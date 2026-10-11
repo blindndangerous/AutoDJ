@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from autodj.liner_scheduler import TALK_UP_MARGIN_S, LinerScheduler
+from autodj.liner_scheduler import TALK_UP_MARGIN_S, LinerScheduler, _Prepared
 from autodj.mixbus import LinerCue, RenderedTrack
 
 _SR = 44100
@@ -241,3 +241,56 @@ class TestOverTheCrossfade:
         (tmp_path / "a.wav").unlink()
         h.sched.on_track_start(self._outgoing())
         assert h.cues() == []
+
+
+class TestAnnouncement:
+    """A rendered announcement, such as the time check after the hour."""
+
+    def test_it_takes_the_liner_slot_with_the_talk_up_cue(self, tmp_path) -> None:
+        h = _Harness(tmp_path, liner_s=2.0, vocals={"n": 10.0})
+        clip = np.zeros((_SR, 2), np.float32)
+        h.sched.announcement = lambda: clip
+        track = _track("n", 30.0)
+        h.sched.on_track_start(track)
+        (call,) = h.bus.play_liner.call_args_list
+        assert call.args[0] is clip
+        assert call.kwargs["duck_db"] == -10.0
+        assert call.kwargs["at"].frame == 10 * _SR - _MARGIN - _SR
+        assert h.decodes == 0
+
+    def test_without_one_due_the_liner_plays(self, tmp_path) -> None:
+        h = _Harness(tmp_path, liner_s=2.0, vocals={"n": 10.0})
+        h.sched.announcement = lambda: None
+        h.sched.on_track_start(_track("n", 30.0))
+        assert h.decodes == 1 and len(h.cues()) == 1
+
+    def test_a_render_error_is_logged_and_the_liner_plays(self, tmp_path, caplog) -> None:
+        h = _Harness(tmp_path, liner_s=2.0, vocals={"n": 10.0})
+
+        def broken() -> np.ndarray:
+            raise RuntimeError("no audio")
+
+        h.sched.announcement = broken
+        h.sched.on_track_start(_track("n", 30.0))
+        assert h.decodes == 1
+        assert "Could not render the announcement" in caplog.text
+
+    def test_it_waits_while_the_bus_cannot_play_or_a_talk_up_is_on_air(self, tmp_path) -> None:
+        h = _Harness(tmp_path, liner_s=2.0, vocals={"n": 10.0})
+        asked = MagicMock(return_value=None)
+        h.sched.announcement = asked
+        h.sched._can_fire = lambda: False
+        h.sched.on_track_start(_track("n", 30.0))
+        h.sched._can_fire = lambda: True
+        outgoing = _track("r", 60.0)
+        h.sched._prepared = _Prepared("a.wav", h.liner, LinerCue(outgoing, 0, started=True))
+        h.sched.on_track_start(_track("n", 30.0))
+        asked.assert_not_called()
+
+    def test_play_audio_plays_now_and_restarts_the_trigger(self, tmp_path) -> None:
+        h = _Harness(tmp_path, liner_s=2.0, vocals={"n": 10.0}, liners_every_n_songs=2)
+        h.sched.on_track_start(_track("n", 30.0))
+        h.sched.play_audio(np.zeros((_SR, 2), np.float32))
+        assert h.cues() == [None]
+        h.sched.on_track_start(_track("n", 30.0))
+        assert len(h.cues()) == 1

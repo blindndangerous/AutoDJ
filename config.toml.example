@@ -360,6 +360,22 @@ liners_talk_up = false
 # are skipped with a log line.  Browser playback has no limit.
 server_max_track_minutes = 15.0
 
+# Spoken time checks. Clips use 24-hour minute names such as 03_05.wav,
+# 15_05.mp3, or 00_00.flac; WAV, MP3, FLAC and OGG are accepted.
+# Missing minutes fall back to the external TTS command, if configured:
+# an argument array (never a shell) that writes a WAV to {out}, with the
+# text on stdin or in {text}.  docs/operations.md has espeak-ng and Windows
+# SAPI examples.  Only enabled, hour_format and rule can also be changed in
+# Settings; the paths and the command stay in this file.
+[time_checks]
+enabled = false
+# clips_folder = "~/.autodj/time_checks"  # default: <index_dir>/<name>/time_checks
+hour_format = "12"                       # "12" or "24"
+rule = "off"                             # "off" or "after_hour_song"
+# intro_clip = "~/.autodj/time-intro.wav"
+# outro_clip = "~/.autodj/time-outro.wav"
+# tts_command = ["piper", "--model", "/path/to/model.onnx", "--output_file", "{out}"]
+
 # ---------------------------------------------------------------------------
 # ReplayGain loudness normalisation
 # ---------------------------------------------------------------------------

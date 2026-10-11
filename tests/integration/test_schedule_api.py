@@ -86,6 +86,7 @@ def test_actions_and_upcoming_come_from_the_server(
         "stereo_tool_preset",
         "pick_mode",
         "liner",
+        "time_check",
         "stream",
         "discovery",
         "recording_start",
@@ -93,6 +94,7 @@ def test_actions_and_upcoming_come_from_the_server(
         "recording_split",
         "play_cart",
     }
+    assert actions["time_check"]["fields"] == []
     assert actions["profile"]["fields"][0]["options"] == [{"value": "Evening", "label": "Evening"}]
     assert actions["liner"]["fields"][0]["options"] == [
         {"value": "station-id.wav", "label": "station-id.wav"}

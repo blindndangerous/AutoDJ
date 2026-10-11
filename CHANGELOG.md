@@ -18,6 +18,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The wall and the uploads are kept on the server and in backups, profiles remember the page
   shown, and the scheduler can play a cart.
 
+- Spoken time checks (Settings, Time checks) use a recorded `HH_MM` clip or a cached external
+  TTS command, with optional intro and outro clips. They play from a Schedule action or after the
+  song that crosses the hour, in the station time zone, with the voice liner duck and talk-up; the
+  check after the hour takes the place of that song change's automatic liner. Settings choose
+  12- or 24-hour speech; doctor reports missing recordings, and backups include the clips and the
+  saved switches. `scripts/time_check_sapi.ps1` speaks with a chosen Windows SAPI voice.
+
 - DMCA mode (`[dmca] enabled = true`): every pick mode, the clockwheel included, keeps to the
   US statutory webcasting licence's performance complement (at most 3 songs from one album, 2 in
   a row, and 4 by one artist or from one box set, 3 in a row, in any three hours; featured

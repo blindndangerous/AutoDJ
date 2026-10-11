@@ -1216,6 +1216,8 @@ artists file is `index/<name>/related-artists.toml` and is read only when
   complete play history.
 - Every file in the liners folder (`[playback] liners_folder`, or `index/<name>/liners`) and in
   `index/profiles`, plus uploaded presets in `index/stereo-tool-presets`.
+- `time_checks.json` and every recorded clip in `[time_checks] clips_folder` (or the default
+  time_checks folder under the active index). Generated TTS cache files are rebuilt when needed.
 - `manifest.json`, which records the AutoDJ version that made the archive and lists its files.
 
 Backups do not include `config.toml` or `config.local.toml`. Copy those yourself
@@ -1370,6 +1372,7 @@ Actions:
 - Play a voice liner or station ID. This needs server audio or stream mode.
 - Play a cart by page and cart number, with its saved duck, over or replace mode. This needs
   server audio or stream mode.
+- Play a time check. This needs server audio or stream mode.
 - Start or stop the stream (stream mode). Start keeps the station playing without listeners,
   stop keeps it off the air even with listeners, and automatic hands control back to the
   listener count. The choice lasts until the next stream event or a restart.
@@ -1391,3 +1394,75 @@ out, so the server still starts. Events are not replayed after downtime: a one-t
 time passed while AutoDJ was stopped is disabled and recorded as missed, and an event more than
 two minutes late (the computer slept) is recorded as missed instead of running. The schedule
 holds at most 100 events.
+
+## Spoken time checks
+
+Open **Settings**, then **Time checks**, and turn on **Enable time checks** (or set
+`[time_checks] enabled = true`). Choose 12- or 24-hour speech, and choose **After the song that
+crosses the hour** to hear the time when the song playing at the top of the hour ends. The
+Schedule panel also offers a **Time check** action for set times; it needs server audio or
+stream mode. Both use `[server] station_timezone` (or the detected system zone), and the time
+said is the time when the check plays. A check plays at most once an hour from the rule: when a
+scheduled check already played in that hour, the rule stays quiet.
+
+A check is one clip: the optional intro, the time, and the optional outro. It plays like a
+voice liner, with the liner duck depth. After the hour, in server audio or stream mode, it takes
+the place of the automatic liner due at that song change and uses **Talk up to the vocal** when
+the clip fits before the singing. When a talk-up liner is already playing over the crossfade
+into that song, the check waits for the following song rather than cutting the liner off. In
+browser playback the page plays it when the next song starts; there it does not replace a voice
+liner due at the same song change, so the two can overlap. The **Play a time check now** button plays one straight away: on the server in server
+audio or stream mode, and in this browser otherwise.
+
+Record one clip per minute in the configured `clips_folder` (by default the `time_checks`
+folder in the active index folder): `00_00.wav` through `23_59.wav`, using 24-hour names even
+when speech uses 12 hours. MP3, FLAC and OGG are also accepted. For example, `03_05.wav` plays
+at 3:05 in the morning and `15_05.wav` at 3:05 in the afternoon. The Settings panel says how
+many minute clips there are. Run `uv run autodj doctor` for the number missing, the first ten
+missing names, and warnings for a missing folder, intro or outro clip or TTS program. A minute
+without a clip uses TTS when it is configured. Without a clip or working TTS command, the check
+is skipped and the server logs one warning.
+
+The speech says "It's 3:05", or "It's 15:05" in 24-hour mode. On the hour it says "It's 3
+o'clock" in 12-hour mode and "It's 15 hundred" in 24-hour mode, and in both modes "It's midnight"
+at 00:00 and "It's noon" at 12:00.
+
+The `tts_command` is an argument array in `config.toml`. AutoDJ passes the spoken text on stdin,
+replaces `{out}` with a temporary WAV path, replaces `{text}` with the text as one argument,
+allows 20 seconds, and caches the result for each command and text. It runs the program
+directly, never through a shell, and on a worker thread. A command that fails, times out or
+writes a WAV with no sound is skipped with a warning. Examples:
+
+```toml
+# Piper, with an installed voice model (Linux or Windows)
+[time_checks]
+tts_command = ["piper", "--model", "/voices/en_US-lessac-medium.onnx", "--output_file", "{out}"]
+```
+
+```toml
+# espeak-ng in a Linux container
+[time_checks]
+tts_command = ["espeak-ng", "-w", "{out}", "{text}"]
+```
+
+```toml
+# Windows SAPI, with the full path to the script in your AutoDJ folder
+[time_checks]
+tts_command = [
+  "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+  "-File", "C:/AutoDJ/scripts/time_check_sapi.ps1", "{out}", "-Voice", "Microsoft Zira Desktop",
+]
+```
+
+The SAPI script speaks the text as plain text and never runs it. Name a voice with `-Voice`:
+the Windows default voice can be a screen reader's SAPI bridge, such as NVDA's, which speaks
+through the screen reader and writes no sound to the file. To list the installed voices, run
+`powershell -NoProfile -Command "Add-Type -AssemblyName System.Speech;
+[System.Speech.Synthesis.SpeechSynthesizer]::new().GetInstalledVoices().VoiceInfo.Name"`.
+
+Choose one command, and test it with **Play a time check now**. `intro_clip`, `outro_clip`,
+`clips_folder`, and `tts_command` are local file settings only; the browser cannot change or
+read them. The enabled switch, hour format, and rule live in versioned `time_checks.json` in
+the index folder after you change them in Settings, and a wrong version stops startup with an
+error. Backups include `time_checks.json` and the recorded clips; copy `config.toml` yourself
+if you use custom paths or a TTS command.

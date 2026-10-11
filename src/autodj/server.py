@@ -48,7 +48,7 @@ import threading
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
 from dataclasses import dataclass, field, fields
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, BinaryIO, Literal
 
@@ -1240,6 +1240,9 @@ def create_app(
         elif server_audio:
             await asyncio.to_thread(_start_server_audio_liners, bridge, _resolve_liner_folder())
             stream_ticker = asyncio.create_task(_tick_stream_workers(bridge))
+        if bridge.liner_scheduler is not None:
+            # The time check after the hour plays where an automatic liner would.
+            bridge.liner_scheduler.announcement = time_checks.due_audio
         broadcast = asyncio.create_task(_broadcast_loop())
         watcher = asyncio.create_task(_index_watcher_loop())
         library_ticker = None
@@ -1351,6 +1354,12 @@ def create_app(
                 await station_schedule.tick()
             except Exception:
                 logger.exception("Scheduler tick failed")
+            try:
+                time_checks.tick(
+                    datetime.now(time_checks.zone), bridge.player._state.current_track is not None
+                )
+            except Exception:
+                logger.exception("Time check tick failed")
 
     # No /docs, /redoc or /openapi.json: the web UI does not use them, and
     # a full map of every route and body schema is reconnaissance material
@@ -3233,6 +3242,10 @@ def create_app(
         station_schedule.register(
             Action(f"recording_{name}", description, run_recording, interrupt="none")
         )
+
+    from autodj.time_checks import install_time_checks
+
+    time_checks = install_time_checks(app, bridge, station_schedule, station_timezone)
     return app
 
 

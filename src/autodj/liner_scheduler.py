@@ -259,6 +259,9 @@ class LinerScheduler:
         self._path_decoder = path_decoder or decode_liner_path
         self._registered_cursor = 0
         self._prepared: _Prepared | None = None
+        # Rendered audio due at this song change instead of an automatic
+        # liner, such as the time check after the hour (set by its owner).
+        self.announcement: Callable[[], np.ndarray | None] | None = None
         self._lock = threading.Lock()
         self._tracks_since = 0
         self._last_fire = clock()
@@ -477,14 +480,32 @@ class LinerScheduler:
     def on_track_start(self, track: RenderedTrack | None = None) -> None:
         """Count a track advance and fire a liner if a trigger is due.
 
+        A due :attr:`announcement` takes the place of an automatic liner at
+        this start, with the same duck and talk-up timing.  It is rendered
+        before the lock is taken, and is not asked for while a talk-up
+        liner from the crossfade is on air or automatic liners may not
+        fire, so it stays due for a later start.
+
         Args:
             track: The render that just started, which talk-ups time
                 against; ``None`` plays a due liner straight away.
         """
         with self._lock:
+            prepared = self._prepared
+            on_air = prepared is not None and prepared.cue is not None and prepared.cue.started
+        announcement = self.announcement
+        audio = None
+        if announcement is not None and not on_air and self._can_fire():
+            try:
+                audio = announcement()
+            except Exception:
+                logger.exception("Could not render the announcement due at this song")
+        with self._lock:
             self._tracks_since += 1
             prepared, self._prepared = self._prepared, None
-            if prepared is not None and prepared.cue is not None and prepared.cue.started:
+            if audio is not None:
+                self._fire_locked(None, track, _Prepared("announcement", audio))
+            elif prepared is not None and prepared.cue is not None and prepared.cue.started:
                 self._fired_locked()  # it played over the crossfade into this track
             else:
                 if prepared is not None and prepared.cue is not None:
@@ -533,6 +554,11 @@ class LinerScheduler:
         """Fade out the clip on the liner path and bring the music back up."""
         with self._lock:
             self._bus.stop_liner()
+
+    def play_audio(self, audio: np.ndarray) -> None:
+        """Play rendered *audio* now, as :meth:`fire` plays a named liner."""
+        with self._lock:
+            self._fire_locked(None, prepared=_Prepared("announcement", audio))
 
     def _planner_mode(self) -> bool:
         """Whether saved-point talk-ups are owned by the renderer planner."""

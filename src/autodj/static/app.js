@@ -461,6 +461,7 @@ function applyState(s) {
   _stateApplicationGeneration += 1;
   _lastState = s;
   bumpLinerTrackCount(s);
+  timeCheckControls?.noteTrack(s);
   noteTrackForHistory(s);
 
   // Stream mode never starts the deck engine, whatever browser_playback
@@ -2338,6 +2339,9 @@ clockwheelPanelControls = installClockwheelPanel();
 schedulerPanelControls = installSchedulerPanel();
 
 import { installLiners, bumpLinerTrackCount } from "./modules/liners.js";
+import { installTimeChecks } from "./modules/time-checks.js";
+
+let timeCheckControls = null;
 
 const _linerEls = {
   lnEnabled:       document.getElementById("ln-enabled"),
@@ -2437,31 +2441,34 @@ function startAuthenticatedApp(initialState) {
   installLibraryJobs(_libEls);
   // Audio dependencies are owned by the audio engine. Inject closures
   // that read its live bindings and stop liner playback after auth expiry.
-  installLiners(_linerEls, {
-    postSettings,
-    // Scheduled liners join music that is playing: none fires while
-    // paused, or after a hard stop (the session ended) until the listener
-    // has pressed Play again.  Nor during a crossfade: "every N songs"
-    // counts the new track the moment the fade starts, and a liner then
-    // talked over the transition.  It waits for the fade to finish.
-    canPlay: () => authenticatedActivityActive && !!_ctx && !!_lastBrowserPlayback
-      && playbackEnabled && !_lastState?.is_paused && !crossfading,
-    // Whenever the server mixes the audio (stream mode or --server-audio),
-    // Test asks the server to play the liner into that mix; only browser
-    // playback plays it on this page.
-    testOnServer: () => _lastStreamMode || _lastState?.browser_playback === false,
+  // Whenever the server mixes the audio (stream mode or --server-audio),
+  // Test asks the server to play the liner or time check into that mix;
+  // only browser playback plays it on this page.
+  const testOnServer = () => _lastStreamMode || _lastState?.browser_playback === false;
+  // Scheduled liners and the time check after the hour join music that is
+  // playing: none plays while paused, or after a hard stop (the session
+  // ended) until the listener has pressed Play again.  Nor during a
+  // crossfade: "every N songs" counts the new track the moment the fade
+  // starts, and a liner then talked over the transition.  It waits for the
+  // fade to finish.
+  const canPlayLiner = () => authenticatedActivityActive && !!_ctx && !!_lastBrowserPlayback
+    && playbackEnabled && !_lastState?.is_paused && !crossfading;
+  // Liners, time checks and carts all play through playBrowserClip.
+  const linerAudio = {
+    canPlay: canPlayLiner,
+    testOnServer,
     // Test in browser playback is a preview: it plays at the page volume
     // whether or not music is playing, and only Mute keeps it silent.
     prepareTest: () => prepareBrowserClip("liner"),
     playLiner: (arrayBuf, duckDb, epoch = captureAuthenticatedRequestEpoch()) =>
       playBrowserClip(arrayBuf, duckDb, activeLinerSources, epoch),
-  });
-  // Carts take the same path.  When the server mixes, it plays the cart
-  // itself and the page only shows and announces it.
+  };
+  timeCheckControls = installTimeChecks(linerAudio);
+  installLiners(_linerEls, { postSettings, ...linerAudio });
+  // When the server mixes, it plays the cart itself and the page only
+  // shows and announces it.
   cartWallControls = installCartWall(undefined, {
-    prepare: () => (
-      _lastStreamMode || _lastState?.browser_playback === false ? null : prepareBrowserClip("cart")
-    ),
+    prepare: () => (testOnServer() ? null : prepareBrowserClip("cart")),
     playAudio: (arrayBuf, mode, duckDb) => playBrowserClip(
       arrayBuf,
       { over: 0, replace: -Infinity }[mode] ?? duckDb,
