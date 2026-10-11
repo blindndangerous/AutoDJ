@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from autodj.fsutil import atomic_write
+from autodj.repeat_settings import LEGACY_REPEAT_FIELDS, migrate_repeat_settings
 from autodj.settings_bodies import (
     BpmRangeBody,
     DiscoveryBody,
@@ -118,10 +119,7 @@ def _migrate_v1(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _backup_v1_state(path: Path) -> bool:
-    """Preserve a v1 file once before replacing it; false means do not save."""
-    backup = path.with_name(f"{path.name}.v1.bak")
-    if backup.exists():
-        return True
+    """Preserve old settings before replacing them; false means do not save."""
     try:
         original = path.read_bytes()
         data = json.loads(original)
@@ -129,12 +127,19 @@ def _backup_v1_state(path: Path) -> bool:
         return True
     if not isinstance(data, dict) or type(data.get("schema_version")) is not int:
         return True
-    if data["schema_version"] != 1:
+    version = data["schema_version"]
+    old_repeats = isinstance(data.get("playback"), dict) and bool(
+        LEGACY_REPEAT_FIELDS.intersection(data["playback"])
+    )
+    if version != 1 and not old_repeats:
+        return True
+    backup = path.with_name(f"{path.name}.v{version}.bak")
+    if backup.exists():
         return True
     try:
         atomic_write(backup, original)
     except OSError as exc:
-        logger.warning("Failed to back up v1 web_state.json; keeping original: %s", exc)
+        logger.warning("Failed to back up old web_state.json; keeping original: %s", exc)
         return False
     return True
 
@@ -191,6 +196,34 @@ def _restore_preset(bridge: PlayerBridge, value: object) -> None:
 
 def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
     """Restore the playback section through the playback-settings route's setter."""
+    playback = playback.copy()
+    legacy = {key: playback.pop(key) for key in LEGACY_REPEAT_FIELDS if key in playback}
+    if legacy and "repeat_rules" not in playback:
+        valid = {}
+        for key, value in legacy.items():
+            try:
+                migrate_repeat_settings({key: value})
+            except (TypeError, ValueError):
+                _warn(key, value)
+            else:
+                valid[key] = value
+        if valid:
+            config = bridge.player._cfg.playback
+            previous = getattr(config, "_legacy_repeat_settings", {})
+            combined = {**previous, **valid}
+            migrated = migrate_repeat_settings(combined, base=config.repeat_rules)
+            from autodj.related_artist_file import migrate_legacy_related_file
+
+            try:
+                migrated_file = migrate_legacy_related_file(
+                    bridge.player._cfg.index.active_dir, combined
+                )
+            except (OSError, ValueError) as exc:
+                logger.warning("Could not migrate related artists: %s", exc)
+            else:
+                if migrated_file:
+                    migrated.related_artists_file = migrated_file
+            playback["repeat_rules"] = migrated.model_dump()
     player = bridge.player
     if "volume" in playback:
         volume = _checked(VolumeBody, "volume", playback["volume"])
@@ -253,7 +286,7 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
         checked = _checked(PlaybackSettingsBody, field, value)
         if checked is not _INVALID:
             values[field] = checked
-    bridge.set_playback_settings(PlaybackSettingsBody.model_validate(values))
+    bridge.set_playback_settings(PlaybackSettingsBody.model_validate(values), restoring=True)
 
 
 def _restore_eq(bridge: PlayerBridge, eq: dict[str, Any]) -> None:

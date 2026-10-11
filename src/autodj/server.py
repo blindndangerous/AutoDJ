@@ -2487,7 +2487,10 @@ def create_app(
     @app.post("/api/playback-settings")
     async def api_playback_settings(body: PlaybackSettingsBody) -> dict:
         """Apply playback-flag overrides (transition mode, lyrics, ...)."""
-        bridge.set_playback_settings(body)
+        try:
+            bridge.set_playback_settings(body)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         bridge.save_persistent_state()
         return bridge.get_settings()
 

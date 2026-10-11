@@ -20,6 +20,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from autodj.audience import StreamAudience
@@ -1393,8 +1394,12 @@ class PlayerBridge:
                 "key_prefer_flats": bool(pb.key_prefer_flats),
                 "show_lyrics": pb.show_lyrics,
                 "beat_sync_fx": bool(pb.beat_sync_fx),
-                "no_repeat_window": int(pb.no_repeat_window),
-                "artist_repeat_window": int(pb.artist_repeat_window),
+                "repeat_rules": pb.repeat_rules.model_dump(),
+                "related_artists_default_file": str(
+                    (Path(cfg.index.active_dir) / "related-artists.toml").resolve()
+                )
+                if cfg.index.active_dir is not None
+                else "",
                 "transition_wet_mix": float(cfg.transitions.wet_mix),
                 "replaygain_target_db": float(cfg.replaygain.target_db),
                 "replaygain_max_clip_safe_gain": float(cfg.replaygain.max_clip_safe_gain),
@@ -1493,11 +1498,33 @@ class PlayerBridge:
             if hasattr(cfg.djmix, k):
                 setattr(cfg.djmix, k, bool(v))
 
-    def set_playback_settings(self, body: PlaybackSettingsBody) -> None:
+    def set_playback_settings(self, body: PlaybackSettingsBody, *, restoring: bool = False) -> None:
         """Apply the fields set in *body*, which pydantic has already validated."""
         values = body.model_dump(exclude_none=True)
         player = self.player
         cfg = player._cfg
+        if body.repeat_rules is not None:
+            from autodj.related_artist_file import load_configured_related_artists
+
+            # Validate the file before changing any live settings.
+            try:
+                related = load_configured_related_artists(
+                    cfg.index.active_dir, body.repeat_rules.related_artists_file
+                )
+                player.related_artists_problem = None
+            except (OSError, ValueError) as exc:
+                if not restoring:
+                    raise
+                from autodj.repeat_rules import RelatedArtists
+
+                related = RelatedArtists()
+                player.related_artists_problem = str(exc)
+                logger.warning("Related artists file was not used: %s", exc)
+            values["repeat_rules"] = body.repeat_rules
+            player._related_artists = related
+            if hasattr(player, "_key_cache_lock"):
+                with player._key_cache_lock:
+                    player._key_cache = None
         targets = {
             "pure_shuffle": (player, "_pure_shuffle"),
             "anchor_to_seed": (player, "_anchor_to_seed"),
@@ -1541,10 +1568,12 @@ class PlayerBridge:
         if values.get("show_lyrics") is False:
             player._current_lyrics = []
             player._current_lyrics_plain = ""
-        if "no_repeat_window" in values or "artist_repeat_window" in values:
+        if "repeat_rules" in values:
             from autodj.player import apply_repeat_windows
 
             apply_repeat_windows(player)
+            if self.library is not None:
+                player.restore_repeat_history(self.library.catalog, refresh=True)
 
     def set_bpm_range(self, lo: float | None, hi: float | None) -> None:
         """Set the hard BPM filter; pass both null to clear."""

@@ -426,14 +426,21 @@ beets_db  = "/home/me/.config/beets/library.db"   # optional
 crossfade_seconds       = 5
 crossfade_eq_duck       = true
 discovery_every         = 8        # pick a sonically distant track once per 8 songs
-no_repeat_window        = 500
-artist_repeat_minutes   = 60       # no artist twice within an hour
-related_artists_starter = true     # Bruno Mars also holds back Silk Sonic, and so on
 show_lyrics             = true
 beat_sync_fx            = true
 key_sync_fx             = true
 transition_mode         = "full_intro_outro"
 ```
+
+Set repeat limits in **Settings > Picking > Repeats**. Artist, album, track and title
+have separate Tracks and Minutes boxes. Zero turns off a limit; when both are set,
+both must be satisfied before a repeat is allowed. Save applies the rules to future
+picks and remembers them across restarts. Older repeat settings are imported automatically.
+
+**Use related artists** applies the artist limit to the links in your editable TOML file.
+The page shows its location, normally `index/<name>/related-artists.toml`. AutoDJ copies
+a sample there on first use and leaves your edits alone on upgrades. After editing the
+file, save the repeat settings to reload it. See [repeat rules](docs/track-selection.md#repeat-avoidance-and-discovery).
 
 ### Multi-machine / NAS setups
 

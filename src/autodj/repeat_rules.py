@@ -1,11 +1,11 @@
 """Repeat rules: which recently heard tracks, artists and titles hold back a pick.
 
-Three rules decide whether a candidate may play yet:
+Four independent rules decide whether a candidate may play yet:
 
 - **Track**: the exact file played recently.
 - **Artist**: any artist credited on the candidate was credited on a recent
-  track, or is related to one (see :class:`RelatedArtists`).  The album
-  rule rides along with it, as it always has.
+  track, or is related to one (see :class:`RelatedArtists`).
+- **Album**: the candidate has an album name recently played.
 - **Title**: the candidate's song title, after :func:`title_key` folds away
   case, punctuation, accents and version notes such as "(Live)", matches a
   recent title.  So "Jingle Bells", "Jingle Bells (Live)" and
@@ -261,36 +261,6 @@ class ArtistSplitter:
 # Related artists
 # ---------------------------------------------------------------------------
 
-#: The optional starter list (``related_artists_starter = true``): side
-#: projects, duos and aliases of one artist, in the same one-way form as
-#: the user file.  Each key holds back the artists listed under it.
-STARTER_RELATED_ARTISTS: dict[str, tuple[str, ...]] = {
-    "Bruno Mars": ("Silk Sonic",),
-    "Anderson .Paak": ("Silk Sonic", "NxWorries"),
-    "Silk Sonic": ("Bruno Mars", "Anderson .Paak"),
-    "NxWorries": ("Anderson .Paak",),
-    "Donald Glover": ("Childish Gambino",),
-    "Childish Gambino": ("Donald Glover",),
-    "Danger Mouse": ("Gnarls Barkley", "Broken Bells"),
-    "CeeLo Green": ("Gnarls Barkley",),
-    "Gnarls Barkley": ("CeeLo Green", "Danger Mouse"),
-    "Killer Mike": ("Run the Jewels",),
-    "El-P": ("Run the Jewels",),
-    "Run the Jewels": ("Killer Mike", "El-P"),
-    "MF DOOM": ("Madvillain", "DANGERDOOM"),
-    "Madlib": ("Madvillain",),
-    "Madvillain": ("MF DOOM", "Madlib"),
-    "Damon Albarn": ("Gorillaz", "Blur"),
-    "Gorillaz": ("Damon Albarn",),
-    "Jack White": ("The White Stripes", "The Raconteurs", "The Dead Weather"),
-    "The White Stripes": ("Jack White",),
-    "Thom Yorke": ("Radiohead", "Atoms for Peace", "The Smile"),
-    "Justin Vernon": ("Bon Iver",),
-    "Bon Iver": ("Justin Vernon",),
-    "Aphex Twin": ("AFX", "Polygon Window"),
-    "AFX": ("Aphex Twin",),
-}
-
 
 @dataclass(frozen=True)
 class RelatedArtists:
@@ -385,25 +355,16 @@ def parse_related_artists(data: Mapping[str, Any], source: str) -> RelatedArtist
     )
 
 
-def starter_related_artists() -> RelatedArtists:
-    """The built-in starter list as :class:`RelatedArtists`."""
-    return parse_related_artists(
-        {"related": {artist: list(others) for artist, others in STARTER_RELATED_ARTISTS.items()}},
-        "starter list",
-    )
-
-
-def load_related_artists(path: str | Path | None, *, starter: bool = False) -> RelatedArtists:
-    """Read the related artists file at *path*, plus the starter list when *starter*.
+def load_related_artists(path: str | Path | None) -> RelatedArtists:
+    """Read and validate the related artists file at *path*.
 
     Raises:
         FileNotFoundError: *path* is set but there is no such file.
         ValueError: The file is not valid TOML or not a valid related
             artists file (see :func:`parse_related_artists`).
     """
-    related = starter_related_artists() if starter else RelatedArtists()
     if not path:
-        return related
+        return RelatedArtists()
     file = Path(path)
     if not file.is_file():
         raise FileNotFoundError(f"playback.related_artists_file not found: {file}")
@@ -412,37 +373,25 @@ def load_related_artists(path: str | Path | None, *, starter: bool = False) -> R
             data = tomllib.load(handle)
     except tomllib.TOMLDecodeError as exc:
         raise ValueError(f"{file}: not valid TOML: {exc}") from exc
-    return related.merged(parse_related_artists(data, str(file)))
+    return parse_related_artists(data, str(file))
 
 
-def load_related_artists_or_warn(
-    path: str | Path | None, *, starter: bool = False
-) -> tuple[RelatedArtists, str | None]:
+def load_related_artists_or_warn(path: str | Path | None) -> tuple[RelatedArtists, str | None]:
     """Like :func:`load_related_artists`, but a bad file never stops AutoDJ.
 
     Returns:
         The related artists and ``None``; or, when the file is missing,
-        unreadable or invalid, the starter list (when *starter*) or no
-        links, and a sentence naming the file and the problem.
+        unreadable or invalid, no links and a sentence naming the problem.
     """
     try:
-        return load_related_artists(path, starter=starter), None
+        return load_related_artists(path), None
     except (OSError, ValueError) as exc:  # tomllib.TOMLDecodeError is a ValueError
-        fallback = starter_related_artists() if starter else RelatedArtists()
-        return fallback, f"playback.related_artists_file {path} was not used: {exc}"
+        return RelatedArtists(), f"playback.related_artists_file {path} was not used: {exc}"
 
 
 # ---------------------------------------------------------------------------
 # Rules and history
 # ---------------------------------------------------------------------------
-
-
-def _number(settings: Any, name: str, default: float | None) -> Any:
-    """``settings.name`` when it is a number, else *default* (an older settings object)."""
-    value = getattr(settings, name, default)
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return default
-    return value
 
 
 def _text(value: Any) -> str:
@@ -476,6 +425,8 @@ class RepeatRules:
     title_window: int = 3
     title_minutes: float = 0.0
     related: RelatedArtists = field(default_factory=RelatedArtists)
+    album_window: int = 3
+    album_minutes: float = 0.0
 
     @classmethod
     def from_playback(
@@ -488,34 +439,48 @@ class RepeatRules:
         """Build the rules from a ``[playback]`` section.
 
         Args:
-            playback: A :class:`~autodj.config.PlaybackConfig`.  On an
-                older settings object, a newer setting that is missing or
-                not a number reads as its default.
-            track_window: Use this instead of ``no_repeat_window`` (the
-                player shrinks it to fit a small library).
+            playback: A :class:`~autodj.config.PlaybackConfig`.
+            track_window: Use this track count instead of the configured
+                count (the player shrinks it to fit a small library).
             related: The loaded related artists.
         """
-        artist_window = int(playback.artist_repeat_window)
-        title_window = _number(playback, "title_repeat_window", None)
+        settings = playback.repeat_rules
+
+        def values(rule: Any) -> tuple[int, float]:
+            return rule.tracks, rule.minutes
+
+        artist_window, artist_minutes = values(settings.artist)
+        album_window, album_minutes = values(settings.album)
+        title_window, title_minutes = values(settings.title)
+        configured_track_window, track_minutes = values(settings.track)
         return cls(
-            track_window=int(playback.no_repeat_window if track_window is None else track_window),
-            track_minutes=float(_number(playback, "no_repeat_minutes", 0.0)),
+            track_window=int(configured_track_window if track_window is None else track_window),
+            track_minutes=track_minutes,
             artist_window=artist_window,
-            artist_minutes=float(_number(playback, "artist_repeat_minutes", 0.0)),
-            title_window=artist_window if title_window is None else int(title_window),
-            title_minutes=float(_number(playback, "title_repeat_minutes", 0.0)),
-            related=related if related is not None else RelatedArtists(),
+            artist_minutes=artist_minutes,
+            title_window=title_window,
+            title_minutes=title_minutes,
+            related=(
+                related
+                if related is not None and settings.use_related_artists
+                else RelatedArtists()
+            ),
+            album_window=album_window,
+            album_minutes=album_minutes,
         )
 
     @property
     def keep_tracks(self) -> int:
-        """How many recent tracks the artist and title rules can look at."""
-        return max(0, self.artist_window, self.title_window)
+        """How many recent tracks the artist, album and title rules can look at."""
+        return max(0, self.artist_window, self.album_window, self.title_window)
 
     @property
     def keep_seconds(self) -> float:
         """How many seconds of history any minute window can look at."""
-        return max(self.track_minutes, self.artist_minutes, self.title_minutes) * 60.0
+        return (
+            max(self.track_minutes, self.artist_minutes, self.album_minutes, self.title_minutes)
+            * 60.0
+        )
 
 
 @dataclass(frozen=True)
@@ -599,8 +564,9 @@ def prune_history(history: Any, rules: RepeatRules, now: float) -> None:
     and walks the history stays quick even with week-long windows.
     """
     keep, seconds = rules.keep_tracks, rules.keep_seconds
+    history_limit = max(HISTORY_LIMIT, rules.keep_tracks)
     while history and (
-        len(history) > HISTORY_LIMIT
+        len(history) > history_limit
         or (len(history) > keep and now - history[0].started >= seconds)
     ):
         history.popleft()
@@ -767,17 +733,20 @@ def build_filter(
     paths: list[str] = []
     # No age is below -inf, so a rule without minutes counts tracks only.
     artist_seconds = rules.artist_minutes * 60.0 if rules.artist_minutes > 0 else -math.inf
+    album_seconds = rules.album_minutes * 60.0 if rules.album_minutes > 0 else -math.inf
     title_seconds = rules.title_minutes * 60.0 if rules.title_minutes > 0 else -math.inf
     track_seconds = rules.track_minutes * 60.0 if rules.track_minutes > 0 else -math.inf
     for position, record in enumerate(history):
         back = count - position  # 1 = the latest track
         age = now - record.started
         by_artist = back <= rules.artist_window or age < artist_seconds
+        by_album = back <= rules.album_window or age < album_seconds
         by_title = back <= rules.title_window or age < title_seconds
-        if by_artist or by_title:
+        if by_artist or by_album or by_title:
             track = cache.keys(record)
             if by_artist:
                 artists |= track.artists
+            if by_album:
                 albums.add(track.album)
             if by_title:
                 titles.add(track.title)
@@ -799,7 +768,6 @@ __all__ = [
     "MAX_REPEAT_MINUTES",
     "REASONS",
     "SINGLE_ACTS",
-    "STARTER_RELATED_ARTISTS",
     "ArtistSplitter",
     "PlayRecord",
     "RelatedArtists",
@@ -817,6 +785,5 @@ __all__ = [
     "plays_to_load",
     "prune_history",
     "records_from_plays",
-    "starter_related_artists",
     "title_key",
 ]

@@ -12,6 +12,7 @@ import pytest
 from autodj._bridge import PlayerBridge
 from autodj.config import NowPlayingConfig
 from autodj.player import PlayerState
+from autodj.repeat_settings import RepeatRule, RepeatSettings
 from autodj.runtime_state import (
     STATE_VERSION,
     load_into_bridge,
@@ -47,13 +48,13 @@ def _make_player() -> SimpleNamespace:
         liners_pick_mode="random",
         liners_duck_db=-12.0,
         liners_talk_up=False,
-        no_repeat_window=20,
-        artist_repeat_window=3,
+        repeat_rules=RepeatSettings(track=RepeatRule(tracks=20)),
         crossfade_bass_cutoff_hz=180.0,
         pick_top_k=1,
         pick_temperature=0.3,
     )
     cfg = SimpleNamespace(
+        index=SimpleNamespace(active_dir=None),
         transitions=SimpleNamespace(effect="none", wet_mix=1.0),
         djmix=SimpleNamespace(
             harmonic_mode="off",
@@ -291,7 +292,7 @@ def test_failed_v1_backup_prevents_overwrite(tmp_path: Path, monkeypatch, caplog
         save_from_player({"preset": "new"}, tmp_path)
 
     assert path.read_bytes() == original
-    assert "Failed to back up v1 web_state.json" in caplog.text
+    assert "Failed to back up old web_state.json" in caplog.text
 
 
 def test_non_object_state_root_is_warned_and_ignored(tmp_path: Path, caplog) -> None:
@@ -567,8 +568,8 @@ class TestRoundTrip:
         p1._cfg.transitions.wet_mix = 0.6
         p1._cfg.replaygain.target_db = -18.0
         p1._cfg.playback.quiet_boost_db = 6.5
-        p1._cfg.playback.no_repeat_window = 50
-        p1._cfg.playback.artist_repeat_window = 5
+        p1._cfg.playback.repeat_rules.track.tracks = 50
+        p1._cfg.playback.repeat_rules.artist.tracks = 5
         p1._cfg.playback.crossfade_seconds = 6.0
         p1._cfg.playback.fade_in_seconds = 1.5
         p1._cfg.playback.crossfade_eq_duck = True
@@ -675,8 +676,7 @@ class TestRoundTrip:
             "pick_top_k",
             "pick_temperature",
             "replaygain_max_clip_safe_gain",
-            "no_repeat_window",
-            "artist_repeat_window",
+            "repeat_rules",
             "transition_wet_mix",
             "replaygain_target_db",
             "quiet_boost_db",
@@ -684,6 +684,7 @@ class TestRoundTrip:
             "is_muted",
             # Bridge-visible derived session values are never persisted.
             "library_size",
+            "related_artists_default_file",
         }
         # Config-only absolute path is neither browser-visible nor persisted.
         assert "liners_folder" not in saved["playback"]
@@ -708,6 +709,7 @@ class TestRoundTrip:
             if key
             not in {
                 "library_size",
+                "related_artists_default_file",
                 "liners_folder",
             }
         }
@@ -753,3 +755,74 @@ class TestRoundTrip:
         }
         assert "invalid eq.low" in caplog.text
         assert "invalid eq.mid" in caplog.text
+
+
+def test_legacy_repeat_state_migrates_over_config_and_is_backed_up(tmp_path):
+    from autodj.config import PlaybackConfig
+
+    player = _make_player()
+    legacy = {
+        "no_repeat_window": 200,
+        "no_repeat_minutes": 120,
+        "artist_repeat_window": 7,
+        "artist_repeat_minutes": 60,
+        "title_repeat_window": 11,
+        "title_repeat_minutes": 10,
+    }
+    config = PlaybackConfig.from_dict(legacy)
+    player._cfg.playback.repeat_rules = config.repeat_rules
+    player._cfg.playback._legacy_repeat_settings = config._legacy_repeat_settings
+    _write_state(tmp_path, {"playback": {"no_repeat_window": 50, "artist_repeat_window": 5}})
+    original = (tmp_path / "web_state.json").read_bytes()
+    _load(player, tmp_path)
+    rules = player._cfg.playback.repeat_rules
+    assert rules.track == RepeatRule(tracks=50, minutes=120)
+    assert rules.artist == rules.album == RepeatRule(tracks=5, minutes=60)
+    assert rules.title == RepeatRule(tracks=11, minutes=10)
+    bridge = PlayerBridge(player, player._sim)
+    save_from_player(bridge.get_settings(), tmp_path)
+    saved = json.loads((tmp_path / "web_state.json").read_text(encoding="utf-8"))
+    assert saved["playback"]["repeat_rules"] == rules.model_dump()
+    assert "artist_repeat_window" not in saved["playback"]
+    assert (tmp_path / "web_state.json.v2.bak").read_bytes() == original
+
+
+def test_new_repeat_state_wins_over_legacy_and_round_trips(tmp_path):
+    rules = RepeatSettings(
+        track=RepeatRule(tracks=0, minutes=120),
+        artist=RepeatRule(tracks=4, minutes=60),
+        album=RepeatRule(tracks=9, minutes=0),
+        title=RepeatRule(tracks=0, minutes=0),
+    )
+    _write_state(
+        tmp_path,
+        {
+            "playback": {
+                "repeat_rules": rules.model_dump(),
+                "artist_repeat_window": 99,
+            }
+        },
+    )
+    player = _make_player()
+    _load(player, tmp_path)
+    assert player._cfg.playback.repeat_rules == rules
+    assert player._state.rules.album_window == 9
+    assert player._state.rules.title_window == player._state.rules.title_minutes == 0
+    save_from_player(PlayerBridge(player, player._sim).get_settings(), tmp_path)
+    restored = _make_player()
+    _load(restored, tmp_path)
+    assert restored._cfg.playback.repeat_rules == rules
+
+
+def test_missing_related_file_does_not_discard_restored_repeat_rules(tmp_path, caplog):
+    rules = RepeatSettings(
+        artist=RepeatRule(tracks=12, minutes=80),
+        use_related_artists=True,
+        related_artists_file=str(tmp_path / "missing.toml"),
+    )
+    _write_state(tmp_path, {"playback": {"repeat_rules": rules.model_dump()}})
+    player = _make_player()
+    _load(player, tmp_path)
+    assert player._cfg.playback.repeat_rules == rules
+    assert player._state.rules.artist_window == 12
+    assert "Related artists file was not used" in caplog.text

@@ -834,23 +834,37 @@
 
     <fieldset>
       <legend>Repeats</legend>
-      <div class="settings-row">
-        <label for="pb-no-repeat">Tracks before a song can repeat</label>
-        <input type="number" id="pb-no-repeat" min="0" max="100000" step="1" value="500"
-               inputmode="numeric" aria-describedby="pb-no-repeat-desc">
+      <span class="setting-desc" id="repeat-rules-desc">Set a track limit, a time limit, or both. 0 disables that limit. Track limits are whole numbers from 0 to 100000; time limits can be decimals from 0 to 10080 minutes.</span>
+      <fieldset>
+        <legend>Prevent the same artist from repeating within</legend>
+        <div class="settings-row"><label for="repeat-artist-tracks">Tracks</label><input type="number" id="repeat-artist-tracks" min="0" max="100000" step="1" value="8" inputmode="numeric" aria-describedby="repeat-rules-desc"></div>
+        <div class="settings-row"><label for="repeat-artist-minutes">Minutes</label><input type="number" id="repeat-artist-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal" aria-describedby="repeat-rules-desc"></div>
+      </fieldset>
+      <div class="settings-check">
+        <input type="checkbox" id="repeat-use-related-artists">
+        <label for="repeat-use-related-artists">Use related artists</label>
       </div>
-      <span class="setting-desc" id="pb-no-repeat-desc">
-        How many recently played tracks the picker avoids, a whole number from 0 to 100000.  0 lets a song come back straight away.  When the library holds fewer tracks than this, AutoDJ uses a smaller number so it always has something to pick.
-      </span>
-
+      <fieldset>
+        <legend>Prevent the same album from repeating within</legend>
+        <div class="settings-row"><label for="repeat-album-tracks">Tracks</label><input type="number" id="repeat-album-tracks" min="0" max="100000" step="1" value="0" inputmode="numeric" aria-describedby="repeat-rules-desc"></div>
+        <div class="settings-row"><label for="repeat-album-minutes">Minutes</label><input type="number" id="repeat-album-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal" aria-describedby="repeat-rules-desc"></div>
+      </fieldset>
+      <fieldset>
+        <legend>Prevent the same track from repeating within</legend>
+        <div class="settings-row"><label for="repeat-track-tracks">Tracks</label><input type="number" id="repeat-track-tracks" min="0" max="100000" step="1" value="50" inputmode="numeric" aria-describedby="repeat-rules-desc"></div>
+        <div class="settings-row"><label for="repeat-track-minutes">Minutes</label><input type="number" id="repeat-track-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal" aria-describedby="repeat-rules-desc"></div>
+      </fieldset>
+      <fieldset>
+        <legend>Prevent the same title from repeating within</legend>
+        <div class="settings-row"><label for="repeat-title-tracks">Tracks</label><input type="number" id="repeat-title-tracks" min="0" max="100000" step="1" value="0" inputmode="numeric" aria-describedby="repeat-rules-desc"></div>
+        <div class="settings-row"><label for="repeat-title-minutes">Minutes</label><input type="number" id="repeat-title-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal" aria-describedby="repeat-rules-desc"></div>
+      </fieldset>
       <div class="settings-row">
-        <label for="pb-artist-repeat">Tracks before an artist can repeat</label>
-        <input type="number" id="pb-artist-repeat" min="0" max="100" step="1" value="3"
-               inputmode="numeric" aria-describedby="pb-artist-repeat-desc">
+        <label for="repeat-related-file">Related artists file</label>
+        <input type="text" id="repeat-related-file" autocomplete="off" aria-describedby="repeat-related-file-desc">
       </div>
-      <span class="setting-desc" id="pb-artist-repeat-desc">
-        How many of the latest tracks are checked for the same artist, album or song title, a whole number from 0 to 100.  0 turns this check off.
-      </span>
+      <span class="setting-desc" id="repeat-related-file-desc">Leave blank to use the station default: <code id="repeat-related-default">Loading…</code>. AutoDJ creates a sample there if missing and never overwrites an existing file. Edit the file, then save these settings to reload it.</span>
+      <button type="button" id="repeat-save">Save repeat settings</button>
     </fieldset>
 
     <fieldset>

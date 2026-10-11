@@ -1068,13 +1068,15 @@ the rules and the collecting societies are different.
   `vectors.g<number>.index` files it names.
 - `dj_meta.db`, the intro, outro, beat grid and cue cache.
 - `web_state.json`, the settings chosen in the web page.
+- `related-artists.toml` and any related-artist copies created by migration, in the active index folder.
 - `library.db`, the station's registered folders, track data and cues, last-played times and
   complete play history.
 - Every file in the liners folder (`[playback] liners_folder`, or `index/<name>/liners`) and in
   `index/profiles`.
 - `manifest.json`, which records the AutoDJ version that made the archive and lists its files.
 
-Backups do not include `config.toml` or `config.local.toml`. Copy those yourself
+Backups do not include a related-artist file stored at a custom path outside the active index
+folder, or `config.toml` or `config.local.toml`. Copy those yourself
 and keep them with the archive. Backups also leave out the pairing secret and the paired browsers, so
 after a restore on a new machine you pair your browsers again.
 Use the new machine's address followed by `/stream.mp3` to listen.
