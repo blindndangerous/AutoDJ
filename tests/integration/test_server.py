@@ -341,8 +341,10 @@ class TestLiners:
             def record_for_path(self, value):
                 return record if _path(value) == _path(path) else None
 
-            def set_points(self, value, points):
+            def set_points(self, value, points, *, allow_outro=None):
                 record["points"] = points
+                if allow_outro is not None:
+                    record["allow_outro"] = allow_outro
 
         class Library:
             catalog = Catalog()
@@ -364,6 +366,19 @@ class TestLiners:
         )
         assert saved.status_code == 200
         assert saved.json()["points"] == {"start": 0.2, "end": 3.8, "overlap_start": 0}
+        saved = tc.post(
+            "/api/library/points",
+            json={"path": str(path), "points": {}, "allow_outro": True},
+        )
+        assert saved.status_code == 200
+        assert saved.json()["allow_outro"] is True
+        assert (
+            tc.post(
+                "/api/library/points",
+                json={"path": str(path), "points": {}, "allow_outro": "true"},
+            ).status_code
+            == 422
+        )
 
     def test_liners_empty_folder(self, client) -> None:
         resp = client.get("/api/liners")

@@ -23,7 +23,7 @@ function mount() {
       <p id="source-folders-status"></p><ul id="source-folders"></ul>
     </section>
     <button id="edit-current-points"></button><section id="points-editor" hidden>
-      <h3 id="points-heading">Song points</h3><p id="points-liner-help" hidden></p>
+      <h3 id="points-heading">Song points</h3><p id="points-liner-help" hidden></p><label id="points-allow-outro-label" hidden><input id="points-allow-outro" type="checkbox"> Allow start over outro</label>
       <input id="points-path"><button id="points-load"></button>
       ${["start", "intro", "outro", "segue", "end", "overlap_start"].map((name) => `<label><input data-point="${name}"><span data-point-source="${name}"></span></label><button data-preview="${name}"></button><button data-set-current="${name}"></button>`).join("")}
       <audio id="points-preview"></audio>
@@ -245,11 +245,19 @@ describe("clock folder and points controls", () => {
     expect(document.querySelector('[data-point="intro"]').closest("label").hidden).toBe(true);
     expect(document.querySelector('[data-point="outro"]').closest("label").hidden).toBe(true);
     expect(document.querySelector('[data-point="segue"]').closest("label").hidden).toBe(false);
-    expect(document.querySelector('[data-point="overlap_start"]').value).toBe("0:00");
+    expect(document.querySelector('[data-point="overlap_start"]').value).toBe("");
+    expect(document.getElementById("points-allow-outro-label").hidden).toBe(false);
+    expect(document.getElementById("points-allow-outro").checked).toBe(false);
+    const preview = document.getElementById("points-preview");
+    Object.defineProperty(preview, "play", { configurable: true, value: vi.fn(async () => {}) });
+    document.querySelector('[data-preview="overlap_start"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(preview.currentTime).toBe(2.6);
+    expect(preview.play).toHaveBeenCalledOnce();
     document.getElementById("points-save").click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     const save = request.mock.calls.find(([url]) => url === "/api/library/points");
-    expect(JSON.parse(save[1].body).points).toEqual({ start: 0.2, segue: 2.6, end: 3.8, overlap_start: 0 });
+    expect(JSON.parse(save[1].body)).toEqual({ path: "N:/voice/same.wav", points: { start: 0.2, segue: 2.6, end: 3.8, overlap_start: null }, allow_outro: false });
   });
 
   it("treats liner overlap start as relative to saved Start for preview and setting current", async () => {
@@ -272,6 +280,22 @@ describe("clock folder and points controls", () => {
     document.querySelector('[data-point="start"]').value = "invalid";
     document.querySelector('[data-set-current="overlap_start"]').click();
     expect(document.getElementById("points-status").textContent).toContain("Enter seconds or minutes:seconds");
+  });
+
+  it("saves the liner outro option and keeps it checked when saved points reload", async () => {
+    const request = vi.fn(async (url) => url === "/api/library/points"
+      ? { points: { start: 0, segue: 5, end: 8, overlap_start: null } }
+      : { path: "N:/voice/same.wav", kind: "liner", allow_outro: true, points: { start: 0, segue: 5, end: 8 } });
+    installLibraryFolders({ document, request });
+    document.dispatchEvent(new CustomEvent("autodj:edit-points", { detail: { path: "N:/voice/same.wav", kind: "liner" } }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const allowOutro = document.getElementById("points-allow-outro");
+    expect(allowOutro.checked).toBe(true);
+    document.getElementById("points-save").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(JSON.parse(request.mock.calls.find(([url]) => url === "/api/library/points")[1].body).allow_outro).toBe(true);
+    expect(allowOutro.checked).toBe(true);
+    expect(document.querySelector('[data-point="overlap_start"]').value).toBe("");
   });
 
   function trackRequest() {
@@ -444,13 +468,21 @@ describe("clock folder and points controls", () => {
 
   it("keeps the cached older page usable until its server restarts", async () => {
     for (const id of ["tab-track-info", "panel-track-info", "track-info-details", "track-info-dialog"]) document.getElementById(id).remove();
-    const controls = installLibraryFolders({ document, request: trackRequest() });
-    await controls.openEditor("M:/one.flac");
+    document.getElementById("points-allow-outro-label").remove();
+    const request = vi.fn(async (url) => url === "/api/library/points"
+      ? { points: { start: 0, segue: 5, end: 8 } }
+      : { path: decodeURIComponent(url.split("path=")[1]), title: "Old liner", kind: "liner", points: { start: 0, segue: 5, end: 8 } });
+    const controls = installLibraryFolders({ document, request });
+    await controls.openEditor("N:/one.wav", "liner");
     expect(document.getElementById("panel-now").hidden).toBe(false);
     expect(document.getElementById("points-editor").hidden).toBe(false);
-    document.querySelector('[data-point="intro"]').value = "0:10";
-    await controls.openEditor("M:/two.flac");
-    expect(document.getElementById("points-path").value).toBe("M:/one.flac");
+    document.getElementById("points-save").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const save = request.mock.calls.find(([url]) => url === "/api/library/points");
+    expect(JSON.parse(save[1].body)).not.toHaveProperty("allow_outro");
+    document.querySelector('[data-point="segue"]').value = "0:04";
+    await controls.openEditor("N:/two.wav", "liner");
+    expect(document.getElementById("points-path").value).toBe("N:/one.wav");
     expect(document.getElementById("points-status").textContent).toContain("Save your changes");
   });
 });

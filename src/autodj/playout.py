@@ -68,8 +68,9 @@ def render_handoff(
     start_offset: int = 0,
     fade_seconds: float = 1.5,
     liner: np.ndarray | None = None,
-    overlap_start: float = 0,
+    overlap_start: float | None = None,
     liner_segue: float | None = None,
+    outro_lead_limit: float | None = 0.0,
 ) -> Handoff:
     """Plan a handoff from saved points without rendering incoming music.
 
@@ -77,6 +78,9 @@ def render_handoff(
     fade tail and the remaining voice tail are returned as ``next_overlay``.
     Point times are seconds in their source files; offsets are sample frames.
     ``liner_segue`` is relative to the retained liner audio, excluding its tail.
+    Blank overlap uses that segue; zero permits fitting under the incoming intro.
+    ``outro_lead_limit`` bounds how early a liner chain may start before the song
+    segue: zero for an ID, None for voices, or an ID's offset after preceding voices.
     """
     checked = _audio(outgoing, "outgoing")
     assert checked is not None
@@ -93,13 +97,14 @@ def render_handoff(
         or fade_seconds < 0
     ):
         raise ValueError("fade_seconds must be a non-negative finite number")
-    if (
-        isinstance(overlap_start, bool)
-        or not isinstance(overlap_start, (int, float))
-        or not math.isfinite(overlap_start)
-        or overlap_start < 0
-    ):
-        raise ValueError("overlap_start must be a non-negative finite number")
+    for name, value in (("overlap_start", overlap_start), ("outro_lead_limit", outro_lead_limit)):
+        if value is not None and (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value < 0
+        ):
+            raise ValueError(f"{name} must be a non-negative finite number or None")
 
     frame_count = len(outgoing)
     start_frame = min(
@@ -134,9 +139,6 @@ def render_handoff(
     if liner is None:
         liner_start = None
         incoming_frame = segue_frame
-    elif overlap_start > 0:
-        liner_start = segue_frame
-        incoming_frame = segue_frame + _frames(float(overlap_start), "overlap_start")
     else:
         outro_point = _point(outgoing_points, "outro")
         safe_outro = max(
@@ -146,10 +148,23 @@ def render_handoff(
                 _frames(outro_point, "outro") if outro_point is not None else segue_frame,
             ),
         )
-        liner_start = max(
-            safe_outro, min(segue_frame, segue_frame + incoming_intro_frames - main_frames)
-        )
-        incoming_frame = max(segue_frame, liner_start + main_frames - incoming_intro_frames)
+        if outro_lead_limit is not None:
+            safe_outro = max(
+                safe_outro, segue_frame - _frames(outro_lead_limit, "outro_lead_limit")
+            )
+        if overlap_start == 0:
+            liner_start = max(
+                safe_outro, min(segue_frame, segue_frame + incoming_intro_frames - main_frames)
+            )
+            incoming_frame = max(segue_frame, liner_start + main_frames - incoming_intro_frames)
+        else:
+            release = (
+                main_frames
+                if overlap_start is None
+                else min(main_frames, _frames(overlap_start, "overlap_start"))
+            )
+            liner_start = max(safe_outro, segue_frame - release)
+            incoming_frame = max(segue_frame, liner_start + release)
 
     fade_frames = _frames(float(fade_seconds), "fade_seconds")
     fade_start = max(start_frame, segue_frame - fade_frames // 3)

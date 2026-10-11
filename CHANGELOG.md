@@ -87,6 +87,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Random walk, least recently played and clock picks now hold back the same album and the same
   song title as well as the same artist, like similarity picks always did. Discovery picks now
   follow the artist, album and title rules too.
+- Liners start at the outgoing song's segue by default. Track info has an "Allow start over
+  outro" checkbox for voicetracks that may begin earlier.
+- A blank liner Overlap start now follows its Segue, falling back to End. Set 0 to allow
+  incoming-intro overlap. An explicit overlap cannot be later than the liner's segue.
+
 - Smooth and Stereo Tool offer "Boost quiet sections", defaulting to 9 dB. It applies throughout
   music tracks; prepared audio refreshes when the allowance changes.
 - Stereo Tool output gains 5.8 dB through a final peak limiter, with a -1.2 dB ceiling,

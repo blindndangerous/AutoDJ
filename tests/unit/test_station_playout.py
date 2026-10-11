@@ -42,7 +42,10 @@ def station(monkeypatch):
         audio[entry.path] = array
     monkeypatch.setattr(player, "_load_playout_audio", lambda entry: audio[entry.path].copy())
     player._library = SimpleNamespace(
-        catalog=SimpleNamespace(points=lambda path: points[path]),
+        catalog=SimpleNamespace(
+            points=lambda path: points[path],
+            record_for_path=lambda path: {"allow_outro": path == voice.path},
+        ),
         entries_snapshot=lambda kind="music": tuple(
             entries[2:] if kind == "liner" else entries[:2]
         ),
@@ -330,3 +333,24 @@ def test_clock_start_keeps_a_preceding_liner_and_obeys_empty_pool(station, monke
     assert player._seed_clock_cursor == 2
     monkeypatch.setattr(player, "_clock_pick", lambda *_: ClockPick(None, None, 0, ["blocked"]))
     assert player._random_start_entry() is None
+
+
+@pytest.mark.parametrize("overlap, music_entry", [(None, 14), (0, 12)])
+def test_default_id_ignores_song_outro_and_distinguishes_blank_overlap(
+    station, overlap, music_entry
+):
+    player, (a, b, voice, _), points = station
+    player._library.catalog.record_for_path = lambda _path: {"allow_outro": False}
+    points[voice.path]["overlap_start"] = overlap
+    result = player._render_track(a, b, 0, liners=((voice, True),))
+    assert result.liner_events[0][0] == 10 * SR
+    assert len(result.audio) - result.overlap_frames == music_entry * SR
+
+
+def test_voice_followed_by_id_never_starts_id_before_song_segue(station):
+    player, (a, b, voice, jingle), points = station
+    points[a.path]["outro"] = 2
+    points[jingle.path].update(end=4, overlap_start=0)
+    result = player._render_track(a, b, 0, liners=((voice, True), (jingle, True)))
+    assert result.liner_events == ((6 * SR, voice, True), (10 * SR, jingle, True))
+    assert len(result.audio) - result.overlap_frames == 12 * SR

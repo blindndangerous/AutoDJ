@@ -49,6 +49,8 @@ def test_short_liner_is_backtimed_to_its_intro_without_pulling_music_early():
         {"start": 0, "intro": 4},
         fade_seconds=1.5,
         liner=audio(6, 0.25),
+        overlap_start=0,
+        outro_lead_limit=None,
     )
     assert handoff.liner_s == pytest.approx(6)
     assert handoff.incoming_s == pytest.approx(8)
@@ -63,6 +65,8 @@ def test_long_liner_delays_music_but_does_not_move_the_outgoing_fade():
         {"start": 0, "intro": 4},
         fade_seconds=1.5,
         liner=audio(8, 0.25),
+        overlap_start=0,
+        outro_lead_limit=None,
     )
     assert handoff.liner_s == pytest.approx(5)
     assert handoff.incoming_s == pytest.approx(9)
@@ -78,6 +82,8 @@ def test_unknown_intro_means_zero_and_voice_never_advances_music():
         {"start": 0, "outro": 5, "segue": 8, "end": 12},
         {},
         liner=audio(2, 0.2),
+        overlap_start=0,
+        outro_lead_limit=None,
     )
     assert handoff.liner_s == pytest.approx(6)
     assert handoff.incoming_s == pytest.approx(8)
@@ -108,6 +114,8 @@ def test_liner_segue_fits_main_content_before_vocals_and_keeps_tail(intro, liner
         {"outro": 4, "segue": 8, "end": 12},
         {"start": 0, "intro": intro},
         liner=audio(6, 0.2),
+        overlap_start=0,
+        outro_lead_limit=None,
         liner_segue=4,
     )
     assert handoff.liner_s == pytest.approx(liner_start)
@@ -145,3 +153,42 @@ def test_zero_fade_is_a_cut_and_invalid_audio_or_times_are_rejected():
         render_handoff(np.zeros((100,)), {}, {})
     with pytest.raises(ValueError, match="fade_seconds"):
         render_handoff(audio(3), {}, {}, fade_seconds=float("nan"))
+
+
+@pytest.mark.parametrize("overlap, incoming", [(None, 12), (0, 10), (7, 12)])
+def test_ids_wait_for_song_segue_and_blank_overlap_uses_liner_segue(overlap, incoming):
+    handoff = render_handoff(
+        audio(14),
+        {"outro": 3, "segue": 8, "end": 14},
+        {"intro": 2},
+        liner=audio(6, 0.2),
+        liner_segue=4,
+        overlap_start=overlap,
+    )
+    assert handoff.liner_s == 8
+    assert handoff.incoming_s == incoming
+    assert handoff.next_overlay[-1, 0] == pytest.approx(0.2)
+
+
+def test_blank_overlap_without_liner_segue_falls_back_to_end():
+    handoff = render_handoff(
+        audio(14),
+        {"outro": 3, "segue": 8, "end": 14},
+        {"intro": 20},
+        liner=audio(6, 0.2),
+    )
+    assert handoff.liner_s == 8
+    assert handoff.incoming_s == 14
+
+
+def test_enabled_outro_can_start_voice_early_with_blank_incoming_overlap():
+    handoff = render_handoff(
+        audio(14),
+        {"outro": 3, "segue": 8, "end": 14},
+        {"intro": 20},
+        liner=audio(6, 0.2),
+        liner_segue=4,
+        outro_lead_limit=None,
+    )
+    assert handoff.liner_s == 4
+    assert handoff.incoming_s == 8

@@ -319,7 +319,8 @@
     <section id="points-editor" aria-labelledby="points-heading" hidden>
       <h3 id="points-heading">Cue points</h3>
       <p>Preview this file to check its cues. Use preview position copies the preview’s time; it does not use or change the station’s playback position.</p>
-      <p id="points-liner-help" hidden>Segue marks the end of the liner’s main content; End keeps the remaining tail. With Overlap start set to 0, AutoDJ fits Segue before the next song’s vocals. A positive Overlap start explicitly starts the music that many seconds after saved Start.</p>
+      <p id="points-liner-help" hidden>Segue marks the end of the liner’s main content; End keeps the remaining tail. A blank Overlap start uses Segue, or End when Segue is blank. With Allow start over outro unchecked, the liner starts at the outgoing song’s Segue; checked, it may start over the Outro. Overlap start 0 allows the incoming intro to overlap; it does not force a full intro overlap. A positive value starts the music that many seconds after saved Start.</p>
+      <label id="points-allow-outro-label" hidden><input type="checkbox" id="points-allow-outro" aria-describedby="points-liner-help"> Allow start over outro</label>
       <label for="points-path">Track path</label>
       <input id="points-path" type="text" autocomplete="off" readonly>
       <div id="points-fields">
