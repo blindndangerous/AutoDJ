@@ -244,6 +244,23 @@ def test_eq_stateful_stereo_matches_mono() -> None:
         np.testing.assert_allclose(s[:, 1], m, atol=1e-5)
 
 
+def test_eq_keeps_different_stereo_channels_independent() -> None:
+    filters = eq.make_eq_filters(44100)
+    audio = np.stack([_tone(3528, hz=80), _tone(3528, hz=6000)], axis=1)
+    expected = np.stack(
+        [eq.apply_eq(audio[:, channel], filters, 0.4, 1.0, 1.6) for channel in (0, 1)],
+        axis=1,
+    )
+    state = eq.make_eq_state(filters, channels=2)
+    actual = np.concatenate(
+        [
+            eq.apply_eq(audio[start : start + 882], filters, 0.4, 1.0, 1.6, state=state)
+            for start in range(0, len(audio), 882)
+        ]
+    )
+    np.testing.assert_allclose(actual, expected, atol=1e-6)
+
+
 def test_load_stereo_falls_back_to_librosa_on_soundfile_failure() -> None:
     fake_mono = np.ones(22050, dtype=np.float32)
     with (

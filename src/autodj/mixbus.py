@@ -293,7 +293,7 @@ class MixBus:
         self._duck_remaining = 0
         self._eq_filters = make_eq_filters(SAMPLE_RATE)
         self._eq_state = make_eq_state(self._eq_filters, channels=2)
-        self._eq_engaged = False
+        self._eq_previous_gains = (1.0, 1.0, 1.0)
 
     @property
     def playing(self) -> bool:
@@ -474,6 +474,8 @@ class MixBus:
             self._skip_fade = 0
             self._tail = None
             self._drop_liner()
+            reset_eq_state(self._eq_state)
+            self._eq_previous_gains = (1.0, 1.0, 1.0)
 
     def _drop_liner(self) -> None:
         """Forget any liner and put the music back at full level (lock held)."""
@@ -599,13 +601,15 @@ class MixBus:
             if self._paused or not self._playing:
                 return np.zeros((self.BLOCK, 2), np.float32)
             block = self._music(self.BLOCK, pending)
-            low, mid, high = self._eq_gains()
-            engaged = (low, mid, high) != (1.0, 1.0, 1.0)
-            if engaged and not self._eq_engaged:
-                reset_eq_state(self._eq_state)
-            self._eq_engaged = engaged
-            if engaged:
-                block = apply_eq(block, self._eq_filters, low, mid, high, state=self._eq_state)
+            gains = self._eq_gains()
+            low, mid, high = gains
+            if gains != self._eq_previous_gains:
+                # Ramp slider changes over this 20 ms block to avoid clicks.
+                ramp = np.linspace(self._eq_previous_gains, gains, self.BLOCK + 1)[1:]
+                low, mid, high = ramp.T[:, :, None]
+            # Keep filter memory current even at unity gain.
+            block = apply_eq(block, self._eq_filters, low, mid, high, state=self._eq_state)
+            self._eq_previous_gains = gains
             duck = self._duck_ramp(len(block))
             block = block * duck[:, None]
             if self._liner is not None:

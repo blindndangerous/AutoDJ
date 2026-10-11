@@ -127,6 +127,30 @@ def test_eq_gains_are_applied() -> None:
     assert np.max(np.abs(bus.render_block())) < 0.05
 
 
+def test_eq_slider_changes_ramp_and_keep_filters_warm_at_unity() -> None:
+    gains = [1.0, 1.0, 1.0]
+    bus, _, _ = _bus([_track(0.4, 882 * 10)])
+    bus._eq_gains = lambda: tuple(gains)
+    bus.start_set()
+    bus.render_block()
+    bus.render_block()
+    previous = 1.0
+    for target in (0.5, 1.0, 0.0, 2.0, 1.0):
+        gains[0] = target
+        block = bus.render_block()
+        expected = 0.4 * np.linspace(previous, target, 883)[1:]
+        np.testing.assert_allclose(block[:, 0], expected, atol=1e-6)
+        np.testing.assert_array_equal(block[:, 0], block[:, 1])
+        previous = target
+
+
+def test_eq_boost_without_master_is_bounded() -> None:
+    bus, _, _ = _bus([_track(0.8, 882 * 4)], gains=(2.0, 2.0, 2.0))
+    bus.start_set()
+    bus.render_block()
+    np.testing.assert_array_equal(bus.render_block(), 1.0)
+
+
 def test_liner_ducks_music_and_is_mixed_in() -> None:
     bus, _, _ = _bus([_track(0.5, 50_000)])
     bus.start_set()
@@ -303,8 +327,9 @@ def test_run_skips_sleep_when_slightly_behind_schedule() -> None:
     assert clock.slept == []
 
 
-def test_run_sends_unclipped_sum_to_master_once_for_all_outputs() -> None:
-    bus, _, _ = _bus([_track(0.8, 882 * 4)])
+@pytest.mark.parametrize("eq_gain", [1.0, 2.0])
+def test_run_sends_unclipped_sum_to_master_once_for_all_outputs(eq_gain: float) -> None:
+    bus, _, _ = _bus([_track(0.8, 882 * 4)], gains=(eq_gain, eq_gain, eq_gain))
     bus.start_set()
     bus.play_liner(np.full((882 * 4, 2), 0.8, np.float32), duck_db=0.0)
     received: list[np.ndarray] = []
@@ -323,7 +348,7 @@ def test_run_sends_unclipped_sum_to_master_once_for_all_outputs() -> None:
     bus.run(stop)
 
     assert len(received) == 1
-    assert np.max(received[0]) > 1.0
+    assert received[0][-1, 0] == pytest.approx(0.8 * eq_gain + 0.8)
     np.testing.assert_array_equal(first.blocks[0], second.blocks[0])
     assert np.max(first.blocks[0]) == 1.0  # bounded at the output boundary
 

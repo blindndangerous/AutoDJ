@@ -17,11 +17,10 @@ _HIGH_CROSSOVER_HZ = 4000.0
 
 
 def make_eq_filters(sample_rate: int) -> dict[str, Any]:
-    """Return SOS filter coefficients for a 3-band split (low / mid / high).
+    """Return first-order low-pass and high-pass SOS coefficients.
 
-    The returned object is a dict ``{"low": sos, "mid_lp": sos, "mid_hp": sos,
-    "high": sos}`` — band-pass for mid is built from a serial low-pass +
-    high-pass pair (cheaper than designing a true band-pass).
+    The middle band is the input minus these two bands, so the three
+    bands reconstruct the original signal exactly at unity gain.
 
     Args:
         sample_rate: Sample rate in Hz.
@@ -33,10 +32,8 @@ def make_eq_filters(sample_rate: int) -> dict[str, Any]:
     low_norm = max(1e-4, min(0.99, _LOW_CROSSOVER_HZ / nyquist))
     high_norm = max(1e-4, min(0.99, _HIGH_CROSSOVER_HZ / nyquist))
     return {
-        "low": butter(2, low_norm, btype="low", output="sos"),
-        "mid_lp": butter(2, high_norm, btype="low", output="sos"),
-        "mid_hp": butter(2, low_norm, btype="high", output="sos"),
-        "high": butter(2, high_norm, btype="high", output="sos"),
+        "low": butter(1, low_norm, btype="low", output="sos"),
+        "high": butter(1, high_norm, btype="high", output="sos"),
     }
 
 
@@ -68,10 +65,8 @@ def make_eq_state(sos_filters: dict[str, Any], channels: int = 1) -> dict[str, n
 def reset_eq_state(state: dict[str, np.ndarray]) -> None:
     """Zero the filter memory in *state*, in place.
 
-    Call this whenever the EQ starts filtering again after a stretch of
-    bypassed blocks: the memory still holds the tail of whatever was filtered
-    before the bypass, and splicing that into a later part of the track is a
-    click.  Starting from zeros is the same assumption a new stream makes.
+    Call this when the stream stops. During playback, keep filtering even
+    at unity gain so the next slider change uses current filter memory.
 
     Args:
         state: Dict from :func:`make_eq_state`.
@@ -83,9 +78,9 @@ def reset_eq_state(state: dict[str, np.ndarray]) -> None:
 def apply_eq(
     chunk: np.ndarray,
     sos_filters: dict[str, Any],
-    low_gain: float,
-    mid_gain: float,
-    high_gain: float,
+    low_gain: float | np.ndarray,
+    mid_gain: float | np.ndarray,
+    high_gain: float | np.ndarray,
     state: dict[str, np.ndarray] | None = None,
 ) -> np.ndarray:
     """Apply a 3-band gain-only EQ to a short audio chunk.
@@ -103,6 +98,8 @@ def apply_eq(
         chunk: Mono ``(n,)`` or stereo ``(n, 2)`` float32 audio chunk.
         sos_filters: Dict from :func:`make_eq_filters`.
         low_gain: Multiplier for the low band (1.0 = unity, 0.0 = kill).
+            Gains may also be per-frame ramps: ``(n,)`` for mono input,
+            or ``(n, 1)`` for stereo input.
         mid_gain: Multiplier for the mid band.
         high_gain: Multiplier for the high band.
         state: Per-band filter memory, updated in place.  ``None`` filters
@@ -110,7 +107,8 @@ def apply_eq(
             ``make_eq_state(sos_filters, channels=2)`` for stereo *chunk*.
 
     Returns:
-        EQ-processed float32 chunk (same shape, hard-clipped to ±1.0).
+        EQ-processed float32 chunk, with the same shape. Levels may exceed
+        ±1.0; the mix bus's output stage handles limiting or clipping.
     """
 
     def _filter(band: str, signal: np.ndarray) -> np.ndarray:
@@ -121,8 +119,6 @@ def apply_eq(
 
     low = _filter("low", chunk)
     high = _filter("high", chunk)
-    mid = _filter("mid_lp", _filter("mid_hp", chunk))
-
-    out = (low * low_gain + mid * mid_gain + high * high_gain).astype(np.float32)
-    np.clip(out, -1.0, 1.0, out=out)
-    return out
+    return (chunk * mid_gain + low * (low_gain - mid_gain) + high * (high_gain - mid_gain)).astype(
+        np.float32
+    )
