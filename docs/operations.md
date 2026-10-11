@@ -1195,6 +1195,9 @@ jumps; when a time happens twice, the event runs the first time only.
 Actions:
 
 - Switch to a saved profile or a preset.
+- Switch the Stereo Tool preset, to Included or an uploaded one. It takes effect when Output
+  processing is Stereo Tool, restarts the processor at once and never skips the song playing. A
+  preset deleted after the event was saved makes its runs fail in words.
 - Change song picking, for example to the clockwheel imported in Library tools.
 - Play a voice liner or station ID. This needs server audio or stream mode.
 - Start or stop the stream (stream mode). Start keeps the station playing without listeners,
@@ -1205,7 +1208,8 @@ Actions:
 Timing is soft or hard. A soft event waits for the current song to end; with nothing playing it
 runs at once. A hard event runs at its time and fades out the current song through the normal
 skip: after the change for profile, preset, song picking and discovery events, so the next song
-follows it, and before the liner for liner events. Stream events never skip.
+follows it, and before the liner for liner events. Stream and Stereo Tool preset events never
+skip.
 
 **Run now** runs an event's action at once, to test it. Each run, failure and missed event goes
 to the server log and to **Recent runs**, which keeps the last 200.

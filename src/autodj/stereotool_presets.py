@@ -41,11 +41,11 @@ def validate_preset_name(name: str) -> str:
     return name
 
 
-def preset_folder(active_index: Path) -> Path:
-    return active_index.parent / "stereo-tool-presets"
+def preset_folder(active_index: Path | str) -> Path:
+    return Path(active_index).parent / "stereo-tool-presets"
 
 
-def preset_path(active_index: Path, name: str, *, require_existing: bool = True) -> Path:
+def preset_path(active_index: Path | str, name: str, *, require_existing: bool = True) -> Path:
     validate_preset_name(name)
     if name == INCLUDED:
         return INCLUDED_PATH
@@ -55,7 +55,7 @@ def preset_path(active_index: Path, name: str, *, require_existing: bool = True)
     return path
 
 
-def list_presets(active_index: Path) -> list[dict[str, str | bool]]:
+def list_presets(active_index: Path | str) -> list[dict[str, str | bool]]:
     folder = preset_folder(active_index)
     names = (
         sorted(
