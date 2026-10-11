@@ -280,6 +280,50 @@ def test_invalid_automatic_point_does_not_block_basic_track(manager_factory, tmp
     assert not any("song.flac" in error for error in manager.snapshot()["import"]["errors"])
 
 
+@pytest.mark.parametrize("point_source", ["user", "imported"])
+def test_replaced_track_resets_manual_cues_and_derived_cache(
+    manager_factory, tmp_path, point_source
+):
+    music = tmp_path / "Music"
+    music.mkdir()
+    song = music / "song.flac"
+    song.write_bytes(b"original audio bytes")
+    old_prepared = tmp_path / "old-prepared.wav"
+    old_prepared.write_bytes(b"old prepared audio")
+    manager = manager_factory(music=music)
+    manager.catalog.put_entry(make_entry(song), prepared_path=str(old_prepared))
+    manager.catalog.set_points(song, {"start": 0, "outro": 170, "end": 180}, source=point_source)
+    manager.catalog.set_vector(song, np.ones(FEATURE_DIM, dtype=np.float32))
+
+    song.write_bytes(b"replacement audio with different bytes and length")
+
+    def short_track(path: Path, kind: str = "music"):
+        del kind
+        fresh = make_entry(path)
+        fresh.length = 100.0
+        return fresh, {
+            "start": 0.0,
+            "intro": 5.0,
+            "outro": 90.0,
+            "segue": 95.0,
+            "end": 99.0,
+        }
+
+    with (
+        patch("autodj.library.analyze_basic", side_effect=short_track),
+        patch("autodj.library.prepare_source", side_effect=fake_prepare),
+    ):
+        manager.scan()
+
+    record = manager.catalog.record_for_path(song)
+    assert record["length"] == 100.0
+    assert record["points"]["outro"] == 90.0
+    assert record["point_sources"]["outro"] == "analysis"
+    assert record["prepared_path"] != os.path.normcase(str(old_prepared))
+    assert not manager.catalog.has_vector(song)
+    assert not any("song.flac" in error for error in manager.snapshot()["import"]["errors"])
+
+
 def test_confirmed_move_preserves_points_prepared_audio_vector_and_play_history(
     manager_factory, tmp_path
 ):

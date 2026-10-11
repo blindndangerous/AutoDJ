@@ -282,8 +282,13 @@ export function applySettingsState(st, els) {
   }
   const pickMode = st.playback?.pick_mode ??
     (st.playback?.pure_shuffle ? "random" : "similarity");
+  const pickModeOption = Array.from(pbPickMode?.options || []).some((option) => option.value === pickMode)
+    ? pickMode
+    : pickMode === "random" && Array.from(pbPickMode?.options || []).some((option) => option.value === "pure")
+      ? "pure"
+      : pickMode;
   if (pbPickMode && doc.activeElement !== pbPickMode && !saveHolds(pbPickMode, pickMode)) {
-    pbPickMode.value = pickMode;
+    pbPickMode.value = pickModeOption;
   }
   for (const [input, bound] of [[bpmLo, "lo"], [bpmHi, "hi"]]) {
     if (!st.bpm_range || !input || doc.activeElement === input) continue;

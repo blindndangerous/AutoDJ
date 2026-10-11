@@ -58,6 +58,12 @@ describe("clock folder and points controls", () => {
     expect(() => parsePointTime("1:75")).toThrow();
   });
 
+  it("rejects nonfinite cue input and carries rounded centiseconds", () => {
+    expect(() => parsePointTime("9".repeat(400))).toThrow();
+    expect(formatPointTime(8.999)).toBe("0:09");
+    expect(formatPointTime(59.999)).toBe("1:00");
+  });
+
   it("posts folder choices and displays the returned import status", async () => {
     document.getElementById("panel-library").hidden = false;
     const request = vi.fn(async (url, options) => url === "/api/library/folders" && !options ? {
@@ -88,6 +94,20 @@ describe("clock folder and points controls", () => {
     list.querySelector("button").click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(request).toHaveBeenCalledWith("/api/library/folders/abc", { method: "DELETE" });
+  });
+
+  it("holds a folder checkbox while its update is in flight", async () => {
+    document.getElementById("source-folders").innerHTML = '<li data-id="abc"><input type="checkbox" data-field="recursive"></li>';
+    let finish;
+    const request = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+    installLibraryFolders({ document, request });
+    const checkbox = document.querySelector('[data-field="recursive"]');
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(checkbox.disabled).toBe(true);
+    expect(request).toHaveBeenCalledTimes(1);
+    finish({});
+    await vi.waitFor(() => expect(checkbox.disabled).toBe(false));
   });
 
   it("keeps folder-control focus across unchanged polls and restores focus if a folder disappears", async () => {
@@ -312,6 +332,46 @@ describe("clock folder and points controls", () => {
     await opening;
     expect(document.getElementById("points-editor").hidden).toBe(true);
     expect(document.getElementById("track-info-details").textContent).not.toContain("Private title");
+  });
+
+  it("clears protected paths, cue drafts, metadata and preview audio on auth reset", async () => {
+    const request = trackRequest();
+    const controls = installLibraryFolders({ document, request });
+    await controls.openEditor("M:/one.flac");
+    const preview = document.getElementById("points-preview");
+    preview.pause = vi.fn();
+    preview.load = vi.fn();
+    preview.src = "/api/audio?path=private";
+    document.querySelector('[data-point="intro"]').value = "0:10";
+    controls.clearProtectedData();
+    expect(document.getElementById("points-editor").hidden).toBe(true);
+    expect(document.getElementById("points-path").value).toBe("");
+    expect(document.getElementById("track-info-details").textContent).toBe("");
+    expect(document.getElementById("track-info-dialog-title").textContent).toBe("");
+    expect(document.querySelector('[data-point="intro"]').value).toBe("");
+    expect(preview.pause).toHaveBeenCalled();
+    expect(preview.hasAttribute("src")).toBe(false);
+  });
+
+  it("ignores a track detail response that arrives after auth reset", async () => {
+    let respond;
+    const controls = installLibraryFolders({ document, request: () => new Promise(resolve => { respond = resolve; }) });
+    const opening = controls.openEditor("M:/one.flac");
+    controls.clearProtectedData();
+    respond({ path: "M:/one.flac", title: "Private title", points: {} });
+    await opening;
+    expect(document.getElementById("points-editor").hidden).toBe(true);
+    expect(document.getElementById("track-info-details").textContent).not.toContain("Private title");
+  });
+
+  it("ignores a folder refresh that arrives after auth reset", async () => {
+    document.getElementById("panel-library").hidden = false;
+    let respond;
+    const controls = installLibraryFolders({ document, request: () => new Promise(resolve => { respond = resolve; }) });
+    controls.clearProtectedData();
+    respond({ folders: [{ id: 1, path: "M:/private", kind: "music" }] });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.getElementById("source-folders").textContent).toBe("");
   });
 
   it("keeps the cached older page usable until its server restarts", async () => {

@@ -182,6 +182,8 @@ let _lastStreamServerAudio = false;
 
 const auth = initAuthDialog({ document });
 let authExpiryHandled = false;
+let libraryFoldersControls = null;
+let clockwheelPanelControls = null;
 let reconnectGeneration = 0;
 let reconnectTimer = null;
 
@@ -271,6 +273,19 @@ function clearProtectedSessionData() {
   if (browseInput) {
     browseInput.value = "";
     browseInput.dispatchEvent(new Event("input"));
+  }
+  libraryFoldersControls?.clearProtectedData();
+  clockwheelPanelControls?.clearProtectedData();
+  const browseFolder = document.getElementById("library-browse-folder");
+  if (browseFolder) {
+    const option = (value, label) => {
+      const element = document.createElement("option");
+      element.value = value;
+      element.textContent = label;
+      return element;
+    };
+    browseFolder.replaceChildren(option("all-music", "All music"), option("all-liners", "All voice liners"));
+    browseFolder.value = "all-music";
   }
   for (const element of Object.values(_libEls)) {
     if (element && !element.matches("button, input")) element.textContent = "";
@@ -1215,6 +1230,8 @@ function connectWS() {
         reconnect: () => {
           if (authExpiryHandled || generation !== reconnectGeneration) return;
           authenticatedActivityActive = true;
+          libraryFoldersControls?.resume();
+          clockwheelPanelControls?.resume();
           connectWS();
         },
       });
@@ -2149,7 +2166,7 @@ import { initViewRouter } from "./modules/tabs.js";
 
 initViewRouter();
 
-installLibraryFolders({
+libraryFoldersControls = installLibraryFolders({
   getCurrentTrack: () => _lastState?.current_track || null,
   getCurrentPosition: () => _lastElapsed,
   onFolders(folders) {
@@ -2175,7 +2192,7 @@ installLibraryFolders({
   },
 });
 
-installClockwheelPanel();
+clockwheelPanelControls = installClockwheelPanel();
 
 import { installLiners, bumpLinerTrackCount } from "./modules/liners.js";
 
@@ -2215,6 +2232,8 @@ function startAuthenticatedApp(initialState) {
   authenticatedAppStarted = true;
   authExpiryHandled = false;
   authenticatedActivityActive = true;
+  libraryFoldersControls?.resume();
+  clockwheelPanelControls?.resume();
   installLibraryJobs(_libEls);
   // Audio dependencies are owned by the audio engine. Inject closures
   // that read its live bindings and stop liner playback after auth expiry.

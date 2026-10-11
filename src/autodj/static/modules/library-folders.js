@@ -9,18 +9,26 @@ const POINTS = ["start", "intro", "outro", "segue", "end", "overlap_start"];
 export function parsePointTime(value) {
   const text = String(value ?? "").trim();
   if (!text) return null;
-  if (/^\d+(?:\.\d+)?$/.test(text)) return Number(text);
+  if (/^\d+(?:\.\d+)?$/.test(text)) {
+    const seconds = Number(text);
+    if (Number.isFinite(seconds)) return seconds;
+  }
   const match = /^(\d+):([0-5]?\d(?:\.\d+)?)$/.exec(text);
-  if (match) return Number(match[1]) * 60 + Number(match[2]);
+  if (match) {
+    const seconds = Number(match[1]) * 60 + Number(match[2]);
+    if (Number.isFinite(seconds)) return seconds;
+  }
   throw new Error("Enter seconds or minutes:seconds, for example 5.3 or 1:05.");
 }
 
 export function formatPointTime(value) {
   if (value == null) return "";
-  const minutes = Math.floor(value / 60);
-  const seconds = value - minutes * 60;
-  const whole = String(Math.floor(seconds)).padStart(2, "0");
-  const fraction = seconds % 1 ? `.${(seconds % 1).toFixed(2).slice(2).replace(/0+$/, "")}` : "";
+  const centiseconds = Math.round(value * 100);
+  const minutes = Math.floor(centiseconds / 6000);
+  const seconds = Math.floor(centiseconds / 100) % 60;
+  const fractionValue = centiseconds % 100;
+  const whole = String(seconds).padStart(2, "0");
+  const fraction = fractionValue ? `.${String(fractionValue).padStart(2, "0").replace(/0$/, "")}` : "";
   return `${minutes}:${whole}${fraction}`;
 }
 
@@ -45,6 +53,12 @@ export function installLibraryFolders({ document: doc = document, request = requ
   let opening = false;
   let saving = false;
   let folderSignature = null;
+  let protectedGeneration = 0;
+  let suspended = false;
+
+  function requestCurrent(epoch, generation) {
+    return !suspended && generation === protectedGeneration && isAuthenticatedRequestCurrent(epoch);
+  }
 
   function say(message, error = false) {
     status.textContent = message;
@@ -87,11 +101,17 @@ export function installLibraryFolders({ document: doc = document, request = requ
     }
   }
   async function refresh() {
-    if (!panel || panel.hidden) return;
-    try { renderFolders(await request("/api/library/folders")); }
-    catch (error) { say(`Could not load folders: ${error.message}`, true); }
+    if (!panel || panel.hidden || suspended) return;
+    const epoch = captureAuthenticatedRequestEpoch();
+    const generation = protectedGeneration;
+    try {
+      const data = await request("/api/library/folders");
+      if (requestCurrent(epoch, generation)) renderFolders(data);
+    } catch (error) {
+      if (requestCurrent(epoch, generation)) say(`Could not load folders: ${error.message}`, true);
+    }
   }
-  function visible() { return !panel.hidden && !doc.hidden; }
+  function visible() { return !suspended && !panel.hidden && !doc.hidden; }
   function updatePolling() {
     if (visible() && timer == null) {
       void refresh();
@@ -107,38 +127,59 @@ export function installLibraryFolders({ document: doc = document, request = requ
     advancedInput.checked = kindInput.value !== "liner";
   });
   doc.getElementById("source-folder-add").addEventListener("click", async () => {
+    if (suspended) return;
+    const epoch = captureAuthenticatedRequestEpoch();
+    const generation = protectedGeneration;
     const path = pathInput.value.trim();
     if (!path) { say("Enter a folder path on the AutoDJ machine.", true); pathInput.focus(); return; }
     try {
       await request("/api/library/folders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, kind: kindInput.value, recursive: recursiveInput.checked, advanced: kindInput.value === "music" && advancedInput.checked }) });
+      if (!requestCurrent(epoch, generation)) return;
       pathInput.value = "";
       say("Folder added.");
       await refresh();
-    } catch (error) { say(`Could not add folder: ${error.message}`, true); }
+    } catch (error) { if (requestCurrent(epoch, generation)) say(`Could not add folder: ${error.message}`, true); }
   });
   list.addEventListener("change", async (event) => {
+    if (suspended) return;
     const input = event.target.closest("input[data-field]");
     if (!input) return;
     const row = input.closest("li");
     const body = { [input.dataset.field]: input.checked };
+    const epoch = captureAuthenticatedRequestEpoch();
+    const generation = protectedGeneration;
+    input.disabled = true;
     try {
       await request(`/api/library/folders/${encodeURIComponent(row.dataset.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      say("Folder settings saved.");
-    } catch (error) { say(`Could not save folder settings: ${error.message}`, true); await refresh(); }
+      if (requestCurrent(epoch, generation)) say("Folder settings saved.");
+    } catch (error) {
+      if (requestCurrent(epoch, generation)) { say(`Could not save folder settings: ${error.message}`, true); await refresh(); }
+    } finally {
+      if (requestCurrent(epoch, generation)) input.disabled = false;
+    }
   });
   list.addEventListener("click", async (event) => {
+    if (suspended) return;
     const button = event.target.closest('button[data-action="remove"]');
     if (!button) return;
     const row = button.closest("li");
+    const epoch = captureAuthenticatedRequestEpoch();
+    const generation = protectedGeneration;
+    button.disabled = true;
     try {
       await request(`/api/library/folders/${encodeURIComponent(row.dataset.id)}`, { method: "DELETE" });
+      if (!requestCurrent(epoch, generation)) return;
       say("Folder removed from the library.");
       await refresh();
-    } catch (error) { say(`Could not remove folder: ${error.message}`, true); }
+    } catch (error) { if (requestCurrent(epoch, generation)) say(`Could not remove folder: ${error.message}`, true); }
+    finally { if (requestCurrent(epoch, generation)) button.disabled = false; }
   });
   doc.getElementById("source-folder-rescan").addEventListener("click", async () => {
-    try { await request("/api/library/rescan", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); say("Rescan started."); await refresh(); }
-    catch (error) { say(`Could not start rescan: ${error.message}`, true); }
+    if (suspended) return;
+    const epoch = captureAuthenticatedRequestEpoch();
+    const generation = protectedGeneration;
+    try { await request("/api/library/rescan", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); if (requestCurrent(epoch, generation)) { say("Rescan started."); await refresh(); } }
+    catch (error) { if (requestCurrent(epoch, generation)) say(`Could not start rescan: ${error.message}`, true); }
   });
 
   function setPointFields(points, sources = {}) {
@@ -204,6 +245,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     if (saving || !currentPath) return false;
     saving = true;
     const epoch = captureAuthenticatedRequestEpoch();
+    const generation = protectedGeneration;
     const wasInert = editor.inert;
     editor.inert = true;
     try {
@@ -213,20 +255,22 @@ export function installLibraryFolders({ document: doc = document, request = requ
         if (!field.closest("label").hidden) points[name] = parsePointTime(field.value);
       }
       const data = await request("/api/library/points", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: currentPath, points }) });
-      if (!isAuthenticatedRequestCurrent(epoch)) return false;
+      if (!requestCurrent(epoch, generation)) return false;
       if (data.points) setPointFields(data.points, data.point_sources || {});
       else savedFields = fieldSnapshot();
       pointSay(`Saved changes to ${currentName}.`);
       return true;
     } catch (error) {
-      if (!isAuthenticatedRequestCurrent(epoch)) return false;
+      if (!requestCurrent(epoch, generation)) return false;
       const message = `Could not save changes: ${error.message}`;
       if (errorTarget) errorTarget.textContent = `${message} Press Escape to return to editing.`;
       else pointSay(message, true);
       return false;
     } finally {
-      saving = false;
-      editor.inert = wasInert;
+      if (generation === protectedGeneration) {
+        saving = false;
+        editor.inert = wasInert;
+      }
     }
   }
   function confirmTrackChange() {
@@ -268,16 +312,18 @@ export function installLibraryFolders({ document: doc = document, request = requ
     });
   }
   async function openEditor(path, kind = "music") {
-    if (opening || saving) return;
+    if (suspended || opening || saving) return;
     if (!path) { showTrackInfo(); pointSay("Choose a track first.", true); return; }
     if (path === currentPath && savedFields !== fieldSnapshot()) { showTrackInfo(); return; }
     opening = true;
     const epoch = captureAuthenticatedRequestEpoch();
+    const generation = protectedGeneration;
     try {
       if (currentPath && savedFields !== fieldSnapshot() && !await confirmTrackChange()) return;
+      if (!requestCurrent(epoch, generation)) return;
       editor.inert = true;
       const data = await request(`/api/library/points?path=${encodeURIComponent(path)}`);
-      if (!isAuthenticatedRequestCurrent(epoch)) return;
+      if (!requestCurrent(epoch, generation)) return;
       currentPath = data.path || path;
       currentKind = data.kind || kind;
       currentName = data.title ? fmtTrack(data) : currentPath.split(/[\\/]/).pop();
@@ -293,9 +339,9 @@ export function installLibraryFolders({ document: doc = document, request = requ
       showTrackInfo();
       pointSay("");
     } catch (error) {
-      if (isAuthenticatedRequestCurrent(epoch)) { showTrackInfo(); pointSay(`Could not load track info: ${error.message}`, true); }
+      if (requestCurrent(epoch, generation)) { showTrackInfo(); pointSay(`Could not load track info: ${error.message}`, true); }
     }
-    finally { editor.inert = false; opening = false; }
+    finally { if (generation === protectedGeneration) { editor.inert = false; opening = false; } }
   }
   doc.getElementById("edit-current-points").addEventListener("click", () => {
     const track = getCurrentTrack();
@@ -342,5 +388,45 @@ export function installLibraryFolders({ document: doc = document, request = requ
   window.addEventListener("hashchange", updatePolling);
   doc.addEventListener("visibilitychange", updatePolling);
   updatePolling();
-  return { refresh, openEditor, destroy() { if (timer != null) clearInterval(timer); window.removeEventListener("hashchange", updatePolling); doc.removeEventListener("visibilitychange", updatePolling); doc.removeEventListener("autodj:edit-points", onEditPoints); } };
+  function clearProtectedData() {
+    suspended = true;
+    protectedGeneration += 1;
+    if (timer != null) clearInterval(timer);
+    timer = null;
+    opening = saving = false;
+    const dialog = doc.getElementById("track-info-dialog");
+    if (dialog?.open) dialog.close();
+    const dialogTitle = doc.getElementById("track-info-dialog-title");
+    if (dialogTitle) dialogTitle.textContent = "";
+    const dialogError = doc.getElementById("track-info-error");
+    if (dialogError) dialogError.textContent = "";
+    editor.inert = false;
+    editor.hidden = true;
+    currentPath = null;
+    currentKind = "music";
+    currentName = "this track";
+    savedFields = "";
+    list.replaceChildren();
+    folderSignature = null;
+    pathInput.value = "";
+    status.textContent = "";
+    pointStatus.textContent = "";
+    pointPath.value = "";
+    for (const name of POINTS) {
+      doc.querySelector(`[data-point="${name}"]`).value = "";
+      const source = doc.querySelector(`[data-point-source="${name}"]`);
+      if (source) source.textContent = "";
+    }
+    doc.getElementById("track-info-details")?.replaceChildren();
+    const details = doc.getElementById("track-info-details");
+    if (details) details.hidden = true;
+    const heading = doc.getElementById("track-info-heading");
+    if (heading) heading.textContent = "Track info";
+    const empty = doc.getElementById("track-info-empty");
+    if (empty) empty.hidden = false;
+    const preview = doc.getElementById("points-preview");
+    if (preview) { preview.pause(); preview.removeAttribute("src"); preview.load(); }
+  }
+  function resume() { suspended = false; updatePolling(); }
+  return { refresh, openEditor, clearProtectedData, resume, destroy() { clearProtectedData(); window.removeEventListener("hashchange", updatePolling); doc.removeEventListener("visibilitychange", updatePolling); doc.removeEventListener("autodj:edit-points", onEditPoints); } };
 }

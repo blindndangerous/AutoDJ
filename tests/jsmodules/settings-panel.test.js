@@ -6,6 +6,8 @@
 // "Cannot reach server: els is undefined" even when the server was alive.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { applySettingsState, installSettingsControls, postSettings } from
   "../../src/autodj/static/modules/settings-panel.js";
 
@@ -148,6 +150,23 @@ describe("applySettingsState", () => {
     applySettingsState({ playback: { pure_shuffle: true, replaygain_enabled: true } }, els);
     expect(els.pbPickMode.value).toBe("random");
     expect(els.pbLoudness.value).toBe("replaygain");
+  });
+
+  it("matches the real Random walk option and retains compatibility with cached pure markup", () => {
+    const template = document.createElement("template");
+    template.innerHTML = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
+    const actual = template.content.querySelector("#pb-pick-mode");
+    expect(actual.querySelector('option[value="random"]')).not.toBeNull();
+    const els = makeEls();
+    els.pbPickMode = actual;
+    applySettingsState({ playback: { pick_mode: "random" } }, els);
+    expect(actual.value).toBe("random");
+
+    const oldMarkup = document.createElement("select");
+    oldMarkup.innerHTML = '<option value="pure">Random walk</option>';
+    els.pbPickMode = oldMarkup;
+    applySettingsState({ playback: { pick_mode: "random" } }, els);
+    expect(oldMarkup.value).toBe("pure");
   });
 
   it("selects and saves Stereo Tool processing", () => {

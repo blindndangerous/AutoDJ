@@ -1,5 +1,5 @@
 // Clockwheel configuration, with PAL treated only as uploaded text.
-import { requestJson } from "./api-client.js";
+import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 
 const FIELDS = ["folder", "recursive", "selection", "enforce_rules", "kind"];
 
@@ -26,6 +26,12 @@ export function installClockwheelPanel({ document: doc = document, request = req
   let config = { name: "Clock", slots: [], resync_minutes: [0], cursor: 0 };
   let timer = null;
   let slotsSignature = null;
+  let generation = 0;
+  let suspended = false;
+
+  function requestCurrent(epoch, mine) {
+    return !suspended && mine === generation && isAuthenticatedRequestCurrent(epoch);
+  }
 
   function say(message, error = false) {
     if (status.textContent !== message) status.textContent = message;
@@ -65,12 +71,18 @@ export function installClockwheelPanel({ document: doc = document, request = req
     if (config.last_status) say(config.last_status);
   }
   async function refresh() {
-    if (!panel || panel.hidden || doc.hidden) return;
-    try { render(await request("/api/library/clock")); }
-    catch (error) { say(`Could not load clock: ${error.message}`, true); }
+    if (!panel || panel.hidden || doc.hidden || suspended) return;
+    const epoch = captureAuthenticatedRequestEpoch();
+    const mine = generation;
+    try {
+      const data = await request("/api/library/clock");
+      if (requestCurrent(epoch, mine)) render(data);
+    } catch (error) {
+      if (requestCurrent(epoch, mine)) say(`Could not load clock: ${error.message}`, true);
+    }
   }
   function updatePolling() {
-    if (!panel.hidden && !doc.hidden && timer == null) {
+    if (!suspended && !panel.hidden && !doc.hidden && timer == null) {
       void refresh();
       timer = setInterval(refresh, 5000);
     } else if ((panel.hidden || doc.hidden) && timer != null) {
@@ -87,31 +99,57 @@ export function installClockwheelPanel({ document: doc = document, request = req
   }
 
   doc.getElementById("clock-save").addEventListener("click", async () => {
+    if (suspended) return;
+    const epoch = captureAuthenticatedRequestEpoch();
+    const mine = generation;
     try {
       const resync_minutes = parseResyncMinutes(resyncInput.value);
       const slots = config.slots.map((slot) => Object.fromEntries(FIELDS.map((field) => [field, slot[field]])));
-      render(await postConfig("/api/library/clock", { name: nameInput.value.trim(), slots, resync_minutes }));
+      const data = await postConfig("/api/library/clock", { name: nameInput.value.trim(), slots, resync_minutes });
+      if (!requestCurrent(epoch, mine)) return;
+      render(data);
       say("Clock saved.");
-    } catch (error) { say(`Could not save clock: ${error.message}`, true); }
+    } catch (error) { if (requestCurrent(epoch, mine)) say(`Could not save clock: ${error.message}`, true); }
   });
   doc.getElementById("clock-import").addEventListener("click", async () => {
+    if (suspended) return;
+    const epoch = captureAuthenticatedRequestEpoch();
+    const mine = generation;
     const file = doc.getElementById("clock-pal-file").files?.[0];
     if (!file) { say("Choose a .pal text file to import.", true); return; }
     if (file.size > 256 * 1024) { say("PAL files must be 256 KB or smaller.", true); return; }
     try {
       const text = await file.text();
+      if (!requestCurrent(epoch, mine)) return;
       const resync_minutes = parseResyncMinutes(resyncInput.value);
-      render(await postConfig("/api/library/clock/import", {
+      const data = await postConfig("/api/library/clock/import", {
         text, name: nameInput.value.trim(), resync_minutes,
-      }));
+      });
+      if (!requestCurrent(epoch, mine)) return;
+      render(data);
       say("PAL clock imported and saved.");
-    } catch (error) { say(`Could not import clock: ${error.message}`, true); }
+    } catch (error) { if (requestCurrent(epoch, mine)) say(`Could not import clock: ${error.message}`, true); }
   });
   window.addEventListener("hashchange", updatePolling);
   doc.addEventListener("visibilitychange", updatePolling);
   updatePolling();
-  return { refresh, destroy() {
+  function clearProtectedData() {
+    suspended = true;
+    generation += 1;
     if (timer != null) clearInterval(timer);
+    timer = null;
+    config = { name: "Clock", slots: [], resync_minutes: [0], cursor: 0 };
+    slotsSignature = null;
+    nameInput.value = "Clock";
+    resyncInput.value = "0";
+    doc.getElementById("clock-pal-file").value = "";
+    slotsList.replaceChildren();
+    next.textContent = "";
+    status.textContent = "";
+  }
+  function resume() { suspended = false; updatePolling(); }
+  return { refresh, clearProtectedData, resume, destroy() {
+    clearProtectedData();
     window.removeEventListener("hashchange", updatePolling);
     doc.removeEventListener("visibilitychange", updatePolling);
   } };

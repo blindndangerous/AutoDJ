@@ -727,9 +727,9 @@ def test_playback_pick_and_loudness_modes_validate_and_keep_legacy_default() -> 
     for mode in ("off", "replaygain", "smooth", "stereotool"):
         assert PlaybackConfig.from_dict({"loudness_processing": mode}).loudness_processing == mode
     assert PlaybackConfig.from_dict({}).stereotool_path == "stereo_tool_cmd"
-    assert PlaybackConfig.from_dict({"stereotool_path": "C:/tools/stereo_tool_cmd"}).stereotool_path == (
-        "C:/tools/stereo_tool_cmd"
-    )
+    assert PlaybackConfig.from_dict(
+        {"stereotool_path": "C:/tools/stereo_tool_cmd"}
+    ).stereotool_path == ("C:/tools/stereo_tool_cmd")
     with pytest.raises(ValueError, match="stereotool_path"):
         PlaybackConfig.from_dict({"stereotool_path": "  "})
     with pytest.raises(ValueError, match="pick_mode"):

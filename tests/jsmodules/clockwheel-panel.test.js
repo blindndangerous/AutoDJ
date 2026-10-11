@@ -69,4 +69,31 @@ describe("clockwheel configuration panel", () => {
     expect(name.value).toBe("Editing name");
     controls.destroy();
   });
+
+  it("ignores a clock response that arrives after auth reset and clears paths", async () => {
+    document.getElementById("panel-library").hidden = false;
+    let respond;
+    const controls = installClockwheelPanel({ document, request: () => new Promise(resolve => { respond = resolve; }) });
+    controls.clearProtectedData();
+    respond({ name: "Private clock", slots: [{ folder: "M:/private", kind: "music" }], resync_minutes: [0] });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.getElementById("clock-slots").textContent).toBe("");
+    expect(document.getElementById("clock-name").value).toBe("Clock");
+    expect(document.getElementById("clock-next").textContent).toBe("");
+    controls.destroy();
+  });
+
+  it("does not upload PAL text read after auth reset", async () => {
+    let finishText;
+    const fileInput = document.getElementById("clock-pal-file");
+    Object.defineProperty(fileInput, "files", { value: [{ size: 20, text: () => new Promise(resolve => { finishText = resolve; }) }] });
+    const request = vi.fn(async () => ({}));
+    const controls = installClockwheelPanel({ document, request });
+    document.getElementById("clock-import").click();
+    controls.clearProtectedData();
+    finishText("Dir['/private'].QueueBottom(smLRP);");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(request).not.toHaveBeenCalled();
+    controls.destroy();
+  });
 });

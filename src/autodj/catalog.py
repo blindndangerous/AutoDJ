@@ -370,9 +370,12 @@ class LibraryCatalog:
                 values[_ENTRY_FIELDS.index("fingerprint")],
             )
             if all(old_identity) and all(new_identity) and old_identity != new_identity:
+                # Changed bytes, including retagging, invalidate cues and derived audio too.
                 self._db().execute("DELETE FROM catalog_vectors WHERE entry_id=?", (record_id,))
                 self._db().execute(
-                    "UPDATE catalog_entries SET prepared_path=NULL WHERE id=?", (record_id,)
+                    "UPDATE catalog_entries SET prepared_path=NULL, points='{}', point_sources='{}' "
+                    "WHERE id=?",
+                    (record_id,),
                 )
         cols = ",".join(_ENTRY_FIELDS)
         placeholders = ",".join("?" for _ in _ENTRY_FIELDS)

@@ -71,7 +71,10 @@ def test_seeded_index_fields_survive_put_and_reopen(tmp_path: Path) -> None:
         assert catalog.points(track)["segue"] == 150.0
 
 
-def test_user_points_survive_auto_updates_and_can_be_explicitly_cleared(tmp_path: Path) -> None:
+@pytest.mark.parametrize("point_source", ["user", "imported"])
+def test_manual_points_survive_same_file_auto_updates_and_can_be_cleared(
+    tmp_path: Path, point_source: str
+) -> None:
     root = tmp_path / "music"
     root.mkdir()
     track = root / "song.flac"
@@ -79,11 +82,12 @@ def test_user_points_survive_auto_updates_and_can_be_explicitly_cleared(tmp_path
     with LibraryCatalog(tmp_path / "catalog.db") as catalog:
         catalog.add_source(root)
         catalog.put_entry(entry(track))
-        catalog.set_points(track, {"start": 0, "outro": 170}, source="user")
+        catalog.set_points(track, {"start": 0, "outro": 170}, source=point_source)
         catalog.set_points(track, {"start": 2, "outro": 160, "intro": 5}, source="analysis")
         assert catalog.points(track)["start"] == 0
         assert catalog.points(track)["outro"] == 170
         assert catalog.points(track)["intro"] == 5
+        assert catalog.record_for_path(track)["point_sources"]["start"] == point_source
         catalog.set_points(track, {"start": None}, source="user")
         assert catalog.points(track)["start"] is None
         assert catalog.record_for_path(track)["point_sources"]["start"] == "user"
