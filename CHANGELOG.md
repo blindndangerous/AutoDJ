@@ -153,6 +153,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Clock music slots with repeat rules disabled still skip silent tracks and songs already
+  playing or being prepared.
 - Unknown or removed configuration settings now produce warnings and are ignored instead of
   blocking startup. Saved browser settings follow the same rule, preserving valid repeat limits
   alongside obsolete keys. Invalid values for supported configuration settings still fail validation.

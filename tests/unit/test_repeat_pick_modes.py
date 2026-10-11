@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 import logging
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -154,6 +155,29 @@ def test_clock_slot_without_rules_ignores_them() -> None:
     _played_first(player)
     titles = {player._clock_pick(player._pick_context(), 0).entry.title for _ in range(60)}
     assert "Leave the Door Open" in titles
+
+
+@pytest.mark.parametrize("selection", ["random", "least_recent"])
+def test_clock_slot_without_rules_skips_protected_and_allows_recent(selection: str) -> None:
+    player = _clock_player([("Protected", "Playing"), ("Recent", "Still allowed")])
+    entries = tuple(player.playable_entries())
+    protected, recent = entries
+    player._clock_slots = [ClockSlot(folder="Z:/Music", selection=selection, enforce_rules=False)]
+    now = datetime.now(UTC)
+    player._library = SimpleNamespace(
+        entries_snapshot=lambda kind="music": () if kind == "liner" else entries,
+        last_played=lambda: {
+            protected.path: now - timedelta(days=10),
+            recent.path: now,
+        },
+    )
+    context = replace(
+        player._pick_context(), protected=frozenset({protected.path}), recent=deque([recent.path])
+    )
+
+    picked = player._clock_pick(context, 0)
+
+    assert picked.entry == recent
 
 
 def test_discovery_honours_the_rules() -> None:

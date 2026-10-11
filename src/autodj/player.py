@@ -1130,12 +1130,15 @@ class Player:
 
         recent = set(context.recent)
         entries = self.playable_entries()
+        eligible = tuple(
+            entry for entry in entries if not entry.is_silent and entry.path not in context.protected
+        )
         # DMCA mode holds every slot to the complement, even one that does
         # not enforce the repeat rules.
         complying = (
-            entries
+            eligible
             if context.complement is None
-            else tuple(entry for entry in entries if context.allows(entry))
+            else tuple(entry for entry in eligible if context.allows(entry))
         )
         last_played = self._library.last_played()
         liners = self._library.entries_snapshot("liner")
@@ -1149,7 +1152,7 @@ class Player:
                     and (not use_rules or context.repeat(entry))
                 )
 
-            pool = complying if use_dmca else entries
+            pool = complying if use_dmca else eligible
             return pick_slot(self._clock_slots, position, pool, last_played, allowed, liners=liners)
 
         # Like the other pick modes, relax rather than stop the music: first
