@@ -456,7 +456,9 @@ def test_basic_suggestions_include_legacy_intro_outro_without_overwriting_manual
     assert manager.catalog.points(song)["outro"] == 140.0
 
 
-def test_play_history_is_buffered_until_tick_and_reloaded(manager_factory, tmp_path):
+def test_play_history_and_recent_archive_are_buffered_until_tick_and_close(
+    manager_factory, tmp_path
+):
     music = tmp_path / "Music"
     music.mkdir()
     song = music / "song.flac"
@@ -465,10 +467,91 @@ def test_play_history_is_buffered_until_tick_and_reloaded(manager_factory, tmp_p
     manager.catalog.put_entry(make_entry(song))
     manager.refresh()
     manager.remember_play(song, 99.5)
+    first = {
+        "event_id": "play-1",
+        "path": str(song),
+        "entry_id": None,
+        "title": "Song",
+        "artist": "Artist",
+        "duration": 180.0,
+        "played_at": "2026-01-01T00:00:00+00:00",
+    }
+    manager.remember_history(first)
     assert manager.catalog.last_played()[os.path.normcase(str(song))] == 0
     assert manager.last_played()[os.path.normcase(str(song))] == 99.5
+    assert manager.catalog.recent_history() == []
     manager.tick()
     assert manager.catalog.last_played()[os.path.normcase(str(song))] == 99.5
+    stored = manager.catalog.recent_history()
+    assert len(stored) == 1
+    assert (stored[0]["event_id"], stored[0]["title"], stored[0]["played_at"]) == (
+        first["event_id"],
+        first["title"],
+        first["played_at"],
+    )
+    assert stored[0]["entry_id"] is not None
+
+    second = {**first, "event_id": "play-2", "title": "Interrupted"}
+    manager.remember_history(second)
+    manager.interrupt_history(second["event_id"])
+    assert len(manager.catalog.recent_history()) == 1
+    manager.close()
+
+    reopened = LibraryCatalog(manager.cfg.index.active_dir / "library.db")
+    try:
+        assert [row["event_id"] for row in reopened.recent_history()] == ["play-1"]
+        rows = (
+            reopened._db()
+            .execute("SELECT event_id,interrupted FROM play_history ORDER BY rowid")
+            .fetchall()
+        )
+        assert [(row["event_id"], row["interrupted"]) for row in rows] == [
+            ("play-1", 0),
+            ("play-2", 1),
+        ]
+    finally:
+        reopened.close()
+
+
+def test_history_events_queued_during_flush_are_persisted_next_tick(manager_factory, monkeypatch):
+    manager = manager_factory()
+    first = {
+        "event_id": "play-1",
+        "path": r"C:\Music\one.flac",
+        "entry_id": None,
+        "title": "One",
+        "artist": "Artist",
+        "duration": 180.0,
+        "played_at": "2026-01-01T00:00:00+00:00",
+    }
+    second = {**first, "event_id": "play-2", "title": "Two"}
+    manager.remember_history(first)
+    write_history = manager.catalog.write_history
+    enqueued = False
+
+    def write_during_callback(rows, interrupted=()):
+        nonlocal enqueued
+        if not enqueued:
+            enqueued = True
+            manager.remember_history(second)
+            manager.interrupt_history(first["event_id"])
+        write_history(rows, interrupted)
+
+    monkeypatch.setattr(manager.catalog, "write_history", write_during_callback)
+    manager.tick()
+    assert [row["event_id"] for row in manager.catalog.recent_history()] == ["play-1"]
+
+    manager.tick()
+    assert [row["event_id"] for row in manager.catalog.recent_history()] == ["play-2"]
+    rows = (
+        manager.catalog._db()
+        .execute("SELECT event_id,interrupted FROM play_history ORDER BY rowid")
+        .fetchall()
+    )
+    assert [(row["event_id"], row["interrupted"]) for row in rows] == [
+        ("play-1", 1),
+        ("play-2", 0),
+    ]
 
 
 def test_runtime_settings_are_buffered_until_tick_and_close(manager_factory, tmp_path):

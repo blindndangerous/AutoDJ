@@ -1,4 +1,6 @@
+import json
 import os
+import sqlite3
 from pathlib import Path
 
 import numpy as np
@@ -119,12 +121,27 @@ def test_rekey_preserves_record_identity_points_and_history(tmp_path: Path) -> N
         record_id = catalog.put_entry(entry(old))
         catalog.set_points(old, {"segue": 120}, "user")
         catalog.remember_play(old, 1234.5)
+        catalog.write_history(
+            [
+                {
+                    "event_id": "archived-play",
+                    "path": str(old),
+                    "title": "Title",
+                    "artist": "Artist",
+                    "duration": 180,
+                    "played_at": "2025-02-03T12:30:00Z",
+                }
+            ]
+        )
         old.rename(new)
         assert catalog.rekey(old, new)
         record = catalog.record_for_path(new)
         assert record["id"] == record_id
         assert record["points"]["segue"] == 120
         assert catalog.last_played()[os.path.normcase(str(new))] == 1234.5
+        history = catalog.recent_history()[0]
+        assert history["entry_id"] == record_id
+        assert history["path"] == os.path.normcase(str(old))
         assert catalog.record_for_path(old) is None
 
 
@@ -140,6 +157,122 @@ def test_settings_and_source_update_are_persistent(tmp_path: Path) -> None:
         assert catalog.sources()[0]["recursive"] is False
         assert catalog.sources()[0]["advanced"] is False
         assert catalog.get_setting("clockwheel") == {"enabled": True}
+
+
+def test_play_history_is_unbounded_idempotent_and_recent_is_limited(tmp_path: Path) -> None:
+    root = tmp_path / "music"
+    root.mkdir()
+    track = root / "song.flac"
+    track.write_bytes(b"audio")
+    db = tmp_path / "catalog.db"
+    with LibraryCatalog(db) as catalog:
+        catalog.put_entry(entry(track))
+        catalog.remember_play(track, 1234.5)
+        rows = [
+            {
+                "event_id": f"play-{i}",
+                "path": str(track),
+                "title": "Title",
+                "artist": "Artist",
+                "duration": 180.0,
+                "played_at": f"2025-01-{i % 28 + 1:02d}T12:00:00+00:00",
+            }
+            for i in range(501)
+        ]
+        catalog.write_history(rows)
+        catalog.write_history(
+            [rows[0], {**rows[0], "title": "retry"}, {**rows[0], "event_id": "second"}]
+        )
+        catalog.write_history([], interrupted=["play-0"])
+        assert len(catalog.recent_history()) == 500
+        assert catalog.recent_history()[0]["event_id"] == "play-2"
+        assert catalog.recent_history()[-1]["event_id"] == "second"
+        assert catalog.recent_history(limit=1)[0]["event_id"] == "second"
+        assert catalog._db().execute("SELECT COUNT(*) FROM play_history").fetchone()[0] == 502
+        assert (
+            catalog._db()
+            .execute("SELECT interrupted FROM play_history WHERE event_id='play-0'")
+            .fetchone()[0]
+            == 1
+        )
+        assert (
+            catalog._db()
+            .execute("SELECT entry_id FROM play_history WHERE event_id='play-1'")
+            .fetchone()[0]
+            == catalog.record_for_path(track)["id"]
+        )
+    with LibraryCatalog(db) as catalog:
+        assert catalog._db().execute("SELECT COUNT(*) FROM play_history").fetchone()[0] == 502
+        assert catalog.last_played()[os.path.normcase(str(track))] == 1234.5
+
+
+def test_play_history_migrates_all_valid_legacy_rows_once(tmp_path: Path) -> None:
+    db = tmp_path / "catalog.db"
+    legacy = [
+        {
+            "title": f"Title {i}",
+            "artist": "Artist",
+            "duration": 180,
+            "played_at": "2025-02-03T12:30:00Z",
+        }
+        for i in range(503)
+    ]
+    legacy += [
+        {"title": "bad", "artist": "Artist", "duration": -1, "played_at": "2025-02-03"},
+        {"title": "bad", "artist": "Artist", "duration": 1, "played_at": "no date"},
+    ]
+    connection = sqlite3.connect(db)
+    connection.execute("CREATE TABLE catalog_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    connection.execute(
+        "INSERT INTO catalog_settings VALUES ('play_history',?)", (json.dumps(legacy),)
+    )
+    connection.commit()
+    connection.close()
+    with LibraryCatalog(db) as catalog:
+        assert len(catalog.recent_history()) == 500
+        assert catalog._db().execute("SELECT COUNT(*) FROM play_history").fetchone()[0] == 503
+        assert catalog.get_setting("play_history") == legacy
+    with LibraryCatalog(db) as catalog:
+        assert catalog._db().execute("SELECT COUNT(*) FROM play_history").fetchone()[0] == 503
+
+
+def test_play_history_import_waits_for_legacy_key_to_appear(tmp_path: Path) -> None:
+    db = tmp_path / "catalog.db"
+    with LibraryCatalog(db) as catalog:
+        assert catalog.recent_history() == []
+        assert catalog.get_setting("play_history_migrated") is None
+        catalog.set_setting(
+            "play_history",
+            [
+                {
+                    "title": "Title",
+                    "artist": "Artist",
+                    "duration": 180,
+                    "played_at": "2025-02-03T12:30:00Z",
+                }
+            ],
+        )
+    with LibraryCatalog(db) as catalog:
+        assert len(catalog.recent_history()) == 1
+        assert catalog.get_setting("play_history_migrated") is True
+
+
+@pytest.mark.parametrize("raw", ["{bad json", "{}", "null", "[1, null]"])
+def test_corrupt_legacy_play_history_does_not_block_startup(tmp_path: Path, raw: str) -> None:
+    db = tmp_path / "catalog.db"
+    connection = sqlite3.connect(db)
+    connection.execute("CREATE TABLE catalog_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    connection.execute("INSERT INTO catalog_settings VALUES ('play_history',?)", (raw,))
+    connection.commit()
+    connection.close()
+    with LibraryCatalog(db) as catalog:
+        assert catalog.recent_history() == []
+        assert (
+            catalog._db()
+            .execute("SELECT value FROM catalog_settings WHERE key='play_history'")
+            .fetchone()[0]
+            == raw
+        )
 
 
 def test_seed_vectors_and_confirmed_move_preserve_vector(tmp_path: Path) -> None:

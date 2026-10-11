@@ -62,6 +62,8 @@ class LibraryManager:
         }
         self._import_errors: list[dict[str, str]] = []
         self._pending_plays: dict[str, float] = {}
+        self._pending_history: dict[str, dict] = {}
+        self._interrupted_plays: set[str] = set()
         self._pending_settings: dict[str, Any] = {}
         self._last_played: dict[str, float] = {}
         self._catalog_mtime = 0
@@ -156,6 +158,15 @@ class LibraryManager:
         with self._lock:
             self._pending_settings[key] = value
 
+    def remember_history(self, row: dict) -> None:
+        """Queue a play-log entry without writing SQLite on the audio thread."""
+        with self._lock:
+            self._pending_history[row["event_id"]] = dict(row)
+
+    def interrupt_history(self, event_id: str) -> None:
+        with self._lock:
+            self._interrupted_plays.add(event_id)
+
     def last_played(self) -> dict[str, float]:
         with self._lock:
             return dict(self._last_played)
@@ -178,8 +189,22 @@ class LibraryManager:
                 if self._pending_settings.get(key) == value:
                     self._pending_settings.pop(key, None)
 
+    def _flush_history(self) -> None:
+        with self._lock:
+            pending = dict(self._pending_history)
+            interrupted = set(self._interrupted_plays)
+        if not pending and not interrupted:
+            return
+        self.catalog.write_history(list(pending.values()), list(interrupted))
+        with self._lock:
+            for event_id, row in pending.items():
+                if self._pending_history.get(event_id) == row:
+                    self._pending_history.pop(event_id, None)
+            self._interrupted_plays.difference_update(interrupted)
+
     def tick(self) -> None:
         self._flush_plays()
+        self._flush_history()
         self._flush_settings()
         if self._mtime() != self._catalog_mtime:
             self.refresh()
@@ -561,6 +586,7 @@ class LibraryManager:
         with self._scan_lock:
             pass
         self._flush_plays()
+        self._flush_history()
         self._flush_settings()
         self.catalog.close()
 

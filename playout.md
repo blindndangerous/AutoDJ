@@ -62,7 +62,9 @@ Thimeo says its [trial has no time limit](https://www.thimeo.com/help/stereo-too
 
 config.toml still supplies installation defaults. The active library saves its folder lists, checkbox choices, points and clock in library.db. Configured folders are imported once; an intentionally empty list stays empty. Browser playback settings remain in web_state.json, and prepared audio is stored beside the library. Playback profiles do not change source folders. Existing Beets/index tools remain available as advanced jobs.
 
-The History fix saves the latest 500 plays in the same library database, including their original times and repeated plays of a song. The existing background library writer saves these updates, so the audio thread does not write to disk. The list is restored before playback starts. This fix is ready locally but still needs an approved restart to load. Last-played times for least-recently-played selection were already saved separately.
+Keep every play in the library database, with no automatic age or count limit. History shows the latest 500; older plays stay saved for future date browsing. Each song also keeps its own last-played time, which least-recently-played selection already uses. That time does not expire when a song leaves the visible history, whether it was played yesterday, weeks ago or months ago. A confirmed file move keeps the same library record and last-played time.
+
+The history update saves new plays through the existing background writer, so the audio thread does not write to disk. It restores the recent view on startup and needs no new setting. This update is committed locally but still needs an approved restart to load. Date browsing can come later.
 
 A restart keeps the clock's saved position but chooses a song for that slot again; it does not restore the prepared next song or resume the interrupted audio. Ties for least recently played are random. That explains Blackstreet changing to Cardigans after the restart: both were unplayed candidates in the same 90a slot. A song that was only prepared stays in the unplayed pool.
 

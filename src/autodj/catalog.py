@@ -9,6 +9,7 @@ import sqlite3
 import threading
 import uuid
 from collections.abc import Iterable, Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +87,11 @@ class LibraryCatalog:
             CREATE TABLE IF NOT EXISTS catalog_settings (
                 key TEXT PRIMARY KEY, value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS play_history (
+                event_id TEXT PRIMARY KEY NOT NULL, entry_id TEXT, path TEXT,
+                title TEXT NOT NULL, artist TEXT NOT NULL, duration REAL NOT NULL,
+                played_at TEXT NOT NULL, interrupted INTEGER NOT NULL DEFAULT 0
+            );
             CREATE TABLE IF NOT EXISTS catalog_vectors (
                 entry_id TEXT PRIMARY KEY REFERENCES catalog_entries(id) ON DELETE CASCADE,
                 vector BLOB NOT NULL
@@ -93,6 +99,145 @@ class LibraryCatalog:
             """
         )
         self._conn.commit()
+        self._migrate_legacy_history()
+
+    @staticmethod
+    def _valid_played_at(value: Any) -> bool:
+        if not isinstance(value, str):
+            return False
+        try:
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        return True
+
+    @staticmethod
+    def _duration(value: Any) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            return None
+        try:
+            value = float(value)
+        except OverflowError:
+            return None
+        return value if math.isfinite(value) and value >= 0 else None
+
+    def _migrate_legacy_history(self) -> None:
+        db = self._db()
+        with self._lock:
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                if db.execute(
+                    "SELECT 1 FROM catalog_settings WHERE key='play_history_migrated'"
+                ).fetchone():
+                    db.commit()
+                    return
+                legacy = db.execute(
+                    "SELECT value FROM catalog_settings WHERE key='play_history'"
+                ).fetchone()
+                if legacy is None:
+                    db.commit()
+                    return
+                try:
+                    rows = json.loads(legacy[0])
+                except (TypeError, json.JSONDecodeError):
+                    rows = []
+                if isinstance(rows, list):
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            continue
+                        duration = self._duration(row.get("duration"))
+                        if (
+                            not isinstance(row.get("title"), str)
+                            or not isinstance(row.get("artist"), str)
+                            or duration is None
+                            or not self._valid_played_at(row.get("played_at"))
+                        ):
+                            continue
+                        db.execute(
+                            "INSERT INTO play_history "
+                            "(event_id,title,artist,duration,played_at) VALUES (?,?,?,?,?)",
+                            (
+                                uuid.uuid4().hex,
+                                row["title"],
+                                row["artist"],
+                                duration,
+                                row["played_at"],
+                            ),
+                        )
+                db.execute("INSERT INTO catalog_settings VALUES ('play_history_migrated','true')")
+                db.commit()
+            except BaseException:
+                db.rollback()
+                raise
+
+    def write_history(self, rows: Sequence[dict], interrupted: Sequence[str] = ()) -> None:
+        """Append unique play events and mark any supplied events interrupted."""
+        clean_rows = []
+        for row in rows:
+            event_id = row.get("event_id") if isinstance(row, dict) else None
+            path = row.get("path") if isinstance(row, dict) else None
+            duration = self._duration(row.get("duration")) if isinstance(row, dict) else None
+            if (
+                not isinstance(event_id, str)
+                or not event_id
+                or not isinstance(path, str)
+                or not path
+                or not isinstance(row.get("title"), str)
+                or not isinstance(row.get("artist"), str)
+                or duration is None
+                or not self._valid_played_at(row.get("played_at"))
+            ):
+                continue
+            normalized_path = _path(path)
+            clean_rows.append(
+                (
+                    event_id,
+                    normalized_path,
+                    normalized_path,
+                    row["title"],
+                    row["artist"],
+                    duration,
+                    row["played_at"],
+                )
+            )
+        interrupted = tuple(
+            event_id for event_id in interrupted if isinstance(event_id, str) and event_id
+        )
+        with self._lock:
+            db = self._db()
+            try:
+                db.execute("BEGIN")
+                db.executemany(
+                    "INSERT INTO play_history (event_id,entry_id,path,title,artist,duration,played_at) "
+                    "VALUES (?,(SELECT id FROM catalog_entries WHERE path=?),?,?,?,?,?) "
+                    "ON CONFLICT(event_id) DO NOTHING",
+                    clean_rows,
+                )
+                db.executemany(
+                    "UPDATE play_history SET interrupted=1 WHERE event_id=?",
+                    ((event_id,) for event_id in dict.fromkeys(interrupted)),
+                )
+                db.commit()
+            except BaseException:
+                db.rollback()
+                raise
+
+    def recent_history(self, limit: int = 500) -> list[dict]:
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+            raise ValueError("limit must be a non-negative integer")
+        with self._lock:
+            rows = (
+                self._db()
+                .execute(
+                    "SELECT event_id,entry_id,path,title,artist,duration,played_at FROM ("
+                    "SELECT rowid,event_id,entry_id,path,title,artist,duration,played_at "
+                    "FROM play_history WHERE interrupted=0 ORDER BY rowid DESC LIMIT ?) "
+                    "ORDER BY rowid ASC",
+                    (limit,),
+                )
+                .fetchall()
+            )
+            return [dict(row) for row in rows]
 
     def _db(self) -> sqlite3.Connection:
         if self._conn is None:

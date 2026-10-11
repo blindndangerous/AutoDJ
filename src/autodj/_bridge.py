@@ -13,7 +13,6 @@ server stack.
 from __future__ import annotations
 
 import logging
-import math
 import secrets
 import threading
 from collections import deque
@@ -59,6 +58,8 @@ def _library_job_snapshot() -> dict:
 def _history_entry(entry: Any) -> dict:
     """Return a JSON-serialisable history-row dict for *entry*."""
     return {
+        "event_id": secrets.token_hex(16),
+        "path": str(getattr(entry, "path", "") or ""),
         "title": getattr(entry, "title", "") or "",
         "artist": getattr(entry, "artist", "") or "",
         "duration": float(getattr(entry, "length", 0.0) or 0.0),
@@ -90,7 +91,7 @@ class PlayerBridge:
     player: Any
     sim: Any
     library: Any = None
-    # Keep the latest 500 plays across restarts without unbounded growth.
+    # The viewer keeps 500 rows; the catalog retains the full play log.
     _play_history: deque = field(
         default_factory=lambda: deque(maxlen=500),
         init=False,
@@ -229,13 +230,8 @@ class PlayerBridge:
             if self.stream_mode and self.player._state.current_track is not entry:
                 self._open_play = None
                 return
-            row = _history_entry(entry)
-            self._play_history.append(row)
-            self._history_started = True
-            self._remember_history()
+            row = self._append_history(entry)
             self._open_play = (entry, row)
-        if self.library is not None:
-            self.library.remember_play(entry.path)
         if self.stream is not None:
             self.stream.set_title(
                 getattr(entry, "artist", "") or "", getattr(entry, "title", "") or ""
@@ -271,18 +267,27 @@ class PlayerBridge:
             for index in range(len(self._play_history) - 1, -1, -1):
                 if self._play_history[index] is play[1]:
                     del self._play_history[index]
-                    self._remember_history()
+                    if self.library is not None:
+                        self.library.interrupt_history(play[1]["event_id"])
                     return
 
-    def _remember_history(self) -> None:
-        """Buffer an ordered history snapshot while holding ``_history_lock``."""
+    def _append_history(self, entry: Any) -> dict:
+        """Record one play while holding ``_history_lock``; never trim the archive."""
+        row = _history_entry(entry)
+        self._play_history.append(row)
+        self._history_started = True
         if self.library is not None:
-            self.library.remember_setting("play_history", list(self._play_history))
+            self.library.remember_history(row)
+            self.library.remember_play(entry.path)
+        return row
 
     def history_snapshot(self) -> list[dict]:
         """Return the latest plays across sessions, oldest first."""
         with self._history_lock:
-            return list(self._play_history)
+            return [
+                {key: row[key] for key in ("title", "artist", "duration", "played_at")}
+                for row in self._play_history
+            ]
 
     # ------------------------------------------------------------------
     # Controls
@@ -292,9 +297,7 @@ class PlayerBridge:
         """Append the seed track to history before the first advance fires."""
         with self._history_lock:
             if entry is not None and not self._history_started:
-                self._play_history.append(_history_entry(entry))
-                self._history_started = True
-                self._remember_history()
+                self._append_history(entry)
 
     def seek(self, seconds: float | None = None, delta: float | None = None) -> float:
         """Seek the active track and return the resulting position in seconds.
@@ -435,10 +438,8 @@ class PlayerBridge:
         # Lazy-capture seed on first advance (seed never goes through advance_now as nxt).
         with self._history_lock:
             if not self._history_started and cur is not None:
-                self._play_history.append(_history_entry(cur))
-            self._play_history.append(_history_entry(nxt))
-            self._history_started = True
-            self._remember_history()
+                self._append_history(cur)
+            self._append_history(nxt)
         # Browser-driven mode never renders on the server, so without an
         # explicit call here the lyric panel would stay frozen on the previous
         # track's words.  Lyric lookup can touch slow audio/tag storage,
@@ -1260,37 +1261,11 @@ class PlayerBridge:
         load_into_bridge(self, self.player._cfg.index.active_dir)
         if self.library is None:
             return
-        try:
-            saved = self.library.catalog.get_setting("play_history", [])
-        except ValueError:
-            logger.warning("Saved playback history is invalid; ignoring it")
-            return
-        if not isinstance(saved, list):
-            return
         with self._history_lock:
             if self._history_started:
                 return
             self._play_history.clear()
-            for row in saved[-500:]:
-                if not isinstance(row, dict) or not all(
-                    isinstance(row.get(key), str) for key in ("title", "artist", "played_at")
-                ):
-                    continue
-                duration = row.get("duration")
-                if (
-                    isinstance(duration, bool)
-                    or not isinstance(duration, int | float)
-                    or not math.isfinite(duration)
-                    or duration < 0
-                ):
-                    continue
-                try:
-                    datetime.fromisoformat(row["played_at"])
-                except ValueError:
-                    continue
-                self._play_history.append(
-                    {key: row[key] for key in ("title", "artist", "duration", "played_at")}
-                )
+            self._play_history.extend(self.library.catalog.recent_history())
 
     def save_persistent_state(self) -> None:
         """Write current settings to web_state.json (atomic)."""
