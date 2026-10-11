@@ -527,6 +527,7 @@ def test_run_doctor_check_order(tmp_path: Path) -> None:
         "index-path",
         "model-path",
         "index",
+        "saved-settings",
         "dj-meta-db",
         "dependencies",
         "model-cache",
@@ -534,6 +535,34 @@ def test_run_doctor_check_order(tmp_path: Path) -> None:
         "stream",
         "related-artists",
     ]
+
+
+@pytest.mark.parametrize(
+    "content,status",
+    [
+        (None, CheckStatus.PASS),
+        ("{bad", CheckStatus.WARN),
+        ('{"schema_version": 99}', CheckStatus.WARN),
+        (
+            '{"schema_version": 2, "playback": {"related_artists_file": "custom.toml"}}',
+            CheckStatus.FAIL,
+        ),
+    ],
+)
+def test_saved_settings_check(tmp_path: Path, content: str | None, status: CheckStatus) -> None:
+    cfg = _config(tmp_path)
+    path = cfg.index.active_dir / "web_state.json"
+    if content is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    check = doctor._saved_settings_check(cfg)
+
+    assert check.name == "saved-settings"
+    assert check.status is status
+    if status is CheckStatus.FAIL:
+        assert "related_artists_file" in check.detail
+        assert "Preserve the old related-artists data" in check.detail
 
 
 def test_unreadable_or_non_directory_paths_fail(tmp_path: Path) -> None:

@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from autodj.config import PlaybackConfig, ServerConfig, UnknownConfigKeysError
-from autodj.doctor_repair import plan_unknown_key_repairs
+from autodj.doctor_repair import plan_saved_state_repair, plan_unknown_key_repairs
 
 
 def test_unknown_keys_raise_structured_error() -> None:
@@ -148,3 +148,56 @@ def test_repairs_preserve_unknown_sections_and_presets(tmp_path: Path) -> None:
     assert repair.replacement == (
         b"[playback]\n[legacy_section]\nkeep = 'yes'\n[presets.workout]\nbpm_min = 120\n"
     )
+
+
+def test_saved_state_repair_removes_only_obsolete_keys_and_keeps_backup(tmp_path: Path) -> None:
+    import json
+
+    path = tmp_path / "web_state.json"
+    original = json.dumps(
+        {
+            "schema_version": 2,
+            "eq": {"low": 1.4},
+            "playback": {
+                "no_repeat_minutes": 40,
+                "repeat_rules": {"related_artists_file": "", "track": {"minutes": 460}},
+                "pick_mode": "current_all_counts_0",
+            },
+        },
+        indent=2,
+    ).encode()
+    path.write_bytes(original)
+    repair = plan_saved_state_repair(tmp_path)
+    assert repair is not None
+    assert repair.keys_by_section == {
+        "playback": ("no_repeat_minutes",),
+        "playback.repeat_rules": ("related_artists_file",),
+    }
+    backup = repair.apply()
+    assert backup.read_bytes() == original
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["eq"] == {"low": 1.4}
+    assert data["playback"]["repeat_rules"] == {"track": {"minutes": 460}}
+    assert data["playback"]["pick_mode"] == "current_all_counts_0"
+
+
+def test_saved_state_repair_leaves_custom_related_artist_path_and_malformed_files(
+    tmp_path: Path,
+) -> None:
+    import json
+
+    path = tmp_path / "web_state.json"
+    original = json.dumps(
+        {
+            "schema_version": 2,
+            "playback": {
+                "related_artists_file": "custom.toml",
+                "no_repeat_window": 40,
+            },
+        }
+    ).encode()
+    path.write_bytes(original)
+    assert plan_saved_state_repair(tmp_path) is None
+    assert path.read_bytes() == original
+    path.write_text("{bad", encoding="utf-8")
+    assert plan_saved_state_repair(tmp_path) is None

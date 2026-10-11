@@ -20,6 +20,24 @@ REMOVED_REPEAT_KEYS = frozenset(
 )
 
 
+def removed_saved_repeat_keys(data: object) -> dict[str, tuple[str, ...]]:
+    """Group removed repeat keys in saved web state by their playback section."""
+    if not isinstance(data, dict) or not isinstance(data.get("playback"), dict):
+        return {}
+    playback = data["playback"]
+    removed: dict[str, tuple[str, ...]] = {}
+    direct = tuple(sorted(REMOVED_REPEAT_KEYS.intersection(playback)))
+    if direct:
+        removed["playback"] = direct
+    rules = playback.get("repeat_rules")
+    nested = (
+        tuple(sorted(REMOVED_REPEAT_KEYS.intersection(rules))) if isinstance(rules, dict) else ()
+    )
+    if nested:
+        removed["playback.repeat_rules"] = nested
+    return removed
+
+
 class RepeatRule(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

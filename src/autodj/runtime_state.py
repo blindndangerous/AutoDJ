@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from autodj.fsutil import atomic_write
-from autodj.repeat_settings import REMOVED_REPEAT_KEYS
+from autodj.repeat_settings import removed_saved_repeat_keys
 from autodj.settings_bodies import (
     BpmRangeBody,
     DiscoveryBody,
@@ -308,19 +308,17 @@ def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
     if not isinstance(data, dict):
         logger.warning("web_state.json root is not an object, ignoring")
         return
-    playback = data.get("playback")
-    if isinstance(playback, dict):
-        old = sorted(REMOVED_REPEAT_KEYS.intersection(playback))
-        rules = playback.get("repeat_rules")
-        if isinstance(rules, dict):
-            old.extend(
-                f"repeat_rules.{key}" for key in sorted(REMOVED_REPEAT_KEYS.intersection(rules))
-            )
-        if old:
-            raise SavedStateError(
-                f"{path}: removed playback repeat keys {', '.join(old)}; "
-                "remove them by hand and re-enter limits in Settings > Picking > Repeats"
-            )
+    removed = removed_saved_repeat_keys(data)
+    if removed:
+        old = [
+            f"{group.removeprefix('playback.')}.{key}" if group != "playback" else key
+            for group, keys in removed.items()
+            for key in keys
+        ]
+        raise SavedStateError(
+            f"{path}: removed playback repeat keys {', '.join(old)}; "
+            "remove them by hand and re-enter limits in Settings > Picking > Repeats"
+        )
     version = data.get("schema_version")
     if type(version) is int and version == 1:
         data = _migrate_v1(data)

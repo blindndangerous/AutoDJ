@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import tomllib
@@ -12,11 +13,12 @@ from pathlib import Path
 
 from autodj.config import unknown_config_keys
 from autodj.fsutil import atomic_write
+from autodj.repeat_settings import removed_saved_repeat_keys
 
 
 @dataclass
 class ConfigRepair:
-    """A proposed removal of obsolete keys from one TOML file."""
+    """A proposed removal of obsolete settings from one file."""
 
     path: Path
     keys_by_section: dict[str, tuple[str, ...]]
@@ -147,3 +149,40 @@ def plan_unknown_key_repairs(config_path: str | None) -> list[ConfigRepair]:
             continue
         repairs.append(ConfigRepair(path, keys_by_section, original, replacement))
     return repairs
+
+
+def plan_saved_state_repair(index_dir: Path) -> ConfigRepair | None:
+    """Plan removal of obsolete repeat keys from supported saved web state."""
+    path = Path(index_dir) / "web_state.json"
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        original = path.read_bytes()
+        data = json.loads(original)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(data, dict)
+        or type(data.get("schema_version")) is not int
+        or data["schema_version"] not in (1, 2)
+    ):
+        return None
+    removed = removed_saved_repeat_keys(data)
+    if not removed:
+        return None
+    for keys in removed.values():
+        if "related_artists_file" in keys:
+            playback = data["playback"]
+            value = playback.get("related_artists_file")
+            rules = playback.get("repeat_rules")
+            if value is None and isinstance(rules, dict):
+                value = rules.get("related_artists_file")
+            if value not in (None, ""):
+                return None
+    cleaned = deepcopy(data)
+    for group, keys in removed.items():
+        target = cleaned["playback"] if group == "playback" else cleaned["playback"]["repeat_rules"]
+        for key in keys:
+            target.pop(key, None)
+    replacement = (json.dumps(cleaned, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    return ConfigRepair(path, removed, original, replacement)

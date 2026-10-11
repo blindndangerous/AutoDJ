@@ -793,6 +793,17 @@ def test_repeat_state_rejects_nested_file_path(tmp_path):
         _load(_make_player(), tmp_path)
 
 
+def test_removed_repeat_keys_are_shared_and_grouped():
+    from autodj.repeat_settings import removed_saved_repeat_keys
+
+    assert removed_saved_repeat_keys(
+        {"playback": {"no_repeat_minutes": 40, "repeat_rules": {"related_artists_file": ""}}}
+    ) == {
+        "playback": ("no_repeat_minutes",),
+        "playback.repeat_rules": ("related_artists_file",),
+    }
+
+
 def test_missing_related_file_does_not_discard_restored_repeat_rules(tmp_path, caplog):
     rules = RepeatSettings(
         artist=RepeatRule(tracks=12, minutes=80),

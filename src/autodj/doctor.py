@@ -28,6 +28,7 @@ from autodj.index_manifest import (
     UnsupportedIndexError,
     first_absolute_path,
 )
+from autodj.repeat_settings import removed_saved_repeat_keys
 from autodj.sqlite_utils import readonly_uri
 
 _connect = sqlite3.connect
@@ -189,6 +190,52 @@ def _beets_db_check(cfg: AutoDJConfig) -> DoctorCheck:
         "not found; indexing scans the files instead and enrich fails. "
         "Fix [library] beets_db or set it to an empty string.",
     )
+
+
+def _saved_settings_check(cfg: AutoDJConfig) -> DoctorCheck:
+    """Check saved browser settings for data the runtime loader rejects."""
+    path = cfg.index.active_dir / "web_state.json"
+    if not path.exists():
+        return DoctorCheck("saved-settings", CheckStatus.PASS, "no saved settings")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return DoctorCheck(
+            "saved-settings", CheckStatus.WARN, "saved settings unreadable", str(exc)
+        )
+    if not isinstance(data, dict):
+        return DoctorCheck(
+            "saved-settings", CheckStatus.WARN, "saved settings root is not an object"
+        )
+    version = data.get("schema_version")
+    if type(version) is not int or version not in (1, 2):
+        return DoctorCheck(
+            "saved-settings",
+            CheckStatus.WARN,
+            "unsupported saved settings schema",
+            f"schema_version must be 1 or 2, got {version!r}; runtime ignores this file",
+        )
+    removed = removed_saved_repeat_keys(data)
+    if removed:
+        grouped = "; ".join(f"{group}: {', '.join(keys)}" for group, keys in removed.items())
+        playback = data.get("playback", {})
+        related_file = playback.get("related_artists_file") if isinstance(playback, dict) else None
+        rules = playback.get("repeat_rules") if isinstance(playback, dict) else None
+        if related_file in (None, "") and isinstance(rules, dict):
+            related_file = rules.get("related_artists_file")
+        preserve = (
+            " Preserve the old related-artists data and resolve that path manually."
+            if related_file not in (None, "")
+            else ""
+        )
+        return DoctorCheck(
+            "saved-settings",
+            CheckStatus.FAIL,
+            "saved settings contain removed repeat keys",
+            f"{path}; {grouped}. Remove them or re-enter limits in Settings > Picking > Repeats.{preserve}",
+            "repair-saved-settings",
+        )
+    return DoctorCheck("saved-settings", CheckStatus.PASS, "saved settings valid", str(path))
 
 
 def _index_check(cfg: AutoDJConfig) -> DoctorCheck:
@@ -561,6 +608,7 @@ def run_doctor(
             _path_check("index-path", cfg.index.index_dir, writable=True),
             _path_check("model-path", cfg.index.model_dir, writable=True),
             _index_check(cfg),
+            _saved_settings_check(cfg),
             _dj_meta_database_check(cfg),
             _dependency_check(),
             _model_cache_check(cfg),
