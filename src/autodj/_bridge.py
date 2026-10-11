@@ -1269,6 +1269,11 @@ class PlayerBridge:
                 return
             self._play_history.clear()
             self._play_history.extend(self.library.catalog.recent_history())
+        # The repeat rules count the plays from before the restart too.
+        try:
+            self.player.restore_repeat_history(self.library.catalog)
+        except Exception:
+            logger.exception("Could not load earlier plays into the repeat rules")
 
     def save_persistent_state(self) -> None:
         """Write current settings to web_state.json (atomic)."""

@@ -239,6 +239,33 @@ class LibraryCatalog:
             )
             return [dict(row) for row in rows]
 
+    def recent_plays(self, limit: int) -> list[dict]:
+        """The latest *limit* plays that started, oldest first, with each track's album.
+
+        For the repeat rules.  A play a set stop cut short (``interrupted``)
+        is left out, as in :meth:`recent_history`, and so is a liner.  The
+        album comes from the catalog entry, because play rows do not store
+        it; a track no longer in the catalog has an empty album.
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+            raise ValueError("limit must be a non-negative integer")
+        with self._lock:
+            rows = (
+                self._db()
+                .execute(
+                    "SELECT path,title,artist,album,played_at FROM ("
+                    "SELECT h.rowid AS row,h.path,h.title,h.artist,"
+                    "COALESCE(e.album,'') AS album,h.played_at "
+                    "FROM play_history h LEFT JOIN catalog_entries e ON e.path=h.path "
+                    "WHERE h.interrupted=0 AND h.path IS NOT NULL "
+                    "AND (e.kind IS NULL OR e.kind='music') "
+                    "ORDER BY h.rowid DESC LIMIT ?) ORDER BY row ASC",
+                    (limit,),
+                )
+                .fetchall()
+            )
+            return [dict(row) for row in rows]
+
     def _db(self) -> sqlite3.Connection:
         if self._conn is None:
             raise RuntimeError("catalog is closed")

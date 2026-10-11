@@ -44,12 +44,14 @@ wrong split holds back a few more tracks; it never lets one through.
 from __future__ import annotations
 
 import logging
+import math
 import re
 import tomllib
 import unicodedata
 from collections import Counter
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -70,6 +72,8 @@ _NON_WORD = re.compile(r"[\W_]+")
 
 def _fold(text: str) -> str:
     """Casefold *text* and strip its accents ("Beyoncé" -> "beyonce")."""
+    if text.isascii():  # most tags: nothing to decompose
+        return text.lower()
     decomposed = unicodedata.normalize("NFKD", text)
     return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).casefold()
 
@@ -333,7 +337,7 @@ def parse_related_artists(data: Mapping[str, Any], source: str) -> RelatedArtist
     split, and a ``[related]`` table mapping an artist to a list of the
     artists it holds back::
 
-        single_acts = ["Tom Petty and the Heartbreakers"]
+        single_acts = ["Edward Sharpe and the Magnetic Zeros"]
 
         [related]
         "Bruno Mars" = ["Silk Sonic"]
@@ -409,6 +413,23 @@ def load_related_artists(path: str | Path | None, *, starter: bool = False) -> R
     except tomllib.TOMLDecodeError as exc:
         raise ValueError(f"{file}: not valid TOML: {exc}") from exc
     return related.merged(parse_related_artists(data, str(file)))
+
+
+def load_related_artists_or_warn(
+    path: str | Path | None, *, starter: bool = False
+) -> tuple[RelatedArtists, str | None]:
+    """Like :func:`load_related_artists`, but a bad file never stops AutoDJ.
+
+    Returns:
+        The related artists and ``None``; or, when the file is missing,
+        unreadable or invalid, the starter list (when *starter*) or no
+        links, and a sentence naming the file and the problem.
+    """
+    try:
+        return load_related_artists(path, starter=starter), None
+    except (OSError, ValueError) as exc:  # tomllib.TOMLDecodeError is a ValueError
+        fallback = starter_related_artists() if starter else RelatedArtists()
+        return fallback, f"playback.related_artists_file {path} was not used: {exc}"
 
 
 # ---------------------------------------------------------------------------
@@ -502,7 +523,10 @@ class PlayRecord:
     """One track start, as the repeat rules remember it.
 
     The raw tags are kept, not keys, so a change to the related artists or
-    to the library's known artists applies to tracks already played.
+    to the library's known artists applies to tracks already played; a
+    :class:`TrackKeyCache` works the keys out once per track.  *started*
+    is wall-clock seconds (``time.time()``), so saved plays from before a
+    restart compare with new ones.
     """
 
     path: str
@@ -523,11 +547,126 @@ class PlayRecord:
         )
 
 
+def _played_at(value: Any) -> float | None:
+    """Seconds since the epoch for a saved ``played_at`` (ISO 8601), or ``None``."""
+    if not isinstance(value, str):
+        return None
+    try:
+        when = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return when.timestamp()
+
+
+def records_from_plays(rows: Iterable[Mapping[str, Any]], now: float) -> list[PlayRecord]:
+    """Turn saved plays (oldest first) into :class:`PlayRecord`, oldest first.
+
+    Each row needs ``path``, ``artist``, ``album``, ``title`` and
+    ``played_at`` (ISO 8601).  *now* is the wall clock (``time.time()``).
+    A row with no path or an unreadable time is skipped, and so is one
+    played after *now*: the clock was set back since, and a start in the
+    future would hold its song back until the clock caught up.
+    """
+    records = []
+    for row in rows:
+        path = row.get("path")
+        started = _played_at(row.get("played_at"))
+        if not isinstance(path, str) or not path or started is None or started > now:
+            continue
+        records.append(
+            PlayRecord(
+                path,
+                _text(row.get("artist")),
+                _text(row.get("album")),
+                _text(row.get("title")),
+                started,
+            )
+        )
+    return records
+
+
+#: The most track starts the artist, album and title rules remember.  A
+#: week of two-minute tracks fits; a larger window looks only this far back.
+HISTORY_LIMIT = 5000
+
+
 def prune_history(history: Any, rules: RepeatRules, now: float) -> None:
-    """Drop records no rule can look at any more from the left of *history* (a deque)."""
+    """Drop records no rule can look at any more from the left of *history* (a deque).
+
+    At most :data:`HISTORY_LIMIT` records are kept, so a pick that copies
+    and walks the history stays quick even with week-long windows.
+    """
     keep, seconds = rules.keep_tracks, rules.keep_seconds
-    while history and len(history) > keep and now - history[0].started >= seconds:
+    while history and (
+        len(history) > HISTORY_LIMIT
+        or (len(history) > keep and now - history[0].started >= seconds)
+    ):
         history.popleft()
+
+
+def plays_to_load(rules: RepeatRules) -> int:
+    """How many saved plays to load at startup so every window starts full.
+
+    The track window's count, the artist and title windows' counts, and,
+    when any rule counts minutes, up to :data:`HISTORY_LIMIT` plays.
+    """
+    needed = HISTORY_LIMIT if rules.keep_seconds > 0 else min(rules.keep_tracks, HISTORY_LIMIT)
+    return max(rules.track_window, needed)
+
+
+@dataclass(frozen=True, slots=True)
+class TrackKeys:
+    """The keys the artist, album and title rules compare for one track.
+
+    Attributes:
+        artists: Every artist key the track credits (see
+            :meth:`ArtistSplitter.credited`).
+        album: :func:`album_key` of the album, or ``""``.
+        title: :func:`title_key` of the title, or ``""``.
+    """
+
+    artists: frozenset[str]
+    album: str
+    title: str
+
+
+class TrackKeyCache:
+    """Each track's :class:`TrackKeys`, worked out once and then looked up.
+
+    A pick checks the whole library against the rules, so splitting
+    credits and folding titles on every pick would cost far too much on a
+    large library.  Tracks are remembered by path together with the tags
+    their keys came from, so a retagged track gets new keys.  Make a new
+    cache when the splitter's known artists change.
+
+    Args:
+        splitter: Splits artist credits.
+    """
+
+    def __init__(self, splitter: ArtistSplitter | None = None) -> None:
+        self.splitter = splitter or ArtistSplitter()
+        self._keys: dict[str, tuple[str, str, str, TrackKeys]] = {}
+
+    def keys(self, track: Any) -> TrackKeys:
+        """The keys of *track*: anything with ``path``, ``artist``, ``album`` and ``title``."""
+        artist, album, title = _text(track.artist), _text(track.album), _text(track.title)
+        cached = self._keys.get(track.path)
+        if cached is not None and cached[:3] == (artist, album, title):
+            return cached[3]
+        keys = TrackKeys(
+            self.splitter.credited(artist, title),
+            album_key(album) if album else "",
+            title_key(title) if title else "",
+        )
+        self._keys[track.path] = (artist, album, title, keys)
+        return keys
+
+
+def _key_cache(keys: TrackKeyCache | ArtistSplitter | None) -> TrackKeyCache:
+    """*keys* as a :class:`TrackKeyCache` (a bare splitter gets a fresh cache)."""
+    return keys if isinstance(keys, TrackKeyCache) else TrackKeyCache(keys)
 
 
 #: Reasons a candidate is held back, in the order they are checked.
@@ -548,7 +687,8 @@ class RepeatFilter:
             artist key that holds it back.
         albums: Keys of recent albums.
         titles: Keys of recent titles.
-        splitter: Splits each candidate's credit.
+        keys: Looks up each candidate's keys; a bare splitter gets a
+            fresh cache.
         names: Looks up the written name of an artist key, for logs.
     """
 
@@ -558,14 +698,15 @@ class RepeatFilter:
         related: Mapping[str, str] | None = None,
         albums: Collection[str] = (),
         titles: Collection[str] = (),
-        splitter: ArtistSplitter | None = None,
+        keys: TrackKeyCache | ArtistSplitter | None = None,
         names: RelatedArtists | None = None,
     ) -> None:
         self.artists = frozenset(artists)
         self.related = dict(related or {})
+        self._related_keys = frozenset(self.related)
         self.albums = frozenset(albums)
         self.titles = frozenset(titles)
-        self._splitter = splitter or ArtistSplitter()
+        self._keys = _key_cache(keys)
         self._names = names or RelatedArtists()
         self.held_back: dict[str, str] = {}
 
@@ -575,17 +716,16 @@ class RepeatFilter:
 
     def reason(self, entry: Any) -> str | None:
         """Why *entry* is held back, as a short phrase, or ``None``."""
-        if self.artists or self.related:
-            keys = self._splitter.credited(entry.artist or "", entry.title or "")
-            for key in keys:
-                if key in self.artists:
-                    return "same artist"
-            for key in keys:
-                if key in self.related:
-                    return "related artist"
-        if self.albums and entry.album and album_key(entry.album) in self.albums:
+        if not self:
+            return None
+        keys = self._keys.keys(entry)
+        if not keys.artists.isdisjoint(self.artists):
+            return "same artist"
+        if not keys.artists.isdisjoint(self._related_keys):
+            return "related artist"
+        if keys.album and keys.album in self.albums:
             return "same album"
-        if self.titles and entry.title and title_key(entry.title) in self.titles:
+        if keys.title and keys.title in self.titles:
             return "same title"
         return None
 
@@ -607,34 +747,41 @@ def build_filter(
     history: Sequence[PlayRecord],
     rules: RepeatRules,
     now: float,
-    splitter: ArtistSplitter,
+    keys: TrackKeyCache | ArtistSplitter,
 ) -> tuple[RepeatFilter, list[str]]:
     """Work out what *history* (oldest first) holds back at time *now*.
+
+    *keys* looks up each record's keys; pass the player's
+    :class:`TrackKeyCache` so tracks from the library are not split again.
 
     Returns:
         The artist, album and title filter, and the paths the track
         rule's minute window holds back (its count window is the
         player's recent-path deque).
     """
+    cache = _key_cache(keys)
     count = len(history)
     artists: set[str] = set()
     albums: set[str] = set()
     titles: set[str] = set()
     paths: list[str] = []
+    # No age is below -inf, so a rule without minutes counts tracks only.
+    artist_seconds = rules.artist_minutes * 60.0 if rules.artist_minutes > 0 else -math.inf
+    title_seconds = rules.title_minutes * 60.0 if rules.title_minutes > 0 else -math.inf
+    track_seconds = rules.track_minutes * 60.0 if rules.track_minutes > 0 else -math.inf
     for position, record in enumerate(history):
         back = count - position  # 1 = the latest track
         age = now - record.started
-
-        def within(window: int, minutes: float, back: int = back, age: float = age) -> bool:
-            return back <= window or (minutes > 0 and age < minutes * 60.0)
-
-        if within(rules.artist_window, rules.artist_minutes):
-            artists |= splitter.credited(record.artist, record.title)
-            if record.album:
-                albums.add(album_key(record.album))
-        if record.title and within(rules.title_window, rules.title_minutes):
-            titles.add(title_key(record.title))
-        if within(0, rules.track_minutes):
+        by_artist = back <= rules.artist_window or age < artist_seconds
+        by_title = back <= rules.title_window or age < title_seconds
+        if by_artist or by_title:
+            track = cache.keys(record)
+            if by_artist:
+                artists |= track.artists
+                albums.add(track.album)
+            if by_title:
+                titles.add(track.title)
+        if age < track_seconds:
             paths.append(record.path)
     related: dict[str, str] = {}
     for key in artists:
@@ -644,10 +791,11 @@ def build_filter(
     artists.discard("")
     albums.discard("")
     titles.discard("")
-    return RepeatFilter(artists, related, albums, titles, splitter, rules.related), paths
+    return RepeatFilter(artists, related, albums, titles, cache, rules.related), paths
 
 
 __all__ = [
+    "HISTORY_LIMIT",
     "MAX_REPEAT_MINUTES",
     "REASONS",
     "SINGLE_ACTS",
@@ -657,13 +805,18 @@ __all__ = [
     "RelatedArtists",
     "RepeatFilter",
     "RepeatRules",
+    "TrackKeyCache",
+    "TrackKeys",
     "album_key",
     "artist_key",
     "build_filter",
     "featured_in_title",
     "load_related_artists",
+    "load_related_artists_or_warn",
     "parse_related_artists",
+    "plays_to_load",
     "prune_history",
+    "records_from_plays",
     "starter_related_artists",
     "title_key",
 ]

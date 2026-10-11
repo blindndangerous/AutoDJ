@@ -535,6 +535,7 @@ def test_run_doctor_check_order(tmp_path: Path) -> None:
         "model-cache",
         "network-safety",
         "stream",
+        "related-artists",
     ]
 
 
@@ -1018,3 +1019,31 @@ def test_unreachable_relay_warns(tmp_path: Path) -> None:
 
 def test_no_relays_no_relay_checks(tmp_path: Path) -> None:
     assert doctor._relay_checks(_config(tmp_path)) == ()
+
+
+def test_related_artists_check(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    check = doctor._related_artists_check(cfg)
+    assert (check.status, check.summary) == (doctor.CheckStatus.PASS, "no related artists file")
+    cfg.playback.related_artists_starter = True
+    assert doctor._related_artists_check(cfg).summary == "starter list only"
+
+    path = tmp_path / "related.toml"
+    path.write_bytes(b'[related]\n"Bruno Mars" = ["The Hooligans"]\n')
+    cfg.playback.related_artists_file = str(path)
+    check = doctor._related_artists_check(cfg)
+    assert check.status is doctor.CheckStatus.PASS
+    assert str(path) in check.summary
+
+
+@pytest.mark.parametrize("content", [b"[related\n", b"related = 3\n", None])
+def test_related_artists_check_warns_about_a_bad_file(tmp_path: Path, content) -> None:
+    cfg = _config(tmp_path)
+    path = tmp_path / "related.toml"
+    if content is not None:
+        path.write_bytes(content)
+    cfg.playback.related_artists_file = str(path)
+    check = doctor._related_artists_check(cfg)
+    assert check.status is doctor.CheckStatus.WARN
+    assert str(path) in check.detail
+    assert check.repair is None

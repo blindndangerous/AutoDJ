@@ -59,10 +59,13 @@ from autodj.repeat_rules import (
     RelatedArtists,
     RepeatFilter,
     RepeatRules,
+    TrackKeyCache,
     artist_key,
     build_filter,
-    load_related_artists,
+    load_related_artists_or_warn,
+    plays_to_load,
     prune_history,
+    records_from_plays,
 )
 from autodj.stereo import (
     SAMPLE_RATE,
@@ -375,8 +378,9 @@ class PlayerState:
         play_history: The track starts the artist, album and title rules
             and the minute windows look at, oldest first (see
             :class:`~autodj.repeat_rules.PlayRecord`).
-        clock: Where the minute windows read the time, in seconds
-            (``time.monotonic``; tests pass a fake).
+        clock: Where the minute windows read the time: wall-clock
+            seconds (``time.time``), so plays saved before a restart
+            compare with new ones.  Tests pass a fake.
         track_number: Zero-based count of auto-picked tracks (seed = 0).
             Incremented after each track transition.
         discovery_enabled: Runtime toggle for discovery mode.  Must be ``True``
@@ -410,7 +414,7 @@ class PlayerState:
     repeat_rules: RepeatRules | None = None
     recently_played: deque = field(default_factory=deque)
     play_history: deque[PlayRecord] = field(default_factory=deque)
-    clock: Callable[[], float] = field(default=time.monotonic, repr=False, compare=False)
+    clock: Callable[[], float] = field(default=time.time, repr=False, compare=False)
     volume: float = 1.0  # 0.0 (silent) – 1.0 (full)
     is_muted: bool = False
     track_number: int = 0
@@ -466,6 +470,21 @@ class PlayerState:
                 title_window=artist_repeat_window,
             )
         )
+
+    def restore_history(self, records: list[PlayRecord]) -> None:
+        """Put plays from before a restart (oldest first) ahead of the history.
+
+        Fills the track window's paths and the artist, album and title
+        history, so the rules hold after a restart as they did before.
+        Takes ``history_lock``.
+        """
+        with self.history_lock:
+            maxlen = self.recently_played.maxlen
+            self.recently_played = deque(
+                [*(record.path for record in records), *self.recently_played], maxlen=maxlen
+            )
+            self.play_history = deque([*records, *self.play_history])
+            prune_history(self.play_history, self.rules, self.clock())
 
     def record_played(self, entry: IndexEntry) -> None:
         """Record a track as recently played.
@@ -778,14 +797,24 @@ class Player:
             library_size,
         )
         # Read once: a changed related artists file applies after a restart.
+        # A bad file is reported and skipped; it never stops the player.
         related_file = getattr(cfg.playback, "related_artists_file", None)
-        self._related_artists: RelatedArtists = load_related_artists(
-            related_file if isinstance(related_file, str) else None,
-            starter=getattr(cfg.playback, "related_artists_starter", False) is True,
+        starter = getattr(cfg.playback, "related_artists_starter", False) is True
+        self._related_artists: RelatedArtists
+        self._related_artists, self.related_artists_problem = load_related_artists_or_warn(
+            related_file if isinstance(related_file, str) else None, starter=starter
         )
-        # (library entries, splitter that knows their artists), rebuilt
-        # when the library changes; see _artist_splitter.
-        self._splitter_cache: tuple[tuple[IndexEntry, ...], ArtistSplitter] | None = None
+        if self.related_artists_problem:
+            logger.warning(
+                "%s. Picking goes on with %s.",
+                self.related_artists_problem,
+                "the starter list only" if starter else "no related artists",
+            )
+        # (library entries, their keys), rebuilt when the library changes;
+        # see _track_keys.  Its own lock: the build can take a while on a
+        # large library, and _pick_lock must never make a track start wait.
+        self._key_cache: tuple[tuple[IndexEntry, ...], TrackKeyCache] | None = None
+        self._key_cache_lock = threading.Lock()
         self._state = PlayerState(
             repeat_rules=RepeatRules.from_playback(
                 cfg.playback, track_window=effective, related=self._related_artists
@@ -974,23 +1003,39 @@ class Player:
         position = self._clock.get("cursor", 0) if cursor is None else cursor
 
         recent = set(context.recent)
+        entries = self.playable_entries()
+        last_played = self._library.last_played()
+        liners = self._library.entries_snapshot("liner")
 
-        def allowed(entry: IndexEntry) -> bool:
-            return (
-                not entry.is_silent
-                and entry.path not in recent
-                and entry.path not in context.protected
-                and context.repeat(entry)
+        def pick(use_rules: bool, use_recent: bool) -> Any:
+            def allowed(entry: IndexEntry) -> bool:
+                return (
+                    not entry.is_silent
+                    and entry.path not in context.protected
+                    and not (use_recent and entry.path in recent)
+                    and (not use_rules or context.repeat(entry))
+                )
+
+            return pick_slot(
+                self._clock_slots, position, entries, last_played, allowed, liners=liners
             )
 
-        picked = pick_slot(
-            self._clock_slots,
-            position,
-            self.playable_entries(),
-            self._library.last_played(),
-            allowed,
-            liners=self._library.entries_snapshot("liner"),
-        )
+        # Like the other pick modes, relax rather than stop the music: first
+        # the artist, album and title rules, then the track window.
+        picked = pick(True, True)
+        if picked.entry is None and context.repeat:
+            logger.info(
+                "Clock: every matching track is held back (%s); relaxing the artist, "
+                "album and title rules for this pick",
+                context.repeat.summary() or "repeat rules",
+            )
+            picked = pick(False, True)
+        if picked.entry is None and recent:
+            logger.info(
+                "Clock: every matching track played recently; relaxing the track "
+                "window for this pick"
+            )
+            picked = pick(False, False)
         self._clock_status = "; ".join(picked.skipped) or "Ready"
         if picked.entry is not None:
             _log_repeat_blocks(context.repeat, picked.entry)
@@ -1852,7 +1897,7 @@ class Player:
             track_number = self._state.track_number
             recorded = self._state.recently_played
             latest = recorded[-1] if recorded else None
-        repeat, minute_paths = build_filter(history, rules, now, self._artist_splitter())
+        repeat, minute_paths = build_filter(history, rules, now, self._track_keys())
         if minute_paths:
             held = set(paths)
             paths = deque([*paths, *(path for path in minute_paths if path not in held)])
@@ -1896,22 +1941,55 @@ class Player:
         history = [*state.play_history, *(PlayRecord.of(entry, now) for entry in added)]
         return paths, history
 
-    def _artist_splitter(self) -> ArtistSplitter:
-        """The artist splitter, knowing every whole artist credit in the library.
+    def _track_keys(self) -> TrackKeyCache:
+        """Each track's repeat-rule keys, with a splitter that knows the library's artists.
 
-        Rebuilt only when the library's entries change, so its cache of
-        split credits lasts across picks.
+        A track's keys are worked out once and every later pick only looks
+        them up.  The library hands out a new snapshot whenever its
+        catalog changes (each play is written to it), so a new snapshot
+        keeps the cache unless its set of artists changed.
         """
         library = getattr(self, "_library", None)
         collection = library if library is not None else getattr(self, "_sim", None)
         entries = collection.entries_snapshot() if collection is not None else ()
-        cached = getattr(self, "_splitter_cache", None)
-        if cached is None or cached[0] is not entries:
-            known = {artist_key(entry.artist) for entry in entries if entry.artist}
-            related = getattr(self, "_related_artists", None) or RelatedArtists()
-            cached = (entries, ArtistSplitter(known, related.single_acts))
-            self._splitter_cache = cached
-        return cached[1]
+        lock = getattr(self, "_key_cache_lock", None) or threading.Lock()
+        with lock:
+            cached = getattr(self, "_key_cache", None)
+            if cached is None or cached[0] is not entries:
+                known = frozenset(artist_key(entry.artist) for entry in entries if entry.artist)
+                if cached is not None and cached[1].splitter.known == known:
+                    cached = (entries, cached[1])
+                else:
+                    related = getattr(self, "_related_artists", None) or RelatedArtists()
+                    splitter = ArtistSplitter(known, related.single_acts)
+                    cached = (entries, TrackKeyCache(splitter))
+                self._key_cache = cached
+            return cached[1]
+
+    def restore_repeat_history(self, catalog: Any) -> int:
+        """Load the plays from before a restart into the repeat rules.
+
+        Reads only as many saved plays as the windows can look at (see
+        :func:`~autodj.repeat_rules.plays_to_load`).  Plays a set stop cut
+        short are not counted, nor are plays dated after now.
+
+        Args:
+            catalog: The station's :class:`~autodj.catalog.LibraryCatalog`.
+
+        Returns:
+            How many plays were loaded.
+        """
+        if getattr(self, "_repeat_history_restored", False):
+            return 0
+        self._repeat_history_restored = True
+        limit = plays_to_load(self._state.rules)
+        if limit <= 0:
+            return 0
+        records = records_from_plays(catalog.recent_plays(limit), time.time())
+        if records:
+            self._state.restore_history(records)
+            logger.info("Repeat rules: %d plays from before the restart count", len(records))
+        return len(records)
 
     def _pick_pure_shuffle(self, current: IndexEntry, context: _PickContext) -> IndexEntry:
         """Random pick from tracks not in *context*'s history, honouring the BPM range.

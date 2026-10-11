@@ -138,8 +138,19 @@ A count of 0 or minutes of 0 turns that half of a rule off. With both set, a
 candidate is held back if either catches it. Minutes count from when a
 track started, measured when the pick is made; in server audio and stream
 mode that is about one track ahead of when the pick plays, so a minute
-window holds back a little more than its length. The history lives only in
-memory, so a restart starts every window afresh.
+window holds back a little more than its length.
+
+The rules survive a restart. At startup the player reads the latest plays
+from the station's saved play history (`play_history` in `library.db`), as
+many as the windows can look at, and counts them like plays from this run:
+a song that started 30 minutes before a restart is still held back by a
+60-minute window afterwards. Only plays that started count; a play a set stop
+cut short does not, as in the history viewer. Minute windows use the wall
+clock. A saved play dated after the current time (the clock was set back) is
+skipped at startup; one recorded during this run that ends up in the future
+counts as just played until the clock catches up. The artist, album and
+title rules remember at most 5000 plays (`HISTORY_LIMIT`), a week of
+two-minute tracks; a larger window looks only that far back.
 
 The track and artist windows can be changed while AutoDJ runs, under
 Settings, Song picking ("Tracks before a song can repeat" and "Tracks before
@@ -180,8 +191,8 @@ Heartbreakers" also counts for Tom Petty. The limits:
 
 - A duo of one-word names splits only when the library also has a track
   credited to each name alone ("Rihanna & Drake").
-- A band named like two multi-word artists is split. Add it to
-  `single_acts`.
+- A band named like two multi-word artists, such as "Edward Sharpe and the
+  Magnetic Zeros", is split. Add it to `single_acts`.
 - Splitting only adds artists, so a wrong split holds back a few more
   tracks; it never lets one through.
 
@@ -194,7 +205,11 @@ artist to a list of artists it holds back. Links are one-way and are not
 followed further: "Bruno Mars" = ["Silk Sonic"] holds back Silk Sonic after
 Bruno Mars, but not Bruno Mars after Silk Sonic. `related_artists_starter =
 true` adds a short built-in list of side projects, duos and aliases
-(`STARTER_RELATED_ARTISTS`). Both are read when AutoDJ starts.
+(`STARTER_RELATED_ARTISTS`). Both are read when AutoDJ starts. A file
+that is missing, unreadable or invalid does not stop AutoDJ: the server log
+warns once, naming the file and the problem, and picking goes on with the
+starter list (when it is on) or no related artists. `autodj doctor` reports
+the same problem under "related-artists".
 
 ### Where the rules apply
 
@@ -204,7 +219,9 @@ true` adds a short built-in list of side projects, duos and aliases
 - Random walk and least recently played pick among the tracks the rules
   allow.
 - Clock slots marked EnforceRules use the rules; NoRules slots ignore them,
-  as before.
+  as before. When every matching track is held back, the clock relaxes the
+  artist, album and title rules for that pick, then the track window, and
+  logs which one it relaxed.
 - When no track passes, the rules are relaxed rather than stopping the
   music. The fallback pick after a failed pick ignores them, as before.
 - Tracks you queue, play now, or choose as the seed are never held back.
@@ -212,6 +229,10 @@ true` adds a short built-in list of side projects, duos and aliases
 Each pick that held candidates back logs a line at info level, such as
 "Repeat rules held back 3 candidates (1 same artist, 1 related artist, 1 same
 title)". A similarity pick only counts the nearest candidates it looked at.
+
+Each track's keys (its split artists, album and title) are worked out once
+per library snapshot and then looked up, so a pick that checks every track
+in a large library costs a set lookup per track.
 
 Two mechanisms deliberately leave similarity behind:
 

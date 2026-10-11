@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import time
 from collections import deque
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,19 +15,25 @@ from hypothesis import strategies as st
 
 from autodj.config import PlaybackConfig
 from autodj.repeat_rules import (
+    HISTORY_LIMIT,
     MAX_REPEAT_MINUTES,
     STARTER_RELATED_ARTISTS,
     ArtistSplitter,
     PlayRecord,
     RepeatFilter,
     RepeatRules,
+    TrackKeyCache,
+    TrackKeys,
     album_key,
     artist_key,
     build_filter,
     featured_in_title,
     load_related_artists,
+    load_related_artists_or_warn,
     parse_related_artists,
+    plays_to_load,
     prune_history,
+    records_from_plays,
     starter_related_artists,
     title_key,
 )
@@ -484,3 +492,155 @@ class TestPlaybackConfigRepeatKeys:
     def test_invalid_values_fail_loudly(self, key: str, value: object, error: type) -> None:
         with pytest.raises(error, match=f"playback.{key}"):
             PlaybackConfig.from_dict({key: value})
+
+
+# ---------------------------------------------------------------------------
+# Per-track keys and speed
+# ---------------------------------------------------------------------------
+
+
+class TestTrackKeyCache:
+    def test_keys_are_worked_out_once_per_track(self, monkeypatch) -> None:
+        cache = TrackKeyCache()
+        calls = []
+        credited = ArtistSplitter.credited
+        monkeypatch.setattr(
+            ArtistSplitter,
+            "credited",
+            lambda self, *args: calls.append(args) or credited(self, *args),
+        )
+        entry = _entry("a", artist="Calvin Harris & Dua Lipa", title="One Kiss (Live)", album="X")
+        keys = cache.keys(entry)
+        assert keys == TrackKeys(
+            frozenset({"calvin harris and dua lipa", "calvin harris", "dua lipa"}), "x", "one kiss"
+        )
+        assert cache.keys(entry) is keys
+        assert len(calls) == 1
+
+    def test_a_retagged_track_gets_new_keys(self) -> None:
+        cache = TrackKeyCache()
+        assert cache.keys(_entry("a", artist="Old Name")).artists == {"old name"}
+        assert cache.keys(_entry("a", artist="New Name")).artists == {"new name"}
+
+    def test_missing_tags_give_empty_keys(self) -> None:
+        keys = TrackKeyCache().keys(SimpleNamespace(path="a", artist=None, title=None, album=None))
+        assert keys == TrackKeys(frozenset(), "", "")
+
+    def test_a_large_library_pick_only_looks_keys_up(self, monkeypatch) -> None:
+        """Checking 100,000 tracks splits no credit and folds no title after the first pick."""
+        entries = [
+            _entry(
+                f"e{i}.flac",
+                artist=f"Artist {i % 5000} & Guest {i % 7}",
+                title=f"Song {i}",
+                album=f"Album {i % 900}",
+            )
+            for i in range(100_000)
+        ]
+        history = [
+            _record(i, f"Artist {i} & Guest 1", f"Song {i}", album=f"Album {i}") for i in range(3)
+        ]
+        cache = TrackKeyCache()
+        repeat, _ = build_filter(history, RepeatRules(), 0.0, cache)
+        allowed = sum(map(repeat, entries))  # the first pick fills the cache
+
+        import autodj.repeat_rules as rules_module
+
+        def forbidden(*_args):
+            raise AssertionError("a pick worked out keys again")
+
+        monkeypatch.setattr(ArtistSplitter, "credited", forbidden)
+        monkeypatch.setattr(rules_module, "title_key", forbidden)
+        monkeypatch.setattr(rules_module, "album_key", forbidden)
+        started = time.perf_counter()
+        repeat, _ = build_filter(history, RepeatRules(), 0.0, cache)
+        assert sum(map(repeat, entries)) == allowed
+        # Typically well under 0.2 s; the bound only catches a return to per-pick work.
+        assert time.perf_counter() - started < 1.5
+
+
+class TestHistoryBounds:
+    def test_history_is_capped(self) -> None:
+        rules = RepeatRules(artist_minutes=MAX_REPEAT_MINUTES)
+        history = deque(_record(i, started=float(i)) for i in range(HISTORY_LIMIT + 10))
+        prune_history(history, rules, now=float(HISTORY_LIMIT + 10))
+        assert len(history) == HISTORY_LIMIT
+        assert history[0].path == "10.flac"
+
+    def test_plays_to_load(self) -> None:
+        assert plays_to_load(RepeatRules(track_window=500, artist_window=3)) == 500
+        assert plays_to_load(RepeatRules(track_window=0, artist_window=0, title_window=7)) == 7
+        assert plays_to_load(RepeatRules(track_window=10, title_minutes=60)) == HISTORY_LIMIT
+        assert plays_to_load(RepeatRules(track_window=9000, title_minutes=60)) == 9000
+        assert plays_to_load(RepeatRules(0, 0, 0, 0, 0, 0)) == 0
+
+    def test_a_start_in_the_future_never_counts_for_a_rule_without_minutes(self) -> None:
+        # The wall clock was set back: the record is 100 s in the future.
+        history = [_record(1, "Some Artist", "Some Song", started=100.0)]
+        rules = RepeatRules(artist_window=0, title_window=0)
+        repeat, paths = build_filter(history, rules, 0.0, ArtistSplitter())
+        assert not repeat
+        assert paths == []
+        rules = RepeatRules(artist_window=0, artist_minutes=1, title_window=0)
+        repeat, _ = build_filter(history, rules, 0.0, ArtistSplitter())
+        assert repeat.artists == {"some artist"}  # counts as just played
+
+
+class TestRecordsFromPlays:
+    def test_rows_become_records(self) -> None:
+        rows = [
+            {
+                "path": "a",
+                "artist": "A",
+                "album": "X",
+                "title": "T",
+                "played_at": "2026-01-01T00:00:00+00:00",
+            },
+            {
+                "path": "b",
+                "artist": "B",
+                "album": "",
+                "title": "U",
+                "played_at": "2026-01-01T00:01:00Z",
+            },
+            {"path": "c", "artist": None, "title": "V", "played_at": "2026-01-01T00:02:00"},
+        ]
+        records = records_from_plays(rows, now=datetime(2026, 1, 2, tzinfo=UTC).timestamp())
+        assert [r.path for r in records] == ["a", "b", "c"]
+        assert records[1].started - records[0].started == 60
+        assert records[2].started - records[0].started == 120  # no zone reads as UTC
+        assert (records[2].artist, records[2].album) == ("", "")
+
+    def test_bad_and_future_rows_are_skipped(self) -> None:
+        now = datetime(2026, 1, 1, tzinfo=UTC).timestamp()
+        rows = [
+            {"path": "", "played_at": "2025-12-31T00:00:00+00:00"},
+            {"path": "a", "played_at": "not a time"},
+            {"path": "b", "played_at": None},
+            {"path": "c", "played_at": "2026-01-01T00:00:01+00:00"},
+            {"path": "d", "played_at": "2025-12-31T23:59:59+00:00"},
+        ]
+        assert [r.path for r in records_from_plays(rows, now)] == ["d"]
+
+
+class TestLoadRelatedArtistsOrWarn:
+    def test_a_good_file_has_no_problem(self, tmp_path: Path) -> None:
+        path = tmp_path / "related.toml"
+        path.write_bytes(b'[related]\n"A B" = ["C D"]\n')
+        related, problem = load_related_artists_or_warn(str(path))
+        assert problem is None
+        assert related.related_to("a b") == {"c d"}
+
+    @pytest.mark.parametrize(
+        "content", [b"[related\n", b"related = 3\n", b'[related]\n"A" = "B"\n', b"\xff\xfe", None]
+    )
+    def test_a_bad_file_falls_back(self, tmp_path: Path, content: bytes | None) -> None:
+        path = tmp_path / "related.toml"
+        if content is not None:
+            path.write_bytes(content)
+        related, problem = load_related_artists_or_warn(str(path), starter=True)
+        assert problem is not None
+        assert str(path) in problem
+        assert related.related_to("bruno mars") == {"silk sonic"}
+        related, _ = load_related_artists_or_warn(str(path))
+        assert related.links == {}

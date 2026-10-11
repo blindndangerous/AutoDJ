@@ -22,7 +22,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - New `[playback]` settings: `no_repeat_minutes`, `artist_repeat_minutes` and
     `title_repeat_minutes` hold a track, an artist or a song title back for a number of minutes,
     and `title_repeat_window` sets the title rule's own number of tracks.
+  - The rules count plays from before a restart, read from the saved play history, so a song
+    played 30 minutes before a restart is still held back by a 60-minute window.
   - The server log says which rule held songs back on each pick.
+  - A related artists file that is missing or invalid does not stop AutoDJ: the log warns, and
+    `autodj doctor` reports it.
   - These settings are in `config.toml` only for now; Settings page controls follow.
 - More settings can be changed on the Settings page instead of in `config.toml`. They are saved
   on the server and survive a restart:
