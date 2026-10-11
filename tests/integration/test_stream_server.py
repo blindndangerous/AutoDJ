@@ -394,6 +394,7 @@ def test_stream_info(stream_app) -> None:
         "bitrate": 320,
         "continuous": False,
         "station_name": "AutoDJ",
+        "show_next": False,
         "listeners": 2,
         "state": "idle",
         "relays": [],
@@ -421,6 +422,19 @@ def test_continuous_setting_is_strict_and_persisted(stream_app, bridge) -> None:
     assert response.json()["continuous"] is True
     assert bridge.player._cfg.stream.continuous is True
     stream.set_bitrate.assert_not_called()
+    bridge.save_persistent_state.assert_called_once()
+
+
+def test_show_next_is_strict_persisted_and_reaches_the_public_feed(stream_app, bridge) -> None:
+    client, _stream = stream_app
+    bridge.save_persistent_state = MagicMock()
+    # The upcoming song stays private until the operator turns it on.
+    assert client.get("/api/nowplaying").json()["next_track"] is None
+    assert client.post("/api/stream/settings", json={"show_next": "true"}).status_code == 422
+    response = client.post("/api/stream/settings", json={"show_next": True})
+    assert response.status_code == 200 and response.json()["show_next"] is True
+    assert bridge.player._cfg.nowplaying.show_next is True
+    assert client.get("/api/nowplaying").json()["next_track"]["title"] == "Song 1"
     bridge.save_persistent_state.assert_called_once()
 
 

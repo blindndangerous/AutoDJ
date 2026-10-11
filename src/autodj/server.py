@@ -92,6 +92,7 @@ from autodj.listener_access import (
     normalize_address,
     proxy_allowlist,
 )
+from autodj.nowplaying import NowPlaying
 from autodj.pairing import DeviceRegistry
 from autodj.playlog import (
     missing_fields,
@@ -126,9 +127,11 @@ from autodj.settings_bodies import (
     VolumeBody,
     validate_playback_choices,
 )
+from autodj.status_page import STATUS_PAGE_CSP, render_status_page
 from autodj.stream import EncoderUnavailableError, ListenerLimitError
 from autodj.tls import CertificateReloader
 from autodj.version import current_version
+from autodj.webhooks import WebhookWorker
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
@@ -1118,6 +1121,23 @@ def create_app(
     _ws_clients: set[_WebSocketClient] = set()
     _ws_lock = asyncio.Lock()
     _lyrics_read_gate = asyncio.Semaphore(1)
+    nowplaying = NowPlaying(bridge)
+    webhooks = WebhookWorker(getattr(bridge.player._cfg, "webhooks", ()))
+
+    # Both run on playout threads (mix bus, station), so a fault here is
+    # logged and never reaches playback.
+    def _track_started() -> None:
+        try:
+            webhooks.submit(nowplaying.refresh())
+        except Exception:
+            logger.exception("Could not publish now-playing state")
+
+    def _public_state_changed() -> None:
+        try:
+            nowplaying.refresh()
+        except Exception:
+            logger.exception("Could not refresh now-playing state")
+
     cfg = bridge.player._cfg
     stream_cfg = cfg.stream
     listener_access = (
@@ -1175,9 +1195,11 @@ def create_app(
         if bridge.library is not None:
             bridge.library.start_scan()
             library_ticker = asyncio.create_task(_tick_library())
+        webhooks.start()
         try:
             yield
         finally:
+            webhooks.close()
             # Graceful teardown.  Order matters:
             #   1. Tell the Player thread to leave its wait-loop.  It is
             #      a daemon thread so the process can exit either way,
@@ -1307,6 +1329,8 @@ def create_app(
         secure_cookie=secure_cookie,
         device_is_active=(device_registry.is_active if device_registry is not None else None),
     )
+    bridge.public_state_changed = _public_state_changed
+    bridge.track_started_callback = _track_started
     # Read-only handles for serve()'s startup banner and for tests; the
     # routes and the middleware use these same objects directly.
     app.state.security_policy = policy
@@ -1613,6 +1637,27 @@ def create_app(
             return {"status": "ok"}
         return {"status": "ok", "tracks": bridge.sim.ntotal}
 
+    @app.api_route("/api/nowplaying", methods=["GET", "HEAD"])
+    async def api_nowplaying() -> JSONResponse:
+        """Return public metadata with no file paths or pairing details."""
+        return JSONResponse(
+            nowplaying.snapshot(),
+            headers={"Cache-Control": "no-cache", "Access-Control-Allow-Origin": "*"},
+        )
+
+    @app.api_route("/status", methods=["GET", "HEAD"], response_class=HTMLResponse)
+    async def get_status_page() -> HTMLResponse:
+        """Serve the public station status page, built from the same feed."""
+        return HTMLResponse(
+            render_status_page(nowplaying.snapshot(), stream_mode=bridge.stream_mode),
+            headers={
+                "Cache-Control": "no-cache",
+                "Content-Security-Policy": STATUS_PAGE_CSP,
+                "X-Content-Type-Options": "nosniff",
+                "Referrer-Policy": "no-referrer",
+            },
+        )
+
     @app.get("/api/history")
     async def api_history(
         page: int = Query(1, ge=1),
@@ -1798,9 +1843,11 @@ def create_app(
         def release() -> None:
             access.remove(ident)
             bridge.listener_disconnected(client)
+            nowplaying.refresh()
 
         try:
             bridge.listener_connected(client)
+            nowplaying.refresh()
             return _ListenerResponse(
                 listener.chunks(),
                 on_close=release,
@@ -1816,6 +1863,24 @@ def create_app(
         """Return the stream URL paths, bitrate, listener count and state."""
         _require_stream_mode()
         return bridge.stream_info()
+
+    @app.get("/api/webhooks")
+    async def api_webhooks() -> list[dict[str, str | int]]:
+        """Show redacted webhook destinations to a paired browser."""
+        return webhooks.status()
+
+    @app.post("/api/webhooks/{index}/test")
+    async def api_webhook_test(index: int) -> dict[str, bool]:
+        """Send the current public snapshot to one configured webhook."""
+        if index < 0 or index >= len(webhooks.configs):
+            raise HTTPException(status_code=404, detail="Webhook not found")
+        result = webhooks.submit(nowplaying.snapshot(), index)
+        assert result is not None
+        try:
+            delivered = await asyncio.wait_for(asyncio.wrap_future(result), timeout=20)
+        except TimeoutError:
+            delivered = False
+        return {"delivered": delivered}
 
     @app.get("/api/stream/listeners")
     async def api_stream_listeners() -> dict:
@@ -1881,6 +1946,9 @@ def create_app(
         if body.station_name is not None:
             # Read per stream request, so each player shows it when it next connects.
             bridge.player._cfg.stream.station_name = body.station_name
+        if body.show_next is not None:
+            bridge.player._cfg.nowplaying.show_next = body.show_next
+        nowplaying.refresh()
         if body.max_listeners_per_address is not None:
             stream_cfg.max_listeners_per_address = body.max_listeners_per_address
             access.max_per_address = body.max_listeners_per_address
@@ -2204,6 +2272,7 @@ def create_app(
         """Insert a track at the head of the queue."""
         if not bridge.play_next(body.path, now=body.now):
             raise HTTPException(status_code=404, detail=_TRACK_GONE_DETAIL)
+        nowplaying.refresh()
         return {"ok": True}
 
     @app.get("/api/search")
@@ -2221,17 +2290,24 @@ def create_app(
         """Append a track to the user-ordered queue."""
         if not bridge.queue_add(body.path):
             raise HTTPException(status_code=404, detail=_TRACK_GONE_DETAIL)
+        nowplaying.refresh()
         return {"ok": True}
 
     @app.post("/api/queue/remove")
     async def api_queue_remove(body: PlayNextBody) -> dict[str, bool]:
         """Remove a track from the user-ordered queue."""
-        return {"ok": bridge.queue_remove(body.path)}
+        removed = bridge.queue_remove(body.path)
+        if removed:
+            nowplaying.refresh()
+        return {"ok": removed}
 
     @app.post("/api/queue/reorder")
     async def api_queue_reorder(body: QueueReorderBody) -> dict[str, bool]:
         """Reorder the user-ordered queue."""
-        return {"ok": bridge.queue_reorder(body.paths)}
+        changed = bridge.queue_reorder(body.paths)
+        if changed:
+            nowplaying.refresh()
+        return {"ok": changed}
 
     # ------------------------------------------------------------------
     # Cover art and lyrics
@@ -2331,6 +2407,7 @@ def create_app(
             # No JSON body or malformed payload — endpoint accepts either.
             logger.debug("repick_next: no JSON body, blacklist not set")
         bridge.repick_next(blacklist_path=blacklist)
+        nowplaying.refresh()
         return JSONResponse(bridge.get_state())
 
     @app.post("/api/random-track")

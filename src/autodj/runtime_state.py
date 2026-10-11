@@ -58,6 +58,7 @@ _OWN_ROUTE_PLAYBACK_FIELDS = frozenset(
         "stream_bitrate",
         "stream_continuous",
         "stream_station_name",
+        "nowplaying_show_next",
         "stream_max_listeners_per_address",
     }
 )
@@ -222,6 +223,15 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
         )
         if name is not _INVALID and name is not None:
             player._cfg.stream.station_name = name
+    if "nowplaying_show_next" in playback:
+        show_next = _checked(
+            StreamSettingsBody,
+            "show_next",
+            playback["nowplaying_show_next"],
+            "nowplaying_show_next",
+        )
+        if show_next is not _INVALID:
+            player._cfg.nowplaying.show_next = show_next
     if "stream_max_listeners_per_address" in playback:
         limit = _checked(
             StreamSettingsBody,

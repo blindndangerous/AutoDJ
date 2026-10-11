@@ -1137,6 +1137,76 @@
            text, not live. -->
       <p class="stream-detail" id="stream-loopback-note" hidden>This address only works on this computer. Open AutoDJ using its network address (see the start-up message) to copy a link for speakers.</p>
       <p class="stream-detail"><a id="stream-m3u" download="autodj.m3u">Download playlist file (.m3u)</a></p>
+      <!-- Relays to other servers ([stream.relays.<name>] in config.toml),
+           filled by stream-mode.js.  Plain text, not live. -->
+      <div id="stream-relays" hidden>
+        <p class="stream-detail" id="stream-relays-intro">Relays to other servers. While a relay is on, the station keeps playing even when nobody listens here.</p>
+        <ul class="stream-detail" id="stream-relays-list" aria-labelledby="stream-relays-intro"></ul>
+      </div>
+      <div class="settings-row">
+        <label for="stream-station-name">Station name</label>
+        <input type="text" id="stream-station-name" maxlength="100" autocomplete="off"
+               aria-describedby="stream-station-name-desc">
+      </div>
+      <span class="setting-desc" id="stream-station-name-desc">
+        The name players such as Sonos and VLC show for this station, up to 100 characters.  A player shows a new name the next time it connects.
+      </span>
+      <div class="settings-row">
+        <label for="stream-bitrate">Quality</label>
+        <select id="stream-bitrate" aria-describedby="stream-bitrate-desc">
+          <option value="128">128 kbps</option>
+          <option value="192">192 kbps</option>
+          <option value="256">256 kbps</option>
+          <option value="320">320 kbps</option>
+        </select>
+      </div>
+      <span class="setting-desc" id="stream-bitrate-desc">
+        Higher sounds better and uses more network.  Changing it makes every speaker reconnect for a moment.
+      </span>
+      <div class="settings-check">
+        <input type="checkbox" id="stream-continuous" aria-describedby="stream-continuous-desc">
+        <label for="stream-continuous">Keep playing without listeners</label>
+      </div>
+      <span class="setting-desc" id="stream-continuous-desc">
+        Keep the station running even when nobody is listening. When off, it starts when a listener connects and stops after a short wait once the last listener leaves.
+      </span>
+      <!-- The public now-playing feed and the webhooks from
+           config.local.toml; nowplaying-settings.js fills it.  Nested so
+           it shows, hides and hands focus away with the Stream settings.
+           The webhook list and its empty note are plain text, not live:
+           results of Copy, the show-next save and Send test go to the
+           status regions. -->
+      <fieldset id="np-settings">
+        <legend>Now-playing feed</legend>
+        <div class="settings-row">
+          <label for="np-url">Now-playing link</label>
+          <input type="text" id="np-url" readonly aria-describedby="np-url-desc">
+          <button type="button" id="np-copy">Copy now-playing link</button>
+        </div>
+        <span class="setting-desc" id="np-url-desc">
+          Public JSON for web pages, overlays and other services: the station name, the song playing, recent songs, the listener count, today's peak and the uptime. Anyone who can reach AutoDJ can read it without pairing. It never includes file paths.
+        </span>
+        <div class="settings-row">
+          <label for="np-status-url">Status page link</label>
+          <input type="text" id="np-status-url" readonly aria-describedby="np-status-url-desc">
+          <button type="button" id="np-status-copy">Copy status page link</button>
+        </div>
+        <span class="setting-desc" id="np-status-url-desc">
+          A public page for listeners with the same details as plain text, updated every 15 seconds. It needs no pairing.
+        </span>
+        <p class="stream-detail"><a id="np-status-open" href="/status" target="_blank" rel="noopener">Open the status page (new tab)</a></p>
+        <p class="stream-detail" id="np-loopback-note" hidden>These links only work on this computer. Open AutoDJ using its network address (see the start-up message) to copy links other devices can reach.</p>
+        <div class="settings-check">
+          <input type="checkbox" id="np-show-next" aria-describedby="np-show-next-desc">
+          <label for="np-show-next">Show the next song publicly</label>
+        </div>
+        <span class="setting-desc" id="np-show-next-desc">
+          Add the upcoming song to the now-playing feed. Off by default, because some webcasting licences, such as the US statutory licence, do not allow announcing songs in advance.
+        </span>
+        <p class="stream-detail" id="np-webhooks-intro">Track-change webhooks</p>
+        <ul class="stream-detail" id="np-webhooks-list" aria-labelledby="np-webhooks-intro" hidden></ul>
+        <p class="stream-detail" id="np-webhooks-empty" hidden></p>
+      </fieldset>
       <section aria-labelledby="listener-control-title">
         <h4 id="listener-control-title" tabindex="-1">Listeners</h4>
         <p class="stream-detail" id="stream-listeners"></p>
@@ -1173,39 +1243,6 @@
         <ul id="listener-ban-list" aria-label="Banned addresses"></ul>
         <p id="listener-ban-empty" hidden>No bans.</p>
       </section>
-      <!-- Relays to other servers ([stream.relays.<name>] in config.toml),
-           filled by stream-mode.js.  Plain text, not live. -->
-      <div id="stream-relays" hidden>
-        <p class="stream-detail" id="stream-relays-intro">Relays to other servers. While a relay is on, the station keeps playing even when nobody listens here.</p>
-        <ul class="stream-detail" id="stream-relays-list" aria-labelledby="stream-relays-intro"></ul>
-      </div>
-      <div class="settings-row">
-        <label for="stream-station-name">Station name</label>
-        <input type="text" id="stream-station-name" maxlength="100" autocomplete="off"
-               aria-describedby="stream-station-name-desc">
-      </div>
-      <span class="setting-desc" id="stream-station-name-desc">
-        The name players such as Sonos and VLC show for this station, up to 100 characters.  A player shows a new name the next time it connects.
-      </span>
-      <div class="settings-row">
-        <label for="stream-bitrate">Quality</label>
-        <select id="stream-bitrate" aria-describedby="stream-bitrate-desc">
-          <option value="128">128 kbps</option>
-          <option value="192">192 kbps</option>
-          <option value="256">256 kbps</option>
-          <option value="320">320 kbps</option>
-        </select>
-      </div>
-      <span class="setting-desc" id="stream-bitrate-desc">
-        Higher sounds better and uses more network.  Changing it makes every speaker reconnect for a moment.
-      </span>
-      <div class="settings-check">
-        <input type="checkbox" id="stream-continuous" aria-describedby="stream-continuous-desc">
-        <label for="stream-continuous">Keep playing without listeners</label>
-      </div>
-      <span class="setting-desc" id="stream-continuous-desc">
-        Keep the station running even when nobody is listening. When off, it starts when a listener connects and stops after a short wait once the last listener leaves.
-      </span>
     </fieldset>
   </div>
 

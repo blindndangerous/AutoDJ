@@ -145,7 +145,7 @@ trusted_proxies = []
 # Optional listener_user and listener_password belong in config.local.toml only.
 
 # Station name announced to players via the icy-name header.
-station_name = "AutoDJ"
+  station_name = "AutoDJ"
 
 # Relays: push the station to hosted Icecast or Shoutcast servers, so their
 # listeners, directory listings and capacity carry it too.  One named table
@@ -549,3 +549,19 @@ revision = "main"
 # bpm_start = 80
 # bpm_end   = 140
 # curve     = "slide"
+
+# Public now-playing feed at /api/nowplaying.
+[nowplaying]
+# Show the upcoming song on the public feed. Off by default: some webcasting
+# licences, such as the US statutory licence, forbid announcing songs in
+# advance. Settings, Stream also changes it.
+show_next = false
+# Recent completed songs in the feed, from 0 to 20.
+history_limit = 5
+
+# Webhook destinations belong ONLY in config.local.toml because URLs can hold
+# tokens. Example for that file:
+# [[webhooks]]
+# url = "https://example.com/your-secret-endpoint"
+# format = "generic" # or "discord"
+# events = ["track_change"]

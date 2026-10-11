@@ -111,7 +111,9 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
     liners = active / "liners"
     profiles = active.parent / "profiles"
     _publish(cfg, "Kept")
-    (active / "web_state.json").write_text('{"volume": 1}', encoding="utf-8")
+    (active / "web_state.json").write_text(
+        '{"playback": {"nowplaying_show_next": false}}', encoding="utf-8"
+    )
     (active / "listener_bans.json").write_text(
         '{"bans": [{"address": "192.0.2.1/32", "expires_at": null, "note": "abuse"}]}',
         encoding="utf-8",
@@ -153,7 +155,9 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
         "tracks.g00000000000000000001.db",
         "vectors.g00000000000000000001.index",
     ]
-    assert (active / "web_state.json").read_text(encoding="utf-8") == '{"volume": 1}'
+    assert (active / "web_state.json").read_text(encoding="utf-8") == (
+        '{"playback": {"nowplaying_show_next": false}}'
+    )
     assert (
         json.loads((active / "listener_bans.json").read_text(encoding="utf-8"))["bans"][0][
             "address"

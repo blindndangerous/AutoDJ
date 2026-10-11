@@ -1636,6 +1636,20 @@ describe("static accessibility contracts", () => {
       expect(labelText(id)).toBeTruthy();
     }
 
+    // The general settings and the now-playing group come first; the
+    // Listeners and Bans sections close the fieldset, so heading
+    // navigation never puts a general setting under "Bans".
+    const order = ["#stream-relays", "#stream-station-name", "#stream-bitrate",
+      "#stream-continuous", "#np-settings", "#listener-control-title", "#listener-bans-title"]
+      .map((selector) => document.querySelector(selector));
+    for (let at = 1; at < order.length; at += 1) {
+      expect(order[at - 1].compareDocumentPosition(order[at])
+        & document.defaultView.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    const bans = document.querySelector("#listener-bans-title").closest("section");
+    expect(bans.nextElementSibling).toBeNull();
+    expect(bans.parentElement).toBe(fieldset);
+
     // The "not loaded yet" note is visible text, silent like the count.
     const note = document.querySelector("#stream-url-note");
     expect(fieldset.contains(note)).toBe(true);
@@ -1644,6 +1658,64 @@ describe("static accessibility contracts", () => {
     expect(note.hasAttribute("role")).toBe(false);
     expect(note.hasAttribute("aria-hidden")).toBe(false);
 
+  });
+
+  it("groups the now-playing feed in the Stream settings with labelled native controls", () => {
+    installDocument();
+    const labelText = (id) => document.querySelector(`label[for="${id}"]`)
+      ?.textContent.replace(/\s+/g, " ").trim();
+    const describedBy = (element) => (element.getAttribute("aria-describedby") || "")
+      .split(/\s+/).filter(Boolean).map((id) => document.getElementById(id));
+
+    // Nested in the Stream fieldset, so it hides and hands focus away
+    // with it; its own legend names the group.
+    const group = document.querySelector("#np-settings");
+    expect(group.tagName).toBe("FIELDSET");
+    expect(group.parentElement.id).toBe("stream-settings");
+    expect(group.querySelector(":scope > legend").textContent.trim()).toBe("Now-playing feed");
+    expect(group.querySelector("h1, h2, h3, h4, h5, h6")).toBeNull();
+
+    const link = document.querySelector("#np-url");
+    expect(link.getAttribute("type")).toBe("text");
+    expect(link.hasAttribute("readonly")).toBe(true);
+    expect(labelText("np-url")).toBe("Now-playing link");
+    expect(describedBy(link)).toHaveLength(1);
+    expect(describedBy(link).every(Boolean)).toBe(true);
+
+    const copy = document.querySelector("#np-copy");
+    expect(copy.getAttribute("type")).toBe("button");
+    // Distinct from the stream's Copy address in a list of buttons.
+    expect(copy.textContent.trim()).toBe("Copy now-playing link");
+
+    const statusLink = document.querySelector("#np-status-url");
+    expect(statusLink.hasAttribute("readonly")).toBe(true);
+    expect(labelText("np-status-url")).toBe("Status page link");
+    expect(describedBy(statusLink).every(Boolean)).toBe(true);
+    const statusCopy = document.querySelector("#np-status-copy");
+    expect(statusCopy.getAttribute("type")).toBe("button");
+    expect(statusCopy.textContent.trim()).toBe("Copy status page link");
+    // A link that opens a new tab says so in its own text.
+    const open = document.querySelector("#np-status-open");
+    expect(open.getAttribute("href")).toBe("/status");
+    expect(open.getAttribute("target")).toBe("_blank");
+    expect(open.textContent).toContain("(new tab)");
+
+    const showNext = document.querySelector("#np-show-next");
+    expect(showNext.getAttribute("type")).toBe("checkbox");
+    expect(showNext.hasAttribute("checked")).toBe(false);
+    expect(labelText("np-show-next")).toBe("Show the next song publicly");
+    expect(describedBy(showNext).every(Boolean)).toBe(true);
+
+    // The list and its notes are plain text; results go to status regions.
+    const list = document.querySelector("#np-webhooks-list");
+    expect(list.tagName).toBe("UL");
+    expect(document.getElementById(list.getAttribute("aria-labelledby")).textContent.trim())
+      .toBe("Track-change webhooks");
+    for (const id of ["np-webhooks-list", "np-webhooks-empty", "np-loopback-note"]) {
+      const element = document.getElementById(id);
+      expect(element.hidden).toBe(true);
+      expect(element.closest("[aria-live], [role=status], [role=alert], [role=log]")).toBeNull();
+    }
   });
 
   it("keeps the shared confirmation dialog accessible", () => {
