@@ -62,6 +62,7 @@ from fastapi import (
     UploadFile,
     WebSocket,
 )
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -131,6 +132,7 @@ from autodj.settings_bodies import (
     validate_playback_choices,
 )
 from autodj.status_page import STATUS_PAGE_CSP, render_status_page
+from autodj.stereotool_presets import MAX_PRESET_BYTES
 from autodj.stream import EncoderUnavailableError, ListenerLimitError
 from autodj.tls import CertificateReloader
 from autodj.version import current_version
@@ -1420,6 +1422,7 @@ def create_app(
     body_limits: dict[str, Callable[[], int]] = {
         "/api/pair": lambda: PAIRING_BODY_MAX_BYTES,
         "/api/liners/upload": lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
+        "/api/stereo-tool-presets/upload": lambda: MAX_PRESET_BYTES + _MULTIPART_OVERHEAD_BYTES,
         "/api/schedule": lambda: _SCHEDULE_BODY_MAX_BYTES,
     }
     app.add_middleware(SecurityMiddleware, policy=policy, body_limits=body_limits)
@@ -2568,9 +2571,63 @@ def create_app(
     @app.post("/api/playback-settings")
     async def api_playback_settings(body: PlaybackSettingsBody) -> dict:
         """Apply playback-flag overrides (transition mode, lyrics, ...)."""
-        bridge.set_playback_settings(body)
+        try:
+            await run_in_threadpool(bridge.set_playback_settings, body)
+        # FileNotFoundError (an OSError) is a Stereo Tool preset that is gone.
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         bridge.save_persistent_state()
         return bridge.get_settings()
+
+    @app.get("/api/stereo-tool-presets")
+    async def api_stereo_tool_presets() -> dict:
+        """List the included and uploaded processor presets."""
+        from autodj.stereotool_presets import INCLUDED, list_presets
+
+        cfg = bridge.player._cfg
+        presets = await asyncio.to_thread(list_presets, cfg.index.active_dir)
+        active = cfg.playback.stereotool_preset
+        # A preset removed outside AutoDJ is replaced by the included one when
+        # Stereo Tool starts, so report that instead of a name not listed.
+        if active not in {preset["name"] for preset in presets}:
+            active = INCLUDED
+        return {"active": active, "presets": presets}
+
+    @app.post("/api/stereo-tool-presets/upload")
+    async def api_stereo_tool_preset_upload(file: UploadFile = File(...)) -> dict:
+        """Store one size-bounded text preset under the station data folder."""
+        from autodj.stereotool_presets import store_preset
+
+        name = file.filename or ""
+        try:
+            path = await store_preset(bridge.player._cfg.index.active_dir, name, file)
+        except FileExistsError as exc:
+            raise HTTPException(
+                status_code=409, detail=f"a preset named {name} already exists"
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"name": path.name}
+
+    @app.delete("/api/stereo-tool-presets/{name}")
+    async def api_stereo_tool_preset_delete(name: str) -> dict:
+        """Delete an uploaded preset other than the one currently selected."""
+        from autodj.stereotool_presets import PresetInUseError, delete_preset
+
+        cfg = bridge.player._cfg
+        try:
+            await asyncio.to_thread(
+                delete_preset, cfg.index.active_dir, name, active=cfg.playback.stereotool_preset
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PresetInUseError as exc:
+            raise HTTPException(
+                status_code=409, detail="select another preset before deleting this one"
+            ) from exc
+        return {"deleted": name}
 
     @app.post("/api/bpm-range")
     async def api_bpm_range(body: BpmRangeBody) -> dict:
@@ -3220,6 +3277,7 @@ def serve(
     player.configure_clock()
     if player.bus is not None:
         from autodj.mastering import ContinuousMaster
+        from autodj.stereotool_presets import preset_path
 
         def processing_mode() -> str:
             return (
@@ -3228,7 +3286,12 @@ def serve(
             )
 
         player._continuous_master = ContinuousMaster(
-            mode=processing_mode, stereotool_path=cfg.playback.stereotool_path
+            mode=processing_mode,
+            stereotool_path=cfg.playback.stereotool_path,
+            preset=lambda: preset_path(
+                cfg.index.active_dir, cfg.playback.stereotool_preset, require_existing=False
+            ),
+            input_trim_db=lambda: cfg.playback.stereotool_input_trim_db,
         )
         player.bus.set_master(
             player._continuous_master,

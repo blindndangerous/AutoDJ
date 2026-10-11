@@ -207,7 +207,7 @@ class TestPlayerConstruction:
         library repeats at 50 plays" bug report.
         """
         cfg = _make_cfg_mock()
-        cfg.playback.no_repeat_window = 500
+        cfg.playback.repeat_rules.track.tracks = 500
         sim = _make_sim_index(n=10)
         player = Player(cfg, sim)
         assert player._state.no_repeat_window < 10
@@ -215,7 +215,7 @@ class TestPlayerConstruction:
 
     def test_no_repeat_window_unclamped_when_library_large(self) -> None:
         cfg = _make_cfg_mock()
-        cfg.playback.no_repeat_window = 5
+        cfg.playback.repeat_rules.track.tracks = 5
         sim = _make_sim_index(n=100)
         player = Player(cfg, sim)
         # 5 is well below library size; no clamp.

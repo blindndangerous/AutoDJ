@@ -17,6 +17,7 @@ import numpy as np
 
 from autodj.dj_meta import Cue
 from autodj.indexer import FEATURE_DIM, IndexEntry
+from autodj.repeat_settings import RepeatRule, RepeatSettings
 from autodj.similarity import SimilarityIndex
 
 
@@ -61,14 +62,12 @@ def make_entry(i: int = 0) -> IndexEntry:
 def make_cfg_mock() -> MagicMock:
     """Build a config mock carrying every setting the Player reads."""
     cfg = MagicMock()
-    cfg.playback.no_repeat_window = 50
-    cfg.playback.artist_repeat_window = 3
-    cfg.playback.no_repeat_minutes = 0.0
-    cfg.playback.artist_repeat_minutes = 0.0
-    cfg.playback.title_repeat_window = None
-    cfg.playback.title_repeat_minutes = 0.0
-    cfg.playback.related_artists_file = None
-    cfg.playback.related_artists_starter = False
+    cfg.playback.repeat_rules = RepeatSettings(
+        track=RepeatRule(tracks=50),
+        artist=RepeatRule(tracks=3),
+        album=RepeatRule(tracks=3),
+        title=RepeatRule(tracks=3),
+    )
     cfg.playback.crossfade_seconds = 3.0
     cfg.playback.crossfade_eq_duck = False
     cfg.playback.crossfade_bass_cutoff_hz = 180.0
@@ -79,6 +78,9 @@ def make_cfg_mock() -> MagicMock:
     cfg.playback.pick_top_k = 1
     cfg.playback.pick_mode = "similarity"
     cfg.playback.loudness_processing = None
+    cfg.playback.intro_lift_max_db = 4.0
+    cfg.playback.stereotool_input_trim_db = 0.0
+    cfg.playback.stereotool_preset = "included"
     cfg.playback.pick_temperature = 0.0
     cfg.playback.server_max_track_minutes = 15.0
     cfg.playback.import_external_cues = False

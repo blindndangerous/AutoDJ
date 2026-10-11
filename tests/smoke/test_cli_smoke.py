@@ -102,7 +102,7 @@ def _write_config(path: Path, tmp_path: Path) -> None:
         f'[library]\nmusic_dir = "{music}"\nbeets_db = "{beets}"\n'
         f'supported_formats = ["flac"]\n'
         f'[index]\nindex_dir = "{index}"\nmodel_dir = "{models}"\n'
-        f"[playback]\ncrossfade_seconds = 3.0\nno_repeat_window = 5\n"
+        f"[playback]\ncrossfade_seconds = 3.0\nrepeat_rules = {{ track = {{ tracks = 5 }} }}\n"
         f'[model]\nname = "OpenMuQ/MuQ-large-msd-iter"\n',
         encoding="utf-8",
     )

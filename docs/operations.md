@@ -658,6 +658,19 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
 - **Seek** is not available while streaming. The seek slider is hidden on the page, and the comma
   and full-stop keyboard shortcuts announce "Seeking is not available while streaming."
 - **EQ** is applied once, on the server, so every listener hears the same shaped sound.
+- **Sound processing** is chosen in Settings, Sound. Stereo Tool loads the selected `.sts` preset
+  when its processor starts; changing the preset restarts it. The bundled Included preset is
+  read-only. Uploads (up to 2 MB) live in `index/stereo-tool-presets` beside the active index
+  folder and survive restarts. Deleting the active upload in Settings switches to Included
+  first; a preset file removed by hand is replaced by Included when Stereo Tool next starts. Stereo Tool's
+  command-line integration exposes a preset file, but no individual processor parameters.
+  `[playback] stereotool_input_trim_db` adjusts the input from -12 to +6 dB before the fixed
+  output limiter. `[playback] quiet_boost_db` (0 to 12) controls offline quiet-section balancing.
+  `[playback] intro_lift_max_db` (0 to 6, default 4) caps an extra lift for a quiet opening;
+  it fades back to normal by eight seconds. Zero disables it. Analysis caches the source's
+  peak-safe opening lift in `library.db`; already cataloged songs get it on their next library scan.
+  Browser playback, server audio and streams use the same cached lift, with decoded server audio
+  checked against its peak again. Off processing leaves the source unchanged.
 - **Page volume and mute** affect only the page's own "Listen here" playback in the browser.
   Each speaker keeps its own volume, set on the speaker or in its own app.
 - **With `--server-audio` as well**, the page's volume and Mute also set the volume and mute of
@@ -1100,6 +1113,14 @@ Royalties for the compositions (the songs as written) are separate from SoundExc
 they are licensed through ASCAP, BMI, SESAC and GMR, each with its own reporting. Outside the US
 the rules and the collecting societies are different.
 
+## Repeat settings
+
+Repeat limits are edited in Settings > Picking > Repeats and stored in
+`web_state.json`. Old repeat keys in `config.toml` or `web_state.json` are
+rejected; remove them by hand and re-enter limits in that panel. The related
+artists file is `index/<name>/related-artists.toml` and is read only when
+**Use related artists** is enabled. It must be at most 1 MiB.
+
 ## Backup
 
 `autodj backup` writes one ZIP file holding:
@@ -1108,12 +1129,13 @@ the rules and the collecting societies are different.
   `vectors.g<number>.index` files it names.
 - `dj_meta.db`, the intro, outro, beat grid and cue cache.
 - `web_state.json`, the settings chosen in the web page.
+- `related-artists.toml` in the active index folder.
 - `recording.json`, the broadcast recording settings and whether it was running. The recorded
   MP3 files are not included; archive the recordings folder yourself.
 - `library.db`, the station's registered folders, track data and cues, last-played times and
   complete play history.
 - Every file in the liners folder (`[playback] liners_folder`, or `index/<name>/liners`) and in
-  `index/profiles`.
+  `index/profiles`, plus uploaded presets in `index/stereo-tool-presets`.
 - `manifest.json`, which records the AutoDJ version that made the archive and lists its files.
 
 Backups do not include `config.toml` or `config.local.toml`. Copy those yourself
@@ -1224,6 +1246,9 @@ jumps; when a time happens twice, the event runs the first time only.
 Actions:
 
 - Switch to a saved profile or a preset.
+- Switch the Stereo Tool preset, to Included or an uploaded one. It takes effect when Output
+  processing is Stereo Tool, restarts the processor at once and never skips the song playing. A
+  preset deleted after the event was saved makes its runs fail in words.
 - Change song picking, for example to the clockwheel imported in Library tools.
 - Play a voice liner or station ID. This needs server audio or stream mode.
 - Start or stop the stream (stream mode). Start keeps the station playing without listeners,
@@ -1234,7 +1259,8 @@ Actions:
 Timing is soft or hard. A soft event waits for the current song to end; with nothing playing it
 runs at once. A hard event runs at its time and fades out the current song through the normal
 skip: after the change for profile, preset, song picking and discovery events, so the next song
-follows it, and before the liner for liner events. Stream events never skip.
+follows it, and before the liner for liner events. Stream and Stereo Tool preset events never
+skip.
 
 **Run now** runs an event's action at once, to test it. Each run, failure and missed event goes
 to the server log and to **Recent runs**, which keeps the last 200.

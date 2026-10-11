@@ -832,25 +832,67 @@
       </span>
     </fieldset>
 
-    <fieldset>
+    <!-- The rules' shared help is the outer group's description, read once
+         when focus enters Repeats, not repeated on all eight boxes. -->
+    <fieldset aria-describedby="repeat-rules-desc">
       <legend>Repeats</legend>
-      <div class="settings-row">
-        <label for="pb-no-repeat">Tracks before a song can repeat</label>
-        <input type="number" id="pb-no-repeat" min="0" max="100000" step="1" value="500"
-               inputmode="numeric" aria-describedby="pb-no-repeat-desc">
-      </div>
-      <span class="setting-desc" id="pb-no-repeat-desc">
-        How many recently played tracks the picker avoids, a whole number from 0 to 100000.  0 lets a song come back straight away.  When the library holds fewer tracks than this, AutoDJ uses a smaller number so it always has something to pick.
-      </span>
-
-      <div class="settings-row">
-        <label for="pb-artist-repeat">Tracks before an artist can repeat</label>
-        <input type="number" id="pb-artist-repeat" min="0" max="100" step="1" value="3"
-               inputmode="numeric" aria-describedby="pb-artist-repeat-desc">
-      </div>
-      <span class="setting-desc" id="pb-artist-repeat-desc">
-        How many of the latest tracks are checked for the same artist, album or song title, a whole number from 0 to 100.  0 turns this check off.
-      </span>
+      <p class="setting-desc" id="repeat-rules-desc">Each rule has a Tracks limit and a Minutes limit; when both are set, a repeat waits for both. 0 turns a limit off. Tracks are whole numbers, up to 100000 for the same track and up to 5000 for artist, album and title. Minutes go up to 10080 (one week) and can have decimals.</p>
+      <fieldset>
+        <legend>Prevent the same artist from repeating within</legend>
+        <div class="settings-row">
+          <label for="repeat-artist-tracks">Tracks</label>
+          <input type="number" id="repeat-artist-tracks" min="0" max="5000" step="1" value="8" inputmode="numeric">
+        </div>
+        <div class="settings-row">
+          <label for="repeat-artist-minutes">Minutes</label>
+          <input type="number" id="repeat-artist-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Related artists</legend>
+        <div class="settings-check">
+          <input type="checkbox" id="repeat-use-related-artists" aria-describedby="repeat-related-desc repeat-related-status">
+          <label for="repeat-use-related-artists">Use related artists</label>
+        </div>
+        <p class="setting-desc" id="repeat-related-desc">The artist rule also holds back the artists linked in related-artists.toml in the index folder: <code id="repeat-related-default">index/&lt;name&gt;/related-artists.toml</code>. Edit that file, then save repeat settings to reload it.</p>
+        <!-- A problem found in the file at startup or on save; empty and
+             hidden while there is none. -->
+        <p class="setting-desc" id="repeat-related-status" hidden></p>
+      </fieldset>
+      <fieldset>
+        <legend>Prevent the same album from repeating within</legend>
+        <div class="settings-row">
+          <label for="repeat-album-tracks">Tracks</label>
+          <input type="number" id="repeat-album-tracks" min="0" max="5000" step="1" value="0" inputmode="numeric">
+        </div>
+        <div class="settings-row">
+          <label for="repeat-album-minutes">Minutes</label>
+          <input type="number" id="repeat-album-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Prevent the same track from repeating within</legend>
+        <div class="settings-row">
+          <label for="repeat-track-tracks">Tracks</label>
+          <input type="number" id="repeat-track-tracks" min="0" max="100000" step="1" value="50" inputmode="numeric">
+        </div>
+        <div class="settings-row">
+          <label for="repeat-track-minutes">Minutes</label>
+          <input type="number" id="repeat-track-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Prevent the same title from repeating within</legend>
+        <div class="settings-row">
+          <label for="repeat-title-tracks">Tracks</label>
+          <input type="number" id="repeat-title-tracks" min="0" max="5000" step="1" value="0" inputmode="numeric">
+        </div>
+        <div class="settings-row">
+          <label for="repeat-title-minutes">Minutes</label>
+          <input type="number" id="repeat-title-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
+        </div>
+      </fieldset>
+      <button type="button" id="repeat-save">Save repeat settings</button>
     </fieldset>
 
     <fieldset>
@@ -897,11 +939,11 @@
           <option value="off">Off</option>
           <option value="replaygain">ReplayGain</option>
           <option value="smooth">Smooth</option>
-          <option value="stereotool">Stereo Tool (free preset)</option>
+          <option value="stereotool">Stereo Tool</option>
         </select>
       </div>
       <span class="setting-desc" id="pb-rg-desc">
-        <em>Off</em> leaves levels unchanged. <em>ReplayGain</em> adjusts tracks using their loudness tags. <em>Smooth</em> balances source levels and compresses the mix. <em>Stereo Tool</em> balances sources and runs the mix through the bundled free preset; its executable must be configured on the server. For stream and server audio playback.
+        <em>Off</em> leaves levels unchanged. <em>ReplayGain</em> adjusts tracks using their loudness tags. <em>Smooth</em> balances source levels and compresses the mix. <em>Stereo Tool</em> balances sources and runs the mix through the Stereo Tool preset chosen below; its executable must be configured on the server. For stream and server audio playback.
       </span>
       <div class="settings-row" data-show-when="pb-replaygain=replaygain">
         <label for="pb-rg-target">ReplayGain target loudness (decibels)</label>
@@ -926,6 +968,41 @@
       </div>
       <span class="setting-desc" id="pb-rg-clip-desc" data-show-when="pb-replaygain=replaygain">
         ReplayGain never raises a track so far that its tagged peak goes above this level, from 0.1 to 2.  1, the default, prevents clipping; above 1 allows some.  For stream and server audio playback.
+      </span>
+      <div class="settings-row" data-show-when="pb-replaygain!=off">
+        <label for="pb-intro-lift">Quiet intro lift limit (decibels)</label>
+        <input type="number" id="pb-intro-lift" min="0" max="6" step="0.1" value="4"
+               inputmode="decimal" aria-describedby="pb-intro-lift-desc">
+      </div>
+      <span class="setting-desc" id="pb-intro-lift-desc" data-show-when="pb-replaygain!=off">
+        Raise a song's quiet opening by up to this much, from 0 to 6, so it does not sound too low after a loud song.  The lift holds for one second, then falls back to the song's own level by eight seconds, and never raises the opening's peaks above 1.8 decibels below full scale, so it cannot make them clip.  4 is the default; 0 turns it off.  A song is measured on its next library scan.  For browser, stream and server audio playback.
+      </span>
+    </fieldset>
+
+    <fieldset data-show-when="pb-replaygain=stereotool">
+      <legend>Stereo Tool</legend>
+      <div class="settings-row">
+        <label for="stereo-preset">Preset</label>
+        <select id="stereo-preset" aria-describedby="stereo-preset-desc">
+          <option value="included">Included</option>
+        </select>
+        <button type="button" id="stereo-preset-delete" disabled>Delete selected preset</button>
+      </div>
+      <span class="setting-desc" id="stereo-preset-desc">
+        Stereo Tool restarts with the chosen preset; the sound bypasses it for a moment while it does.  Included is the free preset that comes with AutoDJ and cannot be deleted.  Uploaded presets are kept with the station's data and saved in backups.
+      </span>
+      <div class="settings-row">
+        <label for="stereo-preset-file">Preset file to upload (.sts, up to 2 MB)</label>
+        <input type="file" id="stereo-preset-file" accept=".sts">
+        <button type="button" id="stereo-preset-upload">Upload preset</button>
+      </div>
+      <div class="settings-row">
+        <label for="pb-stereo-trim">Input trim (decibels)</label>
+        <input type="number" id="pb-stereo-trim" min="-12" max="6" step="0.5" value="0"
+               inputmode="decimal" aria-describedby="pb-stereo-trim-desc">
+      </div>
+      <span class="setting-desc" id="pb-stereo-trim-desc">
+        Lower or raise the mix before Stereo Tool, from minus 12 to plus 6.  Lower it when the preset sounds squashed; raise it when the preset barely acts.  The output limiter still holds the same ceiling.  0 is the default.  For stream and server audio playback.
       </span>
     </fieldset>
 

@@ -44,7 +44,7 @@ def minimal_toml(tmp_path: Path) -> Path:
     cfg.write_text(
         '[library]\nmusic_dir = "Z:/Music"\n'
         '[index]\nindex_dir = "index"\nmodel_dir = "models"\n'
-        "[playback]\ncrossfade_seconds = 3.0\nno_repeat_window = 50\n"
+        "[playback]\ncrossfade_seconds = 3.0\nrepeat_rules = { track = { tracks = 50 } }\n"
         '[model]\nname = "OpenMuQ/MuQ-large-msd-iter"\n',
         encoding="utf-8",
     )
@@ -65,7 +65,7 @@ def full_toml(tmp_path: Path) -> Path:
         'model_dir = "models"\n'
         "[playback]\n"
         "crossfade_seconds = 5.0\n"
-        "no_repeat_window = 100\n"
+        "repeat_rules = { track = { tracks = 100 } }\n"
         "[model]\n"
         'name = "OpenMuQ/MuQ-MuLan-large"\n'
         'manual_path = "C:/models/MuQ"\n',
@@ -98,7 +98,7 @@ class TestLoadConfig:
     def test_loads_full_config(self, full_toml: Path) -> None:
         cfg = load_config(full_toml)
         assert cfg.playback.crossfade_seconds == 5.0
-        assert cfg.playback.no_repeat_window == 100
+        assert cfg.playback.repeat_rules.track.tracks == 100
         assert cfg.model.name == "OpenMuQ/MuQ-MuLan-large"
         assert cfg.model.manual_path == Path("C:/models/MuQ")
 
@@ -347,7 +347,9 @@ class TestPlaybackConfig:
     def test_defaults(self) -> None:
         pb = PlaybackConfig.from_dict({})
         assert pb.crossfade_seconds == 3.0
-        assert pb.no_repeat_window == 500
+        for name, tracks in (("track", 50), ("artist", 8), ("album", 0), ("title", 0)):
+            rule = getattr(pb.repeat_rules, name)
+            assert (rule.tracks, rule.minutes) == (tracks, 0)
         assert pb.show_lyrics is True
         assert pb.prefetch_next_track is True
         assert pb.silence_trigger_crossfade is True
@@ -398,7 +400,6 @@ class TestPlaybackConfig:
             ("liners_every_minutes", -1.0),
             ("liners_random_min_minutes", -1.0),
             ("liners_random_max_minutes", -1.0),
-            ("artist_repeat_window", -1),
             ("pick_temperature", -0.1),
             ("pick_top_k", 0),
         ],
@@ -423,13 +424,26 @@ class TestPlaybackConfig:
         with pytest.raises(error, match="server_max_track_minutes"):
             PlaybackConfig.from_dict({"server_max_track_minutes": value})
 
-    def test_no_repeat_window_zero_allowed(self) -> None:
-        pb = PlaybackConfig.from_dict({"no_repeat_window": 0})
-        assert pb.no_repeat_window == 0
-
-    def test_no_repeat_window_negative_raises(self) -> None:
-        with pytest.raises(ValueError):
-            PlaybackConfig.from_dict({"no_repeat_window": -5})
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "no_repeat_window",
+            "no_repeat_minutes",
+            "artist_repeat_window",
+            "artist_repeat_minutes",
+            "title_repeat_window",
+            "title_repeat_minutes",
+            "related_artists_file",
+            "related_artists_starter",
+        ],
+    )
+    def test_removed_repeat_key_is_rejected(self, tmp_path: Path, key: str) -> None:
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(f"[playback]\n{key} = 0\n", encoding="utf-8")
+        with pytest.raises(ValueError, match=r"unknown \[playback\] keys") as error:
+            load_config(config_file, environ={})
+        assert key in str(error.value)
+        assert "Settings > Picking > Repeats" in str(error.value)
 
     def test_key_notation_default(self) -> None:
         pb = PlaybackConfig.from_dict({})
@@ -723,11 +737,23 @@ def test_playback_pick_and_loudness_modes_validate_and_keep_legacy_default() -> 
     assert defaults.pick_mode == "similarity"
     assert defaults.loudness_processing is None
     assert defaults.quiet_boost_db == 9.0
+    assert defaults.intro_lift_max_db == 4.0
+    assert defaults.stereotool_input_trim_db == 0.0
+    assert defaults.stereotool_preset == "included"
     for value in (0, 12):
         assert PlaybackConfig.from_dict({"quiet_boost_db": value}).quiet_boost_db == value
     for value in (-0.1, 12.1, float("inf"), float("nan")):
         with pytest.raises(ValueError, match="quiet_boost_db"):
             PlaybackConfig.from_dict({"quiet_boost_db": value})
+    for field, invalid in (
+        ("intro_lift_max_db", 6.1),
+        ("stereotool_input_trim_db", -12.1),
+        ("stereotool_preset", "../escape.sts"),
+    ):
+        with pytest.raises(
+            ValueError, match=field if field != "stereotool_preset" else "preset file name"
+        ):
+            PlaybackConfig.from_dict({field: invalid})
     for mode in ("similarity", "random", "least_recent", "clock"):
         assert PlaybackConfig.from_dict({"pick_mode": mode}).pick_mode == mode
     for mode in ("off", "replaygain", "smooth", "stereotool"):

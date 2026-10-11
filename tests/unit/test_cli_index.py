@@ -11,6 +11,7 @@ from click.testing import CliRunner
 from autodj.backup import BackupError
 from autodj.cli import cli
 from autodj.indexer import FEATURE_DIM, IndexEntry, save_index
+from autodj.repeat_settings import RepeatSettings
 
 
 def _publish_one_entry(index_dir: Path) -> None:
@@ -40,8 +41,7 @@ def _cfg() -> MagicMock:
     cfg = MagicMock()
     cfg.library.beets_db = None
     cfg.library.music_dir = Path("Z:/Music")
-    cfg.playback.no_repeat_window = 50
-    cfg.playback.artist_repeat_window = 3
+    cfg.playback.repeat_rules = RepeatSettings()
     cfg.playback.crossfade_seconds = 3.0
     cfg.playback.discovery_every = None
     cfg.playback.pick_top_k = 1
@@ -60,7 +60,7 @@ def _write_min_cfg(tmp_path: Path) -> Path:
     cfg.write_text(
         '[library]\nmusic_dir = "Z:/Music"\n'
         '[index]\nindex_dir = "Z:/idx"\nmodel_dir = "models"\n'
-        "[playback]\ncrossfade_seconds = 3.0\nno_repeat_window = 50\n"
+        "[playback]\ncrossfade_seconds = 3.0\nrepeat_rules = { track = { tracks = 50 } }\n"
         '[model]\nname = "OpenMuQ/MuQ-large-msd-iter"\n',
         encoding="utf-8",
     )
