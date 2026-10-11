@@ -144,8 +144,9 @@ plays; artist, album and title track limits allow at most 5000. If the library i
 small for the track rule, AutoDJ reduces its effective count to leave at least
 a tenth of the library (and at least four tracks) available.
 
-Old repeat keys in `config.toml` and `web_state.json` are rejected with an
-error. Remove them by hand and re-enter limits in Settings > Picking > Repeats.
+Old repeat keys in `config.toml` and `web_state.json` are ignored with a warning.
+Re-enter any limits that still use those keys in Settings > Picking > Repeats.
+Current repeat rules are preserved, and Doctor offers optional cleanup with a backup.
 Optional config defaults use
 `[playback.repeat_rules]`, with `track`, `artist`, `album` and `title` tables
 containing `tracks` and `minutes`; saved web settings take precedence.
