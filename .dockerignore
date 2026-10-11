@@ -8,6 +8,7 @@ __pycache__
 *.py[cod]
 node_modules
 tools
+local
 config.toml
 config.local.toml*
 *.pem

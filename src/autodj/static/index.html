@@ -319,7 +319,7 @@
     <section id="points-editor" aria-labelledby="points-heading" hidden>
       <h3 id="points-heading">Cue points</h3>
       <p>Preview this file to check its cues. Use preview position copies the preview’s time; it does not use or change the station’s playback position.</p>
-      <p id="points-liner-help" hidden>Segue marks the end of the liner’s main content; End keeps the remaining tail. A blank Overlap start uses Segue, or End when Segue is blank. With Allow start over outro unchecked, the liner starts at the outgoing song’s Segue; checked, it may start over the Outro. Overlap start 0 allows the incoming intro to overlap; it does not force a full intro overlap. A positive value starts the music that many seconds after saved Start.</p>
+      <p id="points-liner-help" hidden>Segue marks the end of the liner’s main content; End keeps the remaining tail. A blank Overlap start uses Segue, or End when Segue is blank. With Allow start over outro unchecked, the liner starts at the outgoing song’s Segue; checked, it may start over the Outro. Set Overlap start to 0 to let the next song’s intro overlap the liner when timing allows. A positive value is the number of seconds after the liner’s saved Start at which the next song may enter. It cannot be later than the liner’s Segue.</p>
       <label id="points-allow-outro-label" hidden><input type="checkbox" id="points-allow-outro" aria-describedby="points-liner-help"> Allow start over outro</label>
       <label for="points-path">Track path</label>
       <input id="points-path" type="text" autocomplete="off" readonly>
@@ -915,7 +915,7 @@
                inputmode="decimal" aria-describedby="pb-quiet-boost-desc">
       </div>
       <span class="setting-desc" id="pb-quiet-boost-desc" hidden>
-        Applies throughout songs with Smooth or Stereo Tool. Sets the maximum boost, not a fixed boost. A song already cued may keep the previous setting.
+        Smooth and Stereo Tool can raise quiet sections throughout a song by up to this amount. The default is 9 dB. A song already cued may keep the previous setting.
       </span>
       <div class="settings-row" data-show-when="pb-replaygain=replaygain">
         <label for="pb-rg-clip">ReplayGain peak limit</label>
