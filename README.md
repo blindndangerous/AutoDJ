@@ -15,6 +15,8 @@ uploaded to a cloud service.
 - Mood presets that adjust tempo targets during a set. To define your own, add
   `[presets.NAME]` tables to `config.toml`; `config.toml.example` shows how.
 - Voice liners that play spoken clips over the music on a schedule.
+- Spoken time checks from recorded minute clips or an external TTS command, scheduled or after
+  the song that crosses the hour.
 - A scheduler that switches profiles, presets or the clockwheel, plays liners, starts or stops the
   stream and turns discovery on or off at set times.
 - Broadcast recording to dated MP3 files, with hourly or show splits, scheduled controls and retention.
@@ -128,6 +130,12 @@ The public `/api/nowplaying` JSON feed lets pages show the station's current son
 recent plays and listener count, and the public `/status` page shows the same to listeners as plain text. The upcoming song is hidden unless you turn on `[nowplaying] show_next`. Track-change
 webhooks can send the same metadata to other services or Discord; configure their URLs in
 `config.local.toml`. See [Operations](docs/operations.md#now-playing-feed-and-webhooks).
+
+DMCA mode (`[dmca] enabled = true`) keeps the station inside the US statutory webcasting
+licence's performance complement: album, artist and box set limits in any three hours, in every
+pick mode, with a warning to confirm before you queue a song that breaks one. Public pages never
+show the next song in this mode. See [DMCA mode](docs/operations.md#dmca-mode). This is general
+information, not legal advice.
 
 ### Relay to Icecast or Shoutcast
 

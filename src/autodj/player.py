@@ -50,6 +50,7 @@ from autodj.beatmatch import (
     phase_locked_start,
     tempo_ratio,
 )
+from autodj.dmca import WINDOW_SECONDS, Complement, complement, relaxed
 from autodj.indexer import IndexEntry
 from autodj.mixbus import BusEvents, MixBus, RenderedTrack, SkipTail
 from autodj.render_ahead import RenderAhead
@@ -448,6 +449,7 @@ class PlayerState:
     repeat_rules: RepeatRules | None = None
     recently_played: deque = field(default_factory=deque)
     play_history: deque[PlayRecord] = field(default_factory=deque)
+    dmca_enabled: bool = False
     clock: Callable[[], float] = field(default=time.time, repr=False, compare=False)
     volume: float = 1.0  # 0.0 (silent) – 1.0 (full)
     is_muted: bool = False
@@ -475,6 +477,11 @@ class PlayerState:
         """The repeat rules (always set once the state is built)."""
         return cast(RepeatRules, self.repeat_rules)
 
+    @property
+    def dmca_seconds(self) -> float:
+        """Seconds of plays the history keeps for DMCA mode (0 when it is off)."""
+        return WINDOW_SECONDS if self.dmca_enabled else 0.0
+
     def set_repeat_rules(self, rules: RepeatRules) -> None:
         """Change the repeat rules, keeping the most recent history.
 
@@ -493,7 +500,7 @@ class PlayerState:
             self.artist_repeat_window = rules.artist_window
             self.recently_played = deque(self.recently_played, maxlen=rules.track_window)
             self.play_history = deque(self.play_history)
-            prune_history(self.play_history, rules, self.clock())
+            prune_history(self.play_history, rules, self.clock(), self.dmca_seconds)
 
     def restore_history(self, records: list[PlayRecord]) -> None:
         """Put plays from before a restart (oldest first) ahead of the history.
@@ -519,7 +526,7 @@ class PlayerState:
             paths = _join_recent([record.path for record in records], list(self.recently_played))
             self.play_history = deque([*records, *self.play_history])
             self.recently_played = deque(paths, maxlen=maxlen)
-            prune_history(self.play_history, self.rules, self.clock())
+            prune_history(self.play_history, self.rules, self.clock(), self.dmca_seconds)
 
     def record_played(self, entry: IndexEntry) -> None:
         """Record a track as recently played.
@@ -537,7 +544,7 @@ class PlayerState:
         now = self.clock()
         self.recently_played.append(entry.path)
         self.play_history.append(PlayRecord.of(entry, now))
-        prune_history(self.play_history, self.rules, now)
+        prune_history(self.play_history, self.rules, now, self.dmca_seconds)
 
 
 @dataclass(frozen=True)
@@ -562,6 +569,8 @@ class _PickContext:
         protected: Paths no pick may return even after relaxing the repeat
             window: the track the pick follows, the track the bus is
             starting, the latest recorded track and the playing one.
+        complement: In DMCA mode, what the last three hours of plays allow
+            next (see :mod:`autodj.dmca`); ``None`` when the mode is off.
     """
 
     recent: deque
@@ -570,6 +579,11 @@ class _PickContext:
     peek_queue: bool = False
     queue_reserved: IndexEntry | None = None
     protected: frozenset[str] = frozenset()
+    complement: Complement | None = None
+
+    def allows(self, entry: IndexEntry) -> bool:
+        """True when *entry* keeps the DMCA complement (always, with the mode off)."""
+        return self.complement is None or self.complement.allows(entry)
 
 
 @dataclass(frozen=True)
@@ -853,9 +867,10 @@ class Player:
         self._key_cache: tuple[tuple[IndexEntry, ...], TrackKeyCache] | None = None
         self._key_cache_lock = threading.Lock()
         self._state = PlayerState(
+            dmca_enabled=cfg.dmca.enabled,
             repeat_rules=RepeatRules.from_playback(
                 cfg.playback, track_window=effective, related=self._related_artists
-            )
+            ),
         )
         self._skip_event = threading.Event()
         self._lock = threading.Lock()
@@ -981,7 +996,11 @@ class Player:
         self._run_server_audio(current)
 
     def _random_start_entry(self) -> IndexEntry | None:
-        """Pick a starting track the way Shuffle does, or ``None`` if there is none."""
+        """Pick a starting track the way Shuffle does, or ``None`` if there is none.
+
+        In DMCA mode it keeps the complement too (see :meth:`_dmca_checked`).
+        """
+        dmca = self._pick_context() if self._state.dmca_enabled else None
         if self._library is not None:
             import random
 
@@ -991,17 +1010,26 @@ class Player:
             if not entries:
                 return None
             if self._cfg.playback.pick_mode == "clock":
-                picked = self._clock_pick(self._pick_context(), None)
-                if picked.entry is not None:
-                    if picked.liner is not None:
-                        self._seed_clock_cursor = (picked.next_cursor - 1) % len(self._clock_slots)
-                        return picked.liner
-                    self._seed_clock_cursor = picked.next_cursor
-                return picked.entry
+                context = dmca or self._pick_context()
+                picked = self._clock_pick(context, None)
+                if picked.entry is None:
+                    return None
+                if picked.liner is not None:
+                    self._seed_clock_cursor = (picked.next_cursor - 1) % len(self._clock_slots)
+                    return picked.liner
+                self._seed_clock_cursor = picked.next_cursor
+                return self._dmca_checked(picked.entry, context)
+            if dmca is not None:
+                entries = [e for e in entries if dmca.allows(e)] or entries
             if self._cfg.playback.pick_mode == "least_recent":
-                return least_recent(entries, self._library.last_played())
-            return random.choice(entries)  # nosec B311 -- music selection
-        return self._sim.random_entry()
+                chosen = least_recent(entries, self._library.last_played())
+            else:
+                chosen = random.choice(entries)  # nosec B311 -- music selection
+        else:
+            chosen = self._sim.random_entry()
+        if dmca is None or chosen is None:
+            return chosen
+        return self._dmca_checked(chosen, dmca)
 
     def playable_entries(self) -> tuple[IndexEntry, ...]:
         """Return basic-ready music, or the legacy index when no catalog is attached."""
@@ -1041,10 +1069,17 @@ class Player:
 
         recent = set(context.recent)
         entries = self.playable_entries()
+        # DMCA mode holds every slot to the complement, even one that does
+        # not enforce the repeat rules.
+        complying = (
+            entries
+            if context.complement is None
+            else tuple(entry for entry in entries if context.allows(entry))
+        )
         last_played = self._library.last_played()
         liners = self._library.entries_snapshot("liner")
 
-        def pick(use_rules: bool, use_recent: bool) -> Any:
+        def pick(use_rules: bool, use_recent: bool, use_dmca: bool = True) -> Any:
             def allowed(entry: IndexEntry) -> bool:
                 return (
                     not entry.is_silent
@@ -1053,12 +1088,13 @@ class Player:
                     and (not use_rules or context.repeat(entry))
                 )
 
-            return pick_slot(
-                self._clock_slots, position, entries, last_played, allowed, liners=liners
-            )
+            pool = complying if use_dmca else entries
+            return pick_slot(self._clock_slots, position, pool, last_played, allowed, liners=liners)
 
         # Like the other pick modes, relax rather than stop the music: first
-        # the artist, album and title rules, then the track window.
+        # the artist, album and title rules, then the track window, then the
+        # DMCA complement (_dmca_checked then looks for a track that keeps
+        # it in the whole library).
         picked = pick(True, True)
         if picked.entry is None and context.repeat:
             logger.info(
@@ -1073,10 +1109,84 @@ class Player:
                 "window for this pick"
             )
             picked = pick(False, False)
+        if picked.entry is None and context.complement is not None:
+            logger.info(
+                "Clock: every matching track would break the DMCA complement; "
+                "looking further for this pick"
+            )
+            picked = pick(False, False, use_dmca=False)
         self._clock_status = "; ".join(picked.skipped) or "Ready"
         if picked.entry is not None:
             _log_repeat_blocks(context.repeat, picked.entry)
         return picked
+
+    def _candidate_filter(self, context: _PickContext) -> Callable[[IndexEntry], bool]:
+        """The repeat rules and, in DMCA mode, the complement, as one filter."""
+        if context.complement is None:
+            return context.repeat
+
+        def allowed(entry: IndexEntry) -> bool:
+            return context.repeat(entry) and context.allows(entry)
+
+        return allowed
+
+    def _dmca_checked(
+        self, entry: IndexEntry, context: _PickContext, *, queued: bool = False
+    ) -> IndexEntry:
+        """*entry*, or in DMCA mode, when it would break the complement, a track that keeps it.
+
+        A song from the queue plays anyway (the operator confirmed it), and
+        the limits it breaks are logged.  Otherwise the replacement comes
+        from the whole library, relaxing as little as possible (see
+        :func:`~autodj.dmca.relaxed`): a track the repeat rules allow, then
+        any track not played recently, then any but the protected ones.
+        When no track keeps every limit, one that breaks the fewest plays and
+        a warning names the limits it breaks: the music never stops.
+        """
+        import random as _rnd
+
+        limits = context.complement
+        if limits is None or not (broken := limits.broken(entry)):
+            return entry
+        if queued:
+            logger.warning(
+                "DMCA mode: queued %s plays although it breaks the limit: %s",
+                entry.display_name,
+                "; ".join(broken),
+            )
+            return entry
+        audible = [
+            other
+            for other in self.playable_entries()
+            if not other.is_silent and other.path not in context.protected
+        ]
+        recent = set(context.recent)
+        fresh = [other for other in audible if other.path not in recent]
+        choices = relaxed(
+            ([other for other in fresh if context.repeat(other)], fresh, audible), limits.broken
+        )
+        if not choices:
+            logger.warning(
+                "DMCA mode: %s plays although it breaks the limit (%s): nothing else can play",
+                entry.display_name,
+                "; ".join(broken),
+            )
+            return entry
+        chosen, still = _rnd.choice(choices)  # nosec B311 -- music selection
+        if still:
+            logger.warning(
+                "DMCA mode: no track keeps every limit; %s plays although it breaks %s",
+                chosen.display_name,
+                "; ".join(still),
+            )
+        else:
+            logger.info(
+                "DMCA mode: %s would break the limit (%s); %s plays instead",
+                entry.display_name,
+                "; ".join(broken),
+                chosen.display_name,
+            )
+        return chosen
 
     def _station_queue(
         self,
@@ -1108,7 +1218,7 @@ class Player:
         liners, queued = self._station_queue(context.queue_reserved, self._pending_reserved_liners)
         cursor = self._pending_clock_cursor
         if queued is not None:
-            upcoming, mode = queued, "queue"
+            upcoming, mode = self._dmca_checked(queued, context, queued=True), "queue"
         elif self._cfg.playback.pick_mode == "clock":
             picked = self._clock_pick(context, cursor)
             if picked.entry is None:
@@ -1148,7 +1258,8 @@ class Player:
                             (self._clock or {}).get("resync_minutes", [0]),
                         )
                         self._pending_clock_boundary = following.timestamp() if following else None
-            upcoming, mode, cursor = picked.entry, "clock", picked.next_cursor
+            upcoming = self._dmca_checked(picked.entry, context)
+            mode, cursor = "clock", picked.next_cursor
             if picked.liner is not None and not liners:
                 return upcoming, mode, ((picked.liner, False),), cursor, ""
         else:
@@ -1156,6 +1267,7 @@ class Player:
                 upcoming, mode = self._choose_by_mode(current, context)
             except Exception as exc:
                 upcoming, mode = self._fallback_pick(current, context, exc), "fallback"
+            upcoming = self._dmca_checked(upcoming, context)
         selected = tuple((entry, True) for entry in liners)
         key = ""
         scheduler = self.liner_scheduler
@@ -1949,6 +2061,7 @@ class Player:
             peek_queue,
             queue_reserved,
             frozenset(protected),
+            complement(history, now, self._track_keys()) if self._state.dmca_enabled else None,
         )
 
     def _recent_exclusions(
@@ -2023,7 +2136,7 @@ class Player:
         if getattr(self, "_repeat_history_restored", False) and not refresh:
             return 0
         self._repeat_history_restored = True
-        limit = plays_to_load(self._state.rules)
+        limit = plays_to_load(self._state.rules, self._state.dmca_seconds)
         if limit <= 0:
             return 0
         rows = catalog.recent_plays(limit)
@@ -2074,6 +2187,7 @@ class Player:
                     entry.path not in blocked
                     and eligible(entry)
                     and (not use_rules or repeat(entry))
+                    and context.allows(entry)
                 )
 
             if history is not None and entries:
@@ -2115,7 +2229,9 @@ class Player:
         try:
             protected = context.protected | {current.path}
             recent = deque([*context.recent, *sorted(protected - set(context.recent))])
-            entry = self._sim.find_distant(current.path, recent, allowed=context.repeat)
+            entry = self._sim.find_distant(
+                current.path, recent, allowed=self._candidate_filter(context)
+            )
             _log_repeat_blocks(context.repeat, entry)
             _CONSOLE.print("  [bold cyan]◈ Discovery track[/bold cyan]")
             return entry
@@ -2177,15 +2293,17 @@ class Player:
         """
         queued = self._pop_user_queue(context.peek_queue, context.queue_reserved)
         if queued is not None:
-            return queued, "queue"
+            return self._dmca_checked(queued, context, queued=True), "queue"
         try:
-            picked = self._choose_by_mode(current, context)
+            entry, mode = self._choose_by_mode(current, context)
         except Exception as exc:
-            return self._fallback_pick(current, context, exc), "fallback"
+            return self._dmca_checked(self._fallback_pick(current, context, exc), context), (
+                "fallback"
+            )
         if self._pick_fallback_active:
             self._pick_fallback_active = False
             logger.info("Picking the next track works again.")
-        return picked
+        return self._dmca_checked(entry, context), mode
 
     def _choose_by_mode(self, current: IndexEntry, context: _PickContext) -> tuple[IndexEntry, str]:
         """Pick by pure shuffle, discovery or similarity (see :meth:`_choose_next`)."""
@@ -2217,7 +2335,7 @@ class Player:
             "bpm_range": self._bpm_range,
             "harmonic_only": harmonic_only,
             "harmonic_mode": harmonic_mode,
-            "repeat_filter": context.repeat,
+            "repeat_filter": self._candidate_filter(context),
             "pick_top_k": self._cfg.playback.pick_top_k,
             "pick_temperature": self._cfg.playback.pick_temperature,
         }

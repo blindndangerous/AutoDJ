@@ -453,6 +453,84 @@ The radio stream link (`/stream.mp3`) works at home. Through the tunnel it is be
 Access too, so players that cannot log in, such as Sonos, cannot use it from outside.
 On the local network, anyone who can reach AutoDJ can listen without pairing.
 
+## DMCA mode
+
+DMCA mode keeps the station's programming inside the performance complement
+of the US statutory webcasting licence (section 114, reported to
+SoundExchange). This is general information, not legal advice: you remain
+responsible for your licence and your reports.
+
+Turn it on in `config.toml` and restart AutoDJ:
+
+```toml
+[dmca]
+enabled = true
+```
+
+### The limits
+
+In any three hours of actual plays, counting the song about to play:
+
+- at most 3 songs from one album, and at most 2 of them in a row;
+- at most 4 songs by one artist, and at most 3 of them in a row;
+- at most 4 songs from one box set or compilation, and at most 3 of them in a row.
+
+"Actual plays" are the song starts AutoDJ records, including plays from before
+a restart, which it reads back from the play log. A song skipped after a few
+seconds still counts.
+
+Artists are split the way the repeat rules split them, so every artist a credit
+names counts, featured artists included: "Mark Ronson feat. Bruno Mars", or a
+title with "(feat. Bruno Mars)", counts as a play by both. Album names are
+compared the way the repeat rules compare them (case, accents and punctuation
+ignored), so two artists' albums with the same name count as one album. That is
+stricter than the licence, never looser.
+
+A box set or compilation is recognised from its album names: albums whose
+names end in a disc or volume number, such as "Woodstock (Disc 2)", "Hits CD1",
+"Anthology Vol. 3" or "Box (Disc 1 of 4)", count as one set. AutoDJ's index has
+no album-artist or compilation tag, and a one-disc compilation needs none: it is
+one album, and the album limit is the stricter one. A box set whose discs all
+carry the same album name counts as one album, again the stricter limit.
+
+### Where the limits apply
+
+- Every pick mode: similar songs, discovery, random, least recently played and
+  the clockwheel, including clock slots that do not enforce the repeat rules,
+  and the first song of each set.
+- When nothing the pick mode would choose keeps every limit, AutoDJ looks
+  further rather than break one. It plays a song that keeps every limit from
+  anywhere in the library, preferring one the repeat rules allow, then one not
+  played recently, then any other (not the song playing or about to). The log
+  says which song would have broken which limit and what plays instead.
+- Only when no song in the whole library keeps every limit (a very small
+  library) does AutoDJ break one: it plays a song that breaks the fewest limits,
+  and logs a warning naming each one. The music never stops.
+- Songs you queue from Search or Library: Play now, Play next and Add to queue
+  check the limits at the time the song is expected to start, worked out from
+  the lengths of the song playing and the songs queued before it. If the song
+  would break a limit, nothing is queued; a dialog names the limit in words and
+  offers **Queue anyway** (or **Play anyway**) and **Cancel**. Choosing Queue
+  anyway queues it and logs a warning; Cancel leaves the queue as it was. The
+  result is spoken either way. The expected start is an estimate: crossfades and
+  skips move it, so near a three-hour boundary, check again before relying on it.
+  A queued song plays even if it breaks a limit when it starts, and the log
+  says so.
+
+### Public pages
+
+The public now-playing feed (`/api/nowplaying`), the `/status` page and the
+track-change webhooks never include the next song in DMCA mode, whatever
+`[nowplaying] show_next` says. In Settings, Stream, the "Show the next song
+publicly" box stays in the tab order but is unavailable, with the reason read
+as its description, and a line under the feed links says DMCA mode is on. The
+song playing is shown while it plays: the feed gives its artist, title and
+album, and the stream's ICY title its artist and title.
+
+`autodj doctor` has a `dmca` check. With DMCA mode on, it warns about any
+setting that conflicts with it and says how to fix it: today that is
+`[nowplaying] show_next = true`.
+
 ## Now-playing feed and webhooks
 
 `GET /api/nowplaying` is public and needs no paired browser. It accepts GET and HEAD, sends
@@ -488,7 +566,8 @@ working, since no field was removed or renamed.
 The feed never contains local file paths, internal IDs, credentials or pairing state.
 `next_track` is `null` unless `[nowplaying] show_next = true` or **Show the next song
 publicly** is ticked in Settings, Stream. It is off by default because some webcasting
-licences, such as the US statutory licence, forbid announcing specific songs in advance.
+licences, such as the US statutory licence, forbid announcing specific songs in advance, and
+it is always `null` in [DMCA mode](#dmca-mode).
 `history_limit` defaults to 5 and accepts 0 through 20.
 
 Put webhook URLs in `config.local.toml` only. Each `[[webhooks]]` table accepts an HTTP or
@@ -538,7 +617,8 @@ In stream mode, **Settings, Stream** has a **Now-playing feed** group:
 - **Status page link** shows the address of `/status`, with **Copy status page link** and an
   **Open the status page (new tab)** link.
 - **Show the next song publicly** turns `show_next` on or off and is saved like the other
-  stream settings. Outside stream mode, set `[nowplaying] show_next` in `config.toml`.
+  stream settings. Outside stream mode, set `[nowplaying] show_next` in `config.toml`. In
+  [DMCA mode](#dmca-mode) it is unavailable, and says why.
 - **Track-change webhooks** lists each destination by number, host, format and last delivery
   result (Not sent, Delivered or Delivery failed). Its **Send test** button sends the current
   snapshot once and says whether it was delivered. With no webhooks configured, the group says so
@@ -1142,6 +1222,8 @@ artists file is `index/<name>/related-artists.toml` and is read only when
   complete play history.
 - Every file in the liners folder (`[playback] liners_folder`, or `index/<name>/liners`) and in
   `index/profiles`, plus uploaded presets in `index/stereo-tool-presets`.
+- `time_checks.json` and every recorded clip in `[time_checks] clips_folder` (or the default
+  time_checks folder under the active index). Generated TTS cache files are rebuilt when needed.
 - `manifest.json`, which records the AutoDJ version that made the archive and lists its files.
 
 Backups do not include `config.toml` or `config.local.toml`. Copy those yourself
@@ -1257,6 +1339,7 @@ Actions:
   preset deleted after the event was saved makes its runs fail in words.
 - Change song picking, for example to the clockwheel imported in Library tools.
 - Play a voice liner or station ID. This needs server audio or stream mode.
+- Play a time check. This needs server audio or stream mode.
 - Start or stop the stream (stream mode). Start keeps the station playing without listeners,
   stop keeps it off the air even with listeners, and automatic hands control back to the
   listener count. The choice lasts until the next stream event or a restart.
@@ -1278,3 +1361,75 @@ out, so the server still starts. Events are not replayed after downtime: a one-t
 time passed while AutoDJ was stopped is disabled and recorded as missed, and an event more than
 two minutes late (the computer slept) is recorded as missed instead of running. The schedule
 holds at most 100 events.
+
+## Spoken time checks
+
+Open **Settings**, then **Time checks**, and turn on **Enable time checks** (or set
+`[time_checks] enabled = true`). Choose 12- or 24-hour speech, and choose **After the song that
+crosses the hour** to hear the time when the song playing at the top of the hour ends. The
+Schedule panel also offers a **Time check** action for set times; it needs server audio or
+stream mode. Both use `[server] station_timezone` (or the detected system zone), and the time
+said is the time when the check plays. A check plays at most once an hour from the rule: when a
+scheduled check already played in that hour, the rule stays quiet.
+
+A check is one clip: the optional intro, the time, and the optional outro. It plays like a
+voice liner, with the liner duck depth. After the hour, in server audio or stream mode, it takes
+the place of the automatic liner due at that song change and uses **Talk up to the vocal** when
+the clip fits before the singing. When a talk-up liner is already playing over the crossfade
+into that song, the check waits for the following song rather than cutting the liner off. In
+browser playback the page plays it when the next song starts; there it does not replace a voice
+liner due at the same song change, so the two can overlap. The **Play a time check now** button plays one straight away: on the server in server
+audio or stream mode, and in this browser otherwise.
+
+Record one clip per minute in the configured `clips_folder` (by default the `time_checks`
+folder in the active index folder): `00_00.wav` through `23_59.wav`, using 24-hour names even
+when speech uses 12 hours. MP3, FLAC and OGG are also accepted. For example, `03_05.wav` plays
+at 3:05 in the morning and `15_05.wav` at 3:05 in the afternoon. The Settings panel says how
+many minute clips there are. Run `uv run autodj doctor` for the number missing, the first ten
+missing names, and warnings for a missing folder, intro or outro clip or TTS program. A minute
+without a clip uses TTS when it is configured. Without a clip or working TTS command, the check
+is skipped and the server logs one warning.
+
+The speech says "It's 3:05", or "It's 15:05" in 24-hour mode. On the hour it says "It's 3
+o'clock" in 12-hour mode and "It's 15 hundred" in 24-hour mode, and in both modes "It's midnight"
+at 00:00 and "It's noon" at 12:00.
+
+The `tts_command` is an argument array in `config.toml`. AutoDJ passes the spoken text on stdin,
+replaces `{out}` with a temporary WAV path, replaces `{text}` with the text as one argument,
+allows 20 seconds, and caches the result for each command and text. It runs the program
+directly, never through a shell, and on a worker thread. A command that fails, times out or
+writes a WAV with no sound is skipped with a warning. Examples:
+
+```toml
+# Piper, with an installed voice model (Linux or Windows)
+[time_checks]
+tts_command = ["piper", "--model", "/voices/en_US-lessac-medium.onnx", "--output_file", "{out}"]
+```
+
+```toml
+# espeak-ng in a Linux container
+[time_checks]
+tts_command = ["espeak-ng", "-w", "{out}", "{text}"]
+```
+
+```toml
+# Windows SAPI, with the full path to the script in your AutoDJ folder
+[time_checks]
+tts_command = [
+  "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+  "-File", "C:/AutoDJ/scripts/time_check_sapi.ps1", "{out}", "-Voice", "Microsoft Zira Desktop",
+]
+```
+
+The SAPI script speaks the text as plain text and never runs it. Name a voice with `-Voice`:
+the Windows default voice can be a screen reader's SAPI bridge, such as NVDA's, which speaks
+through the screen reader and writes no sound to the file. To list the installed voices, run
+`powershell -NoProfile -Command "Add-Type -AssemblyName System.Speech;
+[System.Speech.Synthesis.SpeechSynthesizer]::new().GetInstalledVoices().VoiceInfo.Name"`.
+
+Choose one command, and test it with **Play a time check now**. `intro_clip`, `outro_clip`,
+`clips_folder`, and `tts_command` are local file settings only; the browser cannot change or
+read them. The enabled switch, hour format, and rule live in versioned `time_checks.json` in
+the index folder after you change them in Settings, and a wrong version stops startup with an
+error. Backups include `time_checks.json` and the recorded clips; copy `config.toml` yourself
+if you use custom paths or a TTS command.

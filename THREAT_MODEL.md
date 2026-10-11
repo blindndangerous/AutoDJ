@@ -139,6 +139,15 @@ AutoDJ checks its size before reading and refuses files larger than 1 MiB. Brows
 not include artist names or unexpected top-level keys from that file.
 Treat a paired browser as trusted.
 
+Time check settings, preview, and test routes under `/api/time-checks` also require a paired
+browser. The browser receives clip coverage and the station time zone, but no configured clip
+paths or TTS command. It can change only enabled, hour format, and rule; paths and executable
+arguments come from local configuration. TTS runs with an argument array and a 20-second timeout,
+without a shell, on a worker thread. The spoken text is built on the server from the station clock
+("It's 3:05"); no browser input reaches the command line or the SAPI script, which speaks its
+stdin as plain text. Preview and test can start the TTS program, once for each new minute's text,
+because results are cached; one synthesis runs at a time.
+
 `/api/stereo-tool-presets` lists, uploads (`/upload`) and deletes (`DELETE /{name}`) Stereo Tool
 presets, under the same session, Host and Origin policy as every other `/api` route. Uploads go
 only to the `stereo-tool-presets` folder beside the active index folder. A name must be one plain

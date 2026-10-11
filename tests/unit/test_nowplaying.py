@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from autodj.config import NowPlayingConfig, WebhookConfig, load_config
+from autodj.config import DmcaConfig, NowPlayingConfig, WebhookConfig, load_config
 from autodj.nowplaying import NowPlaying
 from autodj.webhooks import (
     MAX_RETRY_AFTER_S,
@@ -114,6 +114,25 @@ def test_webhook_payload_formats_and_retry() -> None:
 
 def test_show_next_is_off_by_default() -> None:
     assert NowPlayingConfig().show_next is False
+
+
+@pytest.mark.parametrize(("dmca", "shown"), [(False, True), (True, False)])
+def test_dmca_mode_never_shows_the_next_song(dmca: bool, shown: bool) -> None:
+    song = SimpleNamespace(artist="Next", title="Later", album="Other", length=200, path="p")
+    cfg = SimpleNamespace(
+        stream=SimpleNamespace(station_name="Station"),
+        nowplaying=NowPlayingConfig(show_next=True),
+        dmca=DmcaConfig(enabled=dmca),
+    )
+    bridge = SimpleNamespace(
+        player=SimpleNamespace(
+            _cfg=cfg, _state=SimpleNamespace(current_track=None, next_track=song)
+        ),
+        stream=None,
+        history_snapshot=lambda: [],
+    )
+    payload = NowPlaying(bridge, timezone="UTC").refresh()
+    assert (payload["next_track"] is not None) is shown
 
 
 def test_a_test_send_is_tried_once_and_reports_failure() -> None:

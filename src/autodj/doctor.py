@@ -554,6 +554,7 @@ def run_doctor(
     return DoctorReport(
         (
             _configuration_check(cfg),
+            _dmca_check(cfg),
             _python_check(python_version),
             _path_check("music-path", cfg.library.music_dir, writable=False),
             _beets_db_check(cfg),
@@ -567,5 +568,61 @@ def run_doctor(
             _stream_check(cfg),
             *_relay_checks(cfg),
             _related_artists_check(cfg),
+            _time_checks_check(cfg),
         )
     )
+
+
+def _time_checks_check(cfg: AutoDJConfig) -> DoctorCheck:
+    """Report recorded minute coverage, the clips and TTS program found, and the switches."""
+    from autodj.time_checks import clips_folder, load_settings, missing_minutes
+
+    tc = cfg.time_checks
+    folder = clips_folder(cfg)
+    missing = missing_minutes(folder)
+    detail = {"folder": str(folder), "missing_examples": missing[:10]}
+    try:
+        enabled = load_settings(cfg).enabled
+    except (OSError, ValueError, KeyError, AttributeError) as exc:
+        return DoctorCheck(
+            "time-checks",
+            CheckStatus.FAIL,
+            f"saved time check settings cannot be read: {exc}",
+            detail,
+            "Fix or remove time_checks.json in the index folder, then set the switches again.",
+        )
+    coverage = f"{len(missing)} of 1440 minute clips missing"
+    if not enabled:
+        return DoctorCheck("time-checks", CheckStatus.PASS, f"disabled; {coverage}", detail)
+    problems = []
+    if tc.clips_folder and not folder.is_dir():
+        problems.append("clips_folder is not a folder")
+    problems.extend(
+        f"{name} not found"
+        for name in ("intro_clip", "outro_clip")
+        if getattr(tc, name) and not Path(getattr(tc, name)).is_file()
+    )
+    if tc.tts_command and shutil.which(tc.tts_command[0]) is None:
+        problems.append(f"TTS program {tc.tts_command[0]} not found")
+    if missing and not tc.tts_command:
+        problems.append("no TTS fallback")
+    fallback = "TTS configured" if tc.tts_command else ""
+    summary = "; ".join(part for part in (coverage, fallback, *problems) if part)
+    return DoctorCheck(
+        "time-checks", CheckStatus.WARN if problems else CheckStatus.PASS, summary, detail
+    )
+
+
+def _dmca_check(cfg: AutoDJConfig) -> DoctorCheck:
+    """Name any setting that conflicts with DMCA mode, and how to fix it."""
+    if not cfg.dmca.enabled:
+        return DoctorCheck("dmca", CheckStatus.PASS, "off")
+    if cfg.nowplaying.show_next:
+        return DoctorCheck(
+            "dmca",
+            CheckStatus.WARN,
+            "on, with a conflicting setting",
+            "[nowplaying] show_next = true asks to announce the next song, which DMCA mode "
+            "never does. Set show_next = false so the setting matches what listeners see.",
+        )
+    return DoctorCheck("dmca", CheckStatus.PASS, "on", "no conflicting settings")

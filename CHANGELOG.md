@@ -10,6 +10,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Spoken time checks (Settings, Time checks) use a recorded `HH_MM` clip or a cached external
+  TTS command, with optional intro and outro clips. They play from a Schedule action or after the
+  song that crosses the hour, in the station time zone, with the voice liner duck and talk-up; the
+  check after the hour takes the place of that song change's automatic liner. Settings choose
+  12- or 24-hour speech; doctor reports missing recordings, and backups include the clips and the
+  saved switches. `scripts/time_check_sapi.ps1` speaks with a chosen Windows SAPI voice.
+
+- DMCA mode (`[dmca] enabled = true`): every pick mode, the clockwheel included, keeps to the
+  US statutory webcasting licence's performance complement (at most 3 songs from one album, 2 in
+  a row, and 4 by one artist or from one box set, 3 in a row, in any three hours; featured
+  artists count). When nothing keeps every limit, a song breaking the fewest plays and a warning
+  names the limit. Queueing a song that would break a limit asks first, with the limit in words
+  and Queue anyway or Cancel. The public feed, the status page and webhooks never show the next
+  song, Settings, Stream says the mode is on, and `autodj doctor` names conflicting settings.
+
 - Stereo Tool presets can be uploaded, selected and deleted in Settings, Sound. The included
   preset remains read-only; uploaded presets survive restarts and are included in backups.
   A scheduled event can switch the Stereo Tool preset (Settings, Schedule).

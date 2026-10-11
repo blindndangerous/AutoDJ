@@ -1393,6 +1393,18 @@ class NowPlayingConfig(_Section):
             raise ValueError("nowplaying.history_limit must be between 0 and 20")
 
 
+@dataclass
+class DmcaConfig(_Section):
+    """Optional US statutory-webcasting programming safeguards."""
+
+    SECTION: ClassVar[str] = "dmca"
+    enabled: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise TypeError("dmca.enabled must be true or false")
+
+
 @dataclass(frozen=True)
 class WebhookConfig:
     """One outbound track-change destination, stored in config.local.toml."""
@@ -1431,6 +1443,44 @@ class WebhookConfig:
 
 
 @dataclass
+class TimeChecksConfig(_Section):
+    """Recorded and synthesized spoken time announcements."""
+
+    SECTION: ClassVar[str] = "time_checks"
+
+    enabled: bool = False
+    clips_folder: str | None = None
+    hour_format: str = "12"
+    intro_clip: str | None = None
+    outro_clip: str | None = None
+    tts_command: list[str] = field(default_factory=list)
+    rule: str = "off"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise TypeError("time_checks.enabled must be true or false")
+        if self.hour_format not in ("12", "24"):
+            raise ValueError("time_checks.hour_format must be '12' or '24'")
+        if self.rule not in ("off", "after_hour_song"):
+            raise ValueError("time_checks.rule must be 'off' or 'after_hour_song'")
+        for name in ("clips_folder", "intro_clip", "outro_clip"):
+            value = getattr(self, name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(f"time_checks.{name} must be a nonempty path")
+            if value:
+                setattr(self, name, str(Path(value).expanduser()))
+        command = self.tts_command
+        if not isinstance(command, list) or any(
+            not isinstance(part, str) or not part for part in command
+        ):
+            raise TypeError("time_checks.tts_command must be an array of nonempty strings")
+        if command and sum(part.count("{out}") for part in command) != 1:
+            raise ValueError("time_checks.tts_command must contain {out} once")
+        if any("{" in part.replace("{out}", "").replace("{text}", "") for part in command):
+            raise ValueError("time_checks.tts_command supports only {out} and {text}")
+
+
+@dataclass
 class AutoDJConfig:
     """Root configuration for the AutoDJ application.
 
@@ -1464,6 +1514,8 @@ class AutoDJConfig:
     stream: StreamConfig = field(default_factory=StreamConfig)
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     nowplaying: NowPlayingConfig = field(default_factory=NowPlayingConfig)
+    time_checks: TimeChecksConfig = field(default_factory=TimeChecksConfig)
+    dmca: DmcaConfig = field(default_factory=DmcaConfig)
     webhooks: tuple[WebhookConfig, ...] = ()
     config_sources: tuple[str, ...] = ("defaults",)
 
@@ -1570,6 +1622,8 @@ _SECTION_TYPES: tuple[type[_Section], ...] = (
     StreamConfig,
     RecordingConfig,
     NowPlayingConfig,
+    TimeChecksConfig,
+    DmcaConfig,
 )
 
 

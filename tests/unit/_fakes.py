@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 import faiss
 import numpy as np
 
+from autodj.config import DmcaConfig, TimeChecksConfig
 from autodj.dj_meta import Cue
 from autodj.indexer import FEATURE_DIM, IndexEntry
 from autodj.repeat_settings import RepeatRule, RepeatSettings
@@ -106,7 +107,9 @@ def make_cfg_mock() -> MagicMock:
     cfg.library.beets_db = None
     cfg.library.music_dir = None
     cfg.index.active_dir = None
+    cfg.time_checks = TimeChecksConfig()
     cfg.server.station_timezone = "UTC"
+    cfg.dmca = DmcaConfig()
     return cfg
 
 
