@@ -23,7 +23,12 @@ from autodj.indexer import (
     _finish_decode_report,
     file_fingerprint,
 )
-from autodj.processing import analyze_basic, prepare_source, prepared_source_matches
+from autodj.processing import (
+    analyze_basic,
+    prepare_source,
+    prepared_source_matches,
+    remove_stale_prepared,
+)
 from autodj.stereo import DecodeReport
 
 logger = logging.getLogger(__name__)
@@ -557,10 +562,33 @@ class LibraryManager:
                 finally:
                     with self._lock:
                         self._state["done"] += 1
+            if not self._stop.is_set():
+                self._remove_stale_prepared(cache_dir)
             self._set_state(phase="complete")
         finally:
             self.refresh()
             self._set_state(running=False, current="")
+
+    def _remove_stale_prepared(self, cache_dir: Path) -> None:
+        """Drop prepared audio that no catalog record uses after a settings change."""
+        keep: set[str] = set()
+        for record in self.catalog.all_entries():
+            keep.add(record["path"])
+            if record["prepared_path"]:
+                keep.add(record["prepared_path"])
+        try:
+            removed, freed = remove_stale_prepared(
+                cache_dir, keep, self.cfg.playback.quiet_boost_db
+            )
+        except OSError as exc:
+            logger.warning("Could not clean prepared audio in %s: %s", cache_dir, exc)
+            return
+        if removed:
+            logger.info(
+                "Removed %d outdated prepared audio file(s), freeing %.1f MB",
+                removed,
+                freed / 1_000_000,
+            )
 
     def analysis_pending(self) -> list[dict[str, Any]]:
         pending = []

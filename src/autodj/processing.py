@@ -9,6 +9,8 @@ import os
 import re
 import subprocess  # nosec B404 -- audio preparation uses only fixed FFmpeg argv, no shell
 import tempfile
+import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -35,6 +37,8 @@ MASTER_FILTER = (
     "level=0:latency=1,aresample=44100"
 )
 
+# Only names prepare_source writes: a bare cache key, or a versioned music prefix and key.
+_PREPARED_NAME = re.compile(r"(?:[a-z0-9.-]+-music-[0-9.]+-)?[0-9a-f]{64}\.wav")
 _LOUDNESS = re.compile(r'\{\s*"input_i".*?\}', re.S)
 _TIMEOUT_S = 600
 
@@ -133,6 +137,50 @@ def prepared_source_matches(path: Path, kind: str, quiet_boost_db: float = 9.0) 
     return kind == "music" and path.name.startswith(
         f"{PREPARATION_VERSION}-music-{quiet_boost_db:g}-"
     )
+
+
+def _norm(path: str | Path) -> str:
+    return os.path.normcase(os.path.normpath(os.path.abspath(os.fspath(path))))
+
+
+def remove_stale_prepared(
+    cache_dir: Path,
+    keep: Iterable[str | Path],
+    quiet_boost_db: float = 9.0,
+    *,
+    min_age_seconds: float = 600.0,
+) -> tuple[int, int]:
+    """Delete outdated prepared WAVs from AutoDJ's own cache folder.
+
+    Only regular files directly inside ``cache_dir`` with a name
+    :func:`prepare_source` writes are candidates.  Files listed in ``keep``
+    (catalog sources and the prepared paths records still use), music
+    prepared with the current settings, and anything modified in the last
+    ``min_age_seconds`` stay.  Returns (files removed, bytes freed).
+    """
+    cache_dir = Path(cache_dir)
+    if not cache_dir.is_dir():
+        return 0, 0
+    kept = {_norm(path) for path in keep}
+    current = f"{PREPARATION_VERSION}-music-{quiet_boost_db:g}-"
+    cutoff = time.time() - min_age_seconds
+    removed = freed = 0
+    for path in cache_dir.iterdir():
+        name = path.name
+        if not _PREPARED_NAME.fullmatch(name) or name.startswith(current) or _norm(path) in kept:
+            continue
+        try:
+            if path.is_symlink() or not path.is_file():
+                continue
+            stat = path.stat()
+            if stat.st_mtime > cutoff:
+                continue
+            path.unlink()
+        except OSError:
+            continue
+        removed += 1
+        freed += stat.st_size
+    return removed, freed
 
 
 def prepare_source(
