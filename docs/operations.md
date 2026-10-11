@@ -1182,7 +1182,8 @@ jumps; when a time happens twice, the event runs the first time only.
 Actions:
 
 - Switch to a saved profile or a preset.
-- Change song picking, for example to the clockwheel imported in Library tools.
+- Change song picking. Besides similar songs, random and least recently played, the choices are
+  the active clockwheel and each saved clockwheel by name; a named one also becomes the active one.
 - Play a voice liner or station ID. This needs server audio or stream mode.
 - Start or stop the stream (stream mode). Start keeps the station playing without listeners,
   stop keeps it off the air even with listeners, and automatic hands control back to the
@@ -1204,3 +1205,64 @@ out, so the server still starts. Events are not replayed after downtime: a one-t
 time passed while AutoDJ was stopped is disabled and recorded as missed, and an event more than
 two minutes late (the computer slept) is recorded as missed instead of running. The schedule
 holds at most 100 events.
+
+## Clockwheels
+
+A clockwheel is a repeating order of steps that song picking follows when **Pick mode** (Settings, Picking) is set
+to **Clockwheel**. Keep as many as you like in the **Library tools** tab, **Clockwheels**: create,
+duplicate, rename, delete, activate one, or turn the clockwheel off. Only the active one plays.
+Profiles remember the active clockwheel, and a schedule event can switch to one by name.
+
+Step types:
+
+- **Music** or **Voice liner** from a registered library folder, or from a folder inside it such
+  as `Rock/Live` (the library folder must then add subfolders). Each step can include subfolders,
+  choose the least recently played or a random track, and follow or ignore the repeat rules. A
+  liner step plays over the start of the next music step; two liner steps cannot be next to each
+  other.
+- **A specific track**, by its path inside a registered music folder. It follows the repeat rules;
+  when they hold it back, the clockwheel moves on to the next step.
+- **Switch preset**: the next song is picked and mixed with that preset.
+
+The editor lists the steps in order, each read as "Step 3 of 12, music from Rock", with Edit,
+Move up, Move down, Duplicate and Delete buttons. Alt+Up and Alt+Down move the step whose button
+has focus, and focus moves with it. Nothing is saved until you press **Save clockwheel**; opening
+another clockwheel with unsaved changes asks first. **Restart at these minutes past each hour**
+sends the clockwheel back to step 1 at the song change nearest each minute.
+
+Each clockwheel is one JSON file in `clockwheels/` in the active index folder, named after the
+clockwheel and included in `autodj backup`. Names allow letters, digits, spaces, dashes and
+underscores, up to 64. The format is versioned and checked strictly; an unknown field, step type
+or version stops that clockwheel from loading, says why in the editor and the server log, and
+leaves the clock off while the station keeps playing:
+
+```json
+{
+  "version": 1,
+  "name": "Morning",
+  "steps": [
+    {"type": "music", "source": "<library folder ID>", "folder": "Rock",
+     "recursive": false, "selection": "least_recent", "enforce_rules": true},
+    {"type": "liner", "source": "<library folder ID>", "folder": "",
+     "recursive": false, "selection": "random", "enforce_rules": false},
+    {"type": "track", "source": "<library folder ID>", "path": "Album/Song.flac"},
+    {"type": "settings", "preset": "winddown"}
+  ],
+  "resync_minutes": [0]
+}
+```
+
+`source` is the ID of a registered library folder, so the file never holds a full path; removing
+that folder from the library stops the clockwheel until you edit its steps. Later features (carts,
+time checks, ad breaks) add their own step types through `autodj.clockwheel_store.register_step_type`.
+
+**Import .PAL** turns a SAM Broadcaster `.PAL` file into a new clockwheel, once; the `.PAL` file
+is not used after that. Only `Dir[...]` and `SubDir[...]` lines with `QueueBottom` are read, and
+nothing in the file runs. Each folder must be a registered music or voice liner folder, or a folder
+inside one that adds subfolders; the innermost registered folder is used. A folder above every
+registered folder (for example `SubDir['C:\Station']` when only `C:\Station\Rock` is registered)
+is refused: register the parent folder, or edit that step after the import.
+
+Upgrading from the single clockwheel: the clock saved by earlier versions is not read. The
+Clockwheels section and the server log say so. Import the `.PAL` file again under a name, then
+press **Activate**.

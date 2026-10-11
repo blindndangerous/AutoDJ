@@ -43,6 +43,8 @@ def _builtin_actions(
     apply_profile: Callable[[str], Awaitable[Any]],
     profile_names: Callable[[], Sequence[str]],
     liner_names: Callable[[], Sequence[str]],
+    clock_names: Callable[[], Sequence[str]],
+    select_clock: Callable[[str], Awaitable[Any]],
 ) -> list[Action]:
     """Actions whose backing features exist: profile, preset, picking, liner, stream, discovery."""
     cfg = bridge.player._cfg
@@ -65,16 +67,21 @@ def _builtin_actions(
         bridge.set_preset(params["name"])
         bridge.save_persistent_state()
 
-    def clock_configured() -> bool:
-        library = bridge.library
-        return library is not None and bool(library.catalog.get_setting("clock", {}).get("slots"))
+    def clockwheels() -> list[tuple[str, str]]:
+        return [(f"clock:{name}", f"Clockwheel {name}") for name in clock_names()]
 
     async def picking(params: dict[str, str]) -> None:
-        if params["mode"] == "clock" and not await asyncio.to_thread(clock_configured):
-            raise ValueError("No clockwheel is configured; import one in Library tools")
-        bridge.set_playback_settings(
-            PlaybackSettingsBody.model_validate({"pick_mode": params["mode"]})
-        )
+        mode = params["mode"]
+        if mode.startswith("clock:"):
+            try:
+                await select_clock(mode.removeprefix("clock:"))
+            except HTTPException as exc:
+                raise ValueError(str(exc.detail)) from exc
+            mode = "clock"
+        if mode == "clock" and getattr(bridge.player, "_clock", None) is None:
+            status = getattr(bridge.player, "_clock_status", None) or "No clockwheel is active"
+            raise ValueError(f"The clockwheel cannot play: {status}")
+        bridge.set_playback_settings(PlaybackSettingsBody.model_validate({"pick_mode": mode}))
         bridge.save_persistent_state()
 
     async def liner(params: dict[str, str]) -> None:
@@ -124,11 +131,12 @@ def _builtin_actions(
                     "mode",
                     "Song picking",
                     choices=(
-                        ("clock", "Clockwheel"),
+                        ("clock", "Clockwheel, the active one"),
                         ("similarity", "Similar songs"),
                         ("random", "Random"),
                         ("least_recent", "Least recently played"),
                     ),
+                    more=clockwheels,
                 ),
             ),
         ),
@@ -173,6 +181,8 @@ def install_scheduler(
     apply_profile: Callable[[str], Awaitable[Any]],
     profile_names: Callable[[], Sequence[str]],
     liner_names: Callable[[], Sequence[str]],
+    clock_names: Callable[[], Sequence[str]],
+    select_clock: Callable[[str], Awaitable[Any]],
     publish: Callable[[dict[str, Any]], Awaitable[None]],
 ) -> Scheduler:
     """Create the scheduler with the built-in actions and add its paired routes.
@@ -188,7 +198,9 @@ def install_scheduler(
         interrupt=lambda: bridge.skip(),
         song_playing=lambda: bridge.player._state.current_track is not None,
     )
-    for action in _builtin_actions(bridge, apply_profile, profile_names, liner_names):
+    for action in _builtin_actions(
+        bridge, apply_profile, profile_names, liner_names, clock_names, select_clock
+    ):
         scheduler.register(action)
 
     def event_view(event: ScheduledEvent) -> dict[str, Any]:

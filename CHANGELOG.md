@@ -10,6 +10,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Several named clockwheels (Library tools, Clockwheels): create, duplicate, rename, delete,
+  activate one or turn the clockwheel off. Each is a versioned JSON file in `clockwheels/` in the
+  active index folder, included in backups. A step editor lists steps as "Step 3 of 12, music from
+  Rock" with Edit, Move up, Move down, Duplicate and Delete buttons, and Alt+Up and Alt+Down move
+  the focused step. Steps can play music or liners from a library folder or a folder inside it, a
+  specific track, or switch preset. Profiles remember the active clockwheel, and the schedule's
+  "Change song picking" action can switch to a clockwheel by name. Import .PAL turns a SAM
+  Broadcaster `.PAL` file into a new clockwheel, and now accepts folders inside a registered
+  library folder.
+
 - A scheduler for timed events (Settings, Schedule). Events run once, daily, on weekdays, on
   chosen days, or every N minutes within an optional window, in the station time zone
   (`[server] station_timezone`). They switch profiles, presets or song picking, play liners,
@@ -157,6 +167,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Removed
 
+- **Breaking:** the single clockwheel saved by earlier versions is no longer read. Library tools
+  and the server log say so. Import the `.PAL` file again in Library tools, Clockwheels, under a
+  name, then press Activate.
 - **Breaking:** the old keyed stream addresses, `/stream/<secret>.mp3` and `/stream/<secret>.m3u`,
   and the `POST /api/stream/rotate` route that made a new one. A speaker or player saved with a
   keyed address must be set to `/stream.mp3` or `/stream.m3u` instead. AutoDJ no longer creates

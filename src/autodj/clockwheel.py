@@ -14,21 +14,29 @@ from typing import Any
 
 @dataclass(frozen=True)
 class ClockSlot:
-    folder: str
+    folder: str = ""
     recursive: bool = False
     selection: str = "least_recent"
     enforce_rules: bool = True
     kind: str = "music"
+    path: str = ""
+    preset: str = ""
 
     def __post_init__(self) -> None:
-        if not isinstance(self.folder, str) or not self.folder.strip():
+        if self.kind in {"music", "liner"} and (
+            not isinstance(self.folder, str) or not self.folder.strip()
+        ):
             raise ValueError("folder must be a non-empty string")
         if type(self.recursive) is not bool or type(self.enforce_rules) is not bool:
             raise ValueError("recursive and enforce_rules must be booleans")
         if self.selection not in {"least_recent", "random"}:
             raise ValueError("selection must be 'least_recent' or 'random'")
-        if self.kind not in {"music", "liner"}:
-            raise ValueError("kind must be 'music' or 'liner'")
+        if self.kind not in {"music", "liner", "track", "settings"}:
+            raise ValueError("unknown clock slot kind")
+        if self.kind == "track" and not self.path:
+            raise ValueError("track step needs a path")
+        if self.kind == "settings" and not self.preset:
+            raise ValueError("settings step needs a preset")
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -37,7 +45,7 @@ class ClockSlot:
     def from_json(cls, value: Mapping[str, Any]) -> ClockSlot:
         if not isinstance(value, Mapping):
             raise ValueError("clock slot JSON must be an object")
-        allowed = {"folder", "recursive", "selection", "enforce_rules", "kind"}
+        allowed = {"folder", "recursive", "selection", "enforce_rules", "kind", "path", "preset"}
         unknown = set(value) - allowed
         if unknown:
             raise ValueError(f"unknown clock slot field(s): {', '.join(sorted(unknown))}")
@@ -111,19 +119,23 @@ def least_recent(entries: Sequence[Any], last_played: Mapping[str, Any], rng: An
 
 @dataclass(frozen=True)
 class ClockPick:
-    """A selected music entry, its optional preceding liner, and resume slot."""
+    """A selected music entry, its optional preceding liner, and resume slot.
+
+    ``preset`` is the last settings step passed on the way to the entry.
+    """
 
     entry: Any | None
     liner: Any | None
     next_cursor: int
     skipped: list[str]
+    preset: str | None = None
 
 
 def validate_clock(slots: Sequence[ClockSlot]) -> list[ClockSlot]:
     """Validate a repeating clock and return its slots as a list."""
     result = list(slots)
-    if not result or not any(slot.kind == "music" for slot in result):
-        raise ValueError("clock must contain at least one music slot")
+    if not result or not any(slot.kind in {"music", "track"} for slot in result):
+        raise ValueError("clock must contain at least one music or track slot")
     for index, slot in enumerate(result):
         if slot.kind == "liner" and result[(index + 1) % len(result)].kind == "liner":
             raise ValueError("clock cannot have consecutive liner slots, including across its end")
@@ -178,6 +190,7 @@ def pick_slot(
     chooser = rng if rng is not None else random
     skipped: list[str] = []
     pending_liner = None
+    preset = None
 
     def choose(slot: ClockSlot, pool: Sequence[Any]) -> tuple[Any | None, str | None]:
         matches = _slot_entries(slot, pool)
@@ -204,6 +217,20 @@ def pick_slot(
     for step in range(len(slots)):
         index = (start + step) % len(slots)
         slot = slots[index]
+        if slot.kind == "settings":
+            preset = slot.preset
+            continue
+        if slot.kind == "track":
+            matches = [
+                entry for entry in entries if _normalized(entry.path) == _normalized(slot.path)
+            ]
+            candidates = [entry for entry in matches if allowed(entry)]
+            if candidates:
+                return ClockPick(
+                    candidates[0], pending_liner, (index + 1) % len(slots), skipped, preset
+                )
+            skipped.append(f"track step {slot.path}: recording missing or blocked by rules")
+            continue
         pool = liners if slot.kind == "liner" else entries
         selected, reason = choose(slot, pool)
         if reason:
@@ -212,9 +239,9 @@ def pick_slot(
             pending_liner = selected
             continue
         if selected is not None:
-            return ClockPick(selected, pending_liner, (index + 1) % len(slots), skipped)
+            return ClockPick(selected, pending_liner, (index + 1) % len(slots), skipped, preset)
 
-    return ClockPick(None, None, start, skipped)
+    return ClockPick(None, None, start, skipped, preset)
 
 
 def validate_resync_minutes(minutes: Sequence[int] | None = None) -> list[int]:

@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from autodj.clockwheel_store import ClockwheelStore
 from autodj.profiles import ProfileSnapshot, ProfileStore
 from autodj.server import PlayerBridge, create_app
 
@@ -85,7 +86,9 @@ def test_actions_and_upcoming_come_from_the_server(
     assert actions["liner"]["fields"][0]["options"] == [
         {"value": "station-id.wav", "label": "station-id.wav"}
     ]
-    assert {"value": "clock", "label": "Clockwheel"} in actions["pick_mode"]["fields"][0]["options"]
+    assert {"value": "clock", "label": "Clockwheel, the active one"} in actions["pick_mode"][
+        "fields"
+    ][0]["options"]
     assert len(data["upcoming"]) == 5
     first = datetime.fromisoformat(data["upcoming"][0]["time"])
     assert timedelta(0) < first - datetime.now(UTC) <= timedelta(minutes=30)
@@ -93,6 +96,50 @@ def test_actions_and_upcoming_come_from_the_server(
     many = client.get("/api/schedule/upcoming?count=12").json()["upcoming"]
     assert len(many) == 12
     assert client.get("/api/schedule/upcoming?count=51").status_code == 422
+
+
+def test_song_picking_lists_each_clockwheel_and_switches_to_it(
+    rig: tuple[TestClient, PlayerBridge, Path],
+) -> None:
+    client, bridge, active = rig
+    music = active / "music"
+    music.mkdir()
+    bridge.library = MagicMock()
+    bridge.library.catalog.sources.return_value = [
+        {"id": "src1", "kind": "music", "path": str(music), "recursive": True}
+    ]
+    bridge.library.catalog.get_setting.return_value = {}
+    ClockwheelStore(active / "clockwheels").save(
+        {
+            "version": 1,
+            "name": "Morning",
+            "steps": [{"type": "music", "source": "src1"}],
+            "resync_minutes": [0],
+        }
+    )
+    actions = {item["name"]: item for item in client.get("/api/schedule").json()["actions"]}
+    options = actions["pick_mode"]["fields"][0]["options"]
+    assert options[0] == {"value": "clock", "label": "Clockwheel, the active one"}
+    assert options[-1] == {"value": "clock:Morning", "label": "Clockwheel Morning"}
+    created = client.post(
+        "/api/schedule", json=event(action="pick_mode", params={"mode": "clock:Morning"})
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["action_text"] == "Change song picking: Clockwheel Morning"
+    result = client.post(f"/api/schedule/{created.json()['id']}/run").json()
+    assert result["result"] == "ok", result
+    bridge.library.catalog.set_setting.assert_called_with("clock", {"name": "Morning", "cursor": 0})
+    bridge.player.configure_clock.assert_called()
+    assert bridge.player._cfg.playback.pick_mode == "clock"
+    missing = client.post(
+        "/api/schedule", json=event(action="pick_mode", params={"mode": "clock:Night"})
+    )
+    assert missing.status_code == 400
+    assert missing.json()["detail"] == "Song picking: clock:Night is not one of the choices"
+    (active / "clockwheels" / "Morning.json").unlink()
+    gone = client.post(f"/api/schedule/{created.json()['id']}/run").json()
+    assert gone["result"] == "error"
+    assert "no clockwheel named 'Morning'" in gone["message"]
 
 
 REFUSED = [
@@ -174,8 +221,10 @@ def test_builtin_actions_report_failures_in_words(
     assert run("discovery", {"state": "on"})["message"] == (
         "Set a discovery rate in Song picking first"
     )
+    bridge.player._clock = None
+    bridge.player._clock_status = "No clockwheel is active"
     assert run("pick_mode", {"mode": "clock"})["message"] == (
-        "No clockwheel is configured; import one in Library tools"
+        "The clockwheel cannot play: No clockwheel is active"
     )
 
     bridge.player._discovery_every = 3
@@ -191,8 +240,7 @@ def test_builtin_actions_report_failures_in_words(
     bridge.station = MagicMock()
     assert run("stream", {"state": "auto"})["result"] == "ok"
     bridge.station.set_scheduled_playing.assert_called_with(None)
-    bridge.library = MagicMock()
-    bridge.library.catalog.get_setting.return_value = {"slots": [{"folder": "music"}]}
+    bridge.player._clock = {"name": "Morning", "cursor": 0}
     assert run("pick_mode", {"mode": "clock"})["result"] == "ok"
     assert bridge.player._cfg.playback.pick_mode == "clock"
 

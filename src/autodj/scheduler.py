@@ -342,18 +342,25 @@ class ActionField:
     values that exist right now (profiles, liners).  It is read when the
     form is built and when an event is saved, not when a stored event
     loads, so a removed profile makes that event's runs fail instead of
-    discarding the event.  A field with neither is free text.
+    discarding the event.  ``more`` adds ``(value, label)`` pairs that
+    exist right now, after the fixed ``choices``, checked like ``names``.
+    A field with none of them is free text.
     """
 
     name: str
     label: str
     choices: tuple[tuple[str, str], ...] = ()
     names: Callable[[], Sequence[str]] | None = None
+    more: Callable[[], Sequence[tuple[str, str]]] | None = None
+
+    def pairs(self) -> list[tuple[str, str]]:
+        """The fixed choices followed by the ones that exist right now."""
+        return [*self.choices, *(self.more() if self.more is not None else ())]
 
     def metadata(self) -> dict[str, Any]:
         """Describe the field for the web form."""
-        if self.choices:
-            options = [{"value": value, "label": label} for value, label in self.choices]
+        if self.choices or self.more is not None:
+            options = [{"value": value, "label": label} for value, label in self.pairs()]
         elif self.names is not None:
             options = [{"value": name, "label": name} for name in self.names()]
         else:
@@ -398,9 +405,11 @@ class Action:
             key = f"params.{item.name}"
             value = params.get(item.name, "").strip()
             if not value:
-                verb = "Choose" if item.choices or item.names else "Enter"
+                verb = "Choose" if item.choices or item.names or item.more else "Enter"
                 raise EventError(key, f"{verb} {item.label.lower()}")
-            if item.choices and value not in {choice for choice, _ in item.choices}:
+            # Like names, the choices from ``more`` are checked only live.
+            checked = item.choices if item.more is None else live
+            if checked and value not in {choice for choice, _ in item.pairs()}:
                 raise EventError(key, f"{item.label}: {value} is not one of the choices")
             if live and item.names is not None and value not in item.names():
                 raise EventError(key, f"{item.label} {value} was not found")
@@ -411,7 +420,7 @@ class Action:
         """Say what the action does with *params*, for the UI and the log."""
         values = [params.get(item.name, "") for item in self.fields]
         parts = [
-            dict(item.choices).get(value, value)
+            dict(item.pairs()).get(value, value)
             for item, value in zip(self.fields, values, strict=True)
         ]
         return f"{self.description}: {', '.join(parts)}" if parts else self.description

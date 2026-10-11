@@ -7,7 +7,7 @@ that wrote it and the list of files) and these members:
   (``tracks.gN.db`` and ``vectors.gN.index``): the live index generation.
 - ``index/dj_meta.db``, ``index/library.db``, ``index/web_state.json``,
   ``index/schedule.json`` and ``index/listener_bans.json`` from the active index folder.
-- ``liners/...`` and ``profiles/...``: every file in those folders.
+- ``liners/...``, ``profiles/...`` and ``clockwheels/...``: every file in those folders.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ INDEX_FILES = (
     "listener_bans.json",
     im.MANIFEST_NAME,
 )
-_FOLDERS = ("liners", "profiles")
+_FOLDERS = ("liners", "profiles", "clockwheels")
 
 
 class BackupError(RuntimeError):
@@ -54,6 +54,7 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
         "index": active,
         "liners": Path(cfg.playback.liners_folder or active / "liners"),
         "profiles": active.parent / "profiles",
+        "clockwheels": active / "clockwheels",
     }
 
 
