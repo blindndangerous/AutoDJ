@@ -1636,11 +1636,12 @@ describe("static accessibility contracts", () => {
       expect(labelText(id)).toBeTruthy();
     }
 
-    // The general settings and the now-playing group come first; the
-    // Listeners and Bans sections close the fieldset, so heading
-    // navigation never puts a general setting under "Bans".
+    // The general settings, the now-playing group and broadcast recording
+    // come first; the Listeners and Bans sections close the fieldset, so
+    // heading navigation never puts a general setting under "Bans".
     const order = ["#stream-relays", "#stream-station-name", "#stream-bitrate",
-      "#stream-continuous", "#np-settings", "#listener-control-title", "#listener-bans-title"]
+      "#stream-continuous", "#np-settings", "#recording-controls", "#listener-control-title",
+      "#listener-bans-title"]
       .map((selector) => document.querySelector(selector));
     for (let at = 1; at < order.length; at += 1) {
       expect(order[at - 1].compareDocumentPosition(order[at])
@@ -1716,6 +1717,73 @@ describe("static accessibility contracts", () => {
       expect(element.hidden).toBe(true);
       expect(element.closest("[aria-live], [role=status], [role=alert], [role=log]")).toBeNull();
     }
+  });
+
+  it("groups broadcast recording in the Stream settings with native controls", () => {
+    installDocument();
+    const labelText = (id) => document.querySelector(`label[for="${id}"]`)
+      ?.textContent.replace(/\s+/g, " ").trim();
+    const describedBy = (element) => (element.getAttribute("aria-describedby") || "")
+      .split(/\s+/).filter(Boolean).map((id) => document.getElementById(id));
+
+    // Nested in the Stream fieldset after the now-playing group, so it hides
+    // with it and heading navigation never files it under Listeners or Bans.
+    const group = document.querySelector("#recording-controls");
+    expect(group.tagName).toBe("FIELDSET");
+    expect(group.parentElement.id).toBe("stream-settings");
+    expect(group.hidden).toBe(true);
+    expect(group.querySelector(":scope > legend").textContent.trim()).toBe("Broadcast recording");
+    expect(group.querySelector("h1, h2, h3, h4, h5, h6")).toBeNull();
+    expect(group.querySelector("[aria-controls]")).toBeNull();
+    expect(group.querySelector("[disabled]")).toBeNull();
+
+    // A toggle with a fixed name; aria-pressed carries the state.
+    const toggle = document.querySelector("#recording-toggle");
+    expect(toggle.tagName).toBe("BUTTON");
+    expect(toggle.getAttribute("type")).toBe("button");
+    expect(toggle.textContent.trim()).toBe("Record broadcast");
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    expect(describedBy(toggle).map((element) => element?.id))
+      .toEqual(["recording-status", "recording-error"]);
+
+    // Split stays focusable while unavailable, so pressing it is answered.
+    const split = document.querySelector("#recording-split-now");
+    expect(split.getAttribute("type")).toBe("button");
+    expect(split.getAttribute("aria-disabled")).toBe("true");
+    expect(split.textContent.trim()).toBe("Split recording now");
+
+    // Status and error are plain text: results go to the status regions.
+    for (const id of ["recording-status", "recording-error"]) {
+      const element = document.getElementById(id);
+      expect(element.tagName).toBe("P");
+      expect(element.hasAttribute("role")).toBe(false);
+      expect(element.hasAttribute("aria-live")).toBe(false);
+      expect(element.closest("[aria-live], [role=status], [role=alert], [role=log]")).toBeNull();
+    }
+
+    const mode = document.querySelector("#recording-split");
+    expect(mode.tagName).toBe("SELECT");
+    expect(labelText("recording-split")).toBe("Start a new file");
+    expect([...mode.options].map((option) => option.value)).toEqual(["hour", "show"]);
+    expect(describedBy(mode).every(Boolean)).toBe(true);
+    for (const [id, label] of [
+      ["recording-retention-days", "Days to keep recordings"],
+      ["recording-free-space-mb", "Minimum free space in MB"],
+    ]) {
+      const input = document.getElementById(id);
+      expect(labelText(id)).toBe(label);
+      expect(input.getAttribute("type")).toBe("number");
+      expect(input.getAttribute("min")).toBe("0");
+      expect(input.getAttribute("step")).toBe("1");
+      expect(input.hasAttribute("required")).toBe(true);
+      expect(describedBy(input)).toHaveLength(1);
+      expect(describedBy(input).every(Boolean)).toBe(true);
+    }
+    const save = document.querySelector("#recording-save");
+    expect(save.getAttribute("type")).toBe("button");
+    expect(save.textContent.trim()).toBe("Save recording settings");
+    // Nothing on the page names or edits the recordings folder.
+    expect(group.querySelector("input[type=text], input[type=file]")).toBeNull();
   });
 
   it("keeps the shared confirmation dialog accessible", () => {

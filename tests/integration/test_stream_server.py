@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 from typing import Any
@@ -1091,6 +1092,79 @@ def test_seed_becomes_the_first_sets_first_track() -> None:
         bridge.stream.add_listener(icy=False)
         bridge.station.tick()
         bridge.player.begin_set.assert_called_once_with(seed, "seed")
+
+
+def test_recording_routes_capture_stream_and_expose_scheduler_actions(tmp_path: Path) -> None:
+    from autodj.config import RecordingConfig
+    from tests.unit._fakes import FakeEncoder
+    from tests.unit.test_recorder import _wait_for
+
+    bridge = _lifespan_bridge()
+    bridge.player._cfg.index.active_dir = tmp_path / "index"
+    bridge.player._cfg.server.station_timezone = "UTC"
+    bridge.player._cfg.recording = RecordingConfig(tmp_path / "recordings")
+    with (
+        patch("autodj.stream.FfmpegEncoder", FakeEncoder),
+        TestClient(create_app(bridge, stream_mode=True)) as client,
+    ):
+        assert client.get("/api/recording").json()["running"] is False
+        renamed = client.post("/api/stream/settings", json={"station_name": "Night Owl FM"})
+        assert renamed.status_code == 200, renamed.text
+        assert client.post("/api/recording/start").json()["running"] is True
+        assert bridge.station._continuous() is True
+        sink = bridge.stream._sinks[0]
+        sink.feed(b"on air", "title")
+        _wait_for(lambda: sink.status()["bytes"] == 6)
+        first = sink.status()["file"]
+        assert first.startswith("Night-Owl-FM-")
+        assert (tmp_path / "recordings" / first).read_bytes() == b"on air"
+        status = client.get("/api/status").json()["recording"]
+        assert status["running"] is True
+        assert "recordings" not in json.dumps(status)  # never the folder path
+        actions = {action["name"] for action in client.get("/api/schedule").json()["actions"]}
+        assert {"recording_start", "recording_stop", "recording_split"} <= actions
+        settings = client.post(
+            "/api/recording/settings",
+            json={"split": "show", "retention_days": 3, "free_space_mb": 10},
+        )
+        assert settings.status_code == 200, settings.text
+        assert settings.json()["split"] == "show"
+        for bad in (
+            {"split": "hour", "retention_days": True, "free_space_mb": 10},
+            {"split": "hour", "retention_days": 1, "free_space_mb": 10, "folder": "C:/"},
+        ):
+            assert client.post("/api/recording/settings", json=bad).status_code == 422
+        assert client.post("/api/recording/split").status_code == 200
+        with patch.object(sink, "_save", side_effect=OSError("index volume full")):
+            failed = client.post("/api/recording/stop")
+        assert failed.status_code == 503
+        assert failed.json()["detail"] == "Could not save the recording state"
+        assert client.post("/api/recording/start").json()["running"] is True
+
+        def run(action: str) -> dict[str, Any]:
+            created = client.post(
+                "/api/schedule",
+                json={
+                    "name": action,
+                    "action": action,
+                    "params": {},
+                    "repeat": "daily",
+                    "time": "09:00",
+                },
+            )
+            assert created.status_code == 201, created.text
+            return client.post(f"/api/schedule/{created.json()['id']}/run").json()
+
+        assert run("recording_stop")["result"] == "ok"
+        assert sink.status()["running"] is False
+        assert run("recording_split")["message"] == "Recording is stopped"
+        assert run("recording_start")["result"] == "ok"
+        assert run("recording_split")["result"] == "ok"
+        assert client.post("/api/recording/stop").json()["running"] is False
+        assert client.post("/api/recording/split").status_code == 409
+    state = json.loads((tmp_path / "index" / "recording.json").read_text(encoding="utf-8"))
+    assert state["running"] is False
+    assert state["split"] == "show"
 
 
 def test_stream_headers_go_out_before_the_first_audio(stream_app) -> None:

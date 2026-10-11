@@ -88,6 +88,9 @@ def test_actions_and_upcoming_come_from_the_server(
         "liner",
         "stream",
         "discovery",
+        "recording_start",
+        "recording_stop",
+        "recording_split",
     }
     assert actions["profile"]["fields"][0]["options"] == [{"value": "Evening", "label": "Evening"}]
     assert actions["liner"]["fields"][0]["options"] == [
@@ -179,6 +182,9 @@ def test_builtin_actions_report_failures_in_words(
         "Scheduled liners need server audio or stream mode"
     )
     assert run("stream", {"state": "start"})["message"] == "Stream control needs stream mode"
+    for action in ("recording_start", "recording_stop", "recording_split"):
+        assert run(action, {})["message"] == "Recording requires stream mode"
+    assert client.get("/api/recording").json()["detail"] == "Recording requires stream mode"
     assert run("discovery", {"state": "on"})["message"] == (
         "Set a discovery rate in Song picking first"
     )

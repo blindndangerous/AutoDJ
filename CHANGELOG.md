@@ -25,6 +25,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to 4 dB of peak-safe lift by default, returning to normal within eight seconds. The limit
   is adjustable from 0 to 6 dB, with 0 disabling the lift.
 
+- Broadcast recording saves the encoded stream, including liners and processing, as dated MP3
+  files. Settings, Stream and scheduled actions control recording and splits. A free-space floor
+  pauses recording without stopping listeners; retention removes old dated recordings. Running
+  state and settings survive restarts. Backups include that state but not the MP3 files.
+
 - A scheduler for timed events (Settings, Schedule). Events run once, daily, on weekdays, on
   chosen days, or every N minutes within an optional window, in the station time zone
   (`[server] station_timezone`). They switch profiles, presets or song picking, play liners,
