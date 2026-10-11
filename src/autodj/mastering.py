@@ -5,7 +5,9 @@ from __future__ import annotations
 import collections
 import contextlib
 import logging
+import math
 import subprocess  # nosec B404 -- processors use fixed argv pipelines, never a shell
+import tempfile
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -16,7 +18,7 @@ import numpy as np
 from autodj.config import DEFAULT_STEREOTOOL_PATH
 from autodj.processing import MASTER_FILTER
 from autodj.stereo import SAMPLE_RATE
-from autodj.stereotool_presets import INCLUDED_PATH
+from autodj.stereotool_presets import INCLUDED_PATH, agc_drive_preset_data
 
 logger = logging.getLogger(__name__)
 
@@ -117,13 +119,16 @@ class ContinuousMaster:
         stereotool_path: str = DEFAULT_STEREOTOOL_PATH,
         preset: Callable[[], Path] | None = None,
         input_trim_db: Callable[[], float] = lambda: 0.0,
+        agc_drive_db: Callable[[], float] = lambda: 7.0,
     ) -> None:
         self._factory = popen_factory
         self._select_mode = mode
         self._mode = mode()
         self._stereotool_path = stereotool_path
         self._select_preset = preset or (lambda: INCLUDED_PATH)
-        self._preset = self._select_preset() if self._mode == "stereotool" else None
+        self._select_agc_drive = agc_drive_db
+        self._preset_temp = tempfile.TemporaryDirectory(prefix="autodj-stereo-tool-")
+        self._preset = self._stereotool_signature() if self._mode == "stereotool" else None
         self._input_trim_db = input_trim_db
         self._output_guard_blocks = (
             _STEREOTOOL_GUARD_BLOCKS if self._mode == "stereotool" else _OUTPUT_GUARD_BLOCKS
@@ -182,7 +187,7 @@ class ContinuousMaster:
 
         audio = np.nan_to_num(audio, copy=False)
         mode = self._select_mode()
-        preset = self._select_preset() if mode == "stereotool" else None
+        preset = self._stereotool_signature() if mode == "stereotool" else None
         with self._lock:
             if self._closed:
                 return self._fallback(audio)
@@ -240,7 +245,7 @@ class ContinuousMaster:
         self._enabled = enabled
         if mode is not None:
             self._mode = mode
-            self._preset = self._select_preset() if mode == "stereotool" else None
+            self._preset = self._stereotool_signature() if mode == "stereotool" else None
         self._output_guard_blocks = (
             _STEREOTOOL_GUARD_BLOCKS if self._mode == "stereotool" else _OUTPUT_GUARD_BLOCKS
         )
@@ -255,6 +260,33 @@ class ContinuousMaster:
             self._fallback_delay.clear()
         self._changed.set()
         self._output_cond.notify_all()
+
+    def _stereotool_signature(self) -> tuple[Path, float]:
+        source = self._select_preset()
+        drive_db = float(self._select_agc_drive())
+        if not math.isfinite(drive_db) or not 0 <= drive_db <= 12:
+            raise ValueError("playback.stereotool_agc_drive_db must be between 0 and 12")
+        return source, drive_db
+
+    def _runtime_stereotool_preset(self, signature: tuple[Path, float]) -> Path:
+        source, drive_db = signature
+        try:
+            data = agc_drive_preset_data(source.read_bytes(), drive_db)
+        except (OSError, ValueError) as exc:
+            if source == INCLUDED_PATH:
+                raise
+            logger.warning(
+                "Stereo Tool preset %s cannot apply AGC drive (%s); using included preset",
+                source,
+                exc,
+            )
+            source = INCLUDED_PATH
+            data = agc_drive_preset_data(source.read_bytes(), drive_db)
+        if drive_db == 0:
+            return source
+        target = Path(self._preset_temp.name) / "runtime.sts"
+        target.write_bytes(data)
+        return target
 
     def _set_error(self, message: str) -> None:
         self._error = message
@@ -290,6 +322,7 @@ class ContinuousMaster:
             name = "Stereo Tool" if mode == "stereotool" else "FFmpeg"
             if closed:
                 self._stop_pipeline(proc, writer, reader, stop, post_proc)
+                self._preset_temp.cleanup()
                 return
             if not enabled:
                 if proc is not None:
@@ -303,13 +336,9 @@ class ContinuousMaster:
             if proc is None or generation != active_generation:
                 if proc is not None:
                     self._stop_pipeline(proc, writer, reader, stop, post_proc)
-                if mode == "stereotool" and preset is not None and not preset.is_file():
-                    # A preset deleted or renamed outside AutoDJ must not leave
-                    # Stereo Tool on its unprocessed defaults.
-                    logger.warning(
-                        "Stereo Tool preset %s is missing; using the included one", preset
-                    )
-                    preset = INCLUDED_PATH
+                if mode == "stereotool" and preset is not None:
+                    # Build after stopping the old child so one temp file can be reused safely.
+                    preset = self._runtime_stereotool_preset(preset)
                 try:
                     proc = self._factory(  # nosec B603 -- configured executable, fixed argv, no shell
                         _command(mode, self._stereotool_path, preset),

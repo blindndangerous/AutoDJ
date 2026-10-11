@@ -665,12 +665,18 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
   first; a preset file removed by hand is replaced by Included when Stereo Tool next starts. Stereo Tool's
   command-line integration exposes a preset file, but no individual processor parameters.
   `[playback] stereotool_input_trim_db` adjusts the input from -12 to +6 dB before the fixed
-  output limiter. `[playback] quiet_boost_db` (0 to 12) controls offline quiet-section balancing.
+  output limiter. `[playback] stereotool_agc_drive_db` (0 to 12, default 7) raises the selected
+  preset's `[Pre Compressor] Drive` after the tracks are blended; 0 keeps its base value and does
+  not disable AGC. Smooth uses its continuous mix compressor and does not level each song's quiet
+  passages. Music and liners stay as original files: AutoDJ caches loudness measurements in the
+  catalog and applies the measured gain when it decodes a track. Liners also pass through voice
+  compression, and server-mixed playback holds decoded track audio in memory while it is mixed.
   `[playback] intro_lift_max_db` (0 to 6, default 4) caps an extra lift for a quiet opening;
   it fades back to normal by eight seconds. Zero disables it. Analysis caches the source's
   peak-safe opening lift in `library.db`; already cataloged songs get it on their next library scan.
-  Browser playback, server audio and streams use the same cached lift, with decoded server audio
-  checked against its peak again. Off processing leaves the source unchanged.
+  ReplayGain browser, server audio and stream playback use the cached lift, with decoded server
+  audio checked against its peak again. Smooth, Stereo Tool and Off playback leave intro levels
+  alone.
 - **Page volume and mute** affect only the page's own "Listen here" playback in the browser.
   Each speaker keeps its own volume, set on the speaker or in its own app.
 - **With `--server-audio` as well**, the page's volume and Mute also set the volume and mute of

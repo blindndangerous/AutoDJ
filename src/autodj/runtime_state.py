@@ -250,7 +250,7 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
 
     values: dict[str, Any] = {}
     for field, saved in playback.items():
-        if field in _OWN_ROUTE_PLAYBACK_FIELDS:
+        if field in _OWN_ROUTE_PLAYBACK_FIELDS or field == "quiet_boost_db":
             continue
         value = 0 if saved is None and field in _LINER_TRIGGERS else saved
         if value is None:

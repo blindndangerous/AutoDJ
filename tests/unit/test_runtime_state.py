@@ -30,9 +30,9 @@ def _make_player() -> SimpleNamespace:
         transition_mode="full_intro_outro",
         pick_mode="similarity",
         loudness_processing=None,
-        quiet_boost_db=9.0,
         intro_lift_max_db=4.0,
         stereotool_input_trim_db=0.0,
+        stereotool_agc_drive_db=7.0,
         stereotool_preset="included",
         post_queue_seed="last_queued",
         key_notation="camelot",
@@ -195,6 +195,16 @@ def test_one_invalid_field_is_warned_and_the_rest_still_apply(
     assert {k: after["playback"][k] for k in unchanged} == {
         k: before["playback"][k] for k in unchanged
     }
+
+
+def test_retired_quiet_boost_in_saved_state_is_silently_ignored(tmp_path: Path, caplog) -> None:
+    player = _make_player()
+    _write_state(tmp_path, {"playback": {"quiet_boost_db": 11, "stereotool_agc_drive_db": 6}})
+
+    _load(player, tmp_path)
+
+    assert player._cfg.playback.stereotool_agc_drive_db == 6
+    assert "quiet_boost_db" not in caplog.text
 
 
 @pytest.mark.parametrize("version", [None, 0, 3, "2", True])
@@ -569,7 +579,7 @@ class TestRoundTrip:
         p1._cfg.transitions.effect = "echo_out"
         p1._cfg.transitions.wet_mix = 0.6
         p1._cfg.replaygain.target_db = -18.0
-        p1._cfg.playback.quiet_boost_db = 6.5
+        p1._cfg.playback.stereotool_agc_drive_db = 6.5
         p1._cfg.playback.repeat_rules.track.tracks = 50
         p1._cfg.playback.repeat_rules.artist.tracks = 5
         p1._cfg.playback.crossfade_seconds = 6.0
@@ -681,9 +691,9 @@ class TestRoundTrip:
             "repeat_rules",
             "transition_wet_mix",
             "replaygain_target_db",
-            "quiet_boost_db",
             "intro_lift_max_db",
             "stereotool_input_trim_db",
+            "stereotool_agc_drive_db",
             "stereotool_preset",
             "volume",
             "is_muted",

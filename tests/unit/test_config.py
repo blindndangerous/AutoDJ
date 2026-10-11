@@ -736,15 +736,22 @@ def test_playback_pick_and_loudness_modes_validate_and_keep_legacy_default() -> 
     defaults = PlaybackConfig.from_dict({})
     assert defaults.pick_mode == "similarity"
     assert defaults.loudness_processing is None
-    assert defaults.quiet_boost_db == 9.0
     assert defaults.intro_lift_max_db == 4.0
     assert defaults.stereotool_input_trim_db == 0.0
+    assert defaults.stereotool_agc_drive_db == 7.0
     assert defaults.stereotool_preset == "included"
+    assert PlaybackConfig.from_dict({"quiet_boost_db": 11.0}).stereotool_agc_drive_db == 7.0
+    from autodj.config import unknown_config_keys
+
+    assert unknown_config_keys({"playback": {"quiet_boost_db": 11.0}}) == {}
     for value in (0, 12):
-        assert PlaybackConfig.from_dict({"quiet_boost_db": value}).quiet_boost_db == value
+        assert (
+            PlaybackConfig.from_dict({"stereotool_agc_drive_db": value}).stereotool_agc_drive_db
+            == value
+        )
     for value in (-0.1, 12.1, float("inf"), float("nan")):
-        with pytest.raises(ValueError, match="quiet_boost_db"):
-            PlaybackConfig.from_dict({"quiet_boost_db": value})
+        with pytest.raises(ValueError, match="stereotool_agc_drive_db"):
+            PlaybackConfig.from_dict({"stereotool_agc_drive_db": value})
     for field, invalid in (
         ("intro_lift_max_db", 6.1),
         ("stereotool_input_trim_db", -12.1),
