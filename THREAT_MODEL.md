@@ -178,8 +178,10 @@ Winamp and car head units cannot pair or sign in.
 What a listener can and cannot do:
 
 - The two stream paths carry audio only. They have no control surface: a listener cannot pair a
-  browser, change settings, see the queue, or reach any other endpoint. Besides the page's own
-  static files, they are the only routes exempt from the session cookie check.
+  browser, change settings, see the queue, or reach any other endpoint. They join the short list
+  of routes exempt from the session cookie check (`_PUBLIC_FILES` and `_is_public_path` in
+  `security.py`): the page's own static files and modules, `/healthz`, `/api/version`,
+  `/api/auth/status` and `/api/pair`.
 - Every other check in `SecurityMiddleware` still applies to them, including the Host allowlist,
   so the name typed into the player must be one this AutoDJ instance is configured to accept.
 - `/stream.` followed by anything else, and any path under `/stream/`, is not public: it needs
