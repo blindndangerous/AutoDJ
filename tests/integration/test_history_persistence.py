@@ -80,9 +80,14 @@ def test_history_archive_reopens_in_order_while_view_stays_at_500(tmp_path) -> N
         assert [row["played_at"] for row in archive] == [
             row["played_at"] for row in expected_archive
         ]
-        assert [
-            row | {"path": os.path.normcase(row["path"])} for row in restored.history_snapshot()
-        ] == [row | {"path": os.path.normcase(row["path"])} for row in expected_view]
+
+        # The catalog stores absolute paths; "Z:/Music/..." is relative on POSIX.
+        def same_path(row: dict) -> dict:
+            return row | {"path": os.path.normcase(os.path.abspath(row["path"]))}
+
+        assert [same_path(row) for row in restored.history_snapshot()] == [
+            same_path(row) for row in expected_view
+        ]
         assert all(
             set(row) == {"event_id", "path", "title", "artist", "duration", "played_at"}
             for row in restored.history_snapshot()
