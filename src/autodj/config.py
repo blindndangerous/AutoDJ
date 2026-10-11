@@ -1173,6 +1173,14 @@ class RelayConfig:
             raise ValueError(
                 f"{where}.host must be a host name or IP address, without a scheme, port or path"
             )
+        if ":" in self.host:
+            try:
+                ipaddress.ip_address(self.host)
+            except ValueError:
+                raise ValueError(
+                    f"{where}.host {self.host!r} must not include a port; "
+                    f"give the host name alone and set {where}.port instead"
+                ) from None
         _check_relay_text(where, "password", self.password)
         top_port = 65535 if self.type == "icecast" else 65534
         if isinstance(self.port, bool) or not isinstance(self.port, int):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import socket
@@ -297,7 +298,7 @@ class Script:
         self.calls: list[dict] = []
         self.connections: list[FakeConnection] = []
 
-    def __call__(self, cfg, *, bitrate, station_name):
+    def __call__(self, cfg, *, bitrate, station_name, on_socket=None):
         self.calls.append({"bitrate": bitrate, "station_name": station_name})
         step = self.steps.pop(0) if self.steps else FakeConnection()
         if isinstance(step, BaseException):
@@ -545,7 +546,10 @@ class FakeRelay:
     def start(self) -> None:
         self.started = True
 
-    def close(self) -> None:
+    def begin_close(self) -> None:
+        pass
+
+    def finish_close(self, deadline: float) -> None:
         self.closed = True
 
     def status(self) -> dict:
@@ -606,7 +610,10 @@ def test_manager_with_only_disabled_relays_is_inactive() -> None:
 
 def test_manager_survives_failures(tmp_path: Path, caplog) -> None:
     class Broken(FakeRelay):
-        def close(self) -> None:
+        def begin_close(self) -> None:
+            raise RuntimeError("boom")
+
+        def finish_close(self, deadline: float) -> None:
             raise RuntimeError("boom")
 
     class BrokenOutput(FakeOutput):
@@ -634,3 +641,178 @@ def test_unreadable_status_file(tmp_path: Path, content: str | None) -> None:
     if content is not None:
         path.write_bytes(content.encode())
     assert read_status_file(path) is None
+
+
+# -- review fixes: stopping, slow logins, encoder restarts ------------------------
+
+
+class DribbleSocket(FakeSocket):
+    """Answers one byte at a time, slowly."""
+
+    def __init__(self, reply: bytes, pause: float) -> None:
+        super().__init__(reply)
+        self.pause = pause
+        self.timeouts: list[float] = []
+
+    def settimeout(self, value: float) -> None:
+        super().settimeout(value)
+        self.timeouts.append(value)
+
+    def recv(self, n: int) -> bytes:
+        time.sleep(self.pause)
+        return super().recv(1)
+
+
+def test_a_login_reply_has_one_deadline_for_the_whole_reply(monkeypatch) -> None:
+    monkeypatch.setattr(relay_module, "LOGIN_TIMEOUT", 0.2)
+    sock = DribbleSocket(b"HTTP/1.1 100 Continue" + b" " * 500 + b"\r\n\r\n", 0.02)
+    started = time.monotonic()
+    with pytest.raises(RelayError, match="took too long to answer the login"):
+        open_source(_icecast(), bitrate=128, station_name="A", connect=_connector(sock, []))
+    assert time.monotonic() - started < 1
+    reads = sock.timeouts[1:]  # the first is the send timeout
+    assert reads and all(b < a for a, b in itertools.pairwise(reads))
+    assert sock.closed
+
+
+def test_a_receive_timeout_during_login_is_reported(monkeypatch) -> None:
+    class Silent(FakeSocket):
+        def recv(self, n: int) -> bytes:
+            raise TimeoutError("timed out")
+
+    with pytest.raises(RelayError, match="took too long"):
+        open_source(
+            _shoutcast(), bitrate=128, station_name="A", connect=_connector(Silent(b""), [])
+        )
+
+
+def test_after_login_the_socket_gets_the_send_timeout() -> None:
+    sock = FakeSocket(b"HTTP/1.1 100 Continue\r\n\r\n")
+    open_source(_icecast(), bitrate=128, station_name="A", connect=_connector(sock, []))
+    assert sock.timeout == relay_module.SEND_TIMEOUT
+
+
+def test_open_source_publishes_the_socket_before_logging_in() -> None:
+    sock, seen = FakeSocket(b"HTTP/1.1 100 Continue\r\n\r\n"), []
+
+    def on_socket(s) -> None:
+        seen.append((s, s.sent))
+
+    open_source(
+        _icecast(), bitrate=128, station_name="A", connect=_connector(sock, []), on_socket=on_socket
+    )
+    assert seen == [(sock, b"")]
+
+
+def test_close_cuts_a_login_that_is_waiting_for_the_server(fast) -> None:
+    cut = threading.Event()
+
+    class Waiting(FakeSocket):
+        def shutdown(self, _how: int) -> None:
+            cut.set()
+
+    def connect(cfg, *, bitrate, station_name, on_socket):
+        on_socket(Waiting(b""))
+        cut.wait(5)  # like a recv() that only a shutdown ends
+        raise OSError(10053, "connection aborted")
+
+    relay = _relay(connect)
+    relay.start()
+    _wait_until(lambda: relay._login_socket is not None)
+    started = time.monotonic()
+    relay.close()
+    assert time.monotonic() - started < 1
+    assert cut.is_set()
+    assert relay.status()["state"] == "stopped"
+
+
+def test_a_login_socket_published_after_close_is_cut_at_once() -> None:
+    relay = _relay(Script())
+    relay.begin_close()
+    sock = FakeSocket(b"")
+    cut: list[int] = []
+    sock.shutdown = cut.append  # type: ignore[method-assign]
+    relay._login_started(sock)
+    assert cut and relay._login_socket is None
+
+
+def test_a_relay_stuck_past_close_never_shows_live_again(fast, monkeypatch) -> None:
+    monkeypatch.setattr(relay_module, "CLOSE_TIMEOUT", 0.1)
+    release = threading.Event()
+    connection = FakeConnection()
+
+    def connect(cfg, *, bitrate, station_name, on_socket):
+        release.wait(5)  # stuck where nothing can interrupt it, like a DNS lookup
+        return connection
+
+    titles: list[str] = []
+    relay = _relay(connect, titles)
+    relay.feed(FRAME, "A - B")
+    relay.start()
+    relay.close()
+    assert relay.status()["state"] == "stopped"
+    release.set()
+    _wait_until(lambda: connection.closed)
+    for thread in relay._threads:
+        thread.join(2)
+    assert relay.status() == {**relay.status(), "state": "stopped", "error": None}
+    assert titles == []
+
+
+def test_a_title_failing_after_close_is_not_recorded(fast) -> None:
+    relay = _relay(Script())
+    relay.begin_close()
+    relay._send_title("A - B", relay._generation)
+    assert relay.status()["title_error"] is None
+    assert relay._sent_title is None
+
+
+def test_manager_waits_for_all_relays_against_one_deadline(monkeypatch) -> None:
+    monkeypatch.setattr(relay_module, "CLOSE_TIMEOUT", 0.3)
+    release = threading.Event()
+
+    def stuck(cfg, *, bitrate, station_name, on_socket):
+        release.wait(5)
+        raise OSError(11001, "host not found")
+
+    configs = [RelayConfig.from_table(name, _table()) for name in ("a", "b", "c")]
+    manager = RelayManager(
+        configs,
+        FakeOutput(320),
+        make_output=FakeOutput,
+        station_name=lambda: "R",
+        relay_factory=lambda cfg, **kw: Relay(cfg, connect=stuck, **kw),
+    )
+    manager.start()
+    started = time.monotonic()
+    try:
+        manager.close()
+        took = time.monotonic() - started
+    finally:
+        release.set()
+    assert took < 0.6  # one shared 0.3 s, not 0.3 s per relay
+    assert [s["state"] for s in manager.status()] == ["stopped"] * 3
+
+
+def test_an_encoder_restart_at_the_same_bitrate_backs_off(fast, monkeypatch) -> None:
+    script = Script()
+    relay = _relay(script)
+    relay.start()
+    try:
+        for logins in (2, 3):
+            _wait_until(lambda: relay.status()["state"] == "live")
+            relay.encoder_changed()
+            _wait_until(lambda logins=logins: len(script.calls) == logins)
+        assert relay._failures == 2  # each restart counts like a failure
+        monkeypatch.setattr(relay_module, "BACKOFF_START", 5.0)
+        monkeypatch.setattr(relay_module, "BACKOFF_MAX", 5.0)
+        _wait_until(lambda: relay.status()["state"] == "live")
+        relay.encoder_changed()
+        _wait_until(lambda: relay.status()["state"] == "connecting")
+        time.sleep(0.1)
+        assert len(script.calls) == 3  # still waiting before logging in again
+        assert relay.status()["error"] is None
+    finally:
+        started = time.monotonic()
+        relay.close()
+    assert time.monotonic() - started < 1  # the wait ends at once on close

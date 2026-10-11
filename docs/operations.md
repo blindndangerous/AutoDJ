@@ -616,7 +616,9 @@ What a relay does:
   minute. A connection that lasted 30 seconds starts the count again. The audio sent after a
   reconnect is live; nothing is saved up while disconnected. A server too slow to take the
   audio (more than 5 seconds behind) is disconnected and tried again. Changing Quality makes
-  the relays that send the stream's own audio log in again at the new bitrate.
+  the relays that send the stream's own audio log in again at the new bitrate. If the stream's
+  encoder restarts at the same bitrate, after a crash say, the relay logs in again after the
+  same growing wait as after a failure.
 - **It never slows down the stream.** Each relay sends from its own queue and threads, so a
   stalled server cannot hold up the mix or the other listeners.
 

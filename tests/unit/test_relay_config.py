@@ -41,6 +41,9 @@ def test_password_is_not_in_repr() -> None:
         {**ICECAST, "type": "rtmp"},
         {**ICECAST, "host": "http://radio.example.com"},
         {**ICECAST, "host": "radio.example.com/live"},
+        {**ICECAST, "host": "radio.example.com:8000"},
+        {**ICECAST, "host": "10.0.0.5:8000"},
+        {**ICECAST, "host": "[::1]"},
         {**ICECAST, "host": ""},
         {**ICECAST, "password": ""},
         {**ICECAST, "password": "bad\r\npass"},
@@ -117,3 +120,13 @@ def test_environment_password_alone_does_not_create_a_relay(tmp_path: Path) -> N
 
 def test_password_variable_name() -> None:
     assert relay_password_variable("backup-sc") == "AUTODJ_STREAM_RELAY_BACKUP_SC_PASSWORD"
+
+
+def test_a_host_with_a_port_points_at_the_port_key() -> None:
+    with pytest.raises(ValueError, match=r"must not include a port.*stream\.relays\.main\.port"):
+        RelayConfig.from_table("main", {**ICECAST, "host": "radio.example.com:8000"})
+
+
+@pytest.mark.parametrize("host", ["::1", "fe80::1", "2001:db8::5"])
+def test_an_ipv6_address_is_a_valid_host(host: str) -> None:
+    assert RelayConfig.from_table("main", {**ICECAST, "host": host}).host == host

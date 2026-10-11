@@ -43,6 +43,10 @@ logger = logging.getLogger(__name__)
 
 CONNECT_TIMEOUT = 10.0
 SEND_TIMEOUT = 10.0
+#: The longest a server may take to answer a login, in total.
+LOGIN_TIMEOUT = 10.0
+#: How long stopping waits, in total, for every relay's threads to end.
+CLOSE_TIMEOUT = 3.0
 METADATA_TIMEOUT = 10.0
 BACKOFF_START = 1.0
 BACKOFF_MAX = 60.0
@@ -126,6 +130,12 @@ def source_port(cfg: RelayConfig) -> int:
     return cfg.port if cfg.type == "icecast" else cfg.port + 1
 
 
+def _shut_down(sock: socket.socket) -> None:
+    """Shut *sock* down, which ends a send or receive blocked in another thread."""
+    with contextlib.suppress(OSError):
+        sock.shutdown(socket.SHUT_RDWR)
+
+
 class SocketConnection:
     """A logged-in source socket."""
 
@@ -139,17 +149,31 @@ class SocketConnection:
 
     def close(self) -> None:
         """Shut the socket down, which also ends a send blocked in another thread."""
-        with contextlib.suppress(OSError):
-            self._sock.shutdown(socket.SHUT_RDWR)
+        _shut_down(self._sock)
         with contextlib.suppress(OSError):
             self._sock.close()
 
 
 def _read_until(sock: socket.socket, marker: bytes) -> bytes:
-    """Read the server's reply until *marker* or the connection ends."""
+    """Read the server's reply until *marker* or the connection ends.
+
+    The whole reply must arrive within ``LOGIN_TIMEOUT``, so a server
+    sending a byte at a time cannot hold the relay for long.
+
+    Raises:
+        RelayError: The reply took too long or was too long.
+    """
+    deadline = time.monotonic() + LOGIN_TIMEOUT
     data = b""
     while marker not in data:
-        chunk = sock.recv(1024)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RelayError("the server took too long to answer the login")
+        sock.settimeout(remaining)
+        try:
+            chunk = sock.recv(1024)
+        except TimeoutError:
+            raise RelayError("the server took too long to answer the login") from None
         if not chunk:
             break
         data += chunk
@@ -247,6 +271,7 @@ def open_source(
     bitrate: int,
     station_name: str,
     connect: Callable[..., socket.socket] = socket.create_connection,
+    on_socket: Callable[[socket.socket], None] | None = None,
 ) -> Connection:
     """Connect to *cfg*'s server and log in as its source.
 
@@ -255,6 +280,8 @@ def open_source(
         bitrate: The MP3 bitrate that will be sent, in kbps.
         station_name: The station name to announce.
         connect: ``socket.create_connection`` replacement for tests.
+        on_socket: Called with the socket as soon as it is connected, so
+            another thread can shut it down to end a login stuck waiting.
 
     Returns:
         The connection, ready for audio.
@@ -265,11 +292,14 @@ def open_source(
     """
     sock = connect((cfg.host, source_port(cfg)), timeout=CONNECT_TIMEOUT)
     try:
+        if on_socket is not None:
+            on_socket(sock)
         sock.settimeout(SEND_TIMEOUT)
         if cfg.type == "icecast":
             _icecast_login(sock, cfg, bitrate, station_name)
         else:
             _shoutcast_login(sock, cfg, bitrate, station_name)
+        sock.settimeout(SEND_TIMEOUT)
     except BaseException:
         with contextlib.suppress(OSError):
             sock.close()
@@ -372,6 +402,9 @@ class Relay:
         self._size = 0
         self._max_bytes = 0
         self._connection: Connection | None = None
+        # The socket of a login in progress, so close() can end it.
+        self._login_socket: socket.socket | None = None
+        self._live_bitrate = 0
         # Bumped on every login, so a title sent on an older connection
         # is not taken as sent on the new one.
         self._generation = 0
@@ -439,17 +472,31 @@ class Relay:
             thread.start()
 
     def close(self) -> None:
-        """Disconnect and stop both threads."""
-        self._closed.set()
-        self._title_event.set()
+        """Disconnect and stop both threads, waiting at most ``CLOSE_TIMEOUT``."""
+        self.begin_close()
+        self.finish_close(time.monotonic() + CLOSE_TIMEOUT)
+
+    def begin_close(self) -> None:
+        """Tell both threads to stop and cut any connection or login, without waiting."""
         with self._cond:
-            connection = self._connection
+            self._closed.set()
+            connection, login = self._connection, self._login_socket
             self._cond.notify_all()
+        self._title_event.set()
         if connection is not None:
             connection.close()
+        if login is not None:
+            _shut_down(login)
+
+    def finish_close(self, deadline: float) -> None:
+        """Wait for both threads until *deadline* (``time.monotonic``), then show "stopped".
+
+        A thread still stuck after the deadline (in a host name lookup,
+        say) is left to end on its own; it changes nothing once closed.
+        """
         for thread in self._threads:
             if thread.is_alive():
-                thread.join(timeout=SEND_TIMEOUT + 2)
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
         self._set_state("stopped", None)
 
     def status(self) -> dict[str, Any]:
@@ -472,8 +519,10 @@ class Relay:
     # -- sender thread -----------------------------------------------------------
 
     def _set_state(self, state: str, error: str | None) -> None:
-        """Record a state change and tell the manager."""
+        """Record a state change and tell the manager; only "stopped" once closed."""
         with self._cond:
+            if self._closed.is_set() and state != "stopped":
+                return
             if (self._state, self._error) == (state, error):
                 return
             self._state, self._error = state, error
@@ -511,12 +560,21 @@ class Relay:
                 self._set_state("connecting", None)
             try:
                 connection = self._connect(
-                    self.cfg, bitrate=self._bitrate(), station_name=self._station_name()
+                    self.cfg,
+                    bitrate=self._bitrate(),
+                    station_name=self._station_name(),
+                    on_socket=self._login_started,
                 )
             except Exception as exc:
                 if not self._closed.is_set():
                     self._fail(describe_error(exc))
                 continue
+            finally:
+                with self._cond:
+                    self._login_socket = None
+            if self._closed.is_set():
+                connection.close()
+                return
             started = self._clock()
             error = self._pump(connection)
             if self._closed.is_set():
@@ -525,6 +583,26 @@ class Relay:
                 self._failures = 0
             if error is not None:
                 self._fail(error)
+            elif self._bitrate() == self._live_bitrate:
+                # The encoder restarted at the same bitrate, as after a
+                # crash: wait like after a failure, so an encoder that keeps
+                # crashing does not cause a login per crash.
+                delay = self._next_delay()
+                self._set_state("connecting", None)
+                logger.debug(
+                    "Relay %s: the encoder restarted; logging in again in %.0f s",
+                    self.cfg.name,
+                    delay,
+                )
+                self._closed.wait(delay)
+
+    def _login_started(self, sock: socket.socket) -> None:
+        """Remember the socket of the login in progress, or cut it if closing."""
+        with self._cond:
+            if not self._closed.is_set():
+                self._login_socket = sock
+                return
+        _shut_down(sock)
 
     def _go_live(self, connection: Connection) -> None:
         """Make *connection* current and empty the queue."""
@@ -532,7 +610,8 @@ class Relay:
             self._connection = connection
             self._queue.clear()
             self._size = 0
-            self._max_bytes = int(self._bitrate() * 1000 / 8 * _QUEUE_SECONDS)
+            self._live_bitrate = self._bitrate()
+            self._max_bytes = int(self._live_bitrate * 1000 / 8 * _QUEUE_SECONDS)
             self._live, self._synced, self._restart, self._overflow = True, False, False, False
             self._generation += 1
             self._sent_title = None
@@ -603,6 +682,8 @@ class Relay:
         except Exception as exc:
             error = describe_error(exc)
         with self._cond:
+            if self._closed.is_set():
+                return
             if generation == self._generation:
                 self._sent_title = title
             changed = error != self._title_error
@@ -704,10 +785,21 @@ class RelayManager:
         ]
 
     def close(self) -> None:
-        """Stop every relay, then the extra outputs."""
+        """Stop every relay, then the extra outputs.
+
+        Every relay is told to stop first, then all are waited for against
+        one shared deadline, so shutdown takes at most ``CLOSE_TIMEOUT``
+        however many relays are stuck.
+        """
         for relay in self._relays:
             try:
-                relay.close()
+                relay.begin_close()
+            except Exception:
+                logger.exception("Stopping relay %s failed", relay.cfg.name)
+        deadline = time.monotonic() + CLOSE_TIMEOUT
+        for relay in self._relays:
+            try:
+                relay.finish_close(deadline)
             except Exception:
                 logger.exception("Stopping relay %s failed", relay.cfg.name)
         for output in self.outputs:
