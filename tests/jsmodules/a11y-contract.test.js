@@ -1636,6 +1636,20 @@ describe("static accessibility contracts", () => {
       expect(labelText(id)).toBeTruthy();
     }
 
+    // The general settings and the now-playing group come first; the
+    // Listeners and Bans sections close the fieldset, so heading
+    // navigation never puts a general setting under "Bans".
+    const order = ["#stream-relays", "#stream-station-name", "#stream-bitrate",
+      "#stream-continuous", "#np-settings", "#listener-control-title", "#listener-bans-title"]
+      .map((selector) => document.querySelector(selector));
+    for (let at = 1; at < order.length; at += 1) {
+      expect(order[at - 1].compareDocumentPosition(order[at])
+        & document.defaultView.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    const bans = document.querySelector("#listener-bans-title").closest("section");
+    expect(bans.nextElementSibling).toBeNull();
+    expect(bans.parentElement).toBe(fieldset);
+
     // The "not loaded yet" note is visible text, silent like the count.
     const note = document.querySelector("#stream-url-note");
     expect(fieldset.contains(note)).toBe(true);
