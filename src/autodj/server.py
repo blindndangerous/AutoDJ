@@ -102,6 +102,7 @@ from autodj.playlog import (
     soundexchange_filename,
     soundexchange_report,
 )
+from autodj.scheduler import system_timezone
 from autodj.scheduler_api import install_scheduler
 from autodj.secret_files import paired_devices_path
 from autodj.security import (
@@ -1126,7 +1127,9 @@ def create_app(
     _ws_clients: set[_WebSocketClient] = set()
     _ws_lock = asyncio.Lock()
     _lyrics_read_gate = asyncio.Semaphore(1)
-    nowplaying = NowPlaying(bridge)
+    # The station time zone: scheduled events and the feed's daily peak.
+    station_timezone = bridge.player._cfg.server.station_timezone or system_timezone()
+    nowplaying = NowPlaying(bridge, timezone=station_timezone)
     webhooks = WebhookWorker(getattr(bridge.player._cfg, "webhooks", ()))
 
     # Both run on playout threads (mix bus, station), so a fault here is
@@ -2991,6 +2994,7 @@ def create_app(
     station_schedule = install_scheduler(
         app,
         bridge,
+        timezone=station_timezone,
         apply_profile=api_profile_apply,
         profile_names=lambda: _profile_store().list_names(),
         liner_names=_liner_names,

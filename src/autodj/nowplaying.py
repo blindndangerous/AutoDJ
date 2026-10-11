@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from autodj._bridge import PlayerBridge
 
@@ -32,16 +33,18 @@ class NowPlaying:
         self,
         bridge: PlayerBridge,
         *,
-        today: Callable[[], date] = date.today,
+        timezone: str,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self.bridge = bridge
         self._lock = threading.Lock()
         self._payload: dict[str, Any] = {}
-        # Server-local calendar day (AutoDJ has no station time zone yet)
-        # and the most listeners seen on it.  Kept in memory only, so a
-        # restart starts the count again.
-        self._today = today
+        # The calendar day in the station time zone ([server]
+        # station_timezone, as the scheduler uses) and the most listeners
+        # seen on it.  Kept in memory only, so a restart starts the count again.
+        self._zone = ZoneInfo(timezone)
+        self._clock = clock
         self._peak_day: date | None = None
         self._peak = 0
         self._monotonic = monotonic
@@ -49,7 +52,7 @@ class NowPlaying:
 
     def _peak_today(self, listeners: int) -> int:
         """Fold *listeners* into today's peak, starting a new day at midnight."""
-        day = self._today()
+        day = self._clock().astimezone(self._zone).date()
         with self._lock:
             if day != self._peak_day:
                 self._peak_day = day

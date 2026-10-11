@@ -24,7 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     holds up playback.
   - The next song stays out of the feed unless you turn on **Show the next song publicly** (or
     `[nowplaying] show_next`), since some webcasting licences forbid announcing songs in advance.
-  - The feed also reports today's peak listener count (since local midnight, reset when AutoDJ
+  - The feed also reports today's peak listener count (since midnight in the station time zone, reset when AutoDJ
     restarts) and how long AutoDJ has been running. Its schema version is now 2.
   - A public status page at `/status` shows the station name, the song playing, the next song when
     allowed, listeners now, today's peak and the uptime, as plain text that works without

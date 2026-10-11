@@ -20,7 +20,6 @@ from autodj.scheduler import (
     Scheduler,
     describe_repeat,
     field_error,
-    system_timezone,
 )
 from autodj.settings_bodies import PlaybackSettingsBody
 
@@ -170,6 +169,7 @@ def install_scheduler(
     app: FastAPI,
     bridge: Any,
     *,
+    timezone: str,
     apply_profile: Callable[[str], Awaitable[Any]],
     profile_names: Callable[[], Sequence[str]],
     liner_names: Callable[[], Sequence[str]],
@@ -183,7 +183,7 @@ def install_scheduler(
     cfg = bridge.player._cfg
     scheduler = Scheduler(
         Path(cfg.index.active_dir) / "schedule.json",
-        cfg.server.station_timezone or system_timezone(),
+        timezone,
         publish,
         interrupt=lambda: bridge.skip(),
         song_playing=lambda: bridge.player._state.current_track is not None,

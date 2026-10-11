@@ -478,9 +478,10 @@ working, since no field was removed or renamed.
 
 - `listener_count` is the number of players connected to this server's stream now (0 outside
   stream mode). Listeners of a relay to another server are not counted.
-- `peak_listeners_today` is the most listeners connected at once since midnight in the AutoDJ
-  computer's local time zone (AutoDJ has no station time zone setting yet). It is kept in memory
-  only, so it starts again from the current count when AutoDJ restarts.
+- `peak_listeners_today` is the most listeners connected at once since midnight in the station
+  time zone (`[server] station_timezone`, the one the scheduler uses; the computer's time zone
+  when it is not set). It is kept in memory only, so it starts again from the current count when
+  AutoDJ restarts.
 - `uptime_seconds` counts whole seconds since this AutoDJ server started.
 
 `current_track` and `next_track` are `null` when unavailable. History is newest first.
