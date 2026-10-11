@@ -2,8 +2,8 @@
 
 Settings the user changes in the **browser** — preset, transition
 effect, DJ-mix options, playback settings, volume and mute, stream
-bitrate and station name, BPM range, discovery rate and whether discovery
-is on — are written to
+bitrate and station name, BPM range, discovery rate, EQ and whether
+discovery is on — are written to
 ``<index_dir>/<name>/web_state.json`` so the next `autodj serve` boot
 restores them.
 
@@ -31,6 +31,7 @@ from autodj.settings_bodies import (
     BpmRangeBody,
     DiscoveryBody,
     DjMixBody,
+    EqBody,
     PlaybackSettingsBody,
     PresetBody,
     StreamSettingsBody,
@@ -76,6 +77,7 @@ _TOP_LEVEL_FIELDS = frozenset(
         "bpm_range",
         "discovery_every",
         "discovery_enabled",
+        "eq",
     }
 )
 _INVALID = object()
@@ -228,6 +230,20 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
     bridge.set_playback_settings(PlaybackSettingsBody.model_validate(values))
 
 
+def _restore_eq(bridge: PlayerBridge, eq: dict[str, Any]) -> None:
+    """Restore valid EQ multipliers; omitted or invalid bands keep their defaults."""
+    values: dict[str, float] = {}
+    for band in ("low", "mid", "high"):
+        value = eq.get(band, _INVALID)
+        if value is _INVALID:
+            continue
+        checked = _checked(EqBody, band, value, f"eq.{band}")
+        if checked is not _INVALID and checked is not None:
+            values[band] = checked
+    if values:
+        bridge.set_eq(**values)
+
+
 def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
     """Restore previously-saved settings through *bridge*.
 
@@ -302,6 +318,7 @@ def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
         else:
             player = bridge.player
             player._state.discovery_enabled = enabled and player._discovery_every is not None
+    _restore_eq(bridge, _section(data, "eq"))
 
 
 def save_from_player(settings: dict, index_dir: Path | None) -> None:
@@ -332,6 +349,7 @@ def save_from_player(settings: dict, index_dir: Path | None) -> None:
         "bpm_range": settings.get("bpm_range", {"lo": None, "hi": None}),
         "discovery_every": settings.get("discovery_every"),
         "discovery_enabled": settings.get("discovery_enabled", False),
+        "eq": settings.get("eq", {"low": 1.0, "mid": 1.0, "high": 1.0}),
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

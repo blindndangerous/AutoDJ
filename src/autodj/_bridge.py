@@ -1399,6 +1399,7 @@ class PlayerBridge:
             },
             "discovery_every": p._discovery_every,
             "discovery_enabled": p._state.discovery_enabled,
+            "eq": self.get_eq(),
         }
 
     def set_preset(self, name: str | None) -> None:

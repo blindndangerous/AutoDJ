@@ -423,6 +423,38 @@ class TestLoadLyricsToggle:
     def _make(self):
         return Player(_make_cfg_mock(), _make_sim_index(2))
 
+    def test_eq_route_saves_settings_that_restore_after_restart(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        import asyncio
+
+        from autodj._bridge import PlayerBridge
+        from autodj.server import EqBody, create_app
+
+        player = self._make()
+        player._cfg.index.active_dir = tmp_path
+        bridge = PlayerBridge(player, player._sim)
+        monkeypatch.setattr(bridge, "get_settings", lambda: {"eq": bridge.get_eq()})
+        route = next(
+            route
+            for route in create_app(bridge).routes
+            if getattr(route, "path", None) == "/api/eq"
+        )
+        assert asyncio.run(route.endpoint(EqBody(low=1.25, mid=0.75, high=1.5))) == {
+            "low": 1.25,
+            "mid": 0.75,
+            "high": 1.5,
+        }
+
+        restored = self._make()
+        restored._cfg.index.active_dir = tmp_path
+        PlayerBridge(restored, restored._sim).load_persistent_state()
+        assert PlayerBridge(restored, restored._sim).get_eq() == {
+            "low": 1.25,
+            "mid": 0.75,
+            "high": 1.5,
+        }
+
     def test_show_lyrics_off_reads_nothing(self, tmp_path) -> None:
         player = self._make()
         player._cfg.playback.show_lyrics = False

@@ -79,6 +79,9 @@ def _make_player() -> SimpleNamespace:
         _bpm_range=None,
         _preset=None,
         _discovery_every=None,
+        _eq_low=1.0,
+        _eq_mid=1.0,
+        _eq_high=1.0,
         _state=PlayerState(no_repeat_window=20),
         _sim=SimpleNamespace(entries_snapshot=lambda: (), ntotal=0),
     )
@@ -535,6 +538,7 @@ class TestRoundTrip:
         tmp_path,
     ) -> None:
         p1 = _make_player()
+        p1._eq_low, p1._eq_mid, p1._eq_high = 1.4, 0.75, 1.2
         p1._cfg.djmix.harmonic_mode = "strict"
         p1._cfg.djmix.beatmatch = True
         p1._cfg.djmix.phrase_align = True
@@ -598,7 +602,9 @@ class TestRoundTrip:
             "bpm_range",
             "discovery_every",
             "discovery_enabled",
+            "eq",
         }
+        assert saved["eq"] == {"low": 1.4, "mid": 0.75, "high": 1.2}
         assert set(saved["djmix"]) == {
             "harmonic_mode",
             "beatmatch",
@@ -691,3 +697,36 @@ class TestRoundTrip:
         # The running player's history windows follow the restored values.
         assert p2._state.recently_played.maxlen == 50
         assert p2._state.rules.artist_window == 5
+
+    def test_eq_defaults_to_unity_for_old_state_and_round_trips(self, tmp_path) -> None:
+        _write_state(tmp_path, {})
+        old_player = _make_player()
+        _load(old_player, tmp_path)
+        assert PlayerBridge(old_player, old_player._sim).get_eq() == {
+            "low": 1.0,
+            "mid": 1.0,
+            "high": 1.0,
+        }
+
+        player = _make_player()
+        bridge = PlayerBridge(player, player._sim)
+        bridge.set_eq(low=1.3, mid=0.8, high=1.7)
+        save_from_player(bridge.get_settings(), tmp_path)
+        restored = _make_player()
+        _load(restored, tmp_path)
+        assert PlayerBridge(restored, restored._sim).get_eq() == {
+            "low": 1.3,
+            "mid": 0.8,
+            "high": 1.7,
+        }
+
+    def test_eq_restore_skips_nonfinite_and_out_of_range_bands(self, tmp_path, caplog) -> None:
+        _write_state(tmp_path, {"eq": {"low": 2.1, "mid": float("nan"), "high": 0.5}})
+        player = _make_player()
+        _load(player, tmp_path)
+        assert PlayerBridge(player, player._sim).get_eq() == {
+            "low": 2.0,
+            "mid": 1.0,
+            "high": 0.5,
+        }
+        assert "invalid eq.mid" in caplog.text

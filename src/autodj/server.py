@@ -105,6 +105,7 @@ from autodj.settings_bodies import (
     BpmRangeBody,
     DiscoveryBody,
     DjMixBody,
+    EqBody,
     FadeSeconds,
     FiniteFloat,
     PlaybackSettingsBody,
@@ -571,18 +572,6 @@ class QueueReorderBody(BaseModel):
     """
 
     paths: list[str]
-
-
-class EqBody(BaseModel):
-    """Request body for POST /api/eq.
-
-    Each gain is a linear multiplier in [0.0, 2.0]; 1.0 = unity.
-    Omitted fields are left unchanged.
-    """
-
-    low: FiniteFloat | None = None
-    mid: FiniteFloat | None = None
-    high: FiniteFloat | None = None
 
 
 class LinerTestBody(BaseModel):
@@ -2289,7 +2278,9 @@ def create_app(
     @app.post("/api/eq")
     async def api_eq(body: EqBody) -> dict[str, float]:
         """Set the 3-band EQ gains."""
-        return bridge.set_eq(low=body.low, mid=body.mid, high=body.high)
+        result = bridge.set_eq(low=body.low, mid=body.mid, high=body.high)
+        bridge.save_persistent_state()
+        return result
 
     # ------------------------------------------------------------------
     # Library tools — index / enrich / prune / stats from the web UI

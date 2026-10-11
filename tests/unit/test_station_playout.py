@@ -186,6 +186,30 @@ def test_master_processing_reuses_prepared_sources(station, mode, tmp_path, monk
     assert result.loudness_processing == mode
 
 
+@pytest.mark.parametrize("mode", ["smooth", "stereotool"])
+def test_prepared_liner_gets_one_playout_gain_without_mutating_cache(
+    station, mode, tmp_path, monkeypatch
+):
+    player, (entry, *_), _points = station
+    player._cfg.playback.loudness_processing = mode
+    prepared = tmp_path / "prepared-liner.wav"
+    prepared.touch()
+    player._library.catalog.record_for_path = lambda _path: {
+        "prepared_path": str(prepared),
+        "kind": "liner",
+    }
+    cached_audio = np.ones((100, 2), dtype=np.float32)
+    monkeypatch.setattr("autodj.player.load_stereo", lambda *_args: cached_audio)
+
+    first = Player._load_playout_audio(player, entry)
+    second = Player._load_playout_audio(player, entry)
+
+    expected = 10 ** (-1.5 / 20)
+    np.testing.assert_allclose(first, expected)
+    np.testing.assert_allclose(second, expected)
+    np.testing.assert_array_equal(cached_audio, 1.0)
+
+
 def test_early_skip_restores_unheard_intro_but_late_skip_does_not(station, monkeypatch):
     player, (a, b, *_), _points = station
     current = player._render_track(a, b, 0)

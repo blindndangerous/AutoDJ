@@ -2278,7 +2278,7 @@ class Player:
         if self._cfg.playback.loudness_processing not in {"smooth", "stereotool"}:
             audio = load_stereo(entry.path, SAMPLE_RATE, self._max_render_seconds())
             return self._apply_replaygain(audio, entry.path)
-        from autodj.processing import prepare_source
+        from autodj.processing import PREPARED_LINER_GAIN, prepare_source
 
         record = self._library.catalog.record_for_path(entry.path) if self._library else None
         prepared = record.get("prepared_path") if record else None
@@ -2289,7 +2289,11 @@ class Player:
             )
             if record:
                 self._library.catalog.put_entry(entry, kind=kind, prepared_path=prepared)
-        return load_stereo(prepared, SAMPLE_RATE, self._max_render_seconds())
+        audio = load_stereo(prepared, SAMPLE_RATE, self._max_render_seconds())
+        if record and record["kind"] == "liner":
+            # Keep existing prepared liner caches while reducing their former +4.5 dB lift to +3 dB.
+            return (audio * PREPARED_LINER_GAIN).astype(np.float32)
+        return audio
 
     def saved_points(self, entry: IndexEntry) -> dict[str, Any]:
         """Source-file cue times, with no assumed safe talk-over space."""

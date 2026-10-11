@@ -72,6 +72,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Low, mid and high EQ settings now survive server restarts.
+
 - Radio streams use HTTP framing that works with HTTP/1.0 players such as Winamp,
   avoiding chunk markers that can disrupt audio and track titles.
 - Moving between tabs no longer makes screen readers say "selected" twice.
@@ -86,6 +88,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Random walk, least recently played and clock picks now hold back the same album and the same
   song title as well as the same artist, like similarity picks always did. Discovery picks now
   follow the artist, album and title rules too.
+- Liners play 1.5 dB lower with Smooth or Stereo Tool processing, reducing their intended
+  lift above music from 4.5 dB to 3 dB. Existing prepared audio and cue points are retained.
 
 - Radio listening uses `/stream.mp3`, with `/stream.m3u` for players that need a playlist.
   Anyone who can reach the server can listen without a key; browser controls still require

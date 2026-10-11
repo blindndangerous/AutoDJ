@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
 PREPARATION_VERSION = "type-b-v1"
 HEADROOM_DB = -6.0
+PREPARED_LINER_GAIN = 10 ** (-1.5 / 20)
 VOICE_FILTER = (
     "highpass=f=70,acompressor=threshold=0.063095734:ratio=3:attack=10:release=180:"
     "makeup=1:knee=4:link=maximum:detection=rms"

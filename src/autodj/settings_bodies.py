@@ -1,7 +1,7 @@
 """Request bodies of the web settings routes, shared with ``web_state.json``.
 
 ``POST /api/playback-settings``, ``/api/djmix``, ``/api/bpm-range`` and the
-other settings routes validate their bodies with these models, and
+other settings routes, including ``/api/eq``, validate their bodies with these models, and
 :mod:`autodj.runtime_state` checks every saved setting against the same
 field rules, so a value the page cannot set is never restored either.
 """
@@ -69,6 +69,14 @@ class VolumeBody(BaseModel):
     """Request body for POST /api/volume."""
 
     volume: FiniteFloat
+
+
+class EqBody(BaseModel):
+    """Request body for POST /api/eq; gains are clamped by the bridge."""
+
+    low: FiniteFloat | None = None
+    mid: FiniteFloat | None = None
+    high: FiniteFloat | None = None
 
 
 class PresetBody(BaseModel):
