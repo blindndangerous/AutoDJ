@@ -2,8 +2,8 @@
 
 Settings the user changes in the **browser** — preset, transition
 effect, DJ-mix options, playback settings, volume and mute, stream
-bitrate and station name, BPM range, discovery rate, EQ and whether
-discovery is on — are written to
+bitrate and station name, BPM range, discovery rate, EQ and whether discovery
+is on — are written to
 ``<index_dir>/<name>/web_state.json`` so the next `autodj serve` boot
 restores them.
 
