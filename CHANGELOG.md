@@ -19,6 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Settings > Picking > Repeats has separate artist, album, track and title rules.
     Each accepts tracks, minutes or both; zero turns off that limit. Save applies changes
     to future picks, uses saved play history and remembers the settings across restarts.
+    Fresh installations default to 50 tracks for the same track and 8 for the same artist;
+    album, title and all minute limits start at zero. Existing saved limits are preserved.
   - Least-recent picks, including clock slots, check songs from oldest to newest and stop
     at the first eligible song. Ties stay random; rules relax only after none qualify.
   - Use related artists applies the artist limit to links in an editable TOML file.

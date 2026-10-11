@@ -347,7 +347,9 @@ class TestPlaybackConfig:
     def test_defaults(self) -> None:
         pb = PlaybackConfig.from_dict({})
         assert pb.crossfade_seconds == 3.0
-        assert pb.repeat_rules.track.tracks == 500
+        for name, tracks in (("track", 50), ("artist", 8), ("album", 0), ("title", 0)):
+            rule = getattr(pb.repeat_rules, name)
+            assert (rule.tracks, rule.minutes) == (tracks, 0)
         assert pb.show_lyrics is True
         assert pb.prefetch_next_track is True
         assert pb.silence_trigger_crossfade is True

@@ -63,7 +63,10 @@ def make_cfg_mock() -> MagicMock:
     """Build a config mock carrying every setting the Player reads."""
     cfg = MagicMock()
     cfg.playback.repeat_rules = RepeatSettings(
-        track=RepeatRule(tracks=50), artist=RepeatRule(tracks=3)
+        track=RepeatRule(tracks=50),
+        artist=RepeatRule(tracks=3),
+        album=RepeatRule(tracks=3),
+        title=RepeatRule(tracks=3),
     )
     cfg.playback.crossfade_seconds = 3.0
     cfg.playback.crossfade_eq_duck = False

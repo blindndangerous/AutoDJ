@@ -52,6 +52,9 @@ def _player(
     cfg = make_cfg_mock()
     defaults = {
         "track": {"tracks": 1},
+        "artist": {"tracks": 3},
+        "album": {"tracks": 3},
+        "title": {"tracks": 3},
         "use_related_artists": True,
         "related_artists_file": str(
             Path(__file__).parents[2] / "src" / "autodj" / "data" / "related-artists.toml"

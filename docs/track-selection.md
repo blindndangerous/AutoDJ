@@ -119,6 +119,10 @@ entries with softmax weights.
 
 ## Repeat avoidance and discovery
 
+New installations start with a 50-track limit for the same track and an 8-track
+limit for the same artist. Album, title and all minute limits start at zero.
+Saved settings take precedence over these defaults.
+
 Edit all four rules under **Settings > Picking > Repeats**:
 
 - Artist: any artist credited on a recent track, including related artists when enabled.

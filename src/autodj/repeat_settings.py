@@ -25,17 +25,17 @@ LEGACY_REPEAT_FIELDS = frozenset(
 class RepeatRule(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    tracks: Annotated[int, Field(strict=True, ge=0, le=100000)] = 3
+    tracks: Annotated[int, Field(strict=True, ge=0, le=100000)] = 0
     minutes: Annotated[float, Field(strict=True, ge=0, le=10080, allow_inf_nan=False)] = 0.0
 
 
 class RepeatSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    artist: RepeatRule = RepeatRule(tracks=3)
-    album: RepeatRule = RepeatRule(tracks=3)
-    track: RepeatRule = RepeatRule(tracks=500)
-    title: RepeatRule = RepeatRule(tracks=3)
+    artist: RepeatRule = RepeatRule(tracks=8)
+    album: RepeatRule = RepeatRule(tracks=0)
+    track: RepeatRule = RepeatRule(tracks=50)
+    title: RepeatRule = RepeatRule(tracks=0)
     use_related_artists: StrictBool = False
     related_artists_file: StrictStr = ""
 

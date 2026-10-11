@@ -327,14 +327,14 @@ def _record(i: int, artist: str = "", title: str = "", started: float = 0.0, alb
 
 
 class TestRepeatRules:
-    def test_from_playback_defaults_follow_the_old_keys(self) -> None:
+    def test_from_playback_defaults(self) -> None:
         rules = RepeatRules.from_playback(PlaybackConfig())
         assert (
             rules.track_window,
             rules.artist_window,
             rules.album_window,
             rules.title_window,
-        ) == (500, 3, 3, 3)
+        ) == (50, 8, 0, 0)
         assert (
             rules.track_minutes,
             rules.artist_minutes,

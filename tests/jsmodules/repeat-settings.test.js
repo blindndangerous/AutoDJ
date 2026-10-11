@@ -11,13 +11,13 @@ function setup(postSettings = vi.fn().mockResolvedValue(true)) {
   document.body.innerHTML = `
     <fieldset>
       <label for="artist-tracks">Prevent the same artist from repeating within Tracks</label>
-      <input id="artist-tracks" type="number" value="3">
+      <input id="artist-tracks" type="number" value="8">
       <label for="artist-minutes">Artist Minutes</label><input id="artist-minutes" type="number" value="0">
-      <label for="album-tracks">Album Tracks</label><input id="album-tracks" type="number" value="3">
+      <label for="album-tracks">Album Tracks</label><input id="album-tracks" type="number" value="0">
       <label for="album-minutes">Album Minutes</label><input id="album-minutes" type="number" value="0">
-      <label for="track-tracks">Track Tracks</label><input id="track-tracks" type="number" value="500">
+      <label for="track-tracks">Track Tracks</label><input id="track-tracks" type="number" value="50">
       <label for="track-minutes">Track Minutes</label><input id="track-minutes" type="number" value="0">
-      <label for="title-tracks">Title Tracks</label><input id="title-tracks" type="number" value="3">
+      <label for="title-tracks">Title Tracks</label><input id="title-tracks" type="number" value="0">
       <label for="title-minutes">Title Minutes</label><input id="title-minutes" type="number" value="0">
       <input id="related" type="checkbox"><label for="related">Use related artists</label>
       <label for="file">Related artists file</label><input id="file" value="">
@@ -39,8 +39,8 @@ function setup(postSettings = vi.fn().mockResolvedValue(true)) {
 }
 
 const fullRules = {
-  artist: { tracks: 3, minutes: 0 }, album: { tracks: 3, minutes: 0 },
-  track: { tracks: 500, minutes: 0 }, title: { tracks: 3, minutes: 0 },
+  artist: { tracks: 8, minutes: 0 }, album: { tracks: 0, minutes: 0 },
+  track: { tracks: 50, minutes: 0 }, title: { tracks: 0, minutes: 0 },
   use_related_artists: true, related_artists_file: "config/related-artists.txt",
 };
 
@@ -48,7 +48,7 @@ describe("repeat settings", () => {
   it("applies server values, preserves typed edits across pushes, and submits the full rules object", async () => {
     const { els, postSettings } = setup();
     applyRepeatSettings({ playback: { repeat_rules: fullRules, related_artists_default_file: "C:/station/related-artists.toml" } }, els);
-    expect(els.trackTracks.value).toBe("500");
+    expect(els.trackTracks.value).toBe("50");
     expect(els.relatedArtistsFile.value).toBe("config/related-artists.txt");
     expect(els.defaultFile.textContent).toBe("C:/station/related-artists.toml");
     expect(document.querySelector("label[for=artist-tracks]").textContent)
@@ -70,7 +70,7 @@ describe("repeat settings", () => {
     els.artistTracks.value = "1.5";
     els.artistTracks.dispatchEvent(new Event("input"));
     els.save.click();
-    expect(els.artistTracks.value).toBe("3");
+    expect(els.artistTracks.value).toBe("8");
     expect(postSettings).not.toHaveBeenCalled();
     expect(els.save.textContent).toBe("Save repeat settings");
 
@@ -86,7 +86,7 @@ describe("repeat settings", () => {
     applyRepeatSettings({ playback: { repeat_rules: fullRules, related_artists_default_file: "C:/station/related-artists.toml" } }, els);
     els.artistTracks.value = "9";
     resetRepeatSettings(els);
-    expect(els.artistTracks.value).toBe("3");
+    expect(els.artistTracks.value).toBe("8");
     expect(els.useRelatedArtists.checked).toBe(false);
     expect(els.relatedArtistsFile.value).toBe("");
     expect(els.defaultFile.textContent).toBe("");
