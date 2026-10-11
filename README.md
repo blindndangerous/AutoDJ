@@ -424,10 +424,12 @@ transition_mode         = "full_intro_outro"
 Set repeat limits in **Settings > Picking > Repeats**. Artist, album, track and title
 have separate Tracks and Minutes boxes. Zero turns off a limit; when both are set,
 both must be satisfied before a repeat is allowed. Save applies the rules to future
-picks and remembers them across restarts. Older repeat settings are imported automatically.
+picks and remembers them across restarts. Old repeat keys in `config.toml` or
+`web_state.json` are rejected. Remove them by hand and re-enter limits in
+**Settings > Picking > Repeats**.
 
 **Use related artists** applies the artist limit to the links in your editable TOML file.
-The page shows its location, normally `index/<name>/related-artists.toml`. AutoDJ copies
+The page shows its fixed location, `index/<name>/related-artists.toml`. AutoDJ copies
 a sample there on first use and leaves your edits alone on upgrades. After editing the
 file, save the repeat settings to reload it. See [repeat rules](docs/track-selection.md#repeat-avoidance-and-discovery).
 

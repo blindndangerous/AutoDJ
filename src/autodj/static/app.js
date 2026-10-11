@@ -725,8 +725,8 @@ const _settingsEls = () => ({
   pbSilenceTrigger: document.getElementById("pb-silence-trigger"),
 });
 
-function postSettings(url, body, control) {
-  return _postSettingsModule(url, body, { settingsStatus, control });
+function postSettings(url, body, control, { onError } = {}) {
+  return _postSettingsModule(url, body, { settingsStatus, control, onError });
 }
 
 installSettingsControls(_settingsEls(), postSettings);
@@ -1087,8 +1087,8 @@ const _repeatEls = {
   titleTracks: document.getElementById("repeat-title-tracks"),
   titleMinutes: document.getElementById("repeat-title-minutes"),
   useRelatedArtists: document.getElementById("repeat-use-related-artists"),
-  relatedArtistsFile: document.getElementById("repeat-related-file"),
   defaultFile: document.getElementById("repeat-related-default"),
+  fileStatus: document.getElementById("repeat-related-status"),
   save: document.getElementById("repeat-save"),
 };
 installRepeatSettings(_repeatEls, { postSettings, settingsStatus });

@@ -660,7 +660,7 @@ class TestLiners:
 
 class TestRepeatSettings:
     @staticmethod
-    def _payload(path: Path) -> dict:
+    def _payload() -> dict:
         return {
             "repeat_rules": {
                 "track": {"tracks": 7, "minutes": 10},
@@ -668,7 +668,6 @@ class TestRepeatSettings:
                 "album": {"tracks": 2, "minutes": 30},
                 "title": {"tracks": 5, "minutes": 40},
                 "use_related_artists": True,
-                "related_artists_file": str(path),
             }
         }
 
@@ -683,10 +682,10 @@ class TestRepeatSettings:
         return TestClient(create_app(bridge))
 
     def test_nested_repeat_settings_round_trip_and_file_reload(self, bridge, tmp_path) -> None:
-        path = tmp_path / "related.toml"
-        path.write_text('[related]\n"Alpha" = ["Beta"]\n', encoding="utf-8")
-        payload = self._payload(path)
         client = self._client(bridge, tmp_path)
+        path = bridge.player._cfg.index.active_dir / "related-artists.toml"
+        path.write_text('[related]\n"Alpha" = ["Beta"]\n', encoding="utf-8")
+        payload = self._payload()
 
         response = client.post("/api/playback-settings", json=payload)
 
@@ -719,10 +718,10 @@ class TestRepeatSettings:
         bridge.save_persistent_state.assert_not_called()
 
     def test_invalid_related_file_keeps_live_repeat_settings(self, bridge, tmp_path) -> None:
-        path = tmp_path / "related.toml"
-        path.write_text('[related]\n"Alpha" = ["Beta"]\n', encoding="utf-8")
         client = self._client(bridge, tmp_path)
-        payload = self._payload(path)
+        path = bridge.player._cfg.index.active_dir / "related-artists.toml"
+        path.write_text('[related]\n"Alpha" = ["Beta"]\n', encoding="utf-8")
+        payload = self._payload()
         assert client.post("/api/playback-settings", json=payload).status_code == 200
         rules = bridge.player._cfg.playback.repeat_rules
         state_rules = bridge.player._state.rules
@@ -732,10 +731,41 @@ class TestRepeatSettings:
         response = client.post("/api/playback-settings", json=payload)
 
         assert response.status_code == 400
+        assert response.json()["detail"] == "The related artists file is not valid: line 1."
         assert bridge.player._cfg.playback.repeat_rules is rules
         assert bridge.player._state.rules is state_rules
         assert bridge.player._state.rules.related.related_to("alpha") == {"beta"}
         bridge.save_persistent_state.assert_not_called()
+        assert bridge.get_settings()["playback"]["related_artists_problem"].startswith(
+            "The related artists file is not valid"
+        )
+
+    def test_api_rejects_related_file_path(self, bridge, tmp_path) -> None:
+        client = self._client(bridge, tmp_path)
+        payload = self._payload()
+        payload["repeat_rules"]["related_artists_file"] = str(tmp_path / "secret.toml")
+        response = client.post("/api/playback-settings", json=payload)
+        assert response.status_code == 422
+        bridge.save_persistent_state.assert_not_called()
+
+    def test_broken_file_does_not_block_save_when_disabled(self, bridge, tmp_path) -> None:
+        client = self._client(bridge, tmp_path)
+        path = bridge.player._cfg.index.active_dir / "related-artists.toml"
+        path.write_text("[related\n", encoding="utf-8")
+        payload = self._payload()
+        payload["repeat_rules"]["use_related_artists"] = False
+        response = client.post("/api/playback-settings", json=payload)
+        assert response.status_code == 200
+        assert response.json()["playback"]["repeat_rules"]["use_related_artists"] is False
+
+    def test_invalid_file_error_does_not_echo_file_keys(self, bridge, tmp_path) -> None:
+        client = self._client(bridge, tmp_path)
+        path = bridge.player._cfg.index.active_dir / "related-artists.toml"
+        path.write_text('secret_api_token = "private"\n', encoding="utf-8")
+        response = client.post("/api/playback-settings", json=self._payload())
+        assert response.status_code == 400
+        assert response.json()["detail"] == "The related artists file is not valid."
+        assert "secret_api_token" not in response.text
 
 
 # ---------------------------------------------------------------------------

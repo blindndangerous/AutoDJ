@@ -14,6 +14,7 @@ from autodj.player import PlayerState
 from autodj.repeat_settings import RepeatRule, RepeatSettings
 from autodj.runtime_state import (
     STATE_VERSION,
+    SavedStateError,
     load_into_bridge,
     save_from_player,
     state_file_for,
@@ -135,8 +136,6 @@ def _warnings(caplog: pytest.LogCaptureFixture, field: str) -> int:
         ({"playback": {"stream_bitrate": 100}}, "stream_bitrate"),
         ({"playback": {"stream_bitrate": "320"}}, "stream_bitrate"),
         ({"playback": {"stream_bitrate": True}}, "stream_bitrate"),
-        ({"playback": {"no_repeat_window": -1}}, "no_repeat_window"),
-        ({"playback": {"artist_repeat_window": 2.5}}, "artist_repeat_window"),
         ({"playback": {"transition_wet_mix": 2.0}}, "transition_wet_mix"),
         ({"playback": {"replaygain_target_db": "loud"}}, "replaygain_target_db"),
         ({"playback": {"volume": True}}, "volume"),
@@ -285,7 +284,7 @@ def test_failed_v1_backup_prevents_overwrite(tmp_path: Path, monkeypatch, caplog
         save_from_player({"preset": "new"}, tmp_path)
 
     assert path.read_bytes() == original
-    assert "Failed to back up old web_state.json" in caplog.text
+    assert "Failed to back up v1 web_state.json" in caplog.text
 
 
 def test_non_object_state_root_is_warned_and_ignored(tmp_path: Path, caplog) -> None:
@@ -666,6 +665,7 @@ class TestRoundTrip:
             # Bridge-visible derived session values are never persisted.
             "library_size",
             "related_artists_default_file",
+            "related_artists_problem",
         }
         # Config-only absolute path is neither browser-visible nor persisted.
         assert "liners_folder" not in saved["playback"]
@@ -675,6 +675,7 @@ class TestRoundTrip:
         assert stored["schema_version"] == STATE_VERSION
         assert "available_presets" not in stored
         assert "library_size" not in stored["playback"]
+        assert "related_artists_problem" not in stored["playback"]
         assert "liners_folder" not in stored["playback"]
         # The gapless switches are web settings now, saved like the rest.
         assert stored["playback"]["prefetch_next_track"] is False
@@ -738,71 +739,42 @@ class TestRoundTrip:
         assert "invalid eq.mid" in caplog.text
 
 
-def test_legacy_repeat_state_migrates_over_config_and_is_backed_up(tmp_path):
-    from autodj.config import PlaybackConfig
-
-    player = _make_player()
-    legacy = {
-        "no_repeat_window": 200,
-        "no_repeat_minutes": 120,
-        "artist_repeat_window": 7,
-        "artist_repeat_minutes": 60,
-        "title_repeat_window": 11,
-        "title_repeat_minutes": 10,
-    }
-    config = PlaybackConfig.from_dict(legacy)
-    player._cfg.playback.repeat_rules = config.repeat_rules
-    player._cfg.playback._legacy_repeat_settings = config._legacy_repeat_settings
-    _write_state(tmp_path, {"playback": {"no_repeat_window": 50, "artist_repeat_window": 5}})
-    original = (tmp_path / "web_state.json").read_bytes()
-    _load(player, tmp_path)
-    rules = player._cfg.playback.repeat_rules
-    assert rules.track == RepeatRule(tracks=50, minutes=120)
-    assert rules.artist == rules.album == RepeatRule(tracks=5, minutes=60)
-    assert rules.title == RepeatRule(tracks=11, minutes=10)
-    bridge = PlayerBridge(player, player._sim)
-    save_from_player(bridge.get_settings(), tmp_path)
-    saved = json.loads((tmp_path / "web_state.json").read_text(encoding="utf-8"))
-    assert saved["playback"]["repeat_rules"] == rules.model_dump()
-    assert "artist_repeat_window" not in saved["playback"]
-    assert (tmp_path / "web_state.json.v2.bak").read_bytes() == original
+@pytest.mark.parametrize(
+    "key",
+    [
+        "no_repeat_window",
+        "no_repeat_minutes",
+        "artist_repeat_window",
+        "artist_repeat_minutes",
+        "title_repeat_window",
+        "title_repeat_minutes",
+        "related_artists_file",
+        "related_artists_starter",
+    ],
+)
+def test_removed_repeat_state_key_is_rejected(tmp_path, key):
+    _write_state(tmp_path, {"playback": {key: 1}})
+    with pytest.raises(SavedStateError, match=r"web_state\.json") as error:
+        _load(_make_player(), tmp_path)
+    assert key in str(error.value)
+    assert "Settings > Picking > Repeats" in str(error.value)
 
 
-def test_new_repeat_state_wins_over_legacy_and_round_trips(tmp_path):
-    rules = RepeatSettings(
-        track=RepeatRule(tracks=0, minutes=120),
-        artist=RepeatRule(tracks=4, minutes=60),
-        album=RepeatRule(tracks=9, minutes=0),
-        title=RepeatRule(tracks=0, minutes=0),
-    )
-    _write_state(
-        tmp_path,
-        {
-            "playback": {
-                "repeat_rules": rules.model_dump(),
-                "artist_repeat_window": 99,
-            }
-        },
-    )
-    player = _make_player()
-    _load(player, tmp_path)
-    assert player._cfg.playback.repeat_rules == rules
-    assert player._state.rules.album_window == 9
-    assert player._state.rules.title_window == player._state.rules.title_minutes == 0
-    save_from_player(PlayerBridge(player, player._sim).get_settings(), tmp_path)
-    restored = _make_player()
-    _load(restored, tmp_path)
-    assert restored._cfg.playback.repeat_rules == rules
+def test_repeat_state_rejects_nested_file_path(tmp_path):
+    _write_state(tmp_path, {"playback": {"repeat_rules": {"related_artists_file": "secret"}}})
+    with pytest.raises(SavedStateError, match=r"repeat_rules\.related_artists_file"):
+        _load(_make_player(), tmp_path)
 
 
 def test_missing_related_file_does_not_discard_restored_repeat_rules(tmp_path, caplog):
     rules = RepeatSettings(
         artist=RepeatRule(tracks=12, minutes=80),
         use_related_artists=True,
-        related_artists_file=str(tmp_path / "missing.toml"),
     )
     _write_state(tmp_path, {"playback": {"repeat_rules": rules.model_dump()}})
     player = _make_player()
+    player._cfg.index.active_dir = tmp_path
+    (tmp_path / "related-artists.toml").write_text("[related\n", encoding="utf-8")
     _load(player, tmp_path)
     assert player._cfg.playback.repeat_rules == rules
     assert player._state.rules.artist_window == 12

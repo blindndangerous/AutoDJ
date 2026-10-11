@@ -101,7 +101,9 @@ export function resetSettingsState(els) {
   _lastPresetOptionsKey = "";
 }
 
-export async function postSettings(url, body, { settingsStatus, control } = {}) {
+// onError(err) replaces the revert and the spoken failure, for a caller
+// that keeps the user's edits and reports the failure itself.
+export async function postSettings(url, body, { settingsStatus, control, onError } = {}) {
   const epoch = captureAuthenticatedRequestEpoch();
   const save = control ? { value: controlValue(control), answeredAt: 0 } : null;
   if (save) _saves.set(control, save);
@@ -122,6 +124,10 @@ export async function postSettings(url, body, { settingsStatus, control } = {}) 
   } catch (err) {
     if (ownSave()) _saves.delete(control);
     if (!isAuthenticatedRequestCurrent(epoch)) return false;
+    if (onError) {
+      onError(err);
+      return false;
+    }
     const reverted = revertAfterFailure(control);
     // The settings card is several screens tall, so the failure has to
     // travel to the visible toast as well as the live region.

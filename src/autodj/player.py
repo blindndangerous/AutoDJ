@@ -310,7 +310,7 @@ def effective_no_repeat_window(configured: int, library_size: int) -> int:
         return configured
     effective = max(1, library_size - max(4, library_size // 10))
     logger.warning(
-        "playback.no_repeat_window=%d but library has only %d tracks; "
+        "playback.repeat_rules.track.tracks=%d but library has only %d tracks; "
         "using %d so the picker always has candidates.",
         configured,
         library_size,
@@ -367,6 +367,32 @@ def _log_repeat_blocks(repeat: RepeatFilter, picked: IndexEntry) -> None:
         )
 
 
+def _join_recent(saved: list[str], recent: list[str]) -> list[str]:
+    """The track window's paths after putting *saved* plays ahead of *recent*.
+
+    Both are oldest first.  *recent* (the window in memory) always stays
+    whole at the end, so loading saved plays never shortens it.  Saved
+    plays it already holds, as a run inside it or as the run it starts
+    with, are not added twice.  Only positions whose first path matches
+    are compared, so a long window costs about one pass.
+    """
+    if not recent:
+        return list(saved)
+    if not saved:
+        return list(recent)
+    size = len(saved)
+    first = saved[0]
+    for index in range(len(recent) - size + 1):
+        if recent[index] == first and recent[index : index + size] == saved:
+            return list(recent)
+    start_path = recent[0]
+    for start, path in enumerate(saved):
+        # The earliest match is the longest overlap.
+        if path == start_path and saved[start:] == recent[: size - start]:
+            return [*saved[:start], *recent]
+    return [*saved, *recent]
+
+
 @dataclass
 class PlayerState:
     """Mutable shared state for the playback loop.
@@ -380,9 +406,9 @@ class PlayerState:
             bounded to *no_repeat_window* entries.
         no_repeat_window: Maximum number of tracks kept in *recently_played*.
         artist_repeat_window: Picks before an artist may repeat.
-        repeat_rules: Every repeat rule.  Left out, it is built from the
-            two windows, the title window following the artist one.  When
-            given, it sets the two windows.
+        repeat_rules: Every repeat rule. Left out, it uses the track and
+            artist windows, with album and title disabled. When given, it
+            sets the two windows.
         play_history: The track starts the artist, album and title rules
             and the minute windows look at, oldest first (see
             :class:`~autodj.repeat_rules.PlayRecord`).
@@ -417,8 +443,8 @@ class PlayerState:
     pre_queue_seed: IndexEntry | None = None
     is_paused: bool = False
     should_stop: bool = False
-    no_repeat_window: int = 500
-    artist_repeat_window: int = 3
+    no_repeat_window: int = 50
+    artist_repeat_window: int = 8
     repeat_rules: RepeatRules | None = None
     recently_played: deque = field(default_factory=deque)
     play_history: deque[PlayRecord] = field(default_factory=deque)
@@ -436,8 +462,8 @@ class PlayerState:
             self.repeat_rules = RepeatRules(
                 track_window=self.no_repeat_window,
                 artist_window=self.artist_repeat_window,
-                album_window=self.artist_repeat_window,
-                title_window=self.artist_repeat_window,
+                album_window=0,
+                title_window=0,
             )
         self.no_repeat_window = self.repeat_rules.track_window
         self.artist_repeat_window = self.repeat_rules.artist_window
@@ -469,41 +495,30 @@ class PlayerState:
             self.play_history = deque(self.play_history)
             prune_history(self.play_history, rules, self.clock())
 
-    def resize_repeat_windows(self, no_repeat_window: int, artist_repeat_window: int) -> None:
-        """Change the track and artist windows; the title window follows the artist one."""
-        self.set_repeat_rules(
-            replace(
-                self.rules,
-                track_window=no_repeat_window,
-                artist_window=artist_repeat_window,
-                album_window=artist_repeat_window,
-                title_window=artist_repeat_window,
-            )
-        )
-
     def restore_history(self, records: list[PlayRecord]) -> None:
         """Put plays from before a restart (oldest first) ahead of the history.
 
         Fills the track window's paths and the artist, album and title
         history, so the rules hold after a restart as they did before.
-        Takes ``history_lock``.
+        Run again after a settings save, it never shortens the track
+        window: the paths in memory stay, and saved plays only go ahead of
+        them (see :func:`_join_recent`).  Takes ``history_lock``.
         """
         with self.history_lock:
             maxlen = self.recently_played.maxlen
             if self.play_history:
                 first = self.play_history[0]
                 records = [record for record in records if record.started < first.started]
-                # shortcut: starts within 1s share a play; use IDs if rapid replays must count.
+                # The catalog and playback loop use separate timestamps for one start.
                 if (
                     records
                     and records[-1].path == first.path
-                    and first.started - records[-1].started < 1.0
+                    and first.started - records[-1].started < 5.0
                 ):
                     records.pop()
+            paths = _join_recent([record.path for record in records], list(self.recently_played))
             self.play_history = deque([*records, *self.play_history])
-            self.recently_played = deque(
-                (record.path for record in self.play_history), maxlen=maxlen
-            )
+            self.recently_played = deque(paths, maxlen=maxlen)
             prune_history(self.play_history, self.rules, self.clock())
 
     def record_played(self, entry: IndexEntry) -> None:
@@ -822,21 +837,19 @@ class Player:
         )
         from autodj.related_artist_file import (
             load_configured_related_artists,
-            migrate_legacy_related_file,
+            unused_related_artists_message,
         )
 
         try:
-            legacy = getattr(cfg.playback, "_legacy_repeat_settings", {})
-            migrated_file = migrate_legacy_related_file(cfg.index.active_dir, legacy)
-            if migrated_file:
-                cfg.playback.repeat_rules.related_artists_file = migrated_file
-            self._related_artists = load_configured_related_artists(
-                cfg.index.active_dir, cfg.playback.repeat_rules.related_artists_file
+            self._related_artists = (
+                load_configured_related_artists(cfg.index.active_dir)
+                if cfg.playback.repeat_rules.use_related_artists
+                else RelatedArtists()
             )
             self.related_artists_problem = None
         except (OSError, ValueError) as exc:
             self._related_artists = RelatedArtists()
-            self.related_artists_problem = str(exc)
+            self.related_artists_problem = unused_related_artists_message(exc)
             logger.warning("Related artists file was not used: %s", exc)
         # (library entries, their keys), rebuilt when the library changes;
         # see _track_keys.  Its own lock: the build can take a while on a
@@ -1988,7 +2001,11 @@ class Player:
                 if cached is not None and cached[1].splitter.known == known:
                     cached = (entries, cached[1])
                 else:
-                    related = getattr(self, "_related_artists", None) or RelatedArtists()
+                    related = (
+                        getattr(self, "_related_artists", None) or RelatedArtists()
+                        if self._cfg.playback.repeat_rules.use_related_artists
+                        else RelatedArtists()
+                    )
                     splitter = ArtistSplitter(known, related.single_acts)
                     cached = (entries, TrackKeyCache(splitter))
                 self._key_cache = cached
@@ -2013,7 +2030,12 @@ class Player:
         limit = plays_to_load(self._state.rules)
         if limit <= 0:
             return 0
-        records = records_from_plays(catalog.recent_plays(limit), time.time())
+        rows = catalog.recent_plays(limit)
+        library = getattr(self, "_library", None)
+        if library is not None:
+            # Plays the library has not written to SQLite yet count too.
+            rows.extend(library.pending_history())
+        records = records_from_plays(rows, time.time())
         if records:
             self._state.restore_history(records)
             logger.info("Repeat rules: %d plays from before the restart count", len(records))
@@ -2095,7 +2117,9 @@ class Player:
         ):
             return None
         try:
-            entry = self._sim.find_distant(current.path, context.recent, allowed=context.repeat)
+            protected = context.protected | {current.path}
+            recent = deque([*context.recent, *sorted(protected - set(context.recent))])
+            entry = self._sim.find_distant(current.path, recent, allowed=context.repeat)
             _log_repeat_blocks(context.repeat, entry)
             _CONSOLE.print("  [bold cyan]◈ Discovery track[/bold cyan]")
             return entry
@@ -2204,7 +2228,9 @@ class Player:
 
         # --- Normal similarity search ---
         try:
-            picked = self._sim.find_next_for_path(recently_played=context.recent, **search)
+            protected = context.protected | {current.path}
+            recent = deque([*context.recent, *sorted(protected - set(context.recent))])
+            picked = self._sim.find_next_for_path(recently_played=recent, **search)
             _log_repeat_blocks(context.repeat, picked)
             return picked, mode
         except SimilarityError:

@@ -383,6 +383,30 @@ describe("postSettings", () => {
     expect(control.disabled).toBe(false);
     vi.unstubAllGlobals();
   });
+
+  it("hands the failure to onError instead of reverting or announcing it", async () => {
+    const settingsStatus = document.createElement("p");
+    const control = document.createElement("input");
+    control.type = "number";
+    control.value = "7";
+    const onError = vi.fn();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new globalThis.Response(
+      JSON.stringify({ detail: "The related artists file is not valid: line 3." }),
+      { status: 400, headers: { "Content-Type": "application/json" } },
+    )));
+
+    await expect(postSettings("/api/playback-settings", {}, {
+      settingsStatus, control, onError,
+    })).resolves.toBe(false);
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onError.mock.calls[0][0].status).toBe(400);
+    expect(onError.mock.calls[0][0].message)
+      .toBe("The related artists file is not valid: line 3.");
+    expect(control.value).toBe("7");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settingsStatus.textContent).toBe("");
+    vi.unstubAllGlobals();
+  });
 });
 
 describe("a setting being saved", () => {

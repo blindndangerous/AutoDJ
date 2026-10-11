@@ -14,6 +14,7 @@ from click.testing import CliRunner
 from autodj.cli import _serve_url, _stage_serve_server, cli
 from autodj.config import ServerConfig, StreamConfig, load_config
 from autodj.lan import load_or_create_access_token
+from autodj.repeat_settings import RepeatSettings
 
 _DETECTED = ["127.0.0.1", "192.168.1.20", "::1", "localhost", "nas", "nas.local"]
 _TOKEN = "e" * 40
@@ -351,8 +352,7 @@ def _run_serve(
 
     cfg = MagicMock()
     cfg.index.index_dir = tmp_path
-    cfg.playback.no_repeat_window = 50
-    cfg.playback.artist_repeat_window = 3
+    cfg.playback.repeat_rules = RepeatSettings()
     cfg.playback.crossfade_seconds = 3.0
     cfg.server = server
     sim = MagicMock()

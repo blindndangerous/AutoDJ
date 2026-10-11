@@ -1385,6 +1385,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
       uv run autodj serve --lan
       uv run autodj serve --server-audio
     """
+    from autodj.runtime_state import SavedStateError
     from autodj.server import serve
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
@@ -1472,6 +1473,9 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
             stream=cfg.stream.enabled,
             lan_configured_hosts=lan_configured_hosts,
         )
+    except SavedStateError as exc:
+        console.print(f"[bold red]Saved web settings not loaded:[/] {escape(str(exc))}")
+        raise click.exceptions.Exit(1) from exc
     except KeyboardInterrupt:
         console.print("\n[yellow]Stopped.[/]")
 

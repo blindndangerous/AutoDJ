@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import heapq
 import ntpath
 import posixpath
 import random
@@ -110,13 +111,16 @@ def least_recent(
     if allowed is not None:
         ordered = list(entries)
         chooser.shuffle(ordered)
-        ordered.sort(
-            key=lambda entry: (
-                (stamp := last_played.get(entry.path)) is not None,
-                stamp,
-            )
-        )
-        return next((entry for entry in ordered if allowed(entry)), None)
+        heap = [
+            ((stamp := last_played.get(entry.path)) is not None, stamp, index, entry)
+            for index, entry in enumerate(ordered)
+        ]
+        heapq.heapify(heap)
+        while heap:
+            entry = heapq.heappop(heap)[-1]
+            if allowed(entry):
+                return entry
+        return None
     oldest = min(
         (last_played.get(entry.path) for entry in entries),
         key=lambda stamp: (stamp is not None, stamp),

@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from autodj.fsutil import atomic_write
-from autodj.repeat_settings import LEGACY_REPEAT_FIELDS, migrate_repeat_settings
+from autodj.repeat_settings import REMOVED_REPEAT_KEYS
 from autodj.settings_bodies import (
     BpmRangeBody,
     DiscoveryBody,
@@ -44,6 +44,11 @@ if TYPE_CHECKING:
     from autodj._bridge import PlayerBridge
 
 logger = logging.getLogger(__name__)
+
+
+class SavedStateError(ValueError):
+    """``web_state.json`` holds settings AutoDJ no longer reads; fix it by hand."""
+
 
 #: Version 2 dropped the redundant ``harmonic_mixing`` toggle. Version 1
 #: migration honors that toggle so ``harmonic_mixing: false`` cannot silently
@@ -111,7 +116,10 @@ def _migrate_v1(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _backup_v1_state(path: Path) -> bool:
-    """Preserve old settings before replacing them; false means do not save."""
+    """Preserve a v1 file once before replacing it; false means do not save."""
+    backup = path.with_name(f"{path.name}.v1.bak")
+    if backup.exists():
+        return True
     try:
         original = path.read_bytes()
         data = json.loads(original)
@@ -119,19 +127,12 @@ def _backup_v1_state(path: Path) -> bool:
         return True
     if not isinstance(data, dict) or type(data.get("schema_version")) is not int:
         return True
-    version = data["schema_version"]
-    old_repeats = isinstance(data.get("playback"), dict) and bool(
-        LEGACY_REPEAT_FIELDS.intersection(data["playback"])
-    )
-    if version != 1 and not old_repeats:
-        return True
-    backup = path.with_name(f"{path.name}.v{version}.bak")
-    if backup.exists():
+    if data["schema_version"] != 1:
         return True
     try:
         atomic_write(backup, original)
     except OSError as exc:
-        logger.warning("Failed to back up old web_state.json; keeping original: %s", exc)
+        logger.warning("Failed to back up v1 web_state.json; keeping original: %s", exc)
         return False
     return True
 
@@ -188,34 +189,6 @@ def _restore_preset(bridge: PlayerBridge, value: object) -> None:
 
 def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
     """Restore the playback section through the playback-settings route's setter."""
-    playback = playback.copy()
-    legacy = {key: playback.pop(key) for key in LEGACY_REPEAT_FIELDS if key in playback}
-    if legacy and "repeat_rules" not in playback:
-        valid = {}
-        for key, value in legacy.items():
-            try:
-                migrate_repeat_settings({key: value})
-            except (TypeError, ValueError):
-                _warn(key, value)
-            else:
-                valid[key] = value
-        if valid:
-            config = bridge.player._cfg.playback
-            previous = getattr(config, "_legacy_repeat_settings", {})
-            combined = {**previous, **valid}
-            migrated = migrate_repeat_settings(combined, base=config.repeat_rules)
-            from autodj.related_artist_file import migrate_legacy_related_file
-
-            try:
-                migrated_file = migrate_legacy_related_file(
-                    bridge.player._cfg.index.active_dir, combined
-                )
-            except (OSError, ValueError) as exc:
-                logger.warning("Could not migrate related artists: %s", exc)
-            else:
-                if migrated_file:
-                    migrated.related_artists_file = migrated_file
-            playback["repeat_rules"] = migrated.model_dump()
     player = bridge.player
     if "volume" in playback:
         volume = _checked(VolumeBody, "volume", playback["volume"])
@@ -283,6 +256,9 @@ def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
     Version 1 state is migrated conservatively; unsupported versions are
     ignored. Other saved fields continue to be validated individually.
 
+    Raises:
+        SavedStateError: The file holds removed repeat keys.
+
     Args:
         bridge: The :class:`~autodj._bridge.PlayerBridge` of a live player.
         index_dir: Directory housing ``web_state.json``.
@@ -299,6 +275,19 @@ def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
     if not isinstance(data, dict):
         logger.warning("web_state.json root is not an object, ignoring")
         return
+    playback = data.get("playback")
+    if isinstance(playback, dict):
+        old = sorted(REMOVED_REPEAT_KEYS.intersection(playback))
+        rules = playback.get("repeat_rules")
+        if isinstance(rules, dict):
+            old.extend(
+                f"repeat_rules.{key}" for key in sorted(REMOVED_REPEAT_KEYS.intersection(rules))
+            )
+        if old:
+            raise SavedStateError(
+                f"{path}: removed playback repeat keys {', '.join(old)}; "
+                "remove them by hand and re-enter limits in Settings > Picking > Repeats"
+            )
     version = data.get("schema_version")
     if type(version) is int and version == 1:
         data = _migrate_v1(data)

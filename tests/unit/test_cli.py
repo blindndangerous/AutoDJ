@@ -23,6 +23,7 @@ from autodj.cli import (
 )
 from autodj.config import ENVIRONMENT_OVERLAY, ServerConfig, StreamConfig
 from autodj.indexer import IndexEntry
+from autodj.repeat_settings import RepeatSettings
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -76,8 +77,7 @@ def _make_sim(n: int = 5) -> MagicMock:
 def _make_cfg(beets_db=None) -> MagicMock:
     cfg = MagicMock()
     cfg.library.beets_db = beets_db
-    cfg.playback.no_repeat_window = 50
-    cfg.playback.artist_repeat_window = 3
+    cfg.playback.repeat_rules = RepeatSettings()
     cfg.playback.crossfade_seconds = 3.0
     cfg.playback.discovery_every = None
     cfg.presets = {}
@@ -180,7 +180,7 @@ class TestCliConfigNotFound:
         cfg.write_text(
             '[library]\nmusic_dir = "Z:/Music"\n'
             '[index]\nindex_dir = "Z:/idx"\nmodel_dir = "models"\n'
-            "[playback]\ncrossfade_seconds = 3.0\nno_repeat_window = 50\n"
+            "[playback]\ncrossfade_seconds = 3.0\nrepeat_rules = { track = { tracks = 50 } }\n"
             '[model]\nname = "OpenMuQ/MuQ-large-msd-iter"\n',
             encoding="utf-8",
         )
@@ -197,7 +197,7 @@ class TestCliConfigNotFound:
         cfg.write_text(
             '[library]\nmusic_dir = "Z:/Music"\n'
             '[index]\nindex_dir = "Z:/idx"\nmodel_dir = "models"\n'
-            "[playback]\ncrossfade_seconds = 3.0\nno_repeat_window = 50\n"
+            "[playback]\ncrossfade_seconds = 3.0\nrepeat_rules = { track = { tracks = 50 } }\n"
             '[model]\nname = "OpenMuQ/MuQ-large-msd-iter"\n',
             encoding="utf-8",
         )
@@ -213,7 +213,7 @@ class TestCliConfigNotFound:
         cfg.write_text(
             '[library]\nmusic_dir = "Z:/Music"\n'
             '[index]\nindex_dir = "Z:/idx"\nmodel_dir = "models"\n'
-            "[playback]\ncrossfade_seconds = 3.0\nno_repeat_window = 50\n"
+            "[playback]\ncrossfade_seconds = 3.0\nrepeat_rules = { track = { tracks = 50 } }\n"
             '[model]\nname = "OpenMuQ/MuQ-large-msd-iter"\n',
             encoding="utf-8",
         )
@@ -353,7 +353,7 @@ class TestCliIndexNotFound:
         cfg.write_text(
             '[library]\nmusic_dir = "Z:/Music"\n'
             '[index]\nindex_dir = "Z:/no-such-index"\nmodel_dir = "models"\n'
-            "[playback]\ncrossfade_seconds = 3.0\nno_repeat_window = 50\n"
+            "[playback]\ncrossfade_seconds = 3.0\nrepeat_rules = { track = { tracks = 50 } }\n"
             '[model]\nname = "OpenMuQ/MuQ-large-msd-iter"\n',
             encoding="utf-8",
         )

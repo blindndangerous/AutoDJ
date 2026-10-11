@@ -44,7 +44,7 @@ def minimal_toml(tmp_path: Path) -> Path:
     cfg.write_text(
         '[library]\nmusic_dir = "Z:/Music"\n'
         '[index]\nindex_dir = "index"\nmodel_dir = "models"\n'
-        "[playback]\ncrossfade_seconds = 3.0\nno_repeat_window = 50\n"
+        "[playback]\ncrossfade_seconds = 3.0\nrepeat_rules = { track = { tracks = 50 } }\n"
         '[model]\nname = "OpenMuQ/MuQ-large-msd-iter"\n',
         encoding="utf-8",
     )
@@ -65,7 +65,7 @@ def full_toml(tmp_path: Path) -> Path:
         'model_dir = "models"\n'
         "[playback]\n"
         "crossfade_seconds = 5.0\n"
-        "no_repeat_window = 100\n"
+        "repeat_rules = { track = { tracks = 100 } }\n"
         "[model]\n"
         'name = "OpenMuQ/MuQ-MuLan-large"\n'
         'manual_path = "C:/models/MuQ"\n',
@@ -424,59 +424,26 @@ class TestPlaybackConfig:
         with pytest.raises(error, match="server_max_track_minutes"):
             PlaybackConfig.from_dict({"server_max_track_minutes": value})
 
-    def test_legacy_repeat_settings_migrate(self) -> None:
-        pb = PlaybackConfig.from_dict(
-            {
-                "no_repeat_window": 50,
-                "artist_repeat_window": 4,
-                "artist_repeat_minutes": 10,
-                "related_artists_starter": True,
-            }
-        )
-        assert pb.repeat_rules.track.tracks == 50
-        assert pb.repeat_rules.artist.tracks == pb.repeat_rules.album.tracks == 4
-        assert pb.repeat_rules.artist.minutes == pb.repeat_rules.album.minutes == 10
-        assert pb.repeat_rules.title.tracks == 4
-        assert pb.repeat_rules.use_related_artists
-
-    def test_title_migration_inherits_artist_count_only(self) -> None:
-        pb = PlaybackConfig.from_dict(
-            {
-                "artist_repeat_window": 7,
-                "artist_repeat_minutes": 12,
-                "title_repeat_minutes": 90,
-            }
-        )
-        assert pb.repeat_rules.title.tracks == 7
-        assert pb.repeat_rules.title.minutes == 90
-        explicit_none = PlaybackConfig.from_dict(
-            {
-                "artist_repeat_window": 7,
-                "title_repeat_window": None,
-            }
-        )
-        assert explicit_none.repeat_rules.title.tracks == 7
-
-    def test_new_repeat_rules_override_legacy(self) -> None:
-        pb = PlaybackConfig.from_dict(
-            {
-                "repeat_rules": {"track": {"tracks": 8}, "artist": {"tracks": 2}},
-                "no_repeat_window": 500,
-            }
-        )
-        assert pb.repeat_rules.track.tracks == 8
-
-    def test_legacy_repeat_keys_are_not_public_fields(self) -> None:
-        with pytest.raises(ValueError, match=r"unknown \[playback\] keys"):
-            PlaybackConfig.from_dict({"no_repeat_window": 0, "crossfade_seconds": 1, "bad": 2})
-
-    def test_no_repeat_window_zero_allowed(self) -> None:
-        pb = PlaybackConfig.from_dict({"no_repeat_window": 0})
-        assert pb.repeat_rules.track.tracks == 0
-
-    def test_no_repeat_window_negative_raises(self) -> None:
-        with pytest.raises(ValueError):
-            PlaybackConfig.from_dict({"no_repeat_window": -5})
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "no_repeat_window",
+            "no_repeat_minutes",
+            "artist_repeat_window",
+            "artist_repeat_minutes",
+            "title_repeat_window",
+            "title_repeat_minutes",
+            "related_artists_file",
+            "related_artists_starter",
+        ],
+    )
+    def test_removed_repeat_key_is_rejected(self, tmp_path: Path, key: str) -> None:
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(f"[playback]\n{key} = 0\n", encoding="utf-8")
+        with pytest.raises(ValueError, match=r"unknown \[playback\] keys") as error:
+            load_config(config_file, environ={})
+        assert key in str(error.value)
+        assert "Settings > Picking > Repeats" in str(error.value)
 
     def test_key_notation_default(self) -> None:
         pb = PlaybackConfig.from_dict({})

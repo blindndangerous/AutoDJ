@@ -519,25 +519,9 @@ def _related_artists_check(cfg: AutoDJConfig) -> DoctorCheck:
     """Read the related artists file the way the player will at startup."""
     from autodj.related_artist_file import DEFAULT_RELATED_ARTISTS_FILE
     from autodj.repeat_rules import load_related_artists
-    from autodj.repeat_settings import RepeatSettings
 
-    settings = cfg.playback.repeat_rules
-    state = cfg.index.active_dir / "web_state.json"
-    if state.is_file():
-        try:
-            saved = json.loads(state.read_text(encoding="utf-8"))
-            if isinstance(saved, dict) and isinstance(saved.get("playback"), dict):
-                values = saved["playback"].get("repeat_rules")
-                if values is not None:
-                    settings = RepeatSettings.model_validate(values)
-        except (OSError, ValueError):
-            pass
-    path = (
-        Path(settings.related_artists_file).expanduser()
-        if settings.related_artists_file
-        else cfg.index.active_dir / DEFAULT_RELATED_ARTISTS_FILE
-    )
-    if not settings.related_artists_file and not path.exists():
+    path = cfg.index.active_dir / DEFAULT_RELATED_ARTISTS_FILE
+    if not path.exists():
         return DoctorCheck(
             "related-artists",
             CheckStatus.PASS,
@@ -550,7 +534,7 @@ def _related_artists_check(cfg: AutoDJConfig) -> DoctorCheck:
             "related-artists",
             CheckStatus.WARN,
             "related artists file not usable; AutoDJ starts without it",
-            f"{exc}. Fix the file or choose another in Settings > Picking > Repeats.",
+            f"{exc}. Fix {path} and save Settings > Picking > Repeats again.",
         )
     return DoctorCheck(
         "related-artists",

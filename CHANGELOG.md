@@ -20,15 +20,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     Each accepts tracks, minutes or both; zero turns off that limit. Save applies changes
     to future picks, uses saved play history and remembers the settings across restarts.
     Fresh installations default to 50 tracks for the same track and 8 for the same artist;
-    album, title and all minute limits start at zero. Existing saved limits are preserved.
+    album, title and all minute limits start at zero. Artist, album and title track
+    limits are capped at 5000.
   - Least-recent picks, including clock slots, check songs from oldest to newest and stop
     at the first eligible song. Ties stay random; rules relax only after none qualify.
   - Use related artists applies the artist limit to links in an editable TOML file.
     AutoDJ copies the sample to `index/<name>/related-artists.toml` on first use and never
     overwrites an existing copy during upgrades. Save repeat settings to reload file edits.
-    The default file is included in backups; a custom file elsewhere must be backed up separately.
+    The fixed file is included in backups and capped at 1 MiB.
   - An invalid related-artist file is refused when saving. At startup the other rules still
-    work, and the log and `autodj doctor` identify the file problem.
+    work, and the Repeats panel, log and `autodj doctor` identify the file problem.
 - Export the play log for royalty reports, from "Export play log" in the History tab or with
   `autodj export-plays --from DATE --to DATE`. The CSV has one row per play: start and end time,
   seconds played, artist, title, album, ISRC, label, kind, file and performances. ISRC and label
@@ -87,9 +88,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Old repeat settings migrate into the web controls. The old artist limits become the
-  initial artist and album limits, while titles retain their own limits. Saving writes only
-  the new settings format and preserves a backup of older saved settings.
+- Old repeat keys in `config.toml` and `web_state.json` are rejected. Remove them by hand
+  and re-enter limits in Settings > Picking > Repeats.
 - Random walk, least recently played and clock picks now hold back the same album and the same
   song title as well as the same artist, like similarity picks always did. Discovery picks now
   follow the artist, album and title rules too.

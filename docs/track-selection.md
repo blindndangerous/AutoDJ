@@ -140,15 +140,13 @@ The current song and already prepared queue are left alone. Saved play history
 counts after a restart and when you increase a limit. A play interrupted by a
 set stop does not count, as in the history viewer. Future-dated saved plays are
 skipped if the clock has moved backwards. Minute limits use up to 5000 recent
-plays; track-count rules retain the number requested. If the library is too
+plays; artist, album and title track limits allow at most 5000. If the library is too
 small for the track rule, AutoDJ reduces its effective count to leave at least
 a tenth of the library (and at least four tracks) available.
 
-Older config and saved web settings are imported into these controls. The old
-artist limits become both the artist and album limits; title keeps its own
-limits, or inherits the old artist track count when none was specified. There
-are no separate legacy controls. The next settings save writes the new format
-and keeps a backup of older saved settings. Optional config defaults use
+Old repeat keys in `config.toml` and `web_state.json` are rejected with an
+error. Remove them by hand and re-enter limits in Settings > Picking > Repeats.
+Optional config defaults use
 `[playback.repeat_rules]`, with `track`, `artist`, `album` and `title` tables
 containing `tracks` and `minutes`; saved web settings take precedence.
 
@@ -195,20 +193,20 @@ Artist names ignore case, accents, punctuation and a leading "The".
 The **Use related artists** checkbox applies the artist limits to links in a
 TOML file. The default is `index/<name>/related-artists.toml`; AutoDJ copies the
 shipped sample there only when it is absent. Upgrades never replace an existing
-user copy. An older setup that used both the starter list and a custom file gets
-a merged copy beside the default file; the original custom file is left untouched.
-The Settings page shows the default location and accepts a custom
-path. Relative custom paths start from the folder where AutoDJ was launched.
+user copy. The Settings page shows this fixed location. The browser cannot
+choose another path. The file must be at most 1 MiB.
 Edit the file, then save repeat settings to reload it without restarting playback.
 
 The `[related]` table maps an artist to the artists it holds back. Links are
 one-way and are not followed further. For example, `"Bruno Mars" = ["Silk Sonic"]`
 holds back Silk Sonic after Bruno Mars; add the reverse entry for both directions.
-The optional `single_acts` list identifies credits that should never be split.
+The optional `single_acts` list identifies credits that should never be split
+while **Use related artists** is enabled.
 
-An invalid file is refused when you save settings, leaving the previous rules
-in use. At startup, an invalid or missing custom file produces a warning and
-the other repeat rules still work. `autodj doctor` reports the file problem.
+An invalid file is refused when you save with **Use related artists** on,
+leaving the previous rules in use. At startup, an invalid file produces a
+warning and the other repeat rules still work. The Repeats panel and
+`autodj doctor` report the problem.
 
 ### Where the rules apply
 
@@ -225,6 +223,8 @@ the other repeat rules still work. `autodj doctor` reports the file problem.
   logs which one it relaxed.
 - When no track passes, the rules are relaxed rather than stopping the
   music. The fallback pick after a failed pick ignores them, as before.
+- Automatic picks exclude the playing, prepared and starting tracks even when
+  every repeat limit is zero.
 - Tracks you queue, play now, or choose as the seed are never held back.
 
 Each pick that held candidates back logs a line at info level, such as

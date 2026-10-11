@@ -126,6 +126,10 @@ The liner *root directory* comes only from configuration. `/api/playback-setting
 `liners_folder`, like any other unknown field, with 422 before applying anything.
 `web_state.json` keeps only fields a settings route accepts, and on restart each saved value
 must pass that route's field rule, so the file can neither store nor restore `liners_folder`.
+`repeat_rules.related_artists_file` is also rejected by the API and saved state. The only
+related-artists file the browser can enable is `related-artists.toml` in the active index folder.
+AutoDJ checks its size before reading and refuses files larger than 1 MiB. Browser errors do
+not include artist names or unexpected top-level keys from that file.
 Treat a paired browser as trusted.
 
 `GET /api/history/export` returns the play log for a date range: titles, artists, albums, ISRC
