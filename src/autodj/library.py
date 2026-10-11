@@ -25,9 +25,8 @@ from autodj.indexer import (
 )
 from autodj.processing import (
     analyze_basic,
-    prepare_source,
-    prepared_source_matches,
-    remove_stale_prepared,
+    analyze_loudness,
+    loudness_matches,
 )
 from autodj.stereo import SAMPLE_RATE, DecodeReport
 
@@ -496,7 +495,6 @@ class LibraryManager:
             found = self._discover(source_ids)
             self._set_state(total=len(found), phase="reading tracks")
             self._reconcile_moves(found)
-            cache_dir = self.cfg.index.active_dir / "prepared"
             for kind, path in found:
                 if self._stop.is_set():
                     break
@@ -566,7 +564,7 @@ class LibraryManager:
                     with self._lock:
                         self._state["done"] += 1
             self.refresh()
-            self._set_state(phase="preparing audio", done=0, total=len(found), current="")
+            self._set_state(phase="measuring loudness", done=0, total=len(found), current="")
             for kind, path in found:
                 if self._stop.is_set():
                     break
@@ -575,49 +573,20 @@ class LibraryManager:
                     record = self.catalog.record_for_path(path)
                     if record is None:
                         continue
-                    prepared_path = record["prepared_path"]
-                    quiet_boost_db = self.cfg.playback.quiet_boost_db
-                    if prepared_path and prepared_source_matches(
-                        prepared_path, kind, quiet_boost_db
-                    ):
+                    if loudness_matches(record.get("loudness"), path, kind):
                         continue
-                    prepared = prepare_source(path, cache_dir, kind, quiet_boost_db)
-                    entry = self._entry_from_record(record)
-                    self.catalog.put_entry(entry, kind, prepared_path=str(prepared))
+                    self.catalog.set_loudness(path, analyze_loudness(path, kind))
                 except Exception as exc:
-                    logger.warning("Audio preparation failed for %s: %s", path, exc)
+                    logger.warning("Loudness analysis failed for %s: %s", path, exc)
                     with self._lock:
                         self._import_errors.append({"path": str(path), "error": str(exc)})
                 finally:
                     with self._lock:
                         self._state["done"] += 1
-            if not self._stop.is_set():
-                self._remove_stale_prepared(cache_dir)
             self._set_state(phase="complete")
         finally:
             self.refresh()
             self._set_state(running=False, current="")
-
-    def _remove_stale_prepared(self, cache_dir: Path) -> None:
-        """Drop prepared audio that no catalog record uses after a settings change."""
-        keep: set[str] = set()
-        for record in self.catalog.all_entries():
-            keep.add(record["path"])
-            if record["prepared_path"]:
-                keep.add(record["prepared_path"])
-        try:
-            removed, freed = remove_stale_prepared(
-                cache_dir, keep, self.cfg.playback.quiet_boost_db
-            )
-        except OSError as exc:
-            logger.warning("Could not clean prepared audio in %s: %s", cache_dir, exc)
-            return
-        if removed:
-            logger.info(
-                "Removed %d outdated prepared audio file(s), freeing %.1f MB",
-                removed,
-                freed / 1_000_000,
-            )
 
     def analysis_pending(self) -> list[dict[str, Any]]:
         pending = []
@@ -634,7 +603,7 @@ class LibraryManager:
     def schedule_analysis(self) -> bool:
         with self._lock:
             phase = self._state["phase"]
-            if self._scan_lock.locked() and phase != "preparing audio":
+            if self._scan_lock.locked() and phase != "measuring loudness":
                 return False
             generation = self._scan_generation
             if self._analysis_started_generation == generation:

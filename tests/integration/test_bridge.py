@@ -328,10 +328,10 @@ def test_repeat_windows_resize_the_running_history(bridge, tmp_path) -> None:
     assert bridge.get_settings()["playback"]["repeat_rules"]["track"]["tracks"] == 500
 
 
-def test_quiet_boost_setting_updates_and_reads_back(bridge) -> None:
-    bridge.set_playback_settings(PlaybackSettingsBody(quiet_boost_db=6.5))
-    assert bridge.player._cfg.playback.quiet_boost_db == 6.5
-    assert bridge.get_settings()["playback"]["quiet_boost_db"] == 6.5
+def test_stereotool_agc_drive_setting_updates_and_reads_back(bridge) -> None:
+    bridge.set_playback_settings(PlaybackSettingsBody(stereotool_agc_drive_db=6.5))
+    assert bridge.player._cfg.playback.stereotool_agc_drive_db == 6.5
+    assert bridge.get_settings()["playback"]["stereotool_agc_drive_db"] == 6.5
 
 
 class _SetStoppingState:

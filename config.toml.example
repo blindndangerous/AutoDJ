@@ -181,7 +181,7 @@ trusted_proxies = []
 # login with the stream ID.
 
 [playback]
-# Extra lift for a quiet opening, returning to normal within 8 seconds (0 to 6; 0 disables).
+# ReplayGain-only opening lift, returning to normal within 8 seconds (0 to 6; 0 disables).
 intro_lift_max_db = 4.0
 # Stereo Tool input gain before its output limiter, from -12 to +6 dB.
 stereotool_input_trim_db = 0.0
