@@ -98,7 +98,7 @@ class TestLoadConfig:
     def test_loads_full_config(self, full_toml: Path) -> None:
         cfg = load_config(full_toml)
         assert cfg.playback.crossfade_seconds == 5.0
-        assert cfg.playback.no_repeat_window == 100
+        assert cfg.playback.repeat_rules.track.tracks == 100
         assert cfg.model.name == "OpenMuQ/MuQ-MuLan-large"
         assert cfg.model.manual_path == Path("C:/models/MuQ")
 
@@ -347,7 +347,7 @@ class TestPlaybackConfig:
     def test_defaults(self) -> None:
         pb = PlaybackConfig.from_dict({})
         assert pb.crossfade_seconds == 3.0
-        assert pb.no_repeat_window == 500
+        assert pb.repeat_rules.track.tracks == 500
         assert pb.show_lyrics is True
         assert pb.prefetch_next_track is True
         assert pb.silence_trigger_crossfade is True
@@ -398,7 +398,6 @@ class TestPlaybackConfig:
             ("liners_every_minutes", -1.0),
             ("liners_random_min_minutes", -1.0),
             ("liners_random_max_minutes", -1.0),
-            ("artist_repeat_window", -1),
             ("pick_temperature", -0.1),
             ("pick_top_k", 0),
         ],
@@ -423,9 +422,43 @@ class TestPlaybackConfig:
         with pytest.raises(error, match="server_max_track_minutes"):
             PlaybackConfig.from_dict({"server_max_track_minutes": value})
 
+    def test_legacy_repeat_settings_migrate(self) -> None:
+        pb = PlaybackConfig.from_dict({
+            "no_repeat_window": 50, "artist_repeat_window": 4,
+            "artist_repeat_minutes": 10, "related_artists_starter": True,
+        })
+        assert pb.repeat_rules.track.tracks == 50
+        assert pb.repeat_rules.artist.tracks == pb.repeat_rules.album.tracks == 4
+        assert pb.repeat_rules.artist.minutes == pb.repeat_rules.album.minutes == 10
+        assert pb.repeat_rules.title.tracks == 4
+        assert pb.repeat_rules.use_related_artists
+
+    def test_title_migration_inherits_artist_count_only(self) -> None:
+        pb = PlaybackConfig.from_dict({
+            "artist_repeat_window": 7, "artist_repeat_minutes": 12,
+            "title_repeat_minutes": 90,
+        })
+        assert pb.repeat_rules.title.tracks == 7
+        assert pb.repeat_rules.title.minutes == 90
+        explicit_none = PlaybackConfig.from_dict({
+            "artist_repeat_window": 7, "title_repeat_window": None,
+        })
+        assert explicit_none.repeat_rules.title.tracks == 7
+
+    def test_new_repeat_rules_override_legacy(self) -> None:
+        pb = PlaybackConfig.from_dict({
+            "repeat_rules": {"track": {"tracks": 8}, "artist": {"tracks": 2}},
+            "no_repeat_window": 500,
+        })
+        assert pb.repeat_rules.track.tracks == 8
+
+    def test_legacy_repeat_keys_are_not_public_fields(self) -> None:
+        with pytest.raises(ValueError, match=r"unknown \[playback\] keys"):
+            PlaybackConfig.from_dict({"no_repeat_window": 0, "crossfade_seconds": 1, "bad": 2})
+
     def test_no_repeat_window_zero_allowed(self) -> None:
         pb = PlaybackConfig.from_dict({"no_repeat_window": 0})
-        assert pb.no_repeat_window == 0
+        assert pb.repeat_rules.track.tracks == 0
 
     def test_no_repeat_window_negative_raises(self) -> None:
         with pytest.raises(ValueError):

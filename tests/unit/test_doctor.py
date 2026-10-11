@@ -1024,13 +1024,12 @@ def test_no_relays_no_relay_checks(tmp_path: Path) -> None:
 def test_related_artists_check(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     check = doctor._related_artists_check(cfg)
-    assert (check.status, check.summary) == (doctor.CheckStatus.PASS, "no related artists file")
-    cfg.playback.related_artists_starter = True
-    assert doctor._related_artists_check(cfg).summary == "starter list only"
+    assert check.status == doctor.CheckStatus.PASS
+    assert "Sample will be copied" in check.summary
 
     path = tmp_path / "related.toml"
     path.write_bytes(b'[related]\n"Bruno Mars" = ["The Hooligans"]\n')
-    cfg.playback.related_artists_file = str(path)
+    cfg.playback.repeat_rules.related_artists_file = str(path)
     check = doctor._related_artists_check(cfg)
     assert check.status is doctor.CheckStatus.PASS
     assert str(path) in check.summary
@@ -1042,7 +1041,7 @@ def test_related_artists_check_warns_about_a_bad_file(tmp_path: Path, content) -
     path = tmp_path / "related.toml"
     if content is not None:
         path.write_bytes(content)
-    cfg.playback.related_artists_file = str(path)
+    cfg.playback.repeat_rules.related_artists_file = str(path)
     check = doctor._related_artists_check(cfg)
     assert check.status is doctor.CheckStatus.WARN
     assert str(path) in check.detail

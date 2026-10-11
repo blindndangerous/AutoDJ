@@ -120,3 +120,40 @@ def test_eq_body_accepts_bridge_range(value: float) -> None:
 def test_eq_body_rejects_gains_outside_bridge_range(value: float) -> None:
     with pytest.raises(ValidationError):
         EqBody.model_validate({"mid": value})
+
+
+@pytest.mark.parametrize("rule", ["artist", "album", "track", "title"])
+@pytest.mark.parametrize(
+    "limits",
+    [
+        {"tracks": -1},
+        {"tracks": 1.5},
+        {"tracks": True},
+        {"tracks": 100001},
+        {"minutes": -1},
+        {"minutes": float("nan")},
+        {"minutes": True},
+        {"minutes": 10081},
+    ],
+)
+def test_repeat_rules_reject_invalid_limits(rule, limits):
+    with pytest.raises(ValidationError):
+        PlaybackSettingsBody.model_validate({"repeat_rules": {rule: limits}})
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "no_repeat_window",
+        "artist_repeat_window",
+        "no_repeat_minutes",
+        "artist_repeat_minutes",
+        "title_repeat_window",
+        "title_repeat_minutes",
+        "related_artists_file",
+        "related_artists_starter",
+    ],
+)
+def test_removed_repeat_api_fields_are_not_silently_accepted(field):
+    with pytest.raises(ValidationError):
+        PlaybackSettingsBody.model_validate({field: 3})

@@ -119,46 +119,34 @@ entries with softmax weights.
 
 ## Repeat avoidance and discovery
 
-`PlayerState` keeps `recently_played` as a deque bounded by
-`no_repeat_window` (default 500), and `play_history`, the path, artist, album,
-title and start time of each recent track. `src/autodj/repeat_rules.py` turns
-that history into three rules:
+Edit all four rules under **Settings > Picking > Repeats**:
 
-- Track: the same file, within `no_repeat_window` tracks or
-  `no_repeat_minutes` minutes.
-- Artist: any artist the candidate credits, or a related one, was credited
-  within `artist_repeat_window` tracks (default 3) or
-  `artist_repeat_minutes` minutes. The same album is held back by the same
-  window, as before.
-- Title: the same song in any version, within `title_repeat_window` tracks
-  or `title_repeat_minutes` minutes. Unset, `title_repeat_window` follows
-  `artist_repeat_window`, which covered titles on its own before.
+- Artist: any artist credited on a recent track, including related artists when enabled.
+- Album: the same album name, independent of the artist limit.
+- Track: the same audio file.
+- Title: the same song title across versions, such as a radio edit and a live recording.
 
-A count of 0 or minutes of 0 turns that half of a rule off. With both set, a
-candidate is held back if either catches it. Minutes count from when a
-track started, measured when the pick is made; in server audio and stream
-mode that is about one track ahead of when the pick plays, so a minute
-window holds back a little more than its length.
+Each has a Tracks box and a Minutes box. Zero turns off that limit. When both
+are set, a candidate must clear both limits. Minutes count from when a track
+started to when the next pick is made. Server playout picks ahead, so a song
+may be held back a little longer than the chosen time.
 
-The rules survive a restart. At startup the player reads the latest plays
-from the station's saved play history (`play_history` in `library.db`), as
-many as the windows can look at, and counts them like plays from this run:
-a song that started 30 minutes before a restart is still held back by a
-60-minute window afterwards. Only plays that started count; a play a set stop
-cut short does not, as in the history viewer. Minute windows use the wall
-clock. A saved play dated after the current time (the clock was set back) is
-skipped at startup; one recorded during this run that ends up in the future
-counts as just played until the clock catches up. The artist, album and
-title rules remember at most 5000 plays (`HISTORY_LIMIT`), a week of
-two-minute tracks; a larger window looks only that far back.
+Save applies the rules to future picks and stores them in `web_state.json`.
+The current song and already prepared queue are left alone. Saved play history
+counts after a restart and when you increase a limit. A play interrupted by a
+set stop does not count, as in the history viewer. Future-dated saved plays are
+skipped if the clock has moved backwards. Minute limits use up to 5000 recent
+plays; track-count rules retain the number requested. If the library is too
+small for the track rule, AutoDJ reduces its effective count to leave at least
+a tenth of the library (and at least four tracks) available.
 
-The track and artist windows can be changed while AutoDJ runs, under
-Settings, Song picking ("Tracks before a song can repeat" and "Tracks before
-an artist can repeat"); the new value applies to the next pick and is saved
-in `web_state.json`. The other repeat settings are read from `config.toml`
-for now. When the library holds no more tracks than `no_repeat_window`, the
-player uses a smaller window so that at least a tenth of the library (and at
-least 4 tracks) stays available.
+Older config and saved web settings are imported into these controls. The old
+artist limits become both the artist and album limits; title keeps its own
+limits, or inherits the old artist track count when none was specified. There
+are no separate legacy controls. The next settings save writes the new format
+and keeps a backup of older saved settings. Optional config defaults use
+`[playback.repeat_rules]`, with `track`, `artist`, `album` and `title` tables
+containing `tracks` and `minutes`; saved web settings take precedence.
 
 ### Titles
 
@@ -200,16 +188,23 @@ Artist names ignore case, accents, punctuation and a leading "The".
 
 ### Related artists
 
-`related_artists_file` names a TOML file whose `[related]` table maps an
-artist to a list of artists it holds back. Links are one-way and are not
-followed further: "Bruno Mars" = ["Silk Sonic"] holds back Silk Sonic after
-Bruno Mars, but not Bruno Mars after Silk Sonic. `related_artists_starter =
-true` adds a short built-in list of side projects, duos and aliases
-(`STARTER_RELATED_ARTISTS`). Both are read when AutoDJ starts. A file
-that is missing, unreadable or invalid does not stop AutoDJ: the server log
-warns once, naming the file and the problem, and picking goes on with the
-starter list (when it is on) or no related artists. `autodj doctor` reports
-the same problem under "related-artists".
+The **Use related artists** checkbox applies the artist limits to links in a
+TOML file. The default is `index/<name>/related-artists.toml`; AutoDJ copies the
+shipped sample there only when it is absent. Upgrades never replace an existing
+user copy. An older setup that used both the starter list and a custom file gets
+a merged copy beside the default file; the original custom file is left untouched.
+The Settings page shows the default location and accepts a custom
+path. Relative custom paths start from the folder where AutoDJ was launched.
+Edit the file, then save repeat settings to reload it without restarting playback.
+
+The `[related]` table maps an artist to the artists it holds back. Links are
+one-way and are not followed further. For example, `"Bruno Mars" = ["Silk Sonic"]`
+holds back Silk Sonic after Bruno Mars; add the reverse entry for both directions.
+The optional `single_acts` list identifies credits that should never be split.
+
+An invalid file is refused when you save settings, leaving the previous rules
+in use. At startup, an invalid or missing custom file produces a warning and
+the other repeat rules still work. `autodj doctor` reports the file problem.
 
 ### Where the rules apply
 

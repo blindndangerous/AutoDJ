@@ -62,7 +62,6 @@ from autodj.repeat_rules import (
     TrackKeyCache,
     artist_key,
     build_filter,
-    load_related_artists_or_warn,
     plays_to_load,
     prune_history,
     records_from_plays,
@@ -323,7 +322,7 @@ def apply_repeat_windows(player: Any) -> None:
     """Give *player* the repeat rules its configuration now asks for.
 
     Used when the web UI or restored web state changes
-    ``playback.no_repeat_window`` or ``playback.artist_repeat_window`` on
+    ``playback.repeat_rules`` on
     a running player, and when the library size changes.  Cheap when
     nothing changed: :meth:`PlayerState.set_repeat_rules` keeps equal
     rules as they are.
@@ -341,7 +340,7 @@ def apply_repeat_windows(player: Any) -> None:
     player._state.set_repeat_rules(
         RepeatRules.from_playback(
             pb,
-            track_window=effective_no_repeat_window(int(pb.no_repeat_window), library_size),
+            track_window=effective_no_repeat_window(pb.repeat_rules.track.tracks, library_size),
             related=getattr(player, "_related_artists", None),
         )
     )
@@ -428,6 +427,7 @@ class PlayerState:
             self.repeat_rules = RepeatRules(
                 track_window=self.no_repeat_window,
                 artist_window=self.artist_repeat_window,
+                album_window=self.artist_repeat_window,
                 title_window=self.artist_repeat_window,
             )
         self.no_repeat_window = self.repeat_rules.track_window
@@ -467,6 +467,7 @@ class PlayerState:
                 self.rules,
                 track_window=no_repeat_window,
                 artist_window=artist_repeat_window,
+                album_window=artist_repeat_window,
                 title_window=artist_repeat_window,
             )
         )
@@ -480,10 +481,20 @@ class PlayerState:
         """
         with self.history_lock:
             maxlen = self.recently_played.maxlen
-            self.recently_played = deque(
-                [*(record.path for record in records), *self.recently_played], maxlen=maxlen
-            )
+            if self.play_history:
+                first = self.play_history[0]
+                records = [record for record in records if record.started < first.started]
+                # The play log timestamps the same start a little later or earlier.
+                if (
+                    records
+                    and records[-1].path == first.path
+                    and first.started - records[-1].started < 1.0
+                ):
+                    records.pop()
             self.play_history = deque([*records, *self.play_history])
+            self.recently_played = deque(
+                (record.path for record in self.play_history), maxlen=maxlen
+            )
             prune_history(self.play_history, self.rules, self.clock())
 
     def record_played(self, entry: IndexEntry) -> None:
@@ -797,23 +808,27 @@ class Player:
         # picker still has variety.
         library_size = len(getattr(sim_index, "entries", []) or [])
         effective = effective_no_repeat_window(
-            int(cfg.playback.no_repeat_window),
+            cfg.playback.repeat_rules.track.tracks,
             library_size,
         )
-        # Read once: a changed related artists file applies after a restart.
-        # A bad file is reported and skipped; it never stops the player.
-        related_file = getattr(cfg.playback, "related_artists_file", None)
-        starter = getattr(cfg.playback, "related_artists_starter", False) is True
-        self._related_artists: RelatedArtists
-        self._related_artists, self.related_artists_problem = load_related_artists_or_warn(
-            related_file if isinstance(related_file, str) else None, starter=starter
+        from autodj.related_artist_file import (
+            load_configured_related_artists,
+            migrate_legacy_related_file,
         )
-        if self.related_artists_problem:
-            logger.warning(
-                "%s. Picking goes on with %s.",
-                self.related_artists_problem,
-                "the starter list only" if starter else "no related artists",
+
+        try:
+            legacy = getattr(cfg.playback, "_legacy_repeat_settings", {})
+            migrated_file = migrate_legacy_related_file(cfg.index.active_dir, legacy)
+            if migrated_file:
+                cfg.playback.repeat_rules.related_artists_file = migrated_file
+            self._related_artists = load_configured_related_artists(
+                cfg.index.active_dir, cfg.playback.repeat_rules.related_artists_file
             )
+            self.related_artists_problem = None
+        except (OSError, ValueError) as exc:
+            self._related_artists = RelatedArtists()
+            self.related_artists_problem = str(exc)
+            logger.warning("Related artists file was not used: %s", exc)
         # (library entries, their keys), rebuilt when the library changes;
         # see _track_keys.  Its own lock: the build can take a while on a
         # large library, and _pick_lock must never make a track start wait.
@@ -1970,7 +1985,7 @@ class Player:
                 self._key_cache = cached
             return cached[1]
 
-    def restore_repeat_history(self, catalog: Any) -> int:
+    def restore_repeat_history(self, catalog: Any, *, refresh: bool = False) -> int:
         """Load the plays from before a restart into the repeat rules.
 
         Reads only as many saved plays as the windows can look at (see
@@ -1983,7 +1998,7 @@ class Player:
         Returns:
             How many plays were loaded.
         """
-        if getattr(self, "_repeat_history_restored", False):
+        if getattr(self, "_repeat_history_restored", False) and not refresh:
             return 0
         self._repeat_history_restored = True
         limit = plays_to_load(self._state.rules)

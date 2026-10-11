@@ -5,7 +5,8 @@ that wrote it and the list of files) and these members:
 
 - ``index/index-manifest.json`` and the two generation files it names
   (``tracks.gN.db`` and ``vectors.gN.index``): the live index generation.
-- ``index/dj_meta.db``, ``index/library.db`` and ``index/web_state.json`` from the active index folder.
+- ``index/dj_meta.db``, ``index/library.db``, ``index/web_state.json`` and editable
+  ``index/related-artists.toml`` from the active index folder.
 - ``liners/...`` and ``profiles/...``: every file in those folders.
 """
 
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sqlite3
 import tempfile
@@ -31,8 +33,15 @@ if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
 
 # Files of the index folder a backup holds besides the generation files.
-INDEX_FILES = ("dj_meta.db", "library.db", "web_state.json", im.MANIFEST_NAME)
+INDEX_FILES = (
+    "dj_meta.db",
+    "library.db",
+    "web_state.json",
+    "related-artists.toml",
+    im.MANIFEST_NAME,
+)
 _FOLDERS = ("liners", "profiles")
+_MIGRATED_RELATED_FILE = re.compile(r"related-artists-migrated-[0-9a-f]{16}\.toml")
 
 
 class BackupError(RuntimeError):
@@ -80,6 +89,12 @@ def _snapshot_index(active: Path, snapshot: Path) -> None:
         ):
             source.backup(target)
         _check_sqlite(snapshot / name)
+    for related_artists in active.glob("related-artists*.toml"):
+        if (
+            related_artists.name == "related-artists.toml"
+            or _MIGRATED_RELATED_FILE.fullmatch(related_artists.name)
+        ) and related_artists.is_file():
+            shutil.copyfile(related_artists, snapshot / related_artists.name)
 
 
 def _check_sqlite(path: Path) -> None:
@@ -175,7 +190,11 @@ def _target(roots: dict[str, Path], name: str) -> Path:
     if (
         top == "index"
         and len(rest) == 1
-        and (rest[0] in INDEX_FILES or im.GENERATION_FILE_RE.match(rest[0]))
+        and (
+            rest[0] in INDEX_FILES
+            or im.GENERATION_FILE_RE.match(rest[0])
+            or _MIGRATED_RELATED_FILE.fullmatch(rest[0])
+        )
     ):
         return roots["index"] / rest[0]
     if top in _FOLDERS and rest:
