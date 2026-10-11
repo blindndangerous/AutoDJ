@@ -39,6 +39,7 @@ tmp/
 served.html
 
 # Tool caches
+/tools/
 .cache/
 .mypy_cache/
 .ruff_cache/

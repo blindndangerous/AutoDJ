@@ -156,6 +156,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Output processing keeps audio playing through a fallback while the processor restarts,
+  then returns to processed sound when it recovers.
+- Older version-1 web settings are migrated on upgrade, preserving the harmonic-mixing
+  preference and saving the original settings as `web_state.json.v1.bak`.
 - Listen here opens a fresh stream URL on every connection, preventing Firefox from
   reusing an old media offset after a page refresh. Shared station links stay unchanged.
 - Adding a folder scans and counts that folder instead of the whole library. Additions queued
