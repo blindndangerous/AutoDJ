@@ -1,6 +1,8 @@
 """Station timing through the real player, including queue reservations."""
 
+import threading
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -41,7 +43,10 @@ def station(monkeypatch):
         audio[entry.path] = array
     monkeypatch.setattr(player, "_load_playout_audio", lambda entry: audio[entry.path].copy())
     player._library = SimpleNamespace(
-        catalog=SimpleNamespace(points=lambda path: points[path]),
+        catalog=SimpleNamespace(
+            points=lambda path: points[path],
+            record_for_path=lambda path: {"allow_outro": path == voice.path},
+        ),
         entries_snapshot=lambda kind="music": tuple(
             entries[2:] if kind == "liner" else entries[:2]
         ),
@@ -171,7 +176,7 @@ def test_master_processing_does_not_stack_replaygain(station, mode):
 def test_master_processing_reuses_prepared_sources(station, mode, tmp_path, monkeypatch):
     player, (entry, *_), _points = station
     player._cfg.playback.loudness_processing = mode
-    prepared = tmp_path / "prepared.wav"
+    prepared = tmp_path / "type-b-v1-music-9-prepared.wav"
     prepared.touch()
     player._library.catalog.record_for_path = lambda _path: {
         "prepared_path": str(prepared),
@@ -184,6 +189,86 @@ def test_master_processing_reuses_prepared_sources(station, mode, tmp_path, monk
     assert load.call_args.args[0] == str(prepared)
     result = player._render_track(entry, None, 0)
     assert result.loudness_processing == mode
+
+
+def test_playback_keeps_existing_music_cache_and_reprepares_in_background(
+    station, tmp_path, monkeypatch
+):
+    player, (entry, *_), _points = station
+    player._cfg.playback.loudness_processing = "smooth"
+    player._cfg.index.active_dir = tmp_path
+    old_prepared = tmp_path / "old-music-prepared.wav"
+    old_prepared.touch()
+    player._library.catalog.record_for_path = lambda _path: {
+        "prepared_path": str(old_prepared),
+        "kind": "music",
+    }
+    updated = threading.Event()
+    update = MagicMock(side_effect=lambda *a, **k: updated.set())
+    player._library.catalog.put_entry = update
+    new_prepared = tmp_path / "type-b-v1-music-9-new.wav"
+    prepare = MagicMock(return_value=new_prepared)
+    monkeypatch.setattr("autodj.processing.prepare_source", prepare)
+    audio = np.ones((100, 2), dtype=np.float32)
+    load = MagicMock(return_value=audio)
+    monkeypatch.setattr("autodj.player.load_stereo", load)
+
+    assert Player._load_playout_audio(player, entry) is audio
+    assert load.call_args.args[0] == str(old_prepared)
+
+    assert updated.wait(5)
+    prepare.assert_called_once_with(
+        Path(entry.path),
+        player._cfg.index.active_dir / "prepared",
+        kind="music",
+        quiet_boost_db=9.0,
+    )
+    update.assert_called_once_with(entry, kind="music", prepared_path=str(new_prepared))
+
+
+def test_playback_prepares_inline_when_no_prepared_file_exists(station, tmp_path, monkeypatch):
+    player, (entry, *_), _points = station
+    player._cfg.playback.loudness_processing = "smooth"
+    player._cfg.index.active_dir = tmp_path
+    player._library.catalog.record_for_path = lambda _path: {
+        "prepared_path": str(tmp_path / "missing.wav"),
+        "kind": "music",
+    }
+    update = MagicMock()
+    player._library.catalog.put_entry = update
+    new_prepared = tmp_path / "type-b-v1-music-9-new.wav"
+    monkeypatch.setattr("autodj.processing.prepare_source", MagicMock(return_value=new_prepared))
+    load = MagicMock(return_value=np.ones((100, 2), dtype=np.float32))
+    monkeypatch.setattr("autodj.player.load_stereo", load)
+
+    Player._load_playout_audio(player, entry)
+
+    assert load.call_args.args[0] == str(new_prepared)
+    update.assert_called_once_with(entry, kind="music", prepared_path=str(new_prepared))
+
+
+@pytest.mark.parametrize("mode", ["smooth", "stereotool"])
+def test_prepared_liner_gets_one_playout_gain_without_mutating_cache(
+    station, mode, tmp_path, monkeypatch
+):
+    player, (entry, *_), _points = station
+    player._cfg.playback.loudness_processing = mode
+    prepared = tmp_path / "prepared-liner.wav"
+    prepared.touch()
+    player._library.catalog.record_for_path = lambda _path: {
+        "prepared_path": str(prepared),
+        "kind": "liner",
+    }
+    cached_audio = np.ones((100, 2), dtype=np.float32)
+    monkeypatch.setattr("autodj.player.load_stereo", lambda *_args: cached_audio)
+
+    first = Player._load_playout_audio(player, entry)
+    second = Player._load_playout_audio(player, entry)
+
+    expected = 10 ** (-1.5 / 20)
+    np.testing.assert_allclose(first, expected)
+    np.testing.assert_allclose(second, expected)
+    np.testing.assert_array_equal(cached_audio, 1.0)
 
 
 def test_early_skip_restores_unheard_intro_but_late_skip_does_not(station, monkeypatch):
@@ -272,3 +357,24 @@ def test_clock_start_keeps_a_preceding_liner_and_obeys_empty_pool(station, monke
     assert player._seed_clock_cursor == 2
     monkeypatch.setattr(player, "_clock_pick", lambda *_: ClockPick(None, None, 0, ["blocked"]))
     assert player._random_start_entry() is None
+
+
+@pytest.mark.parametrize("overlap, music_entry", [(None, 14), (0, 12)])
+def test_default_id_ignores_song_outro_and_distinguishes_blank_overlap(
+    station, overlap, music_entry
+):
+    player, (a, b, voice, _), points = station
+    player._library.catalog.record_for_path = lambda _path: {"allow_outro": False}
+    points[voice.path]["overlap_start"] = overlap
+    result = player._render_track(a, b, 0, liners=((voice, True),))
+    assert result.liner_events[0][0] == 10 * SR
+    assert len(result.audio) - result.overlap_frames == music_entry * SR
+
+
+def test_voice_followed_by_id_never_starts_id_before_song_segue(station):
+    player, (a, b, voice, jingle), points = station
+    points[a.path]["outro"] = 2
+    points[jingle.path].update(end=4, overlap_start=0)
+    result = player._render_track(a, b, 0, liners=((voice, True), (jingle, True)))
+    assert result.liner_events == ((6 * SR, voice, True), (10 * SR, jingle, True))
+    assert len(result.audio) - result.overlap_frames == 12 * SR

@@ -7,6 +7,7 @@ Audio crossfade math is tested with real numpy arrays.
 import os
 import subprocess
 import sys
+import threading
 from collections import deque
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -422,6 +423,38 @@ class TestLoadLyricsToggle:
 
     def _make(self):
         return Player(_make_cfg_mock(), _make_sim_index(2))
+
+    def test_eq_route_saves_settings_that_restore_after_restart(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        import asyncio
+
+        from autodj._bridge import PlayerBridge
+        from autodj.server import EqBody, create_app
+
+        player = self._make()
+        player._cfg.index.active_dir = tmp_path
+        bridge = PlayerBridge(player, player._sim)
+        monkeypatch.setattr(bridge, "get_settings", lambda: {"eq": bridge.get_eq()})
+        route = next(
+            route
+            for route in create_app(bridge).routes
+            if getattr(route, "path", None) == "/api/eq"
+        )
+        assert asyncio.run(route.endpoint(EqBody(low=1.25, mid=0.75, high=1.5))) == {
+            "low": 1.25,
+            "mid": 0.75,
+            "high": 1.5,
+        }
+
+        restored = self._make()
+        restored._cfg.index.active_dir = tmp_path
+        PlayerBridge(restored, restored._sim).load_persistent_state()
+        assert PlayerBridge(restored, restored._sim).get_eq() == {
+            "low": 1.25,
+            "mid": 0.75,
+            "high": 1.5,
+        }
 
     def test_show_lyrics_off_reads_nothing(self, tmp_path) -> None:
         player = self._make()
@@ -2777,3 +2810,64 @@ def test_play_now_without_a_bus_only_moves_the_cursor() -> None:
     player.play_now(x, pick_mode="seed")
     assert (player._pending_entry, player._pending_pick_mode) == (x, "seed")
     assert player._state.next_track is x
+
+
+def test_settings_change_prepares_in_background_and_keeps_existing_audio(tmp_path) -> None:
+    player = Player(_make_cfg_mock(), _make_sim_index(2))
+    player._cfg.playback.loudness_processing = "smooth"
+    player._cfg.playback.quiet_boost_db = 6.0
+    player._cfg.index.active_dir = tmp_path
+    entry = player._sim.entries[0]
+    old = tmp_path / f"type-b-v1-music-9-{'a' * 64}.wav"
+    old.write_bytes(b"wav")
+    new = tmp_path / "prepared" / f"type-b-v1-music-6-{'b' * 64}.wav"
+    library = MagicMock()
+    library.catalog.record_for_path.return_value = {"prepared_path": str(old), "kind": "music"}
+    player._library = library
+    started, release, done = threading.Event(), threading.Event(), threading.Event()
+
+    def slow_prepare(source, cache_dir, kind="music", quiet_boost_db=9.0):
+        started.set()
+        assert release.wait(5)
+        return new
+
+    def finished(*args, **kwargs):
+        done.set()
+
+    library.catalog.put_entry.side_effect = finished
+    audio = np.full((10, 2), 0.25, dtype=np.float32)
+    with (
+        patch("autodj.processing.prepare_source", side_effect=slow_prepare) as prepare,
+        patch("autodj.player.load_stereo", return_value=audio) as load,
+    ):
+        loaded = player._load_playout_audio(entry)
+        # Rendering returned the existing preparation while the new one is still running.
+        assert started.wait(5)
+        assert not release.is_set()
+        assert load.call_args.args[0] == str(old)
+        np.testing.assert_array_equal(loaded, audio)
+        player._load_playout_audio(entry)  # in flight: no second preparation
+        release.set()
+        assert done.wait(5)
+    assert prepare.call_count == 1
+    assert prepare.call_args.kwargs["quiet_boost_db"] == 6.0
+    library.catalog.put_entry.assert_called_once_with(entry, kind="music", prepared_path=str(new))
+    for _ in range(100):
+        if not player._prepare_inflight:
+            break
+        threading.Event().wait(0.01)
+    assert player._prepare_inflight == set()
+
+
+def test_background_preparation_failure_is_logged(tmp_path, caplog) -> None:
+    player = Player(_make_cfg_mock(), _make_sim_index(2))
+    player._cfg.index.active_dir = tmp_path
+    player._library = None
+    entry = player._sim.entries[0]
+    with patch("autodj.processing.prepare_source", side_effect=OSError("disk full")):
+        player._prepare_in_background(entry, "music", 6.0)
+        for _ in range(200):
+            if not player._prepare_inflight:
+                break
+            threading.Event().wait(0.01)
+    assert "Background audio preparation failed" in caplog.text

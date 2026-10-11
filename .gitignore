@@ -34,6 +34,7 @@ models/
 
 # Test temp files
 tmp/
+/local/
 
 # Runtime web-UI snapshots (saved by the browser via "View page source")
 served.html

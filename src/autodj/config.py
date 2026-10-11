@@ -13,6 +13,7 @@ Example:
 from __future__ import annotations
 
 import ipaddress
+import math
 import os
 import re
 import tomllib
@@ -369,6 +370,7 @@ class PlaybackConfig(_Section):
     pick_mode: str = "similarity"
     # None follows the legacy [replaygain].enabled setting.
     loudness_processing: str | None = None
+    quiet_boost_db: float = 9.0
     # Executable name or path used by Stereo Tool processing; installation setting.
     stereotool_path: str = DEFAULT_STEREOTOOL_PATH
     # Where the similarity engine seeds from after a user-built queue
@@ -514,6 +516,9 @@ class PlaybackConfig(_Section):
         self.pick_mode = _validate_pick_mode(str(self.pick_mode))
         if self.loudness_processing is not None:
             self.loudness_processing = _validate_loudness_processing(str(self.loudness_processing))
+        self.quiet_boost_db = float(self.quiet_boost_db)
+        if not math.isfinite(self.quiet_boost_db) or not 0 <= self.quiet_boost_db <= 12:
+            raise ValueError("playback.quiet_boost_db must be between 0 and 12")
         if not isinstance(self.stereotool_path, str) or not self.stereotool_path.strip():
             raise ValueError("playback.stereotool_path must be a non-empty string")
         self.skip_style = _validate_skip_style(str(self.skip_style))

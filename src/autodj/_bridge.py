@@ -1371,6 +1371,7 @@ class PlayerBridge:
                 "crossfade_bass_cutoff_hz": float(pb.crossfade_bass_cutoff_hz),
                 "pick_top_k": int(pb.pick_top_k),
                 "pick_temperature": float(pb.pick_temperature),
+                "quiet_boost_db": float(pb.quiet_boost_db),
                 "library_size": len(self.library.entries_snapshot())
                 if self.library is not None
                 else int(p._sim.ntotal if p._sim else 0),
@@ -1399,6 +1400,7 @@ class PlayerBridge:
             },
             "discovery_every": p._discovery_every,
             "discovery_enabled": p._state.discovery_enabled,
+            "eq": self.get_eq(),
         }
 
     def set_preset(self, name: str | None) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import sqlite3
@@ -33,6 +34,8 @@ _ENTRY_FIELDS = (
     "size",
     "fingerprint",
 )
+
+logger = logging.getLogger(__name__)
 _POINTS = ("start", "intro", "outro", "segue", "end", "overlap_start")
 _POINT_SOURCES = {"auto", "lyrics", "analysis", "user", "imported"}
 
@@ -45,6 +48,7 @@ _SCHEMA = """
     );
     CREATE TABLE IF NOT EXISTS catalog_entries (
         id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE, kind TEXT NOT NULL,
+        allow_outro INTEGER NOT NULL DEFAULT 0,
         title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
         album TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
         bpm REAL NOT NULL DEFAULT 0, year INTEGER NOT NULL DEFAULT 0,
@@ -101,7 +105,7 @@ class LibraryCatalog:
         self._conn.row_factory = sqlite3.Row
         try:
             self._conn.executescript(_SCHEMA)
-            self._add_performances_column()
+            self._add_missing_columns()
             self._migrate_legacy_history()
         except BaseException:
             # Not a catalog (or unreadable): do not leave the file open.
@@ -109,15 +113,22 @@ class LibraryCatalog:
             self._conn = None
             raise
 
-    def _add_performances_column(self) -> None:
-        """Give a play log from before listener counts its ``performances`` column.
+    def _add_missing_columns(self) -> None:
+        """Add columns an older catalog file lacks.
 
-        The check and the change share one write transaction, so a second
-        process opening the same old file waits, then finds the column.
+        These are the liner ``allow_outro`` flag and the play log's
+        ``performances`` count.  The checks and the changes share one write
+        transaction, so a second process opening the same old file waits,
+        then finds the columns.
         """
         db = self._db()
         db.execute("BEGIN IMMEDIATE")
         try:
+            entries = {row[1] for row in db.execute("PRAGMA table_info(catalog_entries)")}
+            if "allow_outro" not in entries:
+                db.execute(
+                    "ALTER TABLE catalog_entries ADD COLUMN allow_outro INTEGER NOT NULL DEFAULT 0"
+                )
             have = {row[1] for row in db.execute("PRAGMA table_info(play_history)")}
             if "performances" not in have:
                 db.execute("ALTER TABLE play_history ADD COLUMN performances INTEGER")
@@ -478,6 +489,8 @@ class LibraryCatalog:
                 f"UPDATE catalog_entries SET kind=?, {','.join(f'{n}=?' for n in _ENTRY_FIELDS)} WHERE path=?",  # nosec B608 -- constant field names; values are bound
                 (kind, *values, path),
             )
+            if kind != "liner":
+                self._db().execute("UPDATE catalog_entries SET allow_outro=0 WHERE path=?", (path,))
         else:
             self._db().execute(
                 f"INSERT INTO catalog_entries (id,path,kind,{cols}) VALUES (?,?,?,{placeholders})",  # nosec B608 -- constant field names; values are bound
@@ -721,6 +734,7 @@ class LibraryCatalog:
                 "id": row["id"],
                 "path": normalized,
                 "kind": row["kind"],
+                "allow_outro": bool(row["allow_outro"]),
                 "points": json.loads(row["points"]),
                 "point_sources": json.loads(row["point_sources"]),
                 "prepared_path": row["prepared_path"],
@@ -804,7 +818,7 @@ class LibraryCatalog:
         row = (
             self._db()
             .execute(
-                "SELECT points,point_sources,length FROM catalog_entries WHERE path=?", (path,)
+                "SELECT points,point_sources,length,kind FROM catalog_entries WHERE path=?", (path,)
             )
             .fetchone()
         )
@@ -835,24 +849,64 @@ class LibraryCatalog:
         if start is not None and end is not None and start >= end:
             raise ValueError("Start must precede End")
         overlap = current.get("overlap_start")
-        if overlap is not None and start is not None and end is not None and overlap > end - start:
-            raise ValueError("overlap_start exceeds the selected Start to End range")
+        if overlap is not None:
+            if row["kind"] == "liner":
+                limit_point = current.get("segue")
+                if limit_point is None:
+                    limit_point = current.get("end")
+                if limit_point is None and row["length"] > 0:
+                    limit_point = row["length"]
+                limit = None if limit_point is None else limit_point - (start or 0)
+                if limit is not None and overlap > limit:
+                    if "overlap_start" in values and source in {"user", "imported"}:
+                        raise ValueError("overlap_start exceeds the liner segue after Start")
+                    if sources.get("overlap_start") == "user":
+                        # Keep what the user typed; playback clamps it to the segue.
+                        logger.warning(
+                            "Liner %s: Overlap start %.2f s is now past its segue (%.2f s); "
+                            "playback will use the segue",
+                            path,
+                            overlap,
+                            max(0, limit),
+                        )
+                    else:
+                        current["overlap_start"] = max(0, limit)
+                        sources.setdefault("overlap_start", source)
+            elif start is not None and end is not None and overlap > end - start:
+                raise ValueError("overlap_start exceeds the selected Start to End range")
         self._db().execute(
             "UPDATE catalog_entries SET points=?,point_sources=? WHERE path=?",
             (json.dumps(current), json.dumps(sources), path),
         )
 
-    def set_points(self, path: str | Path, values: dict, source: str = "user") -> dict:
+    def set_points(
+        self,
+        path: str | Path,
+        values: dict,
+        source: str = "user",
+        *,
+        allow_outro: bool | None = None,
+    ) -> dict:
         with self._lock:
             normalized = _path(path)
-            if (
-                not self._db()
-                .execute("SELECT 1 FROM catalog_entries WHERE path=?", (normalized,))
+            row = (
+                self._db()
+                .execute("SELECT kind FROM catalog_entries WHERE path=?", (normalized,))
                 .fetchone()
-            ):
+            )
+            if not row:
                 raise KeyError(normalized)
+            if allow_outro is not None and type(allow_outro) is not bool:
+                raise ValueError("allow_outro must be a boolean")
+            if allow_outro is not None and row["kind"] != "liner":
+                raise ValueError("allow_outro can only be set for liners")
             try:
                 self._merge_points(normalized, values, source)
+                if allow_outro is not None:
+                    self._db().execute(
+                        "UPDATE catalog_entries SET allow_outro=? WHERE path=?",
+                        (int(allow_outro), normalized),
+                    )
                 self._db().commit()
                 return self.points(normalized)
             except BaseException:

@@ -1,7 +1,7 @@
 """Request bodies of the web settings routes, shared with ``web_state.json``.
 
 ``POST /api/playback-settings``, ``/api/djmix``, ``/api/bpm-range`` and the
-other settings routes validate their bodies with these models, and
+other settings routes, including ``/api/eq``, validate their bodies with these models, and
 :mod:`autodj.runtime_state` checks every saved setting against the same
 field rules, so a value the page cannot set is never restored either.
 """
@@ -69,6 +69,18 @@ class VolumeBody(BaseModel):
     """Request body for POST /api/volume."""
 
     volume: FiniteFloat
+
+
+EqGain = Annotated[float, Field(ge=0.0, le=2.0, allow_inf_nan=False)]
+"""EQ band multiplier: 0 (cut) to 2 (boost), 1 is unity — the bridge's range."""
+
+
+class EqBody(BaseModel):
+    """Request body for POST /api/eq; a band outside 0 to 2 is refused."""
+
+    low: EqGain | None = None
+    mid: EqGain | None = None
+    high: EqGain | None = None
 
 
 class PresetBody(BaseModel):
@@ -202,6 +214,7 @@ class PlaybackSettingsBody(BaseModel):
     pick_temperature: Annotated[float, Field(ge=0.0, le=10.0, allow_inf_nan=False)] | None = None
     prefetch_next_track: bool | None = None
     silence_trigger_crossfade: bool | None = None
+    quiet_boost_db: Annotated[float, Field(ge=0.0, le=12.0, allow_inf_nan=False)] | None = None
 
     @model_validator(mode="after")
     def _check_choices(self) -> PlaybackSettingsBody:

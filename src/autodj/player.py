@@ -753,6 +753,10 @@ class Player:
         self._bg_analysis_inflight: set[str] = set()
         self._bg_analysis_threads: set[threading.Thread] = set()
         self._bg_analysis_lock = threading.Lock()
+        # Prepared-audio refreshes after a preparation setting changes run
+        # here, off the render thread; keyed by source path.
+        self._prepare_inflight: set[str] = set()
+        self._prepare_lock = threading.Lock()
         # Cues from DJ-software libraries: None until load_library_cues has
         # read them; tracks analysed before then are listed for a late merge.
         self._library_cues: dict[str, list[Cue]] | None = None
@@ -2278,18 +2282,66 @@ class Player:
         if self._cfg.playback.loudness_processing not in {"smooth", "stereotool"}:
             audio = load_stereo(entry.path, SAMPLE_RATE, self._max_render_seconds())
             return self._apply_replaygain(audio, entry.path)
-        from autodj.processing import prepare_source
+        from autodj.processing import (
+            PREPARED_LINER_GAIN,
+            prepare_source,
+            prepared_source_matches,
+        )
 
         record = self._library.catalog.record_for_path(entry.path) if self._library else None
         prepared = record.get("prepared_path") if record else None
-        if not prepared or not Path(prepared).is_file():
-            kind = record["kind"] if record else "music"
+        kind = record["kind"] if record else "music"
+        quiet_boost_db = self._cfg.playback.quiet_boost_db
+        if prepared and Path(prepared).is_file():
+            if not prepared_source_matches(prepared, kind, quiet_boost_db):
+                # Settings changed: keep playing the existing preparation and
+                # switch to the new one on a later load once it is ready.
+                self._prepare_in_background(entry, kind, quiet_boost_db)
+        else:
             prepared = str(
-                prepare_source(Path(entry.path), self._cfg.index.active_dir / "prepared", kind=kind)
+                prepare_source(
+                    Path(entry.path),
+                    self._cfg.index.active_dir / "prepared",
+                    kind=kind,
+                    quiet_boost_db=quiet_boost_db,
+                )
             )
             if record:
                 self._library.catalog.put_entry(entry, kind=kind, prepared_path=prepared)
-        return load_stereo(prepared, SAMPLE_RATE, self._max_render_seconds())
+        audio = load_stereo(prepared, SAMPLE_RATE, self._max_render_seconds())
+        if record and record["kind"] == "liner":
+            # Keep existing prepared liner caches while reducing their former +4.5 dB lift to +3 dB.
+            return (audio * PREPARED_LINER_GAIN).astype(np.float32)
+        return audio
+
+    def _prepare_in_background(self, entry: IndexEntry, kind: str, quiet_boost_db: float) -> None:
+        """Refresh one prepared source on a worker thread, once per path at a time."""
+        lock = self._prepare_lock
+        with lock:
+            if entry.path in self._prepare_inflight:
+                return
+            self._prepare_inflight.add(entry.path)
+
+        def work() -> None:
+            from autodj.processing import prepare_source
+
+            try:
+                prepared = prepare_source(
+                    Path(entry.path),
+                    self._cfg.index.active_dir / "prepared",
+                    kind=kind,
+                    quiet_boost_db=quiet_boost_db,
+                )
+                library = self._library
+                if library is not None and library.catalog.record_for_path(entry.path):
+                    library.catalog.put_entry(entry, kind=kind, prepared_path=str(prepared))
+            except Exception as exc:
+                logger.warning("Background audio preparation failed for %s: %s", entry.path, exc)
+            finally:
+                with lock:
+                    self._prepare_inflight.discard(entry.path)
+
+        threading.Thread(target=work, name="autodj-prepare", daemon=True).start()
 
     def saved_points(self, entry: IndexEntry) -> dict[str, Any]:
         """Source-file cue times, with no assumed safe talk-over space."""
@@ -2329,8 +2381,10 @@ class Player:
             entry.path == current.path for entry in self._library.entries_snapshot("liner")
         )
         clips, events, release = [], [], 0.0
+        outro_lead_limit = None
         frames = 0
         main_frames = 0
+        fit_main_frames = 0
         if is_liner:
             clips.append(source[source_start:end])
             frames = end - source_start
@@ -2340,7 +2394,15 @@ class Player:
                 if segue is None
                 else min(frames, max(0, round(segue * SAMPLE_RATE) - source_start))
             )
-            release = float(points.get("overlap_start") or 0)
+            overlap_point = points.get("overlap_start")
+            release = (
+                main_frames / SAMPLE_RATE
+                if overlap_point is None
+                else min(float(overlap_point), main_frames / SAMPLE_RATE)
+            )
+            if overlap_point == 0:
+                fit_main_frames = main_frames
+            outro_lead_limit = 0.0
         for liner_entry, queued in liners:
             try:
                 clip = self._load_playout_audio(liner_entry)
@@ -2350,15 +2412,33 @@ class Player:
                 clip = clip[first:last]
                 if not len(clip):
                     continue
-                overlap = float(cues.get("overlap_start") or 0)
-                if overlap > 0:
-                    release = max(release, frames / SAMPLE_RATE + overlap)
                 segue = cues.get("segue")
                 main_frames = frames + (
                     len(clip)
                     if segue is None
                     else min(len(clip), max(0, round(segue * SAMPLE_RATE) - first))
                 )
+                overlap_point = cues.get("overlap_start")
+                overlap = (
+                    (main_frames - frames) / SAMPLE_RATE
+                    if overlap_point is None
+                    else min(float(overlap_point), (main_frames - frames) / SAMPLE_RATE)
+                )
+                if overlap > 0 or overlap_point is None:
+                    release = max(release, frames / SAMPLE_RATE + overlap)
+                if overlap_point == 0:
+                    fit_main_frames = max(fit_main_frames, main_frames)
+                record = (
+                    self._library.catalog.record_for_path(liner_entry.path)
+                    if self._library
+                    else None
+                )
+                if not record or not record.get("allow_outro", False):
+                    # A later ID also limits how early the preceding voice can start.
+                    limit = frames / SAMPLE_RATE
+                    outro_lead_limit = (
+                        limit if outro_lead_limit is None else min(outro_lead_limit, limit)
+                    )
                 events.append((frames, liner_entry, queued))
                 clips.append(clip)
                 frames += len(clip)
@@ -2370,6 +2450,12 @@ class Player:
                     with self._state.queue_lock:
                         self._commit_queue_pick(liner_entry)
         incoming_points = self.saved_points(next_entry)
+        if fit_main_frames:
+            incoming_intro = max(
+                0.0,
+                (incoming_points.get("intro") or 0.0) - (incoming_points.get("start") or 0.0),
+            )
+            release = max(release, fit_main_frames / SAMPLE_RATE - incoming_intro)
         handoff = render_handoff(
             np.zeros((1, 2), dtype=np.float32) if is_liner else source,
             {"start": 0, "end": 0, "segue": 0} if is_liner else points,
@@ -2379,6 +2465,7 @@ class Player:
             liner=np.concatenate(clips) if clips else None,
             overlap_start=release,
             liner_segue=main_frames / SAMPLE_RATE if clips else None,
+            outro_lead_limit=outro_lead_limit,
         )
         overlap = len(handoff.next_overlay)
         tail = handoff.next_overlay.copy()

@@ -55,6 +55,8 @@ export function installLibraryFolders({ document: doc = document, request = requ
   const editor = doc.getElementById("points-editor");
   const pointStatus = doc.getElementById("points-status");
   const pointPath = doc.getElementById("points-path");
+  const allowOutro = doc.getElementById("points-allow-outro");
+  const allowOutroLabel = doc.getElementById("points-allow-outro-label");
   let timer = null;
   let currentPath = null;
   let currentKind = "music";
@@ -225,9 +227,10 @@ export function installLibraryFolders({ document: doc = document, request = requ
     if (heading) heading.textContent = "Cue points";
     const linerHelp = doc.getElementById("points-liner-help");
     if (linerHelp) linerHelp.hidden = currentKind !== "liner";
+    if (allowOutroLabel) allowOutroLabel.hidden = currentKind !== "liner";
     for (const name of POINTS) {
       const field = doc.querySelector(`[data-point="${name}"]`);
-      field.value = formatPointTime(currentKind === "liner" && name === "overlap_start" && points?.[name] == null ? 0 : points?.[name]);
+      field.value = formatPointTime(points?.[name]);
       const applicable = currentKind === "liner" ? ["start", "segue", "end", "overlap_start"].includes(name) : name !== "overlap_start";
       field.closest("label").hidden = !applicable;
       doc.querySelector(`[data-preview="${name}"]`).hidden = !applicable;
@@ -239,7 +242,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     savedFields = fieldSnapshot();
   }
   function fieldSnapshot() {
-    return JSON.stringify(POINTS.map((name) => doc.querySelector(`[data-point="${name}"]`).value));
+    return JSON.stringify([...POINTS.map((name) => doc.querySelector(`[data-point="${name}"]`).value), allowOutro?.checked ?? false]);
   }
   function showTrackInfo() {
     const tab = doc.getElementById("tab-track-info") || doc.getElementById("tab-now");
@@ -292,7 +295,9 @@ export function installLibraryFolders({ document: doc = document, request = requ
         const field = doc.querySelector(`[data-point="${name}"]`);
         if (!field.closest("label").hidden) points[name] = parsePointTime(field.value);
       }
-      const data = await request("/api/library/points", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: currentPath, points }) });
+      const body = { path: currentPath, points };
+      if (currentKind === "liner" && allowOutro) body.allow_outro = allowOutro.checked;
+      const data = await request("/api/library/points", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (!requestCurrent(epoch, generation)) return false;
       if (data.points) setPointFields(data.points, data.point_sources || {});
       else savedFields = fieldSnapshot();
@@ -365,6 +370,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       currentPath = data.path || path;
       currentKind = data.kind || kind;
       currentName = data.title ? fmtTrack(data) : currentPath.split(/[\\/]/).pop();
+      if (allowOutro) allowOutro.checked = currentKind === "liner" && data.allow_outro === true;
       pointPath.value = currentPath;
       setPointFields(data.points || {}, data.point_sources || {});
       renderDetails(data);
@@ -411,13 +417,21 @@ export function installLibraryFolders({ document: doc = document, request = requ
     const button = event.target.closest("button[data-preview]");
     if (!button) return;
     try {
-      const time = parsePointTime(doc.querySelector(`[data-point="${button.dataset.preview}"]`).value);
+      const name = button.dataset.preview;
+      let time = parsePointTime(doc.querySelector(`[data-point="${name}"]`).value);
+      if (currentKind === "liner" && name === "overlap_start") {
+        if (time == null) {
+          time = parsePointTime(doc.querySelector('[data-point="segue"]').value)
+            ?? parsePointTime(doc.querySelector('[data-point="end"]').value);
+          if (time == null) throw new Error("Set Segue or End before previewing the blank Overlap start.");
+        } else {
+          time += parsePointTime(doc.querySelector('[data-point="start"]').value) ?? 0;
+        }
+      }
       if (time == null) throw new Error("Enter a time before previewing it.");
       const preview = doc.getElementById("points-preview");
       if (!preview) throw new Error("Preview audio is unavailable.");
-      preview.currentTime = currentKind === "liner" && button.dataset.preview === "overlap_start"
-        ? (parsePointTime(doc.querySelector('[data-point="start"]').value) ?? 0) + time
-        : time;
+      preview.currentTime = time;
       await preview.play();
     }
     catch (error) { pointSay(error.message, true); }
@@ -444,6 +458,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     currentPath = null;
     currentKind = "music";
     currentName = "this track";
+    if (allowOutro) allowOutro.checked = false;
     savedFields = "";
     list.replaceChildren();
     folderSignature = null;

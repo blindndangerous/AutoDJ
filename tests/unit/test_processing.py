@@ -51,6 +51,27 @@ def test_liner_uses_voice_preset_and_has_distinct_cache_entry(tmp_path: Path) ->
         processing.prepare_source(source, cache, "jingle")
 
 
+def test_music_quiet_boost_uses_distinct_reusable_cache_and_leaves_liner_independent(
+    tmp_path: Path,
+) -> None:
+    source = _source(tmp_path / "song.wav")
+    cache = tmp_path / "cache"
+
+    music_9 = processing.prepare_source(source, cache, quiet_boost_db=9)
+    music_9_again = processing.prepare_source(source, cache, quiet_boost_db=9.0)
+    music_0 = processing.prepare_source(source, cache, quiet_boost_db=0)
+    liner = processing.prepare_source(source, cache, "liner")
+
+    assert music_9 == music_9_again
+    assert music_9 != music_0
+    assert processing.prepared_source_matches(music_9, "music", 9)
+    assert not processing.prepared_source_matches(music_9, "music", 0)
+    assert processing.prepared_source_matches(liner, "liner", 0)
+    assert processing.prepared_source_matches(liner, "liner", 12)
+    with pytest.raises(ValueError, match="quiet_boost_db"):
+        processing.prepare_source(source, cache, quiet_boost_db=12.1)
+
+
 def test_silent_input_fails_without_publishing_partial_cache(tmp_path: Path) -> None:
     source = _source(tmp_path / "silence.wav", silence=True)
     cache = tmp_path / "cache"

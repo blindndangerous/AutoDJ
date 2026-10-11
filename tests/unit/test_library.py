@@ -102,9 +102,15 @@ def fake_basic(path: Path, kind: str = "music"):
     }
 
 
-def fake_prepare(path: Path, cache_dir: Path, kind: str = "music") -> Path:
+def fake_prepare(
+    path: Path, cache_dir: Path, kind: str = "music", quiet_boost_db: float = 9.0
+) -> Path:
     cache_dir.mkdir(parents=True, exist_ok=True)
-    result = cache_dir / f"{kind}-{path.stem}.wav"
+    result = cache_dir / (
+        f"type-b-v1-music-{quiet_boost_db:g}-{path.stem}.wav"
+        if kind == "music"
+        else f"{kind}-{path.stem}.wav"
+    )
     result.write_bytes(b"prepared")
     return result
 
@@ -302,8 +308,8 @@ def test_basic_entry_is_playable_while_audio_preparation_runs_and_analysis_can_s
     release = threading.Event()
     captured = {}
 
-    def slow_prepare(path, cache_dir, kind="music"):
-        del path, cache_dir, kind
+    def slow_prepare(path, cache_dir, kind="music", quiet_boost_db=9.0):
+        del path, cache_dir, kind, quiet_boost_db
         entered.set()
         release.wait(timeout=3)
         return tmp_path / "prepared.wav"
@@ -781,3 +787,70 @@ def test_advanced_worker_adds_vector_without_publishing_legacy_index(tmp_path: P
         assert not (cfg.index.active_dir / "index-manifest.json").exists()
     finally:
         check.close()
+
+
+def _age(path: Path, seconds: float = 3600.0) -> Path:
+    old = path.stat().st_mtime - seconds
+    os.utime(path, (old, old))
+    return path
+
+
+def test_remove_stale_prepared_only_deletes_unused_autodj_cache_files(tmp_path):
+    from autodj.processing import remove_stale_prepared
+
+    cache = tmp_path / "prepared"
+    cache.mkdir()
+    key = "a" * 64
+
+    def made(name: str, data: bytes = b"wav") -> Path:
+        path = cache / name
+        path.write_bytes(data)
+        return _age(path)
+
+    old_music = made(f"{key}.wav", b"12345")
+    old_boost = made(f"type-b-v1-music-6-{'b' * 64}.wav", b"123")
+    current = made(f"type-b-v1-music-9-{'c' * 64}.wav")
+    in_use = made(f"{'d' * 64}.wav")
+    source_named_like_cache = made(f"{'e' * 64}.wav")
+    user_file = made("song.wav")
+    notes = made("notes.txt")
+    fresh = cache / f"{'f' * 64}.wav"
+    fresh.write_bytes(b"new")
+    nested = cache / "sub"
+    nested.mkdir()
+    deeper = made(f"sub/{'0' * 64}.wav")
+
+    removed, freed = remove_stale_prepared(
+        cache, [in_use, str(source_named_like_cache)], quiet_boost_db=9
+    )
+
+    assert (removed, freed) == (2, 8)
+    assert not old_music.exists()
+    assert not old_boost.exists()
+    for kept in (current, in_use, source_named_like_cache, user_file, notes, fresh, deeper):
+        assert kept.exists()
+    assert remove_stale_prepared(tmp_path / "missing", []) == (0, 0)
+
+
+def test_scan_removes_prepared_audio_left_by_older_settings(manager_factory, tmp_path, caplog):
+    music = tmp_path / "Music"
+    song = music / "song.flac"
+    music.mkdir()
+    song.write_bytes(b"music")
+    manager = manager_factory(music=music)
+    cache = manager.cfg.index.active_dir / "prepared"
+    cache.mkdir(parents=True)
+    stale = cache / f"{'a' * 64}.wav"
+    stale.write_bytes(b"x" * 2_000_000)
+    _age(stale)
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.prepare_source", side_effect=fake_prepare),
+        caplog.at_level("INFO", logger="autodj.library"),
+    ):
+        manager.scan()
+
+    assert not stale.exists()
+    assert song.exists()
+    assert manager.catalog.record_for_path(song)["prepared_path"]
+    assert "freeing 2.0 MB" in caplog.text

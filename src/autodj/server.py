@@ -62,7 +62,7 @@ from fastapi import (
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, StrictBool, ValidationError, model_validator
 from pydantic import Field as PydanticField
 from starlette.background import BackgroundTask
 from starlette.datastructures import Headers
@@ -105,6 +105,7 @@ from autodj.settings_bodies import (
     BpmRangeBody,
     DiscoveryBody,
     DjMixBody,
+    EqBody,
     FadeSeconds,
     FiniteFloat,
     PlaybackSettingsBody,
@@ -573,18 +574,6 @@ class QueueReorderBody(BaseModel):
     paths: list[str]
 
 
-class EqBody(BaseModel):
-    """Request body for POST /api/eq.
-
-    Each gain is a linear multiplier in [0.0, 2.0]; 1.0 = unity.
-    Omitted fields are left unchanged.
-    """
-
-    low: FiniteFloat | None = None
-    mid: FiniteFloat | None = None
-    high: FiniteFloat | None = None
-
-
 class LinerTestBody(BaseModel):
     """Request body for POST /api/liners/test.
 
@@ -628,6 +617,7 @@ class SongPointsBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     path: str
     points: dict[str, Any]
+    allow_outro: StrictBool | None = None
 
 
 class ClockBody(BaseModel):
@@ -2289,7 +2279,9 @@ def create_app(
     @app.post("/api/eq")
     async def api_eq(body: EqBody) -> dict[str, float]:
         """Set the 3-band EQ gains."""
-        return bridge.set_eq(low=body.low, mid=body.mid, high=body.high)
+        result = bridge.set_eq(low=body.low, mid=body.mid, high=body.high)
+        bridge.save_persistent_state()
+        return result
 
     # ------------------------------------------------------------------
     # Library tools — index / enrich / prune / stats from the web UI
@@ -2529,8 +2521,15 @@ def create_app(
                     status_code=400,
                     detail="Liner points support only start, segue, end, and overlap_start",
                 )
+        elif body.allow_outro is not None:
+            raise HTTPException(status_code=400, detail="allow_outro can only be set for liners")
         try:
-            await asyncio.to_thread(library.catalog.set_points, body.path, body.points)
+            if body.allow_outro is None:
+                await asyncio.to_thread(library.catalog.set_points, body.path, body.points)
+            else:
+                await asyncio.to_thread(
+                    library.catalog.set_points, body.path, body.points, allow_outro=body.allow_outro
+                )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return await asyncio.to_thread(library.catalog.record_for_path, body.path)

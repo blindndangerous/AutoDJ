@@ -4,7 +4,12 @@ import pytest
 from pydantic import ValidationError
 
 from autodj.config import PICK_MODES, TRANSITION_MODES
-from autodj.settings_bodies import DjMixBody, PlaybackSettingsBody, StreamSettingsBody
+from autodj.settings_bodies import (
+    DjMixBody,
+    EqBody,
+    PlaybackSettingsBody,
+    StreamSettingsBody,
+)
 
 
 @pytest.mark.parametrize("mode", PICK_MODES)
@@ -27,6 +32,17 @@ def test_playback_body_accepts_saved_points_and_legacy_fields() -> None:
     assert body.transition_mode == "saved_points"
     assert body.pure_shuffle is True
     assert body.replaygain_enabled is True
+
+
+@pytest.mark.parametrize("value", (0, 9, 12))
+def test_playback_body_accepts_quiet_boost_range(value: float) -> None:
+    assert PlaybackSettingsBody.model_validate({"quiet_boost_db": value}).quiet_boost_db == value
+
+
+@pytest.mark.parametrize("value", (-0.1, 12.1, float("inf"), float("nan")))
+def test_playback_body_rejects_quiet_boost_outside_finite_range(value: float) -> None:
+    with pytest.raises(ValidationError):
+        PlaybackSettingsBody.model_validate({"quiet_boost_db": value})
 
 
 @pytest.mark.parametrize(
@@ -93,3 +109,14 @@ def test_stream_body_trims_the_station_name() -> None:
     assert (
         StreamSettingsBody.model_validate({"station_name": " Kitchen "}).station_name == "Kitchen"
     )
+
+
+@pytest.mark.parametrize("value", (0, 1.0, 2))
+def test_eq_body_accepts_bridge_range(value: float) -> None:
+    assert EqBody.model_validate({"low": value}).low == value
+
+
+@pytest.mark.parametrize("value", (-0.01, 2.01, float("inf"), float("nan")))
+def test_eq_body_rejects_gains_outside_bridge_range(value: float) -> None:
+    with pytest.raises(ValidationError):
+        EqBody.model_validate({"mid": value})

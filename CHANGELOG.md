@@ -72,6 +72,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Brief playout stalls no longer trigger a burst of catch-up audio that can empty the
+  output buffer and unnecessarily restart Smooth or Stereo Tool.
+- Low, mid and high EQ settings now survive server restarts.
 - Radio streams use HTTP framing that works with HTTP/1.0 players such as Winamp,
   avoiding chunk markers that can disrupt audio and track titles.
 - Moving between tabs no longer makes screen readers say "selected" twice.
@@ -86,7 +89,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Random walk, least recently played and clock picks now hold back the same album and the same
   song title as well as the same artist, like similarity picks always did. Discovery picks now
   follow the artist, album and title rules too.
-
+- Liners start at the outgoing song's segue by default. Track info has an "Allow start over
+  outro" checkbox for voicetracks that may begin earlier.
+- A blank liner Overlap start uses its Segue, or End if Segue is blank. Set it to 0 to let
+  the next song's intro overlap the liner when timing allows. Overlap start cannot be later
+  than the liner's segue.
+- Smooth and Stereo Tool offer "Boost quiet sections", defaulting to 9 dB. It applies throughout
+  music tracks. After a change, each track is prepared again in the background when it is
+  next loaded, or during a scan; it keeps its previous preparation until the new one is ready.
+  The next library scan deletes prepared audio files that nothing uses any more.
+- Stereo Tool output gains 5.8 dB through a final peak limiter, with a -1.8 dB ceiling,
+  5 ms attack and 100 ms release. Its existing compression preset is unchanged.
+- Liners play 1.5 dB lower with Smooth or Stereo Tool processing, reducing their intended
+  lift above music from 4.5 dB to 3 dB. Existing prepared audio and cue points are retained.
 - Radio listening uses `/stream.mp3`, with `/stream.m3u` for players that need a playlist.
   Anyone who can reach the server can listen without a key; browser controls still require
   pairing when LAN authentication is enabled.

@@ -90,6 +90,11 @@ const NUMBER_FIELDS = [
     label: "Filter sweep floor", min: 20, max: 5000, integer: false,
     read: (st) => st.djmix?.filter_sweep_floor_hz,
   },
+  {
+    key: "pbQuietBoost", url: "/api/playback-settings", field: "quiet_boost_db",
+    label: "Boost quiet sections", min: 0, max: 12, integer: false,
+    read: (st) => st.playback?.quiet_boost_db,
+  },
 ];
 
 const _serverValue = new WeakMap();

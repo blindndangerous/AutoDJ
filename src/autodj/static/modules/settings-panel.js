@@ -232,6 +232,8 @@ function applyModeVisibility(st, els, doc) {
     (st.playback?.replaygain_enabled ? "replaygain" : "off");
   setControlVisible(els.pbRgTarget || doc.getElementById("pb-rg-target"),
     loudness === "replaygain");
+  setControlVisible(els.pbQuietBoost || doc.getElementById("pb-quiet-boost"),
+    loudness === "smooth" || loudness === "stereotool");
   const note = els.pbSavedPointsNote || doc.getElementById("pb-saved-points-note");
   if (note) note.hidden = !savedPoints;
 }

@@ -341,8 +341,10 @@ class TestLiners:
             def record_for_path(self, value):
                 return record if _path(value) == _path(path) else None
 
-            def set_points(self, value, points):
+            def set_points(self, value, points, *, allow_outro=None):
                 record["points"] = points
+                if allow_outro is not None:
+                    record["allow_outro"] = allow_outro
 
         class Library:
             catalog = Catalog()
@@ -364,6 +366,19 @@ class TestLiners:
         )
         assert saved.status_code == 200
         assert saved.json()["points"] == {"start": 0.2, "end": 3.8, "overlap_start": 0}
+        saved = tc.post(
+            "/api/library/points",
+            json={"path": str(path), "points": {}, "allow_outro": True},
+        )
+        assert saved.status_code == 200
+        assert saved.json()["allow_outro"] is True
+        assert (
+            tc.post(
+                "/api/library/points",
+                json={"path": str(path), "points": {}, "allow_outro": "true"},
+            ).status_code
+            == 422
+        )
 
     def test_liners_empty_folder(self, client) -> None:
         resp = client.get("/api/liners")
@@ -2483,13 +2498,14 @@ class TestEqEndpoint:
         assert data["mid"] == 1.5
         assert data["high"] == 2.0
 
-    def test_post_eq_clamps(self, bridge) -> None:
+    @pytest.mark.parametrize("body", [{"low": -0.1}, {"high": 2.01}, {"mid": 100.0}])
+    def test_post_eq_rejects_out_of_range_bands(self, bridge, body) -> None:
         from fastapi.testclient import TestClient
 
+        bridge.player._eq_low = bridge.player._eq_mid = bridge.player._eq_high = 1.0
         tc = TestClient(create_app(bridge))
-        data = tc.post("/api/eq", json={"low": -5.0, "high": 100.0}).json()
-        assert data["low"] == 0.0
-        assert data["high"] == 2.0
+        assert tc.post("/api/eq", json=body).status_code == 422
+        assert bridge.get_eq() == {"low": 1.0, "mid": 1.0, "high": 1.0}
 
     def test_post_eq_partial(self, bridge) -> None:
         from fastapi.testclient import TestClient

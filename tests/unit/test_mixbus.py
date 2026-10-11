@@ -274,7 +274,8 @@ def test_run_recovers_from_render_block_exception() -> None:
     np.testing.assert_array_equal(good.blocks[0], np.full((882, 2), 0.5, np.float32))
 
 
-def test_run_recovers_schedule_after_output_stalls_clock() -> None:
+@pytest.mark.parametrize("stall_seconds", [0.12, 0.45, 0.95, 2.0])
+def test_run_recovers_schedule_after_output_stalls_clock(stall_seconds: float) -> None:
     bus, _, _ = _bus([_track(0.5, 882 * 20)])
     clock: FakeClock = bus._clock  # type: ignore[assignment]
     good = Recorder()
@@ -284,7 +285,7 @@ def test_run_recovers_schedule_after_output_stalls_clock() -> None:
         good.write(block)
         if not stalled["done"]:
             stalled["done"] = True
-            clock.t += 2.0
+            clock.t += stall_seconds
 
     stalling = MagicMock()
     stalling.write.side_effect = maybe_stall
@@ -314,7 +315,7 @@ def test_run_skips_sleep_when_slightly_behind_schedule() -> None:
 
     def slow_write(block: np.ndarray) -> None:
         good.write(block)
-        clock.t += 0.5  # behind schedule, but under the 1s catch-up threshold
+        clock.t += 0.025  # only 5 ms behind the next block deadline
         stop.set()
 
     slow = MagicMock()
