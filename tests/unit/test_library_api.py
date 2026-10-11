@@ -4,6 +4,7 @@ import asyncio
 import os
 from types import SimpleNamespace
 from unittest.mock import Mock
+from unittest.mock import call as mock_call
 from urllib.parse import urlsplit
 
 import numpy as np
@@ -73,7 +74,11 @@ def test_folder_choices_persist_and_removing_a_source_keeps_files(library_api, t
         call("GET", "/api/library/points", str(recording))
     assert missing.value.status_code == 404
     call("POST", "/api/library/rescan")
-    assert manager.start_scan.call_count == 3
+    assert manager.start_scan.call_args_list == [
+        mock_call({source["id"]}),
+        mock_call({source["id"]}),
+        mock_call(),
+    ]
 
 
 def test_points_validate_and_keep_manual_values_without_analysis(library_api, tmp_path):

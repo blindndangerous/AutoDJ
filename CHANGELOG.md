@@ -114,6 +114,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Track info follows Queue & Search in the tabs and keyboard navigation.
 - Settings help uses plainer language and explains which controls apply to saved segue
   playback. The processing selector is labelled **Output processing**.
 - `autodj serve --host ADDRESS --port PORT` now works with a network address: with no allowlists,
@@ -155,6 +156,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Adding a folder scans and counts that folder instead of the whole library. Additions queued
+  during a scan are combined for the next pass; Rescan still checks all registered folders.
+- Folder actions announce success or failure once. Import progress remains available as
+  plain text without repeating its counts and filenames through the screen reader.
 - Adding folders accepts quoted Windows paths copied from File Explorer. Failed additions
   keep their error visible and focus the folder field so the reason can be read.
 - Neutral EQ no longer colours the server mix, and moving EQ sliders changes the sound smoothly.

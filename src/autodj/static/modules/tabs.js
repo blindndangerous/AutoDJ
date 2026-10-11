@@ -1,10 +1,10 @@
-// Section router -- single-page nav across the five views.  Audio
+// Section router -- single-page navigation. Audio
 // graph + crossfade state survive every navigation because the
 // document never reloads; only the `hidden` attribute toggles on
 // each <section>.  Tablist arrow / Home / End navigation follows
 // the ARIA APG roving-tabindex pattern.
 
-const VIEW_NAMES = ["now", "queue", "history", "settings", "library", "track-info"];
+const VIEW_NAMES = ["now", "queue", "track-info", "history", "settings", "library"];
 
 const _viewSections = new Map();
 const _viewLinks = new Map();
@@ -16,7 +16,11 @@ export function initViewRouter() {
     const sec = document.querySelector(`section[data-view="${name}"]`);
     const lnk = document.querySelector(`#view-nav [role="tab"][data-view="${name}"]`);
     if (sec) _viewSections.set(name, sec);
-    if (lnk) _viewLinks.set(name, lnk);
+    if (lnk) {
+      _viewLinks.set(name, lnk);
+      // Keep cached page markup in the same order as keyboard navigation.
+      lnk.parentElement.append(lnk);
+    }
   }
   for (const lnk of _viewLinks.values()) {
     lnk.addEventListener("click", () => {

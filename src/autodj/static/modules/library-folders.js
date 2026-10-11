@@ -38,6 +38,16 @@ export function installLibraryFolders({ document: doc = document, request = requ
   const panel = doc.getElementById("panel-library");
   const list = doc.getElementById("source-folders");
   const status = doc.getElementById("source-folders-status");
+  status.textContent = "";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  status.setAttribute("aria-atomic", "true");
+  let progress = doc.getElementById("source-folders-progress");
+  if (!progress) {
+    progress = doc.createElement("p");
+    progress.id = "source-folders-progress";
+    status.insertAdjacentElement("afterend", progress);
+  }
   const pathInput = doc.getElementById("source-folder-path");
   const kindInput = doc.getElementById("source-folder-kind");
   const recursiveInput = doc.getElementById("source-folder-recursive");
@@ -54,6 +64,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
   let saving = false;
   let folderSignature = null;
   let protectedGeneration = 0;
+  let actionAnnouncement = 0;
   let suspended = false;
   let addError = null;
 
@@ -61,11 +72,16 @@ export function installLibraryFolders({ document: doc = document, request = requ
     return !suspended && generation === protectedGeneration && isAuthenticatedRequestCurrent(epoch);
   }
 
-  function say(message, error = false) {
-    status.textContent = message;
+  function announceAction(message, error = false) {
     status.dataset.tone = error ? "error" : "info";
+    status.textContent = "";
+    const announcement = ++actionAnnouncement;
+    setTimeout(() => {
+      if (!suspended && announcement === actionAnnouncement) status.textContent = message;
+    }, 0);
   }
   function clearAddError() {
+    actionAnnouncement += 1;
     addError = null;
     pathInput.removeAttribute("aria-invalid");
     pathInput.removeAttribute("aria-describedby");
@@ -74,7 +90,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     addError = message;
     pathInput.setAttribute("aria-invalid", "true");
     pathInput.setAttribute("aria-describedby", status.id);
-    say(message, true);
+    announceAction(message, true);
     pathInput.focus();
   }
   function pointSay(message, error = false) {
@@ -104,15 +120,13 @@ export function installLibraryFolders({ document: doc = document, request = requ
         (replacement || doc.getElementById("source-folder-add")).focus();
       }
     }
-    if (addError) {
-      say(addError, true);
-    } else if (data.import?.running) {
+    if (data.import?.running) {
       const job = data.import;
-      say(`Importing tracks (${job.phase || "working"}): ${job.done || 0} of ${job.total || 0}${job.current ? `; ${job.current}` : ""}${job.errors?.length ? `; errors: ${job.errors.join("; ")}` : ""}`, Boolean(job.errors?.length));
+      progress.textContent = `Importing tracks (${job.phase || "working"}): ${job.done || 0} of ${job.total || 0}${job.current ? `; ${job.current}` : ""}${job.errors?.length ? `; errors: ${job.errors.join("; ")}` : ""}`;
     } else if (data.import?.errors?.length) {
-      say(`Import finished with ${data.import.errors.length} error(s): ${data.import.errors.join("; ")}`, true);
+      progress.textContent = `Import finished with ${data.import.errors.length} error(s): ${data.import.errors.join("; ")}`;
     } else {
-      say(`${data.tracks_ready ?? 0} tracks ready; ${data.tracks_indexed ?? 0} indexed.`);
+      progress.textContent = `${data.tracks_ready ?? 0} tracks ready; ${data.tracks_indexed ?? 0} indexed.`;
     }
   }
   async function refresh() {
@@ -123,7 +137,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       const data = await request("/api/library/folders");
       if (requestCurrent(epoch, generation)) renderFolders(data);
     } catch (error) {
-      if (requestCurrent(epoch, generation)) say(`Could not load folders: ${error.message}`, true);
+      if (requestCurrent(epoch, generation)) progress.textContent = `Could not load folders: ${error.message}`;
     }
   }
   function visible() { return !suspended && !panel.hidden && !doc.hidden; }
@@ -145,7 +159,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     if (addError) {
       const previousError = addError;
       clearAddError();
-      if (status.textContent === previousError) say("");
+      if (status.textContent === previousError) status.textContent = "";
     }
   });
   doc.getElementById("source-folder-add").addEventListener("click", async () => {
@@ -160,7 +174,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       await request("/api/library/folders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, kind: kindInput.value, recursive: recursiveInput.checked, advanced: kindInput.value === "music" && advancedInput.checked }) });
       if (!requestCurrent(epoch, generation)) return;
       pathInput.value = "";
-      say("Folder added.");
+      announceAction(`Folder added; import queued for ${path}.`);
       await refresh();
     } catch (error) { if (requestCurrent(epoch, generation)) reportAddError(`Could not add folder: ${error.message}`); }
   });
@@ -175,9 +189,9 @@ export function installLibraryFolders({ document: doc = document, request = requ
     input.disabled = true;
     try {
       await request(`/api/library/folders/${encodeURIComponent(row.dataset.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      if (requestCurrent(epoch, generation)) say("Folder settings saved.");
+      if (requestCurrent(epoch, generation)) announceAction("Folder settings saved.");
     } catch (error) {
-      if (requestCurrent(epoch, generation)) { say(`Could not save folder settings: ${error.message}`, true); await refresh(); }
+      if (requestCurrent(epoch, generation)) { announceAction(`Could not save folder settings: ${error.message}`, true); await refresh(); }
     } finally {
       if (requestCurrent(epoch, generation)) input.disabled = false;
     }
@@ -193,17 +207,17 @@ export function installLibraryFolders({ document: doc = document, request = requ
     try {
       await request(`/api/library/folders/${encodeURIComponent(row.dataset.id)}`, { method: "DELETE" });
       if (!requestCurrent(epoch, generation)) return;
-      say("Folder removed from the library.");
+      announceAction("Folder removed from the library.");
       await refresh();
-    } catch (error) { if (requestCurrent(epoch, generation)) say(`Could not remove folder: ${error.message}`, true); }
+    } catch (error) { if (requestCurrent(epoch, generation)) announceAction(`Could not remove folder: ${error.message}`, true); }
     finally { if (requestCurrent(epoch, generation)) button.disabled = false; }
   });
   doc.getElementById("source-folder-rescan").addEventListener("click", async () => {
     if (suspended) return;
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
-    try { await request("/api/library/rescan", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); if (requestCurrent(epoch, generation)) { say("Rescan started."); await refresh(); } }
-    catch (error) { if (requestCurrent(epoch, generation)) say(`Could not start rescan: ${error.message}`, true); }
+    try { await request("/api/library/rescan", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); if (requestCurrent(epoch, generation)) { announceAction("Rescan started."); await refresh(); } }
+    catch (error) { if (requestCurrent(epoch, generation)) announceAction(`Could not start rescan: ${error.message}`, true); }
   });
 
   function setPointFields(points, sources = {}) {
@@ -415,6 +429,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
   function clearProtectedData() {
     suspended = true;
     protectedGeneration += 1;
+    actionAnnouncement += 1;
     if (timer != null) clearInterval(timer);
     timer = null;
     opening = saving = false;
@@ -435,6 +450,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     pathInput.value = "";
     clearAddError();
     status.textContent = "";
+    progress.textContent = "";
     pointStatus.textContent = "";
     pointPath.value = "";
     for (const name of POINTS) {

@@ -64,20 +64,32 @@ describe("clock folder and points controls", () => {
     expect(formatPointTime(59.999)).toBe("1:00");
   });
 
-  it("posts folder choices and displays the returned import status", async () => {
+  it("announces an added folder once and keeps polling progress outside the live region", async () => {
     document.getElementById("panel-library").hidden = false;
     const request = vi.fn(async (url, options) => url === "/api/library/folders" && !options ? {
       folders: [{ id: 4, path: "C:/music", kind: "music", recursive: true, advanced: true }],
-      tracks_ready: 12, tracks_indexed: 8,
+      import: { running: true, phase: "scan", done: 2, total: 10, current: "track.flac" },
     } : {});
     const controls = installLibraryFolders({ document, request });
+    const status = document.getElementById("source-folders-status");
+    const progress = document.getElementById("source-folders-progress");
+    expect(status.getAttribute("role")).toBe("status");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(status.getAttribute("aria-atomic")).toBe("true");
+    expect(progress.hasAttribute("role")).toBe(false);
+    expect(progress.hasAttribute("aria-live")).toBe(false);
     document.getElementById("source-folder-path").value = "C:/music";
     document.getElementById("source-folder-add").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(request).toHaveBeenCalledWith("/api/library/folders", expect.objectContaining({ method: "POST" }));
     expect(JSON.parse(request.mock.calls[1][1].body).path).toBe("C:/music");
     expect(document.getElementById("source-folders").textContent).toContain("C:/music");
-    expect(document.getElementById("source-folders-status").textContent).toContain("12 tracks ready");
+    expect(status.textContent).toBe("Folder added; import queued for C:/music.");
+    expect(progress.textContent).toContain("Importing tracks (scan): 2 of 10");
+    await controls.refresh();
+    expect(status.textContent).toBe("Folder added; import queued for C:/music.");
+    expect(progress.textContent).toContain("track.flac");
     controls.destroy();
   });
 
@@ -125,7 +137,8 @@ describe("clock folder and points controls", () => {
     document.getElementById("panel-library").hidden = false;
     await controls.refresh();
     expect(request).toHaveBeenCalledWith("/api/library/folders");
-    expect(document.getElementById("source-folders-status").textContent).toContain("Folder is unavailable");
+    await vi.waitFor(() => expect(document.getElementById("source-folders-status").textContent).toContain("Folder is unavailable"));
+    expect(document.getElementById("source-folders-status").getAttribute("role")).toBe("status");
 
     pathInput.value = "C:/fixed";
     pathInput.dispatchEvent(new Event("input", { bubbles: true }));
@@ -425,6 +438,8 @@ describe("clock folder and points controls", () => {
     respond({ folders: [{ id: 1, path: "M:/private", kind: "music" }] });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(document.getElementById("source-folders").textContent).toBe("");
+    expect(document.getElementById("source-folders-status").textContent).toBe("");
+    expect(document.getElementById("source-folders-progress").textContent).toBe("");
   });
 
   it("keeps the cached older page usable until its server restarts", async () => {

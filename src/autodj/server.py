@@ -2264,7 +2264,7 @@ def create_app(
     async def api_library_add_folder(body: LibraryFolderBody) -> dict:
         library = _catalog_library()
         try:
-            await asyncio.to_thread(
+            source = await asyncio.to_thread(
                 library.catalog.add_source,
                 body.path,
                 body.kind,
@@ -2273,7 +2273,7 @@ def create_app(
             )
         except (OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        library.start_scan()
+        library.start_scan({source["id"]})
         return library.snapshot()
 
     @app.patch("/api/library/folders/{source_id}")
@@ -2290,7 +2290,7 @@ def create_app(
             recursive,
             advanced if source["kind"] == "music" else False,
         )
-        library.start_scan()
+        library.start_scan({source_id})
         return library.snapshot()
 
     @app.delete("/api/library/folders/{source_id}")

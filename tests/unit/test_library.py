@@ -217,6 +217,79 @@ def test_scan_continues_after_per_file_failure(manager_factory, tmp_path):
     assert any("bad.flac" in error for error in manager.snapshot()["import"]["errors"])
 
 
+def test_folder_scan_counts_only_requested_sources(manager_factory, tmp_path):
+    manager = manager_factory()
+    (manager.cfg.library.music_dir / "existing.flac").write_bytes(b"existing")
+    holiday = tmp_path / "Holiday"
+    holiday.mkdir()
+    for name in ("first.flac", "second.flac"):
+        (holiday / name).write_bytes(name.encode())
+    nested = holiday / "nested"
+    nested.mkdir()
+    (nested / "excluded.flac").write_bytes(b"nested")
+    source = manager.catalog.add_source(holiday, recursive=False)
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic) as analyzed,
+        patch("autodj.library.prepare_source", side_effect=fake_prepare),
+    ):
+        manager.scan({source["id"]})
+        assert {item.args[0].name for item in analyzed.call_args_list} == {
+            "first.flac",
+            "second.flac",
+        }
+        assert manager.snapshot()["import"]["total"] == 2
+        assert manager.snapshot()["import"]["done"] == 2
+        manager.scan()
+        assert manager.snapshot()["import"]["total"] == 3
+        assert manager.entry_for_path(manager.cfg.library.music_dir / "existing.flac") is not None
+
+
+@pytest.mark.parametrize("full_rescan", [False, True])
+def test_added_folders_queue_once_without_expanding_to_other_sources(
+    manager_factory, tmp_path, full_rescan
+):
+    manager = manager_factory()
+    roots = []
+    for name, count in (("First", 1), ("Second", 2), ("Third", 1)):
+        folder = tmp_path / name
+        folder.mkdir()
+        for number in range(count):
+            (folder / f"{number}.flac").write_bytes(f"{name}-{number}".encode())
+        roots.append(manager.catalog.add_source(folder)["id"])
+    entered, release = threading.Event(), threading.Event()
+    observed = []
+    original_scan = manager._scan
+
+    def scoped_scan(source_ids):
+        if not observed:
+            entered.set()
+            assert release.wait(timeout=3)
+        original_scan(source_ids)
+        observed.append((source_ids, manager.snapshot()["import"]["total"]))
+
+    manager._scan = scoped_scan
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.prepare_source", side_effect=fake_prepare),
+    ):
+        assert manager.start_scan({roots[0]})
+        try:
+            assert entered.wait(timeout=3)
+            assert manager.start_scan({roots[1]})
+            assert manager.start_scan({roots[2]})
+            assert manager.start_scan({roots[2]})
+            if full_rescan:
+                assert manager.start_scan()
+        finally:
+            release.set()
+        manager._thread.join(timeout=5)
+        assert not manager._thread.is_alive()
+    assert observed == [
+        ({roots[0]}, 1),
+        (None, 4) if full_rescan else ({roots[1], roots[2]}, 3),
+    ]
+
+
 def test_basic_entry_is_playable_while_audio_preparation_runs_and_analysis_can_start(
     manager_factory, tmp_path
 ):
@@ -623,7 +696,8 @@ def test_start_scan_reruns_with_new_sources_when_requested_during_scan(manager_f
     second_root.mkdir()
     observed = []
 
-    def pass_scan():
+    def pass_scan(source_ids):
+        assert source_ids is None
         observed.append({source["path"] for source in manager.catalog.sources("music")})
         if len(observed) == 1:
             entered.set()
@@ -641,6 +715,19 @@ def test_start_scan_reruns_with_new_sources_when_requested_during_scan(manager_f
     manager._thread.join(timeout=1)
     assert len(observed) == 2
     assert any("second" in source for source in observed[1])
+
+
+def test_failed_scan_thread_start_releases_worker_for_retry(manager_factory):
+    manager = manager_factory()
+    with (
+        patch("threading.Thread.start", side_effect=RuntimeError("cannot start thread")),
+        pytest.raises(RuntimeError, match="cannot start thread"),
+    ):
+        manager.start_scan()
+    assert not manager._scan_lock.locked()
+    assert manager._thread is None
+    manager.scan()
+    assert manager.snapshot()["import"]["phase"] == "complete"
 
 
 def test_snapshot_uses_cached_counts(manager_factory):

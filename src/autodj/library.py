@@ -49,7 +49,7 @@ class LibraryManager:
         self._scan_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._rescan_requested = False
+        self._pending_sources: set[str] | None = set()
         self._closed = False
         self._scan_generation = 0
         self._analysis_started_generation: int | None = None
@@ -223,48 +223,62 @@ class LibraryManager:
             "tracks_indexed": indexed,
         }
 
-    def start_scan(self) -> bool:
+    def _claim_scan(self, source_ids: set[str] | None) -> bool:
+        """Queue a scope and claim the worker lock; caller holds ``_lock``."""
+        if source_ids is None or self._pending_sources is None:
+            self._pending_sources = None
+        else:
+            self._pending_sources.update(source_ids)
+        if not self._scan_lock.acquire(blocking=False):
+            return False
+        self._stop.clear()
+        return True
+
+    def start_scan(self, source_ids: set[str] | None = None) -> bool:
         with self._lock:
             if self._closed:
                 return False
-            if self._thread is not None and self._thread.is_alive():
-                self._rescan_requested = True
+            if not self._claim_scan(source_ids):
                 return True
-            if self._scan_lock.locked():
-                self._rescan_requested = True
-                return True
-            self._stop.clear()
-            self._rescan_requested = False
             self._thread = threading.Thread(
-                target=self.scan, name="autodj-library-scan", daemon=True
+                target=self._scan_queued, name="autodj-library-scan", daemon=True
             )
-            self._thread.start()
+            try:
+                self._thread.start()
+            except BaseException:
+                self._thread = None
+                self._scan_lock.release()
+                raise
             return True
 
-    def scan(self) -> None:
-        if not self._scan_lock.acquire(blocking=False):
-            with self._lock:
-                if not self._closed:
-                    self._rescan_requested = True
-            return
+    def scan(self, source_ids: set[str] | None = None) -> None:
+        with self._lock:
+            if self._closed or not self._claim_scan(source_ids):
+                return
+        self._scan_queued()
+
+    def _scan_queued(self) -> None:
         acquired = True
         try:
             while not self._stop.is_set():
                 with self._lock:
                     if self._closed:
                         break
+                    source_ids = self._pending_sources
+                    self._pending_sources = set()
                     self._scan_generation += 1
-                self._scan()
+                self._scan(source_ids)
                 with self._lock:
-                    repeat = self._rescan_requested and not self._stop.is_set()
-                    self._rescan_requested = False
+                    repeat = self._pending_sources is None or bool(self._pending_sources)
+                    repeat = repeat and not self._stop.is_set()
                     if not repeat:
                         self._scan_lock.release()
                         acquired = False
                         break
         finally:
             if acquired:
-                self._scan_lock.release()
+                with self._lock:
+                    self._scan_lock.release()
 
     def _set_state(self, **values: Any) -> None:
         with self._lock:
@@ -307,10 +321,12 @@ class LibraryManager:
             result[field] = value if start <= value <= end else None
         return result
 
-    def _discover(self) -> list[tuple[str, Path]]:
+    def _discover(self, source_ids: set[str] | None = None) -> list[tuple[str, Path]]:
         formats = {f".{ext.lower().lstrip('.')}" for ext in self.cfg.library.supported_formats}
         found: dict[str, tuple[str, Path]] = {}
         for source in self.catalog.sources():
+            if source_ids is not None and source["id"] not in source_ids:
+                continue
             root = Path(source["path"])
             if not root.is_dir():
                 with self._lock:
@@ -446,12 +462,12 @@ class LibraryManager:
             if value is not None
         }
 
-    def _scan(self) -> None:
+    def _scan(self, source_ids: set[str] | None = None) -> None:
         with self._lock:
             self._import_errors = []
         self._set_state(running=True, phase="discovering", done=0, total=0, current="")
         try:
-            found = self._discover()
+            found = self._discover(source_ids)
             self._set_state(total=len(found), phase="reading tracks")
             self._reconcile_moves(found)
             cache_dir = self.cfg.index.active_dir / "prepared"
