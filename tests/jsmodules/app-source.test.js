@@ -2317,7 +2317,7 @@ describe("stream mode", () => {
       .toBe("Authentication required"));
     expect(listen.getAttribute("aria-pressed")).toBe("false");
     expect(audio.getAttribute("src")).toBeNull();
-    // The stream address is a secret: it leaves the page with the session.
+    // Clear the stream address from the page with the session state.
     expect(document.getElementById("stream-url").value).toBe("");
     expect(document.getElementById("stream-m3u").hasAttribute("href")).toBe(false);
   });
@@ -2326,12 +2326,10 @@ describe("stream mode", () => {
     const oldInfo = {
       path: "/stream/OLD.mp3", m3u_path: "/stream/OLD.m3u", bitrate: 320, listeners: 1, state: "playing",
     };
-    const newInfo = { ...oldInfo, path: "/stream/NEW.mp3", m3u_path: "/stream/NEW.m3u" };
     const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
     const stationServer = (overrides = {}) => (url, options) => {
       if (url in overrides) return overrides[url](options);
       if (url === "/api/stream") return jsonResponse(oldInfo);
-      if (url === "/api/stream/rotate") return jsonResponse(newInfo);
       return lyricsFor("a.mp3");
     };
 
@@ -2348,38 +2346,6 @@ describe("stream mode", () => {
         .toBe(`${location.origin}/stream/OLD.mp3`));
       expect(document.getElementById("stream-m3u").getAttribute("href")).toBe("/stream/OLD.m3u");
       expect(document.getElementById("stream-listeners").textContent).toBe("1 listener");
-    });
-
-    it("speaks its own new link once and skips the matching station event", async () => {
-      const { fetchImpl, webSocket } = await setupApp({
-        initialState: streamState, onRequest: stationServer(),
-      });
-      const url = document.getElementById("stream-url");
-      await vi.waitFor(() => expect(url.value).toContain("/stream/OLD.mp3"));
-      const rotate = document.getElementById("stream-rotate");
-      const dialog = document.getElementById("confirm-dialog");
-      const sr = document.getElementById("sr-status");
-      rotate.focus();
-      rotate.click();
-      expect(dialog.open).toBe(true);
-      document.getElementById("confirm-accept").click();
-      await vi.waitFor(() => expect(sr.textContent)
-        .toBe("New stream link made. The old link no longer works."));
-      expect(url.value).toContain("/stream/NEW.mp3");
-      expect(document.activeElement).toBe(rotate);
-      const [, options] = fetchImpl.mock.calls.find(([called]) => called === "/api/stream/rotate");
-      expect(options.method).toBe("POST");
-
-      sr.textContent = "";
-      const lookups = () => fetchImpl.mock.calls.filter(([called]) => called === "/api/stream").length;
-      const before = lookups();
-      webSocket.onmessage({ data: JSON.stringify({
-        ...streamState, stream_event: { id: "boot", seq: 2, name: "link_changed" },
-      }) });
-      await settle();
-      expect(sr.textContent).toBe("");
-      // The rotate reply already filled the new link: no second lookup.
-      expect(lookups()).toBe(before);
     });
 
     it("sends one quality save for quick arrow presses", async () => {
@@ -2439,22 +2405,6 @@ describe("stream mode", () => {
       } finally {
         location.hash = "";
       }
-    });
-
-    it("reports a failed new link in the settings region", async () => {
-      await setupApp({
-        initialState: streamState,
-        onRequest: stationServer({
-          "/api/stream/rotate": () => jsonResponse({ detail: "Could not save the new stream link" }, 500),
-        }),
-      });
-      const url = document.getElementById("stream-url");
-      await vi.waitFor(() => expect(url.value).toContain("/stream/OLD.mp3"));
-      document.getElementById("stream-rotate").click();
-      document.getElementById("confirm-accept").click();
-      await vi.waitFor(() => expect(document.getElementById("settings-status").textContent)
-        .toBe("Could not make a new link: Could not save the new stream link"));
-      expect(url.value).toContain("/stream/OLD.mp3");
     });
 
     it("saves the quality and puts it back when the encoder cannot restart", async () => {

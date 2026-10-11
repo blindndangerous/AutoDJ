@@ -154,18 +154,14 @@ btnListen.addEventListener("click", () => {
   _listenOptedIn = true;
   void streamMode.toggleListen();
 });
-// Settings > Stream.  This page speaks its own "Make new link"
-// confirmation, so it claims the station event that rotation causes.
+// Settings > Stream.
 const streamSettings = createStreamSettings({
   doc: document,
   fetchInfo: () => requestJson("/api/stream"),
-  rotate: () => withDisabled(document.getElementById("stream-rotate"),
-    () => requestJson("/api/stream/rotate", { method: "POST" })),
   saveBitrate: (value, control) =>
     postSettings("/api/stream/settings", { bitrate: value }, control),
   saveContinuous: (value, control) =>
     postSettings("/api/stream/settings", { continuous: value }, control),
-  claimLinkChange: () => streamMode.claimLinkChange(),
   srStatus: document.getElementById("sr-status"),
   settingsStatus,
 });

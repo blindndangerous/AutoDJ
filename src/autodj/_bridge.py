@@ -183,10 +183,9 @@ class PlayerBridge:
 
     def stream_info(self) -> dict:
         """Return the stream's paths, bitrate, listener count and state."""
-        secret = self.stream_secret.value
         return {
-            "path": f"/stream/{secret}.mp3",
-            "m3u_path": f"/stream/{secret}.m3u",
+            "path": "/stream.mp3",
+            "m3u_path": "/stream.m3u",
             "bitrate": int(self.player._cfg.stream.bitrate),
             "continuous": bool(self.player._cfg.stream.continuous),
             "listeners": int(self.stream.listener_count),

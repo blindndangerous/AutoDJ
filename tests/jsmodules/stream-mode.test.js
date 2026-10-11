@@ -5,7 +5,6 @@ import {
   createStreamSettings,
   ADDRESS_RETRY_MS,
   BITRATE_SETTLE_MS,
-  LINK_CLAIM_TIMEOUT_MS,
   NOT_LOADED_NOTE,
   STREAM_DELAY_ESTIMATE_S,
 } from "../../src/autodj/static/modules/stream-mode.js";
@@ -551,46 +550,8 @@ describe("stream mode", () => {
   });
 });
 
-describe("own link change", () => {
-  it("skips the link_changed event this page claimed, once", async () => {
-    const { mode, sr } = setup();
-    mode.apply({ stream_mode: true, stream_event: { id: "a", seq: 1, name: "set_started" } });
-    mode.claimLinkChange();
-    mode.apply({ stream_mode: true, stream_event: { id: "a", seq: 2, name: "link_changed" } });
-    await tick();
-    expect(sr.textContent).toBe("");
-    // A later change made on another page is spoken as usual.
-    mode.apply({ stream_mode: true, stream_event: { id: "a", seq: 3, name: "link_changed" } });
-    await tick();
-    expect(sr.textContent).toBe("Stream link changed. Speakers using the old link have stopped.");
-  });
-
-  it("does not let a claim swallow other station events", async () => {
-    const { mode, sr } = setup();
-    mode.apply({ stream_mode: true, stream_event: null });
-    mode.claimLinkChange();
-    mode.apply({ stream_mode: true, stream_event: { id: "a", seq: 1, name: "set_started" } });
-    await tick();
-    expect(sr.textContent).toBe("New set started.");
-    mode.apply({ stream_mode: true, stream_event: { id: "a", seq: 2, name: "link_changed" } });
-    await tick();
-    expect(sr.textContent).toBe("New set started.");
-  });
-
-  it("releases a claim whose link change never happened", async () => {
-    const { mode, sr } = setup();
-    mode.apply({ stream_mode: true, stream_event: null });
-    const release = mode.claimLinkChange();
-    release();
-    mode.apply({ stream_mode: true, stream_event: { id: "a", seq: 1, name: "link_changed" } });
-    await tick();
-    expect(sr.textContent).toBe("Stream link changed. Speakers using the old link have stopped.");
-  });
-});
-
-const INFO = { path: "/stream/S.mp3", m3u_path: "/stream/S.m3u", bitrate: 320, listeners: 0, state: "idle" };
-const NEW_INFO = { path: "/stream/NEW.mp3", m3u_path: "/stream/NEW.m3u", bitrate: 320, listeners: 0, state: "idle" };
-const MADE_TEXT = "New stream link made. The old link no longer works.";
+const INFO = { path: "/stream.mp3", m3u_path: "/stream.m3u", bitrate: 320, listeners: 0, state: "idle" };
+const NEW_INFO = { ...INFO, path: "/stream/NEW.mp3", m3u_path: "/stream/NEW.m3u" };
 const COPY_FAIL = "Could not copy. Select the address and copy it yourself.";
 // The copy handler writes its answer on a zero-delay timer queued only
 // after the clipboard attempt settles, so a fixed tick() can win that
@@ -613,38 +574,17 @@ function settingsDom() {
       <label for="stream-bitrate">Quality</label>
       <select id="stream-bitrate"><option value="128">128 kbps</option><option value="192">192 kbps</option><option value="256">256 kbps</option><option value="320">320 kbps</option></select>
       <input id="stream-continuous" type="checkbox">
-      <button type="button" id="stream-rotate">Make new link</button>
       <p id="stream-listeners"></p>
     </fieldset>
     </details>
-    <dialog id="confirm-dialog"><h2 id="confirm-title"></h2><p id="confirm-message"></p>
-      <button id="confirm-cancel"></button><button id="confirm-accept"></button></dialog>
     <div id="sr-status" role="status" aria-live="polite" aria-atomic="true"></div>`;
-  // The shared confirmation as a browser runs it: closing puts focus back
-  // on the element that had it when the dialog opened.
-  const dialog = document.getElementById("confirm-dialog");
-  let opener = null;
-  dialog.showModal = vi.fn(() => {
-    opener = document.activeElement;
-    dialog.setAttribute("open", "");
-  });
-  dialog.close = vi.fn((value) => {
-    if (!dialog.hasAttribute("open")) return;
-    if (value !== undefined) dialog.returnValue = value;
-    dialog.removeAttribute("open");
-    if (opener?.isConnected) opener.focus();
-    dialog.dispatchEvent(new Event("close"));
-  });
-  return dialog;
 }
 
 function makeSettings(overrides = {}) {
   const opts = {
     doc: document,
     fetchInfo: vi.fn(async () => INFO),
-    rotate: vi.fn(async () => NEW_INFO),
     saveBitrate: vi.fn(async () => true),
-    claimLinkChange: vi.fn(() => vi.fn()),
     srStatus: document.getElementById("sr-status"),
     settingsStatus: document.getElementById("settings-status"),
     ...overrides,
@@ -653,11 +593,6 @@ function makeSettings(overrides = {}) {
 }
 
 const byId = (id) => document.getElementById(id);
-
-// Presses the confirmation's own button.
-function closeDialog(dialog, value) {
-  byId(value === "confirm" ? "confirm-accept" : "confirm-cancel").click();
-}
 
 describe("stream settings", () => {
   beforeEach(() => vi.useRealTimers());
@@ -728,8 +663,8 @@ describe("stream settings", () => {
     ui.apply({ stream_mode: true, stream_listeners: 2 });
     await ui.refresh();
     expect(byId("stream-settings").hidden).toBe(false);
-    expect(byId("stream-url").value).toBe(`${location.origin}/stream/S.mp3`);
-    expect(byId("stream-m3u").getAttribute("href")).toBe("/stream/S.m3u");
+    expect(byId("stream-url").value).toBe(`${location.origin}/stream.mp3`);
+    expect(byId("stream-m3u").getAttribute("href")).toBe("/stream.m3u");
     expect(byId("stream-bitrate").value).toBe("256");
     expect(byId("stream-listeners").textContent).toBe("2 listeners");
   });
@@ -741,7 +676,7 @@ describe("stream settings", () => {
     ui.apply({ stream_mode: true, stream_listeners: 0 });
     await tick();
     expect(opts.fetchInfo).toHaveBeenCalledOnce();
-    expect(byId("stream-url").value).toBe(`${location.origin}/stream/S.mp3`);
+    expect(byId("stream-url").value).toBe(`${location.origin}/stream.mp3`);
   });
 
   it("rewrites the listener count only when it changes and never makes it live", () => {
@@ -790,15 +725,15 @@ describe("stream settings", () => {
 
   it("does not let a slow lookup overwrite a newer link", async () => {
     settingsDom();
-    let resolveSlow;
-    const fetchInfo = vi.fn(() => new Promise((resolve) => { resolveSlow = resolve; }));
+    const replies = [];
+    const fetchInfo = vi.fn(() => new Promise((resolve) => { replies.push(resolve); }));
     const { ui } = makeSettings({ fetchInfo });
-    const dialog = byId("confirm-dialog");
-    ui.apply({ stream_mode: true });
-    byId("stream-rotate").click();
-    closeDialog(dialog, "confirm");
+    ui.apply({ stream_mode: true, stream_event: { id: "a", seq: 1, name: "set_started" } });
+    ui.apply({ stream_mode: true, stream_event: { id: "a", seq: 2, name: "link_changed" } });
     await tick();
-    resolveSlow(INFO);
+    replies[1](NEW_INFO);
+    await tick();
+    replies[0](INFO);
     await tick();
     expect(byId("stream-url").value).toBe(`${location.origin}/stream/NEW.mp3`);
   });
@@ -822,80 +757,6 @@ describe("stream settings", () => {
     expect(byId("settings-status").textContent).toBe("");
   });
 
-  it("rotates only after confirmation and announces once", async () => {
-    const dialog = settingsDom();
-    const { ui, opts } = makeSettings();
-    ui.apply({ stream_mode: true, stream_listeners: 0 });
-    await ui.refresh();
-    const rotateBtn = byId("stream-rotate");
-    rotateBtn.focus();
-    rotateBtn.click();
-    expect(dialog.showModal).toHaveBeenCalled();
-    expect(byId("confirm-title").textContent).toBe("Make a new stream link?");
-    expect(byId("confirm-accept").textContent).toBe("Make new link");
-    closeDialog(dialog, "cancel");
-    await tick();
-    expect(opts.rotate).not.toHaveBeenCalled();
-    expect(opts.claimLinkChange).not.toHaveBeenCalled();
-    expect(document.activeElement).toBe(rotateBtn);
-    rotateBtn.click();
-    closeDialog(dialog, "confirm");
-    await tick();
-    expect(opts.claimLinkChange).toHaveBeenCalledOnce();
-    expect(opts.rotate).toHaveBeenCalledOnce();
-    expect(byId("stream-url").value).toContain("/stream/NEW.mp3");
-    expect(byId("stream-m3u").getAttribute("href")).toBe("/stream/NEW.m3u");
-    expect(byId("sr-status").textContent).toBe(MADE_TEXT);
-    expect(document.activeElement).toBe(rotateBtn);
-  });
-
-  it("treats Escape as cancel", async () => {
-    const dialog = settingsDom();
-    const { ui, opts } = makeSettings();
-    ui.apply({ stream_mode: true });
-    byId("stream-rotate").click();
-    // Escape closes the dialog without pressing either button.
-    dialog.removeAttribute("open");
-    dialog.dispatchEvent(new Event("close"));
-    await tick();
-    expect(opts.rotate).not.toHaveBeenCalled();
-    expect(document.activeElement).toBe(byId("stream-rotate"));
-  });
-
-  it("claims the link change before asking the server", async () => {
-    const dialog = settingsDom();
-    const order = [];
-    const { ui } = makeSettings({
-      claimLinkChange: vi.fn(() => { order.push("claim"); return () => {}; }),
-      rotate: vi.fn(async () => { order.push("rotate"); return NEW_INFO; }),
-    });
-    ui.apply({ stream_mode: true });
-    byId("stream-rotate").click();
-    closeDialog(dialog, "confirm");
-    await tick();
-    expect(order).toEqual(["claim", "rotate"]);
-  });
-
-  it("reports a failed rotation, releases the claim and keeps the old link", async () => {
-    const dialog = settingsDom();
-    const release = vi.fn();
-    const { ui } = makeSettings({
-      rotate: vi.fn(async () => { throw new Error("Could not save the new stream link"); }),
-      claimLinkChange: vi.fn(() => release),
-    });
-    ui.apply({ stream_mode: true });
-    await ui.refresh();
-    byId("stream-rotate").click();
-    closeDialog(dialog, "confirm");
-    await tick();
-    expect(release).toHaveBeenCalledOnce();
-    expect(byId("stream-url").value).toContain("/stream/S.mp3");
-    expect(byId("settings-status").textContent)
-      .toBe("Could not make a new link: Could not save the new stream link");
-    expect(byId("sr-status").textContent).toBe("");
-    expect(document.activeElement).toBe(byId("stream-rotate"));
-  });
-
   it("copies the address and reports failure", async () => {
     settingsDom();
     const writeText = vi.fn(async () => {});
@@ -905,7 +766,7 @@ describe("stream settings", () => {
     await ui.refresh();
     byId("stream-copy").click();
     await announced("Stream address copied.");
-    expect(writeText).toHaveBeenCalledWith(`${location.origin}/stream/S.mp3`);
+    expect(writeText).toHaveBeenCalledWith(`${location.origin}/stream.mp3`);
     writeText.mockRejectedValueOnce(new Error("denied"));
     document.execCommand = vi.fn(() => false);
     byId("stream-copy").click();
@@ -956,9 +817,9 @@ describe("stream settings", () => {
     copy.click();
     await announced("Stream address copied.");
     expect(document.execCommand).toHaveBeenCalledWith("copy");
-    expect(setData).toHaveBeenCalledWith("text/plain", `${location.origin}/stream/S.mp3`);
+    expect(setData).toHaveBeenCalledWith("text/plain", `${location.origin}/stream.mp3`);
     expect(prevented).toBe(true);
-    // NVDA would read the whole secret address on focusing the field.
+    // NVDA would read the whole address on focusing the field.
     expect(addressFocus).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(copy);
     // The one-off listener is gone: a later copy elsewhere is untouched.
@@ -1211,7 +1072,7 @@ describe("stream settings", () => {
     ui.retryIfMissing();
     await vi.advanceTimersByTimeAsync(0);
     expect(fetchInfo).toHaveBeenCalledTimes(3);
-    expect(byId("stream-url").value).toBe(`${location.origin}/stream/S.mp3`);
+    expect(byId("stream-url").value).toBe(`${location.origin}/stream.mp3`);
     expect(note.hidden).toBe(true);
     // Loaded: no more lookups on pushes or tab opens.
     await vi.advanceTimersByTimeAsync(ADDRESS_RETRY_MS * 2);
@@ -1220,77 +1081,18 @@ describe("stream settings", () => {
     expect(fetchInfo).toHaveBeenCalledTimes(3);
   });
 
-  it("does not look up the link again after its own rotation", async () => {
-    const dialog = settingsDom();
-    const { ui, opts } = makeSettings();
-    ui.apply({ stream_mode: true, stream_event: { id: "a", seq: 1, name: "set_started" } });
-    await tick();
-    expect(opts.fetchInfo).toHaveBeenCalledOnce();
-    byId("stream-rotate").click();
-    closeDialog(dialog, "confirm");
-    await tick();
-    ui.apply({ stream_mode: true, stream_event: { id: "a", seq: 2, name: "link_changed" } });
-    await tick();
-    expect(opts.fetchInfo).toHaveBeenCalledOnce();
-    expect(byId("stream-url").value).toContain("/stream/NEW.mp3");
-    // A later change from another page is looked up as usual.
-    ui.apply({ stream_mode: true, stream_event: { id: "a", seq: 3, name: "link_changed" } });
-    await tick();
-    expect(opts.fetchInfo).toHaveBeenCalledTimes(2);
-  });
-
-  it("skips the lookup when the event beats the rotate reply", async () => {
-    const dialog = settingsDom();
-    let reply;
-    const { ui, opts } = makeSettings({
-      rotate: vi.fn(() => new Promise((resolve) => { reply = resolve; })),
-    });
-    ui.apply({ stream_mode: true, stream_event: null });
-    await tick();
-    byId("stream-rotate").click();
-    closeDialog(dialog, "confirm");
-    await vi.waitFor(() => expect(opts.rotate).toHaveBeenCalled());
-    ui.apply({ stream_mode: true, stream_event: { id: "a", seq: 1, name: "link_changed" } });
-    reply(NEW_INFO);
-    await tick();
-    expect(opts.fetchInfo).toHaveBeenCalledOnce();
-    expect(byId("stream-url").value).toContain("/stream/NEW.mp3");
-  });
-
-  it("gives up the link-change claim ten seconds after the rotate reply", async () => {
-    const dialog = settingsDom();
-    const release = vi.fn();
-    const { ui, opts } = makeSettings({ claimLinkChange: vi.fn(() => release) });
-    ui.apply({ stream_mode: true, stream_event: null });
-    await tick();
-    vi.useFakeTimers();
-    byId("stream-rotate").click();
-    closeDialog(dialog, "confirm");
-    await vi.advanceTimersByTimeAsync(LINK_CLAIM_TIMEOUT_MS - 1);
-    expect(release).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
-    expect(release).toHaveBeenCalledOnce();
-    // The expired claim no longer stops another page's change being fetched.
-    ui.apply({ stream_mode: true, stream_event: { id: "a", seq: 1, name: "link_changed" } });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(opts.fetchInfo).toHaveBeenCalledTimes(2);
-  });
-
   it("hides the section and moves focus out when stream mode ends", async () => {
-    const dialog = settingsDom();
-    const { ui, opts } = makeSettings();
+    settingsDom();
+    const { ui } = makeSettings();
     ui.apply({ stream_mode: true });
     await ui.refresh();
-    byId("stream-rotate").focus();
-    byId("stream-rotate").click();
+    byId("stream-url").focus();
     ui.apply({ stream_mode: false });
     expect(byId("stream-settings").hidden).toBe(true);
-    expect(dialog.hasAttribute("open")).toBe(false);
-    expect(opts.rotate).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(document.querySelector("summary"));
   });
 
-  it("reset() wipes the secret address for sign-out", async () => {
+  it("reset() clears the address for sign-out", async () => {
     settingsDom();
     const { ui, opts } = makeSettings();
     ui.apply({ stream_mode: true, stream_listeners: 3 });

@@ -49,8 +49,9 @@ Browser playback from ADR 3 stays the default for `autodj serve`.
   streaming, since every listener hears the same mix.
 - Stream mode needs ffmpeg on the server and more CPU than browser
   playback, because the server decodes, mixes and encodes the whole set.
-- The stream address is a second credential beside pairing. It is kept
-  in `index/.stream-secret`, and "Make new link" replaces it.
+- Originally, the stream address was a second credential beside pairing,
+  kept in `index/.stream-secret`. Listening now uses public `/stream.mp3`
+  and `/stream.m3u` addresses; the secret remains for legacy links.
 
 ## Alternatives considered
 

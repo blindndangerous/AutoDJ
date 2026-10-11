@@ -66,7 +66,7 @@ def test_right_secret_streams_mp3(stream_app, query) -> None:
 
 
 def test_stream_needs_no_session_when_authentication_is_on(bridge, tmp_path: Path) -> None:
-    """Sonos cannot pair: the secret URL is enough, everything else still needs a login."""
+    """Public stream URLs work without pairing; stream controls still need login."""
     from autodj.config import ServerConfig
 
     bridge.player._cfg.server = ServerConfig(
@@ -78,9 +78,14 @@ def test_stream_needs_no_session_when_authentication_is_on(bridge, tmp_path: Pat
     bridge.attach_stream(stream=_stream_mock(), secret=secret, station=MagicMock(state="idle"))
     client = TestClient(create_app(bridge))
     assert client.get("/api/stream").status_code == 401
+    assert client.post("/api/stream/settings", json={"bitrate": 192}).status_code == 401
     assert client.get(f"/stream/{secret.value}.m3u").status_code == 200
     with client.stream("GET", f"/stream/{secret.value}.mp3") as response:
         assert response.status_code == 200
+    with client.stream("GET", "/stream.mp3", headers={"Accept-Encoding": "gzip"}) as response:
+        assert response.status_code == 200
+        assert "content-encoding" not in response.headers
+        assert next(response.iter_bytes())[:2] == b"\xff\xfb"
 
 
 def test_icy_headers_when_asked(stream_app) -> None:
@@ -100,7 +105,15 @@ def test_m3u_points_at_stream(stream_app) -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("audio/x-mpegurl")
     assert response.headers["cache-control"] == "no-store"
-    assert response.text.strip() == f"http://testserver/stream/{secret.value}.mp3"
+    assert response.text.strip() == "http://testserver/stream.mp3"
+    stream.add_listener.assert_not_called()
+
+
+def test_keyless_m3u_points_at_short_stream_url(stream_app) -> None:
+    client, _secret, stream = stream_app
+    response = client.get("/stream.m3u")
+    assert response.status_code == 200
+    assert response.text.strip() == "http://testserver/stream.mp3"
     stream.add_listener.assert_not_called()
 
 
@@ -109,15 +122,15 @@ def test_rotate_invalidates_old_url(stream_app) -> None:
     old = secret.value
     data = client.post("/api/stream/rotate").json()
     assert old not in data["path"]
-    assert data["path"] == f"/stream/{secret.value}.mp3"
+    assert data["path"] == "/stream.mp3"
     assert client.get(f"/stream/{old}.mp3").status_code == 404
     stream.disconnect_all.assert_called_once()
     assert client.get("/api/status").json()["stream_event"]["name"] == "link_changed"
 
 
 def test_host_check_still_applies(stream_app) -> None:
-    client, secret, stream = stream_app
-    response = client.get(f"/stream/{secret.value}.mp3", headers={"Host": "evil.example"})
+    client, _secret, stream = stream_app
+    response = client.get("/stream.mp3", headers={"Host": "evil.example"})
     assert response.status_code in (400, 403, 421)
     stream.add_listener.assert_not_called()
 
@@ -140,6 +153,9 @@ def test_encoder_cooldown_is_503(stream_app) -> None:
 
 def test_stream_routes_are_404_in_browser_mode(client) -> None:
     assert client.get("/stream/" + "x" * 43 + ".mp3").status_code == 404
+    assert client.get("/stream.mp3").status_code == 404
+    assert client.get("/stream.m3u").status_code == 404
+    assert client.head("/stream.mp3").status_code == 404
     assert client.get("/api/stream").status_code == 404
     assert client.post("/api/stream/rotate").status_code == 404
     assert client.post("/api/stream/settings", json={"bitrate": 192}).status_code == 404
@@ -149,11 +165,11 @@ def test_stream_routes_are_404_in_browser_mode(client) -> None:
 
 
 def test_stream_info(stream_app) -> None:
-    client, secret, stream = stream_app
+    client, _secret, stream = stream_app
     stream.listener_count = 2
     assert client.get("/api/stream").json() == {
-        "path": f"/stream/{secret.value}.mp3",
-        "m3u_path": f"/stream/{secret.value}.m3u",
+        "path": "/stream.mp3",
+        "m3u_path": "/stream.m3u",
         "bitrate": 320,
         "continuous": False,
         "listeners": 2,
@@ -448,7 +464,7 @@ def test_lifespan_starts_the_station_and_shuts_it_down_first(tmp_path: Path) -> 
             player.bus.playing = False
             player.bus.add_output.assert_called_once_with(stream)
             info = client.get("/api/stream").json()
-            assert info["path"] == f"/stream/{secret.value}.mp3"
+            assert info["path"] == "/stream.mp3"
             assert info["state"] == "idle"
             original_close = stream.close
 
@@ -674,8 +690,8 @@ def test_failure_while_sending_frees_the_listener_slot() -> None:
 
 
 def test_head_on_the_stream_sends_headers_only(stream_app) -> None:
-    client, secret, stream = stream_app
-    response = client.head(f"/stream/{secret.value}.mp3", headers={"Icy-MetaData": "1"})
+    client, _secret, stream = stream_app
+    response = client.head("/stream.mp3", headers={"Icy-MetaData": "1"})
     assert response.status_code == 200
     assert response.headers["content-type"] == "audio/mpeg"
     assert response.headers["cache-control"] == "no-store"
@@ -687,9 +703,9 @@ def test_head_on_the_stream_sends_headers_only(stream_app) -> None:
 
 
 def test_head_on_the_playlist_sends_headers_only(stream_app) -> None:
-    client, secret, _stream = stream_app
-    body = client.get(f"/stream/{secret.value}.m3u").content
-    response = client.head(f"/stream/{secret.value}.m3u")
+    client, _secret, _stream = stream_app
+    body = client.get("/stream.m3u").content
+    response = client.head("/stream.m3u")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("audio/x-mpegurl")
     assert response.headers["content-length"] == str(len(body))
@@ -851,14 +867,14 @@ def test_stream_headers_go_out_before_the_first_audio(stream_app) -> None:
     import asyncio
     import contextlib
 
-    client, secret, stream = stream_app
+    client, _secret, stream = stream_app
 
     async def silent():
         await asyncio.Event().wait()
         yield b""
 
     stream.add_listener.return_value.chunks = silent
-    path = f"/stream/{secret.value}.mp3"
+    path = "/stream.mp3"
     scope = {
         "type": "http",
         "asgi": {"version": "3.0"},
@@ -895,3 +911,47 @@ def test_stream_headers_go_out_before_the_first_audio(stream_app) -> None:
     asyncio.run(run())
     assert sent[0]["type"] == "http.response.start"
     assert sent[0]["status"] == 200
+
+
+@pytest.mark.parametrize("version", ["1.0", "1.1"])
+def test_stream_http_framing_matches_the_players_protocol(stream_app, version) -> None:
+    """Exercise the wire protocol: TestClient does not apply HTTP transfer framing."""
+    import http.client
+    import socket
+    import time
+
+    import uvicorn
+
+    client, _secret, stream = stream_app
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        config = uvicorn.Config(
+            client.app, http="h11", lifespan="off", log_level="error", access_log=False
+        )
+        server = uvicorn.Server(config)
+        worker = threading.Thread(target=server.run, kwargs={"sockets": [listener]}, daemon=True)
+        worker.start()
+        try:
+            deadline = time.monotonic() + 5
+            while not server.started and worker.is_alive() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert server.started
+            with socket.create_connection(listener.getsockname(), timeout=5) as connection:
+                connection.sendall(
+                    f"GET /stream.mp3 HTTP/{version}\r\n"
+                    "Host: testserver\r\nIcy-MetaData: 1\r\nConnection: close\r\n\r\n".encode()
+                )
+                response = http.client.HTTPResponse(connection)
+                response.begin()
+                assert response.status == 200
+                if version == "1.0":
+                    assert response.getheader("Transfer-Encoding") is None
+                    assert response.getheader("Content-Length") is None
+                    assert response.getheader("Connection") == "close"
+                assert response.getheader("icy-metaint") == "16000"
+                assert response.read() == b"\xff\xfb\x90\x00" + b"\x00" * 413
+        finally:
+            server.should_exit = True
+            worker.join(timeout=5)
+        assert not worker.is_alive()
+    stream.remove_listener.assert_called_once_with(stream.add_listener.return_value)

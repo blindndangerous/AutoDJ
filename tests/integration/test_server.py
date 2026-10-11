@@ -1671,6 +1671,7 @@ class TestServeFunction:
         assert secret is not None
         assert (tmp_path / ".stream-secret").read_text(encoding="utf-8").strip() == secret.value
         assert captured["uvicorn_kwargs"]["timeout_graceful_shutdown"] == 3
+        assert captured["uvicorn_kwargs"]["http"] == "h11"
         player = captured["player"]
         assert player.on_track_started is not None
 
