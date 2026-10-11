@@ -1067,6 +1067,7 @@ const _mixEls = {
   djMaxStretch:   document.getElementById("dj-max-stretch"),
   djGlideBars:    document.getElementById("dj-glide-bars"),
   djSweepFloor:   document.getElementById("dj-sweep-floor"),
+  pbQuietBoost:   document.getElementById("pb-quiet-boost"),
 };
 installMixSettings(_mixEls, {
   postSettings,

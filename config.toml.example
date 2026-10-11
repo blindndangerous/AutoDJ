@@ -173,6 +173,8 @@ station_name = "AutoDJ"
 # login with the stream ID.
 
 [playback]
+# Maximum gain for quiet sections with Smooth or Stereo Tool, in dB (0 to 12).
+quiet_boost_db = 9.0
 # Optional Stereo Tool command-line executable. Select its free preset under
 # Output processing in the browser after installing it separately.
 # Defaults to ./tools/stereo-tool/stereo_tool_cmd.exe on Windows or

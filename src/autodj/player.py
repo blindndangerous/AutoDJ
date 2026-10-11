@@ -2278,14 +2278,24 @@ class Player:
         if self._cfg.playback.loudness_processing not in {"smooth", "stereotool"}:
             audio = load_stereo(entry.path, SAMPLE_RATE, self._max_render_seconds())
             return self._apply_replaygain(audio, entry.path)
-        from autodj.processing import PREPARED_LINER_GAIN, prepare_source
+        from autodj.processing import (
+            PREPARED_LINER_GAIN,
+            prepare_source,
+            prepared_source_matches,
+        )
 
         record = self._library.catalog.record_for_path(entry.path) if self._library else None
         prepared = record.get("prepared_path") if record else None
-        if not prepared or not Path(prepared).is_file():
-            kind = record["kind"] if record else "music"
+        kind = record["kind"] if record else "music"
+        quiet_boost_db = self._cfg.playback.quiet_boost_db
+        if not prepared or not prepared_source_matches(prepared, kind, quiet_boost_db):
             prepared = str(
-                prepare_source(Path(entry.path), self._cfg.index.active_dir / "prepared", kind=kind)
+                prepare_source(
+                    Path(entry.path),
+                    self._cfg.index.active_dir / "prepared",
+                    kind=kind,
+                    quiet_boost_db=quiet_boost_db,
+                )
             )
             if record:
                 self._library.catalog.put_entry(entry, kind=kind, prepared_path=prepared)

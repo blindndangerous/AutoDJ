@@ -27,6 +27,7 @@ def _make_player() -> SimpleNamespace:
         transition_mode="full_intro_outro",
         pick_mode="similarity",
         loudness_processing=None,
+        quiet_boost_db=9.0,
         post_queue_seed="last_queued",
         key_notation="camelot",
         key_prefer_flats=False,
@@ -548,6 +549,7 @@ class TestRoundTrip:
         p1._cfg.transitions.effect = "echo_out"
         p1._cfg.transitions.wet_mix = 0.6
         p1._cfg.replaygain.target_db = -18.0
+        p1._cfg.playback.quiet_boost_db = 6.5
         p1._cfg.playback.no_repeat_window = 50
         p1._cfg.playback.artist_repeat_window = 5
         p1._cfg.playback.crossfade_seconds = 6.0
@@ -658,6 +660,7 @@ class TestRoundTrip:
             "artist_repeat_window",
             "transition_wet_mix",
             "replaygain_target_db",
+            "quiet_boost_db",
             "volume",
             "is_muted",
             # Bridge-visible derived session values are never persisted.

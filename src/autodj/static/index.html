@@ -908,6 +908,14 @@
       <span class="setting-desc" id="pb-rg-target-desc" data-show-when="pb-replaygain=replaygain">
         The loudness every tagged track is brought to, from minus 30 to 0.  Minus 14 is the default; minus 18 is the original ReplayGain reference and plays quieter.  For stream and server audio playback.
       </span>
+      <div class="settings-row" hidden>
+        <label for="pb-quiet-boost">Boost quiet sections (dB)</label>
+        <input type="number" id="pb-quiet-boost" min="0" max="12" step="0.1" value="9"
+               inputmode="decimal" aria-describedby="pb-quiet-boost-desc">
+      </div>
+      <span class="setting-desc" id="pb-quiet-boost-desc" hidden>
+        Applies throughout songs with Smooth or Stereo Tool. Sets the maximum boost, not a fixed boost. A song already cued may keep the previous setting.
+      </span>
       <div class="settings-row" data-show-when="pb-replaygain=replaygain">
         <label for="pb-rg-clip">ReplayGain peak limit</label>
         <input type="number" id="pb-rg-clip" min="0.1" max="2" step="0.05" value="1"

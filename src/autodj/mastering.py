@@ -26,12 +26,16 @@ STARTUP_BLOCKS: Final = 12
 # The extra cushion absorbs short Windows pipe/thread scheduling gaps, including
 # the first blocks after a restarted FFmpeg process.
 _OUTPUT_GUARD_BLOCKS: Final = STARTUP_BLOCKS + 6
-# Aligned Stereo Tool pipes need two fewer queued blocks for the same 480 ms delay.
+# Stereo Tool and its output limiter use this cushion for roughly 480 ms total delay.
 _STEREOTOOL_GUARD_BLOCKS: Final = 16
 _MEASURED_PIPELINE_BLOCKS: Final = _OUTPUT_GUARD_BLOCKS + 6
 _QUEUE_BLOCKS: Final = _OUTPUT_GUARD_BLOCKS + 20
 _LIMIT: Final = 0.87096359
 _MAKEUP: Final = 10 ** (9.01 / 20)
+_STEREOTOOL_OUTPUT_FILTER: Final = (
+    "volume=5.8dB,aresample=176400,alimiter=limit=0.87096359:attack=5:release=100:"
+    "level=0:latency=1,aresample=44100"
+)
 
 
 def _creation_flags() -> int:
@@ -54,6 +58,10 @@ def _command(mode: str = "smooth", stereotool_path: str = DEFAULT_STEREOTOOL_PAT
             "1024",
             "-q",
         ]
+    return _ffmpeg_command(MASTER_FILTER)
+
+
+def _ffmpeg_command(audio_filter: str) -> list[str]:
     return [
         "ffmpeg",
         "-hide_banner",
@@ -70,7 +78,7 @@ def _command(mode: str = "smooth", stereotool_path: str = DEFAULT_STEREOTOOL_PAT
         "-i",
         "pipe:0",
         "-af",
-        MASTER_FILTER,
+        audio_filter,
         "-f",
         "f32le",
         "-ar",
@@ -116,6 +124,7 @@ class ContinuousMaster:
         )
         self._output_cond = threading.Condition(self._lock)
         self._proc: subprocess.Popen[bytes] | None = None
+        self._post_proc: subprocess.Popen[bytes] | None = None
         self._ready = False
         self._failed = False
         self._recovering = False
@@ -246,7 +255,7 @@ class ContinuousMaster:
 
     def _lifecycle(self) -> None:
         active_generation = -1
-        proc = None
+        proc = post_proc = None
         writer = reader = None
         stop: threading.Event | None = None
         while True:
@@ -257,12 +266,12 @@ class ContinuousMaster:
                 mode = self._mode
             name = "Stereo Tool" if mode == "stereotool" else "FFmpeg"
             if closed:
-                self._stop_pipeline(proc, writer, reader, stop)
+                self._stop_pipeline(proc, writer, reader, stop, post_proc)
                 return
             if not enabled:
                 if proc is not None:
-                    self._stop_pipeline(proc, writer, reader, stop)
-                    proc = writer = reader = None
+                    self._stop_pipeline(proc, writer, reader, stop, post_proc)
+                    proc = post_proc = writer = reader = None
                     stop = None
                     active_generation = -1
                 self._changed.wait(0.1)
@@ -270,7 +279,7 @@ class ContinuousMaster:
                 continue
             if proc is None or generation != active_generation:
                 if proc is not None:
-                    self._stop_pipeline(proc, writer, reader, stop)
+                    self._stop_pipeline(proc, writer, reader, stop, post_proc)
                 try:
                     proc = self._factory(  # nosec B603 -- configured executable, fixed argv, no shell
                         _command(mode, self._stereotool_path),
@@ -282,8 +291,22 @@ class ContinuousMaster:
                     )
                     if proc.stdin is None or proc.stdout is None:
                         raise OSError(f"{name} master pipes unavailable")
+                    post_proc = None
+                    if mode == "stereotool":
+                        post_proc = self._factory(  # nosec B603 -- fixed FFmpeg argv, no shell
+                            _ffmpeg_command(_STEREOTOOL_OUTPUT_FILTER),
+                            stdin=proc.stdout,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL,
+                            bufsize=0,
+                            creationflags=_creation_flags(),
+                        )
+                        if post_proc.stdout is None:
+                            raise OSError("Stereo Tool output limiter pipe unavailable")
+                        proc.stdout.close()
                 except Exception as exc:
-                    proc = None
+                    self._stop_pipeline(proc, None, None, None, post_proc)
+                    proc = post_proc = None
                     with self._lock:
                         if self._closed:
                             return
@@ -307,7 +330,7 @@ class ContinuousMaster:
                 )
                 reader = threading.Thread(
                     target=self._read_loop,
-                    args=(proc, active_generation, stop),
+                    args=(post_proc if post_proc is not None else proc, active_generation, stop),
                     name="autodj-master-reader",
                     daemon=True,
                 )
@@ -315,6 +338,7 @@ class ContinuousMaster:
                 with self._lock:
                     if active_generation == self._generation and self._enabled:
                         self._proc = proc
+                        self._post_proc = post_proc
                         self._ready = False
                         self._failed = False
                         self._overflow_reported = False
@@ -323,25 +347,35 @@ class ContinuousMaster:
                     else:
                         stale = True
                 if stale:
-                    self._stop_pipeline(proc, writer, reader, stop)
-                    proc = writer = reader = None
+                    self._stop_pipeline(proc, writer, reader, stop, post_proc)
+                    proc = post_proc = writer = reader = None
                     stop = None
                     continue
                 writer.start()
                 reader.start()
-            if proc.poll() is not None:
-                self._stop_pipeline(proc, writer, reader, stop)
+            exited = next(
+                (
+                    stage
+                    for stage in (proc, post_proc)
+                    if stage is not None and stage.poll() is not None
+                ),
+                None,
+            )
+            if exited is not None:
+                self._stop_pipeline(proc, writer, reader, stop, post_proc)
                 with self._lock:
-                    self._proc = None
+                    self._proc = self._post_proc = None
                     self._ready = False
                     self._failed = True
                     self._recovering = True
                     self._recovery_outputs = 0
                     self._input.clear()
                     self._output.clear()
-                    self._error = f"{name} master exited ({proc.returncode}); using limited bypass"
+                    self._error = (
+                        f"{name} master exited ({exited.returncode}); using limited bypass"
+                    )
                     self._restarts += 1
-                proc = writer = reader = None
+                proc = post_proc = writer = reader = None
                 stop = None
                 active_generation = -1
                 self._changed.wait(0.5)
@@ -429,26 +463,28 @@ class ContinuousMaster:
         writer: threading.Thread | None,
         reader: threading.Thread | None,
         stop: threading.Event | None,
+        post_proc: subprocess.Popen[bytes] | None = None,
     ) -> None:
-        if proc is None:
-            return
         if stop is not None:
             stop.set()
-        with contextlib.suppress(OSError, ProcessLookupError):
-            proc.terminate()
-        try:
-            proc.wait(timeout=0.5)
-        except (subprocess.TimeoutExpired, OSError):
+        processes = [stage for stage in (proc, post_proc) if stage is not None]
+        for stage in processes:
             with contextlib.suppress(OSError, ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(subprocess.TimeoutExpired, OSError):
-                proc.wait(timeout=0.5)
-        for stream in (getattr(proc, "stdin", None), getattr(proc, "stdout", None)):
+                stage.terminate()
+        for stage in processes:
             try:
-                if stream:
-                    stream.close()
-            except OSError:
-                pass
+                stage.wait(timeout=0.5)
+            except (subprocess.TimeoutExpired, OSError):
+                with contextlib.suppress(OSError, ProcessLookupError):
+                    stage.kill()
+                with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+                    stage.wait(timeout=0.5)
+            for stream in (getattr(stage, "stdin", None), getattr(stage, "stdout", None)):
+                try:
+                    if stream:
+                        stream.close()
+                except OSError:
+                    pass
         for thread in (writer, reader):
             if thread is not None and thread.ident is not None:
                 thread.join(timeout=0.25)

@@ -23,7 +23,7 @@ from autodj.indexer import (
     _finish_decode_report,
     file_fingerprint,
 )
-from autodj.processing import analyze_basic, prepare_source
+from autodj.processing import analyze_basic, prepare_source, prepared_source_matches
 from autodj.stereo import DecodeReport
 
 logger = logging.getLogger(__name__)
@@ -542,9 +542,12 @@ class LibraryManager:
                     if record is None:
                         continue
                     prepared_path = record["prepared_path"]
-                    if prepared_path and Path(prepared_path).is_file():
+                    quiet_boost_db = self.cfg.playback.quiet_boost_db
+                    if prepared_path and prepared_source_matches(
+                        prepared_path, kind, quiet_boost_db
+                    ):
                         continue
-                    prepared = prepare_source(path, cache_dir, kind)
+                    prepared = prepare_source(path, cache_dir, kind, quiet_boost_db)
                     entry = self._entry_from_record(record)
                     self.catalog.put_entry(entry, kind, prepared_path=str(prepared))
                 except Exception as exc:

@@ -109,28 +109,47 @@ def _validate_audio(path: Path, frames: int | None = None) -> int:
     return info.frames
 
 
-def _cache_key(source: Path, kind: str) -> str:
+def _cache_key(source: Path, kind: str, quiet_boost_db: float = 9.0) -> str:
     stat = source.stat()
     digest = hashlib.sha256()
     with source.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
+    settings = f"{quiet_boost_db:g}\0" if kind == "music" else ""
     identity = (
-        f"{PREPARATION_VERSION}\0{kind}\0{stat.st_size}\0{stat.st_mtime_ns}\0{digest.hexdigest()}"
+        f"{PREPARATION_VERSION}\0{kind}\0{settings}"
+        f"{stat.st_size}\0{stat.st_mtime_ns}\0{digest.hexdigest()}"
     )
     return hashlib.sha256(identity.encode()).hexdigest()
 
 
-def prepare_source(source: Path, cache_dir: Path, kind: str = "music") -> Path:
+def prepared_source_matches(path: Path, kind: str, quiet_boost_db: float = 9.0) -> bool:
+    """Check a catalog cache path's processing settings without reading its source."""
+    path = Path(path)
+    if not path.is_file():
+        return False
+    if kind == "liner":
+        return True
+    return kind == "music" and path.name.startswith(
+        f"{PREPARATION_VERSION}-music-{quiet_boost_db:g}-"
+    )
+
+
+def prepare_source(
+    source: Path, cache_dir: Path, kind: str = "music", quiet_boost_db: float = 9.0
+) -> Path:
     """Decode and prepare one immutable source into a deterministic WAV cache."""
     if kind not in ("music", "liner"):
         raise ValueError("kind must be 'music' or 'liner'")
+    if not math.isfinite(quiet_boost_db) or not 0 <= quiet_boost_db <= 12:
+        raise ValueError("quiet_boost_db must be between 0 and 12")
     source = Path(source)
     cache_dir = Path(cache_dir)
     if not source.is_file():
         raise FileNotFoundError(source)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    destination = cache_dir / f"{_cache_key(source, kind)}.wav"
+    prefix = f"{PREPARATION_VERSION}-music-{quiet_boost_db:g}-" if kind == "music" else ""
+    destination = cache_dir / f"{prefix}{_cache_key(source, kind, quiet_boost_db)}.wav"
     if destination.is_file():
         try:
             _validate_audio(destination)
@@ -179,6 +198,9 @@ def prepare_source(source: Path, cache_dir: Path, kind: str = "music") -> Path:
         voice_filter = VOICE_FILTER if voice else ""
         gain = target - _measure(decoded, voice_filter)
         if not voice:
+            music_filter = MUSIC_FILTER.replace(
+                "m=1.584893192", f"m={10 ** (quiet_boost_db / 20):.9f}"
+            )
             _run(
                 [
                     "ffmpeg",
@@ -190,7 +212,7 @@ def prepare_source(source: Path, cache_dir: Path, kind: str = "music") -> Path:
                     "-i",
                     decoded,
                     "-af",
-                    f"volume={gain:.9f}dB,{MUSIC_FILTER}",
+                    f"volume={gain:.9f}dB,{music_filter}",
                     "-ar",
                     str(SAMPLE_RATE),
                     "-ac",

@@ -210,6 +210,7 @@ class PlaybackSettingsBody(BaseModel):
     pick_temperature: Annotated[float, Field(ge=0.0, le=10.0, allow_inf_nan=False)] | None = None
     prefetch_next_track: bool | None = None
     silence_trigger_crossfade: bool | None = None
+    quiet_boost_db: Annotated[float, Field(ge=0.0, le=12.0, allow_inf_nan=False)] | None = None
 
     @model_validator(mode="after")
     def _check_choices(self) -> PlaybackSettingsBody:

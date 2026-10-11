@@ -102,9 +102,15 @@ def fake_basic(path: Path, kind: str = "music"):
     }
 
 
-def fake_prepare(path: Path, cache_dir: Path, kind: str = "music") -> Path:
+def fake_prepare(
+    path: Path, cache_dir: Path, kind: str = "music", quiet_boost_db: float = 9.0
+) -> Path:
     cache_dir.mkdir(parents=True, exist_ok=True)
-    result = cache_dir / f"{kind}-{path.stem}.wav"
+    result = cache_dir / (
+        f"type-b-v1-music-{quiet_boost_db:g}-{path.stem}.wav"
+        if kind == "music"
+        else f"{kind}-{path.stem}.wav"
+    )
     result.write_bytes(b"prepared")
     return result
 
@@ -302,8 +308,8 @@ def test_basic_entry_is_playable_while_audio_preparation_runs_and_analysis_can_s
     release = threading.Event()
     captured = {}
 
-    def slow_prepare(path, cache_dir, kind="music"):
-        del path, cache_dir, kind
+    def slow_prepare(path, cache_dir, kind="music", quiet_boost_db=9.0):
+        del path, cache_dir, kind, quiet_boost_db
         entered.set()
         release.wait(timeout=3)
         return tmp_path / "prepared.wav"

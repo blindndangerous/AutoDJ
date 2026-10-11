@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -278,3 +280,80 @@ def test_installed_stereotool_preserves_tone_without_periodic_gaps() -> None:
         assert np.argmax(spectrum) == 997
     finally:
         master.close()
+
+
+def test_stereotool_output_lifts_quiet_audio_and_limits_peaks() -> None:
+    from scipy.signal import resample_poly
+
+    from autodj.mastering import _STEREOTOOL_OUTPUT_FILTER, _ffmpeg_command
+
+    samples = np.arange(44100 * 2)
+    low = 0.03 * np.sin(2 * np.pi * 997 * samples / 44100)
+    loud = 0.8 * np.sin(2 * np.pi * 997 * samples / 44100)
+    source = np.column_stack((np.concatenate((low, loud)),) * 2).astype(np.float32)
+    result = subprocess.run(
+        _ffmpeg_command(_STEREOTOOL_OUTPUT_FILTER),
+        input=source.tobytes(),
+        capture_output=True,
+        check=True,
+        timeout=10,
+    )
+    output = np.frombuffer(result.stdout, dtype=np.float32).reshape(-1, 2)
+    assert output.shape == source.shape
+    assert np.isfinite(output).all()
+    interior = slice(22050, 66150)
+    gain = np.sqrt(np.mean(output[interior] ** 2) / np.mean(source[interior] ** 2))
+    assert 20 * np.log10(gain) == pytest.approx(5.8, abs=0.05)
+    assert np.max(np.abs(resample_poly(output, 4, 1, axis=0))) <= 10 ** (-1 / 20)
+
+
+def test_output_limiter_start_failure_cleans_up_stereotool() -> None:
+    primary = MagicMock()
+    primary.poll.return_value = None
+    calls = 0
+
+    def factory(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return primary
+        raise OSError("output limiter missing")
+
+    master = ContinuousMaster(popen_factory=factory, mode=lambda: "stereotool")
+    try:
+        deadline = time.monotonic() + 2
+        while master.error is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert master.error and "output limiter missing" in master.error
+        primary.terminate.assert_called_once()
+        primary.stdin.close.assert_called_once()
+        primary.stdout.close.assert_called_once()
+        assert np.isfinite(master.process(_block(0.5))).all()
+    finally:
+        master.close()
+
+
+def test_installed_stereotool_recovers_when_output_limiter_exits() -> None:
+    executable = os.environ.get("AUTODJ_TEST_STEREOTOOL") or shutil.which("stereo_tool_cmd")
+    if not executable:
+        pytest.skip("Set AUTODJ_TEST_STEREOTOOL to test a separately installed Stereo Tool")
+    master = ContinuousMaster(mode=lambda: "stereotool", stereotool_path=executable)
+    outputs = []
+    try:
+        started = time.monotonic()
+        for index in range(220):
+            if index == 90:
+                assert master._post_proc is not None
+                master._post_proc.kill()
+            t = np.arange(BLOCK_FRAMES) + index * BLOCK_FRAMES
+            tone = (0.03 * np.sin(2 * np.pi * 997 * t / 44100)).astype(np.float32)
+            outputs.append(master.process(np.column_stack((tone, tone))))
+            time.sleep(max(0, started + (index + 1) * BLOCK_SECONDS - time.monotonic()))
+        assert master.restarts == 1
+        assert master.error is None
+        assert all(np.max(np.abs(block)) > 1e-5 for block in outputs[40:])
+        assert np.isfinite(np.concatenate(outputs)).all()
+        processes = (master._proc, master._post_proc)
+    finally:
+        master.close()
+    assert all(proc is not None and proc.poll() is not None for proc in processes)

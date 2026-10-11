@@ -29,6 +29,17 @@ def test_playback_body_accepts_saved_points_and_legacy_fields() -> None:
     assert body.replaygain_enabled is True
 
 
+@pytest.mark.parametrize("value", (0, 9, 12))
+def test_playback_body_accepts_quiet_boost_range(value: float) -> None:
+    assert PlaybackSettingsBody.model_validate({"quiet_boost_db": value}).quiet_boost_db == value
+
+
+@pytest.mark.parametrize("value", (-0.1, 12.1, float("inf"), float("nan")))
+def test_playback_body_rejects_quiet_boost_outside_finite_range(value: float) -> None:
+    with pytest.raises(ValidationError):
+        PlaybackSettingsBody.model_validate({"quiet_boost_db": value})
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [("pick_mode", "pure"), ("loudness_processing", "lufs"), ("transition_mode", "cues")],

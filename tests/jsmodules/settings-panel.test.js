@@ -48,6 +48,7 @@ function makeEls() {
     pbAnchorSeed:    cb(),
     pbLoudness:      sel(["off", "replaygain", "smooth", "stereotool"]),
     pbRgTarget:      num(),
+    pbQuietBoost:    num(),
     pbFadeIn:        num(),
     djPhraseBars:    num(),
     txWetMix:        num(),
@@ -256,6 +257,26 @@ describe("applySettingsState", () => {
     }, els);
     expect(els.pbPrefetch.checked).toBe(false);
     expect(els.pbSilenceTrigger.checked).toBe(false);
+  });
+
+  it("shows quiet boost only for Smooth and Stereo Tool", () => {
+    const els = makeEls();
+    const parent = document.createElement("div");
+    parent.className = "settings-row";
+    const description = document.createElement("span");
+    description.id = "quiet-boost-desc";
+    els.pbQuietBoost.setAttribute("aria-describedby", description.id);
+    parent.append(els.pbQuietBoost);
+    document.body.append(parent, description);
+
+    applySettingsState({ playback: { loudness_processing: "off" } }, els);
+    expect(parent.hidden).toBe(true);
+    expect(description.hidden).toBe(true);
+    applySettingsState({ playback: { loudness_processing: "smooth" } }, els);
+    expect(parent.hidden).toBe(false);
+    expect(description.hidden).toBe(false);
+    applySettingsState({ playback: { loudness_processing: "stereotool" } }, els);
+    expect(parent.hidden).toBe(false);
   });
 
   it("keeps the discovery checkbox in step with the runtime toggle", () => {
