@@ -457,32 +457,18 @@ def walk_music_dir(music_dir: Path, formats: list[str]) -> Iterator[Path]:
 # Audio loading
 # ---------------------------------------------------------------------------
 
-# Formats handled natively by soundfile (fast C library, no Python overhead).
-_SOUNDFILE_FORMATS = {".flac", ".wav", ".ogg", ".aif", ".aiff"}
-# MP3 decoding through libsndfile prints native diagnostics directly to stderr,
-# corrupting the live progress line. FFmpeg isolates and logs them per file.
-_FFMPEG_FORMATS = {".mp3", ".aac", ".m4a", ".mp4"}
-
-
-def _load_audio_ffmpeg(path: Path) -> tuple[np.ndarray, int]:
-    """Decode *path* through FFmpeg into a mono float32 array."""
-    if sf is None:
-        raise RuntimeError("soundfile is required to read FFmpeg decoder output")
-    # autodj.stereo needs soundfile, so it is imported only once that is known.
-    from autodj.stereo import load_with_ffmpeg
-
-    audio, sr = load_with_ffmpeg(path, channels=1)
-    if audio.ndim == 2:
-        audio = audio.mean(axis=1)
-    return audio, sr
+# Each phase saves the files it decoded with warnings or skipped here, in the
+# index directory, so they can be read after the progress line has moved on.
+INDEX_DECODE_LOG = "decode-indexing.log"
+ANALYSE_DECODE_LOG = "decode-analysing.log"
+LIBRARY_DECODE_LOG = "decode-library.log"
 
 
 def _load_audio(path: Path) -> tuple[np.ndarray, int]:
     """Load an audio file to a mono float32 array at its native sample rate.
 
-    Uses soundfile for FLAC/WAV, FFmpeg for MP3 and MP4-container audio such as ALAC,
-    and librosa for other formats.  FFmpeg is also the final fallback when
-    libsndfile rejects an otherwise valid file.
+    Decodes through :func:`autodj.stereo.load_mono`, the loader playback
+    uses too.
 
     Args:
         path: Path to the audio file.
@@ -492,32 +478,18 @@ def _load_audio(path: Path) -> tuple[np.ndarray, int]:
     """
     if sf is None:
         raise RuntimeError("soundfile is required for audio indexing")
+    # autodj.stereo needs soundfile, so it is imported only once that is known.
+    from autodj.stereo import load_mono
 
-    suffix = path.suffix.lower()
-    if suffix in _FFMPEG_FORMATS:
-        return _load_audio_ffmpeg(path)
+    return load_mono(path)
 
-    if suffix in _SOUNDFILE_FORMATS:
-        try:
-            audio, sr = sf.read(str(path), dtype="float32", always_2d=False)
-            if audio.ndim == 2:
-                audio = audio.mean(axis=1)  # stereo → mono
-            return audio, sr
-        except sf.LibsndfileError as exc:
-            # libsndfile chokes on some valid FLACs over NFS ("flac decoder lost
-            # sync") and on streams it can't seek through cleanly.  Try
-            # librosa, then FFmpeg below.
-            logger.debug("soundfile failed on %s, falling back to librosa: %s", path, exc)
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message=".*PySoundFile failed.*", category=UserWarning)
-        warnings.filterwarnings("ignore", message=".*audioread.*", category=UserWarning)
-        try:
-            audio, sr = librosa.load(str(path), sr=None, mono=True)
-            return audio, int(sr)
-        except (OSError, sf.LibsndfileError) as exc:
-            logger.debug("librosa failed on %s, falling back to FFmpeg: %s", path, exc)
-            return _load_audio_ffmpeg(path)
+def _finish_decode_report(report: Any, log_path: Path) -> None:
+    """Save *report* to *log_path* and print its one-line summary, if any."""
+    report.write(log_path)
+    summary = report.summary(log_path)
+    if summary is not None:
+        print(f"[AutoDJ] {summary}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1228,15 +1200,19 @@ def backfill_dj_meta(
     print(f"[AutoDJ] Phase: Analysing — DJ-meta backfill for {total} tracks.", flush=True)
     throttle_s = cfg.index.throttle_ms / 1000.0
     done = 0
+    from autodj.stereo import DecodeReport
+
+    report = DecodeReport()
     try:
-        with TrackProgress("Analysing", total, logger) as progress:
+        with report, TrackProgress("Analysing", total, logger) as progress:
             for count, path in enumerate(pending, start=1):
                 if throttle_s:
                     time.sleep(throttle_s)
                 try:
                     meta = _analyse_one_track(path)
                 except Exception as exc:
-                    logger.warning("DJ-meta analysis failed for %s: %s", path, exc)
+                    logger.warning("Could not analyse %s, skipped: %s", path, exc)
+                    report.skip(path, exc)
                     meta = None
                 if meta is not None:
                     if import_cues:
@@ -1247,6 +1223,7 @@ def backfill_dj_meta(
                 progress.update(count)
     except KeyboardInterrupt:  # pragma: no cover - Ctrl+C
         cache.flush(force=True)
+        _finish_decode_report(report, cfg.index.active_dir / ANALYSE_DECODE_LOG)
         print(
             f"[AutoDJ] DJ-meta interrupted: {done}/{total} analysed.  "
             "Re-run `autodj analyse` to resume.",
@@ -1254,6 +1231,7 @@ def backfill_dj_meta(
         )
         return
     cache.flush(force=True)
+    _finish_decode_report(report, cfg.index.active_dir / ANALYSE_DECODE_LOG)
     print(f"[AutoDJ] DJ-meta backfill done: {done}/{total} tracks analysed.", flush=True)
 
 
@@ -1615,6 +1593,7 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
     workers: int | None,
     checkpoint: Callable[[list[IndexEntry], list[np.ndarray]], None],
     throttle_ms: float,
+    report: Any,
 ) -> tuple[list[IndexEntry], list[np.ndarray]]:
     """Embed *new_tracks*, decoding the next ones on a prefetch pool meanwhile."""
     new_entries: list[IndexEntry] = []
@@ -1680,7 +1659,8 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
                     new_entries.append(entry)
                     new_vectors.append(combined)
                 except Exception as exc:
-                    logger.warning("Skipping %s: %s", track.path, exc)
+                    logger.warning("Could not index %s, skipped: %s", track.path, exc)
+                    report.skip(track.path, exc)
                     continue
                 finally:
                     progress.update(done)
@@ -1760,9 +1740,13 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
         existing_vectors=existing_vectors,
         base_generation=base_generation,
     )
-    new_entries, new_vectors = _embed_new_tracks(
-        new_tracks, wrapper, workers, checkpoint.write, cfg.index.throttle_ms
-    )
+    from autodj.stereo import DecodeReport
+
+    with DecodeReport() as report:
+        new_entries, new_vectors = _embed_new_tracks(
+            new_tracks, wrapper, workers, checkpoint.write, cfg.index.throttle_ms, report
+        )
+    _finish_decode_report(report, index_dir / INDEX_DECODE_LOG)
 
     if not new_entries:  # pragma: no cover -- empty / failed-indexing CLI report path
         if not existing_entries:

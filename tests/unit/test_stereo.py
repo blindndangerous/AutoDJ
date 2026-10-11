@@ -74,17 +74,15 @@ def test_load_stereo_keeps_two_channels(tmp_path: Path) -> None:
     np.testing.assert_allclose(out[:, 1], right, atol=1e-4)
 
 
-def test_load_stereo_recovers_mp3_after_both_default_decoders_fail() -> None:
+def test_load_stereo_decodes_mp3_with_ffmpeg_only() -> None:
     audio = np.ones((100, 2), dtype=np.float32)
     with (
-        patch.object(stereo.sf, "SoundFile", side_effect=RuntimeError("bad frame")),
-        patch("librosa.load", side_effect=RuntimeError("bad frame")),
+        patch.object(stereo.sf, "SoundFile") as native,
         patch.object(stereo, "load_with_ffmpeg", return_value=(audio, 44100)) as decode,
     ):
-        assert stereo.load_stereo("recoverable.mp3", max_seconds=60) is audio
-        decode.assert_called_once_with(
-            "recoverable.mp3", channels=2, sample_rate=44100, max_seconds=61
-        )
+        np.testing.assert_array_equal(stereo.load_stereo("song.mp3", max_seconds=60), audio)
+    native.assert_not_called()
+    decode.assert_called_once_with("song.mp3", channels=2, sample_rate=44100, max_seconds=61)
 
 
 def _fake_ffmpeg(decoded: np.ndarray, sr: int):
@@ -130,7 +128,7 @@ def test_ffmpeg_success_logs_complete_stderr_warning(caplog: pytest.LogCaptureFi
     assert run.call_args.args[0][1:3] == ["-v", "warning"]
     assert len(caplog.records) == 1
     assert caplog.records[0].message == (
-        "Audio decode warning for damaged.mp3:\n[mp3 @ 0x1] first warning\n[decoder] second warning"
+        "Decoded damaged.mp3 with warnings:\n[mp3 @ 0x1] first warning\n[decoder] second warning"
     )
 
 
@@ -174,17 +172,18 @@ def test_load_stereo_refuses_an_m4a_longer_than_max_seconds() -> None:
         stereo.load_stereo("song.m4a", 44100, max_seconds=2.0)
 
 
-def test_player_load_audio_decodes_m4a_with_ffmpeg() -> None:
-    decoded = np.zeros(4800, dtype=np.float32)
+def test_load_mono_decodes_m4a_in_stereo_and_averages() -> None:
+    decoded = np.stack([np.ones(4800), np.zeros(4800)], axis=1).astype(np.float32)
     which, run, read = _fake_ffmpeg(decoded, 48000)
     with which, run as ran, read:
-        audio, sr = player.load_audio("song.m4a")
+        audio, sr = stereo.load_mono("song.m4a")
 
     command = ran.call_args.args[0]
-    assert command[command.index("-ac") + 1] == "1"
+    assert command[command.index("-ac") + 1] == "2"
     assert "-ar" not in command
     assert sr == 48000
     assert audio.shape == (4800,)
+    np.testing.assert_allclose(audio, 0.5)
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs FFmpeg to encode ALAC")
@@ -203,7 +202,7 @@ def test_alac_file_loads_for_the_server_mix_and_analysis(tmp_path: Path) -> None
     np.testing.assert_allclose(mixed[:, 0], left, atol=1e-3)
     np.testing.assert_allclose(mixed[:, 1], right, atol=1e-3)
 
-    analysed, sr = player.load_audio(str(alac))
+    analysed, sr = stereo.load_mono(str(alac))
     assert sr == 44100
     assert analysed.shape == (44100,)
 
@@ -261,16 +260,15 @@ def test_eq_keeps_different_stereo_channels_independent() -> None:
     np.testing.assert_allclose(actual, expected, atol=1e-6)
 
 
-def test_load_stereo_falls_back_to_librosa_on_soundfile_failure() -> None:
-    fake_mono = np.ones(22050, dtype=np.float32)
+def test_load_stereo_falls_back_to_ffmpeg_on_soundfile_failure() -> None:
+    decoded = np.ones((22050, 2), dtype=np.float32)
     with (
-        patch("autodj.stereo.sf.SoundFile", side_effect=Exception("unsupported format")),
-        patch("librosa.load", return_value=(fake_mono, 22050)),
-        patch("librosa.resample", side_effect=lambda audio, orig_sr, target_sr, axis: audio),
+        patch("autodj.stereo.sf.SoundFile", side_effect=RuntimeError("unsupported format")),
+        patch.object(stereo, "load_with_ffmpeg", return_value=(decoded, 22050)) as decode,
     ):
         out = stereo.load_stereo("fake.opus", target_sr=22050)
     assert out.shape == (22050, 2)
-    np.testing.assert_array_equal(out[:, 0], out[:, 1])
+    decode.assert_called_once_with("fake.opus", channels=2, sample_rate=22050, max_seconds=None)
 
 
 def test_mono_helper() -> None:
@@ -292,11 +290,98 @@ def test_load_stereo_refuses_a_long_file_before_decoding_it(tmp_path: Path) -> N
 
 
 def test_load_stereo_fallback_decodes_at_most_a_second_past_the_limit() -> None:
-    too_long = np.ones((2, 22050 * 3), dtype=np.float32)
+    too_long = np.ones((22050 * 3, 2), dtype=np.float32)
     with (
-        patch("autodj.stereo.sf.SoundFile", side_effect=Exception("unsupported format")),
-        patch("librosa.load", return_value=(too_long, 22050)) as load,
+        patch("autodj.stereo.sf.SoundFile", side_effect=RuntimeError("unsupported format")),
+        patch.object(stereo, "load_with_ffmpeg", return_value=(too_long, 22050)) as decode,
         pytest.raises(stereo.TrackTooLongError),
     ):
-        stereo.load_stereo("mix.mp3", target_sr=22050, max_seconds=2.0)
-    assert load.call_args.kwargs["duration"] == 3.0
+        stereo.load_stereo("mix.opus", target_sr=22050, max_seconds=2.0)
+    assert decode.call_args.kwargs["max_seconds"] == 3.0
+
+
+def test_ffmpeg_drops_the_routine_duration_estimate_note(caplog: pytest.LogCaptureFixture) -> None:
+    note = b"[mp3 @ 0x1] Estimating duration from bitrate, this may be inaccurate\n"
+    which, _run, read = _fake_ffmpeg(np.zeros(8, dtype=np.float32), 44100)
+    with (
+        which,
+        patch.object(stereo.subprocess, "run", return_value=MagicMock(returncode=0, stderr=note)),
+        read,
+        caplog.at_level("WARNING", logger="autodj.stereo"),
+    ):
+        stereo.load_with_ffmpeg("plain.mp3", channels=2)
+    assert not caplog.records
+
+    mixed = note + b"[mp3float @ 0x2] overread, skip -5 enddists: -3 -3\n"
+    which, _run, read = _fake_ffmpeg(np.zeros(8, dtype=np.float32), 44100)
+    with (
+        which,
+        patch.object(stereo.subprocess, "run", return_value=MagicMock(returncode=0, stderr=mixed)),
+        read,
+        caplog.at_level("WARNING", logger="autodj.stereo"),
+    ):
+        stereo.load_with_ffmpeg("damaged.mp3", channels=2)
+    assert caplog.records[0].message == (
+        "Decoded damaged.mp3 with warnings:\n[mp3float @ 0x2] overread, skip -5 enddists: -3 -3"
+    )
+
+
+def test_load_mono_matches_the_level_of_the_stereo_that_plays(tmp_path: Path) -> None:
+    path = tmp_path / "wide.wav"
+    left, right = _tone(4410), 0.5 * _tone(4410, hz=220.0)
+    sf.write(path, np.stack([left, right], axis=1), 44100)
+
+    analysed, sr = stereo.load_mono(path)
+    played = stereo.load_stereo(str(path))
+
+    assert sr == 44100
+    np.testing.assert_allclose(analysed, played.mean(axis=1), atol=1e-6)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs FFmpeg to encode MP3")
+def test_mp3_analysis_and_playback_decode_the_same_samples(tmp_path: Path) -> None:
+    source = tmp_path / "tone.wav"
+    sf.write(source, np.stack([_tone(44100), -_tone(44100)], axis=1), 44100)
+    mp3 = tmp_path / "tone.mp3"
+    subprocess.run(["ffmpeg", "-v", "error", "-i", str(source), str(mp3)], check=True)
+
+    analysed, sr = stereo.load_mono(mp3)
+    played = stereo.load_stereo(str(mp3), sr)
+
+    np.testing.assert_allclose(analysed, played.mean(axis=1), atol=1e-6)
+
+
+def test_decode_report_saves_warnings_and_skips(tmp_path: Path) -> None:
+    log = tmp_path / "decode.log"
+    with stereo.DecodeReport() as report:
+        stereo.logger.warning(
+            "Decoded %s with warnings:\n%s", "a.mp3", "bad frame", extra={"track": "a.mp3"}
+        )
+        stereo.logger.warning(
+            "Decoded %s with warnings:\n%s", "b.mp3", "worse frame", extra={"track": "b.mp3"}
+        )
+        stereo.logger.warning("not about a track")
+    report.skip("b.mp3", RuntimeError("embedding contains NaN"))
+    report.skip("c.flac", RuntimeError("FFmpeg could not decode c.flac"))
+
+    report.write(log)
+
+    assert log.read_text(encoding="utf-8") == (
+        "Skipped: b.mp3\n  embedding contains NaN\n  worse frame\n"
+        "Skipped: c.flac\n  FFmpeg could not decode c.flac\n"
+        "Decoded with warnings: a.mp3\n  bad frame\n"
+    )
+    assert report.summary(log) == (
+        f"1 file decoded with warnings; 2 files failed and were skipped. Details: {log}"
+    )
+    assert report not in stereo.logger.handlers
+
+
+def test_decode_report_with_nothing_to_say_removes_an_old_log(tmp_path: Path) -> None:
+    log = tmp_path / "decode.log"
+    log.write_text("old run\n", encoding="utf-8")
+    with stereo.DecodeReport() as report:
+        pass
+    report.write(log)
+    assert not log.exists()
+    assert report.summary(log) is None

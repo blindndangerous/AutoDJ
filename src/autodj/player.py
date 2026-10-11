@@ -54,12 +54,11 @@ from autodj.indexer import IndexEntry
 from autodj.mixbus import BusEvents, MixBus, RenderedTrack, SkipTail
 from autodj.render_ahead import RenderAhead
 from autodj.stereo import (
-    FFMPEG_FORMATS,
     SAMPLE_RATE,
     TrackTooLongError,
     envelope,
+    load_mono,
     load_stereo,
-    load_with_ffmpeg,
     mono,
     to_stereo,
 )
@@ -554,46 +553,6 @@ def _grid_anchor(meta: DjMeta) -> float | None:
         if cue.type == "first_downbeat" and cue.source != "auto":
             return cue.time_s
     return imported_markers(meta.cues).get("intro_start")
-
-
-# ---------------------------------------------------------------------------
-# Audio loading
-# ---------------------------------------------------------------------------
-
-
-def load_audio(path: str, target_sr: int = _DEFAULT_SR) -> tuple[np.ndarray, int]:
-    """Load an audio file as a mono float32 array.
-
-    Uses FFmpeg for MP4-container audio such as ALAC, ``soundfile`` for
-    the rest, and falls back to ``librosa`` for files soundfile rejects.
-
-    Args:
-        path: Absolute path to the audio file.
-        target_sr: Target sample rate for the librosa fallback, which
-            resamples to it.  A file soundfile reads keeps its native rate.
-
-    Returns:
-        A tuple ``(audio, sample_rate)`` where *audio* is a mono float32
-        array and *sample_rate* is the actual rate after any resampling.
-
-    Raises:
-        RuntimeError: ``soundfile.LibsndfileError`` when neither decoder can
-            read the file, or FFmpeg's error for MP4-container audio.
-    """
-    if Path(path).suffix.lower() in FFMPEG_FORMATS:
-        return load_with_ffmpeg(path, channels=1)
-    try:
-        audio, sr = sf.read(path, dtype="float32", always_2d=False)
-        # Mix down to mono if stereo
-        if audio.ndim > 1:
-            audio = audio.mean(axis=1)
-        return audio, sr
-    except Exception:
-        # Fallback for MP3 / M4A which soundfile may not support without plugins
-        import librosa
-
-        audio, sr = librosa.load(path, sr=target_sr, mono=True)
-        return audio, int(sr)
 
 
 # ---------------------------------------------------------------------------
@@ -2716,7 +2675,7 @@ class Player:
 
         def _worker() -> None:  # pragma: no cover -- background thread
             try:
-                audio, sr = load_audio(path)
+                audio, sr = load_mono(path)
                 if intro_start_only:
                     self._record_intro_start(path, audio, sr)
                     return

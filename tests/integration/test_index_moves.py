@@ -79,8 +79,11 @@ class Library:
         conn.close()
 
     def index(self) -> None:
-        with patch("autodj.indexer.sf") as sf, patch("autodj.indexer.librosa") as librosa:
-            sf.read.return_value = (_FAKE_AUDIO, 22050)
+        with (
+            patch("autodj.indexer._load_audio") as load,
+            patch("autodj.indexer.librosa") as librosa,
+        ):
+            load.return_value = (_FAKE_AUDIO, 22050)
             _setup_librosa_mock(librosa)
             build_index(self.cfg, wrapper=self.wrapper, limit=None, force=False)
 

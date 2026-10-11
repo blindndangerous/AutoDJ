@@ -52,7 +52,7 @@ fails with the name and message of the error `serve` would stop with, for exampl
 integrity check on `dj_meta.db` without changing it. The `beets-db` check warns when
 `[library] beets_db` names a file that does not exist: indexing then scans the music folder
 instead, and `autodj enrich` fails. The `dependencies` check warns when FFmpeg is not on the
-PATH: indexing then skips `.m4a`, `.mp4` and `.aac` files, and stream mode cannot start.
+PATH: indexing then skips `.mp3`, `.m4a`, `.mp4` and `.aac` files, and stream mode cannot start.
 
 ## Indexing and DJ analysis
 
@@ -67,6 +67,19 @@ With `[playback] import_external_cues` on (the default), intro and outro markers
 Rekordbox or Traktor take the place of the detected intro and outro, so the crossfade follows
 them. A track analysed before AutoDJ read those markers gets them the first time it plays while
 `autodj serve` runs; there is no need to analyse it again.
+
+Indexing, analysis and server playback decode files the same way: FFmpeg decodes `.mp3`, `.m4a`,
+`.mp4` and `.aac` files, and soundfile decodes the rest, with FFmpeg as the fallback when soundfile
+cannot read a file. A file that indexes therefore also plays, at the same level.
+
+FFmpeg can repair some damaged files while it decodes them. When it does, the terminal shows
+"Decoded FILE with warnings" with FFmpeg's message, above the status line. A file that cannot be
+decoded or analysed shows "Could not index FILE, skipped" or "Could not analyse FILE, skipped" with
+the reason. At the end of the run, one line counts both kinds and names a log in the index
+directory that lists each file and its messages: `decode-indexing.log` for embedding and
+`decode-analysing.log` for DJ analysis and `decode-library.log` for `autodj analyse-library`. Each run replaces its log, and a run with nothing to
+report removes it. FFmpeg's routine note that an MP3's duration is estimated from its bitrate is
+left out, because the decode itself is complete.
 
 Each run publishes the tracks embedded so far as a new index generation every 100 tracks and at
 the end, so an interrupted run resumes where it stopped. `autodj analyse` saves its results every

@@ -100,10 +100,9 @@ class TestExtractLibrosaFeatures:
         fake_sr = 22050
 
         with (
-            patch("autodj.indexer.sf") as mock_sf,
+            patch("autodj.indexer._load_audio", return_value=(fake_audio, fake_sr)),
             patch("autodj.indexer.librosa") as mock_librosa,
         ):
-            mock_sf.read.return_value = (fake_audio, fake_sr)
             self._setup_librosa_mock(mock_librosa, fake_audio, fake_sr)
 
             vec, audio, sr, _ = _extract_librosa_features(tmp_path / "song.flac")
@@ -117,10 +116,9 @@ class TestExtractLibrosaFeatures:
         fake_sr = 22050
 
         with (
-            patch("autodj.indexer.sf") as mock_sf,
+            patch("autodj.indexer._load_audio", return_value=(fake_audio, fake_sr)),
             patch("autodj.indexer.librosa") as mock_librosa,
         ):
-            mock_sf.read.return_value = (fake_audio, fake_sr)
             self._setup_librosa_mock(mock_librosa, fake_audio, fake_sr)
 
             _, _, _, extra_meta = _extract_librosa_features(tmp_path / "song.flac")
@@ -137,10 +135,9 @@ class TestExtractLibrosaFeatures:
         fake_sr = 22050
 
         with (
-            patch("autodj.indexer.sf") as mock_sf,
+            patch("autodj.indexer._load_audio", return_value=(fake_audio, fake_sr)),
             patch("autodj.indexer.librosa") as mock_librosa,
         ):
-            mock_sf.read.return_value = (fake_audio, fake_sr)
             self._setup_librosa_mock(mock_librosa, fake_audio, fake_sr)
 
             vec, _, _, _ = _extract_librosa_features(tmp_path / "song.flac")
@@ -590,38 +587,39 @@ class TestPruneIndex:
         assert int(np.argmax(loaded_vectors.reconstruct(0))) == 23
 
     def test_mp3_decode_uses_isolated_ffmpeg_path(self, tmp_path: Path) -> None:
+        import soundfile as sf
+
         from autodj.indexer import _load_audio
 
         path = tmp_path / "track.MP3"
-        samples = np.zeros(128, dtype=np.float32)
+        samples = np.zeros((128, 2), dtype=np.float32)
         with (
-            patch("autodj.indexer._load_audio_ffmpeg", return_value=(samples, 44100)) as decode,
-            patch("librosa.load") as native_decode,
+            patch("autodj.stereo.load_with_ffmpeg", return_value=(samples, 44100)) as decode,
+            patch.object(sf, "SoundFile") as native_decode,
         ):
             audio, rate = _load_audio(path)
-        decode.assert_called_once_with(path)
+        decode.assert_called_once_with(path, channels=2, sample_rate=None, max_seconds=None)
         native_decode.assert_not_called()
-        assert audio is samples
+        assert audio.shape == (128,)
         assert rate == 44100
 
-    def test_load_audio_falls_back_to_librosa_when_soundfile_errors(self, tmp_path: Path) -> None:
+    def test_load_audio_falls_back_to_ffmpeg_when_soundfile_errors(self, tmp_path: Path) -> None:
         # Some FLACs over NFS make libsndfile raise "flac decoder lost sync"
-        # mid-stream — librosa's audioread/ffmpeg path decodes them fine and
-        # must be tried before giving up.  See indexer.py _load_audio.
+        # mid-stream; FFmpeg decodes them, so it is tried before giving up.
         import soundfile as sf
 
         from autodj.indexer import _load_audio
 
         flac = tmp_path / "broken.flac"
         flac.write_bytes(b"not really flac")
-        fake_audio = np.zeros(48000, dtype=np.float32)
+        decoded = np.zeros((48000, 2), dtype=np.float32)
 
         with (
-            patch.object(sf, "read", side_effect=sf.LibsndfileError("flac decoder lost sync")),
-            patch("librosa.load", return_value=(fake_audio, 48000)) as mock_librosa,
+            patch.object(sf, "SoundFile", side_effect=sf.LibsndfileError(0, "lost sync")),
+            patch("autodj.stereo.load_with_ffmpeg", return_value=(decoded, 48000)) as ffmpeg,
         ):
             audio, sr = _load_audio(flac)
-        assert mock_librosa.called
+        assert ffmpeg.called
         assert sr == 48000
         assert len(audio) == 48000
 
@@ -1516,7 +1514,7 @@ class TestIncrementalCheckpoint:
             patch("autodj.indexer.TrackProgress") as progress,
             pytest.raises(OSError, match="checkpoint failed"),
         ):
-            _embed_new_tracks([track], wrapper, 1, fail, 0.0)
+            _embed_new_tracks([track], wrapper, 1, fail, 0.0, MagicMock())
         progress.return_value.__enter__.return_value.update.assert_called_once_with(1)
         progress.return_value.__exit__.assert_called_once()
 

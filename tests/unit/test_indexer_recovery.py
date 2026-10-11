@@ -41,49 +41,53 @@ def test_display_name_falls_back_to_title_without_artist() -> None:
     assert _entry("song.flac", artist="").display_name == "Song"
 
 
-def test_load_audio_downmixes_stereo_soundfile_result() -> None:
-    stereo = np.array([[1.0, 3.0], [5.0, 7.0]], dtype=np.float32)
+def test_load_audio_downmixes_stereo_soundfile_result(tmp_path: Path) -> None:
+    import soundfile as sf
 
-    with patch.object(indexer.sf, "read", return_value=(stereo, 48_000)):
-        audio, sample_rate = indexer._load_audio(Path("song.flac"))
+    path = tmp_path / "song.flac"
+    sf.write(path, np.array([[0.25, 0.75], [-0.5, 0.0]], dtype=np.float32), 48_000)
+
+    audio, sample_rate = indexer._load_audio(path)
 
     assert sample_rate == 48_000
-    assert np.array_equal(audio, np.array([2.0, 6.0], dtype=np.float32))
+    np.testing.assert_allclose(audio, [0.5, -0.25], atol=1e-4)
 
 
-def test_load_audio_decodes_m4a_with_ffmpeg() -> None:
+def test_load_audio_decodes_m4a_with_ffmpeg_and_averages_channels() -> None:
     stereo = np.array([[1.0, 3.0], [5.0, 7.0]], dtype=np.float32)
     completed = MagicMock(returncode=0, stderr=b"")
 
     with (
         patch.object(stereo_mod.shutil, "which", return_value="/usr/bin/ffmpeg"),
         patch.object(stereo_mod.subprocess, "run", return_value=completed) as run,
-        patch.object(indexer.sf, "read", return_value=(stereo, 44_100)) as read,
+        patch.object(stereo_mod.sf, "read", return_value=(stereo, 44_100)) as read,
     ):
         audio, sample_rate = indexer._load_audio(Path("song.m4a"))
 
     command = run.call_args.args[0]
     assert command[0] == "/usr/bin/ffmpeg"
     assert command[command.index("-i") + 1] == "song.m4a"
+    # FFmpeg's own mono downmix is louder than the channel mean playback hears.
+    assert command[command.index("-ac") + 1] == "2"
     assert command[-2:] == ["wav", "pipe:1"]
-    assert read.call_args.kwargs == {"dtype": "float32", "always_2d": False}
+    assert read.call_args.kwargs == {"dtype": "float32", "always_2d": True}
     assert sample_rate == 44_100
     assert np.array_equal(audio, np.array([2.0, 6.0], dtype=np.float32))
 
 
-def test_load_audio_ffmpeg_reports_missing_binary() -> None:
+def test_load_audio_reports_missing_ffmpeg() -> None:
     with (
         patch.object(stereo_mod.shutil, "which", return_value=None),
         pytest.raises(RuntimeError, match=r"FFmpeg is required to decode \.m4a"),
     ):
-        indexer._load_audio_ffmpeg(Path("song.m4a"))
+        indexer._load_audio(Path("song.m4a"))
 
 
 @pytest.mark.parametrize(
     ("stderr", "message"),
     [(b"invalid data", "invalid data"), (b"", "unknown error")],
 )
-def test_load_audio_ffmpeg_reports_decoder_failure(stderr: bytes, message: str) -> None:
+def test_load_audio_reports_decoder_failure(stderr: bytes, message: str) -> None:
     completed = MagicMock(returncode=1, stderr=stderr)
 
     with (
@@ -91,22 +95,24 @@ def test_load_audio_ffmpeg_reports_decoder_failure(stderr: bytes, message: str) 
         patch.object(stereo_mod.subprocess, "run", return_value=completed),
         pytest.raises(RuntimeError, match=message),
     ):
-        indexer._load_audio_ffmpeg(Path("song.m4a"))
+        indexer._load_audio(Path("song.m4a"))
 
 
-def test_load_audio_falls_back_to_ffmpeg_after_librosa_decoder_error() -> None:
-    error = indexer.sf.LibsndfileError("lost sync")
-    expected = (np.zeros(4, dtype=np.float32), 48_000)
+def test_load_audio_falls_back_to_ffmpeg_after_soundfile_decoder_error() -> None:
+    error = stereo_mod.sf.LibsndfileError(0, "lost sync")
+    decoded = np.zeros((4, 2), dtype=np.float32)
 
     with (
-        patch.object(indexer.sf, "read", side_effect=error),
-        patch.object(indexer.librosa, "load", side_effect=error),
-        patch.object(indexer, "_load_audio_ffmpeg", return_value=expected) as ffmpeg,
+        patch.object(stereo_mod.sf, "SoundFile", side_effect=error),
+        patch.object(stereo_mod, "load_with_ffmpeg", return_value=(decoded, 48_000)) as ffmpeg,
     ):
-        result = indexer._load_audio(Path("song.flac"))
+        audio, rate = indexer._load_audio(Path("song.flac"))
 
-    assert result == expected
-    ffmpeg.assert_called_once_with(Path("song.flac"))
+    assert rate == 48_000
+    assert audio.shape == (4,)
+    ffmpeg.assert_called_once_with(
+        Path("song.flac"), channels=2, sample_rate=None, max_seconds=None
+    )
 
 
 def test_key_estimation_rejects_ambiguous_chroma() -> None:
