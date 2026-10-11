@@ -128,6 +128,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Doctor now detects obsolete repeat settings in saved browser state, including the empty
+  `related_artists_file` key that could still block startup after repairing `config.toml`.
+  It offers to remove them with a backup and preserves current repeat limits and sound settings.
+  Nonempty related-artist paths need manual review. Failed `serve` commands now offer to run
+  Doctor in an interactive terminal, carrying over the configuration and named index.
+  `autodj doctor --name` also lets you select that index yourself.
+
 - When a liner's segue moves earlier, move any later saved overlap back to the segue.
   Track Info now matches playback, and subsequent cue edits can be saved.
 

@@ -186,3 +186,119 @@ def test_directory_repairs_recheck_and_preserve_failure_exit(tmp_path: Path) -> 
     assert run.call_count == 2
     assert "Rechecking" in result.output
     confirm.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "flags,interactive,answer,repaired",
+    [
+        ([], False, "", False),
+        (["--no-fix"], True, "y\n", False),
+        (["--json"], True, "y\n", False),
+        ([], True, "n\n", False),
+        ([], True, "y\n", True),
+        (["--fix"], False, "", True),
+    ],
+)
+def test_saved_settings_repair_consent(tmp_path, flags, interactive, answer, repaired):
+    from autodj.config import load_config
+    from autodj.doctor import _saved_settings_check
+
+    config = tmp_path / "config.toml"
+    config.write_text("")
+    cfg = load_config(config, environ={})
+    cfg.index.index_dir = tmp_path / "index"
+    cfg.index.active_dir.mkdir(parents=True)
+    state = cfg.index.active_dir / "web_state.json"
+    original = json.dumps(
+        {
+            "schema_version": 2,
+            "playback": {
+                "repeat_rules": {
+                    "related_artists_file": "",
+                    "artist": {"minutes": 40, "tracks": 0},
+                    "title": {"minutes": 460, "tracks": 0},
+                }
+            },
+            "eq": {"low": 1.41},
+        }
+    ).encode()
+    state.write_bytes(original)
+    with (
+        patch("autodj.cli._load_cfg_or_exit", return_value=cfg),
+        patch(
+            "autodj.doctor.run_doctor",
+            side_effect=lambda cfg: DoctorReport((_saved_settings_check(cfg),)),
+        ),
+        patch("click.testing._NamedTextIOWrapper.isatty", return_value=interactive),
+    ):
+        result = CliRunner().invoke(cli, ["doctor", *flags], input=answer)
+    assert result.exit_code == (0 if repaired else 1), result.output
+    assert (state.read_bytes() != original) is repaired
+    backups = list(cfg.index.active_dir.glob("*.bak"))
+    if repaired:
+        assert len(backups) == 1 and backups[0].read_bytes() == original
+        expected = json.loads(original)
+        del expected["playback"]["repeat_rules"]["related_artists_file"]
+        assert json.loads(state.read_bytes()) == expected
+    else:
+        assert not backups
+    if "--json" in flags:
+        assert json.loads(result.output)["exit_code"] == 1
+
+
+def test_doctor_named_index(tmp_path):
+    from autodj.config import load_config
+
+    config = tmp_path / "config.toml"
+    config.write_text("")
+    cfg = load_config(config, environ={})
+    with (
+        patch("autodj.cli._load_cfg_or_exit", return_value=cfg),
+        patch("autodj.doctor.run_doctor", return_value=DoctorReport(())) as run,
+    ):
+        result = CliRunner().invoke(cli, ["doctor", "--name", "second", "--no-fix"])
+    assert result.exit_code == 0, result.output
+    assert run.call_args.args[0].index.name == "second"
+
+
+@pytest.mark.parametrize("failure_kind", ["custom-path", "backup-error"])
+def test_saved_settings_unsafe_or_failed_repair_keeps_file(tmp_path, failure_kind):
+    from autodj.config import load_config
+    from autodj.doctor import _saved_settings_check
+
+    config = tmp_path / "config.toml"
+    config.write_text("")
+    cfg = load_config(config, environ={})
+    cfg.index.index_dir = tmp_path / "index"
+    cfg.index.active_dir.mkdir(parents=True)
+    state = cfg.index.active_dir / "web_state.json"
+    original = json.dumps(
+        {
+            "schema_version": 2,
+            "playback": {
+                "repeat_rules": {
+                    "related_artists_file": "custom.toml" if failure_kind == "custom-path" else ""
+                }
+            },
+        }
+    ).encode()
+    state.write_bytes(original)
+    with (
+        patch("autodj.cli._load_cfg_or_exit", return_value=cfg),
+        patch(
+            "autodj.doctor.run_doctor",
+            side_effect=lambda cfg: DoctorReport((_saved_settings_check(cfg),)),
+        ),
+        patch(
+            "autodj.doctor_repair.ConfigRepair._create_backup", side_effect=OSError("disk full")
+        ) as backup,
+    ):
+        result = CliRunner().invoke(cli, ["doctor", "--fix"])
+    assert result.exit_code == 1, result.output
+    assert state.read_bytes() == original
+    assert not list(cfg.index.active_dir.glob("*.bak"))
+    if failure_kind == "custom-path":
+        backup.assert_not_called()
+        assert "No safe automatic edit" in result.output
+    else:
+        assert "Could not repair saved settings" in result.output

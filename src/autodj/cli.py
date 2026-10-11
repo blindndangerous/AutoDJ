@@ -477,6 +477,9 @@ def cmd_setup(arguments: tuple[str, ...]) -> None:
 
 
 @cli.command("doctor")
+@click.option(
+    "--name", "index_name", default=None, help="Named index to check (defaults to [index].name)."
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
 @click.option(
     "--fix/--no-fix",
@@ -485,7 +488,7 @@ def cmd_setup(arguments: tuple[str, ...]) -> None:
     "By default, ask before each repair in an interactive terminal.",
 )
 @click.pass_context
-def cmd_doctor(ctx: click.Context, as_json: bool, fix: bool | None) -> None:
+def cmd_doctor(ctx: click.Context, as_json: bool, fix: bool | None, index_name: str | None) -> None:
     """Check configuration, storage, dependencies, model, network, and stream health."""
     from autodj.doctor import (
         CheckStatus,
@@ -515,8 +518,13 @@ def cmd_doctor(ctx: click.Context, as_json: bool, fix: bool | None) -> None:
         )
         click.echo(report.to_json())
         raise click.exceptions.Exit(1) from None
+    _apply_index_name(cfg, index_name)
     report = run_doctor(cfg)
     click.echo(report.to_json() if as_json else render_text(report))
+    if offer_repairs and _doctor_repair_saved_settings(cfg, report, fix is True):
+        click.echo("Rechecking after repairs...")
+        report = run_doctor(cfg)
+        click.echo(render_text(report))
     if offer_repairs and _doctor_create_directories(cfg, report, fix is True):
         click.echo("Rechecking after repairs...")
         report = run_doctor(cfg)
@@ -574,6 +582,30 @@ def _doctor_load_config(
                 f"Could not repair configuration: {repair_error}"
             ) from repair_error
     return _load_cfg_or_exit(config_path)
+
+
+def _doctor_repair_saved_settings(cfg: AutoDJConfig, report: DoctorReport, auto_fix: bool) -> bool:
+    from autodj.doctor_repair import plan_saved_state_repair
+
+    if not any(check.repair == "repair-saved-settings" for check in report.checks):
+        return False
+    repair = plan_saved_state_repair(cfg.index.active_dir)
+    if repair is None:
+        click.echo(
+            "No safe automatic edit is available for saved settings; review the details above."
+        )
+        return False
+    click.echo(f"Remove obsolete repeat keys from {repair.path}:")
+    for section, keys in repair.keys_by_section.items():
+        click.echo(f"  [{section}]: {list(keys)}")
+    if not auto_fix and not click.confirm("Apply this repair (with a backup)?", default=False):
+        return False
+    try:
+        backup = repair.apply()
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise click.ClickException(f"Could not repair saved settings: {exc}") from exc
+    click.echo(f"Repaired {repair.path}. Backup: {backup}")
+    return True
 
 
 def _doctor_create_directories(cfg: AutoDJConfig, report: DoctorReport, auto_fix: bool) -> bool:
@@ -1242,6 +1274,24 @@ class _ServeCommand(click.Command):
                 if ctx.obj and ctx.obj.get("config_path"):
                     hint += " Use the same --config option."
                 click.echo(hint, err=True)
+                if sys.stdin.isatty() and not os.environ.get("AUTODJ_DOCTOR_ACTIVE"):
+                    import subprocess  # nosec B404 -- fixed command, argv only, no shell
+
+                    try:
+                        if click.confirm("Run AutoDJ Doctor now?", default=False, err=True):
+                            args = [sys.executable, "-m", "autodj"]
+                            if ctx.obj and ctx.obj.get("config_path"):
+                                args.extend(["--config", str(ctx.obj["config_path"])])
+                            args.append("doctor")
+                            if ctx.params.get("index_name"):
+                                args.extend(["--name", ctx.params["index_name"]])
+                            environment = os.environ.copy()
+                            environment["AUTODJ_RUNTIME"] = "current"
+                            environment["AUTODJ_DOCTOR_ACTIVE"] = "1"
+                            subprocess.run(args, env=environment, check=False)  # nosec B603
+                            click.echo("After resolving the checks, run your serve command again.")
+                    except (OSError, click.Abort, KeyboardInterrupt) as doctor_error:
+                        click.echo(f"Doctor did not finish: {doctor_error}", err=True)
             raise
 
 

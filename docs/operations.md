@@ -14,8 +14,11 @@ key in either file, such as a setting a newer AutoDJ removed, is an error that n
 
 ## Diagnose before serving
 
-If `autodj serve` exits with an error, it suggests running `autodj doctor` to troubleshoot.
-Use the same `--config` option when diagnosing a custom configuration.
+If `autodj serve` exits with an error in an interactive terminal, it offers to run
+`autodj doctor` with the same Python environment, configuration and named index.
+Doctor still asks before repairs. After resolving the checks, run your serve command again.
+In scripts, serve prints the suggestion without prompting. To run Doctor yourself, use the
+same `--config` and `--name` options as serve.
 
 Run `uv run autodj doctor`. Use `uv run autodj doctor --json` for automation. A required failed
 check returns exit 1. In an interactive terminal, doctor offers to remove unsupported config
@@ -25,6 +28,12 @@ in one edit per affected file, saving one uniquely named backup beside each orig
 preserving unrelated settings and formatting, then retrying validation.
 Review the key names before accepting: a misspelled setting may need correcting instead of removing.
 Complex TOML edits that cannot be made safely are left for manual correction.
+
+Doctor also checks `web_state.json` in the selected index for obsolete repeat settings that
+would prevent startup. It offers to remove those keys, with a backup, while preserving current
+repeat limits, EQ and other saved values. An empty old `related_artists_file` setting can be
+removed this way. A nonempty path needs manual review so you can preserve its related-artist
+data. Malformed files and unsupported saved-state versions are left unchanged.
 
 Use `uv run autodj doctor --fix` to apply supported repairs automatically without prompting.
 Without flags, doctor asks before each repair in an interactive terminal. Use `--no-fix`

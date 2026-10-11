@@ -179,7 +179,9 @@ Every command takes `--help`, for example `uv run autodj serve --help`. The glob
 - `autodj serve` starts the browser interface; `autodj serve --lan` opens it to your local
   network; `autodj serve --stream` also serves the live mix as an MP3 radio station.
 - `autodj list-devices` lists the audio output devices available to `serve --server-audio`.
-- `autodj doctor` checks configuration, paths, dependencies, the model, and security settings.
+- `autodj doctor` checks configuration, saved browser settings, paths, dependencies, the model,
+  and security settings. Use `--name` to check a specific index. If `serve` fails in a terminal,
+  it offers to run Doctor; repairs still require confirmation.
 - `autodj backup` and `autodj restore` archive and restore index and user data.
 - `autodj devices list`, `rename`, `revoke`, `reset`, and `pairing-code` manage paired browsers.
 

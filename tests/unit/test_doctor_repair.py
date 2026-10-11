@@ -225,8 +225,6 @@ def test_saved_state_repair_preserves_nested_custom_path_when_top_level_path_is_
 
 
 def test_saved_state_repair_does_not_modify_unsupported_schema(tmp_path: Path) -> None:
-    import json
-
     path = tmp_path / "web_state.json"
     original = b'{"schema_version":99,"playback":{"no_repeat_minutes":40}}'
     path.write_bytes(original)

@@ -317,7 +317,7 @@ def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
         ]
         raise SavedStateError(
             f"{path}: removed playback repeat keys {', '.join(old)}; "
-            "remove them by hand and re-enter limits in Settings > Picking > Repeats"
+            "run autodj doctor to review repairs; re-enter any old limits in Settings > Picking > Repeats"
         )
     version = data.get("schema_version")
     if type(version) is int and version == 1:
