@@ -875,7 +875,10 @@ def _start_stream_station(
 
     Starts the MP3 encoder, registers the stream as an output of the
     player's mix bus, and hands the stream to the station, which reads its
-    listener count and starts a set on the first listener.
+    listener count and starts a set on the first listener.  Configured
+    relays (``[stream.relays.<name>]``) start connecting too; while any is
+    enabled the station plays as if it always had a listener, because the
+    relay's own listeners are invisible to AutoDJ.
 
     Args:
         bridge: The bridge whose player was built in stream mode.
@@ -899,6 +902,20 @@ def _start_stream_station(
         encoder_factory=stream_module.FfmpegEncoder,
         loop=loop,
     )
+    relays = None
+    if cfg.stream.relays:
+        from autodj.relay import RelayManager, relay_status_path
+
+        relays = RelayManager(
+            cfg.stream.relays.values(),
+            stream_out,
+            make_output=lambda bitrate: stream_module.StreamOutput(
+                bitrate, 0, encoder_factory=stream_module.FfmpegEncoder, loop=loop
+            ),
+            station_name=lambda: cfg.stream.station_name,
+            status_path=relay_status_path(cfg),
+        )
+    relays_active = relays is not None and relays.active
     station = Station(
         bus,
         stream_out,
@@ -906,7 +923,7 @@ def _start_stream_station(
         cfg.stream.idle_grace_seconds,
         on_event=bridge.announce_station_event,
         forget_track=bridge.forget_track,
-        continuous=lambda: cfg.stream.continuous,
+        continuous=lambda: cfg.stream.continuous or relays_active,
     )
     scheduler = LinerScheduler(
         cfg.playback,
@@ -923,9 +940,13 @@ def _start_stream_station(
     )
     if first_track is not None:
         station.start_with(first_track, "seed")
-    bridge.attach_stream(stream=stream_out, station=station)
+    bridge.attach_stream(stream=stream_out, station=station, relays=relays)
     bridge.attach_liner_scheduler(scheduler)
     bus.add_output(stream_out)
+    if relays is not None:
+        for output in relays.outputs:
+            bus.add_output(output)
+        relays.start()
     return stream_out
 
 
@@ -987,7 +1008,16 @@ async def _stop_stream_station(bridge: PlayerBridge, stream_out: StreamOutput) -
     Each step is attempted even if an earlier one fails, and nothing is
     raised: the rest of shutdown (player stop, cache flush) must still run.
     """
+    remove_output = bridge.player.bus.remove_output
+    relay_steps: list[tuple[str, Callable[[], None]]] = []
+    if bridge.relays is not None:
+        relay_steps = [
+            ("detaching a relay encoder", functools.partial(remove_output, output))
+            for output in bridge.relays.outputs
+        ]
+        relay_steps.append(("stopping the relays", bridge.relays.close))
     steps: tuple[tuple[str, Callable[[], None]], ...] = (
+        *relay_steps,
         ("detaching", functools.partial(bridge.player.bus.remove_output, stream_out)),
         ("closing", stream_out.close),
         ("stopping the liner worker for", bridge.shutdown_liner_worker),

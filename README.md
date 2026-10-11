@@ -119,6 +119,31 @@ server can listen without a key. Browser controls still require pairing in LAN m
 keyed addresses such as `/stream/<secret>.mp3` no longer work, so set any player saved with one
 to `/stream.mp3`.
 
+### Relay to Icecast or Shoutcast
+
+Stream mode can also push the station to hosted Icecast 2.4, Shoutcast 1 or Shoutcast 2 servers,
+so a host's listener capacity and directory listings carry it too. Describe each server in
+`config.toml` and keep its password in `config.local.toml`:
+
+```toml
+# config.toml
+[stream.relays.main]
+type = "icecast"
+host = "radio.example.com"
+port = 8000
+mount = "/live"
+
+# config.local.toml
+[stream.relays.main]
+password = "the source password from your host"
+```
+
+Each relay sends the song titles, reconnects on its own, and keeps the station playing even
+when nobody listens to AutoDJ directly. Settings, Stream shows each relay's state, and
+`autodj doctor` checks that each server answers. See
+[Relaying to Icecast and Shoutcast](docs/operations.md#relaying-to-icecast-and-shoutcast) for
+every option.
+
 ## Commands
 
 Every command takes `--help`, for example `uv run autodj serve --help`. The global options

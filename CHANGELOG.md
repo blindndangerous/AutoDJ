@@ -27,6 +27,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - the EQ duck cutoff while EQ ducking is off
   - the filter sweep floor while the sweep is off
   - the pick spread outside Similarity picking
+- Stream mode can relay the station to hosted Icecast 2.4, Shoutcast 1 and Shoutcast 2 servers,
+  set up as `[stream.relays.<name>]` tables in `config.toml` with the password in
+  `config.local.toml` or `AUTODJ_STREAM_RELAY_<NAME>_PASSWORD`. Each relay sends the stream's
+  own audio, or a separate encoding at its own bitrate, sends the song title on every new song,
+  and reconnects on its own with growing waits up to a minute. While a relay is on, the station
+  keeps playing with nobody connected to AutoDJ itself. Settings, Stream lists each relay's
+  state and last error, and `autodj doctor` checks that each server answers and shows the state
+  AutoDJ last reported. Passwords never reach the browser, the logs or `web_state.json`. See
+  "Relaying to Icecast and Shoutcast" in the operations guide.
 
 ### Fixed
 

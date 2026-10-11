@@ -199,6 +199,7 @@ def test_stream_info(stream_app) -> None:
         "station_name": "AutoDJ",
         "listeners": 2,
         "state": "idle",
+        "relays": [],
     }
 
 
@@ -971,3 +972,57 @@ def test_stream_http_framing_matches_the_players_protocol(stream_app, version) -
             worker.join(timeout=5)
         assert not worker.is_alive()
     stream.remove_listener.assert_called_once_with(stream.add_listener.return_value)
+
+
+def test_relays_start_with_the_stream_and_keep_the_station_playing(tmp_path: Path) -> None:
+    """Relays are wired in at startup, reported without passwords, and stopped at shutdown."""
+    import socket
+    from unittest.mock import patch
+
+    from autodj.config import StreamConfig
+    from tests.unit._fakes import FakeEncoder
+
+    closed_port = socket.socket()
+    closed_port.bind(("127.0.0.1", 0))
+    port = closed_port.getsockname()[1]
+    closed_port.close()  # nothing listens there: the relays keep retrying
+    password = "relay-password-value"
+    bridge = _lifespan_bridge()
+    bridge.player._cfg.index.index_dir = tmp_path
+    bridge.player._cfg.stream = StreamConfig(
+        enabled=True,
+        relays={
+            "same": {
+                "type": "icecast",
+                "host": "127.0.0.1",
+                "port": port,
+                "mount": "/live",
+                "password": password,
+            },
+            "low": {
+                "type": "shoutcast1",
+                "host": "127.0.0.1",
+                "port": port - 1,
+                "password": password,
+                "bitrate": 128,
+            },
+        },
+    )
+    with (
+        patch("autodj.stream.FfmpegEncoder", FakeEncoder),
+        TestClient(create_app(bridge, stream_mode=True)) as client,
+    ):
+        relays = bridge.relays
+        bus = bridge.player.bus
+        assert bus.add_output.call_count == 2  # the stream's encoder and one for 128 kbps
+        assert bridge.station._continuous() is True
+        state = client.get("/api/status").json()
+        assert [relay["name"] for relay in state["stream_relays"]] == ["same", "low"]
+        assert client.get("/api/stream").json()["relays"] == state["stream_relays"]
+        assert password not in client.get("/api/status").text
+        bridge.on_track_started(bridge.player._state.current_track)
+        assert (tmp_path / "relay-status.json").exists()
+    assert bus.remove_output.call_count == 2
+    assert all(relay.status()["state"] == "stopped" for relay in relays._relays)
+    assert all(output._closed for output in relays.outputs)
+    assert password not in (tmp_path / "relay-status.json").read_text(encoding="utf-8")

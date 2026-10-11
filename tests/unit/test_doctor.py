@@ -940,3 +940,81 @@ def test_locked_metadata_is_not_offered_a_destructive_rebuild(tmp_path: Path) ->
     assert check.status is CheckStatus.FAIL
     assert check.repair is None
     assert "permissions" in check.detail
+
+
+def _relay_cfg(tmp_path: Path, **relays: dict) -> AutoDJConfig:
+    from autodj.config import StreamConfig
+
+    cfg = _config(tmp_path)
+    cfg.stream = StreamConfig(enabled=True, relays=relays)
+    return cfg
+
+
+def test_relay_checks_probe_without_credentials_and_show_last_state(tmp_path: Path) -> None:
+    import socket
+
+    from autodj.relay import relay_status_path
+
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen()
+    port = server.getsockname()[1]
+    secret = "relay-password-value"
+    cfg = _relay_cfg(
+        tmp_path,
+        up={
+            "type": "icecast",
+            "host": "127.0.0.1",
+            "port": port,
+            "mount": "/l",
+            "password": secret,
+        },
+        sc={"type": "shoutcast1", "host": "127.0.0.1", "port": port - 1, "password": secret},
+        off={"type": "shoutcast2", "host": "h", "password": secret, "enabled": False},
+    )
+    relay_status_path(cfg).write_bytes(
+        json.dumps(
+            {
+                "updated": "2026-10-11T01:00:00+00:00",
+                "relays": [
+                    {"name": "up", "state": "live", "error": None, "title_error": "no"},
+                    {
+                        "name": "sc",
+                        "state": "retrying",
+                        "error": "the server rejected the password",
+                    },
+                ],
+            }
+        ).encode()
+    )
+    with closing(server):
+        report = doctor.run_doctor(cfg, python_version=(3, 14))
+    checks = {check.name: check for check in report.checks}
+    assert checks["relay-up"].status is CheckStatus.PASS
+    assert "the server answers" in checks["relay-up"].summary
+    assert "last reported it live at 2026-10-11" in checks["relay-up"].detail
+    assert "title updates failing: no" in checks["relay-up"].detail
+    assert checks["relay-sc"].status is CheckStatus.WARN  # reachable, but last seen retrying
+    assert "rejected the password" in checks["relay-sc"].detail
+    assert checks["relay-off"].summary.endswith("off (enabled = false)")
+    assert secret not in doctor.render_text(report)
+    assert secret not in report.to_json()
+
+
+def test_unreachable_relay_warns(tmp_path: Path) -> None:
+    def refuse(address, timeout):
+        raise ConnectionRefusedError(111, "refused")
+
+    cfg = _relay_cfg(
+        tmp_path, main={"type": "icecast", "host": "h.example", "mount": "/l", "password": "p"}
+    )
+    (check,) = doctor._relay_checks(cfg, connect=refuse)
+    assert check.status is CheckStatus.WARN
+    assert check.summary == (
+        "Icecast at h.example:8000/l: cannot reach the server: the server refused the connection"
+    )
+    assert check.detail == ""
+
+
+def test_no_relays_no_relay_checks(tmp_path: Path) -> None:
+    assert doctor._relay_checks(_config(tmp_path)) == ()

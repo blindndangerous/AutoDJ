@@ -30,3 +30,8 @@ port = 8080
 # allowed_origins = ["https://autodj.example.net"]
 # ssl_certfile = "/srv/autodj/tls/fullchain.pem"
 # ssl_keyfile = "/srv/autodj/tls/privkey.pem"
+
+# Relay passwords belong here, beside the relay described in config.toml
+# under the same name; the two tables are merged key by key.
+# [stream.relays.main]
+# password = "the source password from your host"

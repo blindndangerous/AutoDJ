@@ -142,6 +142,36 @@ max_listeners = 8
 # Station name announced to players via the icy-name header.
 station_name = "AutoDJ"
 
+# Relays: push the station to hosted Icecast or Shoutcast servers, so their
+# listeners, directory listings and capacity carry it too.  One named table
+# per server; the name is shown in Settings, Stream, in the log and in
+# `autodj doctor`.  Relays run only in stream mode.  While any relay is
+# enabled the station keeps playing with nobody connected to AutoDJ itself,
+# as if `continuous` were true, because the relay's listeners are invisible
+# here.  Each relay reconnects on its own when the server drops it, waiting
+# 1 second, then 2, 4 and so on up to 60 seconds between tries.
+#
+# Keep the password out of this file: put it in config.local.toml under the
+# same table name (see config.local.toml.example), or in the environment as
+# AUTODJ_STREAM_RELAY_<NAME>_PASSWORD (the name upper-cased, "-" as "_").
+# It is never saved to web_state.json, logged, or sent to the browser.
+#
+# [stream.relays.main]
+# type = "icecast"            # "icecast" (2.4 or later), "shoutcast1" or "shoutcast2"
+# host = "radio.example.com"  # host name or IP address only, no http:// or port
+# port = 8000                 # the server's listener port (default 8000)
+# mount = "/live"             # Icecast only: the mount point
+# user = "source"             # Icecast only: the source user (default "source")
+# stream_id = 1               # Shoutcast 2 only: the stream ID (default 1)
+# bitrate = 128               # optional: 128, 192, 256 or 320; leave it out to send
+#                             # the stream's own audio with no extra encoder
+# public = false              # ask the server to list the station in directories
+# enabled = true              # false keeps the settings but does not connect
+#
+# Shoutcast sources log in on the port above `port` (8001 for 8000), as
+# Shoutcast expects; Shoutcast 2 is reached through its Shoutcast 1 source
+# login with the stream ID.
+
 [playback]
 # Optional Stereo Tool command-line executable. Select its free preset under
 # Output processing in the browser after installing it separately.

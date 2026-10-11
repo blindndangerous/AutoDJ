@@ -105,6 +105,9 @@ class PlayerBridge:
     # set together by :meth:`attach_stream`.
     stream: Any = None
     station: Any = None
+    # The relays to other servers (:class:`~autodj.relay.RelayManager`),
+    # when any are configured.
+    relays: Any = None
     # History is appended on the mix-bus thread, trimmed by the station's
     # tick and read by request handlers.
     _history_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
@@ -130,15 +133,21 @@ class PlayerBridge:
         """Whether the mix is served as a radio stream."""
         return self.stream is not None
 
-    def attach_stream(self, *, stream: Any, station: Any) -> None:
+    def attach_stream(self, *, stream: Any, station: Any, relays: Any = None) -> None:
         """Switch the bridge into stream mode.
 
         Args:
             stream: The :class:`~autodj.stream.StreamOutput`.
             station: The :class:`~autodj.station.Station`.
+            relays: The :class:`~autodj.relay.RelayManager`, if any.
         """
         self.stream = stream
         self.station = station
+        self.relays = relays
+
+    def relay_status(self) -> list[dict]:
+        """Return each relay's name, server type, target and state; no passwords."""
+        return self.relays.status() if self.relays is not None else []
 
     def attach_liner_scheduler(self, scheduler: Any) -> None:
         """Fire voice liners into the server mix (stream or server audio).
@@ -188,6 +197,7 @@ class PlayerBridge:
             "station_name": self.player._cfg.stream.station_name,
             "listeners": int(self.stream.listener_count),
             "state": self.station.state,
+            "relays": self.relay_status(),
         }
 
     def set_stream_bitrate(self, bitrate: int) -> None:
@@ -224,9 +234,10 @@ class PlayerBridge:
             row = self._append_history(entry)
             self._open_play = (entry, row)
         if self.stream is not None:
-            self.stream.set_title(
-                getattr(entry, "artist", "") or "", getattr(entry, "title", "") or ""
-            )
+            artist, title = getattr(entry, "artist", "") or "", getattr(entry, "title", "") or ""
+            self.stream.set_title(artist, title)
+            if self.relays is not None:
+                self.relays.set_title(artist, title)
         worker = self._liner_worker
         if worker is not None:
             # The render that started, for liner talk-ups to time against.
@@ -888,6 +899,7 @@ class PlayerBridge:
             and bool(getattr(self.player, "_server_audio_too", False)),
             "stream_state": self.station.state if self.stream_mode else None,
             "stream_listeners": int(self.stream.listener_count) if self.stream_mode else 0,
+            "stream_relays": self.relay_status(),
             "stream_event": self._current_station_event(),
             "playout": {
                 "processing": processing
