@@ -92,7 +92,7 @@ def test_pick_modes_honour_artist_related_and_title_rules(mode: str) -> None:
         context = player._pick_context()
         picked, _how = player._choose_by_mode(current, context)
         assert picked.title == "Fine Song"
-        if mode != "similarity":  # similarity only meets its nearest neighbours
+        if mode == "random":  # Other modes stop once a candidate passes.
             assert {player.playable_entries()[i].path: r for i, r in HELD_BACK.items()} == (
                 context.repeat.held_back
             )
@@ -150,11 +150,29 @@ def test_queue_and_fallback_ignore_the_rules() -> None:
 
 def test_rules_relax_when_nothing_else_can_play() -> None:
     tracks = [("Same Artist", f"Song {i}") for i in range(4)]
-    for mode in ("similarity", "random"):
+    for mode in ("similarity", "random", "least_recent"):
         player = _player(mode, tracks)
+        if mode == "least_recent":
+            player._library = _library(player)
         current = _played_first(player)
         picked, _how = player._choose_by_mode(current, player._pick_context())
         assert picked.path != current.path
+
+
+def test_least_recent_stops_checking_rules_after_the_oldest_eligible_track() -> None:
+    player = _player("least_recent")
+    player._library = _library(player)
+    entries = player.playable_entries()
+    now = datetime(2026, 10, 11, tzinfo=UTC)
+    history = {entry.path: now for entry in entries}
+    history[entries[2].path] = now - timedelta(days=3)
+    history[entries[4].path] = now - timedelta(days=2)
+    player._library.last_played = lambda: history
+    current = _played_first(player)
+    context = player._pick_context()
+    picked, _how = player._choose_by_mode(current, context)
+    assert picked is entries[4]
+    assert context.repeat.held_back == {entries[2].path: "same artist"}
 
 
 def test_minute_windows_use_the_state_clock() -> None:

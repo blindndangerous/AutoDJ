@@ -2043,27 +2043,42 @@ class Player:
 
         entries = self.playable_entries()
         repeat = context.repeat
-        pool = [e for e in entries if e.path not in excluded and eligible(e) and repeat(e)]
+        history = (
+            self._library.last_played()
+            if self._cfg.playback.pick_mode == "least_recent" and self._library is not None
+            else None
+        )
+
+        def choose(blocked: set[str] | frozenset[str], use_rules: bool = True) -> IndexEntry | None:
+            def allowed(entry: IndexEntry) -> bool:
+                return (
+                    entry.path not in blocked
+                    and eligible(entry)
+                    and (not use_rules or repeat(entry))
+                )
+
+            if history is not None and entries:
+                from autodj.clockwheel import least_recent
+
+                return least_recent(entries, history, allowed=allowed)
+            pool = [entry for entry in entries if allowed(entry)]
+            return _rnd.choice(pool) if pool else None  # nosec B311 -- non-security
+
+        chosen = choose(excluded)
         protected = context.protected | {current.path}
-        if not pool:
+        if chosen is None:
             logger.warning(
                 "Pure shuffle exhausted eligible non-recent tracks; relaxing recent-track exclusion"
             )
-            pool = [e for e in entries if e.path not in protected and eligible(e) and repeat(e)]
-        if not pool and repeat:
+            chosen = choose(protected)
+        if chosen is None and repeat:
             logger.warning(
                 "Pure shuffle found no track the artist, album and title repeat rules allow; "
                 "relaxing them"
             )
-            pool = [e for e in entries if e.path not in protected and eligible(e)]
-        if not pool:
+            chosen = choose(protected, use_rules=False)
+        if chosen is None:
             raise SimilarityError("No candidates satisfy hard filters for pure shuffle.")
-        if self._cfg.playback.pick_mode == "least_recent" and self._library is not None:
-            from autodj.clockwheel import least_recent
-
-            chosen = least_recent(pool, self._library.last_played())
-        else:
-            chosen = _rnd.choice(pool)  # nosec B311 -- non-security
         _log_repeat_blocks(repeat, chosen)
         return chosen
 

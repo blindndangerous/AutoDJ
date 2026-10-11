@@ -211,8 +211,10 @@ the other repeat rules still work. `autodj doctor` reports the file problem.
 - Similarity and anchored picks pass the rules to `find_next_for_path`.
 - Discovery picks from the least similar quarter of the tracks the rules
   allow.
-- Random walk and least recently played pick among the tracks the rules
-  allow.
+- Random walk picks among the tracks the rules allow. Least recently played
+  checks songs from oldest play time to newest and stops at the first one
+  allowed. Never-played songs come first; ties are tried in random order.
+  Clock slots using least recently played work the same way.
 - Clock slots marked EnforceRules use the rules; NoRules slots ignore them,
   as before. When every matching track is held back, the clock relaxes the
   artist, album and title rules for that pick, then the track window, and
@@ -224,6 +226,8 @@ the other repeat rules still work. `autodj doctor` reports the file problem.
 Each pick that held candidates back logs a line at info level, such as
 "Repeat rules held back 3 candidates (1 same artist, 1 related artist, 1 same
 title)". A similarity pick only counts the nearest candidates it looked at.
+Least-recent picks count only the candidates checked before finding an eligible
+song. Random picks check the whole pool, so their counts may be higher.
 At DEBUG level, `autodj.player.repeat` also records each candidate examined by
 the artist, related-artist, album or title rules, its reason, and the selected
 path. The row means the candidate was excluded from that pool by the repeat
