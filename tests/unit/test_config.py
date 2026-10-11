@@ -437,13 +437,14 @@ class TestPlaybackConfig:
             "related_artists_starter",
         ],
     )
-    def test_removed_repeat_key_is_rejected(self, tmp_path: Path, key: str) -> None:
+    def test_removed_repeat_key_is_ignored_with_warning(
+        self, tmp_path: Path, key: str, caplog
+    ) -> None:
         config_file = tmp_path / "config.toml"
         config_file.write_text(f"[playback]\n{key} = 0\n", encoding="utf-8")
-        with pytest.raises(ValueError, match=r"unknown \[playback\] keys") as error:
-            load_config(config_file, environ={})
-        assert key in str(error.value)
-        assert "Settings > Picking > Repeats" in str(error.value)
+        cfg = load_config(config_file, environ={})
+        assert cfg.playback.repeat_rules.artist.tracks == 8
+        assert key in caplog.text
 
     def test_key_notation_default(self) -> None:
         pb = PlaybackConfig.from_dict({})
@@ -556,22 +557,42 @@ class TestDeepMergeAndOverlays:
         assert cfg.playback.crossfade_seconds == 5.0
 
     @pytest.mark.parametrize(
-        ("overlay", "message"),
+        "overlay",
         [
-            ("[library]\npath_remap = {}\n", r"unknown \[library\] keys: \['path_remap'\]"),
-            ("[playback]\ncrossfade = 3.0\n", r"unknown \[playback\] keys: \['crossfade'\]"),
-            ("[lyrics]\nenabled = true\n", r"unknown config sections: \['lyrics'\]"),
+            "[library]\npath_remap = {}\n",
+            "[playback]\ncrossfade = 3.0\n",
+            "[lyrics]\nenabled = true\n",
         ],
     )
-    def test_local_overlay_unknown_key_is_rejected(
-        self, tmp_path: Path, overlay: str, message: str
+    def test_local_overlay_unknown_keys_are_ignored(
+        self, tmp_path: Path, overlay: str, caplog
     ) -> None:
-        """A removed or misspelled option in any section fails the load, naming it."""
         base = tmp_path / "config.toml"
         base.write_text('[library]\nmusic_dir = "Z:/Music"\n', encoding="utf-8")
         (tmp_path / "config.local.toml").write_text(overlay, encoding="utf-8")
-        with pytest.raises(ValueError, match=message):
-            load_config(base)
+        cfg = load_config(base)
+        assert str(cfg.library.music_dir).replace("\\", "/").endswith("/Music")
+        assert "Ignoring unknown config" in caplog.text
+
+    def test_unknown_nested_repeat_keys_are_ignored_but_known_values_validate(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            '[playback.repeat_rules]\nfuture = "secret"\n'
+            '[playback.repeat_rules.artist]\ntracks = 12\nfuture = "secret"\n',
+            encoding="utf-8",
+        )
+        cfg = load_config(config_file, environ={})
+        assert cfg.playback.repeat_rules.artist.tracks == 12
+        assert "future" in caplog.text
+        assert "secret" not in caplog.text
+
+        config_file.write_text(
+            "[playback.repeat_rules.artist]\ntracks = -1\nfuture = true\n", encoding="utf-8"
+        )
+        with pytest.raises(ValueError, match="tracks"):
+            load_config(config_file, environ={})
 
     def test_non_table_presets_value_is_a_load_error(self, tmp_path: Path) -> None:
         base = tmp_path / "config.toml"
@@ -662,12 +683,12 @@ class TestDjMixConfig:
         with pytest.raises(ValueError, match=r"djmix\.harmonic_mode"):
             DjMixConfig.from_dict({"harmonic_mode": value})
 
-    def test_leftover_harmonic_mixing_key_is_rejected(self) -> None:
-        """The removed on/off switch must fail loudly, not be silently ignored."""
+    def test_leftover_harmonic_mixing_key_is_ignored(self, caplog) -> None:
         from autodj.config import DjMixConfig
 
-        with pytest.raises(ValueError, match=r"unknown \[djmix\] keys: \['harmonic_mixing'\]"):
-            DjMixConfig.from_dict({"harmonic_mixing": False, "harmonic_mode": "off"})
+        config = DjMixConfig.from_dict({"harmonic_mixing": False, "harmonic_mode": "off"})
+        assert config.harmonic_mode == "off"
+        assert "harmonic_mixing" in caplog.text
 
 
 def test_removed_weighted_liner_mode_is_rejected() -> None:
@@ -894,7 +915,6 @@ class TestServerConfig:
             ({"session_ttl_seconds": 31_536_001}, "server.session_ttl_seconds"),
             ({"liner_upload_max_mib": 0}, "server.liner_upload_max_mib"),
             ({"liner_upload_max_mib": 1025}, "server.liner_upload_max_mib"),
-            ({"liner_upload_max_bytes": 50 * 1024 * 1024}, r"unknown \[server\] keys"),
         ],
     )
     def test_rejects_wrong_types_and_out_of_bounds_values(
@@ -902,6 +922,11 @@ class TestServerConfig:
     ) -> None:
         with pytest.raises((TypeError, ValueError), match=message):
             ServerConfig.from_dict(data)
+
+    def test_unknown_upload_bytes_alias_is_ignored(self, caplog) -> None:
+        cfg = ServerConfig.from_dict({"liner_upload_max_bytes": 1})
+        assert cfg.liner_upload_max_bytes == 50 * 1024 * 1024
+        assert "liner_upload_max_bytes" in caplog.text
 
     def test_rejects_weak_token_without_echoing_it(self) -> None:
         weak = "do-not-print-me"

@@ -236,20 +236,19 @@ class TestLoadUserPresets:
         assert "ok" in result
 
     def test_nested_table_is_skipped_with_a_clear_warning(self, caplog) -> None:
-        """[presets.presets.wakeup] is not a preset called wakeup."""
         raw = {"presets": {"wakeup": {"bpm_target": 90}}}
         with caplog.at_level("WARNING"):
             result = load_user_presets(raw)
         assert result == {}
-        assert "nested tables ['wakeup'] are not preset keys" in caplog.text
+        assert "ignoring unknown keys ['wakeup']" in caplog.text
+        assert "Skipping invalid preset" in caplog.text
 
-    def test_removed_slide_keys_are_rejected(self, caplog) -> None:
-        """bpm_low / bpm_peak are gone; they must not silently fall back to 80-130."""
+    def test_removed_slide_keys_are_ignored(self, caplog) -> None:
         raw = {"arch": {"curve": "slide", "bpm_low": 90, "bpm_peak": 140}}
         with caplog.at_level("WARNING"):
             result = load_user_presets(raw)
-        assert result == {}
-        assert "unknown keys ['bpm_low', 'bpm_peak']" in caplog.text
+        assert result["arch"].target_bpm(0) == 80
+        assert "ignoring unknown keys ['bpm_low', 'bpm_peak']" in caplog.text
 
 
 # ---------------------------------------------------------------------------

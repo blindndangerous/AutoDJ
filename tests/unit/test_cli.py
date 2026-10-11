@@ -261,7 +261,7 @@ class TestCliConfigSelection:
         assert "Config not found or invalid" in result.output
         assert f"{section} section must be a table" in result.output
 
-    def test_unknown_key_error_names_its_section(self, tmp_path: Path) -> None:
+    def test_unknown_key_warns_and_continues_to_index_check(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.toml"
         config_path.write_text("[playback]\nbogus_key = 1\n", encoding="utf-8")
 
@@ -269,7 +269,9 @@ class TestCliConfigSelection:
 
         assert result.exit_code == 1
         # Rich markup used to swallow "[playback]" as a style tag.
-        assert "unknown [playback] keys: ['bogus_key']" in result.output
+        assert "Ignoring unknown config keys in [playback]: ['bogus_key']" in result.output
+        assert "Index not found" in result.output
+        assert "Config not found or invalid" not in result.output
 
     def test_omitted_config_passes_none_to_loader(self) -> None:
         cfg = _make_cfg()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Mapping
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
@@ -18,6 +20,30 @@ REMOVED_REPEAT_KEYS = frozenset(
         "related_artists_starter",
     }
 )
+
+logger = logging.getLogger(__name__)
+
+
+def ignore_unknown_repeat_keys(data: object, section: str = "playback.repeat_rules") -> object:
+    """Drop unknown config keys while leaving recognized values for strict validation."""
+    if not isinstance(data, Mapping):
+        return data
+    known = set(RepeatSettings.model_fields)
+    unknown = set(data) - known
+    if unknown:
+        logger.warning("Ignoring unknown config keys in [%s]: %s", section, sorted(unknown))
+    cleaned = {key: value for key, value in data.items() if key in known}
+    for name in ("artist", "album", "track", "title"):
+        rule = cleaned.get(name)
+        if isinstance(rule, Mapping):
+            rule_keys = set(RepeatRule.model_fields)
+            unknown = set(rule) - rule_keys
+            if unknown:
+                logger.warning(
+                    "Ignoring unknown config keys in [%s.%s]: %s", section, name, sorted(unknown)
+                )
+            cleaned[name] = {key: value for key, value in rule.items() if key in rule_keys}
+    return cleaned
 
 
 def removed_saved_repeat_keys(data: object) -> dict[str, tuple[str, ...]]:

@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from autodj.fsutil import atomic_write
-from autodj.repeat_settings import removed_saved_repeat_keys
+from autodj.repeat_settings import ignore_unknown_repeat_keys
 from autodj.settings_bodies import (
     BpmRangeBody,
     DiscoveryBody,
@@ -44,10 +44,6 @@ if TYPE_CHECKING:
     from autodj._bridge import PlayerBridge
 
 logger = logging.getLogger(__name__)
-
-
-class SavedStateError(ValueError):
-    """``web_state.json`` holds settings AutoDJ no longer reads; fix it by hand."""
 
 
 #: Version 2 dropped the redundant ``harmonic_mixing`` toggle. Version 1
@@ -162,6 +158,11 @@ def _checked(model: type[BaseModel], field: str, value: object, saved_as: str | 
 
     Strict, so a saved ``"true"`` or ``1`` is not taken for a Boolean.
     """
+    if field not in model.model_fields:
+        logger.warning("ignoring unknown %s in web_state.json", saved_as or field)
+        return _INVALID
+    if model is PlaybackSettingsBody and field == "repeat_rules":
+        value = ignore_unknown_repeat_keys(value, "web_state.json playback.repeat_rules")
     try:
         return getattr(model.model_validate({field: value}, strict=True), field)
     except ValidationError:
@@ -289,9 +290,6 @@ def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
     Version 1 state is migrated conservatively; unsupported versions are
     ignored. Other saved fields continue to be validated individually.
 
-    Raises:
-        SavedStateError: The file holds removed repeat keys.
-
     Args:
         bridge: The :class:`~autodj._bridge.PlayerBridge` of a live player.
         index_dir: Directory housing ``web_state.json``.
@@ -308,17 +306,6 @@ def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
     if not isinstance(data, dict):
         logger.warning("web_state.json root is not an object, ignoring")
         return
-    removed = removed_saved_repeat_keys(data)
-    if removed:
-        old = [
-            f"{group.removeprefix('playback.')}.{key}" if group != "playback" else key
-            for group, keys in removed.items()
-            for key in keys
-        ]
-        raise SavedStateError(
-            f"{path}: removed playback repeat keys {', '.join(old)}; "
-            "run autodj doctor to review repairs; re-enter any old limits in Settings > Picking > Repeats"
-        )
     version = data.get("schema_version")
     if type(version) is int and version == 1:
         data = _migrate_v1(data)
@@ -330,7 +317,7 @@ def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
         )
         return
     for field in data.keys() - _TOP_LEVEL_FIELDS:
-        _warn(field, data[field])
+        logger.warning("ignoring unknown %s in web_state.json", field)
 
     if "preset" in data:
         _restore_preset(bridge, data["preset"])

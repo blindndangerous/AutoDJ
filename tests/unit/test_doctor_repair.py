@@ -6,19 +6,16 @@ from unittest.mock import patch
 
 import pytest
 
-from autodj.config import PlaybackConfig, ServerConfig, UnknownConfigKeysError
+from autodj.config import PlaybackConfig, ServerConfig
 from autodj.doctor_repair import plan_saved_state_repair, plan_unknown_key_repairs
 
 
-def test_unknown_keys_raise_structured_error() -> None:
-    with pytest.raises(UnknownConfigKeysError) as caught:
-        PlaybackConfig.from_dict({"enable_daypart": True})
-    assert caught.value.section == "playback"
-    assert caught.value.keys == ("enable_daypart",)
-    assert "unknown [playback] keys" in str(caught.value)
-    with pytest.raises(UnknownConfigKeysError) as server_error:
-        ServerConfig.from_dict({"liner_upload_max_bytes": 1024})
-    assert server_error.value.keys == ("liner_upload_max_bytes",)
+def test_unknown_keys_warn_without_rejecting_valid_settings(caplog) -> None:
+    cfg = PlaybackConfig.from_dict({"enable_daypart": True, "crossfade_seconds": 2})
+    assert cfg.crossfade_seconds == 2
+    ServerConfig.from_dict({"liner_upload_max_bytes": 1024})
+    assert "enable_daypart" in caplog.text
+    assert "liner_upload_max_bytes" in caplog.text
 
 
 def test_plans_and_applies_simple_unknown_key_removal(tmp_path: Path) -> None:

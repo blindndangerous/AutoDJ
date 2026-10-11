@@ -10,7 +10,8 @@ AutoDJ resolves defaults, `config.toml`, sibling `config.local.toml`, environmen
 explicit CLI flags. `config.local.toml` is read only when a `config.toml` was loaded next to it;
 on its own it is ignored. Omitting `--config` is valid. Explicitly naming a missing file is an error. Put
 access tokens only in ignored local configuration or `AUTODJ_ACCESS_TOKEN`. An unknown section or
-key in either file, such as a setting a newer AutoDJ removed, is an error that names it.
+key in either file, such as a setting a newer AutoDJ removed, produces a warning and is ignored.
+Invalid values for supported settings still need fixing.
 
 ## Diagnose before serving
 
@@ -29,8 +30,9 @@ preserving unrelated settings and formatting, then retrying validation.
 Review the key names before accepting: a misspelled setting may need correcting instead of removing.
 Complex TOML edits that cannot be made safely are left for manual correction.
 
-Doctor also checks `web_state.json` in the selected index for obsolete repeat settings that
-would prevent startup. It offers to remove those keys, with a backup, while preserving current
+Doctor also warns about obsolete repeat settings in `web_state.json` in the selected index.
+Startup ignores those keys and loads the other settings. Doctor offers optional cleanup,
+with a backup, while preserving current
 repeat limits, EQ and other saved values. An empty old `related_artists_file` setting can be
 removed this way. A nonempty path needs manual review so you can preserve its related-artist
 data. Malformed files and unsupported saved-state versions are left unchanged.
@@ -1206,7 +1208,7 @@ the rules and the collecting societies are different.
 
 Repeat limits are edited in Settings > Picking > Repeats and stored in
 `web_state.json`. Old repeat keys in `config.toml` or `web_state.json` are
-rejected; remove them by hand and re-enter limits in that panel. The related
+ignored with a warning; re-enter any limits that still use those keys in that panel. The related
 artists file is `index/<name>/related-artists.toml` and is read only when
 **Use related artists** is enabled. It must be at most 1 MiB.
 

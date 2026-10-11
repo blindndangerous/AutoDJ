@@ -193,7 +193,7 @@ def _beets_db_check(cfg: AutoDJConfig) -> DoctorCheck:
 
 
 def _saved_settings_check(cfg: AutoDJConfig) -> DoctorCheck:
-    """Check saved browser settings for data the runtime loader rejects."""
+    """Report obsolete saved settings and offer optional cleanup."""
     path = cfg.index.active_dir / "web_state.json"
     if not path.exists():
         return DoctorCheck("saved-settings", CheckStatus.PASS, "no saved settings")
@@ -222,9 +222,9 @@ def _saved_settings_check(cfg: AutoDJConfig) -> DoctorCheck:
         )
         return DoctorCheck(
             "saved-settings",
-            CheckStatus.FAIL,
-            "saved settings contain removed repeat keys",
-            f"{path}; {grouped}. Remove them or re-enter limits in Settings > Picking > Repeats.{preserve}",
+            CheckStatus.WARN,
+            "ignoring removed repeat keys in saved settings",
+            f"{path}; {grouped}. Re-enter any old limits in Settings > Picking > Repeats.{preserve}",
             "repair-saved-settings",
         )
     version = data.get("schema_version")
