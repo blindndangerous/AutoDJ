@@ -5,7 +5,7 @@ that wrote it and the list of files) and these members:
 
 - ``index/index-manifest.json`` and the two generation files it names
   (``tracks.gN.db`` and ``vectors.gN.index``): the live index generation.
-- ``index/dj_meta.db`` and ``index/web_state.json`` from the active index folder.
+- ``index/dj_meta.db``, ``index/library.db`` and ``index/web_state.json`` from the active index folder.
 - ``liners/...`` and ``profiles/...``: every file in those folders.
 """
 
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
 
 # Files of the index folder a backup holds besides the generation files.
-INDEX_FILES = ("dj_meta.db", "web_state.json", im.MANIFEST_NAME)
+INDEX_FILES = ("dj_meta.db", "library.db", "web_state.json", im.MANIFEST_NAME)
 _FOLDERS = ("liners", "profiles")
 
 
@@ -50,7 +50,7 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
 
 
 def _snapshot_index(active: Path, snapshot: Path) -> None:
-    """Copy the live index generation, its manifest and ``dj_meta.db`` into *snapshot*."""
+    """Copy the live index generation, its manifest and SQLite data into *snapshot*."""
     snapshot.mkdir(parents=True)
     with im.publication_lock(active):
         try:
@@ -70,20 +70,37 @@ def _snapshot_index(active: Path, snapshot: Path) -> None:
                 if im.sha256_file(snapshot / name) != digest:
                     raise BackupError(f"{active / name} does not match its SHA-256 in the manifest")
             shutil.copyfile(active / im.MANIFEST_NAME, snapshot / im.MANIFEST_NAME)
-    dj_meta = active / "dj_meta.db"
-    if dj_meta.is_file():
+    for name in ("dj_meta.db", "library.db"):
+        database = active / name
+        if not database.is_file():
+            continue
         with (
-            closing(sqlite3.connect(readonly_uri(dj_meta), uri=True)) as source,
-            closing(sqlite3.connect(snapshot / "dj_meta.db")) as target,
+            closing(sqlite3.connect(readonly_uri(database), uri=True)) as source,
+            closing(sqlite3.connect(snapshot / name)) as target,
         ):
             source.backup(target)
+        _check_sqlite(snapshot / name)
+
+
+def _check_sqlite(path: Path) -> None:
+    """Refuse a SQLite database that would replace a working local copy."""
+    try:
+        with closing(sqlite3.connect(readonly_uri(path), uri=True)) as conn:
+            result = [row[0] for row in conn.execute("PRAGMA integrity_check")]
+    except sqlite3.Error as exc:
+        raise BackupError(f"{path} failed SQLite integrity_check: {exc}") from exc
+    finally:
+        for suffix in ("-wal", "-shm"):
+            path.with_name(path.name + suffix).unlink(missing_ok=True)
+    if result != ["ok"]:
+        raise BackupError(f"{path} failed SQLite integrity_check: {'; '.join(map(str, result))}")
 
 
 def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
     """Write a backup archive to *destination* and return its absolute path.
 
     Safe while AutoDJ serves: the index is copied under its publication lock
-    and checked against its manifest, and ``dj_meta.db`` is copied through
+    and checked against its manifest, and SQLite databases are copied through
     SQLite's backup API.
 
     Raises:
@@ -229,6 +246,10 @@ def _restore(archive: zipfile.ZipFile, roots: dict[str, Path], *, force: bool) -
                     shutil.copyfileobj(source, target)
             if "index" in stages:
                 _check_index(stages["index"])
+                for name in ("dj_meta.db", "library.db"):
+                    database = stages["index"] / name
+                    if database.is_file():
+                        _check_sqlite(database)
             for top, stage in stages.items():
                 _install(top, roots[top], stage)
         finally:
