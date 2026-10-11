@@ -118,6 +118,24 @@ def test_liner_allow_outro_persists_and_overlap_tracks_effective_segue(tmp_path:
         assert catalog.record_for_path(liner)["allow_outro"] is True
 
 
+def test_automatic_cue_merge_keeps_user_overlap_and_warns(tmp_path: Path, caplog) -> None:
+    root = tmp_path / "liners"
+    root.mkdir()
+    liner = root / "voice.wav"
+    liner.write_bytes(b"voice")
+    with LibraryCatalog(tmp_path / "catalog.db") as catalog:
+        catalog.add_source(root, "liner", recursive=False, advanced=False)
+        catalog.put_entry(entry(liner), "liner")
+        catalog.set_points(liner, {"start": 2, "segue": 8}, "analysis")
+        catalog.set_points(liner, {"overlap_start": 5})
+        with caplog.at_level("WARNING", logger="autodj.catalog"):
+            catalog.set_points(liner, {"segue": 6}, source="auto")
+        assert catalog.points(liner)["overlap_start"] == 5
+        assert catalog.points(liner)["segue"] == 6
+        assert catalog.record_for_path(liner)["point_sources"]["overlap_start"] == "user"
+        assert "past its segue" in caplog.text
+
+
 def test_allow_outro_can_only_be_set_on_liners(tmp_path: Path) -> None:
     root = tmp_path / "music"
     root.mkdir()
