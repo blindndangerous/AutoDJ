@@ -16,9 +16,14 @@ AutoDJ is a single-user local music player with these exposed surfaces:
 - LAN mode requires either an access token or explicit `--insecure-lan`, plus exact Host and Origin
   allowlists. `AUTODJ_ACCESS_TOKEN` is supported for secret injection. `serve --lan` fills in
   both allowlists and the token automatically; see "Automatic LAN mode" below.
-- Backup and restore trust the configured index, liners, profiles and Stereo Tool preset
-  locations. Restore
-  checks member names and the AutoDJ version before it replaces anything.
+- Backup and restore trust the configured index, liners, profiles, clockwheels and Stereo Tool
+  preset locations. Restore checks member names and the AutoDJ version before it replaces anything.
+- Clockwheel routes require a paired browser. Names are checked as safe file names (no path
+  separators, dots or Windows device names) before any file is touched. Steps name a registered
+  library folder by ID plus a path inside it with no `..`, drive letter or backslash, and a track
+  step must be a track the catalog holds; the browser never sends a full path. Unknown fields and
+  step types are refused. PAL import parses a limited declarative subset and never executes
+  uploaded text.
 - Broadcast recordings contain listener-facing encoded audio only. The recording folder is
   chosen in `config.toml` or `config.local.toml` and is never accepted as an API parameter or
   sent to the browser.

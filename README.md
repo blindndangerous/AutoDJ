@@ -15,6 +15,9 @@ uploaded to a cloud service.
 - Mood presets that adjust tempo targets during a set. To define your own, add
   `[presets.NAME]` tables to `config.toml`; `config.toml.example` shows how.
 - Voice liners that play spoken clips over the music on a schedule.
+- Several named clockwheels: repeating orders of music folders, liners, tracks and preset
+  changes, edited from the keyboard, imported from SAM Broadcaster `.PAL` files and switched by
+  the scheduler.
 - A cart wall for instant jingles, station IDs and sound effects, with numbered keys and
   duck, over or replace playback modes.
 - Spoken time checks from recorded minute clips or an external TTS command, scheduled or after
@@ -618,7 +621,7 @@ AutoDJ was built collaboratively by humans and AI assistants.  Each contributor 
 - **[blindndangerous](https://github.com/blindndangerous)**: project vision, library design, requirements, UX direction (web UI flow, mode semantics, gapless feel), every accessibility decision, all real-world testing on a 10k-track library, every release call.
 - **[jage9](https://github.com/jage9)**:
   - Station playout: music and liner folder libraries, track info with editable cues, segue-point
-    liner timing, least-recently-played and clockwheel rotation with PAL import, persistent play
+    liner timing, least-recently-played and native clockwheel rotation with PAL import, persistent play
     history, Smooth and Stereo Tool processing, and the 0.20.0 release preparation.
   - Guided `autodj doctor` repairs, the automatic GPU setup scripts and the launcher.
   - Windows AMD GPU setup guide and launcher, and MuQ compatibility with patched dependencies.

@@ -778,7 +778,7 @@
         </select>
       </div>
       <span class="setting-desc" id="pb-pick-mode-desc">
-        <em>Similarity</em> chooses a song that sounds like the last one. <em>Random walk</em> chooses at random. <em>Least recently played</em> prefers songs that have waited longest. <em>Clockwheel</em> follows your folder rotation, restarting it at a song handoff near the chosen minute marks.
+        <em>Similarity</em> chooses a song that sounds like the last one. <em>Random walk</em> chooses at random. <em>Least recently played</em> prefers songs that have waited longest. <em>Clockwheel</em> follows the active clockwheel from Library tools, restarting it at a song handoff near its chosen minute marks.
       </span>
       <div class="settings-row" data-show-when="pb-pick-mode=similarity">
         <label for="pb-pick-top-k">Choose among the closest songs</label>
@@ -1774,23 +1774,6 @@
         <ul id="source-folders" aria-label="Registered music and liner folders"><li>No folders loaded.</li></ul>
       </section>
 
-      <section aria-labelledby="clockwheel-heading">
-        <h3 id="clockwheel-heading">Clockwheel</h3>
-        <p>Import a PAL text file to define a repeating order of music and voice liner folders. Only supported folder queue lines are imported; other statements are rejected.</p>
-        <label for="clock-name">Clock name</label>
-        <input id="clock-name" type="text" maxlength="120" value="Clock">
-        <label for="clock-pal-file">PAL text file</label>
-        <input id="clock-pal-file" type="file" accept=".pal,text/plain">
-        <button type="button" id="clock-import">Import PAL</button>
-        <ol id="clock-slots" aria-label="Clock slots"><li>No clock imported yet.</li></ol>
-        <p id="clock-next">No clock slots are configured.</p>
-        <label for="clock-resync-minutes">Resync at minute(s) each hour (comma separated, 0–59)</label>
-        <input id="clock-resync-minutes" type="text" inputmode="numeric" value="0" aria-describedby="clock-resync-help">
-        <p id="clock-resync-help">Use 0 for the top of the hour, or enter several minutes such as 0, 30. Leave empty to disable resync boundaries.</p>
-        <button type="button" id="clock-save">Save clock settings</button>
-        <p id="clock-status">Clock settings not loaded.</p>
-      </section>
-
       <!-- Stats card -->
       <h3 id="library-stats-heading">Index stats</h3>
       <dl id="library-stats" aria-labelledby="library-stats-heading">
@@ -1860,6 +1843,84 @@
            role="region"
            aria-labelledby="library-log-heading"><p class="lib-log-empty">No job has run yet.</p></div>
     </details>
+
+    <section class="card" aria-labelledby="clockwheel-heading">
+      <h2 id="clockwheel-heading">Clockwheels</h2>
+      <!-- clockwheel-panel.js fills this section.  Each result of a button
+           is said once through #clock-status; the lists are plain text. -->
+      <p>A clockwheel is a repeating order of steps: music or voice liners from a library folder, a specific track, or a preset change. Keep as many as you like. The active one plays when Pick mode is set to Clockwheel, and the Schedule can switch to another one at set times.</p>
+      <p id="clock-notice" class="field-error" hidden></p>
+      <div id="clock-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+      <h3 id="clock-list-heading">Saved clockwheels</h3>
+      <ul id="clock-list" aria-labelledby="clock-list-heading"><li>No clockwheels loaded.</li></ul>
+      <label for="clock-name">Name</label>
+      <input id="clock-name" type="text" maxlength="64" autocomplete="off" spellcheck="false" aria-describedby="clock-name-help">
+      <p id="clock-name-help">Up to 64 letters, digits, spaces, dashes and underscores. Create, Duplicate, Rename and Import .PAL use this name.</p>
+      <button type="button" id="clock-create">Create</button>
+      <button type="button" id="clock-duplicate">Duplicate</button>
+      <button type="button" id="clock-rename">Rename</button>
+      <button type="button" id="clock-delete">Delete</button>
+      <button type="button" id="clock-activate">Activate</button>
+      <button type="button" id="clock-deactivate">Turn off clockwheel</button>
+      <label for="clock-pal-file">.PAL file to import</label>
+      <input id="clock-pal-file" type="file" accept=".pal,text/plain" aria-describedby="clock-pal-help">
+      <button type="button" id="clock-import">Import .PAL</button>
+      <p id="clock-pal-help">Import makes a new clockwheel from a SAM Broadcaster .PAL file. Only Dir and SubDir queue lines are read, and nothing in the file runs. Each folder must be a registered music or voice liner folder, or a folder inside one that adds subfolders.</p>
+
+      <h3 id="clock-steps-heading">Steps of <span id="clock-open-name">no clockwheel open</span></h3>
+      <p id="clock-steps-help">Alt+Up and Alt+Down move the step whose button has focus. Changes are kept only when you press Save clockwheel.</p>
+      <ol id="clock-slots" aria-labelledby="clock-steps-heading"><li>Open or create a clockwheel to see its steps.</li></ol>
+      <p id="clock-next"></p>
+      <fieldset id="clock-step-form">
+        <legend id="clock-step-legend">Add a step</legend>
+        <label for="clock-step-type">Step type</label>
+        <select id="clock-step-type">
+          <option value="music">Music from a folder</option>
+          <option value="liner">Voice liner from a folder</option>
+          <option value="track">A specific track</option>
+          <option value="settings">Switch preset</option>
+        </select>
+        <div class="clock-step-field">
+          <label for="clock-step-source">Library folder</label>
+          <select id="clock-step-source"></select>
+        </div>
+        <div class="clock-step-field">
+          <label for="clock-step-folder">Subfolder (optional)</label>
+          <input id="clock-step-folder" type="text" autocomplete="off" spellcheck="false" aria-describedby="clock-step-folder-help">
+          <span class="setting-desc" id="clock-step-folder-help">A folder inside the library folder, such as Rock/Live. Leave empty to use the library folder itself.</span>
+        </div>
+        <div class="clock-step-field">
+          <label for="clock-step-path">Track</label>
+          <input id="clock-step-path" type="text" autocomplete="off" spellcheck="false" aria-describedby="clock-step-path-help">
+          <span class="setting-desc" id="clock-step-path-help">The file inside the library folder, such as Album/Song.flac.</span>
+        </div>
+        <div class="clock-step-field">
+          <label for="clock-step-preset">Preset</label>
+          <select id="clock-step-preset"></select>
+        </div>
+        <div class="clock-step-field">
+          <input id="clock-step-recursive" type="checkbox">
+          <label for="clock-step-recursive">Include subfolders</label>
+        </div>
+        <div class="clock-step-field">
+          <label for="clock-step-selection">Choose</label>
+          <select id="clock-step-selection">
+            <option value="least_recent">Least recently played</option>
+            <option value="random">At random</option>
+          </select>
+        </div>
+        <div class="clock-step-field">
+          <input id="clock-step-enforce-rules" type="checkbox" checked>
+          <label for="clock-step-enforce-rules">Follow the repeat rules</label>
+        </div>
+        <button type="button" id="clock-add-step">Add step</button>
+        <button type="button" id="clock-cancel-edit" hidden>Cancel edit</button>
+      </fieldset>
+      <label for="clock-resync-minutes">Restart at these minutes past each hour</label>
+      <input id="clock-resync-minutes" type="text" inputmode="numeric" value="0" autocomplete="off" aria-describedby="clock-resync-help">
+      <p id="clock-resync-help">Comma separated, 0 to 59, such as 0, 30. The clockwheel goes back to step 1 at the song change nearest each minute. Leave empty never to restart.</p>
+      <button type="button" id="clock-save">Save clockwheel</button>
+    </section>
   </section>
 
 <!-- Volume announcement region — only written on user-initiated volume changes -->

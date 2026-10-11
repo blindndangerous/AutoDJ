@@ -55,6 +55,22 @@ def test_schedule_is_backed_up_and_restored(tmp_path: Path) -> None:
     assert json.loads(schedule.read_text(encoding="utf-8"))["schema_version"] == 1
 
 
+def test_clockwheels_are_backed_up_and_restored(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    folder = cfg.index.active_dir / "clockwheels"
+    folder.mkdir()
+    wheel = folder / "Morning.json"
+    wheel.write_text(
+        '{"version":1,"name":"Morning","steps":[],"resync_minutes":[0]}', encoding="utf-8"
+    )
+    archive = create_backup(cfg, tmp_path / "clockwheels.zip", force=False)
+    with zipfile.ZipFile(archive) as backup:
+        assert "clockwheels/Morning.json" in backup.namelist()
+    wheel.unlink()
+    restore_backup(cfg, archive, force=True)
+    assert json.loads(wheel.read_text(encoding="utf-8"))["name"] == "Morning"
+
+
 def test_carts_and_uploaded_clips_are_backed_up_and_restored(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     state = cfg.index.active_dir / "carts.json"
