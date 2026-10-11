@@ -7,7 +7,9 @@ Last reviewed: 2026-09-07. Re-review every major release.
 AutoDJ is a single-user local music player with these exposed surfaces:
 
 - CLI commands read local audio and configuration, then write index, profile, liner or backup
-  data as the invoking user. Play history is kept in memory only.
+  data as the invoking user. `library.db` keeps the complete play history, with listener
+  counts; `autodj export-plays` reads it and writes a CSV or text report to standard output or
+  to the `--out` file.
 - The web UI uses FastAPI and WebSocket. The default host process binds to `127.0.0.1:8080`.
   The Compose service runs `serve --lan` on the host network, so it listens on every host
   interface on port 8080 and every browser must pair.
@@ -125,6 +127,13 @@ The liner *root directory* comes only from configuration. `/api/playback-setting
 `web_state.json` keeps only fields a settings route accepts, and on restart each saved value
 must pass that route's field rule, so the file can neither store nor restore `liners_folder`.
 Treat a paired browser as trusted.
+
+`GET /api/history/export` returns the play log for a date range: titles, artists, albums, ISRC
+and label tags, file paths inside the music folders and listener counts. Like every other `/api`
+route it needs an allowed Host, and a session whenever the server requires one. It is a GET with
+no side effects, so it is not Origin-checked; a cross-site page cannot read the response. It
+takes only dates, a format, a service name of at most 200 characters and a one-letter category,
+and it reads only the ISRC and label tags of files already in the play log.
 
 ### Automatic LAN mode
 

@@ -28,6 +28,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - A related artists file that is missing or invalid does not stop AutoDJ: the log warns, and
     `autodj doctor` reports it.
   - These settings are in `config.toml` only for now; Settings page controls follow.
+- Export the play log for royalty reports, from "Export play log" in the History tab or with
+  `autodj export-plays --from DATE --to DATE`. The CSV has one row per play: start and end time,
+  seconds played, artist, title, album, ISRC, label, kind, file and listeners. ISRC and label are
+  read from the file tags when you export, so no re-index is needed. `--missing` lists the songs
+  that lack an ISRC, label or other reporting field.
+- `--format soundexchange` (or the format choice in the History tab) writes a SoundExchange Report
+  of Use for US webcasters: songs only, one line per recording, with actual total performances from
+  the listener counts. See "Reporting for webcasting licenses" in the operations guide.
+- Each play now records its listeners: in stream mode, the most stream listeners connected at once
+  during the song; otherwise 1.
+
 - More settings can be changed on the Settings page instead of in `config.toml`. They are saved
   on the server and survive a restart:
   - the EQ duck cutoff
