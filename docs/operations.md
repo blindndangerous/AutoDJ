@@ -708,6 +708,11 @@ uv run autodj backup "backups\autodj-$stamp.zip"
 
 ## Restore and validate
 
+Backup archives are still restricted to the AutoDJ major and minor version that made them.
+For an archive made by 0.19, restore it with 0.19 first, then upgrade and convert the index if
+needed. Version 0.20 can open an existing schema-4 index directly; the application version bump
+does not change that index format. Make a new backup after upgrading to include the station catalog.
+
 Stop AutoDJ, and any `autodj index` or `autodj analyse` run, before you restore. Restore cannot
 tell whether AutoDJ is running, and a running AutoDJ would keep using the files it replaces.
 
