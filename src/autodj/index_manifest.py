@@ -56,7 +56,14 @@ CONVERT_SCRIPT = "scripts/convert_index_v3_to_v4.py"
 class UnsupportedIndexError(IndexConsistencyError):
     """Raised when index data was written in a format this release no longer reads."""
 
-    def __init__(self, index_dir: Path | str, reason: str, remedy: str | None = None) -> None:
+    def __init__(
+        self,
+        index_dir: Path | str,
+        reason: str,
+        remedy: str | None = None,
+        *,
+        schema_version: int | None = None,
+    ) -> None:
         """Build the one rebuild message shared by every old-format refusal.
 
         Args:
@@ -65,8 +72,10 @@ class UnsupportedIndexError(IndexConsistencyError):
             reason: What marks the data as old, e.g. "it has no index-manifest.json".
             remedy: What to do about it.  Defaults to rebuilding with
                 :data:`REBUILD_COMMAND`.
+            schema_version: Known manifest version, for choosing a recovery command.
         """
         self.reason = reason
+        self.schema_version = schema_version
         super().__init__(
             f"The index in {index_dir} was made by an older AutoDJ ({reason}). "
             + (remedy or f"Rebuild it with `{REBUILD_COMMAND}`.")
@@ -222,9 +231,11 @@ def read_manifest(index_dir: Path) -> IndexManifest | None:
         raise UnsupportedIndexError(
             index_dir,
             f"its manifest uses schema {version}",
+            schema_version=version,
             remedy=(
-                f"Convert it once with `uv run python {CONVERT_SCRIPT} --help` "
-                f"(see docs/operations.md), or rebuild it with `{REBUILD_COMMAND}`."
+                "Preview conversion with `autodj migrate-index`, then run "
+                "`autodj migrate-index --apply` using the same --config and --name. "
+                f"The legacy `{CONVERT_SCRIPT}` entry point also works. See docs/operations.md."
                 if version == SCHEMA_VERSION - 1
                 else None
             ),

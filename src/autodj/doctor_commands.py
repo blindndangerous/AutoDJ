@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 # Commands are defined here, never extracted from exception messages or file contents.
 _COMMANDS = {
+    "migrate-index": ("migrate-index", "--apply"),
     "rebuild-index": ("index", "--force"),
     "index": ("index",),
     "rebuild-dj-meta": ("analyse",),
@@ -22,6 +23,7 @@ _COMMANDS = {
     "serve-lan": ("serve", "--lan"),
 }
 _EFFECTS = {
+    "migrate-index": "Stop AutoDJ serving/indexing first. Saves a recovery copy and carries the index forward without re-embedding.",
     "rebuild-index": "Re-embeds the full library from scratch; may download models and take a long time.",
     "index": "Indexes the library and downloads missing models; this may take a long time.",
     "rebuild-dj-meta": "Stop AutoDJ serving/indexing first. Backs up the DJ metadata cache and rebuilds it.",

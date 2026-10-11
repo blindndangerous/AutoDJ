@@ -121,6 +121,10 @@ Every command takes `--help`, for example `uv run autodj serve --help`. The glob
 - `autodj index` builds or updates the index from your music folder, then runs the enrich and
   analyse passes unless you skip them.
 - `autodj analyse` fills in intro, outro, beat grid, and cue points for indexed tracks.
+- `autodj analyse-library` runs advanced analysis for tracks added through Library folders.
+  The web interface starts this job in the background when requested.
+- `autodj migrate-index` previews a schema-3 to schema-4 conversion; add `--apply` to save a
+  recovery copy and convert without repeating analysis. Interactive `serve` offers this too.
 - `autodj enrich` refreshes key and mode from your beets database.
 - `autodj prune` removes index entries whose audio files no longer exist.
 - `autodj stats` prints an overview of the indexed library.

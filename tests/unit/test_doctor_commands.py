@@ -60,6 +60,36 @@ def test_rebuild_supersedes_index_and_rechecks_before_analyse(tmp_path: Path) ->
     )
 
 
+def test_migration_recovery_preserves_config_and_named_index(tmp_path: Path) -> None:
+    cfg = config_for(tmp_path)
+    initial = report_for("migrate-index")
+    healthy = DoctorReport(())
+    with (
+        patch("autodj.doctor_commands.click.confirm", return_value=True),
+        patch(
+            "autodj.doctor_commands.subprocess.run", return_value=SimpleNamespace(returncode=0)
+        ) as run,
+        patch("autodj.doctor.run_doctor", return_value=healthy),
+    ):
+        final, failed = run_recovery_commands(cfg, initial, auto_fix=False)
+    assert final is healthy
+    assert not failed
+    run.assert_called_once_with(
+        [
+            sys.executable,
+            "-m",
+            "autodj",
+            "--config",
+            str(cfg.config_path),
+            "migrate-index",
+            "--apply",
+            "--name",
+            "workout",
+        ],
+        check=False,
+    )
+
+
 def test_declining_all_commands_does_not_execute_or_recheck(tmp_path: Path) -> None:
     initial = report_for("rebuild-index", "index", "analyse", "serve-lan")
     with (

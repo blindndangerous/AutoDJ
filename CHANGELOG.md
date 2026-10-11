@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `autodj migrate-index` previews a schema-3 to schema-4 conversion; `--apply` saves a verified
+  recovery copy before converting, keeping the existing analysis. Interactive `autodj serve`
+  offers to do this and continue startup. Services print instructions without waiting for input.
 - Add multiple music and liner folders from Library tools, with separate choices for
   subfolders and background analysis. Songs can play before advanced analysis finishes.
   Browse by folder and see analysis progress. Confirmed file moves keep their saved data;
@@ -32,9 +35,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the same source preparation with a bundled free preset and a separately installed executable.
 - **Keep playing without listeners** lets the stream run unattended.
 - `autodj index` now recognises tracks that moved, for example after `beet move`, and keeps their
-  vectors and DJ cues instead of embedding them again. The index format changed (schema 4): an
-  index from an older AutoDJ is refused. Convert one with `scripts/convert_index_v3_to_v4.py`;
-  `docs/operations.md` explains how.
+  vectors and DJ cues instead of embedding them again. The index format changed (schema 4).
+  Convert a schema-3 index with `autodj migrate-index --apply`; `docs/operations.md` explains how.
 - In stream mode and with server audio, the new **Drop mixing** setting (`drop_mix` in the
   `[djmix]` section of `config.toml`, off by default) mixes songs drop to drop. When both songs
   have a reliable drop and **Beatmatch** can lock their beats, the new song's build-up plays under
@@ -114,6 +116,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Stereo Tool defaults to `./tools/stereo-tool/stereo_tool_cmd.exe` on Windows and
+  `./tools/stereo-tool/stereo_tool_cmd` elsewhere. Custom executable paths still work.
 - Track info follows Queue & Search in the tabs and keyboard navigation.
 - Settings help uses plainer language and explains which controls apply to saved segue
   playback. The processing selector is labelled **Output processing**.
@@ -156,6 +160,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Backups now include the station library database, preserving registered folders, cue edits,
+  last-played times and full play history. Restores check database integrity before replacing files.
 - Output processing keeps audio playing through a fallback while the processor restarts,
   then returns to processed sound when it recovers.
 - Older version-1 web settings are migrated on upgrade, preserving the harmonic-mixing
