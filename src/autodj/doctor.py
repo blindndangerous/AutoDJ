@@ -207,14 +207,6 @@ def _saved_settings_check(cfg: AutoDJConfig) -> DoctorCheck:
         return DoctorCheck(
             "saved-settings", CheckStatus.WARN, "saved settings root is not an object"
         )
-    version = data.get("schema_version")
-    if type(version) is not int or version not in (1, 2):
-        return DoctorCheck(
-            "saved-settings",
-            CheckStatus.WARN,
-            "unsupported saved settings schema",
-            f"schema_version must be 1 or 2, got {version!r}; runtime ignores this file",
-        )
     removed = removed_saved_repeat_keys(data)
     if removed:
         grouped = "; ".join(f"{group}: {', '.join(keys)}" for group, keys in removed.items())
@@ -234,6 +226,14 @@ def _saved_settings_check(cfg: AutoDJConfig) -> DoctorCheck:
             "saved settings contain removed repeat keys",
             f"{path}; {grouped}. Remove them or re-enter limits in Settings > Picking > Repeats.{preserve}",
             "repair-saved-settings",
+        )
+    version = data.get("schema_version")
+    if type(version) is not int or version not in (1, 2):
+        return DoctorCheck(
+            "saved-settings",
+            CheckStatus.WARN,
+            "unsupported saved settings schema",
+            f"schema_version must be 1 or 2, got {version!r}; runtime ignores this file",
         )
     return DoctorCheck("saved-settings", CheckStatus.PASS, "saved settings valid", str(path))
 

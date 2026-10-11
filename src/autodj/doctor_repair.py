@@ -170,15 +170,13 @@ def plan_saved_state_repair(index_dir: Path) -> ConfigRepair | None:
     removed = removed_saved_repeat_keys(data)
     if not removed:
         return None
-    for keys in removed.values():
-        if "related_artists_file" in keys:
-            playback = data["playback"]
-            value = playback.get("related_artists_file")
-            rules = playback.get("repeat_rules")
-            if value is None and isinstance(rules, dict):
-                value = rules.get("related_artists_file")
-            if value not in (None, ""):
-                return None
+    playback = data["playback"]
+    for group, keys in removed.items():
+        if "related_artists_file" not in keys:
+            continue
+        target = playback if group == "playback" else playback["repeat_rules"]
+        if target["related_artists_file"] not in (None, ""):
+            return None
     cleaned = deepcopy(data)
     for group, keys in removed.items():
         target = cleaned["playback"] if group == "playback" else cleaned["playback"]["repeat_rules"]

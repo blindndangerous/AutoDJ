@@ -201,3 +201,35 @@ def test_saved_state_repair_leaves_custom_related_artist_path_and_malformed_file
     assert path.read_bytes() == original
     path.write_text("{bad", encoding="utf-8")
     assert plan_saved_state_repair(tmp_path) is None
+
+
+def test_saved_state_repair_preserves_nested_custom_path_when_top_level_path_is_empty(
+    tmp_path: Path,
+) -> None:
+    import json
+
+    path = tmp_path / "web_state.json"
+    original = json.dumps(
+        {
+            "schema_version": 2,
+            "playback": {
+                "related_artists_file": "",
+                "repeat_rules": {"related_artists_file": "custom.toml"},
+            },
+        }
+    ).encode()
+    path.write_bytes(original)
+
+    assert plan_saved_state_repair(tmp_path) is None
+    assert path.read_bytes() == original
+
+
+def test_saved_state_repair_does_not_modify_unsupported_schema(tmp_path: Path) -> None:
+    import json
+
+    path = tmp_path / "web_state.json"
+    original = b'{"schema_version":99,"playback":{"no_repeat_minutes":40}}'
+    path.write_bytes(original)
+
+    assert plan_saved_state_repair(tmp_path) is None
+    assert path.read_bytes() == original

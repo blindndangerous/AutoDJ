@@ -543,6 +543,7 @@ def test_run_doctor_check_order(tmp_path: Path) -> None:
         (None, CheckStatus.PASS),
         ("{bad", CheckStatus.WARN),
         ('{"schema_version": 99}', CheckStatus.WARN),
+        ('{"schema_version": 99, "playback": {"no_repeat_minutes": 40}}', CheckStatus.FAIL),
         (
             '{"schema_version": 2, "playback": {"related_artists_file": "custom.toml"}}',
             CheckStatus.FAIL,
@@ -561,8 +562,9 @@ def test_saved_settings_check(tmp_path: Path, content: str | None, status: Check
     assert check.name == "saved-settings"
     assert check.status is status
     if status is CheckStatus.FAIL:
-        assert "related_artists_file" in check.detail
-        assert "Preserve the old related-artists data" in check.detail
+        assert "no_repeat_minutes" in check.detail or "related_artists_file" in check.detail
+        if "related_artists_file" in content:
+            assert "Preserve the old related-artists data" in check.detail
 
 
 def test_unreadable_or_non_directory_paths_fail(tmp_path: Path) -> None:
