@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from collections import deque
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -177,14 +176,6 @@ class TestArtistSplitter:
             ("Jay-Z & Kanye West", {"jay z", "kanye west"}),
             ("Lil Nas X & Billy Ray Cyrus", {"lil nas x", "billy ray cyrus"}),
             ("Duke Ellington and His Orchestra", {"duke ellington"}),
-        ],
-    )
-    def test_multi_word_parts_split(self, credit: str, parts: set[str]) -> None:
-        assert ArtistSplitter().split(credit) == {artist_key(credit), *parts}
-
-    @pytest.mark.parametrize(
-        ("credit", "parts"),
-        [
             ("Mark Ronson feat. Bruno Mars", {"mark ronson", "bruno mars"}),
             ("Mark Ronson ft. Bruno Mars", {"mark ronson", "bruno mars"}),
             ("Mark Ronson featuring Bruno Mars", {"mark ronson", "bruno mars"}),
@@ -194,8 +185,26 @@ class TestArtistSplitter:
             ("Rihanna\x00Drake", {"rihanna", "drake"}),
             ("Calvin Harris feat. Rihanna", {"calvin harris", "rihanna"}),
         ],
+        ids=[
+            "ampersand",
+            "comma",
+            "x",
+            "with",
+            "and",
+            "jay-z",
+            "lil-nas-x",
+            "orchestra",
+            "feat",
+            "ft",
+            "featuring",
+            "parenthesized-feat",
+            "versus",
+            "semicolon",
+            "nul",
+            "feat-rihanna",
+        ],
     )
-    def test_featured_credits_always_split(self, credit: str, parts: set[str]) -> None:
+    def test_multi_word_and_featured_credits_split(self, credit: str, parts: set[str]) -> None:
         assert ArtistSplitter().split(credit) == {artist_key(credit), *parts}
 
     def test_one_word_names_split_only_when_known(self) -> None:
@@ -516,7 +525,7 @@ class TestTrackKeyCache:
         assert keys == TrackKeys(frozenset(), "", "")
 
     def test_a_large_library_pick_only_looks_keys_up(self, monkeypatch) -> None:
-        """Checking 100,000 tracks splits no credit and folds no title after the first pick."""
+        """Repeated picks reuse keys computed for each track on the first pick."""
         entries = [
             _entry(
                 f"e{i}.flac",
@@ -524,28 +533,38 @@ class TestTrackKeyCache:
                 title=f"Song {i}",
                 album=f"Album {i % 900}",
             )
-            for i in range(100_000)
+            for i in range(1000)
         ]
         history = [
             _record(i, f"Artist {i} & Guest 1", f"Song {i}", album=f"Album {i}") for i in range(3)
         ]
         cache = TrackKeyCache()
         repeat, _ = build_filter(history, RepeatRules(), 0.0, cache)
-        allowed = sum(map(repeat, entries))  # the first pick fills the cache
-
         import autodj.repeat_rules as rules_module
 
-        def forbidden(*_args):
-            raise AssertionError("a pick worked out keys again")
+        calls = {"credited": 0, "title": 0, "album": 0}
 
-        monkeypatch.setattr(ArtistSplitter, "credited", forbidden)
-        monkeypatch.setattr(rules_module, "title_key", forbidden)
-        monkeypatch.setattr(rules_module, "album_key", forbidden)
-        started = time.perf_counter()
+        def count(name, original):
+            def wrapped(*args, **kwargs):
+                calls[name] += 1
+                return original(*args, **kwargs)
+
+            return wrapped
+
+        monkeypatch.setattr(ArtistSplitter, "credited", count("credited", ArtistSplitter.credited))
+        monkeypatch.setattr(rules_module, "title_key", count("title", rules_module.title_key))
+        monkeypatch.setattr(rules_module, "album_key", count("album", rules_module.album_key))
+        allowed = sum(map(repeat, entries))
+        first_pick = calls.copy()
+        assert first_pick == {
+            "credited": len(entries),
+            "title": len(entries),
+            "album": len(entries),
+        }
+
         repeat, _ = build_filter(history, RepeatRules(), 0.0, cache)
         assert sum(map(repeat, entries)) == allowed
-        # Typically well under 0.2 s; the bound only catches a return to per-pick work.
-        assert time.perf_counter() - started < 1.5
+        assert calls == first_pick
 
 
 class TestHistoryBounds:

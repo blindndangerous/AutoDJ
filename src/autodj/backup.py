@@ -5,8 +5,9 @@ that wrote it and the list of files) and these members:
 
 - ``index/index-manifest.json`` and the two generation files it names
   (``tracks.gN.db`` and ``vectors.gN.index``): the live index generation.
-- ``index/dj_meta.db``, ``index/library.db``, ``index/web_state.json`` and editable
-  ``index/related-artists.toml`` from the active index folder.
+- ``index/dj_meta.db``, ``index/library.db``, ``index/web_state.json``,
+  ``index/related-artists.toml``, ``index/schedule.json`` and
+  ``index/listener_bans.json`` from the active index folder.
 - ``liners/...`` and ``profiles/...``: every file in those folders.
 """
 
@@ -38,6 +39,8 @@ INDEX_FILES = (
     "library.db",
     "web_state.json",
     "related-artists.toml",
+    "schedule.json",
+    "listener_bans.json",
     im.MANIFEST_NAME,
 )
 _FOLDERS = ("liners", "profiles")
@@ -135,8 +138,11 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
             snapshot = Path(temp) / "index"
             _snapshot_index(roots["index"], snapshot)
             members: dict[str, Path] = {}
-            web_state = roots["index"] / "web_state.json"
-            for path in [*sorted(snapshot.glob("*")), web_state]:
+            state_files = [
+                roots["index"] / name
+                for name in ("web_state.json", "schedule.json", "listener_bans.json")
+            ]
+            for path in [*sorted(snapshot.glob("*")), *state_files]:
                 if path.is_file():
                     members[f"index/{path.name}"] = path
             for top in _FOLDERS:

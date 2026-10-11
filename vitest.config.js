@@ -17,6 +17,9 @@ export default defineConfig({
     environment: "happy-dom",
     globals: true,
     include: ["tests/jsmodules/**/*.test.js"],
+    // The stylesheet accessibility contract exceeds its timeout when all
+    // available cores run DOM suites at once on Windows.
+    maxWorkers: 4,
     // The a11y-contract stylesheet cases re-parse app.css many times and
     // land within a few percent of the 5 s default under CI load.
     testTimeout: 15000,

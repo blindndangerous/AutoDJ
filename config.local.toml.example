@@ -31,7 +31,20 @@ port = 8080
 # ssl_certfile = "/srv/autodj/tls/fullchain.pem"
 # ssl_keyfile = "/srv/autodj/tls/privkey.pem"
 
+# Optional HTTP Basic credentials for /stream.mp3 and /stream.m3u:
+# [stream]
+# listener_user = "radio"
+# listener_password = "choose a strong password"
+#
 # Relay passwords belong here, beside the relay described in config.toml
 # under the same name; the two tables are merged key by key.
 # [stream.relays.main]
 # password = "the source password from your host"
+
+# Track-change webhooks belong only here, because their URLs often hold a
+# token; config.toml refuses them.  Up to ten; Settings, Stream lists them by
+# host and can send a test.  See "Now-playing feed and webhooks" in
+# docs/operations.md.
+# [[webhooks]]
+# url = "https://discord.com/api/webhooks/your-id/your-token"
+# format = "discord"   # or "generic" for the JSON feed object

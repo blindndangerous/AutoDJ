@@ -17,10 +17,11 @@ describe("queue mutations", () => {
     const edit = vi.fn();
     document.addEventListener("autodj:edit-points", edit, { once: true });
 
-    els.queueList.querySelector('.queue-btn[data-action="info"]').click();
+    const button = els.queueList.querySelector('.queue-btn[data-action="info"]');
+    button.click();
 
     expect(edit).toHaveBeenCalledOnce();
-    expect(edit.mock.calls[0][0].detail).toEqual({ path: "one.mp3", kind: "music" });
+    expect(edit.mock.calls[0][0].detail).toEqual({ path: "one.mp3", kind: "music", opener: button });
     expect(els.queueList.querySelectorAll("li[data-path]")).toHaveLength(1);
     expect(els.queueList.textContent).toContain("One");
     expect(els.queueList.getAttribute("aria-busy")).not.toBe("true");

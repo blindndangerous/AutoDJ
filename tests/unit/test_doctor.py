@@ -100,10 +100,6 @@ def _write_dj_meta(path: Path) -> None:
         conn.commit()
 
 
-def _check(report, name: str):
-    return next(check for check in report.checks if check.name == name)
-
-
 def _tree_snapshot(root: Path) -> dict[Path, tuple[bool, int, int, str | None]]:
     paths = [root, *root.rglob("*")]
     return {
@@ -321,7 +317,7 @@ def test_dj_meta_failed_integrity_check_fails(
         def close(self) -> None:
             self._conn.close()
 
-    monkeypatch.setattr(doctor.sqlite3, "connect", FailedIntegrityConnection)
+    monkeypatch.setattr(doctor, "_connect", FailedIntegrityConnection)
 
     check = doctor._dj_meta_database_check(cfg)
 
@@ -936,7 +932,7 @@ def test_locked_metadata_is_not_offered_a_destructive_rebuild(tmp_path: Path) ->
     (cfg.index.active_dir / "dj_meta.db").write_bytes(b"cache")
     error = sqlite3.OperationalError("database is locked")
     error.sqlite_errorcode = sqlite3.SQLITE_BUSY
-    with patch("autodj.doctor.sqlite3.connect", side_effect=error):
+    with patch("autodj.doctor._connect", side_effect=error):
         check = doctor._dj_meta_database_check(cfg)
     assert check.status is CheckStatus.FAIL
     assert check.repair is None

@@ -694,6 +694,7 @@ class TestAnalyseTrackInBackground:
         player.analyse_track_in_background(path)
         assert paused_before_write.wait(2.0)
 
+        player._cfg.index.active_dir = tmp_path
         app = create_app(PlayerBridge(player=player, sim=player._sim))
         client = TestClient(app)
         client.__enter__()
@@ -760,6 +761,7 @@ class TestAnalyseTrackInBackground:
         monkeypatch.setattr("autodj.dj_meta.analyse_audio", block_before_write)
         monkeypatch.setattr(threading, "excepthook", capture_thread_error)
         monkeypatch.setattr("autodj.server._SHUTDOWN_TIMEOUT_S", 0.05)
+        player._cfg.index.active_dir = tmp_path
         app = create_app(PlayerBridge(player=player, sim=player._sim))
 
         player.analyse_track_in_background(path)

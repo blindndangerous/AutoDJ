@@ -16,6 +16,7 @@ import logging
 import secrets
 import threading
 from collections import deque
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -110,6 +111,9 @@ class PlayerBridge:
     # ``--stream``); ``None`` in browser-driven mode, where the browser
     # evaluates liner triggers itself and the "Test liner" route is a no-op.
     liner_scheduler: Any = None
+    # Set by the server: hands each track change to the station scheduler,
+    # which runs the soft events that waited for the song to end.
+    scheduler_track_changed: Callable[[], None] | None = None
     # Stream mode (``serve --stream``): the stream output and the station,
     # set together by :meth:`attach_stream`.
     stream: Any = None
@@ -117,6 +121,8 @@ class PlayerBridge:
     # The relays to other servers (:class:`~autodj.relay.RelayManager`),
     # when any are configured.
     relays: Any = None
+    public_state_changed: Callable[[], Any] | None = None
+    track_started_callback: Callable[[], None] | None = None
     # History is appended on the mix-bus thread, trimmed by the station's
     # tick and read by request handlers.
     _history_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
@@ -197,6 +203,8 @@ class PlayerBridge:
         with self._event_lock:
             seq = self._station_event["seq"] + 1 if self._station_event else 1
             self._station_event = {"id": self._event_nonce, "seq": seq, "name": name}
+        if self.public_state_changed is not None:
+            self.public_state_changed()
 
     def stream_info(self) -> dict:
         """Return the stream's paths, bitrate, listener count and state."""
@@ -206,6 +214,7 @@ class PlayerBridge:
             "bitrate": int(self.player._cfg.stream.bitrate),
             "continuous": bool(self.player._cfg.stream.continuous),
             "station_name": self.player._cfg.stream.station_name,
+            "show_next": self.player._cfg.nowplaying.show_next,
             "listeners": int(self.stream.listener_count),
             "state": self.station.state,
             "relays": self.relay_status(),
@@ -250,6 +259,7 @@ class PlayerBridge:
             if self.relays is not None:
                 self.relays.set_title(artist, title)
         worker = self._liner_worker
+        self._notify_scheduler()
         if worker is not None:
             # The render that started, for liner talk-ups to time against.
             render = getattr(self.player, "_playing_render", None)
@@ -258,6 +268,8 @@ class PlayerBridge:
                 worker.submit(self._liner_track_start, track)
             except RuntimeError:
                 logger.debug("Liner worker is shut down; skipping the track-start check")
+        if self.track_started_callback is not None:
+            self.track_started_callback()
 
     def _liner_track_start(self, track: Any = None) -> None:
         """Let the liner scheduler count a track start (liner worker thread)."""
@@ -326,7 +338,10 @@ class PlayerBridge:
         """Return the latest plays across sessions, oldest first."""
         with self._history_lock:
             return [
-                {key: row[key] for key in ("title", "artist", "duration", "played_at")}
+                {
+                    key: row.get(key)
+                    for key in ("event_id", "path", "title", "artist", "duration", "played_at")
+                }
                 for row in self._play_history
             ]
 
@@ -338,7 +353,8 @@ class PlayerBridge:
         """Append the seed track to history before the first advance fires."""
         with self._history_lock:
             if entry is not None and not self._history_started:
-                self._append_history(entry)
+                row = self._append_history(entry)
+                self._open_play = (entry, row)
 
     def seek(self, seconds: float | None = None, delta: float | None = None) -> float:
         """Seek the active track and return the resulting position in seconds.
@@ -480,7 +496,8 @@ class PlayerBridge:
         with self._history_lock:
             if not self._history_started and cur is not None:
                 self._append_history(cur)
-            self._append_history(nxt)
+            row = self._append_history(nxt)
+            self._open_play = (nxt, row)
         # Browser-driven mode never renders on the server, so without an
         # explicit call here the lyric panel would stay frozen on the previous
         # track's words.  Lyric lookup can touch slow audio/tag storage,
@@ -590,6 +607,19 @@ class PlayerBridge:
             (nxt.length if nxt.length and nxt.length > 0 else 5.0) * _DEFAULT_SR,
         )
         p._playback_pos[0] = 0
+        self._notify_scheduler()
+        if self.track_started_callback is not None:
+            self.track_started_callback()
+
+    def _notify_scheduler(self) -> None:
+        """Tell the scheduler a song ended, for soft events; never raises into playout."""
+        notify = self.scheduler_track_changed
+        if notify is None:
+            return
+        try:
+            notify()
+        except Exception:
+            logger.exception("Could not tell the scheduler about the track change")
 
     def pause(self) -> bool:
         """Toggle pause/resume.
@@ -1396,6 +1426,8 @@ class PlayerBridge:
                 "stream_bitrate": int(cfg.stream.bitrate),
                 "stream_continuous": bool(cfg.stream.continuous),
                 "stream_station_name": cfg.stream.station_name,
+                "nowplaying_show_next": cfg.nowplaying.show_next,
+                "stream_max_listeners_per_address": cfg.stream.max_listeners_per_address,
                 "volume": float(p._state.volume),
                 "is_muted": bool(p._state.is_muted),
             },

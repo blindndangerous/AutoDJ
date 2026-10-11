@@ -453,6 +453,7 @@
     <button type="button" role="tab" id="stab-sound" data-subview="sound" data-panel="spanel-sound" aria-selected="false" tabindex="-1">Sound</button>
     <button type="button" role="tab" id="stab-display" data-subview="display" data-panel="spanel-display" aria-selected="false" tabindex="-1">Display and keys</button>
     <button type="button" role="tab" id="stab-liners" data-subview="liners" data-panel="spanel-liners" aria-selected="false" tabindex="-1">Voice liners</button>
+    <button type="button" role="tab" id="stab-schedule" data-subview="schedule" data-panel="spanel-schedule" aria-selected="false" tabindex="-1">Schedule</button>
     <button type="button" role="tab" id="stab-stream" data-subview="stream" data-panel="spanel-stream" aria-selected="false" tabindex="-1" hidden>Stream</button>
     <button type="button" role="tab" id="stab-access" data-subview="access" data-panel="spanel-access" aria-selected="false" tabindex="-1">Profiles and access</button>
   </div>
@@ -1129,6 +1130,104 @@
     </fieldset>
   </div>
 
+  <div class="card" role="tabpanel" id="spanel-schedule" aria-labelledby="stab-schedule" hidden>
+    <h3>Schedule</h3>
+    <!-- scheduler-panel.js fills this panel when it is seen, and again when
+         the server says the schedule changed or an event ran.  The lists
+         are plain text, not live regions: each result of a button is said
+         once through #schedule-status. -->
+    <p>Change the station at set times, in the station time zone: <span id="schedule-timezone"></span>.</p>
+    <div id="schedule-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+    <h4 id="schedule-upcoming-heading">Next events</h4>
+    <ul id="schedule-upcoming" aria-labelledby="schedule-upcoming-heading"></ul>
+    <h4 id="schedule-events-heading">Events</h4>
+    <ul id="schedule-events" aria-labelledby="schedule-events-heading"></ul>
+    <button type="button" id="schedule-add">Add event</button>
+    <!-- Add and Edit share this form.  It checks its own fields: an error
+         is said, the field gets aria-invalid and focus, and the words stay
+         in #schedule-form-error. -->
+    <form id="schedule-form" novalidate hidden>
+      <fieldset>
+        <legend id="schedule-form-legend">Add event</legend>
+        <p id="schedule-form-error" class="field-error" hidden></p>
+        <div class="settings-row">
+          <label for="schedule-name">Name</label>
+          <input type="text" id="schedule-name" maxlength="100" autocomplete="off" required>
+        </div>
+        <div class="settings-row">
+          <label for="schedule-action">Action</label>
+          <select id="schedule-action"></select>
+        </div>
+        <!-- The chosen action's settings, built from what the server lists. -->
+        <div id="schedule-params"></div>
+        <div class="settings-row">
+          <label for="schedule-repeat">Repeat</label>
+          <select id="schedule-repeat">
+            <option value="once">Once</option>
+            <option value="daily">Every day</option>
+            <option value="weekdays">Weekdays, Monday to Friday</option>
+            <option value="days">On chosen days</option>
+            <option value="interval">Every few minutes</option>
+          </select>
+        </div>
+        <!-- data-repeat lists the repeat choices each part belongs to. -->
+        <div class="settings-row" data-repeat="once">
+          <label for="schedule-date">Date</label>
+          <input type="date" id="schedule-date" required>
+        </div>
+        <div class="settings-row" data-repeat="once daily weekdays days">
+          <label for="schedule-time">Time</label>
+          <input type="time" id="schedule-time" required>
+        </div>
+        <fieldset id="schedule-days" data-repeat="days">
+          <legend>Days</legend>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-0" value="0"><label for="schedule-day-0">Monday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-1" value="1"><label for="schedule-day-1">Tuesday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-2" value="2"><label for="schedule-day-2">Wednesday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-3" value="3"><label for="schedule-day-3">Thursday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-4" value="4"><label for="schedule-day-4">Friday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-5" value="5"><label for="schedule-day-5">Saturday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-6" value="6"><label for="schedule-day-6">Sunday</label></div>
+        </fieldset>
+        <div data-repeat="interval">
+          <div class="settings-row">
+            <label for="schedule-interval">Minutes between runs</label>
+            <input type="number" id="schedule-interval" min="1" max="1440" step="1" required>
+          </div>
+          <div class="settings-row">
+            <label for="schedule-window-start">Active from</label>
+            <input type="time" id="schedule-window-start" aria-describedby="schedule-window-desc">
+          </div>
+          <div class="settings-row">
+            <label for="schedule-window-end">Active until</label>
+            <input type="time" id="schedule-window-end" aria-describedby="schedule-window-desc">
+          </div>
+          <span class="setting-desc" id="schedule-window-desc">
+            Optional.  Leave both empty to run all day.  The window may cross midnight, such as 22:00 until 02:00.
+          </span>
+        </div>
+        <div class="settings-row">
+          <label for="schedule-timing">Timing</label>
+          <select id="schedule-timing" aria-describedby="schedule-timing-desc">
+            <option value="soft">Soft</option>
+            <option value="hard">Hard</option>
+          </select>
+        </div>
+        <span class="setting-desc" id="schedule-timing-desc">
+          Soft waits for the current song to end.  Hard runs on time and, except for stream events, fades the current song out.
+        </span>
+        <div class="settings-check">
+          <input type="checkbox" id="schedule-enabled">
+          <label for="schedule-enabled">Enabled</label>
+        </div>
+        <button type="submit" id="schedule-save">Save event</button>
+        <button type="button" id="schedule-cancel">Cancel</button>
+      </fieldset>
+    </form>
+    <h4 id="schedule-runs-heading">Recent runs</h4>
+    <ul id="schedule-runs" aria-labelledby="schedule-runs-heading"></ul>
+  </div>
+
   <div class="card" role="tabpanel" id="spanel-stream" aria-labelledby="stab-stream" hidden>
     <h3>Stream</h3>
     <!-- Stream mode only (autodj serve --stream); stream-mode.js shows it
@@ -1151,7 +1250,6 @@
            text, not live. -->
       <p class="stream-detail" id="stream-loopback-note" hidden>This address only works on this computer. Open AutoDJ using its network address (see the start-up message) to copy a link for speakers.</p>
       <p class="stream-detail"><a id="stream-m3u" download="autodj.m3u">Download playlist file (.m3u)</a></p>
-      <p class="stream-detail" id="stream-listeners"></p>
       <!-- Relays to other servers ([stream.relays.<name>] in config.toml),
            filled by stream-mode.js.  Plain text, not live. -->
       <div id="stream-relays" hidden>
@@ -1185,6 +1283,79 @@
       <span class="setting-desc" id="stream-continuous-desc">
         Keep the station running even when nobody is listening. When off, it starts when a listener connects and stops after a short wait once the last listener leaves.
       </span>
+      <!-- The public now-playing feed and the webhooks from
+           config.local.toml; nowplaying-settings.js fills it.  Nested so
+           it shows, hides and hands focus away with the Stream settings.
+           The webhook list and its empty note are plain text, not live:
+           results of Copy, the show-next save and Send test go to the
+           status regions. -->
+      <fieldset id="np-settings">
+        <legend>Now-playing feed</legend>
+        <div class="settings-row">
+          <label for="np-url">Now-playing link</label>
+          <input type="text" id="np-url" readonly aria-describedby="np-url-desc">
+          <button type="button" id="np-copy">Copy now-playing link</button>
+        </div>
+        <span class="setting-desc" id="np-url-desc">
+          Public JSON for web pages, overlays and other services: the station name, the song playing, recent songs, the listener count, today's peak and the uptime. Anyone who can reach AutoDJ can read it without pairing. It never includes file paths.
+        </span>
+        <div class="settings-row">
+          <label for="np-status-url">Status page link</label>
+          <input type="text" id="np-status-url" readonly aria-describedby="np-status-url-desc">
+          <button type="button" id="np-status-copy">Copy status page link</button>
+        </div>
+        <span class="setting-desc" id="np-status-url-desc">
+          A public page for listeners with the same details as plain text, updated every 15 seconds. It needs no pairing.
+        </span>
+        <p class="stream-detail"><a id="np-status-open" href="/status" target="_blank" rel="noopener">Open the status page (new tab)</a></p>
+        <p class="stream-detail" id="np-loopback-note" hidden>These links only work on this computer. Open AutoDJ using its network address (see the start-up message) to copy links other devices can reach.</p>
+        <div class="settings-check">
+          <input type="checkbox" id="np-show-next" aria-describedby="np-show-next-desc">
+          <label for="np-show-next">Show the next song publicly</label>
+        </div>
+        <span class="setting-desc" id="np-show-next-desc">
+          Add the upcoming song to the now-playing feed. Off by default, because some webcasting licences, such as the US statutory licence, do not allow announcing songs in advance.
+        </span>
+        <p class="stream-detail" id="np-webhooks-intro">Track-change webhooks</p>
+        <ul class="stream-detail" id="np-webhooks-list" aria-labelledby="np-webhooks-intro" hidden></ul>
+        <p class="stream-detail" id="np-webhooks-empty" hidden></p>
+      </fieldset>
+      <section aria-labelledby="listener-control-title">
+        <h4 id="listener-control-title" tabindex="-1">Listeners</h4>
+        <p class="stream-detail" id="stream-listeners"></p>
+        <p id="listener-password-state">Listener password status not loaded.</p>
+        <p class="setting-desc">Set or clear listener_user and listener_password in config.local.toml, then restart AutoDJ. Some players cannot send credentials. HTTP sends the password in plain text.</p>
+        <div class="settings-row">
+          <label for="stream-per-address">Connections per address (0 for unlimited)</label>
+          <input id="stream-per-address" type="number" min="0" max="100" step="1">
+        </div>
+        <ul id="listener-control-list" aria-label="Connected listeners"></ul>
+        <p id="listener-control-empty" hidden>No listeners connected.</p>
+        <button type="button" id="listener-ban-new">Add address ban</button>
+        <form id="listener-ban-form" hidden>
+          <fieldset>
+            <legend>Ban a listener address</legend>
+            <label for="listener-ban-address">Address or CIDR</label>
+            <input id="listener-ban-address" required autocomplete="off">
+            <label for="listener-ban-duration">Duration</label>
+            <select id="listener-ban-duration">
+              <option value="60">1 hour</option>
+              <option value="1440">1 day</option>
+              <option value="10080">7 days</option>
+              <option value="">Until removed</option>
+            </select>
+            <label for="listener-ban-note">Note (optional)</label>
+            <input id="listener-ban-note" maxlength="200" autocomplete="off">
+            <button type="submit">Ban address</button>
+            <button type="button" id="listener-ban-cancel">Cancel</button>
+          </fieldset>
+        </form>
+      </section>
+      <section aria-labelledby="listener-bans-title">
+        <h4 id="listener-bans-title" tabindex="-1">Bans</h4>
+        <ul id="listener-ban-list" aria-label="Banned addresses"></ul>
+        <p id="listener-ban-empty" hidden>No bans.</p>
+      </section>
     </fieldset>
   </div>
 

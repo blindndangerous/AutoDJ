@@ -18,7 +18,7 @@ from pathlib import Path
 from types import MethodType
 from unittest.mock import MagicMock, PropertyMock
 
-from autodj.config import ServerConfig, StreamConfig
+from autodj.config import NowPlayingConfig, ServerConfig, StreamConfig
 from autodj.indexer import IndexEntry
 from autodj.repeat_settings import RepeatRule, RepeatSettings
 
@@ -97,6 +97,8 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
         allowed_origins=["http://testserver"],
     )
     cfg.stream = StreamConfig()
+    cfg.nowplaying = NowPlayingConfig()
+    cfg.webhooks = ()
     cfg.transitions.effect = "none"
     cfg.transitions.wet_mix = 1.0
     cfg.djmix.harmonic_mode = "off"
