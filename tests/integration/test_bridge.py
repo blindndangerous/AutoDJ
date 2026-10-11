@@ -8,6 +8,7 @@ import pytest
 
 from autodj.dj_meta import Cue, DjMeta
 from autodj.indexer import IndexEntry
+from autodj.repeat_settings import RepeatRule, RepeatSettings
 from autodj.server import PlaybackSettingsBody
 
 
@@ -289,29 +290,42 @@ class TestServerAudioUpNext:
         assert state.next_track is before
 
 
-def test_repeat_windows_resize_the_running_history(bridge) -> None:
+def test_repeat_windows_resize_the_running_history(bridge, tmp_path) -> None:
     """A window changed in Settings has to reach the picker without a restart."""
     from types import SimpleNamespace
 
     from autodj.player import PlayerState
 
     state = PlayerState(no_repeat_window=10, artist_repeat_window=3)
+    bridge.player._cfg.index.active_dir = tmp_path
     for i in range(5):
         state.record_played(_entry(path=f"/m/{i}.mp3", artist=f"Artist {i}"))
     bridge.player._state = state
     bridge.player._sim = SimpleNamespace(ntotal=100)
 
-    bridge.set_playback_settings(PlaybackSettingsBody(no_repeat_window=2, artist_repeat_window=1))
+    bridge.set_playback_settings(
+        PlaybackSettingsBody(
+            repeat_rules=RepeatSettings(
+                track=RepeatRule(tracks=2),
+                artist=RepeatRule(tracks=1),
+                album=RepeatRule(tracks=0),
+                title=RepeatRule(tracks=0),
+            )
+        )
+    )
 
     assert list(state.recently_played) == ["/m/3.mp3", "/m/4.mp3"]
     assert [record.artist for record in state.play_history] == ["Artist 4"]
     settings = bridge.get_settings()["playback"]
-    assert (settings["no_repeat_window"], settings["artist_repeat_window"]) == (2, 1)
+    assert settings["repeat_rules"]["track"]["tracks"] == 2
+    assert settings["repeat_rules"]["artist"]["tracks"] == 1
 
     # Larger than the library: the picker keeps a tenth of it unplayed.
-    bridge.set_playback_settings(PlaybackSettingsBody(no_repeat_window=500))
+    bridge.set_playback_settings(
+        PlaybackSettingsBody(repeat_rules=RepeatSettings(track=RepeatRule(tracks=500)))
+    )
     assert state.recently_played.maxlen == 90
-    assert bridge.get_settings()["playback"]["no_repeat_window"] == 500
+    assert bridge.get_settings()["playback"]["repeat_rules"]["track"]["tracks"] == 500
 
 
 def test_quiet_boost_setting_updates_and_reads_back(bridge) -> None:

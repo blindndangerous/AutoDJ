@@ -18,8 +18,15 @@ from pathlib import Path
 from types import MethodType
 from unittest.mock import MagicMock, PropertyMock
 
-from autodj.config import NowPlayingConfig, ServerConfig, StreamConfig
+from autodj.config import (
+    DmcaConfig,
+    NowPlayingConfig,
+    RecordingConfig,
+    ServerConfig,
+    StreamConfig,
+)
 from autodj.indexer import IndexEntry
+from autodj.repeat_settings import RepeatRule, RepeatSettings
 
 # Anything deriving a real filesystem path from a mocked config must point here.
 # Left as a MagicMock, ``index_dir`` stringifies into a literal "MagicMock/..."
@@ -97,6 +104,8 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     )
     cfg.stream = StreamConfig()
     cfg.nowplaying = NowPlayingConfig()
+    cfg.dmca = DmcaConfig()
+    cfg.recording = RecordingConfig(NO_INDEX_DIR / "recordings")
     cfg.webhooks = ()
     cfg.transitions.effect = "none"
     cfg.transitions.wet_mix = 1.0
@@ -111,6 +120,9 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     cfg.playback.crossfade_seconds = 3.0
     cfg.playback.pick_mode = "similarity"
     cfg.playback.loudness_processing = None
+    cfg.playback.intro_lift_max_db = 4.0
+    cfg.playback.stereotool_input_trim_db = 0.0
+    cfg.playback.stereotool_preset = "included"
     cfg.playback.fade_in_seconds = 3.0
     cfg.playback.crossfade_eq_duck = False
     cfg.playback.transition_mode = "full_intro_outro"
@@ -133,7 +145,10 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     cfg.playback.liners_random_max_minutes = None
     cfg.playback.liners_pick_mode = "random"
     cfg.playback.liners_duck_db = -12.0
-    cfg.index.active_dir = str(NO_INDEX_DIR)
+    cfg.playback.repeat_rules = RepeatSettings(
+        track=RepeatRule(tracks=500), artist=RepeatRule(tracks=3)
+    )
+    cfg.index.active_dir = NO_INDEX_DIR
     # create_app derives the paired-device registry from index_dir. Tests that
     # assert on pairing state inject their own DeviceRegistry instead.
     cfg.index.index_dir = NO_INDEX_DIR

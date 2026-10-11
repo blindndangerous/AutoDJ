@@ -6,8 +6,13 @@ that wrote it and the list of files) and these members:
 - ``index/index-manifest.json`` and the two generation files it names
   (``tracks.gN.db`` and ``vectors.gN.index``): the live index generation.
 - ``index/dj_meta.db``, ``index/library.db``, ``index/web_state.json``,
-  ``index/schedule.json``, ``index/carts.json`` and ``index/listener_bans.json`` from the active index folder.
+  ``index/related-artists.toml``, ``index/schedule.json``, ``index/carts.json``,
+  ``index/listener_bans.json`` and ``index/recording.json`` from the active index folder.
 - ``liners/...``, ``carts/...`` and ``profiles/...``: every file in those folders.
+- ``stereo-tool-presets/...``: the uploaded ``.sts`` presets.
+
+Broadcast recordings are archives, not station state: they can run to many
+gigabytes and a restore would replace the whole folder, so they stay out.
 """
 
 from __future__ import annotations
@@ -36,12 +41,14 @@ INDEX_FILES = (
     "dj_meta.db",
     "library.db",
     "web_state.json",
+    "related-artists.toml",
     "schedule.json",
     "carts.json",
     "listener_bans.json",
+    "recording.json",
     im.MANIFEST_NAME,
 )
-_FOLDERS = ("liners", "carts", "profiles")
+_FOLDERS = ("liners", "carts", "profiles", "stereo-tool-presets")
 
 
 class BackupError(RuntimeError):
@@ -56,6 +63,7 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
         "liners": Path(cfg.playback.liners_folder or active / "liners"),
         "carts": active / "carts",
         "profiles": active.parent / "profiles",
+        "stereo-tool-presets": active.parent / "stereo-tool-presets",
     }
 
 
@@ -90,6 +98,9 @@ def _snapshot_index(active: Path, snapshot: Path) -> None:
         ):
             source.backup(target)
         _check_sqlite(snapshot / name)
+    related_artists = active / "related-artists.toml"
+    if related_artists.is_file():
+        shutil.copyfile(related_artists, snapshot / related_artists.name)
 
 
 def _check_sqlite(path: Path) -> None:
@@ -132,14 +143,25 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
             members: dict[str, Path] = {}
             state_files = [
                 roots["index"] / name
-                for name in ("web_state.json", "schedule.json", "carts.json", "listener_bans.json")
+                for name in (
+                    "web_state.json",
+                    "schedule.json",
+                    "carts.json",
+                    "listener_bans.json",
+                    "recording.json",
+                )
             ]
             for path in [*sorted(snapshot.glob("*")), *state_files]:
                 if path.is_file():
                     members[f"index/{path.name}"] = path
             for top in _FOLDERS:
-                for path in sorted(roots[top].rglob("*")):
-                    if path.is_file():
+                paths = (
+                    roots[top].glob("*.sts")
+                    if top == "stereo-tool-presets"
+                    else roots[top].rglob("*")
+                )
+                for path in sorted(paths):
+                    if path.is_file() and (top != "stereo-tool-presets" or not path.is_symlink()):
                         members[f"{top}/{path.relative_to(roots[top]).as_posix()}"] = path
             with partial.open("xb") as handle:
                 with zipfile.ZipFile(handle, "w", zipfile.ZIP_DEFLATED) as archive:

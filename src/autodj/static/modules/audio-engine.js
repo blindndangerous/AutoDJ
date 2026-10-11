@@ -13,6 +13,7 @@
 
 import { dbg } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
+import { scheduleIntroGain } from "./intro-gain.js";
 import {
   captureAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
@@ -206,8 +207,8 @@ const audioElB = document.getElementById("browser-player-b");
 // require a user activation to construct an AudioContext).
 export let _ctx = null;
 export const decks = [
-  { audio: audioEl,  source: null, gain: null, path: null, busy: false },
-  { audio: audioElB, source: null, gain: null, path: null, busy: false },
+  { audio: audioEl,  source: null, gain: null, intro: null, liftDb: 0, path: null, busy: false },
+  { audio: audioElB, source: null, gain: null, intro: null, liftDb: 0, path: null, busy: false },
 ];
 export let activeIdx = 0;
 export let crossfading = false;
@@ -259,6 +260,10 @@ export function ensureAudioGraph() {
     d.gain.gain.value = 0;
     d.source.connect(d.gain);
     d.gain.connect(_program);
+    if (d.liftDb > 0) connectIntroGain(d);
+    for (const event of ["play", "pause", "seeked"]) {
+      d.audio.addEventListener(event, () => updateIntroGain(d));
+    }
     // Silent analyser tap — pulled only for silence detection.  Pre-gain
     // so we measure the actual track signal, not our crossfade ramp.
     d.analyser = _ctx.createAnalyser();
@@ -329,7 +334,34 @@ export function stopAllDecks() {
 export function setSrcOnDeck(deck, path) {
   if (deck.path === path) return;
   deck.path = path;
+  deck.liftDb = 0;
+  updateIntroGain(deck);
   deck.audio.src = "/api/audio?path=" + encodeURIComponent(path);
+}
+
+function updateIntroGain(deck) {
+  if (!deck.intro || !_ctx) return;
+  scheduleIntroGain(deck.intro.gain, _ctx.currentTime,
+    Number.isFinite(deck.audio.currentTime) ? deck.audio.currentTime : 0, deck.liftDb);
+}
+
+function connectIntroGain(deck) {
+  if (deck.intro || !_ctx) return;
+  deck.intro = _ctx.createGain();
+  deck.intro.gain.value = 1;
+  deck.gain.disconnect();
+  deck.gain.connect(deck.intro);
+  deck.intro.connect(_program);
+  updateIntroGain(deck);
+}
+
+function setDeckIntro(deck, track) {
+  if (!track || deck.path !== track.path) return;
+  const lift = Number.isFinite(track.intro_lift_db) ? Math.max(0, track.intro_lift_db) : 0;
+  if (deck.liftDb === lift) return;
+  deck.liftDb = lift;
+  if (lift > 0) connectIntroGain(deck);
+  updateIntroGain(deck);
 }
 
 function playOnDeck(deck) {
@@ -2035,6 +2067,10 @@ export function startCrossfade(nextPath, fadeSec, serverLed = false, phraseAt = 
   const standby = deckStandby();
   let cleanupMetadata = () => {};
   setSrcOnDeck(standby, nextPath);
+  // The cached lift belongs to the announced next track; any other song
+  // (a skip to a different pick) starts unlifted until the server says.
+  setDeckIntro(standby, { path: nextPath,
+    intro_lift_db: nextPath === _nextTrackPathCache ? _nextTrackLiftCache : 0 });
   standby.gain.gain.setValueAtTime(0, _ctx.currentTime);
   // Mixxx-style leading-silence skip — when the server has reported
   // intro_start_s (the first sound) for the next track and the user has
@@ -2367,6 +2403,7 @@ export let _currentOutroStartCache = null;   // active deck's outro_start_s
 export let _nextTrackIntroEndCache = null;   // incoming track's intro_end_s
 export let _nextTrackIntroStartCache = null; // incoming track's intro_start_s
 export let _nextTrackPathCache = null;
+let _nextTrackLiftCache = 0;
 let _transitionMode = "full_intro_outro";
 let _prefetchEnabled = true;
 let _silenceTriggerEnabled = true;
@@ -2601,6 +2638,7 @@ export async function unlockAndPlay(beforePlay = null) {
   }
   const deck = deckActive();
   setSrcOnDeck(deck, path);
+  setDeckIntro(deck, state.current_track);
   let started = true;
   try {
     await deck.audio.play();
@@ -2640,6 +2678,11 @@ export function applyBrowserPlaybackState(s) {
     typeof s.settings.playback.fade_in_seconds === "number")
     ? s.settings.playback.fade_in_seconds : 3.0;
   _nextTrackPathCache = s.next_track ? s.next_track.path : null;
+  _nextTrackLiftCache = s.next_track?.intro_lift_db || 0;
+  for (const deck of decks) {
+    setDeckIntro(deck, s.current_track);
+    setDeckIntro(deck, s.next_track);
+  }
   _lastTransitionFx = (s.settings && s.settings.transition) || "none";
   _noteFxPlan(s);
   _transitionMode = (s.settings && s.settings.playback &&
@@ -2731,6 +2774,7 @@ export function applyBrowserPlaybackState(s) {
       const standby = deckStandby();
       if (standby.path !== _nextTrackPathCache) {
         setSrcOnDeck(standby, _nextTrackPathCache);
+        setDeckIntro(standby, s.next_track);
         // Force the browser to start buffering NOW (preload="metadata"
         // alone won't fetch audio bytes until play()).  We can't actually
         // play() the standby — it'd be audible — but loading the source
@@ -2833,6 +2877,7 @@ export function resetTransitionCaches() {
   _nextTrackIntroEndCache  = null;
   _nextTrackIntroStartCache = null;
   _nextTrackPathCache      = null;
+  _nextTrackLiftCache = 0;
   _fxPlan = null;
   _prevFxPlan = null;
 }

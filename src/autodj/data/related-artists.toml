@@ -1,0 +1,31 @@
+# These links are one-way: a recent Bruno Mars track holds back Silk Sonic,
+# while a recent Silk Sonic track holds back Bruno Mars only because the
+# reverse link is listed too. Links are not followed transitively.
+# Add a band name to single_acts when its artist credit should never split.
+single_acts = []
+
+[related]
+"Bruno Mars" = ["Silk Sonic"]
+"Anderson .Paak" = ["Silk Sonic", "NxWorries"]
+"Silk Sonic" = ["Bruno Mars", "Anderson .Paak"]
+"NxWorries" = ["Anderson .Paak"]
+"Donald Glover" = ["Childish Gambino"]
+"Childish Gambino" = ["Donald Glover"]
+"Danger Mouse" = ["Gnarls Barkley", "Broken Bells"]
+"CeeLo Green" = ["Gnarls Barkley"]
+"Gnarls Barkley" = ["CeeLo Green", "Danger Mouse"]
+"Killer Mike" = ["Run the Jewels"]
+"El-P" = ["Run the Jewels"]
+"Run the Jewels" = ["Killer Mike", "El-P"]
+"MF DOOM" = ["Madvillain", "DANGERDOOM"]
+"Madlib" = ["Madvillain"]
+"Madvillain" = ["MF DOOM", "Madlib"]
+"Damon Albarn" = ["Gorillaz", "Blur"]
+"Gorillaz" = ["Damon Albarn"]
+"Jack White" = ["The White Stripes", "The Raconteurs", "The Dead Weather"]
+"The White Stripes" = ["Jack White"]
+"Thom Yorke" = ["Radiohead", "Atoms for Peace", "The Smile"]
+"Justin Vernon" = ["Bon Iver"]
+"Bon Iver" = ["Justin Vernon"]
+"Aphex Twin" = ["AFX", "Polygon Window"]
+"AFX" = ["Aphex Twin"]

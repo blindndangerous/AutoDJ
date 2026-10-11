@@ -244,9 +244,11 @@
     }
     /* .is-pending: a focused button busy with a request keeps focus and
        stays enabled (see withDisabled in modules/api-client.js) but must
-       look busy.  aria-disabled is the history pager's Prev / Next. */
+       look busy.  aria-disabled is the history pager's Prev / Next, and
+       the show-next box in DMCA mode. */
     button:disabled,
     button[aria-disabled="true"],
+    input[type="checkbox"][aria-disabled="true"],
     button.is-pending {
       opacity: 0.45;
       cursor: not-allowed;
@@ -713,6 +715,8 @@
     body:has(#dj-filter-sweep:not(:checked)) [data-show-when="dj-filter-sweep"],
     body:has(#pb-eq-duck:not(:checked)) [data-show-when="pb-eq-duck"],
     body:not(:has(#pb-replaygain option[value="replaygain"]:checked)) [data-show-when="pb-replaygain=replaygain"],
+    body:not(:has(#pb-replaygain option[value="stereotool"]:checked)) [data-show-when="pb-replaygain=stereotool"],
+    body:has(#pb-replaygain option[value="off"]:checked) [data-show-when="pb-replaygain!=off"],
     body:not(:has(#pb-pick-mode option[value="similarity"]:checked)) [data-show-when="pb-pick-mode=similarity"],
     body:has(#key-notation option[value="musical"]:not(:checked)) [data-show-when="key-notation=musical"],
     body:has(#disc-enabled:not(:checked)) [data-show-when="disc-enabled"],

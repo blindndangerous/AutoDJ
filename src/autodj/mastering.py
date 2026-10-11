@@ -16,6 +16,7 @@ import numpy as np
 from autodj.config import DEFAULT_STEREOTOOL_PATH
 from autodj.processing import MASTER_FILTER
 from autodj.stereo import SAMPLE_RATE
+from autodj.stereotool_presets import INCLUDED_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,11 @@ def _creation_flags() -> int:
     return getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
-def _command(mode: str = "smooth", stereotool_path: str = DEFAULT_STEREOTOOL_PATH) -> list[str]:
+def _command(
+    mode: str = "smooth",
+    stereotool_path: str = DEFAULT_STEREOTOOL_PATH,
+    preset: Path | None = None,
+) -> list[str]:
     if mode == "stereotool":
         return [
             stereotool_path,
@@ -61,7 +66,7 @@ def _command(mode: str = "smooth", stereotool_path: str = DEFAULT_STEREOTOOL_PAT
             "-r",
             str(SAMPLE_RATE),
             "-s",
-            str(Path(__file__).with_name("presets") / "stereo-tool-free.sts"),
+            str(preset or INCLUDED_PATH),
             "-l",
             "1024",
             "-q",
@@ -110,11 +115,16 @@ class ContinuousMaster:
         popen_factory: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
         mode: Callable[[], str] = lambda: "smooth",
         stereotool_path: str = DEFAULT_STEREOTOOL_PATH,
+        preset: Callable[[], Path] | None = None,
+        input_trim_db: Callable[[], float] = lambda: 0.0,
     ) -> None:
         self._factory = popen_factory
         self._select_mode = mode
         self._mode = mode()
         self._stereotool_path = stereotool_path
+        self._select_preset = preset or (lambda: INCLUDED_PATH)
+        self._preset = self._select_preset() if self._mode == "stereotool" else None
+        self._input_trim_db = input_trim_db
         self._output_guard_blocks = (
             _STEREOTOOL_GUARD_BLOCKS if self._mode == "stereotool" else _OUTPUT_GUARD_BLOCKS
         )
@@ -172,11 +182,14 @@ class ContinuousMaster:
 
         audio = np.nan_to_num(audio, copy=False)
         mode = self._select_mode()
+        preset = self._select_preset() if mode == "stereotool" else None
         with self._lock:
             if self._closed:
                 return self._fallback(audio)
-            if not self._enabled or mode != self._mode:
+            if not self._enabled or mode != self._mode or preset != self._preset:
                 self._switch(True, mode)
+            if mode == "stereotool":
+                audio = audio * (10 ** (self._input_trim_db() / 20))
             audio = np.ascontiguousarray(audio)
             self._fallback_delay.append(audio.copy())
             if self._failed:
@@ -227,6 +240,7 @@ class ContinuousMaster:
         self._enabled = enabled
         if mode is not None:
             self._mode = mode
+            self._preset = self._select_preset() if mode == "stereotool" else None
         self._output_guard_blocks = (
             _STEREOTOOL_GUARD_BLOCKS if self._mode == "stereotool" else _OUTPUT_GUARD_BLOCKS
         )
@@ -272,6 +286,7 @@ class ContinuousMaster:
                 enabled = self._enabled
                 generation = self._generation
                 mode = self._mode
+                preset = self._preset
             name = "Stereo Tool" if mode == "stereotool" else "FFmpeg"
             if closed:
                 self._stop_pipeline(proc, writer, reader, stop, post_proc)
@@ -288,9 +303,16 @@ class ContinuousMaster:
             if proc is None or generation != active_generation:
                 if proc is not None:
                     self._stop_pipeline(proc, writer, reader, stop, post_proc)
+                if mode == "stereotool" and preset is not None and not preset.is_file():
+                    # A preset deleted or renamed outside AutoDJ must not leave
+                    # Stereo Tool on its unprocessed defaults.
+                    logger.warning(
+                        "Stereo Tool preset %s is missing; using the included one", preset
+                    )
+                    preset = INCLUDED_PATH
                 try:
                     proc = self._factory(  # nosec B603 -- configured executable, fixed argv, no shell
-                        _command(mode, self._stereotool_path),
+                        _command(mode, self._stereotool_path, preset),
                         stdin=subprocess.PIPE,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.DEVNULL,

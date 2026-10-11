@@ -19,6 +19,7 @@ uploaded to a cloud service.
   duck, over or replace playback modes.
 - A scheduler that switches profiles, presets or the clockwheel, plays liners, starts or stops the
   stream and turns discovery on or off at set times.
+- Broadcast recording to dated MP3 files, with hourly or show splits, scheduled controls and retention.
 - Lyrics from sidecar files or tags, with scrolling and highlighting when timestamps are available.
 - Offline use after installing dependencies and downloading the model. The first indexing run
   downloads model weights from Hugging Face unless you provide a local checkpoint.
@@ -129,6 +130,12 @@ The public `/api/nowplaying` JSON feed lets pages show the station's current son
 recent plays and listener count, and the public `/status` page shows the same to listeners as plain text. The upcoming song is hidden unless you turn on `[nowplaying] show_next`. Track-change
 webhooks can send the same metadata to other services or Discord; configure their URLs in
 `config.local.toml`. See [Operations](docs/operations.md#now-playing-feed-and-webhooks).
+
+DMCA mode (`[dmca] enabled = true`) keeps the station inside the US statutory webcasting
+licence's performance complement: album, artist and box set limits in any three hours, in every
+pick mode, with a warning to confirm before you queue a song that breaks one. Public pages never
+show the next song in this mode. See [DMCA mode](docs/operations.md#dmca-mode). This is general
+information, not legal advice.
 
 ### Relay to Icecast or Shoutcast
 
@@ -254,7 +261,7 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Six tabs:
   - **Transitions**: the transition mode, crossfade and fade-in length, EQ ducking and its cutoff, the transition effect and its level, and how Skip ends a track.
   - **DJ mixing**: beatmatching with its stretch limit and glide back, drop mixing, key shift, phrase and outro alignment, keeping vocals apart, and the filter sweep with its floor.
   - **Song picking**: preset, pick mode, how widely similarity picks spread, harmonic mixing, repeat windows, BPM range and discovery.
-  - **Sound**: output processing, Boost quiet sections for Smooth and Stereo Tool (9 dB by default), the ReplayGain target and peak limit, the browser's audio output device, early loading of the next song and the crossfade on silence.
+  - **Sound**: output processing, upload and select Stereo Tool presets, Stereo Tool input trim, Boost quiet sections, a peak-safe quiet intro lift, the ReplayGain target and peak limit, the browser's audio output device, early loading of the next song and the crossfade on silence.
   - **Display and keys**: lyrics, key notation, announcements and keyboard shortcuts.
   - **Voice liners**.
   - **Schedule**: timed events, the next few runs, and recent results.
@@ -428,14 +435,23 @@ beets_db  = "/home/me/.config/beets/library.db"   # optional
 crossfade_seconds       = 5
 crossfade_eq_duck       = true
 discovery_every         = 8        # pick a sonically distant track once per 8 songs
-no_repeat_window        = 500
-artist_repeat_minutes   = 60       # no artist twice within an hour
-related_artists_starter = true     # Bruno Mars also holds back Silk Sonic, and so on
 show_lyrics             = true
 beat_sync_fx            = true
 key_sync_fx             = true
 transition_mode         = "full_intro_outro"
 ```
+
+Set repeat limits in **Settings > Picking > Repeats**. Artist, album, track and title
+have separate Tracks and Minutes boxes. Zero turns off a limit; when both are set,
+both must be satisfied before a repeat is allowed. Save applies the rules to future
+picks and remembers them across restarts. Old repeat keys in `config.toml` or
+`web_state.json` are rejected. Remove them by hand and re-enter limits in
+**Settings > Picking > Repeats**.
+
+**Use related artists** applies the artist limit to the links in your editable TOML file.
+The page shows its fixed location, `index/<name>/related-artists.toml`. AutoDJ copies
+a sample there on first use and leaves your edits alone on upgrades. After editing the
+file, save the repeat settings to reload it. See [repeat rules](docs/track-selection.md#repeat-avoidance-and-discovery).
 
 ### Multi-machine / NAS setups
 

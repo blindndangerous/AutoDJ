@@ -16,8 +16,14 @@ AutoDJ is a single-user local music player with these exposed surfaces:
 - LAN mode requires either an access token or explicit `--insecure-lan`, plus exact Host and Origin
   allowlists. `AUTODJ_ACCESS_TOKEN` is supported for secret injection. `serve --lan` fills in
   both allowlists and the token automatically; see "Automatic LAN mode" below.
-- Backup and restore trust the configured index, liners and profiles locations. Restore
+- Backup and restore trust the configured index, liners, profiles and Stereo Tool preset
+  locations. Restore
   checks member names and the AutoDJ version before it replaces anything.
+- Broadcast recordings contain listener-facing encoded audio only. The recording folder is
+  chosen in `config.toml` or `config.local.toml` and is never accepted as an API parameter or
+  sent to the browser.
+  Recording status and controls are paired routes; the public stream cannot control recording.
+  Backups include the recording settings and running state, not the recorded files.
 
 Cloud sync, multi-user roles, billing, and public Internet hosting are out of scope. Use TLS for any
 network where observers could read HTTP traffic, and terminate it in AutoDJ itself with
@@ -127,6 +133,10 @@ The liner *root directory* comes only from configuration. `/api/playback-setting
 `liners_folder`, like any other unknown field, with 422 before applying anything.
 `web_state.json` keeps only fields a settings route accepts, and on restart each saved value
 must pass that route's field rule, so the file can neither store nor restore `liners_folder`.
+`repeat_rules.related_artists_file` is also rejected by the API and saved state. The only
+related-artists file the browser can enable is `related-artists.toml` in the active index folder.
+AutoDJ checks its size before reading and refuses files larger than 1 MiB. Browser errors do
+not include artist names or unexpected top-level keys from that file.
 Treat a paired browser as trusted.
 
 The cart wall routes under `/api/carts` require a paired browser like every other `/api` route.
@@ -136,6 +146,23 @@ the `carts` folder in the active index folder, with the voice liner size cap and
 are never overwritten, and are deleted again if they do not decode. `carts.json` is validated
 when the server starts, and a file that fails is set aside. Backups include the wall and the
 uploads. A paired browser can play carts into the server audio or stream output.
+
+`/api/stereo-tool-presets` lists, uploads (`/upload`) and deletes (`DELETE /{name}`) Stereo Tool
+presets, under the same session, Host and Origin policy as every other `/api` route. Uploads go
+only to the `stereo-tool-presets` folder beside the active index folder. A name must be one plain
+filename ending in `.sts`, at most 100 characters of letters, digits, spaces, dots, hyphens and
+underscores, starting with a letter or digit, so it carries no separator, drive, colon or `..`;
+Windows device names such as `CON.sts` or `COM0.sts` are refused. The body is capped at 2 MB
+before the route reads it, and the file must contain no NUL byte, a `[section]` line and a
+`key=value` line. These checks only screen out files that are plainly not presets: Stereo Tool
+itself parses the contents, so a paired browser can hand that parser any text up to 2 MB. An
+upload is written to a hidden `.<random>.part` file, flushed, then hard-linked to its final
+name, so it never replaces an existing preset; that name answers 409. The bundled preset lives
+in the package, is addressed only as `included`, and cannot be uploaded over or deleted. Delete
+takes the same name check, refuses symbolic links and refuses the preset Stereo Tool is set to
+use, whatever its letter case. Selecting a preset in `/api/playback-settings` requires an
+existing file; a preset removed outside AutoDJ is replaced by the included one when Stereo Tool
+next starts.
 
 `GET /api/history/export` returns the play log for a date range: titles, artists, albums, ISRC
 and label tags, file paths inside the music folders and performance counts. Like every other `/api`
@@ -318,17 +345,19 @@ This is the only place AutoDJ holds a credential for another system:
 ## Backup and restore boundary
 
 A backup is a plain ZIP file: the published index generation, `dj_meta.db`, `web_state.json`,
-the liners and profiles folders, and a `manifest.json` naming the
+the liners, profiles and uploaded Stereo Tool preset folders, and a `manifest.json` naming the
 AutoDJ version and the files. It is safe to make while AutoDJ serves: the index is copied under
 its publication lock and `dj_meta.db` through SQLite's backup API. The archive is written to a
-temporary file and renamed into place, and it may not be written inside the liners or profiles
-folder.
+temporary file and renamed into place, and it may not be written inside the liners, profiles or
+uploaded preset folder.
 
 Restore requires a backup from the same major and minor version. It refuses member names that
 are absolute, contain `..`, backslashes or drive letters, or fall outside the known index files,
-liners and profiles, and it refuses an archive whose files differ from its manifest.
+liners, profiles and uploaded Stereo Tool presets, and it refuses an archive whose files differ
+from its manifest.
 Every file is unpacked beside its destination and the index is checked before anything is
-replaced. Restored liners and profiles folders replace the current ones whole. The index files
+replaced. Restored liners, profiles and uploaded preset folders replace the current ones whole.
+The index files
 are checked against the SHA-256 digests in their manifest; other files have no digests, and there
 are no free-space checks or rollback: an interrupted restore is run again. The operator must
 stop AutoDJ first, because restore cannot tell whether it runs. Filesystem locations remain

@@ -453,6 +453,84 @@ The radio stream link (`/stream.mp3`) works at home. Through the tunnel it is be
 Access too, so players that cannot log in, such as Sonos, cannot use it from outside.
 On the local network, anyone who can reach AutoDJ can listen without pairing.
 
+## DMCA mode
+
+DMCA mode keeps the station's programming inside the performance complement
+of the US statutory webcasting licence (section 114, reported to
+SoundExchange). This is general information, not legal advice: you remain
+responsible for your licence and your reports.
+
+Turn it on in `config.toml` and restart AutoDJ:
+
+```toml
+[dmca]
+enabled = true
+```
+
+### The limits
+
+In any three hours of actual plays, counting the song about to play:
+
+- at most 3 songs from one album, and at most 2 of them in a row;
+- at most 4 songs by one artist, and at most 3 of them in a row;
+- at most 4 songs from one box set or compilation, and at most 3 of them in a row.
+
+"Actual plays" are the song starts AutoDJ records, including plays from before
+a restart, which it reads back from the play log. A song skipped after a few
+seconds still counts.
+
+Artists are split the way the repeat rules split them, so every artist a credit
+names counts, featured artists included: "Mark Ronson feat. Bruno Mars", or a
+title with "(feat. Bruno Mars)", counts as a play by both. Album names are
+compared the way the repeat rules compare them (case, accents and punctuation
+ignored), so two artists' albums with the same name count as one album. That is
+stricter than the licence, never looser.
+
+A box set or compilation is recognised from its album names: albums whose
+names end in a disc or volume number, such as "Woodstock (Disc 2)", "Hits CD1",
+"Anthology Vol. 3" or "Box (Disc 1 of 4)", count as one set. AutoDJ's index has
+no album-artist or compilation tag, and a one-disc compilation needs none: it is
+one album, and the album limit is the stricter one. A box set whose discs all
+carry the same album name counts as one album, again the stricter limit.
+
+### Where the limits apply
+
+- Every pick mode: similar songs, discovery, random, least recently played and
+  the clockwheel, including clock slots that do not enforce the repeat rules,
+  and the first song of each set.
+- When nothing the pick mode would choose keeps every limit, AutoDJ looks
+  further rather than break one. It plays a song that keeps every limit from
+  anywhere in the library, preferring one the repeat rules allow, then one not
+  played recently, then any other (not the song playing or about to). The log
+  says which song would have broken which limit and what plays instead.
+- Only when no song in the whole library keeps every limit (a very small
+  library) does AutoDJ break one: it plays a song that breaks the fewest limits,
+  and logs a warning naming each one. The music never stops.
+- Songs you queue from Search or Library: Play now, Play next and Add to queue
+  check the limits at the time the song is expected to start, worked out from
+  the lengths of the song playing and the songs queued before it. If the song
+  would break a limit, nothing is queued; a dialog names the limit in words and
+  offers **Queue anyway** (or **Play anyway**) and **Cancel**. Choosing Queue
+  anyway queues it and logs a warning; Cancel leaves the queue as it was. The
+  result is spoken either way. The expected start is an estimate: crossfades and
+  skips move it, so near a three-hour boundary, check again before relying on it.
+  A queued song plays even if it breaks a limit when it starts, and the log
+  says so.
+
+### Public pages
+
+The public now-playing feed (`/api/nowplaying`), the `/status` page and the
+track-change webhooks never include the next song in DMCA mode, whatever
+`[nowplaying] show_next` says. In Settings, Stream, the "Show the next song
+publicly" box stays in the tab order but is unavailable, with the reason read
+as its description, and a line under the feed links says DMCA mode is on. The
+song playing is shown while it plays: the feed gives its artist, title and
+album, and the stream's ICY title its artist and title.
+
+`autodj doctor` has a `dmca` check. With DMCA mode on, it warns about any
+setting that conflicts with it and says how to fix it: today that is
+`[nowplaying] show_next = true`.
+
 ## Now-playing feed and webhooks
 
 `GET /api/nowplaying` is public and needs no paired browser. It accepts GET and HEAD, sends
@@ -488,7 +566,8 @@ working, since no field was removed or renamed.
 The feed never contains local file paths, internal IDs, credentials or pairing state.
 `next_track` is `null` unless `[nowplaying] show_next = true` or **Show the next song
 publicly** is ticked in Settings, Stream. It is off by default because some webcasting
-licences, such as the US statutory licence, forbid announcing specific songs in advance.
+licences, such as the US statutory licence, forbid announcing specific songs in advance, and
+it is always `null` in [DMCA mode](#dmca-mode).
 `history_limit` defaults to 5 and accepts 0 through 20.
 
 Put webhook URLs in `config.local.toml` only. Each `[[webhooks]]` table accepts an HTTP or
@@ -538,7 +617,8 @@ In stream mode, **Settings, Stream** has a **Now-playing feed** group:
 - **Status page link** shows the address of `/status`, with **Copy status page link** and an
   **Open the status page (new tab)** link.
 - **Show the next song publicly** turns `show_next` on or off and is saved like the other
-  stream settings. Outside stream mode, set `[nowplaying] show_next` in `config.toml`.
+  stream settings. Outside stream mode, set `[nowplaying] show_next` in `config.toml`. In
+  [DMCA mode](#dmca-mode) it is unavailable, and says why.
 - **Track-change webhooks** lists each destination by number, host, format and last delivery
   result (Not sent, Delivered or Delivery failed). Its **Send test** button sends the current
   snapshot once and says whether it was delivered. With no webhooks configured, the group says so
@@ -658,6 +738,19 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
 - **Seek** is not available while streaming. The seek slider is hidden on the page, and the comma
   and full-stop keyboard shortcuts announce "Seeking is not available while streaming."
 - **EQ** is applied once, on the server, so every listener hears the same shaped sound.
+- **Sound processing** is chosen in Settings, Sound. Stereo Tool loads the selected `.sts` preset
+  when its processor starts; changing the preset restarts it. The bundled Included preset is
+  read-only. Uploads (up to 2 MB) live in `index/stereo-tool-presets` beside the active index
+  folder and survive restarts. Deleting the active upload in Settings switches to Included
+  first; a preset file removed by hand is replaced by Included when Stereo Tool next starts. Stereo Tool's
+  command-line integration exposes a preset file, but no individual processor parameters.
+  `[playback] stereotool_input_trim_db` adjusts the input from -12 to +6 dB before the fixed
+  output limiter. `[playback] quiet_boost_db` (0 to 12) controls offline quiet-section balancing.
+  `[playback] intro_lift_max_db` (0 to 6, default 4) caps an extra lift for a quiet opening;
+  it fades back to normal by eight seconds. Zero disables it. Analysis caches the source's
+  peak-safe opening lift in `library.db`; already cataloged songs get it on their next library scan.
+  Browser playback, server audio and streams use the same cached lift, with decoded server audio
+  checked against its peak again. Off processing leaves the source unchanged.
 - **Page volume and mute** affect only the page's own "Listen here" playback in the browser.
   Each speaker keeps its own volume, set on the speaker or in its own app.
 - **With `--server-audio` as well**, the page's volume and Mute also set the volume and mute of
@@ -767,6 +860,46 @@ relay changes state).
 The password crosses the network to the server as the protocol requires: in an HTTP Basic
 login for Icecast, and as plain text for Shoutcast, including in title updates. AutoDJ does
 not use TLS for relays, so use a host you trust on networks you trust. See the threat model.
+
+### Recording the broadcast
+
+Recording needs `serve --stream`. It saves the encoded MP3 that listeners receive, including
+liners and output processing. Starting a recording keeps the station playing without listeners.
+Set `[recording] folder` in `config.toml`, or in `config.local.toml` for a path on this
+machine only. The browser and the API can neither change nor see the folder.
+The default is `recordings`. Files use the station time zone and names such as
+`AutoDJ-2026-10-11_13-00-00.mp3`. The station name is reduced to safe filename characters.
+
+In Settings, Stream, Broadcast recording, the **Record broadcast** toggle button starts and
+stops recording (screen readers say whether it is pressed), and **Split recording now** starts
+a new file. Under **Start a new file**, **Every clock hour** (`split = "hour"`) splits at
+each clock hour, and **For each show** (`split = "show"`) splits when the operator presses
+Split, when a scheduled Start or Split recording event runs, or when a profile is applied.
+The scheduler also has Stop recording. A new encoder, such as after a bitrate change, starts
+a new file.
+The running choice survives a server restart; a new dated file begins when audio resumes.
+
+`[recording] retention_days = 0` keeps files forever. A positive value deletes only dated
+MP3 files in the configured folder whose modification time is older than that many days.
+Cleanup runs in the recorder worker about once an hour. Set `free_space_mb` to the minimum
+free space that must remain on the recording volume. The defaults are 0 days and 100 MB.
+The `config.toml` values apply until you save recording settings in the web page. From then on
+the saved split, retention and free space, and whether recording was running, live in the
+index's `recording.json` and win over `config.toml`. Backups include `recording.json` but not
+the recorded MP3 files; archive the recordings folder yourself. A damaged `recording.json` is
+renamed with a `.bad` suffix and recording starts stopped with the `config.toml` settings.
+
+If disk space drops below the floor, a write fails, or the recorder queue fills, recording
+pauses and reports the error in Settings and the server log. The stream keeps playing.
+The writer tries a new file when space and audio return; audio missed during the failure is
+not backfilled. A failed file may be incomplete.
+
+For command-line automation, use the paired HTTP API against the running server:
+`GET /api/recording` reports status, while `POST /api/recording/start`,
+`POST /api/recording/stop` and `POST /api/recording/split` control it. The requests require
+the same paired session cookie as the web UI when LAN authentication is enabled. There is
+no separate `autodj record` CLI command because the existing CLI has no authenticated
+client for a running server.
 
 ### Troubleshooting
 
@@ -1060,6 +1193,14 @@ Royalties for the compositions (the songs as written) are separate from SoundExc
 they are licensed through ASCAP, BMI, SESAC and GMR, each with its own reporting. Outside the US
 the rules and the collecting societies are different.
 
+## Repeat settings
+
+Repeat limits are edited in Settings > Picking > Repeats and stored in
+`web_state.json`. Old repeat keys in `config.toml` or `web_state.json` are
+rejected; remove them by hand and re-enter limits in that panel. The related
+artists file is `index/<name>/related-artists.toml` and is read only when
+**Use related artists** is enabled. It must be at most 1 MiB.
+
 ## Backup
 
 `autodj backup` writes one ZIP file holding:
@@ -1068,10 +1209,13 @@ the rules and the collecting societies are different.
   `vectors.g<number>.index` files it names.
 - `dj_meta.db`, the intro, outro, beat grid and cue cache.
 - `web_state.json`, the settings chosen in the web page.
+- `related-artists.toml` in the active index folder.
+- `recording.json`, the broadcast recording settings and whether it was running. The recorded
+  MP3 files are not included; archive the recordings folder yourself.
 - `library.db`, the station's registered folders, track data and cues, last-played times and
   complete play history.
 - Every file in the liners folder (`[playback] liners_folder`, or `index/<name>/liners`) and in
-  `index/profiles`.
+  `index/profiles`, plus uploaded presets in `index/stereo-tool-presets`.
 - `manifest.json`, which records the AutoDJ version that made the archive and lists its files.
 
 Backups do not include `config.toml` or `config.local.toml`. Copy those yourself
@@ -1219,6 +1363,9 @@ jumps; when a time happens twice, the event runs the first time only.
 Actions:
 
 - Switch to a saved profile or a preset.
+- Switch the Stereo Tool preset, to Included or an uploaded one. It takes effect when Output
+  processing is Stereo Tool, restarts the processor at once and never skips the song playing. A
+  preset deleted after the event was saved makes its runs fail in words.
 - Change song picking, for example to the clockwheel imported in Library tools.
 - Play a voice liner or station ID. This needs server audio or stream mode.
 - Play a cart by page and cart number, with its saved duck, over or replace mode. This needs
@@ -1231,7 +1378,8 @@ Actions:
 Timing is soft or hard. A soft event waits for the current song to end; with nothing playing it
 runs at once. A hard event runs at its time and fades out the current song through the normal
 skip: after the change for profile, preset, song picking and discovery events, so the next song
-follows it, and before the liner for liner events. Stream events never skip.
+follows it, and before the liner for liner events. Stream and Stereo Tool preset events never
+skip.
 
 **Run now** runs an event's action at once, to test it. Each run, failure and missed event goes
 to the server log and to **Recent runs**, which keeps the last 200.

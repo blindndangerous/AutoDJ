@@ -11,6 +11,10 @@
 //     here asks for more.
 //   - Failures are said in words with the error tone.  A 401 already
 //     opened the sign-in dialog, so it says nothing more.
+//   - DMCA mode (set in config.toml) shows a plain-text status line and
+//     keeps the show-next box focusable but aria-disabled, its reason
+//     added to the box's description.  Pressing it says the reason and
+//     leaves it unticked: listeners never get the next song in that mode.
 
 import { announceStatus } from "./live-region.js";
 import { saveHolds } from "./settings-panel.js";
@@ -90,6 +94,8 @@ export function installNowPlayingSettings({
   const statusCopy = doc.getElementById("np-status-copy");
   const loopbackNote = doc.getElementById("np-loopback-note");
   const showNext = doc.getElementById("np-show-next");
+  const dmcaStatus = doc.getElementById("dmca-status");
+  const dmcaReason = doc.getElementById("np-show-next-dmca");
   const list = doc.getElementById("np-webhooks-list");
   const empty = doc.getElementById("np-webhooks-empty");
   if (!link || !copy || !showNext || !list || !empty) return null;
@@ -232,6 +238,32 @@ export function installNowPlayingSettings({
   installCopy(copy, link, COPIED_TEXT, COPY_FAILED_TEXT);
   if (statusLink) installCopy(statusCopy, statusLink, STATUS_COPIED_TEXT, STATUS_COPY_FAILED_TEXT);
 
+  function dmcaLocked() {
+    return showNext.getAttribute("aria-disabled") === "true";
+  }
+
+  // Before the change: a prevented click leaves the box as it was.
+  showNext.addEventListener("click", (event) => {
+    if (!dmcaLocked()) return;
+    event.preventDefault();
+    say(settingsStatus, dmcaReason?.textContent.trim() || "DMCA mode is on.");
+  });
+
+  function applyDmca(on) {
+    if (dmcaStatus) dmcaStatus.hidden = !on;
+    const ids = (showNext.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean)
+      .filter((id) => id !== dmcaReason?.id);
+    if (on) {
+      showNext.setAttribute("aria-disabled", "true");
+      showNext.checked = false;
+      if (dmcaReason) ids.push(dmcaReason.id);
+    } else {
+      showNext.removeAttribute("aria-disabled");
+    }
+    if (dmcaReason) dmcaReason.hidden = !on;
+    showNext.setAttribute("aria-describedby", ids.join(" "));
+  }
+
   showNext.addEventListener("change", async () => {
     const chosen = showNext.checked;
     const saved = await saveShowNext(chosen, showNext);
@@ -246,12 +278,16 @@ export function installNowPlayingSettings({
   });
 
   function apply(state) {
+    // A push without settings leaves DMCA mode as it was.
+    const dmcaSetting = state?.settings?.playback?.dmca_enabled;
+    if (typeof dmcaSetting === "boolean" && dmcaSetting !== dmcaLocked()) applyDmca(dmcaSetting);
+    const dmca = dmcaLocked();
     if (!state || !state.stream_mode) {
       active = false;
       return;
     }
     const pushed = state.settings?.playback?.nowplaying_show_next;
-    if (typeof pushed === "boolean" && !saveHolds(showNext, pushed)
+    if (!dmca && typeof pushed === "boolean" && !saveHolds(showNext, pushed)
         && showNext.checked !== pushed) {
       showNext.checked = pushed;
     }

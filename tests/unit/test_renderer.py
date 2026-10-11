@@ -36,6 +36,7 @@ def renderer(monkeypatch: pytest.MonkeyPatch) -> player_mod.Player:
     p._cfg = MagicMock()
     p._cfg.playback.crossfade_seconds = 2.0
     p._cfg.playback.server_max_track_minutes = 15.0
+    p._cfg.playback.loudness_processing = "off"
     p._apply_replaygain = lambda audio_in, _path: audio_in
     p._ensure_dj_cache = lambda: None
     p._outgoing_meta = lambda *_a: None

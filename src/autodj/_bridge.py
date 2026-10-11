@@ -20,6 +20,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from autodj.audience import StreamAudience
@@ -872,6 +873,11 @@ class PlayerBridge:
             intro_start, intro_end, outro_start, outro_len = _markers(entry)
             d_out, d_in, out_first_bar = _downbeats(entry, outro_start, intro_end)
             key_hz = key_to_hz(entry.key) if entry.key is not None else None
+            record = self.library.catalog.record_for_path(entry.path) if self.library else None
+            lift = record.get("intro_lift_db") if record and record["kind"] == "music" else None
+            intro_mode = self.player._cfg.playback.loudness_processing or (
+                "replaygain" if self.player._cfg.replaygain.enabled else "off"
+            )
             return {
                 "title": entry.title,
                 "artist": entry.artist,
@@ -896,6 +902,9 @@ class PlayerBridge:
                     prefer_flats=_key_prefer_flats,
                 ),
                 "energy": round(entry.energy, 3) if entry.energy else 0.0,
+                "intro_lift_db": min(self.player._cfg.playback.intro_lift_max_db, lift or 0.0)
+                if intro_mode != "off"
+                else 0.0,
                 "intro_start_s": round(intro_start, 3) if intro_start is not None else None,
                 "intro_end_s": round(intro_end, 2) if intro_end is not None else None,
                 "outro_start_s": round(outro_start, 2) if outro_start is not None else None,
@@ -1215,6 +1224,31 @@ class PlayerBridge:
         self.skip()
         return True
 
+    def dmca_queue_limits(self, entry: IndexEntry, *, now: bool, append: bool) -> tuple[str, ...]:
+        """The DMCA limits *entry* would break where it is about to be queued.
+
+        Its start is projected from track lengths: after the playing track
+        (unless *now*), and with *append* after everything already queued
+        too.  Empty when DMCA mode is off or no limit is broken.
+        """
+        from autodj.dmca import complement, projected_history
+
+        player = self.player
+        if not player._cfg.dmca.enabled:
+            return ()
+        state = player._state
+        with state.history_lock:
+            history = list(state.play_history)
+        with state.queue_lock:
+            waiting = [*([state.queued_next] if state.queued_next else []), *state.queue]
+        records, when = projected_history(
+            history,
+            state.clock(),
+            None if now else state.current_track,
+            waiting if append else [],
+        )
+        return complement(records, when, player._track_keys()).broken(entry)
+
     def queue_add(self, path: str) -> bool:
         """Append a track by path to the end of the user queue."""
         entry = self.entry_for_path(path)
@@ -1359,6 +1393,7 @@ class PlayerBridge:
 
         names = sorted(set(BUILTIN_PRESETS.keys()) | set(cfg.presets.keys()))
         bpm_range = p._bpm_range
+        related_problem = getattr(p, "related_artists_problem", None)
         return {
             "preset": preset.name if preset else None,
             "available_presets": names,
@@ -1393,8 +1428,15 @@ class PlayerBridge:
                 "key_prefer_flats": bool(pb.key_prefer_flats),
                 "show_lyrics": pb.show_lyrics,
                 "beat_sync_fx": bool(pb.beat_sync_fx),
-                "no_repeat_window": int(pb.no_repeat_window),
-                "artist_repeat_window": int(pb.artist_repeat_window),
+                "repeat_rules": pb.repeat_rules.model_dump(),
+                "related_artists_problem": related_problem
+                if isinstance(related_problem, str)
+                else None,
+                "related_artists_default_file": str(
+                    (Path(cfg.index.active_dir) / "related-artists.toml").resolve()
+                )
+                if cfg.index.active_dir is not None
+                else "",
                 "transition_wet_mix": float(cfg.transitions.wet_mix),
                 "replaygain_target_db": float(cfg.replaygain.target_db),
                 "replaygain_max_clip_safe_gain": float(cfg.replaygain.max_clip_safe_gain),
@@ -1402,6 +1444,9 @@ class PlayerBridge:
                 "pick_top_k": int(pb.pick_top_k),
                 "pick_temperature": float(pb.pick_temperature),
                 "quiet_boost_db": float(pb.quiet_boost_db),
+                "intro_lift_max_db": float(pb.intro_lift_max_db),
+                "stereotool_input_trim_db": float(pb.stereotool_input_trim_db),
+                "stereotool_preset": pb.stereotool_preset,
                 "library_size": len(self.library.entries_snapshot())
                 if self.library is not None
                 else int(p._sim.ntotal if p._sim else 0),
@@ -1422,6 +1467,7 @@ class PlayerBridge:
                 "stream_continuous": bool(cfg.stream.continuous),
                 "stream_station_name": cfg.stream.station_name,
                 "nowplaying_show_next": cfg.nowplaying.show_next,
+                "dmca_enabled": cfg.dmca.enabled,
                 "stream_max_listeners_per_address": cfg.stream.max_listeners_per_address,
                 "volume": float(p._state.volume),
                 "is_muted": bool(p._state.is_muted),
@@ -1493,11 +1539,44 @@ class PlayerBridge:
             if hasattr(cfg.djmix, k):
                 setattr(cfg.djmix, k, bool(v))
 
-    def set_playback_settings(self, body: PlaybackSettingsBody) -> None:
+    def set_playback_settings(self, body: PlaybackSettingsBody, *, restoring: bool = False) -> None:
         """Apply the fields set in *body*, which pydantic has already validated."""
         values = body.model_dump(exclude_none=True)
         player = self.player
         cfg = player._cfg
+        if "stereotool_preset" in values:
+            from autodj.stereotool_presets import preset_path
+
+            preset_path(cfg.index.active_dir, values["stereotool_preset"])
+        if body.repeat_rules is not None:
+            from autodj.related_artist_file import (
+                invalid_related_artists_message,
+                load_configured_related_artists,
+                unused_related_artists_message,
+            )
+            from autodj.repeat_rules import RelatedArtists
+
+            related = RelatedArtists()
+            problem = None
+            # The file is read only while it is in use, so a broken one
+            # never blocks saving the other rules.
+            if body.repeat_rules.use_related_artists:
+                try:
+                    related = load_configured_related_artists(cfg.index.active_dir)
+                except (OSError, ValueError) as exc:
+                    if not restoring:
+                        # Refused before any setting changes; the old rules stay.
+                        message = invalid_related_artists_message(exc)
+                        player.related_artists_problem = message
+                        raise ValueError(message) from exc
+                    problem = unused_related_artists_message(exc)
+                    logger.warning("Related artists file was not used: %s", exc)
+            values["repeat_rules"] = body.repeat_rules
+            player._related_artists = related
+            player.related_artists_problem = problem
+            if hasattr(player, "_key_cache_lock"):
+                with player._key_cache_lock:
+                    player._key_cache = None
         targets = {
             "pure_shuffle": (player, "_pure_shuffle"),
             "anchor_to_seed": (player, "_anchor_to_seed"),
@@ -1541,10 +1620,12 @@ class PlayerBridge:
         if values.get("show_lyrics") is False:
             player._current_lyrics = []
             player._current_lyrics_plain = ""
-        if "no_repeat_window" in values or "artist_repeat_window" in values:
+        if "repeat_rules" in values:
             from autodj.player import apply_repeat_windows
 
             apply_repeat_windows(player)
+            if self.library is not None:
+                player.restore_repeat_history(self.library.catalog, refresh=True)
 
     def set_bpm_range(self, lo: float | None, hi: float | None) -> None:
         """Set the hard BPM filter; pass both null to clear."""

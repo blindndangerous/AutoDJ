@@ -181,10 +181,26 @@ trusted_proxies = []
 # Shoutcast expects; Shoutcast 2 is reached through its Shoutcast 1 source
 # login with the stream ID.
 
+# Archives of the exact MP3 sent to listeners. Recording needs stream mode.
+# Set the folder here or in config.local.toml, never from the browser. Running
+# state and the other settings can be changed in Settings, Stream and survive
+# restarts.
+[recording]
+folder = "recordings"
+split = "hour"          # "hour" or "show"
+retention_days = 0      # 0 keeps files forever
+free_space_mb = 100     # pause below this free-space floor
+
 [playback]
 # Maximum gain for quiet sections with Smooth or Stereo Tool, in dB (0 to 12).
 quiet_boost_db = 9.0
-# Optional Stereo Tool command-line executable. Select its free preset under
+# Extra lift for a quiet opening, returning to normal within 8 seconds (0 to 6; 0 disables).
+intro_lift_max_db = 4.0
+# Stereo Tool input gain before its output limiter, from -12 to +6 dB.
+stereotool_input_trim_db = 0.0
+# "included" or a .sts filename uploaded in Settings > Sound.
+stereotool_preset = "included"
+# Optional Stereo Tool command-line executable. Select a preset under
 # Output processing in the browser after installing it separately.
 # Defaults to ./tools/stereo-tool/stereo_tool_cmd.exe on Windows or
 # ./tools/stereo-tool/stereo_tool_cmd elsewhere; set this to override it.
@@ -195,50 +211,15 @@ quiet_boost_db = 9.0
 # track to the next, in the server mix and in the browser.
 crossfade_seconds = 3.0
 
-# How many recently played tracks to exclude from the next-song candidates.
-# Prevents songs from repeating too soon.  Higher = the auto-DJ has to walk
-# more of the library before revisiting a track.  500 is comfortable for
-# libraries of a few thousand tracks; bump higher (2000+) for huge libs.
-no_repeat_window = 500
-
-# Block same artist / album / title within the last N picks.  0 = disabled.
-# An artist credit such as "Calvin Harris feat. Rihanna" counts for each
-# artist it names, and a title matches its other versions: "Jingle Bells",
-# "Jingle Bells (Live)" and "JINGLE BELLS - Remastered 2009" are one song.
-artist_repeat_window = 3
-
-# Repeat rules by the clock.  Each counts minutes from when a track started;
-# 0 (the default) turns it off.  When a rule has both a track count and
-# minutes, a song is held back if either one catches it.  At most 10080
-# (one week).  Plays from before a restart count too: they are read from
-# the saved play history.
-# no_repeat_minutes = 0          # the same track
-# artist_repeat_minutes = 0      # the same artist, a related artist or album
-# title_repeat_minutes = 0       # the same song title, in any version
-
-# Tracks before the same song title may repeat.  Leave it unset to use
-# artist_repeat_window, which covered titles on its own before.
-# title_repeat_window = 3
-
-# Related artists: a TOML file, relative to the folder AutoDJ starts in,
-# that links an artist to others it holds back while it is in the artist
-# window.  Links are one-way: list both artists to link them both ways.
-# The optional single_acts list names credits never to split into
-# separate artists.  For example, related_artists.toml:
-#
-#   single_acts = ["Edward Sharpe and the Magnetic Zeros"]
-#
-#   [related]
-#   "Bruno Mars" = ["Silk Sonic"]
-#   "Anderson .Paak" = ["Silk Sonic", "NxWorries"]
-#
-# The file is read when AutoDJ starts.  If it is missing or invalid, AutoDJ
-# logs a warning and starts without it; `autodj doctor` names the problem.
-# related_artists_file = "related_artists.toml"
-
-# Also use a short built-in list of side projects, duos and aliases, such
-# as Bruno Mars and Silk Sonic.  Default false.
-# related_artists_starter = false
+# Repeat rules are edited in Settings > Picking > Repeats and saved in
+# index/<name>/web_state.json. Each artist, album, track and title rule has
+# a track count and a minute limit; 0 disables that limit. Both can be set.
+# Older repeat keys are rejected. Remove them by hand and re-enter limits in
+# Settings > Picking > Repeats. Optional starting values use the same structure:
+# repeat_rules = { track = { tracks = 50, minutes = 0 }, artist = { tracks = 8, minutes = 0 }, album = { tracks = 0, minutes = 0 }, title = { tracks = 0, minutes = 0 }, use_related_artists = false }
+# Artist, album and title track counts are capped at 5000. The related-artist file is fixed at
+# index/<name>/related-artists.toml and is read only when enabled.
+# AutoDJ copies the shipped sample only if that file does not exist.
 
 # When false, AutoDJ loads no lyrics and the web UI hides the lyric card.
 # Default true (lyrics shown).
@@ -553,6 +534,14 @@ revision = "main"
 # bpm_start = 80
 # bpm_end   = 140
 # curve     = "slide"
+
+[dmca]
+# DMCA mode: keep to the US statutory webcasting licence's performance
+# complement (album, artist and box-set limits in any three hours) in every
+# pick mode, warn before queueing a song that breaks it, and never show the
+# next song publicly. Read when the server starts. General information, not
+# legal advice; see docs/operations.md, "DMCA mode".
+enabled = false
 
 # Public now-playing feed at /api/nowplaying.
 [nowplaying]
