@@ -29,7 +29,7 @@ from autodj.processing import (
     prepared_source_matches,
     remove_stale_prepared,
 )
-from autodj.stereo import DecodeReport
+from autodj.stereo import SAMPLE_RATE, DecodeReport
 
 logger = logging.getLogger(__name__)
 
@@ -547,6 +547,17 @@ class LibraryManager:
                             point_source="analysis",
                         )
                         self._publish_entry(fresh, kind)
+                    if kind == "music":
+                        record = self.catalog.record_for_path(path)
+                        if record is not None and record["intro_lift_db"] is None:
+                            from autodj.intro_lift import measure_source_intro
+
+                            try:
+                                lift = measure_source_intro(path, SAMPLE_RATE, record["energy"])
+                            except (OSError, RuntimeError, ValueError) as exc:
+                                logger.warning("Intro analysis unavailable for %s: %s", path, exc)
+                                lift = 0.0
+                            self.catalog.set_intro_lift(path, lift)
                 except Exception as exc:
                     logger.warning("Basic library scan failed for %s: %s", path, exc)
                     with self._lock:

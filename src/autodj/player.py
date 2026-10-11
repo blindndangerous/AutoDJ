@@ -2346,7 +2346,7 @@ class Player:
         """Use prepared sources with a master processor, keeping source positions."""
         if self._cfg.playback.loudness_processing not in {"smooth", "stereotool"}:
             audio = load_stereo(entry.path, SAMPLE_RATE, self._max_render_seconds())
-            return self._apply_replaygain(audio, entry.path)
+            return self._lift_intro(self._apply_replaygain(audio, entry.path), entry)
         from autodj.processing import (
             PREPARED_LINER_GAIN,
             prepare_source,
@@ -2377,7 +2377,24 @@ class Player:
         if record and record["kind"] == "liner":
             # Keep existing prepared liner caches while reducing their former +4.5 dB lift to +3 dB.
             return (audio * PREPARED_LINER_GAIN).astype(np.float32)
-        return audio
+        return self._lift_intro(audio, entry)
+
+    def _lift_intro(self, audio: np.ndarray, entry: IndexEntry) -> np.ndarray:
+        mode = self._cfg.playback.loudness_processing or (
+            "replaygain" if self._cfg.replaygain.enabled else "off"
+        )
+        if mode == "off":
+            return audio
+        max_db = self._cfg.playback.intro_lift_max_db
+        if max_db <= 0:
+            return audio
+        record = self._library.catalog.record_for_path(entry.path) if self._library else None
+        if record is not None and record["kind"] == "liner":
+            return audio
+        from autodj.intro_lift import apply_intro_lift
+
+        lift = record.get("intro_lift_db") if record else None
+        return apply_intro_lift(audio, SAMPLE_RATE, min(max_db, lift or 0.0))
 
     def _prepare_in_background(self, entry: IndexEntry, kind: str, quiet_boost_db: float) -> None:
         """Refresh one prepared source on a worker thread, once per path at a time."""

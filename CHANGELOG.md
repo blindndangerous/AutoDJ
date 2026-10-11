@@ -10,6 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Stereo Tool presets can be uploaded, selected and deleted in Settings, Sound. The included
+  preset remains read-only; uploaded presets survive restarts and are included in backups.
+  A scheduled event can switch the Stereo Tool preset (Settings, Schedule).
+- Stereo Tool input trim is adjustable from -12 to +6 dB. Quiet song openings can receive up
+  to 4 dB of peak-safe lift by default, returning to normal within eight seconds. The limit
+  is adjustable from 0 to 6 dB, with 0 disabling the lift.
+
 - A scheduler for timed events (Settings, Schedule). Events run once, daily, on weekdays, on
   chosen days, or every N minutes within an optional window, in the station time zone
   (`[server] station_timezone`). They switch profiles, presets or song picking, play liners,

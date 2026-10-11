@@ -9,6 +9,7 @@ that wrote it and the list of files) and these members:
   ``index/related-artists.toml``, ``index/schedule.json`` and
   ``index/listener_bans.json`` from the active index folder.
 - ``liners/...`` and ``profiles/...``: every file in those folders.
+- ``stereo-tool-presets/...``: the uploaded ``.sts`` presets.
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ INDEX_FILES = (
     "listener_bans.json",
     im.MANIFEST_NAME,
 )
-_FOLDERS = ("liners", "profiles")
+_FOLDERS = ("liners", "profiles", "stereo-tool-presets")
 
 
 class BackupError(RuntimeError):
@@ -56,6 +57,7 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
         "index": active,
         "liners": Path(cfg.playback.liners_folder or active / "liners"),
         "profiles": active.parent / "profiles",
+        "stereo-tool-presets": active.parent / "stereo-tool-presets",
     }
 
 
@@ -141,8 +143,13 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
                 if path.is_file():
                     members[f"index/{path.name}"] = path
             for top in _FOLDERS:
-                for path in sorted(roots[top].rglob("*")):
-                    if path.is_file():
+                paths = (
+                    roots[top].glob("*.sts")
+                    if top == "stereo-tool-presets"
+                    else roots[top].rglob("*")
+                )
+                for path in sorted(paths):
+                    if path.is_file() and (top != "stereo-tool-presets" or not path.is_symlink()):
                         members[f"{top}/{path.relative_to(roots[top]).as_posix()}"] = path
             with partial.open("xb") as handle:
                 with zipfile.ZipFile(handle, "w", zipfile.ZIP_DEFLATED) as archive:

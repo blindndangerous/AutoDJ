@@ -259,6 +259,13 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
         checked = _checked(PlaybackSettingsBody, field, value)
         if checked is not _INVALID:
             values[field] = checked
+    if "stereotool_preset" in values:
+        from autodj.stereotool_presets import preset_path
+
+        try:
+            preset_path(player._cfg.index.active_dir, values["stereotool_preset"])
+        except (ValueError, FileNotFoundError):
+            _warn("stereotool_preset", values.pop("stereotool_preset"))
     bridge.set_playback_settings(PlaybackSettingsBody.model_validate(values), restoring=True)
 
 

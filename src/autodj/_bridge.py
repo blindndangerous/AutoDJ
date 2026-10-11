@@ -873,6 +873,11 @@ class PlayerBridge:
             intro_start, intro_end, outro_start, outro_len = _markers(entry)
             d_out, d_in, out_first_bar = _downbeats(entry, outro_start, intro_end)
             key_hz = key_to_hz(entry.key) if entry.key is not None else None
+            record = self.library.catalog.record_for_path(entry.path) if self.library else None
+            lift = record.get("intro_lift_db") if record and record["kind"] == "music" else None
+            intro_mode = self.player._cfg.playback.loudness_processing or (
+                "replaygain" if self.player._cfg.replaygain.enabled else "off"
+            )
             return {
                 "title": entry.title,
                 "artist": entry.artist,
@@ -897,6 +902,9 @@ class PlayerBridge:
                     prefer_flats=_key_prefer_flats,
                 ),
                 "energy": round(entry.energy, 3) if entry.energy else 0.0,
+                "intro_lift_db": min(self.player._cfg.playback.intro_lift_max_db, lift or 0.0)
+                if intro_mode != "off"
+                else 0.0,
                 "intro_start_s": round(intro_start, 3) if intro_start is not None else None,
                 "intro_end_s": round(intro_end, 2) if intro_end is not None else None,
                 "outro_start_s": round(outro_start, 2) if outro_start is not None else None,
@@ -1411,6 +1419,9 @@ class PlayerBridge:
                 "pick_top_k": int(pb.pick_top_k),
                 "pick_temperature": float(pb.pick_temperature),
                 "quiet_boost_db": float(pb.quiet_boost_db),
+                "intro_lift_max_db": float(pb.intro_lift_max_db),
+                "stereotool_input_trim_db": float(pb.stereotool_input_trim_db),
+                "stereotool_preset": pb.stereotool_preset,
                 "library_size": len(self.library.entries_snapshot())
                 if self.library is not None
                 else int(p._sim.ntotal if p._sim else 0),
@@ -1507,6 +1518,10 @@ class PlayerBridge:
         values = body.model_dump(exclude_none=True)
         player = self.player
         cfg = player._cfg
+        if "stereotool_preset" in values:
+            from autodj.stereotool_presets import preset_path
+
+            preset_path(cfg.index.active_dir, values["stereotool_preset"])
         if body.repeat_rules is not None:
             from autodj.related_artist_file import (
                 invalid_related_artists_message,
