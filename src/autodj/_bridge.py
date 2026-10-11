@@ -57,11 +57,12 @@ def _library_job_snapshot() -> dict:
     return snap
 
 
-def _history_entry(entry: Any, performances: int) -> dict:
+def _history_entry(entry: Any, performances: int | None) -> dict:
     """Return a JSON-serialisable history-row dict for *entry*.
 
     *performances* is the listeners connected as it starts; it rises as
-    more join while it plays (see :mod:`autodj.audience`).
+    more join while it plays (see :mod:`autodj.audience`).  ``None`` means
+    unknown, as while a relay serves listeners AutoDJ cannot see.
     """
     return {
         "event_id": secrets.token_hex(16),
@@ -286,7 +287,11 @@ class PlayerBridge:
         """Record one play while holding ``_history_lock``; never trim the archive."""
         # Stream mode counts its connected listeners; otherwise the one
         # listener is the person at this computer or browser.
-        performances = self._audience.start_play() if self.stream_mode else 1
+        performances: int | None = self._audience.start_play() if self.stream_mode else 1
+        if self.relays is not None and self.relays.active:
+            # A relay's own listeners are invisible here: no count beats a
+            # count that leaves them out.
+            performances = None
         row = _history_entry(entry, performances)
         self._play_history.append(row)
         self._history_started = True
@@ -305,7 +310,9 @@ class PlayerBridge:
             if not self._audience.connected(client) or self._open_play is None:
                 return
             row = self._open_play[1]
-            row["performances"] = (row.get("performances") or 0) + 1
+            if row.get("performances") is None:  # not counted while relaying
+                return
+            row["performances"] += 1
             if self.library is not None:
                 self.library.remember_history(row)
 

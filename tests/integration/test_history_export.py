@@ -265,6 +265,23 @@ def test_counts_are_taken_under_the_history_lock() -> None:
     assert seen == [True, True]
 
 
+def test_plays_are_not_counted_while_a_relay_serves_listeners() -> None:
+    entry = _make_entry(3)
+    library = _Library()
+    bridge, _clock = _stream_bridge(entry, library)
+    bridge.relays = SimpleNamespace(active=True, set_title=lambda *_: None)
+    bridge.listener_connected(ALICE)
+    bridge.on_track_started(entry)
+    assert library.rows[-1]["performances"] is None
+    bridge.listener_connected(BOB)
+    assert len(library.rows) == 1
+    assert bridge._open_play[1]["performances"] is None
+    bridge.relays.active = False  # relays configured but all disabled
+    bridge.player._state.current_track = second = _make_entry(4)
+    bridge.on_track_started(second)
+    assert library.rows[-1]["performances"] == 2
+
+
 def test_local_playback_counts_one_listener() -> None:
     library = _Library()
     bridge = PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock(), library=library)

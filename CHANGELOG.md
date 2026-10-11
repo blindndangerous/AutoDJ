@@ -40,7 +40,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the performance counts. See "Reporting for webcasting licenses" in the operations guide.
 - Each play now records its performances, the listeners who heard any part of it: in stream mode,
   the stream listeners connected when it starts plus each listener who connects while it plays,
-  with a quick reconnect from the same player counted once; otherwise 1.
+  with a quick reconnect from the same player counted once; otherwise 1. While an Icecast or
+  Shoutcast relay is enabled, plays get no count, because the relay's listeners are not visible.
 
 - More settings can be changed on the Settings page instead of in `config.toml`. They are saved
   on the server and survive a restart:

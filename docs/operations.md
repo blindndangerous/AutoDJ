@@ -863,6 +863,11 @@ is transmitted to one listener, so one play heard by 100 listeners is 100 perfor
   it, every listener has the proxy's address and only the User-Agent tells them apart.
 - Addresses and User-Agents are kept in memory only, for the song that is playing and the 10
   seconds after a disconnect. The play log stores only the count.
+- While a relay to Icecast or Shoutcast is enabled (see "Relaying to Icecast and Shoutcast"),
+  plays get no count. AutoDJ cannot see the relay's listeners, and a count of only its own
+  listeners would understate the performances. Those plays show up in `--missing`, and their
+  SoundExchange lines leave ACTUAL_TOTAL_PERFORMANCES empty; take the listener figures from the
+  relay server's statistics instead.
 - In every other mode the count is 1: the person at the computer or in the browser.
 - Plays logged before AutoDJ counted listeners have no count. They are listed by `--missing`.
 
