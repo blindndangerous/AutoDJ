@@ -207,7 +207,7 @@ class TestGetAllTracks:
                 nonlocal closed
                 closed = True
 
-        monkeypatch.setattr(sqlite3, "connect", lambda *args, **kwargs: BrokenConnection())
+        monkeypatch.setattr(beets, "_connect", lambda *args, **kwargs: BrokenConnection())
 
         with pytest.raises(sqlite3.DatabaseError):
             beets._open_db(db)

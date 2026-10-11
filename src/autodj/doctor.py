@@ -30,6 +30,8 @@ from autodj.index_manifest import (
 )
 from autodj.sqlite_utils import readonly_uri
 
+_connect = sqlite3.connect
+
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig, IndexConfig, ModelConfig, RelayConfig
     from autodj.model import ModelCacheStatus
@@ -245,7 +247,7 @@ def _dj_meta_database_check(cfg: AutoDJConfig) -> DoctorCheck:
             "analyse",
         )
     try:
-        conn = sqlite3.connect(readonly_uri(path), uri=True)
+        conn = _connect(readonly_uri(path), uri=True)
         with closing(conn):
             integrity = [str(row[0]) for row in conn.execute("PRAGMA integrity_check")]
             if integrity != ["ok"]:
