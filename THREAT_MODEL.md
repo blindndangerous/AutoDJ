@@ -18,6 +18,11 @@ AutoDJ is a single-user local music player with these exposed surfaces:
   both allowlists and the token automatically; see "Automatic LAN mode" below.
 - Backup and restore trust the configured index, liners and profiles locations. Restore
   checks member names and the AutoDJ version before it replaces anything.
+- Broadcast recordings contain listener-facing encoded audio only. The recording folder is
+  chosen in `config.toml` or `config.local.toml` and is never accepted as an API parameter or
+  sent to the browser.
+  Recording status and controls are paired routes; the public stream cannot control recording.
+  Backups include the recording settings and running state, not the recorded files.
 
 Cloud sync, multi-user roles, billing, and public Internet hosting are out of scope. Use TLS for any
 network where observers could read HTTP traffic, and terminate it in AutoDJ itself with

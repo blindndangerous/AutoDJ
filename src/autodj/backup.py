@@ -6,8 +6,11 @@ that wrote it and the list of files) and these members:
 - ``index/index-manifest.json`` and the two generation files it names
   (``tracks.gN.db`` and ``vectors.gN.index``): the live index generation.
 - ``index/dj_meta.db``, ``index/library.db``, ``index/web_state.json``,
-  ``index/schedule.json`` and ``index/listener_bans.json`` from the active index folder.
+  ``index/schedule.json``, ``index/listener_bans.json`` and ``index/recording.json``.
 - ``liners/...`` and ``profiles/...``: every file in those folders.
+
+Broadcast recordings are archives, not station state: they can run to many
+gigabytes and a restore would replace the whole folder, so they stay out.
 """
 
 from __future__ import annotations
@@ -38,6 +41,7 @@ INDEX_FILES = (
     "web_state.json",
     "schedule.json",
     "listener_bans.json",
+    "recording.json",
     im.MANIFEST_NAME,
 )
 _FOLDERS = ("liners", "profiles")
@@ -130,7 +134,12 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
             members: dict[str, Path] = {}
             state_files = [
                 roots["index"] / name
-                for name in ("web_state.json", "schedule.json", "listener_bans.json")
+                for name in (
+                    "web_state.json",
+                    "schedule.json",
+                    "listener_bans.json",
+                    "recording.json",
+                )
             ]
             for path in [*sorted(snapshot.glob("*")), *state_files]:
                 if path.is_file():

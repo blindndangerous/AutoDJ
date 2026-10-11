@@ -17,6 +17,7 @@ uploaded to a cloud service.
 - Voice liners that play spoken clips over the music on a schedule.
 - A scheduler that switches profiles, presets or the clockwheel, plays liners, starts or stops the
   stream and turns discovery on or off at set times.
+- Broadcast recording to dated MP3 files, with hourly or show splits, scheduled controls and retention.
 - Lyrics from sidecar files or tags, with scrolling and highlighting when timestamps are available.
 - Offline use after installing dependencies and downloading the model. The first indexing run
   downloads model weights from Hugging Face unless you provide a local checkpoint.
