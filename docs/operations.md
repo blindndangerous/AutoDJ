@@ -755,6 +755,10 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
   folder and survive restarts. Deleting the active upload in Settings switches to Included
   first; a preset file removed by hand is replaced by Included when Stereo Tool next starts. Stereo Tool's
   settings use preset files; AutoDJ applies the drive boost to a temporary copy, leaving your saved preset unchanged.
+  An uploaded preset without a single `Drive` line under `[Pre Compressor]` plays unchanged,
+  without the boost; Settings, Sound shows "Preset ... has no pre-compressor Drive setting;
+  AGC drive not applied" under the preset, and `/api/status` reports it as
+  `playout.preset_warning`.
   `[playback] stereotool_input_trim_db` adjusts the input from -12 to +6 dB before the fixed
   output limiter. `[playback] stereotool_agc_drive_db` (0 to 12, default 7) raises the selected
   preset's `[Pre Compressor] Drive` after the tracks are blended; 0 keeps its base value and does
@@ -762,6 +766,11 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
   passages. Music and liners stay as original files: AutoDJ caches loudness measurements in the
   catalog and applies the measured gain when it decodes a track. Liners also pass through voice
   compression, and server-mixed playback holds decoded track audio in memory while it is mixed.
+  Earlier versions wrote processed copies to a `prepared` folder inside the active index
+  folder. It is no longer read or written and is safe to delete: its 32-bit float WAVs take
+  about 21 MB per minute of audio, often tens of gigabytes for a large library. After
+  upgrading, a library scan measures loudness in the background; a song played before it is
+  measured is measured as it loads, so that first start takes longer.
   `[playback] intro_lift_max_db` (0 to 6, default 4) caps an extra lift for a quiet opening;
   it fades back to normal by eight seconds. Zero disables it. Analysis caches the source's
   peak-safe opening lift in `library.db`; already cataloged songs get it on their next library scan.

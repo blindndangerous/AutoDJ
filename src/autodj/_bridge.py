@@ -984,6 +984,10 @@ class PlayerBridge:
                 "error": master.error
                 if master is not None and processing in {"smooth", "stereotool"}
                 else None,
+                # The chosen Stereo Tool preset plays without the AGC drive edit.
+                "preset_warning": master.preset_warning
+                if master is not None and processing == "stereotool"
+                else None,
                 "latency_seconds": master.latency_seconds
                 if master is not None and processing in {"smooth", "stereotool"}
                 else 0.0,

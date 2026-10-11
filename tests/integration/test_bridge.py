@@ -370,18 +370,20 @@ def test_state_exposes_continuous_processing_and_prepared_handoff(bridge, mode) 
 
     bridge.player._active_processing_mode = mode
     bridge.player._continuous_master = SimpleNamespace(
-        error="Processor restarting", latency_seconds=0.28
+        error="Processor restarting", latency_seconds=0.28, preset_warning="No drive"
     )
     bridge.player._playing_render = SimpleNamespace(full_audio=object(), next_entry=object())
     status = bridge.get_state()["playout"]
     assert status == {
         "processing": mode,
         "error": "Processor restarting",
+        "preset_warning": "No drive" if mode == "stereotool" else None,
         "latency_seconds": 0.28,
         "queue_locked": True,
     }
     bridge.player._active_processing_mode = "off"
     assert bridge.get_state()["playout"]["error"] is None
+    assert bridge.get_state()["playout"]["preset_warning"] is None
 
 
 class TestNextTransitionFx:

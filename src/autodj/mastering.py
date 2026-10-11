@@ -154,6 +154,8 @@ class ContinuousMaster:
         self._recovery_outputs = 0
         self._healthy_outputs = 0
         self._error: str | None = None
+        # Not an error: the chosen preset plays, but without the AGC drive edit.
+        self._preset_warning: str | None = None
         self._restarts = 0
         self._overflow_reported = False
         self._worker = threading.Thread(target=self._lifecycle, name="autodj-master", daemon=True)
@@ -168,6 +170,11 @@ class ContinuousMaster:
     def error(self) -> str | None:
         with self._lock:
             return self._error
+
+    @property
+    def preset_warning(self) -> str | None:
+        with self._lock:
+            return self._preset_warning
 
     @property
     def restarts(self) -> int:
@@ -272,24 +279,42 @@ class ContinuousMaster:
         source, drive_db = signature
         try:
             data = source.read_bytes()
-            if drive_db == 0:
-                return source
-            data = agc_drive_preset_data(data, drive_db)
-        except (OSError, ValueError) as exc:
+        except OSError as exc:
             if source == INCLUDED_PATH:
                 raise
+            # A preset deleted or renamed outside AutoDJ must not leave
+            # Stereo Tool on its unprocessed defaults.
             logger.warning(
-                "Stereo Tool preset %s cannot apply AGC drive (%s); using included preset",
-                source,
-                exc,
+                "Stereo Tool preset %s is unavailable (%s); using the included one", source, exc
             )
             source = INCLUDED_PATH
-            data = agc_drive_preset_data(source.read_bytes(), drive_db)
+            data = source.read_bytes()
         if drive_db == 0:
+            self._note_preset_warning(None)
             return source
+        try:
+            data = agc_drive_preset_data(data, drive_db)
+        except ValueError as exc:
+            if source == INCLUDED_PATH:
+                raise
+            # The station chose this preset: play it as written rather than
+            # swapping in another one, and say the drive boost is not applied.
+            self._note_preset_warning(
+                f"Preset {source.name} has no pre-compressor Drive setting; AGC drive not applied",
+                exc,
+            )
+            return source
+        self._note_preset_warning(None)
         target = Path(self._preset_temp.name) / "runtime.sts"
         target.write_bytes(data)
         return target
+
+    def _note_preset_warning(self, message: str | None, cause: Exception | None = None) -> None:
+        with self._lock:
+            changed = message != self._preset_warning
+            self._preset_warning = message
+        if message is not None and changed:
+            logger.warning("%s (%s)", message, cause)
 
     def _set_error(self, message: str) -> None:
         self._error = message

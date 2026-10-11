@@ -169,15 +169,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   than the liner's segue.
 - Smooth and Stereo Tool play original music and liner files. AutoDJ saves small loudness
   measurements in the library and processes audio in memory, instead of writing a second
-  audio library. Existing prepared files are left untouched for comparison.
+  audio library. The old `prepared` folder inside the active index folder is no longer
+  used and is safe to delete. It holds uncompressed 32-bit float WAV copies, about 21 MB
+  per minute of audio (roughly 85 MB for a four-minute song), so on a large library it
+  can free tens of gigabytes. After upgrading, a library scan measures loudness in the
+  background; a song played before it is measured is measured as it loads, so its first
+  start takes longer. Later plays reuse the saved measurement.
 - Stereo Tool's **AGC drive boost** replaces **Boost quiet sections**. It starts at 7 dB
   and adjusts how strongly the processor lifts quiet passages throughout a song.
   Smooth keeps its built-in compressor and limiter, without the old quiet-section lift.
-  Neither mode adds the separate intro-only lift.
+  Neither mode adds the separate intro-only lift. An uploaded preset without a single
+  `Drive` line under `[Pre Compressor]` plays unchanged, and Settings and the status API
+  say the AGC drive was not applied.
 - Stereo Tool output gains 5.8 dB through a final peak limiter, with a -1.8 dB ceiling,
   5 ms attack and 100 ms release. The included preset remains the starting point for the AGC drive boost.
 - Liners play 1.5 dB lower with Smooth or Stereo Tool processing, reducing their intended
-  lift above music from 4.5 dB to 3 dB. Existing prepared audio and cue points are retained.
+  lift above music from 4.5 dB to 3 dB. Cue points are retained.
 - Radio listening uses `/stream.mp3`, with `/stream.m3u` for players that need a playlist.
   Anyone who can reach the server can listen without a key; browser controls still require
   pairing when LAN authentication is enabled.

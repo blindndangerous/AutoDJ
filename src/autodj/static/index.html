@@ -976,11 +976,12 @@
       <legend>Stereo Tool</legend>
       <div class="settings-row">
         <label for="stereo-preset">Preset</label>
-        <select id="stereo-preset" aria-describedby="stereo-preset-desc">
+        <select id="stereo-preset" aria-describedby="stereo-preset-warning stereo-preset-desc">
           <option value="included">Included</option>
         </select>
         <button type="button" id="stereo-preset-delete" disabled>Delete selected preset</button>
       </div>
+      <p class="setting-desc" id="stereo-preset-warning" hidden></p>
       <span class="setting-desc" id="stereo-preset-desc">
         Stereo Tool restarts with the chosen preset; the sound bypasses it for a moment while it does.  Included is the free preset that comes with AutoDJ and cannot be deleted.  Uploaded presets are kept with the station's data and saved in backups.
       </span>

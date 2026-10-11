@@ -7,6 +7,7 @@ import math
 import re
 import shutil
 import subprocess  # nosec B404 -- audio processing uses fixed FFmpeg argv, no shell
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,6 +24,7 @@ PREPARATION_VERSION = "loudness-v1"
 TARGET_LUFS = {"music": -28.0, "liner": -25.0}
 MIN_GAIN_DB, MAX_GAIN_DB = -60.0, 18.0
 _FFMPEG_TIMEOUT_S = 600
+_READ_CHUNK_BYTES = 1 << 16
 VOICE_FILTER = (
     "highpass=f=70,acompressor=threshold=0.063095734:ratio=3:attack=10:release=180:"
     "makeup=1:knee=4:link=maximum:detection=rms"
@@ -48,6 +50,55 @@ def _run_ffmpeg(command: list[str]) -> subprocess.CompletedProcess[bytes]:
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"ffmpeg timed out after {_FFMPEG_TIMEOUT_S}s: {command[0]}") from exc
+
+
+def _stream_ffmpeg(command: list[str]) -> tuple[int, bytearray, bytes]:
+    """Run FFmpeg and gather its stdout in one growing, writable buffer.
+
+    subprocess.run returns stdout as immutable bytes, and writable samples
+    built from that need a second full-size copy: two whole decoded tracks
+    in memory at once.  A bytearray can back the samples directly.
+    """
+    proc = subprocess.Popen(  # nosec B603 -- fixed FFmpeg argv, no shell
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    stdout, stderr = proc.stdout, proc.stderr
+    if stdout is None or stderr is None:  # pragma: no cover - PIPE always gives both
+        proc.kill()
+        raise RuntimeError("ffmpeg pipes unavailable")
+    timed_out = threading.Event()
+
+    def expire() -> None:
+        timed_out.set()
+        proc.kill()
+
+    errors: list[bytes] = []
+    # Drain stderr alongside stdout so a chatty decode cannot fill its pipe and stall.
+    drain = threading.Thread(target=lambda: errors.append(stderr.read()), daemon=True)
+    timer = threading.Timer(_FFMPEG_TIMEOUT_S, expire)
+    timer.daemon = True
+    drain.start()
+    timer.start()
+    output = bytearray()
+    try:
+        while data := stdout.read(_READ_CHUNK_BYTES):
+            output += data
+        returncode = proc.wait()
+    finally:
+        timer.cancel()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        drain.join()
+        stdout.close()
+        stderr.close()
+    if timed_out.is_set():
+        raise RuntimeError(f"ffmpeg timed out after {_FFMPEG_TIMEOUT_S}s: {command[0]}")
+    return returncode, output, b"".join(errors)
 
 
 def _kind(kind: str) -> float:
@@ -165,15 +216,16 @@ def load_processed_audio(
     if max_seconds is not None:
         command += ["-t", str(max_seconds + 1.0)]
     command += ["-f", "f32le", "pipe:1"]
-    result = _run_ffmpeg(command)
-    detail = result.stderr.decode(errors="replace").strip()
-    if result.returncode:
+    returncode, output, stderr = _stream_ffmpeg(command)
+    detail = stderr.decode(errors="replace").strip()
+    if returncode:
         raise RuntimeError(f"ffmpeg audio processing failed for {source}: {detail[-1000:]}")
     if detail:
         logger.warning(
             "Decoded %s with warnings:\n%s", source, detail, extra={"track": str(source)}
         )
-    audio = np.frombuffer(result.stdout, dtype="<f4").reshape(-1, 2).copy()
+    # The bytearray is writable, so the samples use it in place with no copy.
+    audio = np.frombuffer(output, dtype="<f4").reshape(-1, 2)
     if max_seconds is not None and len(audio) > max_seconds * SAMPLE_RATE:
         raise TrackTooLongError(str(source), len(audio) / SAMPLE_RATE)
     after = source.stat()

@@ -165,15 +165,56 @@ def test_agc_drive_updates_only_selected_preset_copy_and_cleans_temporary_files(
     assert not temp_path.exists()
 
 
-def test_invalid_custom_preset_falls_back_to_included_with_requested_drive(tmp_path: Path) -> None:
+def test_custom_preset_without_drive_plays_unmodified_and_reports_it(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     invalid = tmp_path / "Bad.sts"
-    invalid.write_text("[Pre Compressor]\nGain=4\n")
-    master = ContinuousMaster(preset=lambda: invalid, agc_drive_db=lambda: 7.0)
+    original = b"[Pre Compressor]\nGain=4\n"
+    invalid.write_bytes(original)
+    good = tmp_path / "Good.sts"
+    good.write_text("[Pre Compressor]\nDrive=4\n")
+    selected = [invalid]
+    master = ContinuousMaster(preset=lambda: selected[0], agc_drive_db=lambda: 7.0)
+    message = "Preset Bad.sts has no pre-compressor Drive setting; AGC drive not applied"
     try:
-        fallback = master._runtime_stereotool_preset(master._stereotool_signature())
-        assert fallback != invalid
-        assert _pre_compressor_drive(fallback.read_bytes()) == pytest.approx(
-            _pre_compressor_drive(INCLUDED_PATH.read_bytes()) * 10 ** (7 / 20)
+        with caplog.at_level("WARNING", logger="autodj.mastering"):
+            for _ in range(3):  # a processor restart must not log it again
+                chosen = master._runtime_stereotool_preset(master._stereotool_signature())
+                assert chosen == invalid
+        assert invalid.read_bytes() == original
+        assert master.preset_warning == message
+        assert [r.getMessage() for r in caplog.records if message in r.getMessage()] == [
+            f"{message} ([Pre Compressor] must contain one Drive value)"
+        ]
+        selected[0] = good
+        master._runtime_stereotool_preset(master._stereotool_signature())
+        assert master.preset_warning is None
+    finally:
+        master.close()
+
+
+def test_status_reports_a_preset_that_cannot_take_the_agc_drive(tmp_path: Path) -> None:
+    source = tmp_path / "Bad.sts"
+    source.write_text("[Stereo Tool]\nVersion=1105\n")
+    commands: list[list[str]] = []
+
+    def factory(command, **_kwargs):
+        commands.append(command)
+        raise OSError("stop here")
+
+    master = ContinuousMaster(
+        popen_factory=factory,
+        mode=lambda: "stereotool",
+        preset=lambda: source,
+        agc_drive_db=lambda: 7.0,
+    )
+    try:
+        deadline = time.monotonic() + 2
+        while not commands and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert commands[0][commands[0].index("-s") + 1] == str(source)
+        assert master.preset_warning == (
+            "Preset Bad.sts has no pre-compressor Drive setting; AGC drive not applied"
         )
     finally:
         master.close()
