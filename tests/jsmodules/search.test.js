@@ -66,7 +66,7 @@ describe("search requests", () => {
     vi.unstubAllGlobals();
   });
 
-  it("offers an accessible Edit points action that opens the shared library editor", async () => {
+  it("offers an accessible Track info action that opens the shared library editor", async () => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse({
       results: [{ path: "M:/music/song.flac", title: "Song" }],
     }))));
@@ -77,7 +77,8 @@ describe("search requests", () => {
     els.btnSearch.click();
     await vi.waitFor(() => expect(els.searchResults.querySelector('[data-points="true"]')).not.toBeNull());
     const button = els.searchResults.querySelector('[data-points="true"]');
-    expect(button.getAttribute("aria-label")).toBe("Edit points for Song");
+    expect(button.getAttribute("aria-label")).toBe("Track info for Song");
+    expect(button.textContent).toContain("Track info");
     button.click();
     expect(onEditPoints).toHaveBeenCalledWith({ path: "M:/music/song.flac", kind: "music" });
     vi.unstubAllGlobals();

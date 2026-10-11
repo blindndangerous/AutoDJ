@@ -1,9 +1,51 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { applyQueueState, installQueueButtons, installQueueClear, renderQueue } from
+import { applyQueueState, installQueueButtons, installQueueClear, renderQueue, resetQueueState } from
   "../../src/autodj/static/modules/queue.js";
 
 describe("queue mutations", () => {
+  it("opens Track info without changing or posting the queue", () => {
+    document.body.innerHTML = '<p id="announce"></p><ul id="queue"></ul>';
+    const els = {
+      queueList: document.querySelector("#queue"),
+      queueCount: document.createElement("span"),
+      queueAnnounce: document.querySelector("#announce"),
+    };
+    const queue = [{ path: "one.mp3", display_name: "One" }];
+    renderQueue(queue, els);
+    installQueueButtons(els);
+    const edit = vi.fn();
+    document.addEventListener("autodj:edit-points", edit, { once: true });
+
+    els.queueList.querySelector('.queue-btn[data-action="info"]').click();
+
+    expect(edit).toHaveBeenCalledOnce();
+    expect(edit.mock.calls[0][0].detail).toEqual({ path: "one.mp3", kind: "music" });
+    expect(els.queueList.querySelectorAll("li[data-path]")).toHaveLength(1);
+    expect(els.queueList.textContent).toContain("One");
+    expect(els.queueList.getAttribute("aria-busy")).not.toBe("true");
+  });
+
+  it("restores focus to Track info after a queue reorder", () => {
+    document.body.innerHTML = '<ul id="queue" tabindex="-1"></ul>';
+    const els = { queueList: document.querySelector("#queue"), queueCount: document.createElement("span") };
+    resetQueueState(els);
+    applyQueueState([
+      { path: "one.mp3", display_name: "One" },
+      { path: "two.mp3", display_name: "Two" },
+    ], els);
+    const button = els.queueList.querySelector('[data-path="two.mp3"][data-action="info"]');
+    button.focus();
+
+    applyQueueState([
+      { path: "two.mp3", display_name: "Two" },
+      { path: "one.mp3", display_name: "One" },
+    ], els);
+
+    expect(document.activeElement.dataset.action).toBe("info");
+    expect(document.activeElement.dataset.path).toBe("two.mp3");
+  });
+
   it("does not collide queue keys containing delimiter characters", () => {
     document.body.innerHTML = '<span id="count"></span><ul id="queue"></ul>';
     const els = {

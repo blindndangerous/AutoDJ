@@ -2430,7 +2430,29 @@ def create_app(
         entry = library.entry_for_path(path)
         if entry is None:
             raise HTTPException(status_code=404, detail="Recording not in library")
-        return await asyncio.to_thread(library.catalog.record_for_path, path)
+        record = await asyncio.to_thread(library.catalog.record_for_path, path)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Recording not in library")
+        record["playable"] = True
+        prepared_path = record["prepared_path"]
+        record["prepared"] = bool(
+            prepared_path and await asyncio.to_thread(Path(prepared_path).is_file)
+        )
+        advanced = record["kind"] == "music" and any(
+            source["advanced"]
+            for source in await asyncio.to_thread(library.catalog.sources_for_path, path, "music")
+        )
+        has_vector = await asyncio.to_thread(library.catalog.has_vector, path)
+        record["analysis"] = "ready" if has_vector else "pending" if advanced else "disabled"
+        from autodj.dj_meta import key_label
+
+        record["key_label"] = key_label(
+            record["key"],
+            record["mode"],
+            library.cfg.playback.key_notation,
+            prefer_flats=library.cfg.playback.key_prefer_flats,
+        )
+        return record
 
     @app.post("/api/library/points")
     async def api_library_save_points(body: SongPointsBody) -> dict:

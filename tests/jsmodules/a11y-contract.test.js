@@ -922,8 +922,9 @@ function focusOutlinesMeetContract(css = cssSource) {
 
 function libraryLogOwnershipIsScoped(html = htmlSource) {
   installDocument({ html });
-  const panel = document.querySelector("#panel-library");
   const status = document.querySelector("#lib-job-status");
+  // Folder browsing has its own announcement; scope this check to the job card.
+  const panel = status.closest("details");
   const log = document.querySelector("#library-log");
   const liveOwners = new Set(panel.querySelectorAll([
     '[aria-live]:not([aria-live="off"])',
@@ -954,6 +955,19 @@ function functionBody(source, name) {
 }
 
 describe("static accessibility contracts", () => {
+  it("keeps track editing in its own tab with a named Save or Discard dialog", () => {
+    installDocument();
+    const panel = document.querySelector("#panel-track-info");
+    expect(panel.getAttribute("aria-labelledby")).toBe("tab-track-info");
+    expect(panel.contains(document.querySelector("#points-editor"))).toBe(true);
+    expect(document.querySelector("#panel-now #points-editor")).toBeNull();
+    expect(document.querySelector("#track-info-details").hasAttribute("aria-live")).toBe(false);
+    const dialog = document.querySelector("#track-info-dialog");
+    expect(dialog.tagName).toBe("DIALOG");
+    expect(dialog.getAttribute("aria-labelledby")).toBe("track-info-dialog-title");
+    expect([...dialog.querySelectorAll("button")].map(button => button.textContent)).toEqual(["Save", "Discard"]);
+    expect(dialog.querySelector("#track-info-error").getAttribute("role")).toBe("status");
+  });
   it("keeps connected status text visible without relying on color alone", () => {
     const background = lastValue("#conn-status.connected", "background");
     const color = lastValue("#conn-status.connected", "color");

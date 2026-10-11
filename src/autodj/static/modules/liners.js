@@ -77,7 +77,7 @@ export function renderLinerFileList(fileList, files, onDelete, onEdit = (path, k
     const liner = legacyName ? { id: item, name: item, path: null } : item;
     const buttons = [rowButton(document, "Delete", `Delete ${liner.name}`, (button) =>
       legacyName ? onDelete(liner.id, button) : onDelete(liner.id, button, liner.name))];
-    if (liner.path && liner.editable !== false) buttons.push(rowButton(document, "Edit points", `Edit points for ${liner.name}`, () => onEdit(liner.path, "liner")));
+    if (liner.path && liner.editable !== false) buttons.push(rowButton(document, "Track info", `Track info for ${liner.name}`, () => onEdit(liner.path, "liner")));
     return listRow(document, liner.name, "", ...buttons);
   }));
 }

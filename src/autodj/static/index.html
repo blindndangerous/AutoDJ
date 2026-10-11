@@ -82,6 +82,7 @@
     <button type="button" role="tab" id="tab-history"  data-view="history"  aria-selected="false" tabindex="-1">History</button>
     <button type="button" role="tab" id="tab-settings" data-view="settings" aria-selected="false" tabindex="-1">Settings</button>
     <button type="button" role="tab" id="tab-library"  data-view="library"  aria-selected="false" tabindex="-1">Library tools</button>
+    <button type="button" role="tab" id="tab-track-info" data-view="track-info" aria-selected="false" tabindex="-1">Track info</button>
   </div>
 </nav>
 
@@ -182,37 +183,7 @@
            the same cues twice.  #cue-details is the one browsable copy. -->
       <p id="cue-summary" class="visually-hidden" aria-hidden="true">No cue points</p>
       <p id="cue-details" class="visually-hidden">No cue points</p>
-      <button type="button" id="edit-current-points">Edit song points</button>
-      <section id="points-editor" aria-labelledby="points-heading" hidden>
-        <h3 id="points-heading">Song points</h3>
-        <p id="points-liner-help" hidden>Segue marks the end of the liner’s main content; End keeps the remaining tail. With Overlap start set to 0, AutoDJ fits Segue before the next song’s vocals. A positive Overlap start explicitly starts the music that many seconds after saved Start.</p>
-        <label for="points-path">Track path</label>
-        <input id="points-path" type="text" autocomplete="off">
-        <button type="button" id="points-load">Load points</button>
-        <div id="points-fields">
-          <label>Start (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="start" aria-label="Start time"><span data-point-source="start"></span></label>
-          <button type="button" data-set-current="start" aria-label="Set Start to current position">Set to current position</button>
-          <button type="button" data-preview="start">Preview Start</button>
-          <label>Intro (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="intro" aria-label="Intro time"><span data-point-source="intro"></span></label>
-          <button type="button" data-set-current="intro" aria-label="Set Intro to current position">Set to current position</button>
-          <button type="button" data-preview="intro">Preview Intro</button>
-          <label>Outro (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="outro" aria-label="Outro time"><span data-point-source="outro"></span></label>
-          <button type="button" data-set-current="outro" aria-label="Set Outro to current position">Set to current position</button>
-          <button type="button" data-preview="outro">Preview Outro</button>
-          <label>Segue (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="segue" aria-label="Segue time"><span data-point-source="segue"></span></label>
-          <button type="button" data-set-current="segue" aria-label="Set Segue to current position">Set to current position</button>
-          <button type="button" data-preview="segue">Preview Segue</button>
-          <label>End (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="end" aria-label="End time"><span data-point-source="end"></span></label>
-          <button type="button" data-set-current="end" aria-label="Set End to current position">Set to current position</button>
-          <button type="button" data-preview="end">Preview End</button>
-          <label>Overlap start (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="overlap_start" aria-label="Overlap start time"><span data-point-source="overlap_start"></span></label>
-          <button type="button" data-set-current="overlap_start" aria-label="Set Overlap start to current position">Set to current position</button>
-          <button type="button" data-preview="overlap_start">Preview Overlap start</button>
-        </div>
-        <button type="button" id="points-save">Save points</button>
-        <audio id="points-preview" controls preload="none" aria-label="Song point preview"></audio>
-        <p id="points-status" role="status" aria-live="polite" aria-atomic="true"></p>
-      </section>
+      <button type="button" id="edit-current-points">Track info</button>
     </div>
   </details>
 
@@ -340,6 +311,52 @@
     <ol id="lyrics-list" role="list" aria-label="Lyric lines"></ol>
   </details>
 
+  </section>
+  <section data-view="track-info" id="panel-track-info" role="tabpanel" aria-labelledby="tab-track-info" hidden>
+    <h2 id="track-info-heading" tabindex="-1">Track info</h2>
+    <p id="track-info-empty">Choose Track info beside a song or liner.</p>
+    <dl id="track-info-details" hidden></dl>
+    <section id="points-editor" aria-labelledby="points-heading" hidden>
+      <h3 id="points-heading">Cue points</h3>
+      <p id="points-liner-help" hidden>Segue marks the end of the liner’s main content; End keeps the remaining tail. With Overlap start set to 0, AutoDJ fits Segue before the next song’s vocals. A positive Overlap start explicitly starts the music that many seconds after saved Start.</p>
+      <label for="points-path">Track path</label>
+      <input id="points-path" type="text" autocomplete="off" readonly>
+      <div id="points-fields">
+        <div class="cue-point-row">
+          <label>Start (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="start" aria-label="Start time"><span data-point-source="start"></span></label>
+          <button type="button" data-set-current="start" aria-label="Set Start to current position">Set to current position</button>
+          <button type="button" data-preview="start">Preview Start</button>
+        </div>
+        <div class="cue-point-row">
+          <label>Intro (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="intro" aria-label="Intro time"><span data-point-source="intro"></span></label>
+          <button type="button" data-set-current="intro" aria-label="Set Intro to current position">Set to current position</button>
+          <button type="button" data-preview="intro">Preview Intro</button>
+        </div>
+        <div class="cue-point-row">
+          <label>Outro (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="outro" aria-label="Outro time"><span data-point-source="outro"></span></label>
+          <button type="button" data-set-current="outro" aria-label="Set Outro to current position">Set to current position</button>
+          <button type="button" data-preview="outro">Preview Outro</button>
+        </div>
+        <div class="cue-point-row">
+          <label>Segue (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="segue" aria-label="Segue time"><span data-point-source="segue"></span></label>
+          <button type="button" data-set-current="segue" aria-label="Set Segue to current position">Set to current position</button>
+          <button type="button" data-preview="segue">Preview Segue</button>
+        </div>
+        <div class="cue-point-row">
+          <label>End (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="end" aria-label="End time"><span data-point-source="end"></span></label>
+          <button type="button" data-set-current="end" aria-label="Set End to current position">Set to current position</button>
+          <button type="button" data-preview="end">Preview End</button>
+        </div>
+        <div class="cue-point-row">
+          <label>Overlap start (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="overlap_start" aria-label="Overlap start time"><span data-point-source="overlap_start"></span></label>
+          <button type="button" data-set-current="overlap_start" aria-label="Set Overlap start to current position">Set to current position</button>
+          <button type="button" data-preview="overlap_start">Preview Overlap start</button>
+        </div>
+      </div>
+      <button type="button" id="points-save">Save points</button>
+      <audio id="points-preview" controls preload="none" aria-label="Song point preview"></audio>
+    </section>
+    <p id="points-status" role="status" aria-live="polite" aria-atomic="true"></p>
   </section>
   <!-- ============================================================
        View: History — session play log, most-recent first
@@ -1249,6 +1266,18 @@
 <!-- Volume announcement region — only written on user-initiated volume changes -->
 <div id="vol-announce" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
 </main>
+
+<dialog id="track-info-dialog" aria-labelledby="track-info-dialog-title">
+  <form method="dialog">
+    <h2 id="track-info-dialog-title"></h2>
+    <p>Save your changes before choosing another track, or discard them to switch.</p>
+    <p id="track-info-error" role="status" aria-live="polite"></p>
+    <div class="dialog-actions">
+      <button type="button" id="track-info-save" value="save">Save</button>
+      <button type="button" id="track-info-discard" value="discard">Discard</button>
+    </div>
+  </form>
+</dialog>
 
 <!-- Shared confirmation for actions that cannot be undone (Clear queue,
      Delete profile, Delete liner, Sign out, Revoke device, Make new

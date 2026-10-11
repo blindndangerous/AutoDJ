@@ -1,5 +1,8 @@
 // Music and liner source folders plus the saved song-points editor.
-import { requestJson } from "./api-client.js";
+import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
+import { fmtTrack } from "./dom-helpers.js";
+import { lastSeenWords } from "./devices.js";
+import { formatPlayedAt } from "./history-format.js";
 
 const POINTS = ["start", "intro", "outro", "segue", "end", "overlap_start"];
 
@@ -37,6 +40,10 @@ export function installLibraryFolders({ document: doc = document, request = requ
   let timer = null;
   let currentPath = null;
   let currentKind = "music";
+  let currentName = "this track";
+  let savedFields = "";
+  let opening = false;
+  let saving = false;
   let folderSignature = null;
 
   function say(message, error = false) {
@@ -136,7 +143,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
 
   function setPointFields(points, sources = {}) {
     const heading = doc.getElementById("points-heading");
-    if (heading) heading.textContent = currentKind === "liner" ? "Liner points" : "Song points";
+    if (heading) heading.textContent = "Cue points";
     const linerHelp = doc.getElementById("points-liner-help");
     if (linerHelp) linerHelp.hidden = currentKind !== "liner";
     for (const name of POINTS) {
@@ -150,46 +157,156 @@ export function installLibraryFolders({ document: doc = document, request = requ
       const provenance = doc.querySelector(`[data-point-source="${name}"]`);
       if (provenance) provenance.textContent = sources[name] ? ` (${String(sources[name]).replaceAll("_", " ")})` : " (not set)";
     }
+    savedFields = fieldSnapshot();
   }
-  async function openEditor(path, kind = "music") {
-    if (!path) { pointSay("Choose a track first.", true); return; }
-    currentPath = path;
-    currentKind = kind;
-    pointPath.value = path;
-    try {
-      const data = await request(`/api/library/points?path=${encodeURIComponent(path)}`);
-      currentKind = data.kind || kind;
-      setPointFields(data.points || {}, data.point_sources || {});
-      editor.hidden = false;
-      const nowPanel = doc.getElementById("panel-now");
-      if (nowPanel?.hidden) doc.getElementById("tab-now")?.click();
-      const preview = doc.getElementById("points-preview");
-      if (preview) preview.src = `/api/audio?path=${encodeURIComponent(path)}`;
-      pointSay(`Editing ${data.path || path}${data.length ? ` (${formatPointTime(data.length)})` : ""}.`);
-      editor.querySelector("[data-point='start']").focus();
-    } catch (error) { pointSay(`Could not load song points: ${error.message}`, true); }
+  function fieldSnapshot() {
+    return JSON.stringify(POINTS.map((name) => doc.querySelector(`[data-point="${name}"]`).value));
   }
-  doc.getElementById("edit-current-points").addEventListener("click", () => {
-    const track = getCurrentTrack();
-    void openEditor(track?.path, track?.kind || "music");
-  });
-  const onEditPoints = (event) => {
-    if (doc.getElementById("panel-now")?.hidden) doc.getElementById("tab-now")?.click();
-    void openEditor(event.detail?.path, event.detail?.kind || "music");
-  };
-  doc.addEventListener("autodj:edit-points", onEditPoints);
-  doc.getElementById("points-load").addEventListener("click", () => void openEditor(pointPath.value.trim(), currentKind));
-  doc.getElementById("points-save").addEventListener("click", async () => {
+  function showTrackInfo() {
+    const tab = doc.getElementById("tab-track-info") || doc.getElementById("tab-now");
+    tab?.click();
+    const heading = doc.getElementById("track-info-heading");
+    if (heading && !doc.getElementById("panel-track-info").hidden) heading.focus();
+  }
+  function renderDetails(data) {
+    const details = doc.getElementById("track-info-details");
+    if (!details) return;
+    const path = data.path || currentPath;
+    const split = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+    const lastPlayed = data.last_played > 0
+      ? `${formatPlayedAt(new Date(data.last_played * 1000).toISOString(), true)} (${lastSeenWords(data.last_played)})`
+      : "Never";
+    const analysis = currentKind === "liner" ? "Not needed for liners" : {
+      ready: "Complete", pending: "Pending — available for playback", disabled: "Not enabled for this folder",
+    }[data.analysis] || "Not available";
+    const rows = [
+      ["Title", data.title || path.slice(split + 1)], ["Artist", data.artist],
+      ["Album", data.album], ["Year", data.year || null], ["Genre", data.genre],
+      ["Type", currentKind === "liner" ? "Voice liner" : "Music"],
+      ["Duration", formatPointTime(data.length)], ["Last played", lastPlayed],
+      ["BPM", data.bpm > 0 ? data.bpm : null], ["Key", data.key_label === "--" ? "Unknown" : data.key_label],
+      ["Advanced analysis", analysis],
+      ["Audio preparation", data.prepared == null ? "Not available" : data.prepared ? "Ready" : "Not prepared yet"],
+      ["Folder", path.slice(0, split + 1)], ["Filename", path.slice(split + 1)],
+    ];
+    details.replaceChildren(...rows.flatMap(([label, value]) => {
+      const term = doc.createElement("dt");
+      const description = doc.createElement("dd");
+      term.textContent = label;
+      description.textContent = value == null || value === "" ? "Not available" : String(value);
+      return [term, description];
+    }));
+    details.hidden = false;
+    doc.getElementById("track-info-heading").textContent = `Track info: ${currentName}`;
+    doc.getElementById("track-info-empty").hidden = true;
+  }
+  async function savePoints(errorTarget = null) {
+    if (saving || !currentPath) return false;
+    saving = true;
+    const epoch = captureAuthenticatedRequestEpoch();
+    const wasInert = editor.inert;
+    editor.inert = true;
     try {
       const points = {};
       for (const name of POINTS) {
         const field = doc.querySelector(`[data-point="${name}"]`);
         if (!field.closest("label").hidden) points[name] = parsePointTime(field.value);
       }
-      await request("/api/library/points", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: currentPath, points }) });
-      pointSay(`${currentKind === "liner" ? "Liner" : "Song"} points saved.`);
-    } catch (error) { pointSay(error.message.startsWith("Enter seconds") ? error.message : `Could not save ${currentKind} points: ${error.message}`, true); }
+      const data = await request("/api/library/points", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: currentPath, points }) });
+      if (!isAuthenticatedRequestCurrent(epoch)) return false;
+      if (data.points) setPointFields(data.points, data.point_sources || {});
+      else savedFields = fieldSnapshot();
+      pointSay(`Saved changes to ${currentName}.`);
+      return true;
+    } catch (error) {
+      if (!isAuthenticatedRequestCurrent(epoch)) return false;
+      const message = `Could not save changes: ${error.message}`;
+      if (errorTarget) errorTarget.textContent = `${message} Press Escape to return to editing.`;
+      else pointSay(message, true);
+      return false;
+    } finally {
+      saving = false;
+      editor.inert = wasInert;
+    }
+  }
+  function confirmTrackChange() {
+    const dialog = doc.getElementById("track-info-dialog");
+    if (!dialog || dialog.open) {
+      showTrackInfo();
+      pointSay("Save your changes before choosing another track.", true);
+      return Promise.resolve(false);
+    }
+    const save = doc.getElementById("track-info-save");
+    const discard = doc.getElementById("track-info-discard");
+    const error = doc.getElementById("track-info-error");
+    doc.getElementById("track-info-dialog-title").textContent = `Save changes to ${currentName}?`;
+    error.textContent = "";
+    dialog.returnValue = "";
+    return new Promise((resolve) => {
+      async function accept() {
+        if (saving) return;
+        save.disabled = discard.disabled = true;
+        const saved = await savePoints(error);
+        save.disabled = discard.disabled = false;
+        if (saved) dialog.close("save");
+      }
+      function reject() { if (!saving) dialog.close("discard"); }
+      function cancel(event) { if (saving) event.preventDefault(); }
+      function closed() {
+        save.removeEventListener("click", accept);
+        discard.removeEventListener("click", reject);
+        dialog.removeEventListener("cancel", cancel);
+        dialog.removeEventListener("close", closed);
+        resolve(dialog.returnValue === "save" || dialog.returnValue === "discard");
+      }
+      save.addEventListener("click", accept);
+      discard.addEventListener("click", reject);
+      dialog.addEventListener("cancel", cancel);
+      dialog.addEventListener("close", closed);
+      dialog.showModal();
+      save.focus();
+    });
+  }
+  async function openEditor(path, kind = "music") {
+    if (opening || saving) return;
+    if (!path) { showTrackInfo(); pointSay("Choose a track first.", true); return; }
+    if (path === currentPath && savedFields !== fieldSnapshot()) { showTrackInfo(); return; }
+    opening = true;
+    const epoch = captureAuthenticatedRequestEpoch();
+    try {
+      if (currentPath && savedFields !== fieldSnapshot() && !await confirmTrackChange()) return;
+      editor.inert = true;
+      const data = await request(`/api/library/points?path=${encodeURIComponent(path)}`);
+      if (!isAuthenticatedRequestCurrent(epoch)) return;
+      currentPath = data.path || path;
+      currentKind = data.kind || kind;
+      currentName = data.title ? fmtTrack(data) : currentPath.split(/[\\/]/).pop();
+      pointPath.value = currentPath;
+      setPointFields(data.points || {}, data.point_sources || {});
+      renderDetails(data);
+      editor.hidden = false;
+      const preview = doc.getElementById("points-preview");
+      if (preview) {
+        preview.pause();
+        preview.src = `/api/audio?path=${encodeURIComponent(currentPath)}`;
+      }
+      showTrackInfo();
+      pointSay("");
+    } catch (error) {
+      if (isAuthenticatedRequestCurrent(epoch)) { showTrackInfo(); pointSay(`Could not load track info: ${error.message}`, true); }
+    }
+    finally { editor.inert = false; opening = false; }
+  }
+  doc.getElementById("edit-current-points").addEventListener("click", () => {
+    const track = getCurrentTrack();
+    void openEditor(track?.path, track?.kind || "music");
   });
+  const onEditPoints = (event) => {
+    void openEditor(event.detail?.path, event.detail?.kind || "music");
+  };
+  doc.addEventListener("autodj:edit-points", onEditPoints);
+  doc.getElementById("points-load")?.addEventListener("click", () => void openEditor(pointPath.value.trim(), currentKind));
+  doc.getElementById("points-save").addEventListener("click", () => void savePoints());
   editor.addEventListener("click", async (event) => {
     const setButton = event.target.closest("button[data-set-current]");
     if (setButton) {

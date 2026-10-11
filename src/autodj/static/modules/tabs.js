@@ -4,7 +4,7 @@
 // each <section>.  Tablist arrow / Home / End navigation follows
 // the ARIA APG roving-tabindex pattern.
 
-const VIEW_NAMES = ["now", "queue", "history", "settings", "library"];
+const VIEW_NAMES = ["now", "queue", "history", "settings", "library", "track-info"];
 
 const _viewSections = new Map();
 const _viewLinks = new Map();
@@ -30,11 +30,11 @@ export function initViewRouter() {
   }
   window.addEventListener("hashchange", () => {
     const view = (location.hash || "#now").replace(/^#/, "");
-    applyView(VIEW_NAMES.includes(view) ? view : "now", true);
+    applyView(VIEW_NAMES.includes(view) && _viewSections.has(view) ? view : "now", true);
   });
   // Initial paint -- no focus stealing on first load.
   const initial = (location.hash || "#now").replace(/^#/, "");
-  applyView(VIEW_NAMES.includes(initial) ? initial : "now", false);
+  applyView(VIEW_NAMES.includes(initial) && _viewSections.has(initial) ? initial : "now", false);
   _initialised = true;
 }
 

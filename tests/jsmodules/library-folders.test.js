@@ -1,9 +1,21 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { formatPointTime, installLibraryFolders, parsePointTime } from "../../src/autodj/static/modules/library-folders.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { formatPointTime, installLibraryFolders as installControls, parsePointTime } from "../../src/autodj/static/modules/library-folders.js";
+import { invalidateAuthenticatedRequestEpoch } from "../../src/autodj/static/modules/api-client.js";
+
+const installed = [];
+function installLibraryFolders(options) {
+  const controls = installControls(options);
+  installed.push(controls);
+  return controls;
+}
+afterEach(() => { for (const controls of installed.splice(0)) controls.destroy(); });
 
 function mount() {
   document.body.innerHTML = `
     <button id="tab-now">Now Playing</button><section id="panel-now" hidden></section>
+    <button id="tab-track-info">Track info</button>
+    <section id="panel-track-info" hidden><h2 id="track-info-heading" tabindex="-1">Track info</h2></section>
+    <p id="track-info-empty">Choose a track</p><dl id="track-info-details" hidden></dl>
     <section id="panel-library" hidden>
       <input id="source-folder-path"><select id="source-folder-kind"><option value="music">Music</option><option value="liner">Liner</option></select>
       <input id="source-folder-recursive" type="checkbox" checked><input id="source-folder-advanced" type="checkbox" checked>
@@ -16,13 +28,25 @@ function mount() {
       ${["start", "intro", "outro", "segue", "end", "overlap_start"].map((name) => `<label><input data-point="${name}"><span data-point-source="${name}"></span></label><button data-preview="${name}"></button><button data-set-current="${name}"></button>`).join("")}
       <audio id="points-preview"></audio>
       <button id="points-save"></button><p id="points-status"></p>
-    </section>`;
+    </section>
+    <dialog id="track-info-dialog" aria-labelledby="track-info-dialog-title">
+      <h2 id="track-info-dialog-title"></h2><p id="track-info-error" role="status"></p>
+      <button id="track-info-save" type="button">Save</button><button id="track-info-discard" type="button">Discard</button>
+    </dialog>`;
+  const dialog = document.getElementById("track-info-dialog");
+  dialog.showModal = () => { dialog.open = true; };
+  dialog.close = (value = "") => {
+    dialog.returnValue = value;
+    dialog.open = false;
+    dialog.dispatchEvent(new Event("close"));
+  };
   return document;
 }
 
 beforeEach(() => { mount(); });
 document.addEventListener("click", (event) => {
   if (event.target.id === "tab-now") document.getElementById("panel-now").hidden = false;
+  if (event.target.id === "tab-track-info") document.getElementById("panel-track-info").hidden = false;
 });
 
 describe("clock folder and points controls", () => {
@@ -130,7 +154,7 @@ describe("clock folder and points controls", () => {
     }));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(document.getElementById("points-editor").hidden).toBe(false);
-    expect(document.getElementById("points-heading").textContent).toBe("Liner points");
+    expect(document.getElementById("points-heading").textContent).toBe("Cue points");
     expect(document.getElementById("points-liner-help").hidden).toBe(false);
     expect(document.querySelector('[data-point="intro"]').closest("label").hidden).toBe(true);
     expect(document.querySelector('[data-point="outro"]').closest("label").hidden).toBe(true);
@@ -162,5 +186,143 @@ describe("clock folder and points controls", () => {
     document.querySelector('[data-point="start"]').value = "invalid";
     document.querySelector('[data-set-current="overlap_start"]').click();
     expect(document.getElementById("points-status").textContent).toContain("Enter seconds or minutes:seconds");
+  });
+
+  function trackRequest() {
+    return vi.fn(async (url) => ({
+      path: decodeURIComponent(url.split("path=")[1] || "M:/one.flac"),
+      title: url.includes("two") ? "Two" : "One", artist: "Artist", kind: "music",
+      last_played: 172800, analysis: "ready", prepared: true,
+      points: { intro: 8, end: 180 }, point_sources: { intro: "analysis" },
+    }));
+  }
+
+  it("shows metadata safely and keeps drafts when revisiting the selected track", async () => {
+    const request = trackRequest();
+    const controls = installLibraryFolders({ document, request });
+    await controls.openEditor("M:/one.flac");
+    expect(document.getElementById("panel-track-info").hidden).toBe(false);
+    expect(document.getElementById("panel-now").hidden).toBe(true);
+    const details = document.getElementById("track-info-details");
+    expect(details.textContent).toContain("Last played");
+    expect(details.textContent).toContain("days ago");
+    expect(details.textContent).toContain("Complete");
+    document.querySelector('[data-point="intro"]').value = "0:10";
+    document.getElementById("panel-track-info").hidden = true;
+    await controls.openEditor("M:/one.flac");
+    expect(document.querySelector('[data-point="intro"]').value).toBe("0:10");
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(document.getElementById("track-info-dialog").open).toBe(false);
+  });
+
+  it("saves the old track before switching and names it in the modal", async () => {
+    const request = trackRequest();
+    const controls = installLibraryFolders({ document, request });
+    await controls.openEditor("M:/one.flac");
+    document.querySelector('[data-point="intro"]').value = "0:10";
+    const switching = controls.openEditor("M:/two.flac");
+    expect(document.getElementById("track-info-dialog").open).toBe(true);
+    expect(document.getElementById("track-info-dialog-title").textContent).toBe("Save changes to Artist — One?");
+    document.getElementById("track-info-save").click();
+    await switching;
+    expect(request.mock.calls.map(([url]) => url)).toEqual([
+      "/api/library/points?path=M%3A%2Fone.flac", "/api/library/points", "/api/library/points?path=M%3A%2Ftwo.flac",
+    ]);
+    const body = JSON.parse(request.mock.calls[1][1].body);
+    expect(body.path).toBe("M:/one.flac");
+    expect(body.points.intro).toBe(10);
+    expect(document.getElementById("points-path").value).toBe("M:/two.flac");
+  });
+
+  it("discards a liner draft without saving, and offers the same liner fields", async () => {
+    const request = vi.fn(async (url) => ({ path: decodeURIComponent(url.split("path=")[1]), title: "Test jingle", kind: "liner", points: { start: 0, segue: 5.3, end: 8.8, overlap_start: 5.3 } }));
+    const controls = installLibraryFolders({ document, request });
+    await controls.openEditor("N:/jingle.wav", "liner");
+    document.querySelector('[data-point="overlap_start"]').value = "0:05.6";
+    const switching = controls.openEditor("N:/stinger.wav", "liner");
+    expect(document.getElementById("track-info-dialog-title").textContent).toContain("Test jingle");
+    document.getElementById("track-info-discard").click();
+    await switching;
+    expect(request.mock.calls.every(([, options]) => !options)).toBe(true);
+    expect(document.getElementById("points-path").value).toBe("N:/stinger.wav");
+    expect(document.querySelector('[data-point="overlap_start"]').closest("label").hidden).toBe(false);
+    expect(document.getElementById("track-info-details").textContent).toContain("Not needed for liners");
+  });
+
+  it("keeps the original draft after a failed save or Escape", async () => {
+    const request = trackRequest();
+    const controls = installLibraryFolders({ document, request });
+    await controls.openEditor("M:/one.flac");
+    document.querySelector('[data-point="intro"]').value = "0:10";
+    request.mockRejectedValueOnce(new Error("Offline"));
+    const switching = controls.openEditor("M:/two.flac");
+    document.getElementById("track-info-save").click();
+    await vi.waitFor(() => expect(document.getElementById("track-info-error").textContent).toContain("Offline"));
+    expect(document.getElementById("track-info-dialog").open).toBe(true);
+    expect(document.getElementById("points-path").value).toBe("M:/one.flac");
+    expect(document.querySelector('[data-point="intro"]').value).toBe("0:10");
+    document.getElementById("track-info-dialog").close();
+    await switching;
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(document.getElementById("points-path").value).toBe("M:/one.flac");
+  });
+
+  it("prevents concurrent switches and keeps draft values when loading the replacement fails", async () => {
+    const request = trackRequest();
+    const controls = installLibraryFolders({ document, request });
+    await controls.openEditor("M:/one.flac");
+    document.querySelector('[data-point="intro"]').value = "0:10";
+    request.mockRejectedValueOnce(new Error("Missing file"));
+    const switching = controls.openEditor("M:/two.flac");
+    await controls.openEditor("M:/three.flac");
+    document.getElementById("track-info-discard").click();
+    await switching;
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(document.getElementById("points-path").value).toBe("M:/one.flac");
+    expect(document.querySelector('[data-point="intro"]').value).toBe("0:10");
+    expect(document.getElementById("points-status").textContent).toContain("Missing file");
+  });
+
+  it("holds Save, Discard and Escape while the save is in flight", async () => {
+    const request = trackRequest();
+    const controls = installLibraryFolders({ document, request });
+    await controls.openEditor("M:/one.flac");
+    document.querySelector('[data-point="intro"]').value = "0:10";
+    let finishSave;
+    request.mockImplementationOnce(() => new Promise(resolve => { finishSave = resolve; }));
+    const switching = controls.openEditor("M:/two.flac");
+    document.getElementById("track-info-save").click();
+    expect(document.getElementById("track-info-save").disabled).toBe(true);
+    expect(document.getElementById("track-info-discard").disabled).toBe(true);
+    const escape = new Event("cancel", { cancelable: true });
+    document.getElementById("track-info-dialog").dispatchEvent(escape);
+    expect(escape.defaultPrevented).toBe(true);
+    expect(request).toHaveBeenCalledTimes(2);
+    finishSave({});
+    await switching;
+    expect(document.getElementById("points-path").value).toBe("M:/two.flac");
+  });
+
+  it("does not expose a stale detail response after authentication changes", async () => {
+    let respond;
+    const controls = installLibraryFolders({ document, request: () => new Promise(resolve => { respond = resolve; }) });
+    const opening = controls.openEditor("M:/one.flac");
+    invalidateAuthenticatedRequestEpoch();
+    respond({ path: "M:/one.flac", title: "Private title", points: {} });
+    await opening;
+    expect(document.getElementById("points-editor").hidden).toBe(true);
+    expect(document.getElementById("track-info-details").textContent).not.toContain("Private title");
+  });
+
+  it("keeps the cached older page usable until its server restarts", async () => {
+    for (const id of ["tab-track-info", "panel-track-info", "track-info-details", "track-info-dialog"]) document.getElementById(id).remove();
+    const controls = installLibraryFolders({ document, request: trackRequest() });
+    await controls.openEditor("M:/one.flac");
+    expect(document.getElementById("panel-now").hidden).toBe(false);
+    expect(document.getElementById("points-editor").hidden).toBe(false);
+    document.querySelector('[data-point="intro"]').value = "0:10";
+    await controls.openEditor("M:/two.flac");
+    expect(document.getElementById("points-path").value).toBe("M:/one.flac");
+    expect(document.getElementById("points-status").textContent).toContain("Save your changes");
   });
 });

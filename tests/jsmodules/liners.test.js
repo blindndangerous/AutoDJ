@@ -245,7 +245,7 @@ describe("liner file controls", () => {
     expect(onDelete).toHaveBeenCalledWith(filename, button);
   });
 
-  it("keeps duplicate filenames distinct and offers an Edit points action", async () => {
+  it("keeps duplicate filenames distinct and offers a Track info action", async () => {
     const { renderLinerFileList } = await import("../../src/autodj/static/modules/liners.js");
     const list = document.createElement("ul");
     const onDelete = vi.fn();
@@ -254,7 +254,8 @@ describe("liner file controls", () => {
       { id: "record-b", name: "same.wav", path: "Y:/two/same.wav" },
     ], onDelete);
     expect(list.querySelectorAll("li")).toHaveLength(2);
-    expect(list.querySelectorAll('button[aria-label="Edit points for same.wav"]')).toHaveLength(2);
+    expect(list.querySelectorAll('button[aria-label="Track info for same.wav"]')).toHaveLength(2);
+    expect([...list.querySelectorAll("button")].some((button) => button.textContent === "Track info")).toBe(true);
     list.querySelector("button").click();
     expect(onDelete).toHaveBeenCalledWith("record-a", expect.anything(), "same.wav");
   });

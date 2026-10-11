@@ -118,10 +118,10 @@ export function installSearch({
                 data-path="${path}"
                 data-now="false">Add to queue</button>
         <button class="result-btn"
-                aria-label="Edit points for ${name}"
+                aria-label="Track info for ${name}"
                 data-path="${path}"
                 data-kind="${escHtml(t.kind || "music") }"
-                data-points="true">Edit points</button>
+                data-points="true">Track info</button>
       </li>`;
     }).join("");
     if (browsing) {

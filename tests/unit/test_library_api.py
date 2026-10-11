@@ -6,10 +6,12 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 from urllib.parse import urlsplit
 
+import numpy as np
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from autodj.indexer import FEATURE_DIM
 from autodj.library import LibraryManager
 from autodj.server import (
     LibraryFolderBody,
@@ -90,6 +92,7 @@ def test_points_validate_and_keep_manual_values_without_analysis(library_api, tm
     with pytest.raises(HTTPException) as invalid:
         call("POST", "/api/library/points", SongPointsBody(path=str(music), points={"end": 999}))
     assert invalid.value.status_code == 400
+
     assert manager.catalog.points(music)["end"] == 180
     manager.start_scan.assert_not_called()
 
@@ -113,6 +116,35 @@ def test_points_validate_and_keep_manual_values_without_analysis(library_api, tm
     with pytest.raises(HTTPException) as invalid:
         call("POST", "/api/library/points", SongPointsBody(path=str(liner), points={"intro": 1}))
     assert invalid.value.status_code == 400
+
+
+def test_track_points_reports_playback_and_analysis_state(library_api, tmp_path):
+    manager, call, _app = library_api
+    music = manager.cfg.library.music_dir / "song.flac"
+    music.touch()
+    prepared = tmp_path / "prepared.wav"
+    prepared.write_bytes(b"prepared")
+    manager.catalog.put_entry(make_entry(music), prepared_path=str(prepared))
+    manager.refresh()
+
+    record = call("GET", "/api/library/points", str(music))
+    assert record["playable"]
+    assert record["prepared"]
+    assert record["analysis"] == "pending"
+    assert record["key_label"] == "--"
+
+    manager.catalog.set_vector(music, np.zeros(FEATURE_DIM, dtype=np.float32))
+    assert call("GET", "/api/library/points", str(music))["analysis"] == "ready"
+
+    source = manager.catalog.sources("music")[0]
+    manager.catalog.update_source(source["id"], recursive=True, advanced=False)
+    assert call("GET", "/api/library/points", str(music))["analysis"] == "ready"
+
+    other = manager.cfg.library.music_dir / "unindexed.flac"
+    other.touch()
+    manager.catalog.put_entry(make_entry(other))
+    manager.refresh()
+    assert call("GET", "/api/library/points", str(other))["analysis"] == "disabled"
 
 
 def test_track_browse_empty_query_paginates_stably(library_api):

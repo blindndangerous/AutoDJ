@@ -56,6 +56,20 @@ describe("card headings", () => {
 });
 
 describe("tab arrow keys", () => {
+  it("routes directly to Track info and focuses its heading", async () => {
+    installIndex();
+    window.location.hash = "#now";
+    vi.resetModules();
+    const { initViewRouter: freshRouter } = await import(
+      "../../src/autodj/static/modules/tabs.js");
+    freshRouter();
+    document.querySelector("#tab-track-info").click();
+    await vi.waitFor(() => expect(document.querySelector("#panel-track-info").hidden).toBe(false));
+    expect(document.activeElement.id).toBe("track-info-heading");
+    expect(window.location.hash).toBe("#track-info");
+    window.location.hash = "";
+  });
+
   it("selects the next tab before focusing it, so it is spoken once", async () => {
     installIndex();
     window.location.hash = "#now";
