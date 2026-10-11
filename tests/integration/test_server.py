@@ -40,11 +40,11 @@ def _tls_files(tmp_path: Path) -> dict[str, str]:
     return {"ssl_certfile": str(cert), "ssl_keyfile": str(key)}
 
 
-def _set_repeat_settings(cfg_mock) -> None:
+def _set_repeat_settings(cfg_mock, active_dir: Path) -> None:
     cfg_mock.playback.repeat_rules = RepeatSettings(
         track=RepeatRule(tracks=50), artist=RepeatRule(tracks=3)
     )
-    cfg_mock.index.active_dir = None
+    cfg_mock.index.active_dir = active_dir
 
 
 def _register_index_entry(bridge, entry) -> None:
@@ -1674,7 +1674,7 @@ class TestServeFunction:
             manager.return_value.entries_snapshot.return_value = ()
             yield
 
-    def test_serve_starts_uvicorn(self, caplog) -> None:
+    def test_serve_starts_uvicorn(self, caplog, tmp_path) -> None:
         """serve() should call uvicorn.run with the FastAPI app."""
         import logging
         from unittest.mock import MagicMock, patch
@@ -1685,7 +1685,7 @@ class TestServeFunction:
 
         # Build a proper cfg mock
         cfg_mock = MagicMock()
-        _set_repeat_settings(cfg_mock)
+        _set_repeat_settings(cfg_mock, tmp_path)
         cfg_mock.playback.crossfade_seconds = 3.0
         cfg_mock.server = ServerConfig()
         sim = _make_sim_mock()
@@ -1710,7 +1710,7 @@ class TestServeFunction:
         )
         assert client.get("/api/version").status_code == 200
 
-    def test_serve_starts_player_thread(self) -> None:
+    def test_serve_starts_player_thread(self, tmp_path) -> None:
         """serve() launches a daemon Player thread before starting uvicorn."""
         import threading
         from unittest.mock import MagicMock, patch
@@ -1718,7 +1718,7 @@ class TestServeFunction:
         from autodj.server import serve
 
         cfg_mock = MagicMock()
-        _set_repeat_settings(cfg_mock)
+        _set_repeat_settings(cfg_mock, tmp_path)
         cfg_mock.playback.crossfade_seconds = 3.0
         cfg_mock.server = ServerConfig()
         sim = _make_sim_mock()
@@ -1744,7 +1744,7 @@ class TestServeFunction:
         from autodj.server import serve
 
         cfg_mock = MagicMock()
-        _set_repeat_settings(cfg_mock)
+        _set_repeat_settings(cfg_mock, tmp_path)
         cfg_mock.playback.crossfade_seconds = 3.0
         cfg_mock.server = ServerConfig()
         cfg_mock.index.index_dir = tmp_path
@@ -1845,14 +1845,14 @@ class TestServeFunction:
         with patch("importlib.util.find_spec", side_effect=ValueError("mocked")):
             assert _missing_audio_modules() == []
 
-    def test_serve_uses_server_config_host_and_port_by_default(self) -> None:
+    def test_serve_uses_server_config_host_and_port_by_default(self, tmp_path) -> None:
         from unittest.mock import MagicMock, patch
 
         from autodj.server import serve
 
         cfg = MagicMock()
         cfg.server = ServerConfig(host="127.0.0.2", port=9090)
-        _set_repeat_settings(cfg)
+        _set_repeat_settings(cfg, tmp_path)
         cfg.playback.crossfade_seconds = 3.0
         sim = _make_sim_mock()
 
@@ -1925,7 +1925,7 @@ class TestServeFunction:
         player_class.assert_not_called()
         mock_uvicorn.assert_not_called()
 
-    def test_serve_allows_specific_authenticated_lan_without_policy_lists(self) -> None:
+    def test_serve_allows_specific_authenticated_lan_without_policy_lists(self, tmp_path) -> None:
         from unittest.mock import MagicMock, patch
 
         from autodj.server import serve
@@ -1933,7 +1933,7 @@ class TestServeFunction:
         cfg = MagicMock()
         cfg.index.index_dir = NO_INDEX_DIR
         cfg.server = ServerConfig(host="192.168.1.10", access_token="s" * 32)
-        _set_repeat_settings(cfg)
+        _set_repeat_settings(cfg, tmp_path)
         cfg.playback.crossfade_seconds = 3.0
 
         with (
@@ -1980,7 +1980,7 @@ class TestServeFunction:
             allowed_origins=[origin],
             **tls_files,
         )
-        _set_repeat_settings(cfg)
+        _set_repeat_settings(cfg, tmp_path)
         cfg.playback.crossfade_seconds = 3.0
 
         with (
@@ -2028,7 +2028,7 @@ class TestServeFunction:
         cfg = MagicMock()
         cfg.index.index_dir = tmp_path
         cfg.server = ServerConfig(access_token="s" * 32)
-        _set_repeat_settings(cfg)
+        _set_repeat_settings(cfg, tmp_path)
         cfg.playback.crossfade_seconds = 3.0
 
         def start() -> tuple[str, object]:
