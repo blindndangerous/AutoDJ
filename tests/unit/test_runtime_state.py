@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from autodj._bridge import PlayerBridge
-from autodj.config import NowPlayingConfig
+from autodj.config import DmcaConfig, NowPlayingConfig
 from autodj.player import PlayerState
 from autodj.runtime_state import (
     STATE_VERSION,
@@ -78,6 +78,7 @@ def _make_player() -> SimpleNamespace:
             max_listeners_per_address=0,
         ),
         nowplaying=NowPlayingConfig(),
+        dmca=DmcaConfig(),
         presets={},
     )
     return SimpleNamespace(
@@ -670,6 +671,7 @@ class TestRoundTrip:
             "stream_continuous",
             "stream_station_name",
             "nowplaying_show_next",
+            "dmca_enabled",
             "stream_max_listeners_per_address",
             "crossfade_bass_cutoff_hz",
             "pick_top_k",

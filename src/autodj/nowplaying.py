@@ -94,7 +94,12 @@ class NowPlaying:
             "schema": SCHEMA_VERSION,
             "station_name": cfg.stream.station_name,
             "current_track": current,
-            "next_track": _track(state.next_track) if cfg.nowplaying.show_next else None,
+            # DMCA mode never announces a song before it plays.
+            "next_track": (
+                _track(state.next_track)
+                if cfg.nowplaying.show_next and not cfg.dmca.enabled
+                else None
+            ),
             "history": list(reversed(history[-limit:])) if limit else [],
             "listener_count": self.bridge.stream.listener_count if self.bridge.stream else 0,
             "stream_path": "/stream.mp3",

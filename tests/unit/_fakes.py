@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 import faiss
 import numpy as np
 
+from autodj.config import DmcaConfig
 from autodj.dj_meta import Cue
 from autodj.indexer import FEATURE_DIM, IndexEntry
 from autodj.similarity import SimilarityIndex
@@ -105,6 +106,7 @@ def make_cfg_mock() -> MagicMock:
     cfg.library.music_dir = None
     cfg.index.active_dir = None
     cfg.server.station_timezone = "UTC"
+    cfg.dmca = DmcaConfig()
     return cfg
 
 

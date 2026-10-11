@@ -128,6 +128,12 @@ recent plays and listener count, and the public `/status` page shows the same to
 webhooks can send the same metadata to other services or Discord; configure their URLs in
 `config.local.toml`. See [Operations](docs/operations.md#now-playing-feed-and-webhooks).
 
+DMCA mode (`[dmca] enabled = true`) keeps the station inside the US statutory webcasting
+licence's performance complement: album, artist and box set limits in any three hours, in every
+pick mode, with a warning to confirm before you queue a song that breaks one. Public pages never
+show the next song in this mode. See [DMCA mode](docs/operations.md#dmca-mode). This is general
+information, not legal advice.
+
 ### Relay to Icecast or Shoutcast
 
 Stream mode can also push the station to hosted Icecast 2.4, Shoutcast 1 or Shoutcast 2 servers,

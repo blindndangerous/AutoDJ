@@ -1215,6 +1215,31 @@ class PlayerBridge:
         self.skip()
         return True
 
+    def dmca_queue_limits(self, entry: IndexEntry, *, now: bool, append: bool) -> tuple[str, ...]:
+        """The DMCA limits *entry* would break where it is about to be queued.
+
+        Its start is projected from track lengths: after the playing track
+        (unless *now*), and with *append* after everything already queued
+        too.  Empty when DMCA mode is off or no limit is broken.
+        """
+        from autodj.dmca import complement, projected_history
+
+        player = self.player
+        if not player._cfg.dmca.enabled:
+            return ()
+        state = player._state
+        with state.history_lock:
+            history = list(state.play_history)
+        with state.queue_lock:
+            waiting = [*([state.queued_next] if state.queued_next else []), *state.queue]
+        records, when = projected_history(
+            history,
+            state.clock(),
+            None if now else state.current_track,
+            waiting if append else [],
+        )
+        return complement(records, when, player._track_keys()).broken(entry)
+
     def queue_add(self, path: str) -> bool:
         """Append a track by path to the end of the user queue."""
         entry = self.entry_for_path(path)
@@ -1422,6 +1447,7 @@ class PlayerBridge:
                 "stream_continuous": bool(cfg.stream.continuous),
                 "stream_station_name": cfg.stream.station_name,
                 "nowplaying_show_next": cfg.nowplaying.show_next,
+                "dmca_enabled": cfg.dmca.enabled,
                 "stream_max_listeners_per_address": cfg.stream.max_listeners_per_address,
                 "volume": float(p._state.volume),
                 "is_muted": bool(p._state.is_muted),
