@@ -13,6 +13,7 @@ Example:
 from __future__ import annotations
 
 import ipaddress
+import logging
 import math
 import os
 import re
@@ -27,7 +28,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from autodj.liners import LINER_PICK_MODES
-from autodj.repeat_settings import REMOVED_REPEAT_KEYS, RepeatSettings
+from autodj.repeat_settings import RepeatSettings, ignore_unknown_repeat_keys
 
 DEFAULT_STEREOTOOL_PATH = (
     "./tools/stereo-tool/stereo_tool_cmd.exe"
@@ -37,6 +38,8 @@ DEFAULT_STEREOTOOL_PATH = (
 
 if TYPE_CHECKING:
     from autodj.presets import Preset
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -64,11 +67,11 @@ class _Section:
         """
         if not isinstance(data, Mapping):
             raise TypeError(f"{cls.SECTION} section must be a table")
-        _reject_unknown_keys(cls.SECTION, data, _field_names(cls))
+        _warn_unknown_keys(cls.SECTION, data, _field_names(cls))
         for f in fields(cls):  # type: ignore[arg-type]
             if f.name not in data and f.default is MISSING and f.default_factory is MISSING:
                 raise KeyError(f"config.toml [{cls.SECTION}] section is missing {f.name!r}")
-        return cls(**data)
+        return cls(**{key: value for key, value in data.items() if key in _field_names(cls)})
 
 
 def _optional(convert: Callable[[Any], Any], value: Any) -> Any:
@@ -230,10 +233,8 @@ def _one_of(value: str, options: tuple[str, ...], field_name: str) -> str:
     return value
 
 
-def _reject_unknown_keys(section: str, data: Mapping[str, Any], known: Iterable[str]) -> None:
-    """Raise if a config section holds a key outside *known*.
-
-    Removed and misspelled options must fail loudly rather than be ignored.
+def _warn_unknown_keys(section: str, data: Mapping[str, Any], known: Iterable[str]) -> None:
+    """Warn about config keys this version does not recognize.
 
     Args:
         section: Section name used in the error message, e.g. ``"library"``.
@@ -241,23 +242,10 @@ def _reject_unknown_keys(section: str, data: Mapping[str, Any], known: Iterable[
         known: Accepted key names.
 
     Raises:
-        ValueError: If *data* has any key not in *known*.
     """
     unknown = set(data) - set(known)
     if unknown:
-        raise UnknownConfigKeysError(section, sorted(unknown))
-
-
-class UnknownConfigKeysError(ValueError):
-    """Raised when a TOML section contains keys the current version rejects."""
-
-    def __init__(self, section: str, keys: Iterable[str]) -> None:
-        self.section = section
-        self.keys = tuple(sorted(keys))
-        message = f"unknown [{section}] keys: {list(self.keys)}"
-        if section == "playback" and REMOVED_REPEAT_KEYS.intersection(self.keys):
-            message += "; remove old repeat keys and re-enter limits in Settings > Picking > Repeats or [playback.repeat_rules]"
-        super().__init__(message)
+        logger.warning("Ignoring unknown config keys in [%s]: %s", section, sorted(unknown))
 
 
 def _field_names(cls: Any) -> set[str]:
@@ -475,7 +463,7 @@ class PlaybackConfig(_Section):
                     f"playback.{name} must be between 0 and {MAX_FADE_SECONDS:g}, got {seconds}"
                 )
             setattr(self, name, seconds)
-        self.repeat_rules = RepeatSettings.model_validate(self.repeat_rules)
+        self.repeat_rules = RepeatSettings.model_validate(ignore_unknown_repeat_keys(self.repeat_rules))
         max_minutes = self.server_max_track_minutes
         if isinstance(max_minutes, bool) or not isinstance(max_minutes, int | float):
             raise TypeError("playback.server_max_track_minutes must be a number")
@@ -1012,8 +1000,12 @@ class ServerConfig(_Section):
         if not isinstance(data, Mapping):
             raise TypeError("server section must be a table")
         data = dict(data)
-        if "liner_upload_max_bytes" in data:
-            raise UnknownConfigKeysError("server", ["liner_upload_max_bytes"])
+        _warn_unknown_keys(
+            "server",
+            data,
+            (_field_names(cls) - {"liner_upload_max_bytes"}) | {"liner_upload_max_mib"},
+        )
+        data.pop("liner_upload_max_bytes", None)
         max_mib = _require_int(data.pop("liner_upload_max_mib", 50), "server.liner_upload_max_mib")
         if not 1 <= max_mib <= MAX_LINER_UPLOAD_MIB:
             raise ValueError("server.liner_upload_max_mib must be between 1 and 1024")
@@ -1179,11 +1171,12 @@ class RelayConfig:
         where = f"stream.relays.{name}"
         if not isinstance(data, Mapping):
             raise TypeError(f"{where} must be a table")
-        _reject_unknown_keys(where, data, _field_names(cls) - {"name"})
+        _warn_unknown_keys(where, data, _field_names(cls) - {"name"})
         for key in _RELAY_REQUIRED:
             if key not in data:
                 raise KeyError(f"config [{where}] is missing {key!r}")
-        return cls(name=name, **data)
+        known = _field_names(cls) - {"name"}
+        return cls(name=name, **{key: value for key, value in data.items() if key in known})
 
     def __post_init__(self) -> None:
         """Validate every field and fill the per-type defaults."""
@@ -1620,7 +1613,7 @@ def _build_config(
 
     unknown_sections = set(raw) - {t.SECTION for t in _SECTION_TYPES} - {"presets", "webhooks"}
     if unknown_sections:
-        raise ValueError(f"unknown config sections: {sorted(unknown_sections)}")
+        logger.warning("Ignoring unknown config sections: %s", sorted(unknown_sections))
     sections: dict[str, Any] = {
         t.SECTION: t.from_dict(raw.get(t.SECTION, {})) for t in _SECTION_TYPES
     }
@@ -1638,9 +1631,10 @@ def _load_webhooks(raw: Any) -> tuple[WebhookConfig, ...]:
         raise ValueError("webhooks must be an array of at most 10 tables")
     hooks = []
     for item in raw:
-        if not isinstance(item, Mapping) or set(item) - {"url", "format", "events"}:
-            raise ValueError("webhooks entries require url, format and optional events")
-        hooks.append(WebhookConfig(**item))
+        if not isinstance(item, Mapping):
+            raise ValueError("webhooks entries must be tables")
+        _warn_unknown_keys("webhooks", item, {"url", "format", "events"})
+        hooks.append(WebhookConfig(**{key: value for key, value in item.items() if key in {"url", "format", "events"}}))
     return tuple(hooks)
 
 
