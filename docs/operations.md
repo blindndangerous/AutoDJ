@@ -796,13 +796,17 @@ uv run autodj export-plays --from 2026-09-01 --to 2026-09-30 --out september.csv
 ```
 
 Without `--out` the file goes to standard output. A one-line summary goes to standard error: how
-many plays were exported and how many songs lack an ISRC, label or other reporting field. Add
-`--missing` to get those songs instead of the plays, one row each, with the fields they lack and
-how often they played. Add `--name` for a named index. Dates are in the server's time zone; an ISO
+many plays were exported, how many songs lack an ISRC, label or other reporting field, and a
+warning when some songs have neither an ISRC nor both an album and a label, because SoundExchange
+may not be able to match those. Add `--missing` to get the songs that lack a field instead of the
+plays, one row each, with the fields they lack, how often they played, and a `matchable` column
+that says `no` for the songs SoundExchange may not be able to match. Add `--name` for a named index. Dates are in the server's time zone; an ISO
 8601 date and time also works, for example `--from 2026-09-01T06:00`.
 
 In the web page, open History, go to "Export play log", choose the dates and the format, and press
-Export. The browser saves the file and AutoDJ says how many plays it holds, or why it failed.
+Export. AutoDJ says "Exporting play log" and the Export button is unavailable until the file is
+ready. Then the browser saves the file and AutoDJ says how many plays it holds, with the same
+warnings as the summary, or why it failed.
 
 The CSV has one row per play, in this column order:
 
@@ -813,11 +817,14 @@ The CSV has one row per play, in this column order:
 - `artist` and `title`, as shown when the song played, and `album` from the library.
 - `isrc` and `label`, read from the file's tags when you export, so you do not need to re-index
   after tagging. ISRC comes from `ISRC` (FLAC and Ogg), `TSRC` (MP3) or the iTunes `ISRC` atom
-  (M4A). Label comes from `LABEL`, `ORGANIZATION` or `PUBLISHER` (FLAC and Ogg), `TPUB` or
+  (M4A). It is written as 12 characters, without hyphens or spaces and in capitals. A tag that is
+  not a valid ISRC (2 letters, 3 letters or digits, then 7 digits) counts as missing, so the song
+  shows up in `--missing`. Label comes from `LABEL`, `ORGANIZATION` or `PUBLISHER` (FLAC and Ogg), `TPUB` or
   `TXXX:LABEL` (MP3), or the iTunes `LABEL` atom (M4A).
 - `kind`: `song` or `liner`.
 - `path`: the file's path inside its music or liner folder, with `/` between folders.
-- `listeners`: see "Listener counts" below. Empty for plays logged before AutoDJ counted listeners.
+- `performances`: how many listeners heard the play; see "Listener counts" below. Empty for plays
+  logged before AutoDJ counted listeners.
 
 The file is UTF-8 without a byte order mark, because reporting tools and scripts would read a byte
 order mark as part of the first column name. To open it in Excel, use Data, From Text/CSV, and
@@ -836,12 +843,26 @@ What the play log does not hold yet:
 
 ### Listener counts
 
-Each play records how many people were listening:
+Each play records its performances: how many listeners heard any part of it, each counted once.
+That follows SoundExchange's definition, where a performance is each time any part of a recording
+is transmitted to one listener, so one play heard by 100 listeners is 100 performances.
 
-- In stream mode (`serve --stream`), AutoDJ counts the stream listeners connected when the song
-  starts, and raises the count whenever a listener joins during the song. The exported number is
-  the most listeners connected at the same time during the song. A listener who joins partway
-  through counts; if one listener leaves and another joins, they count as one.
+- In stream mode (`serve --stream`), the count is the stream listeners connected when the song
+  starts, plus each listener who connects while it plays. A listener who joins partway through
+  counts. When one listener leaves and another joins, both count, unlike a count of the most
+  listeners connected at once.
+- Players drop and reopen the stream, for example on a Wi-Fi blip or when speakers regroup, so
+  AutoDJ treats a listener as a client address with a User-Agent (the name the player sends). A
+  new connection from a pair already counted for the song is the same listener, not another
+  performance, when that pair is still connected or its last connection ended at most 10 seconds
+  earlier. A pair that comes back after more than 10 seconds counts again.
+- The rule can undercount: two players behind one public address that send the same User-Agent,
+  such as two speakers of the same model in one home, count once while both are connected. Behind
+  a reverse proxy such as a Cloudflare Tunnel, the address is the one the proxy passes on in
+  `X-Forwarded-For`, which uvicorn trusts only from this machine (`127.0.0.1`) by default. Without
+  it, every listener has the proxy's address and only the User-Agent tells them apart.
+- Addresses and User-Agents are kept in memory only, for the song that is playing and the 10
+  seconds after a disconnect. The play log stores only the count.
 - In every other mode the count is 1: the person at the computer or in the browser.
 - Plays logged before AutoDJ counted listeners have no count. They are listed by `--missing`.
 
@@ -872,12 +893,16 @@ SOUND_RECORDING_TITLE, ISRC, ALBUM_TITLE, MARKETING_LABEL, ACTUAL_TOTAL_PERFORMA
 AGGREGATE_TUNING_HOURS, CHANNEL_OR_PROGRAM_NAME and PLAY_FREQUENCY.
 
 - Only songs are reported. Liners, station IDs and ads are not sound recordings.
-- There is one line per recording (the same artist, title, ISRC, album and label).
-- ACTUAL_TOTAL_PERFORMANCES adds up the listener counts of the recording's plays. It is left
-  empty when any of those plays has no count.
+- There is one line per recording: plays whose artist, title, ISRC, album and label are the same
+  once written for the report. `Björk` and `Bjork` are one recording, and so are ISRCs written
+  with and without hyphens.
+- ACTUAL_TOTAL_PERFORMANCES adds up the performances of the recording's plays (see "Listener
+  counts" above). It is left empty when any of those plays has no count.
 - PLAY_FREQUENCY is the number of plays. AGGREGATE_TUNING_HOURS is left empty.
-- SoundExchange needs an ISRC, or else both the album title and the marketing label. Run
-  `--missing` to find songs to tag before you send the report.
+- SoundExchange needs an ISRC, or else both the album title and the marketing label, to match a
+  recording. A song with neither still gets its line, but the summary and the web page warn about
+  it. Run `--missing` and look for `no` in the `matchable` column to find the songs to tag before
+  you send the report.
 - The layout follows the rules in 37 CFR 370.4 for a file without headers: plain ASCII text, `|`
   between fields, `^` around text and nothing around numbers, no header row, and empty fields
   still separated. Accents are dropped (`Björk` becomes `Bjork`), other characters outside ASCII
@@ -886,8 +911,10 @@ AGGREGATE_TUNING_HOURS, CHANNEL_OR_PROGRAM_NAME and PLAY_FREQUENCY.
 
 Sources, checked in October 2026: SoundExchange's
 [reporting requirements](https://www.soundexchange.com/service-provider/reporting-requirements/)
-and its Commercial Webcaster and Noncommercial Webcaster Report of Use templates linked there, and
-[37 CFR 370.4](https://www.law.cornell.edu/cfr/text/37/370.4). Most webcasters report every
+(the "per play, per listener" definition of actual total performances) and its Commercial
+Webcaster and Noncommercial Webcaster Report of Use templates linked there,
+[37 CFR 370.4](https://www.law.cornell.edu/cfr/text/37/370.4), and the definition of a performance
+in [37 CFR 380.7](https://www.law.cornell.edu/cfr/text/37/380.7). Most webcasters report every
 calendar month, within 45 days of the month's end.
 
 Royalties for the compositions (the songs as written) are separate from SoundExchange. In the US

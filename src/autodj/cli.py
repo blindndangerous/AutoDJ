@@ -1611,7 +1611,10 @@ def cmd_list_indexes(ctx: click.Context) -> None:  # pragma: no cover -- filesys
 @click.option(
     "--missing",
     is_flag=True,
-    help="List the songs lacking ISRC, label or other reporting fields instead of the plays.",
+    help=(
+        "List the songs lacking ISRC, label or other reporting fields instead of the plays,"
+        " marking those SoundExchange cannot match."
+    ),
 )
 @click.option(
     "--name",
@@ -1637,7 +1640,7 @@ def cmd_export_plays(
 
     Writes one row per play: start, end, duration played, artist, title,
     album, ISRC, label, kind, the path inside the music folder and the
-    listener count.  Times are local, with their UTC offset.  With
+    performances (listeners who heard it).  Times are local, with their UTC offset.  With
     --format soundexchange it writes a SoundExchange Report of Use instead:
     songs only, one line per recording.  A summary goes to standard error.
 

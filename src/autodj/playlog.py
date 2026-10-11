@@ -15,14 +15,16 @@ that started inside the requested range:
 - ``artist`` and ``title`` as shown when it played; ``album`` from the
   catalog record.
 - ``isrc`` and ``label``, read from the file's tags at export time, so no
-  re-index is needed.
+  re-index is needed.  An ISRC is written as 12 characters without
+  hyphens; a tag that does not hold a valid one counts as missing.
 - ``kind``: ``song`` or ``liner``.  The mix bus logs only the tracks it
   starts, so liners mixed over a transition are not in the log, and
   nothing yet marks a file as an ad or a station ID.
 - ``path``: relative to the music or liner folder that holds the file,
   with ``/`` separators; absolute when no folder holds it.
-- ``listeners``: in stream mode, the most stream listeners connected at
-  once during the play (counted when it starts and whenever one joins);
+- ``performances``: how many listeners heard the play, each counted once:
+  in stream mode, the stream listeners connected when it started plus
+  each listener who connected while it played (see :mod:`autodj.audience`);
   otherwise 1, the person at the computer or browser.  Empty for plays
   logged before AutoDJ counted listeners.
 
@@ -59,11 +61,13 @@ COLUMNS = (
     "label",
     "kind",
     "path",
-    "listeners",
+    "performances",
 )
 # What a royalty report needs for every song.
-REPORTING_FIELDS = ("artist", "title", "album", "isrc", "label", "listeners")
-MISSING_COLUMNS = ("artist", "title", "path", "missing", "plays")
+REPORTING_FIELDS = ("artist", "title", "album", "isrc", "label", "performances")
+# ``matchable`` is ``no`` when SoundExchange cannot match the song: it has
+# neither an ISRC nor both an album and a label.
+MISSING_COLUMNS = ("artist", "title", "path", "missing", "plays", "matchable")
 _FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
 
@@ -80,7 +84,7 @@ class Play:
     label: str
     kind: str
     path: str
-    listeners: int | None = None
+    performances: int | None = None
 
     @property
     def duration(self) -> int:
@@ -93,6 +97,11 @@ class Play:
             for name in REPORTING_FIELDS
             if getattr(self, name) is None or getattr(self, name) == ""
         ]
+
+    @property
+    def matchable(self) -> bool:
+        """Whether SoundExchange can match the recording: an ISRC, or album and label."""
+        return bool(self.isrc or (self.album and self.label))
 
 
 def parse_bound(text: str, *, end: bool = False) -> datetime:
@@ -200,7 +209,7 @@ def plays_between(
                 label=label,
                 kind="liner" if kind == "liner" else "song",
                 path=relative,
-                listeners=row["listeners"],
+                performances=row["performances"],
             )
         )
     return plays
@@ -239,33 +248,32 @@ def plays_csv(plays: Iterable[Play]) -> str:
                 p.label,
                 p.kind,
                 p.path,
-                "" if p.listeners is None else p.listeners,
+                "" if p.performances is None else p.performances,
             )
             for p in plays
         ),
     )
 
 
-def missing_fields(plays: Iterable[Play]) -> list[tuple[str, str, str, str, int]]:
+def missing_fields(plays: Iterable[Play]) -> list[tuple[str, str, str, str, int, str]]:
     """Return each song lacking a reporting field, once, sorted by artist and title.
 
-    Each item is ``(artist, title, path, missing, plays)``; ``missing``
-    names the empty fields, separated by ``"; "``.  Liners are left out.
+    Each item is ``(artist, title, path, missing, plays, matchable)``;
+    ``missing`` names the empty fields, separated by ``"; "``, and
+    ``matchable`` is ``"no"`` when SoundExchange cannot match the song
+    (see :attr:`Play.matchable`), else ``"yes"``.  Liners are left out.
     """
     counts: dict[tuple[str, str, str], int] = {}
-    lacking: dict[tuple[str, str, str], str] = {}
+    lacking: dict[tuple[str, str, str], tuple[str, str]] = {}
     for play in plays:
         missing = play.missing()
         if play.kind != "song" or not missing:
             continue
         key = (play.artist, play.title, play.path)
         counts[key] = counts.get(key, 0) + 1
-        lacking.setdefault(key, "; ".join(missing))
+        lacking.setdefault(key, ("; ".join(missing), "yes" if play.matchable else "no"))
     return sorted(
-        (
-            (artist, title, path, lacking[artist, title, path], count)
-            for (artist, title, path), count in counts.items()
-        ),
+        ((*key, lacking[key][0], count, lacking[key][1]) for key, count in counts.items()),
         key=lambda item: (item[0].casefold(), item[1].casefold(), item[2]),
     )
 
@@ -318,11 +326,13 @@ def soundexchange_report(
     """Return a SoundExchange Report of Use for *plays*.
 
     Only songs are reported: liners, station IDs and ads are not sound
-    recordings.  There is one line per recording (same artist, title,
-    ISRC, album and label), in :data:`SOUNDEXCHANGE_COLUMNS` order:
+    recordings.  There is one line per recording: plays whose artist,
+    title, ISRC, album and label are the same once written as ASCII (so
+    ``Bjork`` with or without its accent is one), in
+    :data:`SOUNDEXCHANGE_COLUMNS` order:
 
-    - ACTUAL_TOTAL_PERFORMANCES adds up each play's listeners, and is left
-      empty when a play of that recording has no count.
+    - ACTUAL_TOTAL_PERFORMANCES adds up each play's performances, and is
+      left empty when a play of that recording has no count.
     - PLAY_FREQUENCY is the number of plays.
     - AGGREGATE_TUNING_HOURS is left empty; CHANNEL_OR_PROGRAM_NAME is
       *channel*.
@@ -343,12 +353,17 @@ def soundexchange_report(
         raise ValueError(
             "The transmission category must be one of " + ", ".join(TRANSMISSION_CATEGORIES) + "."
         )
-    totals: dict[tuple[str, str, str, str, str], list[int | None]] = {}
+    # Grouped on the text as written, so spellings that differ only in
+    # accents (or ISRCs only in hyphens) are one recording.
+    totals: dict[tuple[str, ...], list[int | None]] = {}
     for play in plays:
         if play.kind != "song":
             continue
-        key = (play.artist, play.title, play.isrc, play.album, play.label)
-        totals.setdefault(key, []).append(play.listeners)
+        key = tuple(
+            _text_field(value)
+            for value in (play.artist, play.title, play.isrc, play.album, play.label)
+        )
+        totals.setdefault(key, []).append(play.performances)
     lines = []
     for (artist, title, isrc, album, label), counts in sorted(
         totals.items(), key=lambda item: (item[0][0].casefold(), item[0][1].casefold(), item[0])
@@ -357,11 +372,11 @@ def soundexchange_report(
         fields = [
             name,
             _text_field(code),
-            _text_field(artist),
-            _text_field(title),
-            _text_field(isrc),
-            _text_field(album),
-            _text_field(label),
+            artist,
+            title,
+            isrc,
+            album,
+            label,
             "" if known is None else str(known),
             "",
             _text_field(channel),
@@ -377,15 +392,29 @@ def soundexchange_filename(service: str, start: datetime, last_day: datetime) ->
     return f"{stem}{start:%Y%m%d}-{last_day:%Y%m%d}.txt"
 
 
+def unmatchable_count(plays: Iterable[Play]) -> int:
+    """Return how many songs SoundExchange cannot match (see :attr:`Play.matchable`)."""
+    return sum(1 for item in missing_fields(plays) if item[5] == "no")
+
+
 def summary(plays: Sequence[Play]) -> str:
-    """Return one sentence saying how many plays and incomplete songs there are."""
+    """Return a line on the plays, the incomplete songs and the unmatchable ones."""
     count = len(plays)
-    lacking = len(missing_fields(plays))
+    missing = missing_fields(plays)
+    lacking = len(missing)
+    unmatched = sum(1 for item in missing if item[5] == "no")
     text = f"{count} play{'' if count == 1 else 's'} exported."
     if lacking:
         text += (
             f" {lacking} song{' lacks' if lacking == 1 else 's lack'} ISRC, label,"
             " listener count or other reporting fields."
+        )
+    if unmatched:
+        them = "it" if unmatched == 1 else "them"
+        text += (
+            f" Warning: {unmatched} song{' has' if unmatched == 1 else 's have'} neither an"
+            " ISRC nor both an album and a label, so SoundExchange may not be able to match"
+            f" {them}."
         )
     return text
 
@@ -405,4 +434,5 @@ __all__ = [
     "soundexchange_filename",
     "soundexchange_report",
     "summary",
+    "unmatchable_count",
 ]

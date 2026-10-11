@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from autodj.audience import StreamAudience
 from autodj.catalog import LibraryCatalog
 from autodj.config import ServerConfig
 from autodj.indexer import IndexEntry
@@ -96,6 +97,7 @@ def test_export_downloads_the_csv(catalog) -> None:
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["x-play-count"] == "1"
     assert response.headers["x-songs-missing-fields"] == "1"
+    assert response.headers["x-songs-unmatchable"] == "1"  # no ISRC or label
     rows = list(csv.reader(io.StringIO(response.text, newline="")))
     assert tuple(rows[0]) == COLUMNS
     assert rows[1][4] == "'@Song"
@@ -164,30 +166,107 @@ class _Library:
         pass
 
 
-def test_stream_plays_count_listeners_at_start_and_at_peak() -> None:
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _stream_bridge(entry, library):
+    bridge = PlayerBridge(player=_make_player_mock(entry), sim=_make_sim_mock(), library=library)
+    bridge.stream = SimpleNamespace(listener_count=0, set_title=lambda *_: None)
+    clock = _Clock()
+    bridge._audience = StreamAudience(clock)
+    return bridge, clock
+
+
+ALICE = ("192.0.2.1", "VLC/3.0")
+BOB = ("192.0.2.2", "Sonos/80.1")
+
+
+def test_stream_play_counts_listeners_at_start_plus_each_who_joins() -> None:
     entry = _make_entry(3)
     library = _Library()
-    bridge = PlayerBridge(player=_make_player_mock(entry), sim=_make_sim_mock(), library=library)
-    bridge.note_listener_joined()  # not streaming: nothing to count
-    bridge.stream = SimpleNamespace(listener_count=0, set_title=lambda *_: None)
-    bridge.note_listener_joined()  # nothing playing yet
-    bridge.stream.listener_count = 2
+    bridge, clock = _stream_bridge(entry, library)
+    bridge.listener_connected(ALICE)  # nothing playing yet
+    assert library.rows == []
     bridge.on_track_started(entry)
-    assert (library.rows[-1]["listeners"], library.rows[-1]["peak_listeners"]) == (2, 2)
-    bridge.stream.listener_count = 5
-    bridge.note_listener_joined()
-    assert (library.rows[-1]["listeners"], library.rows[-1]["peak_listeners"]) == (2, 5)
-    bridge.stream.listener_count = 4
-    bridge.note_listener_joined()
-    assert len(library.rows) == 2  # a lower count changes nothing
+    assert library.rows[-1]["performances"] == 1
+    bridge.listener_connected(BOB)
+    assert library.rows[-1]["performances"] == 2
+    # Alice leaves and a new listener on her address with another player
+    # joins: that is someone else.
+    bridge.listener_disconnected(ALICE)
+    bridge.listener_connected((ALICE[0], "Firefox/140"))
+    assert library.rows[-1]["performances"] == 3
+    # Bob drops and reconnects within ten seconds: still one listener.
+    bridge.listener_disconnected(BOB)
+    clock.now += 9
+    bridge.listener_connected(BOB)
+    # A second connection while Bob's first is open is also Bob.
+    bridge.listener_connected(BOB)
+    assert len(library.rows) == 3
+    assert bridge._open_play[1]["performances"] == 3
+    # Alice comes back after more than ten seconds away: a new performance.
+    clock.now += 11
+    bridge.listener_connected(ALICE)
+    assert library.rows[-1]["performances"] == 4
+    # Peak concurrency would say 3 here (Alice, Firefox, Bob); the count
+    # is the listeners who heard the play.
     bridge.library = None
-    bridge.stream.listener_count = 6
-    bridge.note_listener_joined()
-    assert bridge._open_play[1]["peak_listeners"] == 6
+    bridge.listener_connected(("192.0.2.9", "VLC/3.0"))
+    assert bridge._open_play[1]["performances"] == 5
+
+
+def test_next_play_starts_from_the_listeners_connected_now() -> None:
+    entry = _make_entry(3)
+    library = _Library()
+    bridge, clock = _stream_bridge(entry, library)
+    bridge.listener_connected(ALICE)
+    bridge.listener_connected(BOB)
+    bridge.listener_connected(BOB)  # one listener, two connections
+    bridge.on_track_started(entry)
+    assert library.rows[-1]["performances"] == 2
+    bridge.listener_disconnected(ALICE)
+    bridge.listener_disconnected(BOB)
+    bridge.player._state.current_track = second = _make_entry(4)
+    bridge.on_track_started(second)
+    assert library.rows[-1]["performances"] == 1  # Bob is still connected once
+    # Alice left during the last song; reconnecting in this one is her
+    # first time hearing it, so it counts.
+    clock.now += 2
+    bridge.listener_connected(ALICE)
+    assert library.rows[-1]["performances"] == 2
+    bridge.listener_disconnected(("203.0.113.5", "never connected"))  # ignored
+
+
+def test_counts_are_taken_under_the_history_lock() -> None:
+    entry = _make_entry(3)
+    bridge, _clock = _stream_bridge(entry, _Library())
+    seen: list[bool] = []
+    real = bridge._audience.connected
+
+    def connected(client):
+        seen.append(bridge._history_lock.locked())
+        return real(client)
+
+    bridge._audience.connected = connected
+    start = bridge._audience.start_play
+
+    def start_play():
+        seen.append(bridge._history_lock.locked())
+        return start()
+
+    bridge._audience.start_play = start_play
+    bridge.listener_connected(ALICE)
+    bridge.on_track_started(entry)
+    assert seen == [True, True]
 
 
 def test_local_playback_counts_one_listener() -> None:
     library = _Library()
     bridge = PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock(), library=library)
     bridge.on_track_started(_make_entry(2))
-    assert (library.rows[-1]["listeners"], library.rows[-1]["peak_listeners"]) == (1, 1)
+    assert library.rows[-1]["performances"] == 1

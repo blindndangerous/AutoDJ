@@ -30,14 +30,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - These settings are in `config.toml` only for now; Settings page controls follow.
 - Export the play log for royalty reports, from "Export play log" in the History tab or with
   `autodj export-plays --from DATE --to DATE`. The CSV has one row per play: start and end time,
-  seconds played, artist, title, album, ISRC, label, kind, file and listeners. ISRC and label are
-  read from the file tags when you export, so no re-index is needed. `--missing` lists the songs
-  that lack an ISRC, label or other reporting field.
+  seconds played, artist, title, album, ISRC, label, kind, file and performances. ISRC and label
+  are read from the file tags when you export, so no re-index is needed; an ISRC is checked and
+  written as 12 characters, and a malformed one counts as missing. `--missing` lists the songs
+  that lack an ISRC, label or other reporting field, and marks the ones SoundExchange may not be
+  able to match because they have neither an ISRC nor both an album and a label.
 - `--format soundexchange` (or the format choice in the History tab) writes a SoundExchange Report
   of Use for US webcasters: songs only, one line per recording, with actual total performances from
-  the listener counts. See "Reporting for webcasting licenses" in the operations guide.
-- Each play now records its listeners: in stream mode, the most stream listeners connected at once
-  during the song; otherwise 1.
+  the performance counts. See "Reporting for webcasting licenses" in the operations guide.
+- Each play now records its performances, the listeners who heard any part of it: in stream mode,
+  the stream listeners connected when it starts plus each listener who connects while it plays,
+  with a quick reconnect from the same player counted once; otherwise 1.
 
 - More settings can be changed on the Settings page instead of in `config.toml`. They are saved
   on the server and survive a restart:

@@ -20,7 +20,7 @@ export function exportFilename(contentDisposition) {
   return match ? match[1] : FALLBACK_NAME;
 }
 
-export function exportMessage(plays, missing, what = "Play log") {
+export function exportMessage(plays, missing, what = "Play log", unmatchable = 0) {
   const count = Number(plays) || 0;
   let text = count
     ? `${what} saved: ${count} ${count === 1 ? "play" : "plays"}.`
@@ -28,6 +28,10 @@ export function exportMessage(plays, missing, what = "Play log") {
   const lacking = Number(missing) || 0;
   if (lacking) {
     text += `  ${lacking} ${lacking === 1 ? "song lacks" : "songs lack"} ISRC, label, listener count or other reporting fields.`;
+  }
+  const unmatched = Number(unmatchable) || 0;
+  if (unmatched) {
+    text += `  Warning: ${unmatched} ${unmatched === 1 ? "song has" : "songs have"} neither an ISRC nor both an album and a label, so SoundExchange may not be able to match ${unmatched === 1 ? "it" : "them"}.`;
   }
   return text;
 }
@@ -79,6 +83,7 @@ export function installHistoryExport({
   const soundexchange = doc.getElementById("hist-export-soundexchange");
   const service = doc.getElementById("hist-export-service");
   const category = doc.getElementById("hist-export-category");
+  const button = doc.getElementById("hist-export-button");
   // Default to this month so far.
   const today = now();
   if (!from.value) from.value = localDate(new Date(today.getFullYear(), today.getMonth(), 1));
@@ -86,9 +91,15 @@ export function installHistoryExport({
   if (service && !service.value) service.value = rememberedService(storage);
   const isSoundExchange = () => format?.value === "soundexchange";
   const showFormatFields = () => {
-    if (soundexchange) soundexchange.hidden = !isSoundExchange();
+    if (!soundexchange) return false;
+    const wasHidden = soundexchange.hidden;
+    soundexchange.hidden = !isSoundExchange();
+    return wasHidden && !soundexchange.hidden;
   };
-  format?.addEventListener("change", showFormatFields);
+  format?.addEventListener("change", () => {
+    // Fields that appear below the focused control are easy to miss.
+    if (showFormatFields()) announce("SoundExchange fields shown", "info");
+  });
   showFormatFields();
   let busy = false;
 
@@ -121,6 +132,11 @@ export function installHistoryExport({
       what = "SoundExchange report";
     }
     busy = true;
+    form.setAttribute("aria-busy", "true");
+    // Disabling the focused button drops focus to the page; give it back after.
+    const buttonHadFocus = button !== null && doc.activeElement === button;
+    if (button) button.disabled = true;
+    announce("Exporting play log", "info");
     try {
       const response = await request(`/api/history/export?${query}`, ["text/csv", "text/plain"]);
       const blob = await response.blob();
@@ -129,11 +145,18 @@ export function installHistoryExport({
         response.headers.get("X-Play-Count"),
         response.headers.get("X-Songs-Missing-Fields"),
         what,
+        response.headers.get("X-Songs-Unmatchable"),
       ), "info");
     } catch (err) {
       announce(`Could not export the play log: ${err.message}`, "error");
     } finally {
       busy = false;
+      form.removeAttribute("aria-busy");
+      if (button) {
+        button.disabled = false;
+        const active = doc.activeElement;
+        if (buttonHadFocus && (!active || active === doc.body)) button.focus();
+      }
     }
   });
 }

@@ -1639,6 +1639,7 @@ def create_app(
                 name = f"autodj-plays-{start:%Y-%m-%d}-to-{last_day:%Y-%m-%d}.csv"
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        missing = missing_fields(plays)
         return Response(
             body.encode("utf-8"),
             media_type=media_type,
@@ -1646,7 +1647,8 @@ def create_app(
                 **_NO_STORE,
                 "Content-Disposition": f'attachment; filename="{name}"',
                 "X-Play-Count": str(len(plays)),
-                "X-Songs-Missing-Fields": str(len(missing_fields(plays))),
+                "X-Songs-Missing-Fields": str(len(missing)),
+                "X-Songs-Unmatchable": str(sum(1 for item in missing if item[5] == "no")),
             },
         )
 
@@ -1719,16 +1721,26 @@ def create_app(
             raise HTTPException(status_code=503, detail="Stream listener limit reached") from exc
         except EncoderUnavailableError as exc:
             raise HTTPException(status_code=503, detail="stream encoder failed") from exc
+        # Who is listening, for the play log's performance counts.
+        client = (
+            request.client.host if request.client else "",
+            request.headers.get("user-agent", ""),
+        )
+
+        def release() -> None:
+            stream.remove_listener(listener)
+            bridge.listener_disconnected(client)
+
         try:
-            bridge.note_listener_joined()  # the play log's peak listener count
+            bridge.listener_connected(client)
             return _ListenerResponse(
                 listener.chunks(),
-                on_close=functools.partial(stream.remove_listener, listener),
+                on_close=release,
                 media_type="audio/mpeg",
                 headers=headers,
             )
         except BaseException:
-            stream.remove_listener(listener)  # never leak a listener slot
+            release()  # never leak a listener slot
             raise
 
     @app.get("/api/stream")

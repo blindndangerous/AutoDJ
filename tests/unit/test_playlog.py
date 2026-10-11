@@ -27,6 +27,7 @@ from autodj.playlog import (
     soundexchange_filename,
     soundexchange_report,
     summary,
+    unmatchable_count,
 )
 
 T0 = datetime(2026, 9, 1, 10, 0, tzinfo=UTC)
@@ -233,7 +234,7 @@ def _play(**fields) -> Play:
         "label": "Label",
         "kind": "song",
         "path": "a/b.flac",
-        "listeners": 1,
+        "performances": 1,
     }
     values.update(fields)
     return Play(**values)
@@ -284,12 +285,27 @@ class TestMissingFields:
             _play(artist="", title="ID", isrc="", kind="liner", path="id.wav"),
         ]
         assert missing_fields(plays) == [
-            ("Abba", "Song", "a.flac", "album; label", 2),
-            ("zed", "Last", "z.flac", "isrc", 1),
+            ("Abba", "Song", "a.flac", "album; label", 2, "yes"),
+            ("zed", "Last", "z.flac", "isrc", 1, "yes"),
         ]
         rows = list(csv.reader(io.StringIO(missing_csv(plays), newline="")))
         assert tuple(rows[0]) == MISSING_COLUMNS
-        assert rows[1] == ["Abba", "Song", "a.flac", "album; label", "2"]
+        assert rows[1] == ["Abba", "Song", "a.flac", "album; label", "2", "yes"]
+
+    def test_flags_songs_soundexchange_cannot_match(self) -> None:
+        plays = [
+            _play(title="No ISRC, no label", isrc="", label="", path="a"),
+            _play(title="No ISRC, no album", isrc="", album="", path="b"),
+            _play(title="Album and label", isrc="", path="c"),
+        ]
+        assert [p.matchable for p in plays] == [False, False, True]
+        assert [item[5] for item in missing_fields(plays)] == ["yes", "no", "no"]
+        assert unmatchable_count(plays) == 2
+        assert summary(plays).endswith(
+            " Warning: 2 songs have neither an ISRC nor both an album and a label,"
+            " so SoundExchange may not be able to match them."
+        )
+        assert summary(plays[:1]).endswith("may not be able to match it.")
 
     def test_summary_counts_plays_and_incomplete_songs(self) -> None:
         assert summary([]) == "0 plays exported."
@@ -338,6 +354,14 @@ class TestReadReportingTags:
             ),
             ({"label": ["  "], "publisher": ["Fallback"], "TSRC": _Frame()}, ("", "Fallback")),
             ({"isrc": []}, ("", "")),
+            # Hyphens and spaces go; a malformed ISRC counts as missing, so
+            # the next tag that holds a valid one is used.
+            ({"isrc": ["us-rc1-76 07839"]}, ("USRC17607839", "")),
+            ({"isrc": ["not an isrc"], "TSRC": _Frame("GB-AYE-00-00001")}, ("GBAYE0000001", "")),
+            ({"isrc": ["USRC1760783"]}, ("", "")),
+            ({"isrc": ["USRC176078390"]}, ("", "")),
+            ({"isrc": ["1SRC17607839"]}, ("", "")),
+            ({"isrc": ["USRC1A607839"]}, ("", "")),
         ],
     )
     def test_reads_each_tag_container(self, monkeypatch, values, expected) -> None:
@@ -350,6 +374,22 @@ class TestReadReportingTags:
         monkeypatch.setattr(audio_meta, "_open_mutagen", lambda _path: object())
         assert audio_meta.read_reporting_tags("odd.mp3") == ("", "")
         assert audio_meta._tag_text(_Tags({}), "boom") == ""
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("USRC17607839", "USRC17607839"),
+            ("us-rc1-76-07839", "USRC17607839"),
+            (" GB AYE 00 00001 ", "GBAYE0000001"),
+            ("QZ1A22300001", "QZ1A22300001"),
+            ("", ""),
+            ("US_RC17607839", ""),
+            ("USRC17607839X", ""),
+            ("USR!17607839", ""),
+        ],
+    )
+    def test_normalize_isrc(self, text: str, expected: str) -> None:
+        assert audio_meta.normalize_isrc(text) == expected
 
 
 class TestExportPlaysCli:
@@ -394,6 +434,8 @@ class TestExportPlaysCli:
         assert rows[1][9] == "song.flac"
         assert result.stderr.strip() == (
             "1 play exported. 1 song lacks ISRC, label, listener count or other reporting fields."
+            " Warning: 1 song has neither an ISRC nor both an album and a label,"
+            " so SoundExchange may not be able to match it."
         )
 
     def test_writes_file_and_missing_report(self, config: Path, tmp_path: Path) -> None:
@@ -406,8 +448,8 @@ class TestExportPlaysCli:
         rows = list(csv.reader(io.StringIO(result.stdout, newline="")))
         assert tuple(rows[0]) == MISSING_COLUMNS
         assert rows[1:] == [
-            ["Artist", "'=cmd", "song.flac", "isrc; label; listeners", "1"],
-            ["Artist", "Later", "song.flac", "isrc; label; listeners", "1"],
+            ["Artist", "'=cmd", "song.flac", "isrc; label; performances", "1", "no"],
+            ["Artist", "Later", "song.flac", "isrc; label; performances", "1", "no"],
         ]
 
     @pytest.mark.parametrize(
@@ -462,68 +504,105 @@ class TestExportPlaysCli:
         assert "name of the service" in result.stderr
 
 
-class TestListenerCounts:
-    def test_old_play_log_gains_count_columns(self, tmp_path: Path) -> None:
+def _old_play_log(path: Path) -> None:
+    """Write a play log from before AutoDJ counted listeners."""
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute(
+            "CREATE TABLE play_history (event_id TEXT PRIMARY KEY NOT NULL, entry_id TEXT,"
+            " path TEXT, title TEXT NOT NULL, artist TEXT NOT NULL, duration REAL NOT NULL,"
+            " played_at TEXT NOT NULL, interrupted INTEGER NOT NULL DEFAULT 0)"
+        )
+        db.execute(
+            "INSERT INTO play_history (event_id,title,artist,duration,played_at)"
+            " VALUES ('old','Old','A',100,?)",
+            (T0.isoformat(),),
+        )
+
+
+class TestPerformanceCounts:
+    def test_old_play_log_gains_the_column(self, tmp_path: Path) -> None:
         path = tmp_path / "old.db"
-        with closing(sqlite3.connect(path)) as db, db:
-            db.execute(
-                "CREATE TABLE play_history (event_id TEXT PRIMARY KEY NOT NULL, entry_id TEXT,"
-                " path TEXT, title TEXT NOT NULL, artist TEXT NOT NULL, duration REAL NOT NULL,"
-                " played_at TEXT NOT NULL, interrupted INTEGER NOT NULL DEFAULT 0)"
-            )
-            db.execute(
-                "INSERT INTO play_history (event_id,title,artist,duration,played_at)"
-                " VALUES ('old','Old','A',100,?)",
-                (T0.isoformat(),),
-            )
+        _old_play_log(path)
         with LibraryCatalog(path) as catalog:
-            assert catalog.play_log()[0]["listeners"] is None
-        with LibraryCatalog(path) as catalog:  # reopening finds the columns already there
+            assert catalog.play_log()[0]["performances"] is None
+        with LibraryCatalog(path) as catalog:  # reopening finds the column already there
             assert len(catalog.play_log()) == 1
 
-    def test_repeated_event_only_raises_the_peak(self, library) -> None:
+    def test_two_processes_upgrading_at_once_both_open(self, tmp_path, monkeypatch) -> None:
+        """Another process cannot add the column between our check and our change."""
+        path = tmp_path / "old.db"
+        _old_play_log(path)
+        connect = sqlite3.connect
+        outcome: list[str] = []
+
+        class Racing(sqlite3.Connection):
+            def execute(self, sql, *args):  # type: ignore[override]
+                cursor = super().execute(sql, *args)
+                if not sql.startswith("PRAGMA table_info(play_history)") or outcome:
+                    return cursor
+                rows = cursor.fetchall()
+                # Right after our check, a second process tries the same upgrade.
+                with closing(connect(path, timeout=0, isolation_level=None)) as other:
+                    try:
+                        other.execute("ALTER TABLE play_history ADD COLUMN performances INTEGER")
+                        outcome.append("other process upgraded first")
+                    except sqlite3.OperationalError as exc:
+                        outcome.append(str(exc))
+                return iter(rows)
+
+        monkeypatch.setattr(sqlite3, "connect", lambda *a, **k: connect(*a, factory=Racing, **k))
+        with LibraryCatalog(path) as catalog:  # no "duplicate column name"
+            assert catalog.play_log()[0]["performances"] is None
+        # The other process had to wait for our write lock; once it gets it,
+        # it finds the column and opens too.
+        assert outcome == ["database is locked"]
+        with LibraryCatalog(path) as catalog:
+            assert len(catalog.play_log()) == 1
+
+    def test_repeated_event_only_raises_the_count(self, library) -> None:
         catalog, paths = library
-        row = _row("a", paths["song"], "Song", T0) | {"listeners": 2, "peak_listeners": 2}
+        row = _row("a", paths["song"], "Song", T0) | {"performances": 2}
         catalog.write_history([row])
-        catalog.write_history([row | {"peak_listeners": 5, "title": "Changed"}])
-        catalog.write_history([row | {"peak_listeners": 3}])
-        catalog.write_history([row | {"peak_listeners": None}])
+        catalog.write_history([row | {"performances": 5, "title": "Changed"}])
+        catalog.write_history([row | {"performances": 3}])
+        catalog.write_history([row | {"performances": None}])
         (logged,) = catalog.play_log()
-        assert (logged["title"], logged["listeners"]) == ("Song", 5)
+        assert (logged["title"], logged["performances"]) == ("Song", 5)
 
     @pytest.mark.parametrize("bad", [-1, True, 1.5, "3"])
     def test_invalid_counts_are_unknown(self, library, bad) -> None:
         catalog, paths = library
-        catalog.write_history(
-            [_row("a", paths["song"], "Song", T0) | {"listeners": bad, "peak_listeners": bad}]
-        )
-        assert catalog.play_log()[0]["listeners"] is None
+        catalog.write_history([_row("a", paths["song"], "Song", T0) | {"performances": bad}])
+        assert catalog.play_log()[0]["performances"] is None
 
     def test_counts_reach_the_export_and_zero_is_known(self, library) -> None:
         catalog, paths = library
         catalog.write_history(
             [
-                _row("a", paths["song"], "Song", T0) | {"listeners": 0, "peak_listeners": 0},
-                _row("b", paths["song"], "Song", T0 + timedelta(minutes=5)) | {"listeners": 4},
+                _row("a", paths["song"], "Song", T0) | {"performances": 0},
+                _row("b", paths["song"], "Song", T0 + timedelta(minutes=5)) | {"performances": 4},
                 _row("c", paths["song"], "Song", T0 + timedelta(minutes=9)),
             ]
         )
         read, _ = _tags({"song.flac": ("USRC17607839", "Label")})
         plays = plays_between(catalog, T0, T0 + timedelta(hours=1), read_tags=read)
-        assert [p.listeners for p in plays] == [0, 4, None]
-        assert [p.missing() for p in plays] == [[], [], ["listeners"]]
+        assert [p.performances for p in plays] == [0, 4, None]
+        assert [p.missing() for p in plays] == [[], [], ["performances"]]
         assert list(csv.reader(io.StringIO(plays_csv(plays), newline="")))[3][10] == ""
 
 
 class TestSoundExchange:
     def test_reports_songs_once_per_recording(self) -> None:
         plays = [
-            _play(artist="Björk", title="Jóga", listeners=3),
-            _play(artist="Björk", title="Jóga", listeners=4),
-            _play(artist="AC|DC", title="T.N.T. ^live^", isrc="", album="", label="", listeners=0),
-            _play(artist="Station", title="Top of the hour", kind="liner", listeners=9),
-            _play(artist="Old", title="Unknown count", listeners=None),
-            _play(artist="Old", title="Unknown count", listeners=2),
+            _play(artist="Björk", title="Jóga", performances=3),
+            # The same recording once written as ASCII: one line, not two.
+            _play(artist="Bjork", title="Joga", performances=4),
+            _play(
+                artist="AC|DC", title="T.N.T. ^live^", isrc="", album="", label="", performances=0
+            ),
+            _play(artist="Station", title="Top of the hour", kind="liner", performances=9),
+            _play(artist="Old", title="Unknown count", performances=None),
+            _play(artist="Old", title="Unknown count", performances=2),
         ]
         text = soundexchange_report(plays, "Ünïcode Radio", "a", channel="Main")
         assert text.endswith("\r\n")

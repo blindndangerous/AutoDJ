@@ -21,7 +21,7 @@ function mount() {
         <label for="hist-export-category">Category</label>
         <select id="hist-export-category"><option value="A">A</option><option value="B">B</option></select>
       </fieldset>
-      <button type="submit" id="hist-export-button">Export CSV</button>
+      <button type="submit" id="hist-export-button">Export</button>
     </form>`;
 }
 
@@ -90,10 +90,41 @@ describe("history export control", () => {
     const [, blob, name] = save.mock.calls[0];
     expect(await blob.text()).toBe("start\r\n");
     expect(name).toBe("autodj-plays-2026-09-01-to-2026-09-17.csv");
-    expect(announce).toHaveBeenCalledTimes(1);
-    expect(announce).toHaveBeenCalledWith(
-      "Play log saved: 12 plays.  3 songs lack ISRC, label, listener count or other reporting fields.", "info",
-    );
+    expect(announce.mock.calls).toEqual([
+      ["Exporting play log", "info"],
+      ["Play log saved: 12 plays.  3 songs lack ISRC, label, listener count or other reporting fields.", "info"],
+    ]);
+  });
+
+  it("is busy while exporting and ready again afterwards", async () => {
+    let finish;
+    request.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    install();
+    const form = document.getElementById("hist-export");
+    const button = document.getElementById("hist-export-button");
+    button.focus();
+    submit();
+    expect(button.disabled).toBe(true);
+    expect(form.getAttribute("aria-busy")).toBe("true");
+    expect(announce.mock.calls).toEqual([["Exporting play log", "info"]]);
+    button.blur(); // what a browser does to a focused button it disables
+    finish(csvResponse("start\r\n", { "X-Play-Count": "1" }));
+    await settle();
+    expect(button.disabled).toBe(false);
+    expect(form.hasAttribute("aria-busy")).toBe(false);
+    expect(document.activeElement).toBe(button);
+    expect(announce).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves focus alone when it was not on the button", async () => {
+    request.mockRejectedValue(new Error("offline"));
+    install();
+    const to = document.getElementById("hist-export-to");
+    to.focus();
+    document.getElementById("hist-export").requestSubmit();
+    await settle();
+    expect(document.activeElement).toBe(to);
+    expect(document.getElementById("hist-export-button").disabled).toBe(false);
   });
 
   it("ignores a second press while the first export runs", async () => {
@@ -114,10 +145,12 @@ describe("history export control", () => {
     submit();
     await settle();
     expect(save).not.toHaveBeenCalled();
-    expect(announce).toHaveBeenCalledTimes(1);
-    expect(announce).toHaveBeenCalledWith(
-      "Could not export the play log: The AutoDJ server is not reachable.", "error",
-    );
+    expect(announce.mock.calls).toEqual([
+      ["Exporting play log", "info"],
+      ["Could not export the play log: The AutoDJ server is not reachable.", "error"],
+    ]);
+    expect(document.getElementById("hist-export-button").disabled).toBe(false);
+    expect(document.getElementById("hist-export").hasAttribute("aria-busy")).toBe(false);
   });
 
   it("checks the dates before asking the server", () => {
@@ -154,6 +187,9 @@ describe("history export control", () => {
     format.value = "soundexchange";
     format.dispatchEvent(new Event("change"));
     expect(fields.hidden).toBe(false);
+    expect(announce.mock.calls).toEqual([["SoundExchange fields shown", "info"]]);
+    format.dispatchEvent(new Event("change")); // already shown: nothing new to say
+    expect(announce).toHaveBeenCalledTimes(1);
     submit();
     expect(announce).toHaveBeenLastCalledWith(
       "Enter the name of the service for the SoundExchange report.", "error",
@@ -223,6 +259,30 @@ describe("export wording", () => {
     expect(exportMessage("2", "1", "SoundExchange report")).toBe(
       "SoundExchange report saved: 2 plays.  1 song lacks ISRC, label, listener count or other reporting fields.",
     );
+  });
+
+  it("warns about songs SoundExchange cannot match", () => {
+    expect(exportMessage("3", "2", "Play log", "1")).toBe(
+      "Play log saved: 3 plays.  2 songs lack ISRC, label, listener count or other reporting fields."
+      + "  Warning: 1 song has neither an ISRC nor both an album and a label,"
+      + " so SoundExchange may not be able to match it.",
+    );
+    expect(exportMessage("3", "2", "Play log", "2")).toMatch(/2 songs have .* match them\.$/);
+  });
+
+  it("announces the SoundExchange fields each time they appear", () => {
+    mount();
+    const announce = vi.fn();
+    installHistoryExport({ document, request: vi.fn(), save: vi.fn(), announce, storage: null });
+    const format = document.getElementById("hist-export-format");
+    for (const value of ["soundexchange", "csv", "soundexchange"]) {
+      format.value = value;
+      format.dispatchEvent(new Event("change"));
+    }
+    expect(announce.mock.calls).toEqual([
+      ["SoundExchange fields shown", "info"],
+      ["SoundExchange fields shown", "info"],
+    ]);
   });
 });
 

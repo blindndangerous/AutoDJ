@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from autodj.audience import StreamAudience
+
 if TYPE_CHECKING:
     from autodj.indexer import IndexEntry
     from autodj.settings_bodies import PlaybackSettingsBody
@@ -55,11 +57,11 @@ def _library_job_snapshot() -> dict:
     return snap
 
 
-def _history_entry(entry: Any, listeners: int) -> dict:
+def _history_entry(entry: Any, performances: int) -> dict:
     """Return a JSON-serialisable history-row dict for *entry*.
 
-    *listeners* is how many were connected as it started; ``peak_listeners``
-    starts there and rises if more join while it plays.
+    *performances* is the listeners connected as it starts; it rises as
+    more join while it plays (see :mod:`autodj.audience`).
     """
     return {
         "event_id": secrets.token_hex(16),
@@ -68,8 +70,7 @@ def _history_entry(entry: Any, listeners: int) -> dict:
         "artist": getattr(entry, "artist", "") or "",
         "duration": float(getattr(entry, "length", 0.0) or 0.0),
         "played_at": datetime.now(UTC).isoformat(),
-        "listeners": listeners,
-        "peak_listeners": listeners,
+        "performances": performances,
     }
 
 
@@ -125,6 +126,8 @@ class PlayerBridge:
     # forget_track removes exactly that row, never an older play of the
     # same song.  None when the last start was ignored or forgotten.
     _open_play: tuple[Any, dict] | None = field(default=None, init=False)
+    # Stream clients and who has heard the open play (history lock).
+    _audience: StreamAudience = field(default_factory=StreamAudience, init=False)
     _station_event: dict | None = field(default=None, init=False)
     # Identifies this server process in ``stream_event`` so a page that
     # outlives a restart does not mistake the new seq 1 for one it announced.
@@ -283,8 +286,8 @@ class PlayerBridge:
         """Record one play while holding ``_history_lock``; never trim the archive."""
         # Stream mode counts its connected listeners; otherwise the one
         # listener is the person at this computer or browser.
-        listeners = int(self.stream.listener_count) if self.stream_mode else 1
-        row = _history_entry(entry, listeners)
+        performances = self._audience.start_play() if self.stream_mode else 1
+        row = _history_entry(entry, performances)
         self._play_history.append(row)
         self._history_started = True
         if self.library is not None:
@@ -292,20 +295,24 @@ class PlayerBridge:
             self.library.remember_play(entry.path)
         return row
 
-    def note_listener_joined(self) -> None:
-        """Raise the playing track's peak listener count after a listener joins."""
-        if not self.stream_mode:
-            return
-        count = int(self.stream.listener_count)
+    def listener_connected(self, client: tuple[str, str]) -> None:
+        """Count a new stream connection from *client* (address, User-Agent).
+
+        The playing track gains a performance unless *client* is a listener
+        it already counted (see :mod:`autodj.audience`).
+        """
         with self._history_lock:
-            if self._open_play is None:
+            if not self._audience.connected(client) or self._open_play is None:
                 return
             row = self._open_play[1]
-            if count <= (row.get("peak_listeners") or 0):
-                return
-            row["peak_listeners"] = count
+            row["performances"] = (row.get("performances") or 0) + 1
             if self.library is not None:
                 self.library.remember_history(row)
+
+    def listener_disconnected(self, client: tuple[str, str]) -> None:
+        """Note that a stream connection from *client* ended."""
+        with self._history_lock:
+            self._audience.disconnected(client)
 
     def history_snapshot(self) -> list[dict]:
         """Return the latest plays across sessions, oldest first."""

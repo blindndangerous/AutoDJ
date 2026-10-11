@@ -607,20 +607,35 @@ def _tag_text(m: Any, key: str) -> str:
     return str(value).strip()
 
 
+# ISO 3901: country (2 letters), registrant (3 letters or digits), year
+# (2 digits) and designation (5 digits).
+_ISRC_SHAPE = re.compile(r"[A-Z]{2}[A-Z0-9]{3}[0-9]{7}")
+
+
+def normalize_isrc(text: str) -> str:
+    """Return *text* as a 12-character ISRC, or ``""`` when it is not one.
+
+    Hyphens and spaces are dropped and letters upper-cased, so
+    ``us-rc1-76-07839`` gives ``USRC17607839``.
+    """
+    value = re.sub(r"[\s-]", "", text).upper()
+    return value if _ISRC_SHAPE.fullmatch(value) else ""
+
+
 def read_reporting_tags(audio_path: str | Path) -> tuple[str, str]:
     """Return the ``(isrc, label)`` tags of *audio_path*; ``""`` when absent.
 
-    Read when the play log is exported, so neither needs a re-index.  An
-    unreadable or missing file gives two empty strings.
+    Read when the play log is exported, so neither needs a re-index.  The
+    ISRC is the first tag that holds a valid one (see :func:`normalize_isrc`);
+    a malformed ISRC counts as missing.  An unreadable or missing file gives
+    two empty strings.
     """
     m = _open_mutagen(audio_path)
     if m is None:
         return "", ""
-
-    def first(keys: tuple[str, ...]) -> str:
-        return next((text for key in keys if (text := _tag_text(m, key))), "")
-
-    return first(_ISRC_KEYS).upper(), first(_LABEL_KEYS)
+    isrc = next((code for key in _ISRC_KEYS if (code := normalize_isrc(_tag_text(m, key)))), "")
+    label = next((text for key in _LABEL_KEYS if (text := _tag_text(m, key))), "")
+    return isrc, label
 
 
 def _vorbis_get(m: Any, key: str) -> str | None:
