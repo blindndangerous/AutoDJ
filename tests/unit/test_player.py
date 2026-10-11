@@ -22,7 +22,6 @@ from autodj.player import (
     _apply_crossfade,
     _apply_crossfade_ducked,
     apply_filter_sweep,
-    load_audio,
 )
 from autodj.similarity import SimilarityError
 from autodj.transitions import TRANSITION_EFFECT_NAMES
@@ -190,39 +189,6 @@ class TestPlayerState:
         state.track_number += 1
         state.track_number += 1
         assert state.track_number == 2
-
-
-# ---------------------------------------------------------------------------
-# load_audio
-# ---------------------------------------------------------------------------
-
-
-class TestLoadAudio:
-    def test_mono_array_returned_as_is(self) -> None:
-        fake_audio = np.ones(44100, dtype=np.float32)
-        with patch("autodj.player.sf.read", return_value=(fake_audio, 44100)):
-            audio, sr = load_audio("fake.wav")
-        assert sr == 44100
-        assert len(audio) == 44100
-        assert audio.dtype == np.float32
-
-    def test_stereo_mixed_to_mono(self) -> None:
-        stereo = np.ones((44100, 2), dtype=np.float32)
-        stereo[:, 1] = 0.0  # right channel is silent
-        with patch("autodj.player.sf.read", return_value=(stereo, 44100)):
-            audio, _ = load_audio("fake.wav")
-        assert audio.ndim == 1
-        assert len(audio) == 44100
-
-    def test_soundfile_failure_falls_back_to_librosa(self) -> None:
-        fake_audio = np.ones(22050, dtype=np.float32)
-        with (
-            patch("autodj.player.sf.read", side_effect=Exception("unsupported format")),
-            patch("librosa.load", return_value=(fake_audio, 22050)),
-        ):
-            audio, sr = load_audio("fake.mp3")
-        assert sr == 22050
-        assert len(audio) == 22050
 
 
 # ---------------------------------------------------------------------------
@@ -589,7 +555,7 @@ class TestAnalyseTrackInBackground:
         audio[1000:] = 0.5
         try:
             with (
-                patch("autodj.player.load_audio", return_value=(audio, 1000)),
+                patch("autodj.player.load_mono", return_value=(audio, 1000)),
                 patch.object(player, "_analyse") as analyse,
             ):
                 player.analyse_track_in_background("track.flac")
@@ -687,7 +653,7 @@ class TestAnalyseTrackInBackground:
             worker_errors.append(args.exc_value)
             worker_exception_seen.set()
 
-        monkeypatch.setattr("autodj.player.load_audio", lambda _path: (np.zeros(8), 8))
+        monkeypatch.setattr("autodj.player.load_mono", lambda _path: (np.zeros(8), 8))
         monkeypatch.setattr("autodj.dj_meta.analyse_audio", pause_before_write)
         monkeypatch.setattr(cache, "set", tracked_set)
         monkeypatch.setattr(threading, "excepthook", capture_thread_error)
@@ -757,7 +723,7 @@ class TestAnalyseTrackInBackground:
         def capture_thread_error(args: threading.ExceptHookArgs) -> None:
             worker_errors.append(args.exc_value)
 
-        monkeypatch.setattr("autodj.player.load_audio", lambda _path: (np.zeros(8), 8))
+        monkeypatch.setattr("autodj.player.load_mono", lambda _path: (np.zeros(8), 8))
         monkeypatch.setattr("autodj.dj_meta.analyse_audio", block_before_write)
         monkeypatch.setattr(threading, "excepthook", capture_thread_error)
         monkeypatch.setattr("autodj.server._SHUTDOWN_TIMEOUT_S", 0.05)

@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Indexing, DJ analysis and server playback now share one audio loader. FFmpeg decodes MP3, AAC,
+  M4A and MP4 files everywhere, and soundfile decodes WAV, FLAC and the other formats, with FFmpeg
+  as the fallback. A file that indexes now also plays, and analysis hears songs at the same level
+  as playback: FFmpeg's own mono mix was about 3 dB louder. Server playback of MP3 files now
+  needs FFmpeg, like indexing already did.
+- A file FFmpeg repairs while decoding is reported as "decoded with warnings", and a file that
+  fails is reported as skipped. `autodj index`, `autodj analyse` and `autodj analyse-library`
+  end with one line counting both and save the details to `decode-indexing.log`,
+  `decode-analysing.log` or `decode-library.log` in the index directory. FFmpeg's routine "Estimating duration from bitrate" note is no longer shown.
+
+### Removed
+
+- The librosa file-loading fallback. Librosa still detects beats, tempo and audio features.
+
 ## [0.20.0] - 2026-10-11
 
 ### Added

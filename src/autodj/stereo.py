@@ -1,4 +1,9 @@
-"""Stereo helpers shared by the server-side mix path.
+"""Audio loading and stereo helpers shared by indexing, analysis and playback.
+
+Every decode of a library file goes through :func:`load_mono` or
+:func:`load_stereo`, so a file that plays also indexes, and both see the same
+samples at the same level.  FFmpeg decodes MP3 and MP4-container audio;
+soundfile decodes the rest, with FFmpeg as the fallback when it cannot.
 
 The server mix is stereo ``float32`` shaped ``(frames, 2)`` at
 :data:`SAMPLE_RATE`.  Most DSP in AutoDJ was written for mono arrays; these
@@ -20,9 +25,14 @@ import soundfile as sf
 SAMPLE_RATE = 44_100
 logger = logging.getLogger(__name__)
 
-# MP4-container audio (ALAC, AAC).  libsndfile cannot open it and librosa 1.0
-# has no other decoder, so FFmpeg decodes it.
-FFMPEG_FORMATS = frozenset({".aac", ".m4a", ".mp4"})
+# FFmpeg decodes MP4-container audio (ALAC, AAC), which libsndfile cannot
+# open, and MP3, where it recovers frames libsndfile rejects and keeps
+# libsndfile's native diagnostics off the terminal.
+FFMPEG_FORMATS = frozenset({".mp3", ".aac", ".m4a", ".mp4"})
+
+# FFmpeg prints this for every MP3 without a Xing/VBRI header.  The decode is
+# complete and correct; only the container's duration estimate is approximate.
+_ROUTINE_FFMPEG_NOTES = ("Estimating duration from bitrate, this may be inaccurate",)
 
 
 def to_stereo(audio: np.ndarray) -> np.ndarray:
@@ -158,29 +168,91 @@ def load_with_ffmpeg(
         detail = result.stderr.decode("utf-8", errors="replace").strip()
         if result.returncode != 0:
             raise RuntimeError(f"FFmpeg could not decode {path}: {detail or 'unknown error'}")
+        detail = "\n".join(
+            line
+            for line in detail.splitlines()
+            if not any(note in line for note in _ROUTINE_FFMPEG_NOTES)
+        ).strip()
         if detail:
             # A decoder can recover and succeed while still reporting damaged
             # frames. Preserve those diagnostics through the progress console,
             # with the filename even when multiple tracks decode concurrently.
-            logger.warning("Audio decode warning for %s:\n%s", path, detail)
+            # The track field lets a DecodeReport collect them for the run's log.
+            logger.warning(
+                "Decoded %s with warnings:\n%s", path, detail, extra={"track": str(path)}
+            )
         decoded.seek(0)
         audio, sr = sf.read(decoded, dtype="float32", always_2d=channels > 1)
     return audio, int(sr)
 
 
+def _decode(
+    path: str | Path, *, sample_rate: int | None = None, max_seconds: float | None = None
+) -> tuple[np.ndarray, int]:
+    """Decode *path* to ``(frames, channels)`` float32.
+
+    FFmpeg decodes :data:`FFMPEG_FORMATS`; soundfile decodes the rest, and
+    FFmpeg takes over when soundfile cannot read a file, for example a FLAC
+    that loses sync over a network share.
+
+    Args:
+        path: Audio file path.
+        sample_rate: Rate FFmpeg resamples to, or ``None`` for the file's own.
+            soundfile always returns the file's own rate.
+        max_seconds: Longest track to decode, or ``None`` for no limit.
+            soundfile reads the length from the header; FFmpeg decodes at most
+            a second past the limit.
+
+    Returns:
+        ``(audio, sample_rate)`` with *audio* shaped ``(frames, channels)``.
+
+    Raises:
+        RuntimeError: If neither decoder can read the file.
+        TrackTooLongError: If the track is longer than *max_seconds*.
+    """
+    if Path(path).suffix.lower() not in FFMPEG_FORMATS:
+        try:
+            with sf.SoundFile(str(path)) as source:
+                seconds = source.frames / source.samplerate
+                if max_seconds is not None and seconds > max_seconds:
+                    raise TrackTooLongError(str(path), seconds)
+                return source.read(dtype="float32", always_2d=True), int(source.samplerate)
+        except (RuntimeError, OSError) as exc:
+            logger.debug("soundfile could not read %s, trying FFmpeg: %s", path, exc)
+    duration = None if max_seconds is None else max_seconds + 1.0
+    audio, rate = load_with_ffmpeg(path, channels=2, sample_rate=sample_rate, max_seconds=duration)
+    if max_seconds is not None and len(audio) > max_seconds * rate:
+        raise TrackTooLongError(str(path), len(audio) / rate)
+    return audio, rate
+
+
+def load_mono(path: str | Path) -> tuple[np.ndarray, int]:
+    """Load an audio file as mono float32 at its own sample rate, for analysis.
+
+    Mono is the mean of the decoded channels, so it matches the level of the
+    stereo audio that plays.  FFmpeg's own mono downmix is about 3 dB louder.
+
+    Args:
+        path: Audio file path.
+
+    Returns:
+        ``(audio, sample_rate)`` with *audio* shaped ``(frames,)``.
+
+    Raises:
+        RuntimeError: If neither decoder can read the file.
+    """
+    audio, rate = _decode(path)
+    return mono(audio), rate
+
+
 def load_stereo(
     path: str, target_sr: int = SAMPLE_RATE, max_seconds: float | None = None
 ) -> np.ndarray:
-    """Load an audio file as stereo float32 at *target_sr*.
-
-    Uses FFmpeg for MP4-container audio such as ALAC, and soundfile for
-    the rest, falling back to librosa and then FFmpeg if decoding fails.
-    All paths resample to *target_sr*.
+    """Load an audio file as stereo float32 at *target_sr*, for playback.
 
     A decoded track costs about 21 MB per minute (stereo float32 at
-    44.1 kHz), so *max_seconds* refuses longer files before decoding
-    them: soundfile reads the length from the header, and FFmpeg and the
-    librosa fallback decode at most a second past the limit.
+    44.1 kHz), so *max_seconds* refuses longer files before decoding all
+    of them.
 
     Args:
         path: Audio file path.
@@ -191,46 +263,82 @@ def load_stereo(
         ``(frames, 2)`` float32 audio.
 
     Raises:
-        RuntimeError: If none of the available decoders can read the file.
+        RuntimeError: If neither decoder can read the file.
         TrackTooLongError: If the track is longer than *max_seconds*.
     """
-    if Path(path).suffix.lower() in FFMPEG_FORMATS:
-        duration = None if max_seconds is None else max_seconds + 1.0
-        decoded, rate = load_with_ffmpeg(
-            path, channels=2, sample_rate=target_sr, max_seconds=duration
-        )
-        if max_seconds is not None and len(decoded) > max_seconds * rate:
-            raise TrackTooLongError(path, len(decoded) / rate)
-        return to_stereo(decoded)
-    try:
-        with sf.SoundFile(path) as source:
-            seconds = source.frames / source.samplerate
-            if max_seconds is not None and seconds > max_seconds:
-                raise TrackTooLongError(path, seconds)
-            audio = source.read(dtype="float32", always_2d=True)
-            sr = source.samplerate
-    except TrackTooLongError:
-        raise
-    except Exception:
-        import librosa
-
-        duration = None if max_seconds is None else max_seconds + 1.0
-        try:
-            audio, sr = librosa.load(path, sr=None, mono=False, duration=duration)
-        except Exception:
-            # FFmpeg can recover MP3 frames that both soundfile paths reject.
-            decoded, rate = load_with_ffmpeg(
-                path, channels=2, sample_rate=target_sr, max_seconds=duration
-            )
-            if max_seconds is not None and len(decoded) > max_seconds * rate:
-                raise TrackTooLongError(path, len(decoded) / rate) from None
-            return to_stereo(decoded)
-        if max_seconds is not None and audio.shape[-1] > max_seconds * sr:
-            raise TrackTooLongError(path, audio.shape[-1] / sr) from None
-        audio = audio.T if audio.ndim == 2 else audio
+    audio, sr = _decode(path, sample_rate=target_sr, max_seconds=max_seconds)
     audio = to_stereo(audio)
-    if int(sr) != target_sr:
+    if sr != target_sr:
         import librosa
 
-        audio = librosa.resample(audio, orig_sr=int(sr), target_sr=target_sr, axis=0)
+        audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sr, axis=0)
     return to_stereo(audio)
+
+
+class DecodeReport(logging.Handler):
+    """Collect one run's decoder warnings and skipped files, then save them.
+
+    Use it as a context manager around a batch of decodes.  While it is
+    active it receives every "decoded with warnings" record; the batch adds
+    files it gave up on with :meth:`skip`.  The terminal still shows each
+    warning as it happens; :meth:`write` keeps them to read after the run.
+    """
+
+    def __init__(self) -> None:
+        """Start an empty report."""
+        super().__init__(logging.WARNING)
+        self.warned: dict[str, str] = {}
+        self.skipped: dict[str, str] = {}
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Record a decode warning that names its track."""
+        track = getattr(record, "track", None)
+        if track is not None:
+            self.warned[track] = record.getMessage().partition("\n")[2]
+
+    def skip(self, path: str | Path, reason: object) -> None:
+        """Record that *path* failed and was left out, and why."""
+        self.skipped[str(path)] = str(reason)
+
+    def __enter__(self) -> DecodeReport:
+        """Start collecting warnings from the shared loader."""
+        logger.addHandler(self)
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        """Stop collecting warnings."""
+        logger.removeHandler(self)
+
+    def summary(self, log_path: Path) -> str | None:
+        """Return one line counting warnings and skips, or ``None`` when there were none."""
+        warned = len(self.warned.keys() - self.skipped.keys())
+        if not warned and not self.skipped:
+            return None
+        parts = []
+        if warned:
+            parts.append(f"{warned} {'file' if warned == 1 else 'files'} decoded with warnings")
+        if self.skipped:
+            count = len(self.skipped)
+            parts.append(f"{count} {'file' if count == 1 else 'files'} failed and were skipped")
+        return f"{'; '.join(parts)}. Details: {log_path}"
+
+    def write(self, log_path: Path) -> None:
+        """Save the warnings and skips to *log_path*, replacing an older report.
+
+        A run with nothing to report removes an older report instead, so the
+        file always describes the latest run.
+        """
+        if not self.warned and not self.skipped:
+            log_path.unlink(missing_ok=True)
+            return
+        lines: list[str] = []
+        for path, reason in sorted(self.skipped.items()):
+            lines.append(f"Skipped: {path}")
+            lines.extend(f"  {line}" for line in reason.splitlines())
+            if path in self.warned:
+                lines.extend(f"  {line}" for line in self.warned[path].splitlines())
+        for path, detail in sorted(self.warned.items()):
+            if path not in self.skipped:
+                lines.append(f"Decoded with warnings: {path}")
+                lines.extend(f"  {line}" for line in detail.splitlines())
+        log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

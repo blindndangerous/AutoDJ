@@ -111,10 +111,10 @@ class TestIndexPipeline:
         wrapper = _fake_wrapper()
 
         with (
-            patch("autodj.indexer.sf") as mock_sf,
+            patch("autodj.indexer._load_audio") as mock_load,
             patch("autodj.indexer.librosa") as mock_librosa,
         ):
-            mock_sf.read.return_value = (_FAKE_AUDIO, _FAKE_SR)
+            mock_load.return_value = (_FAKE_AUDIO, _FAKE_SR)
             _setup_librosa_mock(mock_librosa)
             build_index(fake_config, wrapper=wrapper, limit=None, force=False)
 
@@ -127,10 +127,10 @@ class TestIndexPipeline:
         wrapper = _fake_wrapper()
 
         with (
-            patch("autodj.indexer.sf") as mock_sf,
+            patch("autodj.indexer._load_audio") as mock_load,
             patch("autodj.indexer.librosa") as mock_librosa,
         ):
-            mock_sf.read.return_value = (_FAKE_AUDIO, _FAKE_SR)
+            mock_load.return_value = (_FAKE_AUDIO, _FAKE_SR)
             _setup_librosa_mock(mock_librosa)
             build_index(fake_config, wrapper=wrapper, limit=None, force=False)
 
@@ -142,10 +142,10 @@ class TestIndexPipeline:
         wrapper = _fake_wrapper()
 
         with (
-            patch("autodj.indexer.sf") as mock_sf,
+            patch("autodj.indexer._load_audio") as mock_load,
             patch("autodj.indexer.librosa") as mock_librosa,
         ):
-            mock_sf.read.return_value = (_FAKE_AUDIO, _FAKE_SR)
+            mock_load.return_value = (_FAKE_AUDIO, _FAKE_SR)
             _setup_librosa_mock(mock_librosa)
             build_index(fake_config, wrapper=wrapper, limit=3, force=False)
 
@@ -158,10 +158,10 @@ class TestIndexPipeline:
         wrapper = _fake_wrapper()
 
         with (
-            patch("autodj.indexer.sf") as mock_sf,
+            patch("autodj.indexer._load_audio") as mock_load,
             patch("autodj.indexer.librosa") as mock_librosa,
         ):
-            mock_sf.read.return_value = (_FAKE_AUDIO, _FAKE_SR)
+            mock_load.return_value = (_FAKE_AUDIO, _FAKE_SR)
             _setup_librosa_mock(mock_librosa)
             # First run: index 5 tracks
             build_index(fake_config, wrapper=wrapper, limit=5, force=False)
@@ -182,10 +182,10 @@ class TestIndexPipeline:
         wrapper = _fake_wrapper()
 
         with (
-            patch("autodj.indexer.sf") as mock_sf,
+            patch("autodj.indexer._load_audio") as mock_load,
             patch("autodj.indexer.librosa") as mock_librosa,
         ):
-            mock_sf.read.return_value = (_FAKE_AUDIO, _FAKE_SR)
+            mock_load.return_value = (_FAKE_AUDIO, _FAKE_SR)
             _setup_librosa_mock(mock_librosa)
             build_index(fake_config, wrapper=wrapper, limit=5, force=False)
             build_index(fake_config, wrapper=wrapper, limit=None, force=True)
@@ -217,14 +217,14 @@ class TestIndexPipeline:
 
         wrapper.embed_array.side_effect = fake_embed
         with (
-            patch("autodj.indexer.sf") as mock_sf,
+            patch("autodj.indexer._load_audio") as mock_load,
             patch("autodj.indexer.librosa") as mock_librosa,
             patch(
                 "autodj.indexer.get_all_tracks",
                 side_effect=[tracks, list(reversed(tracks))],
             ),
         ):
-            mock_sf.read.side_effect = fake_read
+            mock_load.side_effect = fake_read
             _setup_librosa_mock(mock_librosa)
             build_index(fake_config, wrapper=wrapper, limit=None, force=False)
             build_index(fake_config, wrapper=wrapper, limit=None, force=True)
@@ -243,10 +243,10 @@ class TestIndexPipeline:
         wrapper = _fake_wrapper()
 
         with (
-            patch("autodj.indexer.sf") as mock_sf,
+            patch("autodj.indexer._load_audio") as mock_load,
             patch("autodj.indexer.librosa") as mock_librosa,
         ):
-            mock_sf.read.return_value = (_FAKE_AUDIO, _FAKE_SR)
+            mock_load.return_value = (_FAKE_AUDIO, _FAKE_SR)
             _setup_librosa_mock(mock_librosa)
             build_index(fake_config, wrapper=wrapper, limit=None, force=False)
 
