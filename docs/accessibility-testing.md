@@ -66,18 +66,23 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   browser playback) keeps playing through it; a session that has ended stops playback and opens
   the pairing dialog. When AutoDJ stays out of reach, the page says once that a reload may be
   needed to sign in again, and nothing more while it retries.
-- Section-tab and disclosure navigation using the keyboard, including focus placement.
+- Section-tab and disclosure navigation using the keyboard, including focus placement.  Moving
+  between tabs says the tab's name and "selected" once, not "selected selected".
+- Settings subtabs: the arrow keys, Home and End move between them and skip Stream outside
+  stream mode; clicking one moves focus to its panel's heading; the page reopens on the last
+  one used; and Profiles and access loads its lists when shown.  Settings that have no
+  effect stay hidden, for example the DJ-mix options with saved segue points.
 - Playback controls, seeking, volume, and the spoken hotkeys.
 - Search, queue additions, reordering, removal, and empty states.
 - Now-playing changes, persistent metadata, cue descriptions, and timed lyrics.
 - Settings changes and their status or error feedback.
-- Settings, Browser access: renaming a device (focus back on its Rename, the new name said
+- Settings, Profiles and access: renaming a device (focus back on its Rename, the new name said
   once), and Show pairing code (the code said once, the countdown silent, a device that pairs
   meanwhile said once, and the used code hidden with focus on Show pairing code).
 - Library-job status and review of the persistent output log. Leave a job running for several
   minutes and confirm the status is spoken once at the start and once at the end, not repeatedly.
-- Stream mode (`serve --stream`): the Settings, Stream section, Copy address, the
-  quality choice and listener count, and Listen here starting and stopping the stream in the page,
+- Stream mode (`serve --stream`): the Settings, Stream subtab, the station name, Copy address,
+  the quality choice and listener count, and Listen here starting and stopping the stream in the page,
   and still playing, with nothing said by the stream, after the page's connection drops and returns.
 - Voice liners: uploading a liner, Test now, and each rotation mode, including the spoken
   result when an upload or test fails.

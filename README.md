@@ -81,8 +81,8 @@ Startup prints the addresses to open, such as `http://nas:8080` and `http://192.
 While no browser is paired yet, it also prints an 8-digit pairing code with how many seconds it
 stays valid. Open one of the addresses on the other device and enter the code once; that browser
 stays paired. Each code pairs one device and works only after someone asks for it: run
-`uv run autodj devices pairing-code` for the next device. In the web page, Settings, Browser
-access lists the paired devices with Rename and Revoke buttons, has **Show pairing code** for
+`uv run autodj devices pairing-code` for the next device. In the web page, Settings, Profiles
+and access lists the paired devices with Rename and Revoke buttons, has **Show pairing code** for
 adding another device, and **Sign out this browser** ends this browser's pairing. To make
 it permanent, set `[server] lan = true` in `config.toml` or `config.local.toml`, or
 `AUTODJ_LAN=1`.
@@ -99,7 +99,7 @@ can read the share can read the token.
 
 Over plain HTTP from another device, the gate stutter, bitcrusher, freeze and glitch transition
 effects play as a plain crossfade in that browser, because browsers give those effects only to
-HTTPS pages and to `localhost`; Settings says so under the transition effect. For HTTPS, set
+HTTPS pages and to `localhost`; Settings, Transitions says so under the transition effect. For HTTPS, set
 `[server] ssl_certfile` and `ssl_keyfile`, or add `--ssl-certfile` and `--ssl-keyfile`; every
 device must trust the certificate. [Operations](docs/operations.md#https-on-your-home-network) shows how to make one for
 your home network, and covers containers, custom DNS names and other advanced overrides.
@@ -211,7 +211,17 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Five tabs:
 - **Now Playing.**  What is playing, the next track, album art, lyrics, the cue strip on the progress bar.
 - **Queue & Search.**  Find any track in your library and choose Play now, Play next (straight after the current track) or Add to queue (at the end).  Move queued tracks up, down or to the top, remove them, or clear the whole queue; each move says the new position, such as "Moved Alpha to position 2 of 5".
 - **History.**  What has played, newest first, one page at a time.  Times get a date when the page holds tracks from before today.  While page 1 is shown, each new song is added to the top on its own.  Refresh history reloads the page you are on.
-- **Settings.**  Pick a preset, change the crossfade length, switch transition effects and their level, set a BPM range, set how soon a song or an artist may repeat, toggle voice liners, choose an audio output device.  **Profiles** saves the current settings under a name to apply later.  **Browser access** (with `--lan`) signs this browser out, renames or revokes paired devices, and shows the pairing code for adding another.
+- **Settings.**  Split into subtabs, so each screen holds one group.  Move between them with the arrow keys, Home and End, as with the section tabs; the page remembers the last one you used.
+  - **Transitions**: the transition mode, crossfade and fade-in length, EQ ducking and its cutoff, the transition effect and its level, and how Skip ends a track.
+  - **DJ mixing**: beatmatching with its stretch limit and glide back, drop mixing, key shift, phrase and outro alignment, keeping vocals apart, and the filter sweep with its floor.
+  - **Song picking**: preset, pick mode, how widely similarity picks spread, harmonic mixing, repeat windows, BPM range and discovery.
+  - **Sound**: output processing with the ReplayGain target and peak limit, the browser's audio output device, early loading of the next song and the crossfade on silence.
+  - **Display and keys**: lyrics, key notation, announcements and keyboard shortcuts.
+  - **Voice liners**.
+  - **Stream**: only in stream mode.  It holds the station name, the address, quality and continuous play.
+  - **Profiles and access**: **Profiles** saves the current settings under a name to apply later.  **Browser access** (with `--lan`) signs this browser out, renames or revokes paired devices, and shows the pairing code for adding another.
+
+  A setting that has no effect right now is hidden.  For example, the effect level is hidden while no transition effect is chosen, and the DJ-mix options are hidden with saved segue points.  Changes are saved on the server and survive a restart.  Paths, server and security options, and the model stay in `config.toml`.
 - **Library tools.**  Run index, enrich, analyse, prune and stats jobs without leaving the page.  One job runs at a time; the index stats and the full job log refresh when it finishes.
 
 ### Keyboard shortcuts
@@ -244,10 +254,10 @@ shortcuts inactive. With NVDA in browse mode, press NVDA+F2 and then a shortcut 
 key through to the page.
 
 A new track is announced while the Now Playing tab is showing. To hear it on every tab, turn on
-**Announce track changes on every tab** under Settings, Announcements; the choice is saved in this
+**Announce track changes on every tab** under Settings, Display and keys; the choice is saved in this
 browser only.
 
-To turn the shortcuts off, clear **Enable keyboard shortcuts** under Settings, Keyboard. The
+To turn the shortcuts off, clear **Enable keyboard shortcuts** under Settings, Display and keys. The
 setting is on by default and is saved in this browser only, not on the server. With it off, no
 single-key shortcut fires; buttons, sliders, tabs and dialogs keep their normal keys, and the
 Keyboard shortcuts button still opens the list. If the browser blocks site storage, shortcuts stay
@@ -263,7 +273,7 @@ To play on the machine's own speakers instead (for example to send sound to a Bl
 
 Drop short spoken clips into a folder.  AutoDJ will fade the music down for a couple of seconds and play one of them now and then.
 
-1. Open the **Settings** tab.
+1. Open the **Settings** tab, then its **Voice liners** subtab.
 2. Tick **Enable voice liners**.
 3. The Trigger / Mix / Library boxes appear.
 4. Pick an MP3 / WAV / OGG / M4A / FLAC / AAC file with **Choose liner file**, then press

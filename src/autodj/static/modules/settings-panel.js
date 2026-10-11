@@ -178,6 +178,11 @@ const FIELDS = [
   // speak their new value.
   { key: "keyNotation", field: "key_notation" },
   { key: "keyPreferFlats", field: "key_prefer_flats" },
+  // On unless the server says otherwise, as the browser deck reads them.
+  { key: "pbPrefetch", field: "prefetch_next_track",
+    read: (st) => Boolean(st.playback) && st.playback.prefetch_next_track !== false },
+  { key: "pbSilenceTrigger", field: "silence_trigger_crossfade",
+    read: (st) => Boolean(st.playback) && st.playback.silence_trigger_crossfade !== false },
 ];
 
 function pushedValue(spec, control, st) {
@@ -190,7 +195,7 @@ function setControlVisible(control, visible) {
   if (!control) return;
   const row = control.closest(".settings-row, .settings-check");
   if (row) row.hidden = !visible;
-  for (const id of (control.getAttribute("aria-describedby") || "").split(/\\s+/)) {
+  for (const id of (control.getAttribute("aria-describedby") || "").split(/\s+/)) {
     if (id) {
       const description = control.ownerDocument.getElementById(id);
       if (description) description.hidden = !visible;
@@ -212,6 +217,17 @@ function applyModeVisibility(st, els, doc) {
   setControlVisible(els.pbFadeIn || doc.getElementById("pb-fade-in"), !savedPoints);
   setControlVisible(els.djPhraseBars || doc.getElementById("dj-phrase-bars"), !savedPoints);
   setControlVisible(els.txWetMix || doc.getElementById("tx-wet-mix"), !savedPoints);
+  for (const id of ["dj-max-stretch", "dj-glide-bars", "dj-sweep-floor", "pb-bass-cutoff"]) {
+    setControlVisible(doc.getElementById(id), !savedPoints);
+  }
+  // Whole groups that do nothing with saved segue points (the effect and
+  // DJ-mix fieldsets), and the notes that say so in their place.
+  for (const group of doc.querySelectorAll('[data-saved-points="hide"]')) {
+    group.hidden = savedPoints;
+  }
+  for (const note of doc.querySelectorAll('[data-saved-points="note"]')) {
+    note.hidden = !savedPoints;
+  }
   const loudness = els.pbLoudness?.value || st.playback?.loudness_processing ||
     (st.playback?.replaygain_enabled ? "replaygain" : "off");
   setControlVisible(els.pbRgTarget || doc.getElementById("pb-rg-target"),

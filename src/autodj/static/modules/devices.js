@@ -2,7 +2,7 @@
 // list with Rename and Revoke per device, and "Show pairing code" for
 // pairing another device.
 //
-// Loads when the card is opened.  A server that does not ask browsers to
+// Loads when its Settings subtab is shown.  A server that does not ask browsers to
 // pair says so and shows no buttons.  Signing out, or revoking this
 // browser's own entry, hands over to onSignedOut(reason), which opens the
 // pairing dialog; focus then belongs to that dialog.

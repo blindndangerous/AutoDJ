@@ -64,6 +64,8 @@ function makeEls() {
     bpmHi:           num(),
     discEnabled:     cb(),
     discEvery:       num(),
+    pbPrefetch:      cb(),
+    pbSilenceTrigger: cb(),
   };
 }
 
@@ -207,6 +209,55 @@ describe("applySettingsState", () => {
     expect(els.pbSavedPointsNote.hidden).toBe(true);
   });
 
+  it("hides every description of a control that has two", () => {
+    const els = makeEls();
+    const parent = document.createElement("div");
+    parent.className = "settings-row";
+    parent.append(els.pbFadeIn);
+    const first = document.createElement("span");
+    first.id = "fade-desc";
+    const second = document.createElement("span");
+    second.id = "fade-note";
+    els.pbFadeIn.setAttribute("aria-describedby", "fade-desc  fade-note");
+    document.body.append(parent, first, second);
+    applySettingsState({ playback: { transition_mode: "saved_points" } }, els);
+    expect(first.hidden).toBe(true);
+    expect(second.hidden).toBe(true);
+    applySettingsState({ playback: { transition_mode: "fixed" } }, els);
+    expect(first.hidden).toBe(false);
+    expect(second.hidden).toBe(false);
+  });
+
+  it("hides the new mix numbers with the rest for saved-point transitions", () => {
+    const els = makeEls();
+    const rows = ["dj-max-stretch", "dj-glide-bars", "dj-sweep-floor", "pb-bass-cutoff"]
+      .map((id) => {
+        const row = document.createElement("div");
+        row.className = "settings-row";
+        const input = document.createElement("input");
+        input.id = id;
+        row.append(input);
+        document.body.append(row);
+        return row;
+      });
+    applySettingsState({ playback: { transition_mode: "saved_points" } }, els);
+    expect(rows.every((row) => row.hidden)).toBe(true);
+    applySettingsState({ playback: { transition_mode: "fixed" } }, els);
+    expect(rows.some((row) => row.hidden)).toBe(false);
+  });
+
+  it("shows early loading and the silence trigger on unless the server says off", () => {
+    const els = makeEls();
+    applySettingsState({ playback: {} }, els);
+    expect(els.pbPrefetch.checked).toBe(true);
+    expect(els.pbSilenceTrigger.checked).toBe(true);
+    applySettingsState({
+      playback: { prefetch_next_track: false, silence_trigger_crossfade: false },
+    }, els);
+    expect(els.pbPrefetch.checked).toBe(false);
+    expect(els.pbSilenceTrigger.checked).toBe(false);
+  });
+
   it("keeps the discovery checkbox in step with the runtime toggle", () => {
     const els = makeEls();
 
@@ -258,6 +309,10 @@ describe("installSettingsControls", () => {
     expect(change(els.lnTalkUp, true))
       .toEqual(["/api/playback-settings", { liners_talk_up: true }]);
     expect(change(els.djVocalGuard, false)).toEqual(["/api/djmix", { vocal_guard: false }]);
+    expect(change(els.pbPrefetch, false))
+      .toEqual(["/api/playback-settings", { prefetch_next_track: false }]);
+    expect(change(els.pbSilenceTrigger, false))
+      .toEqual(["/api/playback-settings", { silence_trigger_crossfade: false }]);
     els.discEvery.value = "7";
     expect(change(els.discEnabled, true)).toEqual(["/api/discovery", { every: 7 }]);
     expect(els.discEvery.disabled).toBe(false);
@@ -371,5 +426,23 @@ describe("a setting being saved", () => {
     applySettingsState(state(false), els);
     expect(els.djBeatmatch.checked).toBe(false);
     vi.unstubAllGlobals();
+  });
+});
+
+describe("saved segue points", () => {
+  it("hides the effect and DJ-mix groups and shows the note in their place", () => {
+    document.body.innerHTML = `
+      <p data-saved-points="note" hidden>Not used</p>
+      <fieldset data-saved-points="hide"><legend>Tempo and key</legend></fieldset>
+      <fieldset data-saved-points="hide"><legend>Transition effect</legend></fieldset>`;
+    const els = makeEls();
+    const groups = [...document.querySelectorAll('[data-saved-points="hide"]')];
+    const note = document.querySelector('[data-saved-points="note"]');
+    applySettingsState({ playback: { transition_mode: "saved_points" } }, els);
+    expect(groups.every((group) => group.hidden)).toBe(true);
+    expect(note.hidden).toBe(false);
+    applySettingsState({ playback: { transition_mode: "full_intro_outro" } }, els);
+    expect(groups.some((group) => group.hidden)).toBe(false);
+    expect(note.hidden).toBe(true);
   });
 });

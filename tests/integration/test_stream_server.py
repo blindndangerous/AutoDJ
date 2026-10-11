@@ -172,6 +172,7 @@ def test_stream_info(stream_app) -> None:
         "m3u_path": "/stream.m3u",
         "bitrate": 320,
         "continuous": False,
+        "station_name": "AutoDJ",
         "listeners": 2,
         "state": "idle",
     }
@@ -197,6 +198,19 @@ def test_continuous_setting_is_strict_and_persisted(stream_app, bridge) -> None:
     assert response.status_code == 200
     assert response.json()["continuous"] is True
     assert bridge.player._cfg.stream.continuous is True
+    stream.set_bitrate.assert_not_called()
+    bridge.save_persistent_state.assert_called_once()
+
+
+def test_station_name_is_validated_applied_and_persisted(stream_app, bridge) -> None:
+    client, _secret, stream = stream_app
+    bridge.save_persistent_state = MagicMock()
+    assert client.post("/api/stream/settings", json={"station_name": "  "}).status_code == 422
+    bridge.save_persistent_state.assert_not_called()
+    response = client.post("/api/stream/settings", json={"station_name": " Kitchen Radio "})
+    assert response.status_code == 200
+    assert response.json()["station_name"] == "Kitchen Radio"
+    assert bridge.player._cfg.stream.station_name == "Kitchen Radio"
     stream.set_bitrate.assert_not_called()
     bridge.save_persistent_state.assert_called_once()
 

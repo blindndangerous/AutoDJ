@@ -1608,18 +1608,24 @@ describe("static accessibility contracts", () => {
     const describedBy = (element) => (element.getAttribute("aria-describedby") || "")
       .split(/\s+/).filter(Boolean).map((id) => document.getElementById(id));
 
-    // One more fieldset inside the Settings card, straight after Keyboard,
-    // hidden until the server reports stream mode.
+    // The Stream subtab's panel, under its heading; the fieldset and its
+    // tab stay hidden until the server reports stream mode.
     const fieldset = document.querySelector("#stream-settings");
     expect(fieldset.tagName).toBe("FIELDSET");
     expect(fieldset.hidden).toBe(true);
     expect(fieldset.querySelector("legend").textContent.trim()).toBe("Stream");
-    expect(fieldset.parentElement.matches("#panel-settings > details.card")).toBe(true);
-    expect(fieldset.parentElement.querySelector("summary > h2").textContent)
-      .toBe("Settings");
-    expect(fieldset.previousElementSibling.querySelector("legend").textContent.trim())
-      .toBe("Keyboard");
+    expect(fieldset.parentElement.matches("#panel-settings > #spanel-stream")).toBe(true);
+    expect(fieldset.previousElementSibling.tagName).toBe("H3");
+    expect(fieldset.previousElementSibling.textContent).toBe("Stream");
+    expect(document.querySelector("#stab-stream").hidden).toBe(true);
     expect(fieldset.querySelector("h1, h2, h3, h4, h5, h6")).toBeNull();
+
+    const name = document.querySelector("#stream-station-name");
+    expect(name.getAttribute("type")).toBe("text");
+    expect(name.getAttribute("maxlength")).toBe("100");
+    expect(labelText("stream-station-name")).toBe("Station name");
+    expect(describedBy(name)).toHaveLength(1);
+    expect(describedBy(name).every(Boolean)).toBe(true);
 
     const address = document.querySelector("#stream-url");
     expect(address.tagName).toBe("INPUT");

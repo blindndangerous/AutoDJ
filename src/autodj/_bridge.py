@@ -188,6 +188,7 @@ class PlayerBridge:
             "m3u_path": "/stream.m3u",
             "bitrate": int(self.player._cfg.stream.bitrate),
             "continuous": bool(self.player._cfg.stream.continuous),
+            "station_name": self.player._cfg.stream.station_name,
             "listeners": int(self.stream.listener_count),
             "state": self.station.state,
         }
@@ -1296,6 +1297,9 @@ class PlayerBridge:
                 "filter_sweep": cfg.djmix.filter_sweep,
                 "vocal_guard": bool(cfg.djmix.vocal_guard),
                 "phrase_bars": int(cfg.djmix.phrase_bars),
+                "beatmatch_max_stretch": float(cfg.djmix.beatmatch_max_stretch),
+                "beatmatch_glide_bars": int(cfg.djmix.beatmatch_glide_bars),
+                "filter_sweep_floor_hz": float(cfg.djmix.filter_sweep_floor_hz),
             },
             "playback": {
                 "crossfade_seconds": pb.crossfade_seconds,
@@ -1317,6 +1321,10 @@ class PlayerBridge:
                 "artist_repeat_window": int(pb.artist_repeat_window),
                 "transition_wet_mix": float(cfg.transitions.wet_mix),
                 "replaygain_target_db": float(cfg.replaygain.target_db),
+                "replaygain_max_clip_safe_gain": float(cfg.replaygain.max_clip_safe_gain),
+                "crossfade_bass_cutoff_hz": float(pb.crossfade_bass_cutoff_hz),
+                "pick_top_k": int(pb.pick_top_k),
+                "pick_temperature": float(pb.pick_temperature),
                 "library_size": len(self.library.entries_snapshot())
                 if self.library is not None
                 else int(p._sim.ntotal if p._sim else 0),
@@ -1335,6 +1343,7 @@ class PlayerBridge:
                 "liners_talk_up": bool(pb.liners_talk_up),
                 "stream_bitrate": int(cfg.stream.bitrate),
                 "stream_continuous": bool(cfg.stream.continuous),
+                "stream_station_name": cfg.stream.station_name,
                 "volume": float(p._state.volume),
                 "is_muted": bool(p._state.is_muted),
             },
@@ -1382,8 +1391,8 @@ class PlayerBridge:
             raise ValueError(f"unknown transition effect: {effect}")
         self.player._cfg.transitions.effect = name
 
-    def set_djmix(self, **flags: bool | int | str | None) -> None:
-        """Set one or more DJ-mix toggle flags or harmonic_mode string."""
+    def set_djmix(self, **flags: bool | int | float | str | None) -> None:
+        """Set DJ-mix toggles, harmonic_mode and the numeric DJ-mix settings."""
         from autodj.dj_meta import HARMONIC_MODES
 
         cfg = self.player._cfg
@@ -1395,8 +1404,11 @@ class PlayerBridge:
                 if mode in HARMONIC_MODES:
                     cfg.djmix.harmonic_mode = mode
                 continue
-            if k == "phrase_bars":
-                cfg.djmix.phrase_bars = int(v)
+            if k in ("phrase_bars", "beatmatch_glide_bars"):
+                setattr(cfg.djmix, k, int(v))
+                continue
+            if k in ("beatmatch_max_stretch", "filter_sweep_floor_hz"):
+                setattr(cfg.djmix, k, float(v))
                 continue
             if hasattr(cfg.djmix, k):
                 setattr(cfg.djmix, k, bool(v))
@@ -1411,6 +1423,7 @@ class PlayerBridge:
             "anchor_to_seed": (player, "_anchor_to_seed"),
             "replaygain_enabled": (cfg.replaygain, "enabled"),
             "replaygain_target_db": (cfg.replaygain, "target_db"),
+            "replaygain_max_clip_safe_gain": (cfg.replaygain, "max_clip_safe_gain"),
             "transition_wet_mix": (cfg.transitions, "wet_mix"),
         }
         for key, value in values.items():

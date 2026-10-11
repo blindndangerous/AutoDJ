@@ -47,6 +47,9 @@ def _make_player() -> SimpleNamespace:
         liners_talk_up=False,
         no_repeat_window=20,
         artist_repeat_window=3,
+        crossfade_bass_cutoff_hz=180.0,
+        pick_top_k=1,
+        pick_temperature=0.3,
     )
     cfg = SimpleNamespace(
         transitions=SimpleNamespace(effect="none", wet_mix=1.0),
@@ -60,10 +63,13 @@ def _make_player() -> SimpleNamespace:
             filter_sweep=False,
             vocal_guard=True,
             phrase_bars=8,
+            beatmatch_max_stretch=0.08,
+            beatmatch_glide_bars=8,
+            filter_sweep_floor_hz=250.0,
         ),
         playback=playback,
-        replaygain=SimpleNamespace(enabled=False, target_db=-14.0),
-        stream=SimpleNamespace(bitrate=320, continuous=False),
+        replaygain=SimpleNamespace(enabled=False, target_db=-14.0, max_clip_safe_gain=1.0),
+        stream=SimpleNamespace(bitrate=320, continuous=False, station_name="AutoDJ"),
         presets={},
     )
     return SimpleNamespace(
@@ -131,8 +137,10 @@ def _warnings(caplog: pytest.LogCaptureFixture, field: str) -> int:
         ({"playback": {"volume": True}}, "volume"),
         ({"playback": {"volume": "0.5"}}, "volume"),
         ({"playback": {"is_muted": "true"}}, "is_muted"),
-        # Config-only options are not web settings, so they are never restored.
-        ({"playback": {"prefetch_next_track": False}}, "prefetch_next_track"),
+        ({"playback": {"prefetch_next_track": "false"}}, "prefetch_next_track"),
+        ({"playback": {"pick_top_k": 0}}, "pick_top_k"),
+        ({"playback": {"stream_station_name": ""}}, "stream_station_name"),
+        ({"djmix": {"filter_sweep_floor_hz": 1.0}}, "filter_sweep_floor_hz"),
         ({"playback": "invalid"}, "playback"),
         ({"bpm_range": "invalid"}, "bpm_range"),
         ({"bpm_range": None}, "bpm_range"),
@@ -417,6 +425,32 @@ class TestLoadInto:
         _load(player, tmp_path)
         assert player._cfg.stream.continuous is False
 
+    def test_stream_station_name_restores_and_rejects_blank(self, tmp_path) -> None:
+        player = _make_player()
+        _write_state(tmp_path, {"playback": {"stream_station_name": "  Kitchen Radio "}})
+        _load(player, tmp_path)
+        assert player._cfg.stream.station_name == "Kitchen Radio"
+        _write_state(tmp_path, {"playback": {"stream_station_name": "   "}})
+        _load(player, tmp_path)
+        assert player._cfg.stream.station_name == "Kitchen Radio"
+
+    def test_new_mix_numbers_out_of_range_are_skipped(self, tmp_path, caplog) -> None:
+        player = _make_player()
+        _write_state(
+            tmp_path,
+            {
+                "djmix": {"beatmatch_max_stretch": 2.0, "beatmatch_glide_bars": 16},
+                "playback": {"pick_top_k": 0, "pick_temperature": 2.5},
+            },
+        )
+        _load(player, tmp_path)
+        assert player._cfg.djmix.beatmatch_max_stretch == 0.08
+        assert player._cfg.djmix.beatmatch_glide_bars == 16
+        assert player._cfg.playback.pick_top_k == 1
+        assert player._cfg.playback.pick_temperature == 2.5
+        assert _warnings(caplog, "beatmatch_max_stretch") == 1
+        assert _warnings(caplog, "pick_top_k") == 1
+
     def test_legacy_playback_flags_restore_and_new_fields_win(self, tmp_path) -> None:
         player = _make_player()
         _write_state(
@@ -540,6 +574,14 @@ class TestRoundTrip:
         p1._cfg.playback.liners_pick_mode = "sequential"
         p1._cfg.playback.liners_duck_db = -9.0
         p1._cfg.stream.bitrate = 192
+        p1._cfg.stream.station_name = "Kitchen Radio"
+        p1._cfg.djmix.beatmatch_max_stretch = 0.12
+        p1._cfg.djmix.beatmatch_glide_bars = 4
+        p1._cfg.djmix.filter_sweep_floor_hz = 400.0
+        p1._cfg.playback.crossfade_bass_cutoff_hz = 120.0
+        p1._cfg.playback.pick_top_k = 5
+        p1._cfg.playback.pick_temperature = 0.8
+        p1._cfg.replaygain.max_clip_safe_gain = 0.9
         p1._bpm_range = (100.0, 132.0)
         p1._discovery_every = 9
         p1._state.volume = 0.0014
@@ -567,6 +609,9 @@ class TestRoundTrip:
             "filter_sweep",
             "vocal_guard",
             "phrase_bars",
+            "beatmatch_max_stretch",
+            "beatmatch_glide_bars",
+            "filter_sweep_floor_hz",
         }
         assert set(saved["playback"]) == {
             "crossfade_seconds",
@@ -598,6 +643,11 @@ class TestRoundTrip:
             "liners_talk_up",
             "stream_bitrate",
             "stream_continuous",
+            "stream_station_name",
+            "crossfade_bass_cutoff_hz",
+            "pick_top_k",
+            "pick_temperature",
+            "replaygain_max_clip_safe_gain",
             "no_repeat_window",
             "artist_repeat_window",
             "transition_wet_mix",
@@ -616,9 +666,10 @@ class TestRoundTrip:
         assert "available_presets" not in stored
         assert "library_size" not in stored["playback"]
         assert "liners_folder" not in stored["playback"]
-        # Config-only options stay with config.toml.
-        assert "prefetch_next_track" not in stored["playback"]
-        assert "silence_trigger_crossfade" not in stored["playback"]
+        # The gapless switches are web settings now, saved like the rest.
+        assert stored["playback"]["prefetch_next_track"] is False
+        assert stored["playback"]["silence_trigger_crossfade"] is False
+        assert stored["playback"]["stream_station_name"] == "Kitchen Radio"
 
         p2 = _make_player()
         _load(p2, tmp_path)
@@ -630,8 +681,6 @@ class TestRoundTrip:
             not in {
                 "library_size",
                 "liners_folder",
-                "prefetch_next_track",
-                "silence_trigger_crossfade",
             }
         }
         assert restored["transition"] == saved["transition"]

@@ -1,7 +1,7 @@
 // Settings > Profiles: save the current settings under a name, apply a
 // saved profile, delete one.
 //
-// The list loads when the Profiles card is opened.  Every result is said
+// The list loads when the Profiles and access subtab is shown.  Every result is said
 // once through #profiles-status.  Focus stays on the control that was
 // pressed, except after Delete, where that row is gone and focus moves to
 // the neighbouring row (or the name field when the list is empty).

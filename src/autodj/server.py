@@ -1699,7 +1699,7 @@ def create_app(
 
     @app.post("/api/stream/settings")
     async def api_stream_settings(body: StreamSettingsBody) -> dict:
-        """Change the stream bitrate (listeners reconnect) and remember it."""
+        """Change the stream bitrate (listeners reconnect), continuous play or name."""
         _require_stream_mode()
         if body.bitrate is not None:
             try:
@@ -1708,6 +1708,9 @@ def create_app(
                 raise HTTPException(status_code=503, detail="stream encoder failed") from exc
         if body.continuous is not None:
             bridge.player._cfg.stream.continuous = body.continuous
+        if body.station_name is not None:
+            # Read per stream request, so each player shows it when it next connects.
+            bridge.player._cfg.stream.station_name = body.station_name
         await asyncio.to_thread(bridge.save_persistent_state)
         return bridge.stream_info()
 

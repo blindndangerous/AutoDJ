@@ -2,7 +2,9 @@
 // graph + crossfade state survive every navigation because the
 // document never reloads; only the `hidden` attribute toggles on
 // each <section>.  Tablist arrow / Home / End navigation follows
-// the ARIA APG roving-tabindex pattern.
+// the ARIA APG roving-tabindex pattern (tablist.js).
+
+import { markSelected, tabForKey } from "./tablist.js";
 
 const VIEW_NAMES = ["now", "queue", "track-info", "history", "settings", "library"];
 
@@ -43,28 +45,10 @@ export function initViewRouter() {
 }
 
 function _onTabKeydown(e) {
-  const order = VIEW_NAMES.filter(n => _viewLinks.has(n));
-  const cur = e.currentTarget.dataset.view;
-  const idx = order.indexOf(cur);
-  let nextName = null;
-  switch (e.key) {
-    case "ArrowRight":
-    case "ArrowDown":
-      nextName = order[(idx + 1) % order.length];
-      break;
-    case "ArrowLeft":
-    case "ArrowUp":
-      nextName = order[(idx - 1 + order.length) % order.length];
-      break;
-    case "Home":
-      nextName = order[0];
-      break;
-    case "End":
-      nextName = order[order.length - 1];
-      break;
-    default:
-      return;
-  }
+  const order = VIEW_NAMES.filter(n => _viewLinks.has(n)).map(n => _viewLinks.get(n));
+  const next = tabForKey(order, e.currentTarget, e.key);
+  if (!next) return;
+  const nextName = next.dataset.view;
   e.preventDefault();
   // Select first, then focus, as the APG tabs example does, so focus
   // lands on a tab that is already selected.  The hashchange that
@@ -82,13 +66,7 @@ function applyView(name, userInitiated) {
     if (k === name) sec.removeAttribute("hidden");
     else sec.setAttribute("hidden", "");
   }
-  for (const [k, lnk] of _viewLinks) {
-    const selected = k === name;
-    lnk.setAttribute("aria-selected", selected ? "true" : "false");
-    // Roving tabindex -- only the active tab is in the document tab
-    // order; the others are reachable via arrow keys.
-    lnk.tabIndex = selected ? 0 : -1;
-  }
+  markSelected([..._viewLinks.values()], _viewLinks.get(name));
   if (userInitiated) {
     const sec = _viewSections.get(name);
     const tab = _viewLinks.get(name);
