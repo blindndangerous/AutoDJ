@@ -16,7 +16,9 @@ class Library:
 
 
 def app_for(catalog):
-    player = SimpleNamespace(_cfg=SimpleNamespace(server=ServerConfig()), _clock_status="Idle")
+    # The schedule file goes in active_dir; these tests never write it.
+    cfg = SimpleNamespace(server=ServerConfig(), index=SimpleNamespace(active_dir="unused"))
+    player = SimpleNamespace(_cfg=cfg, _clock_status="Idle")
     player.configure_clock = Mock()
     bridge = SimpleNamespace(player=player, library=Library(catalog))
     app = create_app(bridge)

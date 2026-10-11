@@ -28,6 +28,7 @@ import {
 import { installSeekController } from "./modules/seek-controller.js";
 import { installLibraryFolders } from "./modules/library-folders.js";
 import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
+import { installSchedulerPanel } from "./modules/scheduler-panel.js";
 import { createStreamMode, createStreamSettings } from "./modules/stream-mode.js";
 import { initSubtabs } from "./modules/subtabs.js";
 
@@ -187,6 +188,7 @@ const auth = initAuthDialog({ document });
 let authExpiryHandled = false;
 let libraryFoldersControls = null;
 let clockwheelPanelControls = null;
+let schedulerPanelControls = null;
 let reconnectGeneration = 0;
 let reconnectTimer = null;
 
@@ -279,6 +281,7 @@ function clearProtectedSessionData() {
   }
   libraryFoldersControls?.clearProtectedData();
   clockwheelPanelControls?.clearProtectedData();
+  schedulerPanelControls?.clear();
   const browseFolder = document.getElementById("library-browse-folder");
   if (browseFolder) {
     const option = (value, label) => {
@@ -1200,7 +1203,12 @@ function connectWS() {
 
   ws.onmessage = (ev) => {
     if (_ws !== ws || !isAuthenticatedRequestCurrent(socketEpoch)) return;
-    try { applyState(JSON.parse(ev.data)); } catch (_) {}
+    try {
+      const message = JSON.parse(ev.data);
+      if (message.type === "schedule_changed" || message.type === "schedule_run") {
+        void schedulerPanelControls?.refresh();
+      } else applyState(message);
+    } catch (_) {}
   };
 
   ws.onclose = (event) => {
@@ -1244,6 +1252,7 @@ function connectWS() {
           authenticatedActivityActive = true;
           libraryFoldersControls?.resume();
           clockwheelPanelControls?.resume();
+          void schedulerPanelControls?.refresh();
           connectWS();
         },
       });
@@ -2210,6 +2219,7 @@ libraryFoldersControls = installLibraryFolders({
 });
 
 clockwheelPanelControls = installClockwheelPanel();
+schedulerPanelControls = installSchedulerPanel();
 
 import { installLiners, bumpLinerTrackCount } from "./modules/liners.js";
 
@@ -2251,6 +2261,7 @@ function startAuthenticatedApp(initialState) {
   authenticatedActivityActive = true;
   libraryFoldersControls?.resume();
   clockwheelPanelControls?.resume();
+  void schedulerPanelControls?.refresh();
   installLibraryJobs(_libEls);
   // Audio dependencies are owned by the audio engine. Inject closures
   // that read its live bindings and stop liner playback after auth expiry.

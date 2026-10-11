@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A scheduler for timed events (Settings, Schedule). Events run once, daily, on weekdays, on
+  chosen days, or every N minutes within an optional window, in the station time zone
+  (`[server] station_timezone`). They switch profiles, presets or song picking, play liners,
+  start or stop the stream, or turn discovery on or off, with hard or soft timing. The panel
+  lists the next events and recent runs; the schedule is saved in `schedule.json` and backed up.
 - Richer repeat rules for picking songs.
   - An artist credit counts for every artist it names: "feat.", "ft.", "featuring" and "vs."
     always split it, and "&", "and", "x", "with" and commas split it when the parts look like

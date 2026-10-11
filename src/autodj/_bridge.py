@@ -16,6 +16,7 @@ import logging
 import secrets
 import threading
 from collections import deque
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -109,6 +110,9 @@ class PlayerBridge:
     # ``--stream``); ``None`` in browser-driven mode, where the browser
     # evaluates liner triggers itself and the "Test liner" route is a no-op.
     liner_scheduler: Any = None
+    # Set by the server: hands each track change to the station scheduler,
+    # which runs the soft events that waited for the song to end.
+    scheduler_track_changed: Callable[[], None] | None = None
     # Stream mode (``serve --stream``): the stream output and the station,
     # set together by :meth:`attach_stream`.
     stream: Any = None
@@ -249,6 +253,7 @@ class PlayerBridge:
             if self.relays is not None:
                 self.relays.set_title(artist, title)
         worker = self._liner_worker
+        self._notify_scheduler()
         if worker is not None:
             # The render that started, for liner talk-ups to time against.
             render = getattr(self.player, "_playing_render", None)
@@ -589,6 +594,17 @@ class PlayerBridge:
             (nxt.length if nxt.length and nxt.length > 0 else 5.0) * _DEFAULT_SR,
         )
         p._playback_pos[0] = 0
+        self._notify_scheduler()
+
+    def _notify_scheduler(self) -> None:
+        """Tell the scheduler a song ended, for soft events; never raises into playout."""
+        notify = self.scheduler_track_changed
+        if notify is None:
+            return
+        try:
+            notify()
+        except Exception:
+            logger.exception("Could not tell the scheduler about the track change")
 
     def pause(self) -> bool:
         """Toggle pause/resume.

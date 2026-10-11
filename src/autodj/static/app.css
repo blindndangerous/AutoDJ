@@ -897,6 +897,20 @@
       font-size: 0.9rem;
     }
 
+    /* A form's error in words (the schedule form), and the field it names.
+       The red edge marks the field; the words say what is wrong. */
+    .field-error {
+      margin: 0.3rem 0 0.6rem;
+      padding: 0.35rem 0.6rem;
+      border-left: 3px solid var(--danger);
+      background: rgba(192, 57, 43, 0.18);
+      color: var(--text);
+    }
+    input[aria-invalid="true"],
+    select[aria-invalid="true"] {
+      border-left: 4px solid var(--danger);
+    }
+
     /* ---- Empty-list placeholder utility ---- */
     /* Used by #why-list, #queue-list, #search-results, #ln-file-list,
        #profile-list and #device-list.  list-style: none matters for #why-list, which is

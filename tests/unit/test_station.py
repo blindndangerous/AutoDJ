@@ -56,6 +56,20 @@ def test_starts_idle() -> None:
     rig.bus.start_set.assert_not_called()
 
 
+def test_scheduled_stream_start_and_stop_override_listener_count() -> None:
+    rig = _Rig()
+    rig.station.set_scheduled_playing(True)
+    assert rig.station.state == "playing"
+    rig.now = 10_000
+    rig.station.tick()
+    rig.bus.stop_set.assert_not_called()
+    rig.stream.listener_count = 1
+    rig.station.set_scheduled_playing(False)
+    assert rig.station.state == "idle"
+    rig.station.tick()
+    rig.bus.start_set.assert_called_once()
+
+
 def test_continuous_station_starts_without_listeners_and_does_not_stop() -> None:
     rig = _Rig()
     rig.station._continuous = lambda: True

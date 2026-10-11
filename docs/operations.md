@@ -1032,3 +1032,41 @@ These steps apply to a native installation from a source checkout.
    again.
 7. Start loopback-only and check that the version in the page footer is the release you checked
    out before enabling LAN access.
+
+## Scheduler
+
+Open **Settings**, then **Schedule** to add timed station events. An event runs once, every day,
+on weekdays (Monday to Friday), on chosen days, or every N minutes. An every-N-minutes event can
+have an active window, such as 22:00 until 02:00; a window may cross midnight, and both ends run.
+Without a window the count starts again at local midnight.
+
+Times use `[server] station_timezone`, an IANA name such as `America/Denver`, or the system time
+zone when that is not set (UTC when the system has no IANA name). The Schedule panel shows the
+zone in use. When daylight saving time skips a time, the event runs at the moment the clock
+jumps; when a time happens twice, the event runs the first time only.
+
+Actions:
+
+- Switch to a saved profile or a preset.
+- Change song picking, for example to the clockwheel imported in Library tools.
+- Play a voice liner or station ID. This needs server audio or stream mode.
+- Start or stop the stream (stream mode). Start keeps the station playing without listeners,
+  stop keeps it off the air even with listeners, and automatic hands control back to the
+  listener count. The choice lasts until the next stream event or a restart.
+- Turn discovery on or off. Discovery needs a rate set in Song picking before it can be on.
+
+Timing is soft or hard. A soft event waits for the current song to end; with nothing playing it
+runs at once. A hard event runs at its time and fades out the current song through the normal
+skip: after the change for profile, preset, song picking and discovery events, so the next song
+follows it, and before the liner for liner events. Stream events never skip.
+
+**Run now** runs an event's action at once, to test it. Each run, failure and missed event goes
+to the server log and to **Recent runs**, which keeps the last 200.
+
+Schedules live in `schedule.json` in the active index folder, next to `web_state.json`. AutoDJ
+writes the file atomically and includes it in `autodj backup`. A damaged schedule file, or an
+event whose action this version does not have, is copied to `schedule.json.bad-<id>` and left
+out, so the server still starts. Events are not replayed after downtime: a one-time event whose
+time passed while AutoDJ was stopped is disabled and recorded as missed, and an event more than
+two minutes late (the computer slept) is recorded as missed instead of running. The schedule
+holds at most 100 events.
