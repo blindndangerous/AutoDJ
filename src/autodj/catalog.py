@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import math
 import os
 import sqlite3
@@ -34,8 +33,6 @@ _ENTRY_FIELDS = (
     "size",
     "fingerprint",
 )
-
-logger = logging.getLogger(__name__)
 _POINTS = ("start", "intro", "outro", "segue", "end", "overlap_start")
 _POINT_SOURCES = {"auto", "lyrics", "analysis", "user", "imported"}
 
@@ -860,18 +857,7 @@ class LibraryCatalog:
                 if limit is not None and overlap > limit:
                     if "overlap_start" in values and source in {"user", "imported"}:
                         raise ValueError("overlap_start exceeds the liner segue after Start")
-                    if sources.get("overlap_start") == "user":
-                        # Keep what the user typed; playback clamps it to the segue.
-                        logger.warning(
-                            "Liner %s: Overlap start %.2f s is now past its segue (%.2f s); "
-                            "playback will use the segue",
-                            path,
-                            overlap,
-                            max(0, limit),
-                        )
-                    else:
-                        current["overlap_start"] = max(0, limit)
-                        sources.setdefault("overlap_start", source)
+                    current["overlap_start"], sources["overlap_start"] = max(0, limit), source
             elif start is not None and end is not None and overlap > end - start:
                 raise ValueError("overlap_start exceeds the selected Start to End range")
         self._db().execute(

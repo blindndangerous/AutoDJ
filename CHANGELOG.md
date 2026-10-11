@@ -72,6 +72,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- When a liner's segue moves earlier, move any later saved overlap back to the segue.
+  Track Info now matches playback, and subsequent cue edits can be saved.
+
 - Brief playout stalls no longer trigger a burst of catch-up audio that can empty the
   output buffer and unnecessarily restart Smooth or Stereo Tool.
 - Low, mid and high EQ settings now survive server restarts.
