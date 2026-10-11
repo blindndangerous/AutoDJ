@@ -88,7 +88,9 @@ def _catalog(cfg: AutoDJConfig) -> sqlite3.Connection:
         """
     )
     conn.execute("INSERT INTO catalog_sources VALUES ('folder', '/music', 'music')")
-    conn.execute("INSERT INTO catalog_entries VALUES ('track', '/music/song.flac', '{\"start\": 1}')")
+    conn.execute(
+        "INSERT INTO catalog_entries VALUES ('track', '/music/song.flac', '{\"start\": 1}')"
+    )
     conn.execute("INSERT INTO play_history VALUES ('play', 'Kept')")
     conn.commit()
     return conn
