@@ -10,6 +10,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Richer repeat rules for picking songs.
+  - An artist credit counts for every artist it names: "feat.", "ft.", "featuring" and "vs."
+    always split it, and "&", "and", "x", "with" and commas split it when the parts look like
+    separate artists. "Simon & Garfunkel", "Earth, Wind & Fire" and "Mumford & Sons" stay one act.
+  - Song titles match in any version, so "Jingle Bells", "Jingle Bells (Live)" and
+    "JINGLE BELLS - Remastered 2009" are one song.
+  - Related artists: `related_artists_file` names a TOML file that links an artist to others it
+    holds back, one way, so Bruno Mars can hold back Silk Sonic. `related_artists_starter = true`
+    adds a short built-in list of side projects, duos and aliases.
+  - New `[playback]` settings: `no_repeat_minutes`, `artist_repeat_minutes` and
+    `title_repeat_minutes` hold a track, an artist or a song title back for a number of minutes,
+    and `title_repeat_window` sets the title rule's own number of tracks.
+  - The server log says which rule held songs back on each pick.
+  - These settings are in `config.toml` only for now; Settings page controls follow.
 - More settings can be changed on the Settings page instead of in `config.toml`. They are saved
   on the server and survive a restart:
   - the EQ duck cutoff
@@ -46,6 +60,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A setting with two descriptions now hides both when it does not apply, not just the first.
 
 ### Changed
+
+- `artist_repeat_window` keeps its meaning: the same artist, album or song title within that many
+  picks. A title now matches its other versions, and an artist matches every artist a credit
+  names. Set `title_repeat_window` to give titles a different number of picks.
+- Random walk, least recently played and clock picks now hold back the same album and the same
+  song title as well as the same artist, like similarity picks always did. Discovery picks now
+  follow the artist, album and title rules too.
 
 - Radio listening uses `/stream.mp3`, with `/stream.m3u` for players that need a playlist.
   Anyone who can reach the server can listen without a key; browser controls still require

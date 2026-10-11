@@ -191,7 +191,41 @@ crossfade_seconds = 3.0
 no_repeat_window = 500
 
 # Block same artist / album / title within the last N picks.  0 = disabled.
+# An artist credit such as "Calvin Harris feat. Rihanna" counts for each
+# artist it names, and a title matches its other versions: "Jingle Bells",
+# "Jingle Bells (Live)" and "JINGLE BELLS - Remastered 2009" are one song.
 artist_repeat_window = 3
+
+# Repeat rules by the clock.  Each counts minutes from when a track started;
+# 0 (the default) turns it off.  When a rule has both a track count and
+# minutes, a song is held back if either one catches it.  At most 10080
+# (one week).
+# no_repeat_minutes = 0          # the same track
+# artist_repeat_minutes = 0      # the same artist, a related artist or album
+# title_repeat_minutes = 0       # the same song title, in any version
+
+# Tracks before the same song title may repeat.  Leave it unset to use
+# artist_repeat_window, which covered titles on its own before.
+# title_repeat_window = 3
+
+# Related artists: a TOML file, relative to the folder AutoDJ starts in,
+# that links an artist to others it holds back while it is in the artist
+# window.  Links are one-way: list both artists to link them both ways.
+# The optional single_acts list names credits never to split into
+# separate artists.  For example, related_artists.toml:
+#
+#   single_acts = ["Tom Petty and the Heartbreakers"]
+#
+#   [related]
+#   "Bruno Mars" = ["Silk Sonic"]
+#   "Anderson .Paak" = ["Silk Sonic", "NxWorries"]
+#
+# The file is read when AutoDJ starts.
+# related_artists_file = "related_artists.toml"
+
+# Also use a short built-in list of side projects, duos and aliases, such
+# as Bruno Mars and Silk Sonic.  Default false.
+# related_artists_starter = false
 
 # When false, AutoDJ loads no lyrics and the web UI hides the lyric card.
 # Default true (lyrics shown).
