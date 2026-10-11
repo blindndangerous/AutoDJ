@@ -1,5 +1,6 @@
 """Station timing through the real player, including queue reservations."""
 
+import threading
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -190,7 +191,7 @@ def test_master_processing_reuses_prepared_sources(station, mode, tmp_path, monk
     assert result.loudness_processing == mode
 
 
-def test_playback_reprepares_existing_music_cache_for_requested_boost(
+def test_playback_keeps_existing_music_cache_and_reprepares_in_background(
     station, tmp_path, monkeypatch
 ):
     player, (entry, *_), _points = station
@@ -202,7 +203,8 @@ def test_playback_reprepares_existing_music_cache_for_requested_boost(
         "prepared_path": str(old_prepared),
         "kind": "music",
     }
-    update = MagicMock()
+    updated = threading.Event()
+    update = MagicMock(side_effect=lambda *a, **k: updated.set())
     player._library.catalog.put_entry = update
     new_prepared = tmp_path / "type-b-v1-music-9-new.wav"
     prepare = MagicMock(return_value=new_prepared)
@@ -212,7 +214,9 @@ def test_playback_reprepares_existing_music_cache_for_requested_boost(
     monkeypatch.setattr("autodj.player.load_stereo", load)
 
     assert Player._load_playout_audio(player, entry) is audio
+    assert load.call_args.args[0] == str(old_prepared)
 
+    assert updated.wait(5)
     prepare.assert_called_once_with(
         Path(entry.path),
         player._cfg.index.active_dir / "prepared",
@@ -220,7 +224,27 @@ def test_playback_reprepares_existing_music_cache_for_requested_boost(
         quiet_boost_db=9.0,
     )
     update.assert_called_once_with(entry, kind="music", prepared_path=str(new_prepared))
+
+
+def test_playback_prepares_inline_when_no_prepared_file_exists(station, tmp_path, monkeypatch):
+    player, (entry, *_), _points = station
+    player._cfg.playback.loudness_processing = "smooth"
+    player._cfg.index.active_dir = tmp_path
+    player._library.catalog.record_for_path = lambda _path: {
+        "prepared_path": str(tmp_path / "missing.wav"),
+        "kind": "music",
+    }
+    update = MagicMock()
+    player._library.catalog.put_entry = update
+    new_prepared = tmp_path / "type-b-v1-music-9-new.wav"
+    monkeypatch.setattr("autodj.processing.prepare_source", MagicMock(return_value=new_prepared))
+    load = MagicMock(return_value=np.ones((100, 2), dtype=np.float32))
+    monkeypatch.setattr("autodj.player.load_stereo", load)
+
+    Player._load_playout_audio(player, entry)
+
     assert load.call_args.args[0] == str(new_prepared)
+    update.assert_called_once_with(entry, kind="music", prepared_path=str(new_prepared))
 
 
 @pytest.mark.parametrize("mode", ["smooth", "stereotool"])
