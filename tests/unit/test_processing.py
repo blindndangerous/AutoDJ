@@ -72,3 +72,33 @@ def test_basic_suggestions_keep_segue_unset_without_sustained_tail_drop(
     assert points["start"] == pytest.approx(0.0, abs=1 / processing.SAMPLE_RATE)
     assert points["end"] == pytest.approx(3.0, abs=1 / processing.SAMPLE_RATE)
     assert points["segue"] is None
+
+
+def test_liner_segue_uses_only_a_sustained_final_drop() -> None:
+    rate = processing.SAMPLE_RATE
+    audio = np.full(rate * 6, 0.2, dtype=np.float32)
+    audio[rate : rate * 2] = 0.0  # Interior pause followed by more content.
+    audio[rate * 5 + rate // 2 :] = 0.0  # Final sustained drop begins at 5.5s.
+
+    assert processing._suggest_liner_segue(audio, rate) == pytest.approx(5.5)
+
+    no_final_drop = np.full(rate * 6, 0.2, dtype=np.float32)
+    no_final_drop[rate : rate * 2] = 0.0
+    assert processing._suggest_liner_segue(no_final_drop, rate) is None
+
+
+def test_liner_without_a_final_drop_falls_back_to_end(tmp_path: Path) -> None:
+    source = _source(tmp_path / "liner.wav")
+
+    _, music_points = processing.analyze_basic(source)
+    _, liner_points = processing.analyze_basic(source, kind="liner")
+
+    assert music_points["segue"] is None
+    assert liner_points["segue"] == liner_points["end"]
+
+
+def test_liner_segue_analysis_handles_silence_and_short_buffers() -> None:
+    rate = processing.SAMPLE_RATE
+
+    assert processing._suggest_liner_segue(np.zeros(rate * 4), rate) is None
+    assert processing._suggest_liner_segue(np.zeros(rate // 10), rate) is None

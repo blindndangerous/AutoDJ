@@ -267,6 +267,11 @@ function clearProtectedSessionData() {
   settingsStatus.textContent = "";
   searchInput.value = "";
   searchInput.dispatchEvent(new Event("input"));
+  const browseInput = document.getElementById("library-browse-query");
+  if (browseInput) {
+    browseInput.value = "";
+    browseInput.dispatchEvent(new Event("input"));
+  }
   for (const element of Object.values(_libEls)) {
     if (element && !element.matches("button, input")) element.textContent = "";
   }
@@ -1917,6 +1922,19 @@ installSearch({
   playNow: playNowHere,
 });
 
+const libraryBrowseFolder = document.getElementById("library-browse-folder");
+installSearch({
+  searchInput: document.getElementById("library-browse-query"),
+  btnSearch: document.getElementById("library-browse"),
+  searchResults: document.getElementById("library-browse-results"),
+  searchCount: document.getElementById("library-browse-count"),
+  queueAnnounce,
+  folderSelect: libraryBrowseFolder,
+  previousPage: document.getElementById("library-browse-previous"),
+  nextPage: document.getElementById("library-browse-next"),
+  playNow: playNowHere,
+});
+
 // ----------------------------------------------------------------
 import {
   installLibraryJobs,
@@ -2134,6 +2152,27 @@ initViewRouter();
 installLibraryFolders({
   getCurrentTrack: () => _lastState?.current_track || null,
   getCurrentPosition: () => _lastElapsed,
+  onFolders(folders) {
+    if (!libraryBrowseFolder) return;
+    const selected = libraryBrowseFolder.value;
+    const option = ([value, label]) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      return option;
+    };
+    const music = folders.filter((folder) => folder.kind === "music");
+    const liners = folders.filter((folder) => folder.kind === "liner");
+    const musicGroup = document.createElement("optgroup");
+    musicGroup.label = "Music folders";
+    musicGroup.append(...music.map((folder) => option([`folder:music:${folder.id}`, folder.path])));
+    const linerGroup = document.createElement("optgroup");
+    linerGroup.label = "Voice liner folders";
+    linerGroup.append(...liners.map((folder) => option([`folder:liner:${folder.id}`, folder.path])));
+    libraryBrowseFolder.replaceChildren(option(["all-music", "All music"]), option(["all-liners", "All voice liners"]), musicGroup, linerGroup);
+    libraryBrowseFolder.value = [...libraryBrowseFolder.options].some((item) => item.value === selected) ? selected : "all-music";
+    if (libraryBrowseFolder.value !== selected) libraryBrowseFolder.dispatchEvent(new Event("change"));
+  },
 });
 
 installClockwheelPanel();

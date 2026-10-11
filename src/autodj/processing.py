@@ -234,7 +234,7 @@ def prepare_source(source: Path, cache_dir: Path, kind: str = "music") -> Path:
             path.unlink(missing_ok=True)
 
 
-def analyze_basic(source: Path) -> tuple[IndexEntry, dict[str, float | None]]:
+def analyze_basic(source: Path, kind: str = "music") -> tuple[IndexEntry, dict[str, float | None]]:
     """Return basic library metadata and conservative timing suggestions.
 
     Full beat-grid and embedding analysis remain separate background work.
@@ -244,6 +244,8 @@ def analyze_basic(source: Path) -> tuple[IndexEntry, dict[str, float | None]]:
     from autodj.indexer import IndexEntry
     from autodj.vocals import first_vocal_s, sung_spans
 
+    if kind not in {"music", "liner"}:
+        raise ValueError("kind must be 'music' or 'liner'")
     source = Path(source)
     audio = load_stereo(str(source))
     length = len(audio) / SAMPLE_RATE
@@ -261,10 +263,16 @@ def analyze_basic(source: Path) -> tuple[IndexEntry, dict[str, float | None]]:
     end = (int(audible[-1]) + 1) / SAMPLE_RATE if len(audible) else 0.0
     lines = load_lrc_for(source)
     spans = sung_spans(lines)
+    if kind == "liner":
+        segue = _suggest_liner_segue(mono, SAMPLE_RATE)
+        if segue is None or segue > end:
+            segue = end
+    else:
+        segue = _suggest_segue(mono, SAMPLE_RATE)
     points = {
         "start": start,
         "end": end,
-        "segue": _suggest_segue(mono, SAMPLE_RATE),
+        "segue": segue,
         "intro": first_vocal_s(spans) if spans else (detected_intro or None),
         "outro": spans[-1][1] if spans else detected_outro if detected_outro < length else None,
     }
@@ -285,6 +293,35 @@ def analyze_basic(source: Path) -> tuple[IndexEntry, dict[str, float | None]]:
         size=source.stat().st_size,
     )
     return entry, points
+
+
+def _suggest_liner_segue(audio: np.ndarray, sample_rate: int) -> float | None:
+    """Find a sustained final content drop in a short liner, never an interior pause."""
+    window = max(1, round(sample_rate * 0.05))
+    if len(audio) < window * 3:
+        return None
+    samples = np.nan_to_num(np.asarray(audio, dtype=np.float64), copy=False)
+    bins = [samples[start : start + window] for start in range(0, len(samples), window)]
+    rms = np.asarray([np.sqrt(np.mean(block * block)) for block in bins], dtype=np.float64)
+    duration = len(samples) / sample_rate
+    centers = (np.arange(len(rms)) + 0.5) * window / sample_rate
+    body = rms[centers < max(0.0, duration - 0.5)]
+    if len(body) == 0:
+        return None
+    reference = float(np.median(body))
+    if not math.isfinite(reference) or reference <= 1e-6:
+        return None
+
+    below = rms <= reference * 10 ** (-10 / 20)
+    index = len(below) - 1
+    while index >= 0 and below[index]:
+        index -= 1
+    first = index + 1
+    tail_duration = len(samples) - first * window
+    point = first * window / sample_rate
+    if tail_duration < sample_rate * 0.15 or point <= 0:
+        return None
+    return point if point < duration else None
 
 
 def _suggest_segue(audio: np.ndarray, sample_rate: int) -> float | None:

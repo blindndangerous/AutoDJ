@@ -48,7 +48,7 @@ import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO, Literal
+from typing import TYPE_CHECKING, Annotated, Any, BinaryIO, Literal
 
 from fastapi import (
     FastAPI,
@@ -2243,6 +2243,24 @@ def create_app(
             raise HTTPException(status_code=503, detail="Folder library is not attached")
         return bridge.library
 
+    @app.get("/api/library/tracks")
+    async def api_library_tracks(
+        q: str = "",
+        kind: Literal["music", "liner"] = "music",
+        source_id: str | None = None,
+        offset: Annotated[int, Query(ge=0)] = 0,
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    ) -> dict:
+        library = _catalog_library()
+        try:
+            return await asyncio.to_thread(
+                library.catalog.browse_tracks, kind, source_id, q, offset, limit
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Folder not registered") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.get("/api/library/folders")
     async def api_library_folders() -> dict:
         return _catalog_library().snapshot()
@@ -2426,11 +2444,11 @@ def create_app(
         if entry is None:
             raise HTTPException(status_code=404, detail="Recording not in library")
         if library.catalog.record_for_path(body.path).get("kind") == "liner":
-            allowed = {"start", "end", "overlap_start"}
+            allowed = {"start", "segue", "end", "overlap_start"}
             if set(body.points) - allowed:
                 raise HTTPException(
                     status_code=400,
-                    detail="Liner points support only start, end, and overlap_start",
+                    detail="Liner points support only start, segue, end, and overlap_start",
                 )
         try:
             await asyncio.to_thread(library.catalog.set_points, body.path, body.points)

@@ -185,6 +185,7 @@
       <button type="button" id="edit-current-points">Edit song points</button>
       <section id="points-editor" aria-labelledby="points-heading" hidden>
         <h3 id="points-heading">Song points</h3>
+        <p id="points-liner-help" hidden>Segue marks the end of the liner’s main content; End keeps the remaining tail. With Overlap start set to 0, AutoDJ fits Segue before the next song’s vocals. A positive Overlap start explicitly starts the music that many seconds after saved Start.</p>
         <label for="points-path">Track path</label>
         <input id="points-path" type="text" autocomplete="off">
         <button type="button" id="points-load">Load points</button>
@@ -1120,6 +1121,18 @@
        jobs and the index stats, run from the web UI.
        ============================================================ -->
   <section data-view="library" id="panel-library" role="tabpanel" hidden aria-labelledby="tab-library">
+    <section class="card" aria-labelledby="browse-library-heading">
+      <h2 id="browse-library-heading">Browse library</h2>
+      <label for="library-browse-folder">Folder</label>
+      <select id="library-browse-folder"><option value="all-music">All music</option><option value="all-liners">All voice liners</option></select>
+      <label for="library-browse-query">Search text (optional)</label>
+      <input id="library-browse-query" type="search">
+      <button type="button" id="library-browse">Browse</button>
+      <p id="library-browse-count" aria-live="polite" aria-atomic="true"></p>
+      <ul id="library-browse-results" role="list" aria-label="Library tracks"></ul>
+      <button type="button" id="library-browse-previous" disabled>Previous</button>
+      <button type="button" id="library-browse-next" disabled>Next</button>
+    </section>
     <details class="card" open>
       <summary><h2>Library tools</h2></summary>
 
@@ -1132,7 +1145,7 @@
 
       <section aria-labelledby="source-folders-heading">
         <h3 id="source-folders-heading">Music folders and Voice liner folders</h3>
-        <p>Enter a folder path on the machine running AutoDJ. Music folders include advanced analysis by default; liner folders do not.</p>
+        <p>Enter a folder path on the machine running AutoDJ. Music folders include advanced analysis by default. Liners get automatic Start, Segue and End suggestions without the music-matching job.</p>
         <label for="source-folder-path">Folder path</label>
         <input id="source-folder-path" type="text" autocomplete="off">
         <label for="source-folder-kind">Folder type</label>

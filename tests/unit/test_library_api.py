@@ -4,9 +4,11 @@ import asyncio
 import os
 from types import SimpleNamespace
 from unittest.mock import Mock
+from urllib.parse import urlsplit
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 from autodj.library import LibraryManager
 from autodj.server import (
@@ -32,15 +34,15 @@ def library_api(tmp_path):
         for method in (route.methods or set())
     }
 
-    def call(method, path, *args):
-        return asyncio.run(routes[(method, path)](*args))
+    def call(method, path, *args, **kwargs):
+        return asyncio.run(routes[(method, path)](*args, **kwargs))
 
-    yield manager, call
+    yield manager, call, app
     manager.close()
 
 
 def test_folder_choices_persist_and_removing_a_source_keeps_files(library_api, tmp_path):
-    manager, call = library_api
+    manager, call, _app = library_api
     folder = tmp_path / "extra"
     folder.mkdir()
     call("POST", "/api/library/folders", LibraryFolderBody(path=str(folder)))
@@ -73,7 +75,7 @@ def test_folder_choices_persist_and_removing_a_source_keeps_files(library_api, t
 
 
 def test_points_validate_and_keep_manual_values_without_analysis(library_api, tmp_path):
-    manager, call = library_api
+    manager, call, _app = library_api
     music = manager.cfg.library.music_dir / "song.flac"
     music.touch()
     manager.catalog.put_entry(make_entry(music), points={"start": 0, "end": 180})
@@ -104,9 +106,80 @@ def test_points_validate_and_keep_manual_values_without_analysis(library_api, tm
     saved = call(
         "POST",
         "/api/library/points",
-        SongPointsBody(path=str(liner), points={"overlap_start": 5.3}),
+        SongPointsBody(path=str(liner), points={"overlap_start": 5.3, "segue": 5.5}),
     )
     assert saved["points"]["overlap_start"] == 5.3
+    assert saved["points"]["segue"] == 5.5
     with pytest.raises(HTTPException) as invalid:
         call("POST", "/api/library/points", SongPointsBody(path=str(liner), points={"intro": 1}))
     assert invalid.value.status_code == 400
+
+
+def test_track_browse_empty_query_paginates_stably(library_api):
+    manager, call, _app = library_api
+    for name in ("Zebra", "Alpha", "Mango"):
+        path = manager.cfg.library.music_dir / f"{name}.flac"
+        path.touch()
+        manager.catalog.put_entry(make_entry(path))
+
+    page = call("GET", "/api/library/tracks", offset=1, limit=1)
+    assert page["total"] == 3
+    assert page["offset"] == 1 and page["limit"] == 1
+    assert [track["title"] for track in page["results"]] == ["Mango"]
+    assert page["results"][0]["display_name"] == "Artist — Mango"
+
+
+def test_track_browse_source_respects_recursive_and_kind(library_api, tmp_path):
+    manager, call, _app = library_api
+    folder = tmp_path / "browse"
+    nested = folder / "nested"
+    nested.mkdir(parents=True)
+    call("POST", "/api/library/folders", LibraryFolderBody(path=str(folder), recursive=False))
+    source = next(
+        s for s in manager.catalog.sources("music") if s["path"] == os.path.normcase(str(folder))
+    )
+    direct = folder / "direct.flac"
+    child = nested / "child.flac"
+    direct.touch()
+    child.touch()
+    manager.catalog.put_entry(make_entry(direct))
+    manager.catalog.put_entry(make_entry(child))
+
+    listed = call("GET", "/api/library/tracks", source_id=source["id"])
+    assert [track["path"] for track in listed["results"]] == [os.path.normcase(str(direct))]
+
+
+def test_track_browse_finds_filename_and_lists_liners(library_api, tmp_path):
+    manager, call, _app = library_api
+    root = manager.cfg.library.music_dir / "liners"
+    root.mkdir()
+    call("POST", "/api/library/folders", LibraryFolderBody(path=str(root), kind="liner"))
+    source = next(
+        s for s in manager.catalog.sources("liner") if s["path"] == os.path.normcase(str(root))
+    )
+    liner = root / "PromoCode.flac"
+    liner.touch()
+    manager.catalog.put_entry(make_entry(liner, title="Promo"), kind="liner")
+
+    assert call("GET", "/api/library/tracks", q="code", kind="music")["total"] == 0
+    results = call("GET", "/api/library/tracks", q="code", kind="liner", source_id=source["id"])
+    assert [track["path"] for track in results["results"]] == [os.path.normcase(str(liner))]
+
+
+def test_track_browse_rejects_unknown_source_and_invalid_kind(library_api):
+    manager, call, app = library_api
+    with pytest.raises(HTTPException) as missing:
+        call("GET", "/api/library/tracks", source_id="missing")
+    assert missing.value.status_code == 404
+    music_source = manager.catalog.sources("music")[0]
+    with pytest.raises(HTTPException) as mismatch:
+        call("GET", "/api/library/tracks", kind="liner", source_id=music_source["id"])
+    assert mismatch.value.status_code == 400
+
+    origin = app.state.security_policy.effective_allowed_origins()[0]
+    response = TestClient(app).get(
+        "/api/library/tracks",
+        params={"kind": "other"},
+        headers={"host": urlsplit(origin).netloc, "origin": origin},
+    )
+    assert response.status_code == 422

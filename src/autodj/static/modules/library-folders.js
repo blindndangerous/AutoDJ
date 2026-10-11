@@ -23,7 +23,7 @@ export function formatPointTime(value) {
 
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 
-export function installLibraryFolders({ document: doc = document, request = requestJson, getCurrentTrack = () => null, getCurrentPosition = () => null }) {
+export function installLibraryFolders({ document: doc = document, request = requestJson, getCurrentTrack = () => null, getCurrentPosition = () => null, onFolders }) {
   const panel = doc.getElementById("panel-library");
   const list = doc.getElementById("source-folders");
   const status = doc.getElementById("source-folders-status");
@@ -63,6 +63,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
         <button type="button" data-action="remove">Remove folder</button>
       </li>`).join("") || "<li>No folders added yet.</li>";
       folderSignature = signature;
+      onFolders?.(folders);
       if (focused) {
         const selector = focused.field ? `input[data-field="${focused.field}"]` : `button[data-action="${focused.action}"]`;
         const replacement = [...list.querySelectorAll("li")].find((row) => row.dataset.id === focused.id)?.querySelector(selector);
@@ -134,10 +135,14 @@ export function installLibraryFolders({ document: doc = document, request = requ
   });
 
   function setPointFields(points, sources = {}) {
+    const heading = doc.getElementById("points-heading");
+    if (heading) heading.textContent = currentKind === "liner" ? "Liner points" : "Song points";
+    const linerHelp = doc.getElementById("points-liner-help");
+    if (linerHelp) linerHelp.hidden = currentKind !== "liner";
     for (const name of POINTS) {
       const field = doc.querySelector(`[data-point="${name}"]`);
       field.value = formatPointTime(currentKind === "liner" && name === "overlap_start" && points?.[name] == null ? 0 : points?.[name]);
-      const applicable = currentKind === "liner" ? ["start", "end", "overlap_start"].includes(name) : name !== "overlap_start";
+      const applicable = currentKind === "liner" ? ["start", "segue", "end", "overlap_start"].includes(name) : name !== "overlap_start";
       field.closest("label").hidden = !applicable;
       doc.querySelector(`[data-preview="${name}"]`).hidden = !applicable;
       const setCurrent = doc.querySelector(`[data-set-current="${name}"]`);
@@ -193,7 +198,13 @@ export function installLibraryFolders({ document: doc = document, request = requ
         ? preview.currentTime
         : (getCurrentTrack()?.path === currentPath ? getCurrentPosition() : null);
       if (!Number.isFinite(time)) { pointSay("This track is not playing in the preview or on the station.", true); return; }
-      doc.querySelector(`[data-point="${setButton.dataset.setCurrent}"]`).value = formatPointTime(time);
+      const name = setButton.dataset.setCurrent;
+      try {
+        const value = currentKind === "liner" && name === "overlap_start"
+          ? Math.max(0, time - (parsePointTime(doc.querySelector('[data-point="start"]').value) ?? 0))
+          : time;
+        doc.querySelector(`[data-point="${name}"]`).value = formatPointTime(value);
+      } catch (error) { pointSay(error.message, true); }
       return;
     }
     const button = event.target.closest("button[data-preview]");
@@ -203,7 +214,9 @@ export function installLibraryFolders({ document: doc = document, request = requ
       if (time == null) throw new Error("Enter a time before previewing it.");
       const preview = doc.getElementById("points-preview");
       if (!preview) throw new Error("Preview audio is unavailable.");
-      preview.currentTime = time;
+      preview.currentTime = currentKind === "liner" && button.dataset.preview === "overlap_start"
+        ? (parsePointTime(doc.querySelector('[data-point="start"]').value) ?? 0) + time
+        : time;
       await preview.play();
     }
     catch (error) { pointSay(error.message, true); }

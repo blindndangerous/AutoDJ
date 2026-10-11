@@ -76,6 +76,26 @@ def test_cold_intro_waits_for_complete_voice(station):
     assert result.audio[11 * SR, 1] == 0.5
 
 
+@pytest.mark.parametrize("standalone", [False, True])
+def test_liner_segue_starts_cold_music_while_tail_keeps_playing(station, standalone):
+    player, (a, b, voice, _), points = station
+    points[b.path]["intro"] = 0.25
+    points[voice.path].update(start=0.5, segue=2.5)
+    result = player._render_track(
+        voice if standalone else a, b, 0, liners=() if standalone else ((voice, True),)
+    )
+    entry = 2 if standalone else 10
+    if standalone:
+        assert result.audio[round((entry - 0.01) * SR), 0] == 0
+    else:
+        assert result.liner_events == ((8 * SR, voice, True),)
+    assert result.overlap_frames == round(1.5 * SR)
+    assert len(result.audio) == round((entry + 1.5) * SR)
+    assert result.audio[entry * SR, 0] >= 0.25
+    assert result.audio[-1, 1] == 0.5
+    assert result.next_start_offset == round(1.75 * SR)
+
+
 def test_positive_release_keeps_entire_jingle_tail(station):
     player, (a, b, _, jingle), _points = station
     result = player._render_track(a, b, 0, liners=((jingle, False),))
@@ -84,6 +104,21 @@ def test_positive_release_keeps_entire_jingle_tail(station):
     assert result.next_start_offset == round(3.75 * SR)
     assert result.audio[round(15.3 * SR), 0] == 0.25
     assert result.audio[-1, 1] == 0.5
+
+
+def test_retained_liner_tail_does_not_play_music_past_saved_end(station):
+    player, (_, b, voice, _), points = station
+    points[b.path].update(start=1.0, intro=1.0, end=2.0)
+    points[voice.path].update(start=0.5, segue=2.5)
+
+    result = player._render_track(voice, b, 0)
+
+    assert result.next_entry_offset == SR
+    assert result.next_start_offset == 2 * SR
+    assert len(result.audio) == round(3.5 * SR)
+    assert np.all(result.audio[2 * SR : 3 * SR, 0] == 0.25)
+    assert np.all(result.audio[3 * SR :, 0] == 0)
+    assert np.all(result.audio[:, 1] == 0.5)
 
 
 def test_pending_liner_and_music_are_reserved_without_leaving_queue(station):

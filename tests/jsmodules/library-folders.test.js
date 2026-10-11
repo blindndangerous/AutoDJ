@@ -11,6 +11,7 @@ function mount() {
       <p id="source-folders-status"></p><ul id="source-folders"></ul>
     </section>
     <button id="edit-current-points"></button><section id="points-editor" hidden>
+      <h3 id="points-heading">Song points</h3><p id="points-liner-help" hidden></p>
       <input id="points-path"><button id="points-load"></button>
       ${["start", "intro", "outro", "segue", "end", "overlap_start"].map((name) => `<label><input data-point="${name}"><span data-point-source="${name}"></span></label><button data-preview="${name}"></button><button data-set-current="${name}"></button>`).join("")}
       <audio id="points-preview"></audio>
@@ -81,6 +82,19 @@ describe("clock folder and points controls", () => {
     controls.destroy();
   });
 
+  it("updates browser folders only when the registered folder signature changes", async () => {
+    document.getElementById("panel-library").hidden = false;
+    const folders = [{ id: 2, path: "N:/voice", kind: "liner", recursive: true, advanced: false }];
+    const onFolders = vi.fn();
+    const controls = installLibraryFolders({ document, request: vi.fn(async () => ({ folders })), onFolders });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(onFolders).toHaveBeenCalledTimes(1);
+    expect(onFolders).toHaveBeenCalledWith(folders);
+    await controls.refresh();
+    expect(onFolders).toHaveBeenCalledTimes(1);
+    controls.destroy();
+  });
+
   it("loads music provenance, hides overlap start, previews the source file, and saves values", async () => {
     const request = vi.fn(async (url) => url.startsWith("/api/library/points?")
       ? { path: "M:/song.flac", kind: "music", length: 200, points: { start: 1.5, intro: 12, segue: 170, end: 190 }, point_sources: { intro: "detected", segue: "user" } }
@@ -108,7 +122,7 @@ describe("clock folder and points controls", () => {
 
   it("opens liner points from a folder row event and exposes only its source window", async () => {
     const request = vi.fn(async (url) => url.startsWith("/api/library/points?")
-      ? { path: "N:/voice/same.wav", kind: "liner", length: 4, points: { start: 0.2, end: 3.8 } }
+      ? { path: "N:/voice/same.wav", kind: "liner", length: 4, points: { start: 0.2, segue: 2.6, end: 3.8 } }
       : {});
     installLibraryFolders({ document, request });
     document.dispatchEvent(new CustomEvent("autodj:edit-points", {
@@ -116,12 +130,37 @@ describe("clock folder and points controls", () => {
     }));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(document.getElementById("points-editor").hidden).toBe(false);
+    expect(document.getElementById("points-heading").textContent).toBe("Liner points");
+    expect(document.getElementById("points-liner-help").hidden).toBe(false);
     expect(document.querySelector('[data-point="intro"]').closest("label").hidden).toBe(true);
-    expect(document.querySelector('[data-point="segue"]').closest("label").hidden).toBe(true);
+    expect(document.querySelector('[data-point="outro"]').closest("label").hidden).toBe(true);
+    expect(document.querySelector('[data-point="segue"]').closest("label").hidden).toBe(false);
     expect(document.querySelector('[data-point="overlap_start"]').value).toBe("0:00");
     document.getElementById("points-save").click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     const save = request.mock.calls.find(([url]) => url === "/api/library/points");
-    expect(JSON.parse(save[1].body).points).toEqual({ start: 0.2, end: 3.8, overlap_start: 0 });
+    expect(JSON.parse(save[1].body).points).toEqual({ start: 0.2, segue: 2.6, end: 3.8, overlap_start: 0 });
+  });
+
+  it("treats liner overlap start as relative to saved Start for preview and setting current", async () => {
+    const request = vi.fn(async (url) => url.startsWith("/api/library/points?")
+      ? { path: "N:/voice/same.wav", kind: "liner", length: 8, points: { start: 1.5, end: 7, overlap_start: 2.5 } }
+      : {});
+    installLibraryFolders({ document, request, getCurrentTrack: () => ({ path: "N:/voice/same.wav" }), getCurrentPosition: () => 5.25 });
+    document.dispatchEvent(new CustomEvent("autodj:edit-points", {
+      detail: { path: "N:/voice/same.wav", kind: "liner" },
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const preview = document.getElementById("points-preview");
+    Object.defineProperty(preview, "play", { configurable: true, value: vi.fn(async () => {}) });
+    document.querySelector('[data-preview="overlap_start"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(preview.currentTime).toBe(4);
+    preview.currentTime = 5.25;
+    document.querySelector('[data-set-current="overlap_start"]').click();
+    expect(document.querySelector('[data-point="overlap_start"]').value).toBe("0:03.75");
+    document.querySelector('[data-point="start"]').value = "invalid";
+    document.querySelector('[data-set-current="overlap_start"]').click();
+    expect(document.getElementById("points-status").textContent).toContain("Enter seconds or minutes:seconds");
   });
 });

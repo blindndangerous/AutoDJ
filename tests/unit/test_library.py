@@ -91,7 +91,8 @@ def manager_factory(tmp_path):
         manager.close()
 
 
-def fake_basic(path: Path):
+def fake_basic(path: Path, kind: str = "music"):
+    del kind
     return make_entry(path), {
         "start": 0.0,
         "intro": 10.0,
@@ -201,10 +202,10 @@ def test_scan_continues_after_per_file_failure(manager_factory, tmp_path):
     good.write_bytes(b"good")
     manager = manager_factory(music=music)
 
-    def analyze(path):
+    def analyze(path, kind="music"):
         if path == bad:
             raise ValueError("decode failed")
-        return fake_basic(path)
+        return fake_basic(path, kind)
 
     with (
         patch("autodj.library.analyze_basic", side_effect=analyze),
@@ -309,6 +310,100 @@ def test_confirmed_move_preserves_points_prepared_audio_vector_and_play_history(
     assert manager.last_played()[os.path.normcase(str(new))] == 42.0
     assert analyze.call_count == 0
     np.testing.assert_array_equal(manager.catalog.vectors_snapshot()[1][0], vector)
+
+
+def test_unchanged_liner_with_unset_analysis_segue_is_backfilled(manager_factory, tmp_path):
+    liner_root = tmp_path / "liners"
+    liner_root.mkdir()
+    liner = liner_root / "liner.wav"
+    liner.write_bytes(b"liner")
+    manager = manager_factory(liners=liner_root)
+    manager.catalog.put_entry(
+        make_entry(liner),
+        "liner",
+        points={"start": 0.0, "end": 180.0, "segue": None, "overlap_start": 12.0},
+        point_source="analysis",
+    )
+    manager.catalog.set_points(liner, {"overlap_start": 18.0}, source="user")
+
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic) as analyzed,
+        patch("autodj.library.prepare_source", side_effect=fake_prepare),
+    ):
+        manager.scan()
+
+    analyzed.assert_called_once_with(liner, kind="liner")
+    points = manager.catalog.points(liner)
+    assert points["segue"] == 160.0
+    assert points["end"] == 180.0
+    assert points["overlap_start"] == 18.0
+
+
+def test_liner_segue_backfill_clamps_to_saved_manual_range(manager_factory, tmp_path):
+    liner_root = tmp_path / "liners"
+    liner_root.mkdir()
+    liner = liner_root / "liner.wav"
+    liner.write_bytes(b"liner")
+    manager = manager_factory(liners=liner_root)
+    manager.catalog.put_entry(
+        make_entry(liner),
+        "liner",
+        points={"start": 0.0, "end": 180.0, "segue": None},
+        point_source="analysis",
+    )
+    manager.catalog.set_points(
+        liner,
+        {
+            "start": 20.0,
+            "end": 100.0,
+            "intro": 30.0,
+            "outro": 80.0,
+            "overlap_start": 12.0,
+        },
+        source="user",
+    )
+
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic) as analyzed,
+        patch("autodj.library.prepare_source", side_effect=fake_prepare),
+    ):
+        manager.scan()
+
+    analyzed.assert_called_once_with(liner, kind="liner")
+    assert manager.catalog.points(liner) == {
+        "start": 20.0,
+        "intro": 30.0,
+        "outro": 80.0,
+        "segue": 100.0,
+        "end": 100.0,
+        "overlap_start": 12.0,
+    }
+    assert manager.snapshot()["import"]["errors"] == []
+
+
+@pytest.mark.parametrize("point_source", ["user", "imported"])
+def test_unchanged_liner_preserves_manually_cleared_segue(manager_factory, tmp_path, point_source):
+    liner_root = tmp_path / "liners"
+    liner_root.mkdir()
+    liner = liner_root / "liner.wav"
+    liner.write_bytes(b"liner")
+    manager = manager_factory(liners=liner_root)
+    manager.catalog.put_entry(
+        make_entry(liner),
+        "liner",
+        points={"start": 0.0, "end": 180.0, "segue": None},
+        point_source="analysis",
+    )
+    manager.catalog.set_points(liner, {"segue": None}, source=point_source)
+
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic) as analyzed,
+        patch("autodj.library.prepare_source", side_effect=fake_prepare),
+    ):
+        manager.scan()
+
+    analyzed.assert_not_called()
+    assert manager.catalog.points(liner)["segue"] is None
 
 
 def test_advanced_analysis_obeys_source_choice_and_uses_vector_presence(manager_factory, tmp_path):

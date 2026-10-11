@@ -2209,9 +2209,16 @@ class Player:
         )
         clips, events, release = [], [], 0.0
         frames = 0
+        main_frames = 0
         if is_liner:
             clips.append(source[source_start:end])
             frames = end - source_start
+            segue = points.get("segue")
+            main_frames = (
+                frames
+                if segue is None
+                else min(frames, max(0, round(segue * SAMPLE_RATE) - source_start))
+            )
             release = float(points.get("overlap_start") or 0)
         for liner_entry, queued in liners:
             try:
@@ -2225,6 +2232,12 @@ class Player:
                 overlap = float(cues.get("overlap_start") or 0)
                 if overlap > 0:
                     release = max(release, frames / SAMPLE_RATE + overlap)
+                segue = cues.get("segue")
+                main_frames = frames + (
+                    len(clip)
+                    if segue is None
+                    else min(len(clip), max(0, round(segue * SAMPLE_RATE) - first))
+                )
                 events.append((frames, liner_entry, queued))
                 clips.append(clip)
                 frames += len(clip)
@@ -2244,14 +2257,21 @@ class Player:
             fade_seconds=self._cfg.playback.crossfade_seconds,
             liner=np.concatenate(clips) if clips else None,
             overlap_start=release,
+            liner_segue=main_frames / SAMPLE_RATE if clips else None,
         )
         overlap = len(handoff.next_overlay)
         tail = handoff.next_overlay.copy()
+        next_offset = handoff.next_start_offset + overlap
         if overlap:
             try:
                 incoming = self._load_playout_audio(next_entry)
-                head = incoming[handoff.next_start_offset : handoff.next_start_offset + overlap]
+                incoming_end = min(
+                    len(incoming),
+                    round((incoming_points.get("end") or next_entry.length) * SAMPLE_RATE),
+                )
+                head = incoming[handoff.next_start_offset : min(next_offset, incoming_end)]
                 tail[: len(head)] += head
+                next_offset = handoff.next_start_offset + len(head)
             except (OSError, ValueError, RuntimeError):
                 logger.exception("Cannot prepare incoming track %s", next_entry.path)
         full_audio = np.concatenate((handoff.audio, tail))
@@ -2263,7 +2283,7 @@ class Player:
             current,
             audio,
             next_entry,
-            handoff.next_start_offset + overlap,
+            next_offset,
             "none",
             start_offset=start,
             overlap_frames=overlap,

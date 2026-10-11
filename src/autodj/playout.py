@@ -69,12 +69,14 @@ def render_handoff(
     fade_seconds: float = 1.5,
     liner: np.ndarray | None = None,
     overlap_start: float = 0,
+    liner_segue: float | None = None,
 ) -> Handoff:
     """Plan a handoff from saved points without rendering incoming music.
 
     The current chunk ends at the actual incoming music entry. Any outgoing
     fade tail and the remaining voice tail are returned as ``next_overlay``.
     Point times are seconds in their source files; offsets are sample frames.
+    ``liner_segue`` is relative to the retained liner audio, excluding its tail.
     """
     checked = _audio(outgoing, "outgoing")
     assert checked is not None
@@ -123,6 +125,12 @@ def render_handoff(
     next_start_offset = _frames(incoming_start, "start")
 
     liner_frames = len(liner) if liner is not None else 0
+    main_end = _point({"liner_segue": liner_segue}, "liner_segue")
+    main_frames = (
+        liner_frames
+        if main_end is None
+        else min(liner_frames, max(0, _frames(main_end, "liner_segue")))
+    )
     if liner is None:
         liner_start = None
         incoming_frame = segue_frame
@@ -139,9 +147,9 @@ def render_handoff(
             ),
         )
         liner_start = max(
-            safe_outro, min(segue_frame, segue_frame + incoming_intro_frames - liner_frames)
+            safe_outro, min(segue_frame, segue_frame + incoming_intro_frames - main_frames)
         )
-        incoming_frame = max(segue_frame, liner_start + liner_frames - incoming_intro_frames)
+        incoming_frame = max(segue_frame, liner_start + main_frames - incoming_intro_frames)
 
     fade_frames = _frames(float(fade_seconds), "fade_seconds")
     fade_start = max(start_frame, segue_frame - fade_frames // 3)

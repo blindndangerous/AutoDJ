@@ -22,11 +22,15 @@ const SEARCH_RESULT_LIMIT = 100;
 // why nothing plays.
 export function installSearch({
   searchInput, btnSearch, searchResults, searchCount, queueAnnounce,
+  folderSelect, previousPage, nextPage,
   playNow = async (request) => { await request(); return true; },
 }) {
   if (!searchInput || !searchResults) return;
+  const browsing = Boolean(folderSelect && previousPage && nextPage);
   // The search in flight: a newer one, or emptying the field, aborts it.
   let searchRequest = null;
+  let offset = 0;
+  let total = 0;
 
   // Announced once and shown once: announceStatus writes the region and
   // copies the same string into the visible #status-toast, so a failed
@@ -46,36 +50,52 @@ export function installSearch({
       { mirror, tone, force: Boolean(message) });
   }
 
-  async function doSearch() {
+  function clearBrowse() {
+    searchRequest?.abort();
+    searchResults.replaceChildren();
+    setCount("");
+    if (previousPage) previousPage.disabled = true;
+    if (nextPage) nextPage.disabled = true;
+  }
+
+  async function doSearch(pageOffset = 0) {
     const q = searchInput.value.trim();
-    if (!q) {
-      searchResults.innerHTML = "";
-      setCount("");
-      searchRequest?.abort();
+    if (!q && !browsing) {
+      clearBrowse();
       return;
     }
     searchRequest?.abort();
     const request = searchRequest = new AbortController();
     let data;
     try {
-      data = await withDisabled(btnSearch, () => requestJson(
-        `/api/search?q=${encodeURIComponent(q)}`,
-        { signal: request.signal },
-      ));
+      let url;
+      if (browsing) {
+        const params = new URLSearchParams({ kind: folderSelect.value.startsWith("folder:liner:") || folderSelect.value === "all-liners" ? "liner" : "music", offset: String(pageOffset), limit: "100" });
+        if (q) params.set("q", q);
+        if (folderSelect.value.startsWith("folder:")) params.set("source_id", folderSelect.value.slice(folderSelect.value.lastIndexOf(":") + 1));
+        url = `/api/library/tracks?${params}`;
+      } else url = `/api/search?q=${encodeURIComponent(q)}`;
+      data = await withDisabled(btnSearch, () => requestJson(url, { signal: request.signal }));
     } catch (errorValue) {
       if (request.signal.aborted) return;
+      if (browsing && searchRequest !== request) return;
       setCount(`Could not search: ${errorValue.message}`,
         { mirror: true, tone: "error" });
-      searchInput.focus();
+      if (!browsing) searchInput.focus();
       return;
     }
-    if (request.signal.aborted) return;
+    if (request.signal.aborted || searchRequest !== request) return;
     const results = data.results || [];
 
     if (results.length === 0) {
       searchResults.innerHTML =
-        `<li><span class="no-results">No results for "${escHtml(q)}".</span></li>`;
-      setCount(`No results for "${q}".`);
+        `<li><span class="no-results">${browsing ? "No tracks found." : `No results for "${escHtml(q)}".`}</span></li>`;
+      total = browsing ? Number(data.total || 0) : 0;
+      offset = browsing ? Number(data.offset ?? pageOffset) : 0;
+      if (browsing) {
+        setCount("No tracks found.");
+        updatePages();
+      } else setCount(`No results for "${q}".`);
       return;
     }
 
@@ -100,9 +120,17 @@ export function installSearch({
         <button class="result-btn"
                 aria-label="Edit points for ${name}"
                 data-path="${path}"
+                data-kind="${escHtml(t.kind || "music") }"
                 data-points="true">Edit points</button>
       </li>`;
     }).join("");
+    if (browsing) {
+      total = Number(data.total ?? results.length);
+      offset = Number(data.offset ?? pageOffset);
+      setCount(`${total} track${total === 1 ? "" : "s"} found; showing ${offset + 1}–${offset + results.length}.`);
+      updatePages();
+      return;
+    }
     // The server caps at SEARCH_RESULT_LIMIT; say so, otherwise a full
     // page of results silently pretends to be the whole library.
     const plural = results.length === 1 ? "" : "s";
@@ -112,18 +140,38 @@ export function installSearch({
       : `${results.length} result${plural} found.`);
   }
 
-  if (btnSearch) btnSearch.addEventListener("click", doSearch);
+  function updatePages() {
+    if (!browsing) return;
+    const focused = searchResults.ownerDocument.activeElement;
+    previousPage.disabled = offset <= 0;
+    nextPage.disabled = offset + 100 >= total;
+    if ((focused === previousPage || focused === nextPage) && focused.disabled) {
+      const target = !previousPage.disabled ? previousPage : !nextPage.disabled ? nextPage : btnSearch;
+      target?.focus();
+    }
+  }
+
+  function changePage(delta) {
+    const nextOffset = Math.max(0, offset + delta * 100);
+    void doSearch(nextOffset);
+  }
+
+  if (btnSearch) btnSearch.addEventListener("click", () => doSearch());
   searchInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") doSearch();
   });
   // Collapse results when input is cleared.
   searchInput.addEventListener("input", () => {
-    if (!searchInput.value.trim()) {
-      searchRequest?.abort();
-      searchResults.innerHTML = "";
-      setCount("");
-    }
+    if (browsing) {
+      offset = 0;
+      clearBrowse();
+    } else if (!searchInput.value.trim()) clearBrowse();
   });
+  if (browsing) {
+    folderSelect.addEventListener("change", () => { offset = 0; void doSearch(); });
+    previousPage.addEventListener("click", () => changePage(-1));
+    nextPage.addEventListener("click", () => changePage(1));
+  }
 
   // Play-now / queue-add buttons via event delegation.
   searchResults.ownerDocument.addEventListener("click", async (e) => {
@@ -134,7 +182,7 @@ export function installSearch({
     if (btn.dataset.points === "true") {
       searchResults.dispatchEvent(new CustomEvent("autodj:edit-points", {
         bubbles: true,
-        detail: { path, kind: "music" },
+        detail: { path, kind: btn.dataset.kind || "music" },
       }));
       return;
     }

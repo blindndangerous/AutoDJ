@@ -373,6 +373,82 @@ class LibraryCatalog:
             )
             return tuple(self._entry(row) for row in rows if self._active(row["path"], kind))
 
+    def browse_tracks(
+        self,
+        kind: str = "music",
+        source_id: str | None = None,
+        q: str = "",
+        offset: int = 0,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """List active playable entries, optionally limited to one registered source."""
+        if kind not in {"music", "liner"}:
+            raise ValueError("kind must be 'music' or 'liner'")
+        with self._lock:
+            db = self._db()
+            sources = db.execute("SELECT id, path, kind, recursive FROM catalog_sources").fetchall()
+            source = None
+            if source_id is not None:
+                source = next((row for row in sources if row["id"] == source_id), None)
+                if source is None:
+                    raise KeyError(source_id)
+                if source["kind"] != kind:
+                    raise ValueError("source kind does not match requested kind")
+            rows = db.execute("SELECT * FROM catalog_entries WHERE kind=?", (kind,)).fetchall()
+
+            tokens = q.casefold().split()
+            matches = []
+            for row in rows:
+                path = row["path"]
+                if not Path(path).is_file():
+                    continue
+                if source is not None:
+                    covered = _under(path, source["path"], bool(source["recursive"]))
+                else:
+                    covered = any(
+                        item["kind"] == kind and _under(path, item["path"], bool(item["recursive"]))
+                        for item in sources
+                    )
+                if not covered:
+                    continue
+                if kind == "music" and any(
+                    item["kind"] == "liner" and _under(path, item["path"], bool(item["recursive"]))
+                    for item in sources
+                ):
+                    continue
+                entry = self._entry(row)
+                searchable = " ".join(
+                    (entry.artist, entry.title, entry.album, Path(path).name)
+                ).casefold()
+                if all(token in searchable for token in tokens):
+                    matches.append(entry)
+
+        matches.sort(
+            key=lambda entry: (
+                entry.artist.casefold(),
+                entry.title.casefold(),
+                entry.path.casefold(),
+            )
+        )
+        return {
+            "results": [
+                {
+                    "path": entry.path,
+                    "title": entry.title,
+                    "artist": entry.artist,
+                    "album": entry.album,
+                    "bpm": entry.bpm,
+                    "length": entry.length,
+                    "display_name": entry.display_name,
+                    "kind": kind,
+                }
+                for entry in matches[offset : offset + limit]
+            ],
+            "total": len(matches),
+            "offset": offset,
+            "limit": limit,
+        }
+
     @staticmethod
     def _entry(row: sqlite3.Row) -> IndexEntry:
         return IndexEntry(path=row["path"], **{n: row[n] for n in _ENTRY_FIELDS})

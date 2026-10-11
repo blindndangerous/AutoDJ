@@ -437,16 +437,36 @@ class LibraryManager:
                 try:
                     old = self.catalog.record_for_path(path)
                     unchanged = old is not None and self._same_identity(old, path)
-                    if (
+                    needs_liner_segue = bool(
+                        kind == "liner"
+                        and old is not None
+                        and old["points"].get("segue") is None
+                        and old["point_sources"].get("segue") not in {"user", "imported"}
+                    )
+                    old_points = old["points"] if old is not None else {}
+                    old_start = old_points.get("start")
+                    old_end = old_points.get("end")
+                    valid_existing_points = bool(
                         unchanged
                         and old is not None
-                        and old["points"].get("start") is not None
-                        and old["points"].get("end") is not None
-                        and old["points"]["end"] > old["points"]["start"]
-                    ):
+                        and isinstance(old_start, int | float)
+                        and not isinstance(old_start, bool)
+                        and isinstance(old_end, int | float)
+                        and not isinstance(old_end, bool)
+                        and np.isfinite(old_start)
+                        and np.isfinite(old_end)
+                        and 0 <= old_start < old_end <= old["length"]
+                    )
+                    if valid_existing_points and needs_liner_segue and old is not None:
+                        _, liner_points = analyze_basic(path, kind="liner")
+                        segue = liner_points.get("segue")
+                        if segue is not None:
+                            segue = min(max(segue, cast(float, old_start)), cast(float, old_end))
+                        self.catalog.set_points(path, {"segue": segue}, source="analysis")
+                    elif valid_existing_points:
                         pass
                     else:
-                        fresh, points = analyze_basic(path)
+                        fresh, points = analyze_basic(path, kind=kind)
                         fresh = self._basic_entry(fresh, old, path)
                         suggestions = self._legacy_point_suggestions(path)
                         for name, value in suggestions.items():

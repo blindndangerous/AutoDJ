@@ -101,6 +101,33 @@ def test_positive_liner_overlap_preserves_full_plague_tail_after_music_entry():
     )
 
 
+@pytest.mark.parametrize("intro,liner_start", [(0, 4), (2, 6)])
+def test_liner_segue_fits_main_content_before_vocals_and_keeps_tail(intro, liner_start):
+    handoff = render_handoff(
+        audio(12),
+        {"outro": 4, "segue": 8, "end": 12},
+        {"start": 0, "intro": intro},
+        liner=audio(6, 0.2),
+        liner_segue=4,
+    )
+    assert handoff.liner_s == pytest.approx(liner_start)
+    assert handoff.incoming_s == pytest.approx(8)
+    assert len(handoff.next_overlay) == (2 + intro) * SAMPLE_RATE
+    assert handoff.next_overlay[-1, 0] == pytest.approx(0.2)
+
+
+def test_explicit_overlap_overrides_liner_segue():
+    handoff = render_handoff(
+        audio(12),
+        {"segue": 5, "end": 12},
+        {},
+        liner=audio(8, 0.2),
+        overlap_start=5.3,
+        liner_segue=6,
+    )
+    assert handoff.incoming_s == pytest.approx(10.3)
+
+
 def test_outro_after_segue_does_not_move_music_entry_and_seek_past_it_is_empty():
     points = {"start": 0, "segue": 4, "outro": 8, "end": 9}
     handoff = render_handoff(audio(9), points, {}, start_offset=6 * SAMPLE_RATE)
