@@ -45,8 +45,10 @@ def test_liner_filter_preserves_duration_and_relative_level(tmp_path: Path) -> N
 
     assert liner_audio.shape == music_audio.shape
     assert np.isfinite(liner_audio).all()
+    assert liner_measurement["lufs"] != pytest.approx(music["lufs"], abs=0.05)
     # Targets preserve the requested 3 dB liner advantage.
-    assert liner_measurement["gain_db"] - music["gain_db"] == pytest.approx(3.0)
+    assert (liner_measurement["lufs"] + liner_measurement["gain_db"]
+            - music["lufs"] - music["gain_db"]) == pytest.approx(3.0)
 
 
 def test_loudness_validation_rejects_silence_stale_and_bad_gain(tmp_path: Path) -> None:
@@ -69,6 +71,9 @@ def test_processed_audio_obeys_max_seconds(tmp_path: Path) -> None:
     measurement = processing.analyze_loudness(source)
     with pytest.raises(ValueError):
         processing.load_processed_audio(source, measurement, max_seconds=1.0)
+    liner_measurement = processing.analyze_loudness(source, "liner")
+    with pytest.raises(ValueError):
+        processing.load_processed_audio(source, liner_measurement, "liner", max_seconds=1.0)
 
 def test_basic_suggestions_keep_segue_unset_without_sustained_tail_drop(
     tmp_path: Path,

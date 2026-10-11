@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-from autodj.stereo import SAMPLE_RATE, load_stereo
+from autodj.stereo import SAMPLE_RATE, TrackTooLongError, load_stereo
 
 if TYPE_CHECKING:
     from autodj.indexer import IndexEntry
@@ -44,9 +44,12 @@ def analyze_loudness(source: Path, kind: str = "music") -> dict[str, object]:
     _kind(kind)
     source = Path(source)
     before = source.stat()
+    filters = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo"
+    if kind == "liner":
+        filters += f",{VOICE_FILTER}"
     result = subprocess.run(
         [shutil.which("ffmpeg") or "ffmpeg", "-hide_banner", "-nostats", "-i", str(source),
-         "-af", "ebur128=peak=none", "-f", "null", "-"],
+         "-vn", "-af", f"{filters},ebur128=peak=none", "-f", "null", "-"],
         capture_output=True, check=False,
     )
     log = (result.stdout + result.stderr).decode("utf-8", errors="replace")
@@ -70,6 +73,8 @@ def analyze_loudness(source: Path, kind: str = "music") -> dict[str, object]:
 
 def loudness_matches(measurement: dict | None, source: Path, kind: str = "music") -> bool:
     """Return whether cached measurement belongs to the current source/settings."""
+    if not isinstance(measurement, dict):
+        return False
     try:
         target = _kind(kind)
         stat = Path(source).stat()
@@ -98,12 +103,17 @@ def load_processed_audio(source: Path, measurement: dict, kind: str = "music",
                    "-vn", "-af", f"{VOICE_FILTER},volume={gain_db:.9f}dB",
                    "-ar", str(SAMPLE_RATE), "-ac", "2"]
         if max_seconds is not None:
-            command += ["-t", str(max_seconds)]
+            command += ["-t", str(max_seconds + 1.0)]
         command += ["-f", "f32le", "pipe:1"]
         result = subprocess.run(command, capture_output=True, check=False)
         if result.returncode:
             raise RuntimeError(f"ffmpeg liner processing failed: {result.stderr.decode(errors='replace')[-1000:]}")
         audio = np.frombuffer(result.stdout, dtype="<f4").reshape(-1, 2).copy()
+        if max_seconds is not None and len(audio) > max_seconds * SAMPLE_RATE:
+            raise TrackTooLongError(str(source), len(audio) / SAMPLE_RATE)
+    after = source.stat()
+    if (after.st_size, after.st_mtime_ns) != (measurement["size"], measurement["mtime_ns"]):
+        raise RuntimeError(f"source changed during audio decode: {source}")
     if not len(audio) or not np.isfinite(audio).all() or not np.any(audio):
         raise ValueError("empty, silent or invalid processed audio")
     return audio
