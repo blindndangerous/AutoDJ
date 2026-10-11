@@ -512,6 +512,28 @@ class LinerScheduler:
         with self._lock:
             return self._fire_locked(name)
 
+    def decode(self, name: str) -> np.ndarray:
+        """Decode liner *name*, a catalog ID or a liner-folder file name, as :meth:`fire` would.
+
+        Raises:
+            LinerDecodeError: There is no such liner, or it could not be decoded.
+        """
+        with self._lock:
+            prepared = self._decode_locked(name)
+        if prepared is None:
+            raise LinerDecodeError(f"cannot decode liner {name!r}")
+        return prepared.audio
+
+    def play_cart(self, audio: np.ndarray, duck_db: float) -> None:
+        """Play a cart clip now through the liner path; it does not reset the liner triggers."""
+        with self._lock:
+            self._bus.play_liner(audio, duck_db=duck_db)
+
+    def stop_cart(self) -> None:
+        """Fade out the clip on the liner path and bring the music back up."""
+        with self._lock:
+            self._bus.stop_liner()
+
     def _planner_mode(self) -> bool:
         """Whether saved-point talk-ups are owned by the renderer planner."""
         return getattr(self._cfg, "transition_mode", None) == "saved_points" and self._talk_up()

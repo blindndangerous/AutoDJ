@@ -129,6 +129,14 @@ The liner *root directory* comes only from configuration. `/api/playback-setting
 must pass that route's field rule, so the file can neither store nor restore `liners_folder`.
 Treat a paired browser as trusted.
 
+The cart wall routes under `/api/carts` require a paired browser like every other `/api` route.
+A slot names a voice liner by catalog ID or liner-folder file name, or an uploaded clip by file
+name, never a path; the names pass the same checks as `/api/liners/file`. Uploaded clips go to
+the `carts` folder in the active index folder, with the voice liner size cap and extension list,
+are never overwritten, and are deleted again if they do not decode. `carts.json` is validated
+when the server starts, and a file that fails is set aside. Backups include the wall and the
+uploads. A paired browser can play carts into the server audio or stream output.
+
 `GET /api/history/export` returns the play log for a date range: titles, artists, albums, ISRC
 and label tags, file paths inside the music folders and performance counts. Like every other `/api`
 route it needs an allowed Host, and a session whenever the server requires one. It is a GET with

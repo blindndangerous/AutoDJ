@@ -6,8 +6,8 @@ that wrote it and the list of files) and these members:
 - ``index/index-manifest.json`` and the two generation files it names
   (``tracks.gN.db`` and ``vectors.gN.index``): the live index generation.
 - ``index/dj_meta.db``, ``index/library.db``, ``index/web_state.json``,
-  ``index/schedule.json`` and ``index/listener_bans.json`` from the active index folder.
-- ``liners/...`` and ``profiles/...``: every file in those folders.
+  ``index/schedule.json``, ``index/carts.json`` and ``index/listener_bans.json`` from the active index folder.
+- ``liners/...``, ``carts/...`` and ``profiles/...``: every file in those folders.
 """
 
 from __future__ import annotations
@@ -37,10 +37,11 @@ INDEX_FILES = (
     "library.db",
     "web_state.json",
     "schedule.json",
+    "carts.json",
     "listener_bans.json",
     im.MANIFEST_NAME,
 )
-_FOLDERS = ("liners", "profiles")
+_FOLDERS = ("liners", "carts", "profiles")
 
 
 class BackupError(RuntimeError):
@@ -53,6 +54,7 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
     return {
         "index": active,
         "liners": Path(cfg.playback.liners_folder or active / "liners"),
+        "carts": active / "carts",
         "profiles": active.parent / "profiles",
     }
 
@@ -130,7 +132,7 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
             members: dict[str, Path] = {}
             state_files = [
                 roots["index"] / name
-                for name in ("web_state.json", "schedule.json", "listener_bans.json")
+                for name in ("web_state.json", "schedule.json", "carts.json", "listener_bans.json")
             ]
             for path in [*sorted(snapshot.glob("*")), *state_files]:
                 if path.is_file():

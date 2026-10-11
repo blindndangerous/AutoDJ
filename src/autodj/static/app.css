@@ -603,6 +603,22 @@
       font-size: 0.9rem;
     }
     #queue-list li:last-child { border-bottom: none; }
+
+    /* ---- Cart wall ---- */
+    #cart-slots {
+      list-style: none;
+      padding: 0;
+      margin: 0.75rem 0;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+      gap: 0.5rem;
+    }
+    #cart-slots button {
+      width: 100%;
+      min-height: 3rem;
+      text-align: left;
+      white-space: normal;
+    }
     .queue-name {
       flex: 1;
       min-width: 0;

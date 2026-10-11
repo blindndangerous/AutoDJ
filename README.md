@@ -15,6 +15,8 @@ uploaded to a cloud service.
 - Mood presets that adjust tempo targets during a set. To define your own, add
   `[presets.NAME]` tables to `config.toml`; `config.toml.example` shows how.
 - Voice liners that play spoken clips over the music on a schedule.
+- A cart wall for instant jingles, station IDs and sound effects, with numbered keys and
+  duck, over or replace playback modes.
 - A scheduler that switches profiles, presets or the clockwheel, plays liners, starts or stops the
   stream and turns discovery on or off at set times.
 - Lyrics from sidecar files or tags, with scrolling and highlighting when timestamps are available.
