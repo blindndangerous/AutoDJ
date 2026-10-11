@@ -39,7 +39,9 @@ def ignore_unknown_repeat_keys(data: object, section: str = "playback.repeat_rul
             rule_keys = set(RepeatRule.model_fields)
             unknown = set(rule) - rule_keys
             if unknown:
-                logger.warning("Ignoring unknown config keys in [%s.%s]: %s", section, name, sorted(unknown))
+                logger.warning(
+                    "Ignoring unknown config keys in [%s.%s]: %s", section, name, sorted(unknown)
+                )
             cleaned[name] = {key: value for key, value in rule.items() if key in rule_keys}
     return cleaned
 

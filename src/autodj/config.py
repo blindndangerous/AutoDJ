@@ -63,15 +63,16 @@ class _Section:
         Raises:
             TypeError: If *data* is not a table, or a value has the wrong type.
             KeyError: If a required key is missing.
-            ValueError: On an unknown key or an invalid value.
+            ValueError: On an invalid value for a supported setting.
         """
         if not isinstance(data, Mapping):
             raise TypeError(f"{cls.SECTION} section must be a table")
-        _warn_unknown_keys(cls.SECTION, data, _field_names(cls))
+        known = _field_names(cls)
+        _warn_unknown_keys(cls.SECTION, data, known)
         for f in fields(cls):  # type: ignore[arg-type]
             if f.name not in data and f.default is MISSING and f.default_factory is MISSING:
                 raise KeyError(f"config.toml [{cls.SECTION}] section is missing {f.name!r}")
-        return cls(**{key: value for key, value in data.items() if key in _field_names(cls)})
+        return cls(**{key: value for key, value in data.items() if key in known})
 
 
 def _optional(convert: Callable[[Any], Any], value: Any) -> Any:
@@ -240,8 +241,6 @@ def _warn_unknown_keys(section: str, data: Mapping[str, Any], known: Iterable[st
         section: Section name used in the error message, e.g. ``"library"``.
         data: Raw keys of that section.
         known: Accepted key names.
-
-    Raises:
     """
     unknown = set(data) - set(known)
     if unknown:
@@ -463,7 +462,9 @@ class PlaybackConfig(_Section):
                     f"playback.{name} must be between 0 and {MAX_FADE_SECONDS:g}, got {seconds}"
                 )
             setattr(self, name, seconds)
-        self.repeat_rules = RepeatSettings.model_validate(ignore_unknown_repeat_keys(self.repeat_rules))
+        self.repeat_rules = RepeatSettings.model_validate(
+            ignore_unknown_repeat_keys(self.repeat_rules)
+        )
         max_minutes = self.server_max_track_minutes
         if isinstance(max_minutes, bool) or not isinstance(max_minutes, int | float):
             raise TypeError("playback.server_max_track_minutes must be a number")
@@ -1161,7 +1162,7 @@ class RelayConfig:
         Raises:
             TypeError: If *data* is not a table, or a value has the wrong type.
             KeyError: If ``type``, ``host`` or ``password`` is missing.
-            ValueError: On an unknown key or an invalid value.
+            ValueError: On an invalid value for a supported setting.
         """
         if not isinstance(name, str) or not _RELAY_NAME.match(name):
             raise ValueError(
@@ -1634,7 +1635,11 @@ def _load_webhooks(raw: Any) -> tuple[WebhookConfig, ...]:
         if not isinstance(item, Mapping):
             raise ValueError("webhooks entries must be tables")
         _warn_unknown_keys("webhooks", item, {"url", "format", "events"})
-        hooks.append(WebhookConfig(**{key: value for key, value in item.items() if key in {"url", "format", "events"}}))
+        hooks.append(
+            WebhookConfig(
+                **{key: value for key, value in item.items() if key in {"url", "format", "events"}}
+            )
+        )
     return tuple(hooks)
 
 

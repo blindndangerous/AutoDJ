@@ -28,9 +28,9 @@ def test_unknown_key_consent(tmp_path: Path, flags, answer, repairs) -> None:
         patch("click.confirm") as confirm,
     ):
         result = CliRunner().invoke(cli, ["--config", str(config), "doctor", *flags], input=answer)
-    assert result.exit_code == (0 if repairs else 1), result.output
+    assert result.exit_code == 0, result.output
     assert (config.read_bytes() != original) is repairs
-    assert run.called is repairs
+    assert run.called
     if repairs:
         assert "Backup:" in result.output
     if "--fix" in flags:
@@ -58,7 +58,7 @@ def test_interactive_default_declines_repair(tmp_path: Path) -> None:
         patch("autodj.doctor.run_doctor", return_value=DoctorReport(())),
     ):
         result = CliRunner().invoke(cli, ["--config", str(config), "doctor"], input="n\n")
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == 0, result.output
     assert config.read_bytes() == original
 
 
@@ -80,9 +80,10 @@ def test_json_never_repairs_unknown_keys(tmp_path: Path) -> None:
     config = tmp_path / "config.toml"
     original = b"[playback]\nenable_daypart = true\n"
     config.write_bytes(original)
-    result = CliRunner().invoke(cli, ["--config", str(config), "doctor", "--json"])
-    assert result.exit_code == 1
-    assert json.loads(result.output)["checks"][0]["name"] == "configuration"
+    with patch("autodj.doctor.run_doctor", return_value=DoctorReport(())):
+        result = CliRunner().invoke(cli, ["--config", str(config), "doctor", "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["exit_code"] == 0
     assert config.read_bytes() == original
     assert not list(tmp_path.glob("*.bak"))
 
@@ -131,7 +132,7 @@ def test_batch_preview_and_single_confirmation_across_files(tmp_path: Path, appr
         result = CliRunner().invoke(
             cli, ["--config", str(config), "doctor"], input="y\n" if approve else "n\n"
         )
-    assert result.exit_code == (0 if approve else 1), result.output
+    assert result.exit_code == 0, result.output
     assert result.output.count("Apply this repair") == 1
     preview = result.output.split("Apply this repair")[0]
     assert "[playback]: ['enable_daypart']" in preview
@@ -232,7 +233,7 @@ def test_saved_settings_repair_consent(tmp_path, flags, interactive, answer, rep
         patch("click.testing._NamedTextIOWrapper.isatty", return_value=interactive),
     ):
         result = CliRunner().invoke(cli, ["doctor", *flags], input=answer)
-    assert result.exit_code == (0 if repaired else 1), result.output
+    assert result.exit_code == 0, result.output
     assert (state.read_bytes() != original) is repaired
     backups = list(cfg.index.active_dir.glob("*.bak"))
     if repaired:
@@ -243,7 +244,7 @@ def test_saved_settings_repair_consent(tmp_path, flags, interactive, answer, rep
     else:
         assert not backups
     if "--json" in flags:
-        assert json.loads(result.output)["exit_code"] == 1
+        assert json.loads(result.stdout)["exit_code"] == 0
 
 
 def test_doctor_named_index(tmp_path):
@@ -294,7 +295,7 @@ def test_saved_settings_unsafe_or_failed_repair_keeps_file(tmp_path, failure_kin
         ) as backup,
     ):
         result = CliRunner().invoke(cli, ["doctor", "--fix"])
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == (0 if failure_kind == "custom-path" else 1), result.output
     assert state.read_bytes() == original
     assert not list(cfg.index.active_dir.glob("*.bak"))
     if failure_kind == "custom-path":

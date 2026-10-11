@@ -437,7 +437,9 @@ class TestPlaybackConfig:
             "related_artists_starter",
         ],
     )
-    def test_removed_repeat_key_is_ignored_with_warning(self, tmp_path: Path, key: str, caplog) -> None:
+    def test_removed_repeat_key_is_ignored_with_warning(
+        self, tmp_path: Path, key: str, caplog
+    ) -> None:
         config_file = tmp_path / "config.toml"
         config_file.write_text(f"[playback]\n{key} = 0\n", encoding="utf-8")
         cfg = load_config(config_file, environ={})
@@ -562,7 +564,9 @@ class TestDeepMergeAndOverlays:
             "[lyrics]\nenabled = true\n",
         ],
     )
-    def test_local_overlay_unknown_keys_are_ignored(self, tmp_path: Path, overlay: str, caplog) -> None:
+    def test_local_overlay_unknown_keys_are_ignored(
+        self, tmp_path: Path, overlay: str, caplog
+    ) -> None:
         base = tmp_path / "config.toml"
         base.write_text('[library]\nmusic_dir = "Z:/Music"\n', encoding="utf-8")
         (tmp_path / "config.local.toml").write_text(overlay, encoding="utf-8")
@@ -585,7 +589,7 @@ class TestDeepMergeAndOverlays:
         assert "secret" not in caplog.text
 
         config_file.write_text(
-            '[playback.repeat_rules.artist]\ntracks = -1\nfuture = true\n', encoding="utf-8"
+            "[playback.repeat_rules.artist]\ntracks = -1\nfuture = true\n", encoding="utf-8"
         )
         with pytest.raises(ValueError, match="tracks"):
             load_config(config_file, environ={})
