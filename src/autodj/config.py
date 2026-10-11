@@ -1086,6 +1086,148 @@ def parse_env_bool(value: str) -> bool:
     raise ValueError(f"not a boolean: {value!r}")
 
 
+#: Server types a relay can push to: Icecast 2.4 or later (HTTP PUT),
+#: Shoutcast 1 and Shoutcast 2 (both through the Shoutcast 1 source login).
+RELAY_TYPES: tuple[str, ...] = ("icecast", "shoutcast1", "shoutcast2")
+MAX_RELAYS = 8
+_RELAY_NAME = re.compile(r"[A-Za-z0-9_-]{1,32}\Z")
+_RELAY_HOST = re.compile(r"[A-Za-z0-9._:-]{1,253}\Z")
+_RELAY_MOUNT = re.compile(r"/[A-Za-z0-9._~/-]{1,200}\Z")
+_RELAY_REQUIRED = ("type", "host", "password")
+
+
+def _check_relay_text(where: str, key: str, value: Any) -> None:
+    """Raise unless *value* is a printable string of 1 to 255 characters."""
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{where}.{key} must be a non-empty string")
+    if len(value) > 255 or not value.isprintable():
+        raise ValueError(
+            f"{where}.{key} must be at most 255 characters, without control characters"
+        )
+
+
+@dataclass
+class RelayConfig:
+    """One external server the stream is pushed to (``[stream.relays.<name>]``).
+
+    Relays are named tables rather than an array so ``config.local.toml``
+    can add the password to a relay that ``config.toml`` describes: TOML
+    overlays merge tables key by key but replace arrays whole.
+
+    Attributes:
+        name: The table name; shown in the web page, logs and ``doctor``.
+        type: One of :data:`RELAY_TYPES`.
+        host: Server host name or IP address, without a scheme or port.
+        password: Source password.  Never logged, saved or sent to a browser.
+        port: The server's listener port.  Shoutcast sources connect one
+            above it, as Shoutcast expects.
+        mount: Icecast mount point, such as ``/live``; Icecast only.
+        stream_id: Shoutcast 2 stream ID (default 1); Shoutcast 2 only.
+        user: Icecast source user name (default ``source``); Icecast only.
+        bitrate: MP3 bitrate in kbps; ``None`` sends the stream's own audio.
+        public: Ask the server to list the station in public directories.
+        enabled: ``False`` keeps the table but does not connect.
+    """
+
+    name: str
+    type: str
+    host: str
+    password: str = field(repr=False)
+    port: int = 8000
+    mount: str | None = None
+    stream_id: int | None = None
+    user: str | None = None
+    bitrate: int | None = None
+    public: bool = False
+    enabled: bool = True
+
+    @classmethod
+    def from_table(cls, name: str, data: Any) -> RelayConfig:
+        """Build a relay from its raw TOML table.
+
+        Raises:
+            TypeError: If *data* is not a table, or a value has the wrong type.
+            KeyError: If ``type``, ``host`` or ``password`` is missing.
+            ValueError: On an unknown key or an invalid value.
+        """
+        if not isinstance(name, str) or not _RELAY_NAME.match(name):
+            raise ValueError(
+                "stream.relays names may use only letters, digits, '-' and '_' "
+                f"(1 to 32 characters), got {name!r}"
+            )
+        where = f"stream.relays.{name}"
+        if not isinstance(data, Mapping):
+            raise TypeError(f"{where} must be a table")
+        _reject_unknown_keys(where, data, _field_names(cls) - {"name"})
+        for key in _RELAY_REQUIRED:
+            if key not in data:
+                raise KeyError(f"config [{where}] is missing {key!r}")
+        return cls(name=name, **data)
+
+    def __post_init__(self) -> None:
+        """Validate every field and fill the per-type defaults."""
+        where = f"stream.relays.{self.name}"
+        if self.type not in RELAY_TYPES:
+            raise ValueError(f"{where}.type must be one of {RELAY_TYPES}, got {self.type!r}")
+        if not isinstance(self.host, str) or not _RELAY_HOST.match(self.host):
+            raise ValueError(
+                f"{where}.host must be a host name or IP address, without a scheme, port or path"
+            )
+        _check_relay_text(where, "password", self.password)
+        top_port = 65535 if self.type == "icecast" else 65534
+        if isinstance(self.port, bool) or not isinstance(self.port, int):
+            raise TypeError(f"{where}.port must be an integer")
+        if not 1 <= self.port <= top_port:
+            raise ValueError(f"{where}.port must be between 1 and {top_port}")
+        for key in ("public", "enabled"):
+            if not isinstance(getattr(self, key), bool):
+                raise TypeError(f"{where}.{key} must be true or false")
+        if self.bitrate is not None and (
+            isinstance(self.bitrate, bool) or self.bitrate not in STREAM_BITRATES
+        ):
+            raise ValueError(f"{where}.bitrate must be one of {STREAM_BITRATES}")
+        self._check_type_keys(where)
+
+    def _check_type_keys(self, where: str) -> None:
+        """Check the keys only one server type uses; fill their defaults."""
+        if self.type == "icecast":
+            if self.mount is None:
+                raise KeyError(f"config [{where}] is missing 'mount' (for example \"/live\")")
+            if not isinstance(self.mount, str) or not _RELAY_MOUNT.match(self.mount):
+                raise ValueError(
+                    f"{where}.mount must start with '/' and use only letters, digits and . _ ~ - /"
+                )
+            self.user = "source" if self.user is None else self.user
+            _check_relay_text(where, "user", self.user)
+            if ":" in self.user:
+                raise ValueError(f"{where}.user must not contain ':'")
+        else:
+            for key in ("mount", "user"):
+                if getattr(self, key) is not None:
+                    raise ValueError(f"{where}.{key} is for Icecast only")
+        if self.type == "shoutcast2":
+            self.stream_id = 1 if self.stream_id is None else self.stream_id
+            if isinstance(self.stream_id, bool) or not isinstance(self.stream_id, int):
+                raise TypeError(f"{where}.stream_id must be an integer")
+            if not 1 <= self.stream_id <= 2_147_483_647:
+                raise ValueError(f"{where}.stream_id must be 1 or more")
+        elif self.stream_id is not None:
+            raise ValueError(f"{where}.stream_id is for Shoutcast 2 only")
+
+
+def relay_password_variable(name: str) -> str:
+    """Return the environment variable that overrides relay *name*'s password.
+
+    Args:
+        name: The relay's table name.
+
+    Returns:
+        ``AUTODJ_STREAM_RELAY_<NAME>_PASSWORD``, with *name* upper-cased
+        and ``-`` turned into ``_``.
+    """
+    return f"AUTODJ_STREAM_RELAY_{name.upper().replace('-', '_')}_PASSWORD"
+
+
 @dataclass
 class StreamConfig(_Section):
     """Radio stream settings (``[stream]``).
@@ -1096,6 +1238,7 @@ class StreamConfig(_Section):
         idle_grace_seconds: Seconds without listeners before the set stops.
         max_listeners: Concurrent listener limit.
         station_name: Name sent to players as ``icy-name``.
+        relays: External servers to push the stream to, by name.
     """
 
     SECTION: ClassVar[str] = "stream"
@@ -1106,9 +1249,20 @@ class StreamConfig(_Section):
     idle_grace_seconds: float = 30.0
     max_listeners: int = 8
     station_name: str = "AutoDJ"
+    relays: dict[str, RelayConfig] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Validate every field."""
+        if not isinstance(self.relays, Mapping):
+            raise TypeError(
+                "stream.relays must be named tables such as [stream.relays.main], not a list"
+            )
+        if len(self.relays) > MAX_RELAYS:
+            raise ValueError(f"stream.relays allows at most {MAX_RELAYS} relays")
+        self.relays = {
+            name: table if isinstance(table, RelayConfig) else RelayConfig.from_table(name, table)
+            for name, table in self.relays.items()
+        }
         if not isinstance(self.enabled, bool):
             raise TypeError("stream.enabled must be true or false")
         if not isinstance(self.continuous, bool):
@@ -1238,6 +1392,32 @@ def _environment_overlay(environ: Mapping[str, str]) -> dict[str, Any]:
     return overlay
 
 
+def _relay_password_overlay(raw: Mapping[str, Any], environ: Mapping[str, str]) -> dict[str, Any]:
+    """Build an overlay of relay passwords from ``AUTODJ_STREAM_RELAY_<NAME>_PASSWORD``.
+
+    Only relays already named in the loaded TOML are looked up, so a
+    variable cannot create a relay on its own.
+
+    Args:
+        raw: The merged TOML tables loaded so far.
+        environ: The process environment.
+
+    Returns:
+        ``{"stream": {"relays": {name: {"password": ...}}}}`` for every
+        relay whose variable is set, or an empty dict.
+    """
+    stream = raw.get("stream")
+    relays = stream.get("relays") if isinstance(stream, Mapping) else None
+    if not isinstance(relays, Mapping):
+        return {}
+    found = {
+        name: {"password": environ[variable]}
+        for name in relays
+        if isinstance(name, str) and (variable := relay_password_variable(name)) in environ
+    }
+    return {"stream": {"relays": found}} if found else {}
+
+
 _SECTION_TYPES: tuple[type[_Section], ...] = (
     LibraryConfig,
     IndexConfig,
@@ -1338,7 +1518,9 @@ def load_config(
                 raw = _deep_merge(raw, tomllib.load(fh))
             sources.append(str(local_path))
 
-    env_raw = _environment_overlay(environment)
+    env_raw = _deep_merge(
+        _environment_overlay(environment), _relay_password_overlay(raw, environment)
+    )
     if env_raw:
         raw = _deep_merge(raw, env_raw)
         sources.append("environment")

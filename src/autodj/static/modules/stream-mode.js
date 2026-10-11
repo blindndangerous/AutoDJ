@@ -332,6 +332,28 @@ function listenerText(count) {
   return `${count} listener${count === 1 ? "" : "s"}`;
 }
 
+const RELAY_TYPE_LABELS = {
+  icecast: "Icecast",
+  shoutcast1: "Shoutcast 1",
+  shoutcast2: "Shoutcast 2",
+};
+
+// One sentence per relay, read in order by a screen reader: who, where,
+// then the state, with the last error while it is not connected.
+export function relayText(relay) {
+  const type = RELAY_TYPE_LABELS[relay.type] || relay.type;
+  let state;
+  if (relay.state === "live") state = "live";
+  else if (relay.state === "connecting") state = "connecting";
+  else if (relay.state === "retrying") {
+    state = `not connected, trying again. Last error: ${relay.error || "unknown"}`;
+  } else if (relay.state === "off") state = "off in the configuration";
+  else state = "stopped";
+  let text = `${relay.name}, ${type} at ${relay.target}: ${state}.`;
+  if (relay.title_error) text += ` Song titles are not updating: ${relay.title_error}.`;
+  return text;
+}
+
 // A 401 already opened the sign-in dialog; saying more would only talk
 // over it.
 function isAuthFailure(err) {
@@ -376,6 +398,8 @@ export function createStreamSettings({
   const continuous = doc.getElementById("stream-continuous");
   const stationName = doc.getElementById("stream-station-name");
   const listeners = doc.getElementById("stream-listeners");
+  const relayBox = doc.getElementById("stream-relays");
+  const relayList = doc.getElementById("stream-relays-list");
   let active = false;
   // Bumped by every source of stream details, so a slow lookup cannot
   // overwrite a newer link.
@@ -473,8 +497,26 @@ export function createStreamSettings({
     url.value = "";
     m3u.removeAttribute("href");
     listeners.textContent = "";
+    showRelays([]);
     failureSpoken = false;
     lastAttempt = -Infinity;
+  }
+
+  // Plain text, not a live region: a relay retrying every minute would
+  // otherwise interrupt whatever the user is doing.  Items are rebuilt
+  // only when some text changed, so reading the list is not disturbed.
+  function showRelays(relays) {
+    if (!relayBox || !relayList) return;
+    const lines = Array.isArray(relays) ? relays.map(relayText) : [];
+    const current = [...relayList.children].map((item) => item.textContent);
+    if (lines.join("\n") !== current.join("\n")) {
+      relayList.replaceChildren(...lines.map((line) => {
+        const item = doc.createElement("li");
+        item.textContent = line;
+        return item;
+      }));
+    }
+    if (relayBox.hidden !== (lines.length === 0)) relayBox.hidden = lines.length === 0;
   }
 
   function applyPushedBitrate(state) {
@@ -505,6 +547,7 @@ export function createStreamSettings({
     }
     const text = listenerText(Number(state.stream_listeners) || 0);
     if (listeners.textContent !== text) listeners.textContent = text;
+    showRelays(state.stream_relays);
     applyPushedBitrate(state);
     showStationName(state.settings?.playback?.stream_station_name);
     if (!active) {

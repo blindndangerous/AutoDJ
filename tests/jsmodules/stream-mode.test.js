@@ -7,6 +7,7 @@ import {
   BITRATE_SETTLE_MS,
   NOT_LOADED_NOTE,
   STREAM_DELAY_ESTIMATE_S,
+  relayText,
 } from "../../src/autodj/static/modules/stream-mode.js";
 
 // happy-dom has no MediaError; the codes are fixed by the HTML standard.
@@ -581,6 +582,10 @@ function settingsDom() {
       <select id="stream-bitrate"><option value="128">128 kbps</option><option value="192">192 kbps</option><option value="256">256 kbps</option><option value="320">320 kbps</option></select>
       <input id="stream-continuous" type="checkbox">
       <p id="stream-listeners"></p>
+      <div id="stream-relays" hidden>
+        <p id="stream-relays-intro">Relays to other servers.</p>
+        <ul id="stream-relays-list" aria-labelledby="stream-relays-intro"></ul>
+      </div>
     </fieldset>
     </details>
     <div id="sr-status" role="status" aria-live="polite" aria-atomic="true"></div>`;
@@ -1108,5 +1113,50 @@ describe("stream settings", () => {
     ui.apply({ stream_mode: true });
     await tick();
     expect(opts.fetchInfo).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("relay status", () => {
+  const LIVE = { name: "main", type: "icecast", target: "radio.example.com:8000/live", state: "live" };
+
+  it.each([
+    [LIVE, "main, Icecast at radio.example.com:8000/live: live."],
+    [{ ...LIVE, state: "connecting" }, "main, Icecast at radio.example.com:8000/live: connecting."],
+    [
+      { ...LIVE, type: "shoutcast2", state: "retrying", error: "the server rejected the password" },
+      "main, Shoutcast 2 at radio.example.com:8000/live: not connected, trying again. "
+        + "Last error: the server rejected the password.",
+    ],
+    [{ ...LIVE, type: "shoutcast1", state: "off" }, "main, Shoutcast 1 at radio.example.com:8000/live: off in the configuration."],
+    [{ ...LIVE, state: "stopped" }, "main, Icecast at radio.example.com:8000/live: stopped."],
+    [
+      { ...LIVE, title_error: "the title update got HTTP status 404" },
+      "main, Icecast at radio.example.com:8000/live: live. "
+        + "Song titles are not updating: the title update got HTTP status 404.",
+    ],
+  ])("describes %o in one sentence", (relay, text) => {
+    expect(relayText(relay)).toBe(text);
+  });
+
+  it("lists relays as plain text, rebuilt only when the text changes", () => {
+    settingsDom();
+    const { ui } = makeSettings();
+    const box = byId("stream-relays");
+    const list = byId("stream-relays-list");
+    ui.apply({ stream_mode: true, stream_listeners: 0 });
+    expect(box.hidden).toBe(true);
+    ui.apply({ stream_mode: true, stream_listeners: 0, stream_relays: [LIVE] });
+    expect(box.hidden).toBe(false);
+    expect([...list.children].map((li) => li.textContent))
+      .toEqual(["main, Icecast at radio.example.com:8000/live: live."]);
+    const item = list.firstChild;
+    ui.apply({ stream_mode: true, stream_listeners: 0, stream_relays: [LIVE] });
+    expect(list.firstChild).toBe(item);
+    ui.apply({ stream_mode: true, stream_listeners: 0, stream_relays: [{ ...LIVE, state: "connecting" }] });
+    expect(list.firstChild.textContent).toContain("connecting");
+    expect(box.querySelector("[aria-live]")).toBeNull();
+    ui.reset();
+    expect(list.children.length).toBe(0);
+    expect(box.hidden).toBe(true);
   });
 });

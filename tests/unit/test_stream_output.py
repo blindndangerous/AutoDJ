@@ -615,3 +615,44 @@ async def test_set_bitrate_factory_failure_leaves_state_untouched() -> None:
     assert out.listener_count == 1
     assert not listener.closed
     out.close()
+
+
+class _Sink:
+    def __init__(self, fail: bool = False) -> None:
+        self.fed: list[tuple[bytes, str]] = []
+        self.changes = 0
+        self.fail = fail
+
+    def feed(self, data: bytes, title: str) -> None:
+        if self.fail:
+            raise RuntimeError("sink broke")
+        self.fed.append((data, title))
+
+    def encoder_changed(self) -> None:
+        self.changes += 1
+
+
+async def test_sinks_get_every_chunk_with_its_title_and_are_not_listeners(
+    output: StreamOutput, caplog: pytest.LogCaptureFixture
+) -> None:
+    broken, sink = _Sink(fail=True), _Sink()
+    output.add_sink(broken)
+    output.add_sink(sink)
+    output.set_title("Artist", "Song")
+    output.write(_block())
+    _wait_until(lambda: sink.fed)
+    assert sink.fed[0][1] == "Artist - Song"
+    assert "A stream sink failed" in caplog.text  # one broken sink does not stop the next
+    assert output.listener_count == 0
+    output.disconnect_all()
+    output.write(_block())
+    _wait_until(lambda: len(sink.fed) == 2)
+
+
+async def test_sinks_hear_about_a_new_encoder(output: StreamOutput) -> None:
+    sink = _Sink()
+    output.add_sink(sink)
+    assert output.bitrate == 320
+    output.set_bitrate(192)
+    assert output.bitrate == 192
+    assert sink.changes == 1

@@ -11,8 +11,10 @@ import importlib.util
 import json
 import os
 import shutil
+import socket
 import sqlite3
 import sys
+from collections.abc import Callable
 from contextlib import closing
 from dataclasses import asdict, dataclass
 from enum import StrEnum
@@ -29,7 +31,7 @@ from autodj.index_manifest import (
 from autodj.sqlite_utils import readonly_uri
 
 if TYPE_CHECKING:
-    from autodj.config import AutoDJConfig, IndexConfig, ModelConfig
+    from autodj.config import AutoDJConfig, IndexConfig, ModelConfig, RelayConfig
     from autodj.model import ModelCacheStatus
 
 
@@ -452,6 +454,67 @@ def _stream_check(cfg: AutoDJConfig) -> DoctorCheck:
     return DoctorCheck("stream", CheckStatus.PASS, f"stream mode on at {cfg.stream.bitrate} kbps")
 
 
+_RELAY_PROBE_TIMEOUT = 3.0
+
+
+def _relay_check(
+    relay: RelayConfig,
+    last: Any,
+    updated: str,
+    connect: Callable[..., socket.socket],
+) -> DoctorCheck:
+    """Check that one relay's server answers, and show its last reported state.
+
+    The probe only opens and closes a TCP connection to the port the relay
+    logs in on; it sends no password and does not disturb a running relay.
+
+    Args:
+        relay: The relay's configuration.
+        last: Its entry in the relay status file, if any.
+        updated: When the status file was written.
+        connect: ``socket.create_connection`` replacement for tests.
+    """
+    from autodj.relay import TYPE_LABELS, describe_error, describe_target, source_port
+
+    name = f"relay-{relay.name}"
+    where = f"{TYPE_LABELS[relay.type]} at {describe_target(relay)}"
+    if not relay.enabled:
+        return DoctorCheck(name, CheckStatus.PASS, f"{where}: off (enabled = false)")
+    status = CheckStatus.PASS
+    try:
+        with closing(connect((relay.host, source_port(relay)), timeout=_RELAY_PROBE_TIMEOUT)):
+            pass
+        summary = f"{where}: the server answers"
+    except OSError as exc:
+        status = CheckStatus.WARN
+        summary = f"{where}: cannot reach the server: {describe_error(exc)}"
+    detail = ""
+    if isinstance(last, dict) and isinstance(last.get("state"), str):
+        detail = f"AutoDJ last reported it {last['state']} at {updated}"
+        if last.get("error"):
+            detail += f", last error: {last['error']}"
+        if last.get("title_error"):
+            detail += f", title updates failing: {last['title_error']}"
+        if last["state"] == "retrying":
+            status = CheckStatus.WARN
+    return DoctorCheck(name, status, summary, detail)
+
+
+def _relay_checks(
+    cfg: AutoDJConfig, connect: Callable[..., socket.socket] = socket.create_connection
+) -> tuple[DoctorCheck, ...]:
+    """Return one check per configured relay (``[stream.relays.<name>]``)."""
+    if not cfg.stream.relays:
+        return ()
+    from autodj.relay import read_status_file, relay_status_path
+
+    report = read_status_file(relay_status_path(cfg)) or {"updated": "", "relays": {}}
+    return tuple(
+        _relay_check(relay, report["relays"].get(relay.name), report["updated"], connect)
+        for relay in cfg.stream.relays.values()
+    )
+
+
 def run_doctor(
     cfg: AutoDJConfig,
     *,
@@ -472,5 +535,6 @@ def run_doctor(
             _model_cache_check(cfg),
             _network_check(cfg),
             _stream_check(cfg),
+            *_relay_checks(cfg),
         )
     )

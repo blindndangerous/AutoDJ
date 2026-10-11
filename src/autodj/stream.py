@@ -6,7 +6,10 @@ if the encoder stalls or a listener stops reading.  PCM handed to
 ``write`` is queued and fed to the encoder by a dedicated writer thread;
 a second reader thread pulls encoded MP3 bytes off the encoder and fans
 them out to every listener's own bounded queue.  A listener that falls
-behind is dropped rather than allowed to slow down the others.
+behind is dropped rather than allowed to slow down the others.  Sinks
+(the relays to other servers, :mod:`autodj.relay`) get the same bytes;
+they are not listeners, so they never count against the listener limit
+and "Make new link" does not disconnect them.
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ import subprocess  # nosec B404 -- ffmpeg MP3 encoder with fixed argv, no shell
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
-from typing import cast
+from typing import Protocol, cast
 
 import numpy as np
 
@@ -36,6 +39,19 @@ _FAILURE_WINDOW = 60.0
 _COOLDOWN = 60.0
 _BLOCK_SECONDS = 882 / SAMPLE_RATE
 _PCM_QUEUE_SECONDS = 2.0
+
+
+class StreamSink(Protocol):
+    """Receives every chunk of encoded MP3 next to the HTTP listeners.
+
+    Both methods run on the stream's reader thread and must not block.
+    """
+
+    def feed(self, data: bytes, title: str) -> None:
+        """Take *data*, which carries the stream title *title*."""
+
+    def encoder_changed(self) -> None:
+        """Note that a new encoder (maybe at a new bitrate) starts a new MP3 stream."""
 
 
 class ListenerLimitError(Exception):
@@ -228,6 +244,7 @@ class StreamOutput:
         self._clock = clock
         self._lock = threading.Lock()
         self._listeners: list[Listener] = []
+        self._sinks: list[StreamSink] = []
         self._burst: collections.deque[bytes] = collections.deque()
         self._burst_size = 0
         self._failures: collections.deque[float] = collections.deque()
@@ -299,6 +316,8 @@ class StreamOutput:
         self._flush_pending_titles()
         self._pcm_in = self._mp3_out = 0
         self._reader = self._start_reader(encoder)
+        for sink in self._sinks:
+            sink.encoder_changed()
 
     def _restart_encoder(self, dead: FfmpegEncoder | None = None) -> None:
         """Replace *dead* with a fresh encoder, counting the failure.
@@ -452,13 +471,33 @@ class StreamOutput:
             while self._burst and self._burst_size - len(self._burst[0]) >= burst_limit:
                 self._burst_size -= len(self._burst.popleft())
             listeners = list(self._listeners)
+            sinks = list(self._sinks)
             title = self._title
         for listener in listeners:
             if not listener.push(data, title):
                 logger.info("Dropping a stream listener that fell behind")
                 self.remove_listener(listener)
+        for sink in sinks:
+            try:
+                sink.feed(data, title)
+            except Exception:
+                logger.exception("A stream sink failed to take audio")
 
-    # -- listeners ---------------------------------------------------------
+    # -- listeners and sinks -------------------------------------------------
+
+    @property
+    def bitrate(self) -> int:
+        """The current MP3 bitrate in kbps."""
+        return self._bitrate
+
+    def add_sink(self, sink: StreamSink) -> None:
+        """Hand *sink* every chunk of encoded MP3 from now on.
+
+        Args:
+            sink: The sink, such as a :class:`~autodj.relay.Relay`.
+        """
+        with self._lock:
+            self._sinks.append(sink)
 
     @property
     def listener_count(self) -> int:

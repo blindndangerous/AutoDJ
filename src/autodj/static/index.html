@@ -1098,6 +1098,12 @@
       <p class="stream-detail" id="stream-loopback-note" hidden>This address only works on this computer. Open AutoDJ using its network address (see the start-up message) to copy a link for speakers.</p>
       <p class="stream-detail"><a id="stream-m3u" download="autodj.m3u">Download playlist file (.m3u)</a></p>
       <p class="stream-detail" id="stream-listeners"></p>
+      <!-- Relays to other servers ([stream.relays.<name>] in config.toml),
+           filled by stream-mode.js.  Plain text, not live. -->
+      <div id="stream-relays" hidden>
+        <p class="stream-detail" id="stream-relays-intro">Relays to other servers. While a relay is on, the station keeps playing even when nobody listens here.</p>
+        <ul class="stream-detail" id="stream-relays-list" aria-labelledby="stream-relays-intro"></ul>
+      </div>
       <div class="settings-row">
         <label for="stream-station-name">Station name</label>
         <input type="text" id="stream-station-name" maxlength="100" autocomplete="off"
