@@ -14,6 +14,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from autodj.config import MAX_FADE_SECONDS
+from autodj.repeat_settings import RepeatSettings
 
 
 def validate_playback_choices(values: Mapping[str, Any]) -> None:
@@ -200,8 +201,7 @@ class PlaybackSettingsBody(BaseModel):
     liners_pick_mode: str | None = None
     liners_duck_db: Annotated[float, Field(ge=-30.0, le=0.0, allow_inf_nan=False)] | None = None
     # The ranges here are the ones the Settings panel's number fields use.
-    no_repeat_window: Annotated[int, Field(ge=0, le=100_000)] | None = None
-    artist_repeat_window: Annotated[int, Field(ge=0, le=100)] | None = None
+    repeat_rules: RepeatSettings | None = None
     transition_wet_mix: Annotated[float, Field(ge=0.0, le=1.0, allow_inf_nan=False)] | None = None
     replaygain_target_db: Annotated[float, Field(ge=-30.0, le=0.0, allow_inf_nan=False)] | None = (
         None

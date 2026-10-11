@@ -27,6 +27,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from autodj.liners import LINER_PICK_MODES
+from autodj.repeat_settings import REMOVED_REPEAT_KEYS, RepeatSettings
 
 DEFAULT_STEREOTOOL_PATH = (
     "./tools/stereo-tool/stereo_tool_cmd.exe"
@@ -253,7 +254,10 @@ class UnknownConfigKeysError(ValueError):
     def __init__(self, section: str, keys: Iterable[str]) -> None:
         self.section = section
         self.keys = tuple(sorted(keys))
-        super().__init__(f"unknown [{section}] keys: {list(self.keys)}")
+        message = f"unknown [{section}] keys: {list(self.keys)}"
+        if section == "playback" and REMOVED_REPEAT_KEYS.intersection(self.keys):
+            message += "; remove old repeat keys and re-enter limits in Settings > Picking > Repeats or [playback.repeat_rules]"
+        super().__init__(message)
 
 
 def _field_names(cls: Any) -> set[str]:
@@ -289,22 +293,7 @@ class PlaybackConfig(_Section):
             ``0.0`` cuts from one track to the next.  In the
             ``full_intro_outro`` and ``outro_fade`` transition modes a track
             with detected markers fades for 1-12 s instead, even at ``0.0``.
-        no_repeat_window: Number of recently played tracks excluded from the
-            next-song candidate pool.
-        no_repeat_minutes: Minutes before the same track may play again;
-            ``0`` (default) leaves the track rule to ``no_repeat_window``.
-        artist_repeat_window: Picks before an artist, a related artist or
-            the same album may play again.  ``0`` turns the count off.
-        artist_repeat_minutes: The artist rule in minutes; ``0`` = off.
-        title_repeat_window: Picks before the same song title, in any
-            version, may play again.  ``None`` (default) follows
-            ``artist_repeat_window``, which used to cover titles too.
-        title_repeat_minutes: The title rule in minutes; ``0`` = off.
-        related_artists_file: Optional TOML file of related artists and
-            single acts (see :mod:`autodj.repeat_rules`), relative to the
-            folder AutoDJ starts in.  ``None`` = none.
-        related_artists_starter: Also use the short built-in list of
-            related artists (side projects, duos and aliases).
+        repeat_rules: Independent artist, album, track and title rules.
         discovery_every: Default discovery rate: inject a sonically distant
             track every *N* tracks.  ``None`` disables discovery by default.
             The user must also toggle discovery ON at runtime.
@@ -336,20 +325,7 @@ class PlaybackConfig(_Section):
 
     crossfade_seconds: float = 3.0
     fade_in_seconds: float = 3.0
-    # Memory of recently-played tracks excluded from candidate pool.  Larger
-    # numbers = the auto-DJ has to traverse more of the library before
-    # revisiting any track.  Default 500 — comfortable for libraries of a
-    # few thousand tracks; bump higher for larger collections.
-    no_repeat_window: int = 500
-    artist_repeat_window: int = 3
-    # Repeat rules by the clock, a separate title window, and related
-    # artists; see the class docstring and autodj.repeat_rules.
-    no_repeat_minutes: float = 0.0
-    artist_repeat_minutes: float = 0.0
-    title_repeat_window: int | None = None
-    title_repeat_minutes: float = 0.0
-    related_artists_file: str | None = None
-    related_artists_starter: bool = False
+    repeat_rules: RepeatSettings = field(default_factory=RepeatSettings)
     discovery_every: int | None = None
     crossfade_eq_duck: bool = False
     crossfade_bass_cutoff_hz: float = 180.0
@@ -487,10 +463,8 @@ class PlaybackConfig(_Section):
         Raises:
             TypeError: If ``server_max_track_minutes`` is not a number.
             ValueError: If ``crossfade_seconds`` or ``fade_in_seconds`` is
-                outside 0-20, ``no_repeat_window``, ``artist_repeat_window``,
-                ``title_repeat_window``, ``pick_temperature`` or a liner
-                trigger is negative, a ``*_repeat_minutes`` value is
-                outside 0 to one week, ``pick_top_k`` is below 1, a choice
+                outside 0-20, ``pick_temperature`` or a liner trigger is
+                negative, ``pick_top_k`` is below 1, a choice
                 is not one of its options, or ``server_max_track_minutes``
                 is outside 1-600.
         """
@@ -501,9 +475,7 @@ class PlaybackConfig(_Section):
                     f"playback.{name} must be between 0 and {MAX_FADE_SECONDS:g}, got {seconds}"
                 )
             setattr(self, name, seconds)
-        self.no_repeat_window = int(self.no_repeat_window)
-        if self.no_repeat_window < 0:
-            raise ValueError(f"playback.no_repeat_window must be >= 0, got {self.no_repeat_window}")
+        self.repeat_rules = RepeatSettings.model_validate(self.repeat_rules)
         max_minutes = self.server_max_track_minutes
         if isinstance(max_minutes, bool) or not isinstance(max_minutes, int | float):
             raise TypeError("playback.server_max_track_minutes must be a number")
@@ -512,8 +484,6 @@ class PlaybackConfig(_Section):
                 f"playback.server_max_track_minutes must be between 1 and 600, got {max_minutes}"
             )
         self.server_max_track_minutes = float(max_minutes)
-        self.artist_repeat_window = int(self.artist_repeat_window)
-        self._check_repeat_rules()
         self.discovery_every = _optional(int, self.discovery_every)
         self.crossfade_bass_cutoff_hz = float(self.crossfade_bass_cutoff_hz)
         self.transition_mode = _validate_transition_mode(str(self.transition_mode))
@@ -567,7 +537,6 @@ class PlaybackConfig(_Section):
         self.liners_random_min_minutes = _optional(float, self.liners_random_min_minutes)
         self.liners_random_max_minutes = _optional(float, self.liners_random_max_minutes)
         for name in (
-            "artist_repeat_window",
             "pick_temperature",
             "liners_every_n_songs",
             "liners_every_minutes",
@@ -586,40 +555,6 @@ class PlaybackConfig(_Section):
             raise ValueError(
                 f"playback.liners_duck_db must be between -30 and 0 dB, got {self.liners_duck_db}"
             )
-
-    def _check_repeat_rules(self) -> None:
-        """Type- and range-check the newer repeat-rule settings.
-
-        Raises:
-            TypeError: A minute value is not a number, the title window is
-                not a whole number, the related artists file is not text
-                or the starter switch is not true or false.
-            ValueError: A value is out of range.
-        """
-        from autodj.repeat_rules import MAX_REPEAT_MINUTES
-
-        for name in ("no_repeat_minutes", "artist_repeat_minutes", "title_repeat_minutes"):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int | float):
-                raise TypeError(f"playback.{name} must be a number of minutes")
-            if not 0 <= value <= MAX_REPEAT_MINUTES:
-                raise ValueError(
-                    f"playback.{name} must be between 0 and {MAX_REPEAT_MINUTES:g} "
-                    f"(one week), got {value}"
-                )
-            setattr(self, name, float(value))
-        window = self.title_repeat_window
-        if window is not None:
-            if isinstance(window, bool) or not isinstance(window, int):
-                raise TypeError("playback.title_repeat_window must be a whole number of tracks")
-            if window < 0:
-                raise ValueError(f"playback.title_repeat_window must be >= 0, got {window}")
-        path = self.related_artists_file
-        if path is not None and not isinstance(path, str):
-            raise TypeError("playback.related_artists_file must be a file path")
-        self.related_artists_file = str(Path(path).expanduser()) if path else None
-        if not isinstance(self.related_artists_starter, bool):
-            raise TypeError("playback.related_artists_starter must be true or false")
 
 
 @dataclass

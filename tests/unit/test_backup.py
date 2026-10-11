@@ -130,6 +130,7 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
         '{"bans": [{"address": "192.0.2.1/32", "expires_at": null, "note": "abuse"}]}',
         encoding="utf-8",
     )
+    (active / "related-artists.toml").write_text("user links", encoding="utf-8")
     liners.mkdir()
     (liners / "station.mp3").write_bytes(b"liner")
     (profiles / "night").mkdir(parents=True)
@@ -147,6 +148,7 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
     _publish(cfg, "Replaced")
     (active / "web_state.json").write_text('{"volume": 0}', encoding="utf-8")
     (active / "listener_bans.json").write_text('{"bans": []}', encoding="utf-8")
+    (active / "related-artists.toml").write_text("replaced links", encoding="utf-8")
     (liners / "extra.mp3").write_bytes(b"new")
     with closing(_dj_meta(cfg)) as conn:
         conn.execute("DELETE FROM cues")
@@ -161,7 +163,7 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
 
     assert "pass --force" in refused.output
     assert restored.exit_code == 0, restored.output
-    assert "Restored 9 files." in restored.output
+    assert "Restored 10 files." in restored.output
     assert _indexed_title(cfg) == "Kept"
     assert sorted(path.name for path in active.glob("*.g*")) == [
         "tracks.g00000000000000000001.db",
@@ -176,6 +178,7 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
         ]
         == "192.0.2.1/32"
     )
+    assert (active / "related-artists.toml").read_text(encoding="utf-8") == "user links"
     assert sorted(path.name for path in liners.iterdir()) == ["station.mp3"]
     assert (profiles / "night" / "profile.json").read_text(encoding="utf-8") == "{}"
     with closing(sqlite3.connect(active / "dj_meta.db")) as conn:

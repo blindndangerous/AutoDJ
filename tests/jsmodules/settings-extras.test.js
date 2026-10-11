@@ -71,32 +71,16 @@ describe("history dates", () => {
 describe("mix settings", () => {
   function setup(postSettings) {
     document.body.innerHTML = `
-      <input type="number" id="no-repeat" value="500">
       <input type="number" id="wet" value="100">
       <p id="settings-status"></p><div id="status-toast" hidden></div>`;
     const els = {
-      pbNoRepeat: document.querySelector("#no-repeat"),
       txWetMix: document.querySelector("#wet"),
     };
     const settingsStatus = document.querySelector("#settings-status");
     installMixSettings(els, { postSettings, settingsStatus });
-    applyMixSettings({ playback: { no_repeat_window: 200, transition_wet_mix: 0.5 } }, els);
+    applyMixSettings({ playback: { transition_wet_mix: 0.5 } }, els);
     return { els, settingsStatus };
   }
-
-  it("refuses a value the server would reject, says why and restores the saved one", async () => {
-    const postSettings = vi.fn().mockResolvedValue(true);
-    const { els, settingsStatus } = setup(postSettings);
-
-    els.pbNoRepeat.value = "2.5";
-    els.pbNoRepeat.dispatchEvent(new Event("change"));
-
-    await vi.waitFor(() => expect(settingsStatus.textContent).toBe(
-      "Could not save Tracks before a song can repeat: enter a whole number from 0 to 100000.  It is still 200.",
-    ));
-    expect(els.pbNoRepeat.value).toBe("200");
-    expect(postSettings).not.toHaveBeenCalled();
-  });
 
   it("refuses a crossfade longer than 20 seconds instead of saving it", async () => {
     document.body.innerHTML = `

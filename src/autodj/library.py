@@ -175,6 +175,24 @@ class LibraryManager:
         with self._lock:
             self._interrupted_plays.add(event_id)
 
+    def pending_history(self) -> list[dict]:
+        """Plays not yet written to SQLite, oldest first, with each track's album.
+
+        The rows :meth:`~autodj.catalog.LibraryCatalog.recent_plays` gives
+        once they are written: a play a set stop cut short is left out, and
+        a track no longer in the library has an empty album.
+        """
+        with self._lock:
+            rows = [
+                dict(row)
+                for event_id, row in self._pending_history.items()
+                if event_id not in self._interrupted_plays
+            ]
+            for row in rows:
+                entry = self._by_path.get(_path(row.get("path") or ""))
+                row["album"] = entry.album if entry is not None else ""
+        return rows
+
     def last_played(self) -> dict[str, float]:
         with self._lock:
             return dict(self._last_played)

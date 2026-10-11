@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import heapq
 import ntpath
 import posixpath
 import random
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -96,11 +97,30 @@ def parse_pal(text: str, liner_folders: Sequence[str] = ()) -> list[ClockSlot]:
     return slots
 
 
-def least_recent(entries: Sequence[Any], last_played: Mapping[str, Any], rng: Any = None) -> Any:
-    """Choose randomly among entries in the oldest play-time group; never-played wins."""
+def least_recent(
+    entries: Sequence[Any],
+    last_played: Mapping[str, Any],
+    rng: Any = None,
+    *,
+    allowed: Callable[[Any], bool] | None = None,
+) -> Any | None:
+    """Choose the oldest allowed entry; prefer never-played and randomize ties."""
     if not entries:
         raise ValueError("entries must not be empty")
     chooser = rng if rng is not None else random
+    if allowed is not None:
+        ordered = list(entries)
+        chooser.shuffle(ordered)
+        heap = [
+            ((stamp := last_played.get(entry.path)) is not None, stamp, index, entry)
+            for index, entry in enumerate(ordered)
+        ]
+        heapq.heapify(heap)
+        while heap:
+            entry = heapq.heappop(heap)[-1]
+            if allowed(entry):
+                return entry
+        return None
     oldest = min(
         (last_played.get(entry.path) for entry in entries),
         key=lambda stamp: (stamp is not None, stamp),
@@ -183,23 +203,28 @@ def pick_slot(
         matches = _slot_entries(slot, pool)
         if not matches:
             return None, f"{slot.kind} slot {slot.folder}: no matching entries"
-        candidates = [entry for entry in matches if not slot.enforce_rules or allowed(entry)]
-        if not candidates:
-            return (
-                None,
-                f"{slot.kind} slot {slot.folder}: all {len(matches)} matching entries blocked by rules",
-            )
         if slot.selection == "least_recent":
             played_by_path = {
                 _normalized(path): played
                 for path, played in last_played.items()
                 if isinstance(path, str)
             }
-            history = {
-                entry.path: played_by_path.get(_normalized(entry.path)) for entry in candidates
-            }
-            return least_recent(candidates, history, chooser), None
-        return chooser.choice(candidates), None
+            history = {entry.path: played_by_path.get(_normalized(entry.path)) for entry in matches}
+            selected = least_recent(
+                matches,
+                history,
+                chooser,
+                allowed=allowed if slot.enforce_rules else None,
+            )
+        else:
+            candidates = [entry for entry in matches if not slot.enforce_rules or allowed(entry)]
+            selected = chooser.choice(candidates) if candidates else None
+        if selected is None:
+            return (
+                None,
+                f"{slot.kind} slot {slot.folder}: all {len(matches)} matching entries blocked by rules",
+            )
+        return selected, None
 
     for step in range(len(slots)):
         index = (start + step) % len(slots)

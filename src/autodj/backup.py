@@ -6,7 +6,8 @@ that wrote it and the list of files) and these members:
 - ``index/index-manifest.json`` and the two generation files it names
   (``tracks.gN.db`` and ``vectors.gN.index``): the live index generation.
 - ``index/dj_meta.db``, ``index/library.db``, ``index/web_state.json``,
-  ``index/schedule.json`` and ``index/listener_bans.json`` from the active index folder.
+  ``index/related-artists.toml``, ``index/schedule.json`` and
+  ``index/listener_bans.json`` from the active index folder.
 - ``liners/...`` and ``profiles/...``: every file in those folders.
 - ``stereo-tool-presets/...``: the uploaded ``.sts`` presets.
 """
@@ -37,6 +38,7 @@ INDEX_FILES = (
     "dj_meta.db",
     "library.db",
     "web_state.json",
+    "related-artists.toml",
     "schedule.json",
     "listener_bans.json",
     im.MANIFEST_NAME,
@@ -90,6 +92,9 @@ def _snapshot_index(active: Path, snapshot: Path) -> None:
         ):
             source.backup(target)
         _check_sqlite(snapshot / name)
+    related_artists = active / "related-artists.toml"
+    if related_artists.is_file():
+        shutil.copyfile(related_artists, snapshot / related_artists.name)
 
 
 def _check_sqlite(path: Path) -> None:

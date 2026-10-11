@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from autodj.fsutil import atomic_write
+from autodj.repeat_settings import REMOVED_REPEAT_KEYS
 from autodj.settings_bodies import (
     BpmRangeBody,
     DiscoveryBody,
@@ -43,6 +44,11 @@ if TYPE_CHECKING:
     from autodj._bridge import PlayerBridge
 
 logger = logging.getLogger(__name__)
+
+
+class SavedStateError(ValueError):
+    """``web_state.json`` holds settings AutoDJ no longer reads; fix it by hand."""
+
 
 #: Version 2 dropped the redundant ``harmonic_mixing`` toggle. Version 1
 #: migration honors that toggle so ``harmonic_mixing: false`` cannot silently
@@ -260,7 +266,7 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
             preset_path(player._cfg.index.active_dir, values["stereotool_preset"])
         except (ValueError, FileNotFoundError):
             _warn("stereotool_preset", values.pop("stereotool_preset"))
-    bridge.set_playback_settings(PlaybackSettingsBody.model_validate(values))
+    bridge.set_playback_settings(PlaybackSettingsBody.model_validate(values), restoring=True)
 
 
 def _restore_eq(bridge: PlayerBridge, eq: dict[str, Any]) -> None:
@@ -283,6 +289,9 @@ def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
     Version 1 state is migrated conservatively; unsupported versions are
     ignored. Other saved fields continue to be validated individually.
 
+    Raises:
+        SavedStateError: The file holds removed repeat keys.
+
     Args:
         bridge: The :class:`~autodj._bridge.PlayerBridge` of a live player.
         index_dir: Directory housing ``web_state.json``.
@@ -299,6 +308,19 @@ def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
     if not isinstance(data, dict):
         logger.warning("web_state.json root is not an object, ignoring")
         return
+    playback = data.get("playback")
+    if isinstance(playback, dict):
+        old = sorted(REMOVED_REPEAT_KEYS.intersection(playback))
+        rules = playback.get("repeat_rules")
+        if isinstance(rules, dict):
+            old.extend(
+                f"repeat_rules.{key}" for key in sorted(REMOVED_REPEAT_KEYS.intersection(rules))
+            )
+        if old:
+            raise SavedStateError(
+                f"{path}: removed playback repeat keys {', '.join(old)}; "
+                "remove them by hand and re-enter limits in Settings > Picking > Repeats"
+            )
     version = data.get("schema_version")
     if type(version) is int and version == 1:
         data = _migrate_v1(data)

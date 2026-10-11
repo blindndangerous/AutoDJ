@@ -62,6 +62,7 @@ from fastapi import (
     UploadFile,
     WebSocket,
 )
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -2490,8 +2491,9 @@ def create_app(
     async def api_playback_settings(body: PlaybackSettingsBody) -> dict:
         """Apply playback-flag overrides (transition mode, lyrics, ...)."""
         try:
-            bridge.set_playback_settings(body)
-        except (ValueError, FileNotFoundError) as exc:
+            await run_in_threadpool(bridge.set_playback_settings, body)
+        # FileNotFoundError (an OSError) is a Stereo Tool preset that is gone.
+        except (OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         bridge.save_persistent_state()
         return bridge.get_settings()

@@ -1073,6 +1073,14 @@ Royalties for the compositions (the songs as written) are separate from SoundExc
 they are licensed through ASCAP, BMI, SESAC and GMR, each with its own reporting. Outside the US
 the rules and the collecting societies are different.
 
+## Repeat settings
+
+Repeat limits are edited in Settings > Picking > Repeats and stored in
+`web_state.json`. Old repeat keys in `config.toml` or `web_state.json` are
+rejected; remove them by hand and re-enter limits in that panel. The related
+artists file is `index/<name>/related-artists.toml` and is read only when
+**Use related artists** is enabled. It must be at most 1 MiB.
+
 ## Backup
 
 `autodj backup` writes one ZIP file holding:
@@ -1081,6 +1089,7 @@ the rules and the collecting societies are different.
   `vectors.g<number>.index` files it names.
 - `dj_meta.db`, the intro, outro, beat grid and cue cache.
 - `web_state.json`, the settings chosen in the web page.
+- `related-artists.toml` in the active index folder.
 - `library.db`, the station's registered folders, track data and cues, last-played times and
   complete play history.
 - Every file in the liners folder (`[playback] liners_folder`, or `index/<name>/liners`) and in

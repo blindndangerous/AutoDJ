@@ -284,6 +284,7 @@ function clearProtectedSessionData() {
   applyCamelotWheel(null, "compatible");
   resetQueueState(_queueEls);
   resetMixSettings(_mixEls);
+  resetRepeatSettings(_repeatEls);
   _profileEls.list.replaceChildren();
   _profileEls.status.textContent = "";
   _accessEls.list.replaceChildren();
@@ -708,6 +709,7 @@ function applyState(s) {
       _settingsEls(),
     );
     applyMixSettings(s.settings, _mixEls);
+    applyRepeatSettings(s.settings, _repeatEls);
   }
 
   // Last, so Play / Pause already has its enabled state for this push.
@@ -747,8 +749,8 @@ const _settingsEls = () => ({
   pbSilenceTrigger: document.getElementById("pb-silence-trigger"),
 });
 
-function postSettings(url, body, control) {
-  return _postSettingsModule(url, body, { settingsStatus, control });
+function postSettings(url, body, control, { onError } = {}) {
+  return _postSettingsModule(url, body, { settingsStatus, control, onError });
 }
 
 installSettingsControls(_settingsEls(), postSettings);
@@ -1074,12 +1076,13 @@ installQueueClear({
 import {
   applyMixSettings, installMixSettings, resetMixSettings,
 } from "./modules/mix-settings.js";
+import {
+  applyRepeatSettings, installRepeatSettings, resetRepeatSettings,
+} from "./modules/repeat-settings.js";
 
 const _mixEls = {
   pbCrossfade:    document.getElementById("pb-crossfade"),
   pbFadeIn:       document.getElementById("pb-fade-in"),
-  pbNoRepeat:     document.getElementById("pb-no-repeat"),
-  pbArtistRepeat: document.getElementById("pb-artist-repeat"),
   djPhraseBars:   document.getElementById("dj-phrase-bars"),
   djFilterSweep:  document.getElementById("dj-filter-sweep"),
   txWetMix:       document.getElementById("tx-wet-mix"),
@@ -1102,6 +1105,22 @@ installMixSettings(_mixEls, {
 
 import { installStereoToolPresets } from "./modules/stereo-tool-presets.js";
 installStereoToolPresets({ status: settingsStatus });
+
+const _repeatEls = {
+  artistTracks: document.getElementById("repeat-artist-tracks"),
+  artistMinutes: document.getElementById("repeat-artist-minutes"),
+  albumTracks: document.getElementById("repeat-album-tracks"),
+  albumMinutes: document.getElementById("repeat-album-minutes"),
+  trackTracks: document.getElementById("repeat-track-tracks"),
+  trackMinutes: document.getElementById("repeat-track-minutes"),
+  titleTracks: document.getElementById("repeat-title-tracks"),
+  titleMinutes: document.getElementById("repeat-title-minutes"),
+  useRelatedArtists: document.getElementById("repeat-use-related-artists"),
+  defaultFile: document.getElementById("repeat-related-default"),
+  fileStatus: document.getElementById("repeat-related-status"),
+  save: document.getElementById("repeat-save"),
+};
+installRepeatSettings(_repeatEls, { postSettings, settingsStatus });
 
 // ----------------------------------------------------------------
 // Settings: Profiles and Browser access -- ./modules/profiles.js and
