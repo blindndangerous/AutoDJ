@@ -72,7 +72,8 @@ def test_loudness_column_migrates_and_persists(tmp_path: Path) -> None:
         catalog.set_loudness(song, measurement)
         assert catalog.record_for_path(song)["loudness"] == measurement
         catalog._db().execute(
-            "UPDATE catalog_entries SET loudness='not-json' WHERE path=?", (os.path.normcase(str(song)),)
+            "UPDATE catalog_entries SET loudness='not-json' WHERE path=?",
+            (os.path.normcase(str(song)),),
         )
         assert catalog.record_for_path(song)["loudness"] == {}
 

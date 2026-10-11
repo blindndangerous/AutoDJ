@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 import shutil
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -95,9 +97,31 @@ def test_mono_48k_processing_uses_only_memory_pipe(tmp_path: Path, monkeypatch, 
 
     assert audio.shape == (2 * processing.SAMPLE_RATE, 2)
     assert np.isfinite(audio).all() and np.any(audio)
-    assert measurement["lufs"] + measurement["gain_db"] == pytest.approx(
-        processing.TARGET_LUFS[kind]
+    measured = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-nostats",
+            "-f",
+            "f32le",
+            "-ar",
+            "44100",
+            "-ac",
+            "2",
+            "-i",
+            "pipe:0",
+            "-af",
+            "ebur128=peak=none",
+            "-f",
+            "null",
+            "-",
+        ],
+        input=audio.astype("<f4").tobytes(),
+        capture_output=True,
+        check=True,
     )
+    lufs = re.findall(rb"I:\s*(-?[\d.]+) LUFS", measured.stderr)
+    assert float(lufs[-1]) == pytest.approx(processing.TARGET_LUFS[kind], abs=0.1)
 
 
 def test_loudness_measurement_reports_ffmpeg_decode_failure(tmp_path: Path) -> None:
@@ -147,3 +171,45 @@ def test_liner_segue_analysis_handles_silence_and_short_buffers() -> None:
 
     assert processing._suggest_liner_segue(np.zeros(rate * 4), rate) is None
     assert processing._suggest_liner_segue(np.zeros(rate // 10), rate) is None
+
+
+def test_recovered_decode_reports_diagnostics(tmp_path: Path, monkeypatch, caplog) -> None:
+    from types import SimpleNamespace
+
+    source = _source(tmp_path / "song.wav")
+    measurement = processing.analyze_loudness(source)
+    monkeypatch.setattr(
+        processing.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=np.ones((20, 2), dtype="<f4").tobytes(),
+            stderr=b"damaged frame recovered",
+        ),
+    )
+    processing.load_processed_audio(source, measurement)
+    assert "damaged frame recovered" in caplog.text
+    assert str(source) in caplog.text
+
+
+@pytest.mark.parametrize("during_measurement", [False, True])
+def test_source_replacement_during_processing_is_rejected(
+    tmp_path: Path, monkeypatch, during_measurement
+) -> None:
+    from types import SimpleNamespace
+
+    source = _source(tmp_path / "song.wav")
+    measurement = processing.analyze_loudness(source)
+
+    def replaced(*args, **kwargs):
+        source.write_bytes(b"replacement")
+        return SimpleNamespace(
+            returncode=0, stdout=np.ones((20, 2), dtype="<f4").tobytes(), stderr=b"I: -20.0 LUFS"
+        )
+
+    monkeypatch.setattr(processing.subprocess, "run", replaced)
+    with pytest.raises(RuntimeError, match="source changed"):
+        if during_measurement:
+            processing.analyze_loudness(source)
+        else:
+            processing.load_processed_audio(source, measurement)

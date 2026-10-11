@@ -229,3 +229,13 @@ def test_runtime_preset_failure_keeps_master_worker_in_fallback(
         assert master._worker.is_alive()
     finally:
         master.close()
+
+
+def test_zero_drive_does_not_require_a_pre_compressor_section(tmp_path: Path) -> None:
+    source = tmp_path / "custom.sts"
+    source.write_bytes(b"[Stereo Tool]\nVersion=1105\n")
+    master = ContinuousMaster(preset=lambda: source, agc_drive_db=lambda: 0)
+    try:
+        assert master._runtime_stereotool_preset(master._stereotool_signature()) == source
+    finally:
+        master.close()

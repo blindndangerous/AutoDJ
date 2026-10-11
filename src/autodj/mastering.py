@@ -271,7 +271,10 @@ class ContinuousMaster:
     def _runtime_stereotool_preset(self, signature: tuple[Path, float]) -> Path:
         source, drive_db = signature
         try:
-            data = agc_drive_preset_data(source.read_bytes(), drive_db)
+            data = source.read_bytes()
+            if drive_db == 0:
+                return source
+            data = agc_drive_preset_data(data, drive_db)
         except (OSError, ValueError) as exc:
             if source == INCLUDED_PATH:
                 raise
@@ -369,6 +372,7 @@ class ContinuousMaster:
                     proc = post_proc = None
                     with self._lock:
                         if self._closed:
+                            self._preset_temp.cleanup()
                             return
                         self._failed = True
                         self._recovering = True

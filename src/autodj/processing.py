@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 import shutil
@@ -15,6 +16,8 @@ from autodj.stereo import SAMPLE_RATE, TrackTooLongError, load_stereo
 
 if TYPE_CHECKING:
     from autodj.indexer import IndexEntry
+
+logger = logging.getLogger(__name__)
 
 PREPARATION_VERSION = "loudness-v1"
 TARGET_LUFS = {"music": -28.0, "liner": -25.0}
@@ -48,13 +51,16 @@ def analyze_loudness(source: Path, kind: str = "music") -> dict[str, object]:
     filters = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo"
     if kind == "liner":
         filters += f",{VOICE_FILTER}"
-    result = subprocess.run(
+    result = subprocess.run(  # nosec B603 -- fixed FFmpeg argv, no shell
         [
             shutil.which("ffmpeg") or "ffmpeg",
             "-hide_banner",
             "-nostats",
+            "-nostdin",
             "-i",
             str(source),
+            "-map",
+            "0:a:0",
             "-vn",
             "-af",
             f"{filters},ebur128=peak=none",
@@ -109,7 +115,7 @@ def loudness_matches(measurement: dict | None, source: Path, kind: str = "music"
             and MIN_GAIN_DB <= gain <= MAX_GAIN_DB
             and math.isclose(gain, target - lufs, abs_tol=0.01)
         )
-    except (KeyError, TypeError, ValueError, OSError):
+    except (KeyError, TypeError, ValueError, OverflowError, OSError):
         return False
 
 
@@ -131,8 +137,11 @@ def load_processed_audio(
         "-hide_banner",
         "-v",
         "error",
+        "-nostdin",
         "-i",
         str(source),
+        "-map",
+        "0:a:0",
         "-vn",
         "-af",
         filters,
@@ -144,10 +153,14 @@ def load_processed_audio(
     if max_seconds is not None:
         command += ["-t", str(max_seconds + 1.0)]
     command += ["-f", "f32le", "pipe:1"]
-    result = subprocess.run(command, capture_output=True, check=False)
+    result = subprocess.run(command, capture_output=True, check=False)  # nosec B603
+    detail = result.stderr.decode(errors="replace").strip()
     if result.returncode:
-        detail = result.stderr.decode(errors="replace")
         raise RuntimeError(f"ffmpeg audio processing failed for {source}: {detail[-1000:]}")
+    if detail:
+        logger.warning(
+            "Decoded %s with warnings:\n%s", source, detail, extra={"track": str(source)}
+        )
     audio = np.frombuffer(result.stdout, dtype="<f4").reshape(-1, 2).copy()
     if max_seconds is not None and len(audio) > max_seconds * SAMPLE_RATE:
         raise TrackTooLongError(str(source), len(audio) / SAMPLE_RATE)

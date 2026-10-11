@@ -133,7 +133,9 @@ class LibraryCatalog:
             if "intro_lift_db" not in entries:
                 db.execute("ALTER TABLE catalog_entries ADD COLUMN intro_lift_db REAL")
             if "loudness" not in entries:
-                db.execute("ALTER TABLE catalog_entries ADD COLUMN loudness TEXT NOT NULL DEFAULT '{}'")
+                db.execute(
+                    "ALTER TABLE catalog_entries ADD COLUMN loudness TEXT NOT NULL DEFAULT '{}'"
+                )
             have = {row[1] for row in db.execute("PRAGMA table_info(play_history)")}
             if "performances" not in have:
                 db.execute("ALTER TABLE play_history ADD COLUMN performances INTEGER")
