@@ -6,7 +6,7 @@ import pytest
 from fastapi import HTTPException
 
 from autodj.catalog import LibraryCatalog
-from autodj.config import ServerConfig, StreamConfig
+from autodj.config import ServerConfig, StreamConfig, TimeChecksConfig
 from autodj.server import ClockBody, PalImportBody, create_app
 
 
@@ -20,6 +20,7 @@ def app_for(catalog):
         _cfg=SimpleNamespace(
             server=ServerConfig(),
             stream=StreamConfig(),
+            time_checks=TimeChecksConfig(),
             index=SimpleNamespace(active_dir="index"),
         ),
         _clock_status="Idle",
