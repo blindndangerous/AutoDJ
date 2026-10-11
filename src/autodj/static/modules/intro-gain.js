@@ -2,7 +2,7 @@
 // falling linearly in decibels: the same curve as intro_lift.py applies on
 // the server.  The lift is the server's peak-safe value, capped at the 6 dB
 // the setting allows.
-export const MAX_LIFT_DB = 6;
+const MAX_LIFT_DB = 6;
 
 export function introMultiplier(seconds, liftDb) {
   const weight = Math.max(0, Math.min(1, (8 - seconds) / 7));
