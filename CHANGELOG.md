@@ -72,6 +72,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Brief playout stalls no longer trigger a burst of catch-up audio that can empty the
+  output buffer and unnecessarily restart Smooth or Stereo Tool.
 - Low, mid and high EQ settings now survive server restarts.
 - Radio streams use HTTP framing that works with HTTP/1.0 players such as Winamp,
   avoiding chunk markers that can disrupt audio and track titles.

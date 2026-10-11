@@ -676,5 +676,6 @@ class MixBus:
             delay = next_due - self._clock.now()
             if delay > 0:
                 self._clock.sleep(delay)
-            elif delay < -1.0:
+            elif delay < -period:
+                # A catch-up burst can drain a healthy processor's output buffer.
                 next_due = self._clock.now()
