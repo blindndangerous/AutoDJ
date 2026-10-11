@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Stream operators can set an optional listener password in `config.local.toml`, limit
+  connections per address, and disconnect or ban addresses from Settings, Stream. Bans survive
+  restarts and are included in backups. Trusted proxy addresses control when forwarded client
+  addresses are used.
+
 - Richer repeat rules for picking songs.
   - An artist credit counts for every artist it names: "feat.", "ft.", "featuring" and "vs."
     always split it, and "&", "and", "x", "with" and commas split it when the parts look like

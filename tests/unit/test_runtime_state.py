@@ -70,7 +70,12 @@ def _make_player() -> SimpleNamespace:
         ),
         playback=playback,
         replaygain=SimpleNamespace(enabled=False, target_db=-14.0, max_clip_safe_gain=1.0),
-        stream=SimpleNamespace(bitrate=320, continuous=False, station_name="AutoDJ"),
+        stream=SimpleNamespace(
+            bitrate=320,
+            continuous=False,
+            station_name="AutoDJ",
+            max_listeners_per_address=0,
+        ),
         presets={},
     )
     return SimpleNamespace(
@@ -652,6 +657,7 @@ class TestRoundTrip:
             "stream_bitrate",
             "stream_continuous",
             "stream_station_name",
+            "stream_max_listeners_per_address",
             "crossfade_bass_cutoff_hz",
             "pick_top_k",
             "pick_temperature",

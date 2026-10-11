@@ -444,7 +444,10 @@ Cloudflare Access is required. Never put AutoDJ on the internet without it, whet
 tunnel, port forwarding or any other proxy: AutoDJ's pairing is built for a home network, not for
 strangers on the internet. After the Access login, pair each remote browser as usual. Every
 request through the tunnel reaches AutoDJ from the `cloudflared` machine's address, so the
-per-address limit on wrong pairing codes counts all remote browsers together.
+per-address limit on wrong pairing codes counts all remote browsers together unless
+`[stream] trusted_proxies` includes that direct peer in stream mode. This setting affects client
+addresses on all routes in stream mode, including pairing and audit logs. Set it only when the proxy appends or replaces
+`X-Forwarded-For` correctly.
 
 The radio stream link (`/stream.mp3`) works at home. Through the tunnel it is behind
 Access too, so players that cannot log in, such as Sonos, cannot use it from outside.
@@ -485,6 +488,45 @@ pairing when LAN authentication is enabled. Older addresses containing a stream 
 `/stream/<secret>.mp3`, no longer work: set any speaker or player saved with one to
 `/stream.mp3`. AutoDJ no longer uses the `index/.stream-secret` file those versions made, and you
 can delete it.
+
+### Listener access controls
+
+Listening stays public by default. To require HTTP Basic authentication, put these lines in
+`config.local.toml` and restart AutoDJ:
+
+```toml
+[stream]
+listener_user = "radio"
+listener_password = "a long private password"
+```
+
+Give a player `http://user:pass@host/stream.mp3` (or use `https://` when AutoDJ serves HTTPS).
+The password protects `/stream.mp3` and `/stream.m3u`; the playlist itself never contains
+credentials, so a player opening it must already know them. Some players, possibly Sonos, cannot
+send HTTP Basic credentials. The page's **Listen here** button may also fail when a password is
+set. HTTP sends the password across the network in plain text; use HTTPS if the network is not
+trusted. Settings, Stream shows whether a password is set, but edits to this private file require
+a restart.
+
+`max_listeners_per_address = 0` leaves the per-address limit off by default. A positive value
+limits one IP address to that many simultaneous connections, in addition to `max_listeners`.
+Change the value in Settings, Stream. If clients reach AutoDJ through a proxy or tunnel, list the **direct proxy
+peer's** IP address or CIDR in `[stream] trusted_proxies`, for example
+`trusted_proxies = ["192.168.1.10"]`. Uvicorn then reads `X-Forwarded-For` from right to left
+and uses the first untrusted address. It does not use the RFC 7239 `Forwarded` header. Without
+this setting, AutoDJ uses the socket peer and ignores forwarded headers. Set trusted proxies
+before enabling a per-address limit or bans behind a proxy or Cloudflare Tunnel; otherwise every
+listener shares the proxy's address. A trusted proxy's `X-Forwarded-Proto: https` also keeps
+playlist URLs on HTTPS. In stream mode, the trusted proxy setting changes client addresses on all routes,
+including pairing and audit logs. Only trust proxies that append or replace these headers
+correctly. Restart after changing trusted proxies.
+
+Settings, Stream lists each direct listener's address, player name and connection time. Use
+**Disconnect** to end one connection, or **Ban** to block an address or CIDR for one hour, one day,
+seven days or until removal. The form accepts an optional note. A ban disconnects matching
+listeners immediately; blocked stream and playlist requests return 403. The **Bans** list removes
+blocks. Bans survive restarts in the active index's `listener_bans.json` and are included in
+AutoDJ backups. Relayed listeners remain under the relay host's own controls.
 
 ### Adding the station to Sonos
 
@@ -859,8 +901,8 @@ is transmitted to one listener, so one play heard by 100 listeners is 100 perfor
 - The rule can undercount: two players behind one public address that send the same User-Agent,
   such as two speakers of the same model in one home, count once while both are connected. Behind
   a reverse proxy such as a Cloudflare Tunnel, the address is the one the proxy passes on in
-  `X-Forwarded-For`, which uvicorn trusts only from this machine (`127.0.0.1`) by default. Without
-  it, every listener has the proxy's address and only the User-Agent tells them apart.
+  `X-Forwarded-For` only when the direct proxy peer is in `[stream] trusted_proxies`. Without
+  that setting, every listener has the proxy's address and only the User-Agent tells them apart.
 - Addresses and User-Agents are kept in memory only, for the song that is playing and the 10
   seconds after a disconnect. The play log stores only the count.
 - While a relay to Icecast or Shoutcast is enabled (see "Relaying to Icecast and Shoutcast"),

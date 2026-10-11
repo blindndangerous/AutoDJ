@@ -31,6 +31,11 @@ port = 8080
 # ssl_certfile = "/srv/autodj/tls/fullchain.pem"
 # ssl_keyfile = "/srv/autodj/tls/privkey.pem"
 
+# Optional HTTP Basic credentials for /stream.mp3 and /stream.m3u:
+# [stream]
+# listener_user = "radio"
+# listener_password = "choose a strong password"
+#
 # Relay passwords belong here, beside the relay described in config.toml
 # under the same name; the two tables are merged key by key.
 # [stream.relays.main]

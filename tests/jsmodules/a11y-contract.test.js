@@ -1618,7 +1618,8 @@ describe("static accessibility contracts", () => {
     expect(fieldset.previousElementSibling.tagName).toBe("H3");
     expect(fieldset.previousElementSibling.textContent).toBe("Stream");
     expect(document.querySelector("#stab-stream").hidden).toBe(true);
-    expect(fieldset.querySelector("h1, h2, h3, h4, h5, h6")).toBeNull();
+    expect([...fieldset.querySelectorAll("h4")].map((heading) => heading.textContent.trim()))
+      .toEqual(["Listeners", "Bans"]);
 
     const name = document.querySelector("#stream-station-name");
     expect(name.getAttribute("type")).toBe("text");
@@ -1659,6 +1660,13 @@ describe("static accessibility contracts", () => {
     expect(count.hasAttribute("role")).toBe(false);
     expect(count.closest("[aria-live], [role=status], [role=alert], [role=log]")).toBeNull();
     expect(fieldset.contains(count)).toBe(true);
+    expect(count.closest("section").getAttribute("aria-labelledby"))
+      .toBe("listener-control-title");
+    expect(labelText("stream-per-address")).toContain("Connections per address");
+    expect(document.getElementById("listener-ban-new").textContent.trim()).toBe("Add address ban");
+    for (const id of ["listener-ban-address", "listener-ban-duration", "listener-ban-note"]) {
+      expect(labelText(id)).toBeTruthy();
+    }
 
     // The "not loaded yet" note is visible text, silent like the count.
     const note = document.querySelector("#stream-url-note");

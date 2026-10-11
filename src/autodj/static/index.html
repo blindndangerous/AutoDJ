@@ -1137,7 +1137,42 @@
            text, not live. -->
       <p class="stream-detail" id="stream-loopback-note" hidden>This address only works on this computer. Open AutoDJ using its network address (see the start-up message) to copy a link for speakers.</p>
       <p class="stream-detail"><a id="stream-m3u" download="autodj.m3u">Download playlist file (.m3u)</a></p>
-      <p class="stream-detail" id="stream-listeners"></p>
+      <section aria-labelledby="listener-control-title">
+        <h4 id="listener-control-title" tabindex="-1">Listeners</h4>
+        <p class="stream-detail" id="stream-listeners"></p>
+        <p id="listener-password-state">Listener password status not loaded.</p>
+        <p class="setting-desc">Set or clear listener_user and listener_password in config.local.toml, then restart AutoDJ. Some players cannot send credentials. HTTP sends the password in plain text.</p>
+        <div class="settings-row">
+          <label for="stream-per-address">Connections per address (0 for unlimited)</label>
+          <input id="stream-per-address" type="number" min="0" max="100" step="1">
+        </div>
+        <ul id="listener-control-list" aria-label="Connected listeners"></ul>
+        <p id="listener-control-empty" hidden>No listeners connected.</p>
+        <button type="button" id="listener-ban-new">Add address ban</button>
+        <form id="listener-ban-form" hidden>
+          <fieldset>
+            <legend>Ban a listener address</legend>
+            <label for="listener-ban-address">Address or CIDR</label>
+            <input id="listener-ban-address" required autocomplete="off">
+            <label for="listener-ban-duration">Duration</label>
+            <select id="listener-ban-duration">
+              <option value="60">1 hour</option>
+              <option value="1440">1 day</option>
+              <option value="10080">7 days</option>
+              <option value="">Until removed</option>
+            </select>
+            <label for="listener-ban-note">Note (optional)</label>
+            <input id="listener-ban-note" maxlength="200" autocomplete="off">
+            <button type="submit">Ban address</button>
+            <button type="button" id="listener-ban-cancel">Cancel</button>
+          </fieldset>
+        </form>
+      </section>
+      <section aria-labelledby="listener-bans-title">
+        <h4 id="listener-bans-title" tabindex="-1">Bans</h4>
+        <ul id="listener-ban-list" aria-label="Banned addresses"></ul>
+        <p id="listener-ban-empty" hidden>No bans.</p>
+      </section>
       <!-- Relays to other servers ([stream.relays.<name>] in config.toml),
            filled by stream-mode.js.  Plain text, not live. -->
       <div id="stream-relays" hidden>

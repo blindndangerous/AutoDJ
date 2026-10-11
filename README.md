@@ -115,7 +115,9 @@ for adding the station to Sonos and VLC, what the playback controls do while str
 troubleshooting.
 
 The stream uses `/stream.mp3` (or `/stream.m3u` for a playlist). Anyone who can reach the
-server can listen without a key. Browser controls still require pairing in LAN mode. Older
+server can listen without a key by default. Operators can set an optional listener password,
+limit connections per address, and disconnect or ban listeners from Settings, Stream. Browser
+controls still require pairing in LAN mode. Older
 keyed addresses such as `/stream/<secret>.mp3` no longer work, so set any player saved with one
 to `/stream.mp3`.
 

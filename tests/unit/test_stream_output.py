@@ -248,6 +248,17 @@ async def test_listener_drains_remaining_chunks_after_close() -> None:
     out.close()
 
 
+async def test_listener_abort_discards_queue_and_ends_response_now() -> None:
+    out = StreamOutput(320, 8, encoder_factory=FakeEncoder, loop=asyncio.get_running_loop())
+    listener = out.add_listener(icy=False)
+    listener.push(b"queued burst", "")
+    listener.abort()
+    out.remove_listener(listener)
+    assert [chunk async for chunk in listener.chunks()] == []
+    assert out.listener_count == 0
+    out.close()
+
+
 async def test_remove_listener_is_idempotent(output: StreamOutput) -> None:
     listener = output.add_listener(icy=False)
     output.remove_listener(listener)
