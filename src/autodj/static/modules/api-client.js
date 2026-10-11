@@ -168,14 +168,22 @@ export function postJsonBestEffort(url, body, reporter, options = {}) {
   }, reporter);
 }
 
-export async function requestBinary(url, options = {}) {
+// A successful response whose media type starts with one of
+// *acceptedPrefixes*, for a caller that reads the body and headers itself
+// (a file to save, such as the play log CSV).
+export async function requestFile(url, acceptedPrefixes, options = {}) {
   const response = await rawRequest(url, options);
   throwIfUnauthorized(response);
   if (!response.ok) {
     if (isJsonResponse(response)) await checkedResponse(response);
     throw new ApiError(httpFailureText(response.status), { status: response.status });
   }
-  requireMediaType(response, ["audio/", "application/octet-stream"]);
+  requireMediaType(response, acceptedPrefixes);
+  return response;
+}
+
+export async function requestBinary(url, options = {}) {
+  const response = await requestFile(url, ["audio/", "application/octet-stream"], options);
   return response.arrayBuffer();
 }
 

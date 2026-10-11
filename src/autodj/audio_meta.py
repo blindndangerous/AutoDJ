@@ -569,6 +569,60 @@ def read_file_tags(audio_path: str | Path) -> FileTags:
     )
 
 
+# Where taggers keep the two fields royalty reports ask for and the index
+# does not store: Vorbis comments (FLAC, OGG), ID3 frames (MP3) and MP4
+# freeform atoms (M4A), in that order of preference.
+_ISRC_KEYS = ("isrc", "TSRC", "TXXX:ISRC", "----:com.apple.iTunes:ISRC")
+_LABEL_KEYS = (
+    "label",
+    "organization",
+    "publisher",
+    "TPUB",
+    "TXXX:LABEL",
+    "----:com.apple.iTunes:LABEL",
+)
+
+
+def _tag_text(m: Any, key: str) -> str:
+    """Return the first value of *key* as stripped text, or ``""``.
+
+    Handles Vorbis lists, ID3 frames and MP4 freeform atoms, which are bytes.
+    """
+    getter = getattr(m, "get", None)
+    if not callable(getter):
+        return ""
+    try:
+        value = getter(key)
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return ""
+    if isinstance(value, list):
+        value = value[0] if value else None
+    text = getattr(value, "text", None)
+    if text is not None:
+        value = text[0] if text else None
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    return str(value).strip()
+
+
+def read_reporting_tags(audio_path: str | Path) -> tuple[str, str]:
+    """Return the ``(isrc, label)`` tags of *audio_path*; ``""`` when absent.
+
+    Read when the play log is exported, so neither needs a re-index.  An
+    unreadable or missing file gives two empty strings.
+    """
+    m = _open_mutagen(audio_path)
+    if m is None:
+        return "", ""
+
+    def first(keys: tuple[str, ...]) -> str:
+        return next((text for key in keys if (text := _tag_text(m, key))), "")
+
+    return first(_ISRC_KEYS).upper(), first(_LABEL_KEYS)
+
+
 def _vorbis_get(m: Any, key: str) -> str | None:
     """Read *key* from Vorbis / dict-like tag access; ``None`` when absent."""
     getter = getattr(m, "get", None)

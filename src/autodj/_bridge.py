@@ -55,8 +55,12 @@ def _library_job_snapshot() -> dict:
     return snap
 
 
-def _history_entry(entry: Any) -> dict:
-    """Return a JSON-serialisable history-row dict for *entry*."""
+def _history_entry(entry: Any, listeners: int) -> dict:
+    """Return a JSON-serialisable history-row dict for *entry*.
+
+    *listeners* is how many were connected as it started; ``peak_listeners``
+    starts there and rises if more join while it plays.
+    """
     return {
         "event_id": secrets.token_hex(16),
         "path": str(getattr(entry, "path", "") or ""),
@@ -64,6 +68,8 @@ def _history_entry(entry: Any) -> dict:
         "artist": getattr(entry, "artist", "") or "",
         "duration": float(getattr(entry, "length", 0.0) or 0.0),
         "played_at": datetime.now(UTC).isoformat(),
+        "listeners": listeners,
+        "peak_listeners": listeners,
     }
 
 
@@ -275,13 +281,31 @@ class PlayerBridge:
 
     def _append_history(self, entry: Any) -> dict:
         """Record one play while holding ``_history_lock``; never trim the archive."""
-        row = _history_entry(entry)
+        # Stream mode counts its connected listeners; otherwise the one
+        # listener is the person at this computer or browser.
+        listeners = int(self.stream.listener_count) if self.stream_mode else 1
+        row = _history_entry(entry, listeners)
         self._play_history.append(row)
         self._history_started = True
         if self.library is not None:
             self.library.remember_history(row)
             self.library.remember_play(entry.path)
         return row
+
+    def note_listener_joined(self) -> None:
+        """Raise the playing track's peak listener count after a listener joins."""
+        if not self.stream_mode:
+            return
+        count = int(self.stream.listener_count)
+        with self._history_lock:
+            if self._open_play is None:
+                return
+            row = self._open_play[1]
+            if count <= (row.get("peak_listeners") or 0):
+                return
+            row["peak_listeners"] = count
+            if self.library is not None:
+                self.library.remember_history(row)
 
     def history_snapshot(self) -> list[dict]:
         """Return the latest plays across sessions, oldest first."""

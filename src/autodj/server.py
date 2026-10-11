@@ -45,6 +45,7 @@ import threading
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
 from dataclasses import dataclass, field, fields
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, BinaryIO, Literal
 
@@ -81,6 +82,14 @@ from autodj.icy import METAINT
 from autodj.index_manifest import IndexConsistencyError, read_manifest
 from autodj.lan import PAIRING_ON_REQUEST_HINT, format_lan_banner, lan_urls, running_in_container
 from autodj.pairing import DeviceRegistry
+from autodj.playlog import (
+    missing_fields,
+    parse_bound,
+    plays_between,
+    plays_csv,
+    soundexchange_filename,
+    soundexchange_report,
+)
 from autodj.secret_files import paired_devices_path
 from autodj.security import (
     COOKIE_NAME,
@@ -1598,6 +1607,49 @@ def create_app(
             items = list(reversed([hist[i] for i in range(lo, hi)]))
         return JSONResponse({"items": items, "total": total, "page": page, "pages": pages})
 
+    @app.get("/api/history/export")
+    async def api_history_export(
+        from_text: Annotated[str, Query(alias="from", max_length=64)],
+        to_text: Annotated[str, Query(alias="to", max_length=64)],
+        report_format: Annotated[Literal["csv", "soundexchange"], Query(alias="format")] = "csv",
+        service: Annotated[str, Query(max_length=200)] = "",
+        category: Annotated[str, Query(max_length=1)] = "A",
+    ) -> Response:
+        """Download the play log between two dates (see :mod:`autodj.playlog`).
+
+        Dates are ``YYYY-MM-DD`` in the server's time zone and ``to`` is
+        included.  ``format=soundexchange`` gives a Report of Use for
+        *service* and transmission *category* instead of the CSV.
+        ``X-Play-Count`` and ``X-Songs-Missing-Fields`` give the page the
+        numbers it announces.
+        """
+        library = _catalog_library()
+        try:
+            start = parse_bound(from_text)
+            end = parse_bound(to_text, end=True)
+            plays = await asyncio.to_thread(plays_between, library.catalog, start, end)
+            last_day = end - timedelta(microseconds=1)
+            if report_format == "soundexchange":
+                body = soundexchange_report(plays, service, category)
+                media_type = "text/plain; charset=us-ascii"
+                name = soundexchange_filename(service, start, last_day)
+            else:
+                body = plays_csv(plays)
+                media_type = "text/csv; charset=utf-8"
+                name = f"autodj-plays-{start:%Y-%m-%d}-to-{last_day:%Y-%m-%d}.csv"
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return Response(
+            body.encode("utf-8"),
+            media_type=media_type,
+            headers={
+                **_NO_STORE,
+                "Content-Disposition": f'attachment; filename="{name}"',
+                "X-Play-Count": str(len(plays)),
+                "X-Songs-Missing-Fields": str(len(missing_fields(plays))),
+            },
+        )
+
     @app.post("/api/skip")
     async def api_skip() -> JSONResponse:
         """Skip the current track immediately."""
@@ -1668,6 +1720,7 @@ def create_app(
         except EncoderUnavailableError as exc:
             raise HTTPException(status_code=503, detail="stream encoder failed") from exc
         try:
+            bridge.note_listener_joined()  # the play log's peak listener count
             return _ListenerResponse(
                 listener.chunks(),
                 on_close=functools.partial(stream.remove_listener, listener),
