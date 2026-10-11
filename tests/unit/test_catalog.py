@@ -315,3 +315,42 @@ def test_changed_content_invalidates_vector_and_prepared_audio(tmp_path: Path) -
         records, vectors = catalog.vectors_snapshot()
         assert records == []
         assert vectors.shape == (0, FEATURE_DIM)
+
+
+def test_recent_plays_for_the_repeat_rules(tmp_path: Path) -> None:
+    root = tmp_path / "music"
+    root.mkdir()
+    song, liner, gone = root / "song.flac", root / "id.flac", root / "gone.flac"
+    with LibraryCatalog(tmp_path / "catalog.db") as catalog:
+        catalog.put_entry(entry(song))
+        catalog.put_entry(entry(liner), kind="liner")
+
+        def play(event_id: str, path: Path, minute: int) -> dict:
+            return {
+                "event_id": event_id,
+                "path": str(path),
+                "title": f"Title {event_id}",
+                "artist": "Artist",
+                "duration": 180.0,
+                "played_at": f"2026-01-01T12:{minute:02d}:00+00:00",
+            }
+
+        catalog.write_history(
+            [
+                play("old", song, 0),
+                play("liner", liner, 1),
+                play("gone", gone, 2),
+                play("cut", song, 3),
+                play("new", song, 4),
+            ],
+            interrupted=["cut"],
+        )
+        plays = catalog.recent_plays(10)
+        # Oldest first; no liner, no play a set stop cut short.
+        assert [row["title"] for row in plays] == ["Title old", "Title gone", "Title new"]
+        assert [row["album"] for row in plays] == ["Album", "", "Album"]
+        assert set(plays[0]) == {"path", "title", "artist", "album", "played_at"}
+        assert [row["title"] for row in catalog.recent_plays(2)] == ["Title gone", "Title new"]
+        assert catalog.recent_plays(0) == []
+        with pytest.raises(ValueError, match="limit"):
+            catalog.recent_plays(-1)

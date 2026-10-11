@@ -515,6 +515,31 @@ def _relay_checks(
     )
 
 
+def _related_artists_check(cfg: AutoDJConfig) -> DoctorCheck:
+    """Read the related artists file the way the player will at startup."""
+    from autodj.repeat_rules import load_related_artists
+
+    path = cfg.playback.related_artists_file
+    starter = cfg.playback.related_artists_starter
+    if not path:
+        summary = "starter list only" if starter else "no related artists file"
+        return DoctorCheck("related-artists", CheckStatus.PASS, summary)
+    try:
+        related = load_related_artists(path, starter=starter)
+    except (OSError, ValueError) as exc:
+        return DoctorCheck(
+            "related-artists",
+            CheckStatus.WARN,
+            "related artists file not usable; AutoDJ starts without it",
+            f"{exc}. Fix the file, or remove playback.related_artists_file from config.toml.",
+        )
+    return DoctorCheck(
+        "related-artists",
+        CheckStatus.PASS,
+        f"{len(related.links)} artists with related artists from {path}",
+    )
+
+
 def run_doctor(
     cfg: AutoDJConfig,
     *,
@@ -536,5 +561,6 @@ def run_doctor(
             _network_check(cfg),
             _stream_check(cfg),
             *_relay_checks(cfg),
+            _related_artists_check(cfg),
         )
     )

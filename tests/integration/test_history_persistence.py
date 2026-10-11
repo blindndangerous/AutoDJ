@@ -189,3 +189,19 @@ def test_old_last_played_survives_unbounded_archive_and_still_wins_least_recent(
             restored.close()
     finally:
         library.close()
+
+
+def test_startup_loads_saved_plays_into_the_repeat_rules(tmp_path, caplog) -> None:
+    bridge, library = _bridge_with_library(tmp_path)
+    try:
+        bridge.load_persistent_state()
+        bridge.player.restore_repeat_history.assert_called_once_with(library.catalog)
+
+        # A failure there is logged; the server still starts.
+        bridge, library2 = _bridge_with_library(tmp_path / "second")
+        bridge.player.restore_repeat_history.side_effect = RuntimeError("boom")
+        bridge.load_persistent_state()
+        assert "Could not load earlier plays into the repeat rules" in caplog.text
+        library2.close()
+    finally:
+        library.close()

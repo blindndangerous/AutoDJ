@@ -1128,20 +1128,17 @@ class TestApplyCrossfadeDucked:
 
 
 class TestRecordPlayedExtended:
-    def test_records_artist_lowercased(self) -> None:
-        state = PlayerState(no_repeat_window=10)
+    def test_records_the_tags_and_start_time(self) -> None:
+        state = PlayerState(no_repeat_window=10, clock=lambda: 42.0)
         state.record_played(_make_entry(0))
-        assert "artist" in state.recently_played_artists
-
-    def test_records_album_lowercased(self) -> None:
-        state = PlayerState(no_repeat_window=10)
-        state.record_played(_make_entry(0))
-        assert "album" in state.recently_played_albums
-
-    def test_records_title_lowercased(self) -> None:
-        state = PlayerState(no_repeat_window=10)
-        state.record_played(_make_entry(0))
-        assert "song 0" in state.recently_played_titles
+        (record,) = state.play_history
+        assert (record.path, record.artist, record.album, record.title, record.started) == (
+            _make_entry(0).path,
+            "Artist",
+            "Album",
+            "Song 0",
+            42.0,
+        )
 
     def test_artist_window_bounded(self) -> None:
         state = PlayerState(no_repeat_window=10, artist_repeat_window=2)
@@ -1149,7 +1146,7 @@ class TestRecordPlayedExtended:
             e = _make_entry(i)
             e.artist = f"A{i}"
             state.record_played(e)
-        assert len(state.recently_played_artists) <= 2
+        assert [record.artist for record in state.play_history] == ["A3", "A4"]
 
 
 # ---------------------------------------------------------------------------
@@ -2395,13 +2392,14 @@ class TestRenderAheadRepeatAvoidance:
         player._next_rendered()
 
         kwargs = find.call_args.kwargs
-        assert {"artist 0", "artist 1"} <= kwargs["excluded_artists"]
-        assert {"album 0", "album 1"} <= kwargs["excluded_albums"]
-        assert {"title 0", "title 1"} <= kwargs["excluded_titles"]
+        repeat = kwargs["repeat_filter"]
+        assert {"artist 0", "artist 1"} <= repeat.artists
+        assert {"album 0", "album 1"} <= repeat.albums
+        assert {"title 0", "title 1"} <= repeat.titles
         assert list(kwargs["recently_played"]) == [played.path, current.path]
         # The real history is untouched until the track actually starts.
         assert list(player._state.recently_played) == [played.path]
-        assert list(player._state.recently_played_artists) == ["artist 0"]
+        assert [record.path for record in player._state.play_history] == [played.path]
 
     def test_exclusion_window_slides_like_a_recorded_track(self) -> None:
         player = _bus_player()
@@ -2409,9 +2407,9 @@ class TestRenderAheadRepeatAvoidance:
         a, b, current = player._sim.entries[:3]
         player._state.record_played(a)
         player._state.record_played(b)
-        paths, artists, _albums, _titles = player._recent_exclusions(current)
+        paths, _history = player._recent_exclusions(current)
         assert list(paths) == [b.path, current.path]
-        assert artists == {"artist 2"}
+        assert player._pick_context(current).repeat.artists == {"artist 2"}
 
     def test_pick_excludes_the_track_starting_before_it_is_recorded(self) -> None:
         """The bus hands over track N+1 and wakes the worker, which picks
@@ -2434,7 +2432,7 @@ class TestRenderAheadRepeatAvoidance:
 
         kwargs = find.call_args.kwargs
         assert list(kwargs["recently_played"]) == [seed.path, starting.path, pending.path]
-        assert kwargs["excluded_artists"] == {"artist 0", "artist 1", "artist 2"}
+        assert kwargs["repeat_filter"].artists == {"artist 0", "artist 1", "artist 2"}
         assert list(player._state.recently_played) == [seed.path]
 
     def test_a_recorded_starting_track_does_not_take_a_second_slot(self) -> None:
@@ -2444,10 +2442,11 @@ class TestRenderAheadRepeatAvoidance:
         player._state.record_played(older)
         player._state.record_played(starting)
 
-        paths, artists, _albums, _titles = player._recent_exclusions(pending, starting)
+        paths, _history = player._recent_exclusions(pending, starting)
 
         assert list(paths) == [older.path, starting.path, pending.path]
-        assert artists == {"artist 1", "artist 2"}
+        context = player._pick_context(pending, starting=starting)
+        assert context.repeat.artists == {"artist 1", "artist 2"}
 
     def test_pure_shuffle_never_repeats_the_track_it_follows(self) -> None:
         player = _bus_player(3)
