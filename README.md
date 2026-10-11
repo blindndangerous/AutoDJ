@@ -539,8 +539,18 @@ AutoDJ was built collaboratively by humans and AI assistants.  Each contributor 
 ### Human contributors
 
 - **[blindndangerous](https://github.com/blindndangerous)**: project vision, library design, requirements, UX direction (web UI flow, mode semantics, gapless feel), every accessibility decision, all real-world testing on a 10k-track library, every release call.
-- **[jage9](https://github.com/jage9)**: Windows AMD setup, MuQ compatibility, keyboard shortcut fixes,
-  and additional contributions and feedback.
+- **[jage9](https://github.com/jage9)**:
+  - Station playout: music and liner folder libraries, track info with editable cues, segue-point
+    liner timing, least-recently-played and clockwheel rotation with PAL import, persistent play
+    history, Smooth and Stereo Tool processing, and the 0.20.0 release preparation.
+  - Guided `autodj doctor` repairs, the automatic GPU setup scripts and the launcher.
+  - Windows AMD GPU setup guide and launcher, and MuQ compatibility with patched dependencies.
+  - Web UI keyboard work: seek by one measure with `,` and `.`, status-speak hotkeys
+    (Shift+T, N, R, B and K), `?` for the shortcut dialog, song-first page titles, and shortcuts
+    that keep working while a button or slider has focus.
+  - The session history tab, the fade-in seconds setting, and a fix for a track playing twice.
+  - A WCAG 2.2 AA audit of the web UI, and settings that hide when the setting they depend on is off.
+  - Dependency and container security updates, CI fixes, testing and feedback.
 
 ### AI assistants
 
