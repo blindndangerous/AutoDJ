@@ -1006,10 +1006,6 @@ class Player:
         """
         dmca = self._pick_context() if self._state.dmca_enabled else None
         if self._library is not None:
-            import random
-
-            from autodj.clockwheel import least_recent
-
             entries = [e for e in self.playable_entries() if not e.is_silent]
             if not entries:
                 return None
@@ -1023,12 +1019,20 @@ class Player:
                     return picked.liner
                 self._seed_clock_cursor = picked.next_cursor
                 return self._dmca_checked(picked.entry, context)
-            if dmca is not None:
-                entries = [e for e in entries if dmca.allows(e)] or entries
-            if self._cfg.playback.pick_mode == "least_recent":
-                chosen = least_recent(entries, self._library.last_played())
-            else:
-                chosen = random.choice(entries)  # nosec B311 -- music selection
+            context = dmca or self._pick_context()
+            # Startup has no current track to exclude. Reuse the ordinary
+            # shuffle eligibility and relaxation.
+            from autodj.similarity import SimilarityError
+
+            try:
+                chosen = self._pick_pure_shuffle(None, context)
+            except SimilarityError:
+                if dmca is None:
+                    return None
+                try:
+                    chosen = self._pick_pure_shuffle(None, replace(context, complement=None))
+                except SimilarityError:
+                    return None
         else:
             chosen = self._sim.random_entry()
         if dmca is None or chosen is None:
@@ -2218,19 +2222,20 @@ class Player:
             logger.info("Repeat rules: %d plays from before the restart count", len(records))
         return len(records)
 
-    def _pick_pure_shuffle(self, current: IndexEntry, context: _PickContext) -> IndexEntry:
+    def _pick_pure_shuffle(
+        self, current: IndexEntry | None, context: _PickContext
+    ) -> IndexEntry:
         """Random pick from tracks not in *context*'s history, honouring the BPM range.
 
         Silent tracks are never picked.  When every eligible track was
-        played recently, the history is relaxed to *current* and the
-        protected tracks (the one starting and the one playing), so the
-        pick never returns to any of them.
+        played recently, the history is relaxed to *current* and the protected
+        tracks. Startup passes no *current*, so no arbitrary entry is excluded.
         """
         import random as _rnd
 
         from autodj.similarity import SimilarityError
 
-        protected = context.protected | {current.path}
+        protected = context.protected | ({current.path} if current is not None else set())
         excluded = set(context.recent) | protected
 
         def eligible(entry: IndexEntry) -> bool:
