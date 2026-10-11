@@ -753,6 +753,10 @@ class Player:
         self._bg_analysis_inflight: set[str] = set()
         self._bg_analysis_threads: set[threading.Thread] = set()
         self._bg_analysis_lock = threading.Lock()
+        # Prepared-audio refreshes after a preparation setting changes run
+        # here, off the render thread; keyed by source path.
+        self._prepare_inflight: set[str] = set()
+        self._prepare_lock = threading.Lock()
         # Cues from DJ-software libraries: None until load_library_cues has
         # read them; tracks analysed before then are listed for a late merge.
         self._library_cues: dict[str, list[Cue]] | None = None
@@ -2288,7 +2292,12 @@ class Player:
         prepared = record.get("prepared_path") if record else None
         kind = record["kind"] if record else "music"
         quiet_boost_db = self._cfg.playback.quiet_boost_db
-        if not prepared or not prepared_source_matches(prepared, kind, quiet_boost_db):
+        if prepared and Path(prepared).is_file():
+            if not prepared_source_matches(prepared, kind, quiet_boost_db):
+                # Settings changed: keep playing the existing preparation and
+                # switch to the new one on a later load once it is ready.
+                self._prepare_in_background(entry, kind, quiet_boost_db)
+        else:
             prepared = str(
                 prepare_source(
                     Path(entry.path),
@@ -2304,6 +2313,35 @@ class Player:
             # Keep existing prepared liner caches while reducing their former +4.5 dB lift to +3 dB.
             return (audio * PREPARED_LINER_GAIN).astype(np.float32)
         return audio
+
+    def _prepare_in_background(self, entry: IndexEntry, kind: str, quiet_boost_db: float) -> None:
+        """Refresh one prepared source on a worker thread, once per path at a time."""
+        lock = self._prepare_lock
+        with lock:
+            if entry.path in self._prepare_inflight:
+                return
+            self._prepare_inflight.add(entry.path)
+
+        def work() -> None:
+            from autodj.processing import prepare_source
+
+            try:
+                prepared = prepare_source(
+                    Path(entry.path),
+                    self._cfg.index.active_dir / "prepared",
+                    kind=kind,
+                    quiet_boost_db=quiet_boost_db,
+                )
+                library = self._library
+                if library is not None and library.catalog.record_for_path(entry.path):
+                    library.catalog.put_entry(entry, kind=kind, prepared_path=str(prepared))
+            except Exception as exc:
+                logger.warning("Background audio preparation failed for %s: %s", entry.path, exc)
+            finally:
+                with lock:
+                    self._prepare_inflight.discard(entry.path)
+
+        threading.Thread(target=work, name="autodj-prepare", daemon=True).start()
 
     def saved_points(self, entry: IndexEntry) -> dict[str, Any]:
         """Source-file cue times, with no assumed safe talk-over space."""
