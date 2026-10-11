@@ -180,6 +180,16 @@ trusted_proxies = []
 # Shoutcast expects; Shoutcast 2 is reached through its Shoutcast 1 source
 # login with the stream ID.
 
+# Archives of the exact MP3 sent to listeners. Recording needs stream mode.
+# Set the folder here or in config.local.toml, never from the browser. Running
+# state and the other settings can be changed in Settings, Stream and survive
+# restarts.
+[recording]
+folder = "recordings"
+split = "hour"          # "hour" or "show"
+retention_days = 0      # 0 keeps files forever
+free_space_mb = 100     # pause below this free-space floor
+
 [playback]
 # ReplayGain-only opening lift, returning to normal within 8 seconds (0 to 6; 0 disables).
 intro_lift_max_db = 4.0

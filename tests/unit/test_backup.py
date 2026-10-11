@@ -55,6 +55,28 @@ def test_schedule_is_backed_up_and_restored(tmp_path: Path) -> None:
     assert json.loads(schedule.read_text(encoding="utf-8"))["schema_version"] == 1
 
 
+def test_recording_state_is_backed_up_but_recordings_are_not(tmp_path: Path) -> None:
+    """Archives can be huge, and a restore must never replace the recordings folder."""
+    cfg = _config(tmp_path)
+    cfg.recording.folder = tmp_path / "recordings"
+    cfg.recording.folder.mkdir()
+    state = cfg.index.active_dir / "recording.json"
+    recording = cfg.recording.folder / "Station-2026-01-01_12-00-00.mp3"
+    state.write_text('{"version":1,"running":true}')
+    recording.write_bytes(b"MP3")
+    archive = create_backup(cfg, tmp_path / "recording.zip", force=False)
+    with zipfile.ZipFile(archive) as backup:
+        assert backup.read("index/recording.json") == state.read_bytes()
+        assert not [name for name in backup.namelist() if name.endswith(".mp3")]
+    state.unlink()
+    newer = cfg.recording.folder / "Station-2026-01-02_12-00-00.mp3"
+    newer.write_bytes(b"NEW")
+    restore_backup(cfg, archive, force=True)
+    assert state.exists()
+    assert recording.read_bytes() == b"MP3"
+    assert newer.read_bytes() == b"NEW"
+
+
 def _publish(cfg: AutoDJConfig, title: str) -> None:
     entry = IndexEntry(
         path=str(cfg.library.music_dir / "song.flac"),

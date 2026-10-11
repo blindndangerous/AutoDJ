@@ -30,6 +30,7 @@ import { installLibraryFolders } from "./modules/library-folders.js";
 import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
 import { installSchedulerPanel } from "./modules/scheduler-panel.js";
 import { createStreamMode, createStreamSettings } from "./modules/stream-mode.js";
+import { createRecordingControls } from "./modules/recording-controls.js";
 import { installNowPlayingSettings } from "./modules/nowplaying-settings.js";
 import { createListenerControls } from "./modules/listener-controls.js";
 import { initSubtabs } from "./modules/subtabs.js";
@@ -190,6 +191,7 @@ const listenerControls = createListenerControls(
     "/api/stream/settings", { max_listeners_per_address: value }, control,
   ),
 );
+const recordingControls = createRecordingControls(document, document.getElementById("sr-status"));
 // A lookup that failed while another tab showed was never heard; opening
 // Settings tries again.
 window.addEventListener("hashchange", () => {
@@ -234,6 +236,7 @@ function clearProtectedSessionData() {
   _seekController?.cancel();
   streamMode.stop();
   streamSettings.reset();
+  recordingControls.reset();
   nowPlayingSettings?.reset();
   listenerControls.reset();
   resetTrackCaches();
@@ -470,6 +473,8 @@ function applyState(s) {
   _lastStreamServerAudio = inStream && Boolean(s.stream_server_audio);
   streamMode.apply(s);
   streamSettings.apply(s);
+  if (s.stream_mode) recordingControls.apply(s.recording);
+  else recordingControls.reset();
   nowPlayingSettings?.apply(s);
   listenerControls.apply(s);
   const browserMode = Boolean(s.browser_playback) && !inStream;

@@ -1383,6 +1383,53 @@
         <ul class="stream-detail" id="np-webhooks-list" aria-labelledby="np-webhooks-intro" hidden></ul>
         <p class="stream-detail" id="np-webhooks-empty" hidden></p>
       </fieldset>
+      <!-- Broadcast recording ([recording] in config.toml).
+           recording-controls.js shows it once the server reports recording
+           status.  The toggle keeps one name; aria-pressed says whether it
+           records.  Split stays focusable with aria-disabled and says why
+           it did nothing.  The status and error lines are plain text, not
+           live: results and new errors go to the status regions.  The
+           folder is set only in the config files and never shown. -->
+      <fieldset id="recording-controls" hidden>
+        <legend>Broadcast recording</legend>
+        <p class="setting-desc" id="recording-desc">
+          Saves the MP3 that listeners hear, including liners and processing, as dated files in the recordings folder set in config.toml. Recording keeps the station playing without listeners.
+        </p>
+        <div class="settings-row">
+          <button type="button" id="recording-toggle" aria-pressed="false"
+                  aria-describedby="recording-status recording-error">Record broadcast</button>
+          <button type="button" id="recording-split-now" aria-disabled="true">Split recording now</button>
+        </div>
+        <p class="stream-detail" id="recording-status"></p>
+        <p class="stream-detail" id="recording-error" hidden></p>
+        <div class="settings-row">
+          <label for="recording-split">Start a new file</label>
+          <select id="recording-split" aria-describedby="recording-split-desc">
+            <option value="hour">Every clock hour</option>
+            <option value="show">For each show</option>
+          </select>
+        </div>
+        <span class="setting-desc" id="recording-split-desc">
+          For each show starts a new file when you press Split recording now, when a scheduled Start recording or Split recording event runs, or when a profile is applied.
+        </span>
+        <div class="settings-row">
+          <label for="recording-retention-days">Days to keep recordings</label>
+          <input type="number" id="recording-retention-days" min="0" step="1" required
+                 inputmode="numeric" aria-describedby="recording-retention-desc">
+        </div>
+        <span class="setting-desc" id="recording-retention-desc">
+          Older dated recordings in the recordings folder are deleted about once an hour. 0 keeps them forever.
+        </span>
+        <div class="settings-row">
+          <label for="recording-free-space-mb">Minimum free space in MB</label>
+          <input type="number" id="recording-free-space-mb" min="0" step="1" required
+                 inputmode="numeric" aria-describedby="recording-free-space-desc">
+        </div>
+        <span class="setting-desc" id="recording-free-space-desc">
+          Recording pauses when the recordings drive has less free space than this, and resumes when space returns. The stream keeps playing.
+        </span>
+        <button type="button" id="recording-save">Save recording settings</button>
+      </fieldset>
       <section aria-labelledby="listener-control-title">
         <h4 id="listener-control-title" tabindex="-1">Listeners</h4>
         <p class="stream-detail" id="stream-listeners"></p>

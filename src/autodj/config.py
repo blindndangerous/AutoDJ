@@ -1354,6 +1354,29 @@ class StreamConfig(_Section):
 
 
 @dataclass
+class RecordingConfig(_Section):
+    """Encoded stream archive settings (``[recording]``)."""
+
+    SECTION: ClassVar[str] = "recording"
+
+    folder: Path = Path("recordings")
+    split: str = "hour"
+    retention_days: int = 0
+    free_space_mb: int = 100
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.folder, str | Path) or not str(self.folder).strip():
+            raise ValueError("recording.folder must be a non-empty path")
+        self.folder = Path(self.folder).expanduser()
+        if self.split not in {"hour", "show"}:
+            raise ValueError("recording.split must be hour or show")
+        for name in ("retention_days", "free_space_mb"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"recording.{name} must be a non-negative integer")
+
+
+@dataclass
 class NowPlayingConfig(_Section):
     """Public now-playing feed settings (``[nowplaying]``)."""
 
@@ -1439,6 +1462,7 @@ class AutoDJConfig:
     transitions: TransitionsConfig = field(default_factory=lambda: TransitionsConfig())
     server: ServerConfig = field(default_factory=ServerConfig)
     stream: StreamConfig = field(default_factory=StreamConfig)
+    recording: RecordingConfig = field(default_factory=RecordingConfig)
     nowplaying: NowPlayingConfig = field(default_factory=NowPlayingConfig)
     webhooks: tuple[WebhookConfig, ...] = ()
     config_sources: tuple[str, ...] = ("defaults",)
@@ -1544,6 +1568,7 @@ _SECTION_TYPES: tuple[type[_Section], ...] = (
     TransitionsConfig,
     ServerConfig,
     StreamConfig,
+    RecordingConfig,
     NowPlayingConfig,
 )
 
