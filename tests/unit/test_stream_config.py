@@ -53,7 +53,6 @@ def test_valid_bitrates(bitrate: int) -> None:
         {"station_name": ""},
         {"enabled": "yes"},
         {"continuous": "true"},
-        {"unknown": 1},
     ],
 )
 def test_invalid_values_rejected(data: dict) -> None:
@@ -114,3 +113,9 @@ def test_station_name_rejects_control_characters(name: str) -> None:
 
 def test_station_name_keeps_printable_unicode() -> None:
     assert StreamConfig(station_name="Радио 🎵 Café").station_name == "Радио 🎵 Café"
+
+
+def test_unknown_stream_keys_warn_without_discarding_supported_settings(caplog):
+    cfg = StreamConfig.from_dict({"unknown": 1, "bitrate": 192, "enabled": True})
+    assert cfg.bitrate == 192 and cfg.enabled is True
+    assert "Ignoring unknown config keys in [stream]: ['unknown']" in caplog.text
