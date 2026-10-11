@@ -21,67 +21,54 @@ def _source(path: Path, *, silence: bool = False) -> Path:
     return path
 
 
-def test_prepare_source_caches_stereo_float_and_keeps_source_unchanged(tmp_path: Path) -> None:
+def test_loudness_measurement_and_original_music_playout(tmp_path: Path) -> None:
     source = _source(tmp_path / "song.wav")
-    before = hashlib.sha256(source.read_bytes()).digest()
+    before = source.stat()
+    measurement = processing.analyze_loudness(source)
+    audio = processing.load_processed_audio(source, measurement)
 
-    prepared = processing.prepare_source(source, tmp_path / "cache")
-    again = processing.prepare_source(source, tmp_path / "cache")
-    audio, rate = sf.read(prepared, dtype="float32", always_2d=True)
-
-    assert again == prepared
-    assert prepared != source
-    assert rate == processing.SAMPLE_RATE
-    assert audio.shape == (3 * rate, 2)
+    assert measurement["lufs"] == pytest.approx(-19.1, abs=1.0)
+    assert measurement["gain_db"] == pytest.approx(-8.9, abs=1.0)
+    assert audio.shape == (3 * processing.SAMPLE_RATE, 2)
     assert np.isfinite(audio).all()
-    assert hashlib.sha256(source.read_bytes()).digest() == before
-    assert processing._measure(prepared) == pytest.approx(-28.0, abs=0.5)
+    assert source.stat().st_mtime_ns == before.st_mtime_ns
+    assert processing.loudness_matches(measurement, source)
+    assert list(tmp_path.iterdir()) == [source]
 
 
-def test_liner_uses_voice_preset_and_has_distinct_cache_entry(tmp_path: Path) -> None:
+def test_liner_filter_preserves_duration_and_relative_level(tmp_path: Path) -> None:
     source = _source(tmp_path / "liner.wav")
-    cache = tmp_path / "cache"
+    music = processing.analyze_loudness(source)
+    liner_measurement = processing.analyze_loudness(source, "liner")
+    music_audio = processing.load_processed_audio(source, music)
+    liner_audio = processing.load_processed_audio(source, liner_measurement, "liner")
 
-    music = processing.prepare_source(source, cache, "music")
-    liner = processing.prepare_source(source, cache, "liner")
-
-    assert music != liner
-    assert processing._measure(liner) == pytest.approx(-23.5, abs=0.7)
-    with pytest.raises(ValueError, match="kind"):
-        processing.prepare_source(source, cache, "jingle")
-
-
-def test_music_quiet_boost_uses_distinct_reusable_cache_and_leaves_liner_independent(
-    tmp_path: Path,
-) -> None:
-    source = _source(tmp_path / "song.wav")
-    cache = tmp_path / "cache"
-
-    music_9 = processing.prepare_source(source, cache, quiet_boost_db=9)
-    music_9_again = processing.prepare_source(source, cache, quiet_boost_db=9.0)
-    music_0 = processing.prepare_source(source, cache, quiet_boost_db=0)
-    liner = processing.prepare_source(source, cache, "liner")
-
-    assert music_9 == music_9_again
-    assert music_9 != music_0
-    assert processing.prepared_source_matches(music_9, "music", 9)
-    assert not processing.prepared_source_matches(music_9, "music", 0)
-    assert processing.prepared_source_matches(liner, "liner", 0)
-    assert processing.prepared_source_matches(liner, "liner", 12)
-    with pytest.raises(ValueError, match="quiet_boost_db"):
-        processing.prepare_source(source, cache, quiet_boost_db=12.1)
+    assert liner_audio.shape == music_audio.shape
+    assert np.isfinite(liner_audio).all()
+    # Targets preserve the requested 3 dB liner advantage.
+    assert liner_measurement["gain_db"] - music["gain_db"] == pytest.approx(3.0)
 
 
-def test_silent_input_fails_without_publishing_partial_cache(tmp_path: Path) -> None:
-    source = _source(tmp_path / "silence.wav", silence=True)
-    cache = tmp_path / "cache"
-
+def test_loudness_validation_rejects_silence_stale_and_bad_gain(tmp_path: Path) -> None:
+    silence = _source(tmp_path / "silence.wav", silence=True)
     with pytest.raises(ValueError, match="silent"):
-        processing.prepare_source(source, cache)
+        processing.analyze_loudness(silence)
 
-    assert list(cache.glob("*.wav")) == []
-    assert list(cache.glob(".prepare-*")) == []
+    source = _source(tmp_path / "song.wav")
+    measurement = processing.analyze_loudness(source)
+    altered = dict(measurement, gain_db=99)
+    assert not processing.loudness_matches(altered, source)
+    with pytest.raises(ValueError, match="stale"):
+        processing.load_processed_audio(source, altered)
+    source.write_bytes(source.read_bytes() + b"x")
+    assert not processing.loudness_matches(measurement, source)
 
+
+def test_processed_audio_obeys_max_seconds(tmp_path: Path) -> None:
+    source = _source(tmp_path / "song.wav")
+    measurement = processing.analyze_loudness(source)
+    with pytest.raises(ValueError):
+        processing.load_processed_audio(source, measurement, max_seconds=1.0)
 
 def test_basic_suggestions_keep_segue_unset_without_sustained_tail_drop(
     tmp_path: Path,
