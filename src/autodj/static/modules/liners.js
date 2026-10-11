@@ -59,9 +59,9 @@ function _setStatus(els, msg, { force = false, tone = "info" } = {}) {
   announceStatus(els.lnStatus, msg, { dwellMs: tone === "error" ? 6000 : 4000, force, tone });
 }
 
-export function renderLinerFileList(fileList, files, onDelete, onEdit = (path, kind) => {
+export function renderLinerFileList(fileList, files, onDelete, onEdit = (path, kind, opener) => {
   fileList.ownerDocument.dispatchEvent(new CustomEvent("autodj:edit-points", {
-    detail: { path, kind },
+    detail: { path, kind, opener },
   }));
 }) {
   if (!fileList) return;
@@ -77,7 +77,7 @@ export function renderLinerFileList(fileList, files, onDelete, onEdit = (path, k
     const liner = legacyName ? { id: item, name: item, path: null } : item;
     const buttons = [rowButton(document, "Delete", `Delete ${liner.name}`, (button) =>
       legacyName ? onDelete(liner.id, button) : onDelete(liner.id, button, liner.name))];
-    if (liner.path && liner.editable !== false) buttons.push(rowButton(document, "Track info", `Track info for ${liner.name}`, () => onEdit(liner.path, "liner")));
+    if (liner.path && liner.editable !== false) buttons.push(rowButton(document, "Track info", `Track info for ${liner.name}`, (button) => onEdit(liner.path, "liner", button)));
     return listRow(document, liner.name, "", ...buttons);
   }));
 }

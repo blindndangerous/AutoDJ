@@ -325,6 +325,16 @@ describe("clock folder and points controls", () => {
     expect(document.getElementById("track-info-dialog").open).toBe(false);
   });
 
+  it("announces when a History recording has left the library", async () => {
+    const missing = new Error("Recording not in library");
+    missing.status = 404;
+    const controls = installLibraryFolders({ document, request: vi.fn(async () => { throw missing; }) });
+    await controls.openEditor("M:/removed.flac");
+    expect(document.getElementById("panel-track-info").hidden).toBe(false);
+    await vi.waitFor(() => expect(document.getElementById("points-status").textContent).toContain("no longer in the library"));
+    expect(document.getElementById("points-editor").hidden).toBe(true);
+  });
+
   it("saves the old track before switching and names it in the modal", async () => {
     const request = trackRequest();
     const controls = installLibraryFolders({ document, request });
@@ -390,7 +400,7 @@ describe("clock folder and points controls", () => {
     expect(request).toHaveBeenCalledTimes(2);
     expect(document.getElementById("points-path").value).toBe("M:/one.flac");
     expect(document.querySelector('[data-point="intro"]').value).toBe("0:10");
-    expect(document.getElementById("points-status").textContent).toContain("Missing file");
+    await vi.waitFor(() => expect(document.getElementById("points-status").textContent).toContain("Missing file"));
   });
 
   it("holds Save, Discard and Escape while the save is in flight", async () => {

@@ -11,6 +11,8 @@ const VIEW_NAMES = ["now", "queue", "track-info", "history", "settings", "librar
 const _viewSections = new Map();
 const _viewLinks = new Map();
 let _initialised = false;
+let _returnFocus = null;
+let _currentView = null;
 
 export function initViewRouter() {
   if (_initialised) return;
@@ -34,14 +36,46 @@ export function initViewRouter() {
     // swap is just a `hidden` toggle, no perf reason for manual.
     lnk.addEventListener("keydown", _onTabKeydown);
   }
-  window.addEventListener("hashchange", () => {
+  window.addEventListener("hashchange", (event) => {
+    if (event.newURL && new URL(event.newURL).hash !== location.hash) return;
     const view = (location.hash || "#now").replace(/^#/, "");
-    applyView(VIEW_NAMES.includes(view) && _viewSections.has(view) ? view : "now", true);
+    const selected = VIEW_NAMES.includes(view) && _viewSections.has(view) ? view : "now";
+    const returning = _returnFocus?.view === selected ? _returnFocus : null;
+    _returnFocus = null;
+    if (!returning && selected === _currentView) return;
+    applyView(selected, !returning);
+    focusReturn(returning);
   });
   // Initial paint -- no focus stealing on first load.
   const initial = (location.hash || "#now").replace(/^#/, "");
   applyView(VIEW_NAMES.includes(initial) && _viewSections.has(initial) ? initial : "now", false);
   _initialised = true;
+}
+
+export function returnToView(view, target) {
+  if (!_viewSections.has(view)) return false;
+  _returnFocus = { view, target };
+  if (location.hash === `#${view}`) {
+    applyView(view, false);
+    focusReturn(_returnFocus);
+    _returnFocus = null;
+  } else location.hash = view;
+  return true;
+}
+
+export function isReturningToView(view) {
+  return _returnFocus?.view === view;
+}
+
+function focusReturn(returning) {
+  if (!returning) return;
+  const target = typeof returning.target === "function" ? returning.target() : returning.target;
+  if (target?.isConnected) { target.focus(); return; }
+  const section = _viewSections.get(returning.view);
+  const heading = Array.from(section?.children || []).find((child) => child.tagName === "H2");
+  const fallback = heading || section?.querySelector("summary") || _viewLinks.get(returning.view);
+  if (fallback?.tagName === "H2") fallback.setAttribute("tabindex", "-1");
+  fallback?.focus();
 }
 
 function _onTabKeydown(e) {
@@ -62,6 +96,7 @@ function _onTabKeydown(e) {
 }
 
 function applyView(name, userInitiated) {
+  _currentView = name;
   for (const [k, sec] of _viewSections) {
     if (k === name) sec.removeAttribute("hidden");
     else sec.setAttribute("hidden", "");

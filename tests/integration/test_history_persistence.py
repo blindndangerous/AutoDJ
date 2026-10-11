@@ -80,9 +80,11 @@ def test_history_archive_reopens_in_order_while_view_stays_at_500(tmp_path) -> N
         assert [row["played_at"] for row in archive] == [
             row["played_at"] for row in expected_archive
         ]
-        assert restored.history_snapshot() == expected_view
+        assert [
+            row | {"path": os.path.normcase(row["path"])} for row in restored.history_snapshot()
+        ] == [row | {"path": os.path.normcase(row["path"])} for row in expected_view]
         assert all(
-            set(row) == {"title", "artist", "duration", "played_at"}
+            set(row) == {"event_id", "path", "title", "artist", "duration", "played_at"}
             for row in restored.history_snapshot()
         )
     finally:
