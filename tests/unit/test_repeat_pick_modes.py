@@ -224,10 +224,27 @@ def test_automatic_start_honours_restored_repeat_history(mode: str) -> None:
     }
     player._library = _library(player)
     player._library.last_played = lambda: history
-    assert player.restore_repeat_history(
-        _Catalog([_saved_play(entries[0], minutes_ago=1)])
-    ) == 1
+    assert player.restore_repeat_history(_Catalog([_saved_play(entries[0], minutes_ago=1)])) == 1
 
+    for _ in range(5):
+        assert player._random_start_entry() is entries[2]
+
+
+@pytest.mark.parametrize("mode", ["random", "least_recent"])
+def test_automatic_start_honours_restored_title_minutes(mode: str) -> None:
+    player = _player(
+        mode,
+        [("Artist A", "Same Song"), ("Artist B", "Same Song (Live)"), ("Artist C", "Other")],
+        repeat_rules={
+            "track": {"tracks": 0},
+            "artist": {"tracks": 0},
+            "album": {"tracks": 0},
+            "title": {"minutes": 60},
+        },
+    )
+    entries = player.playable_entries()
+    player._library = _library(player)
+    assert player.restore_repeat_history(_Catalog([_saved_play(entries[0], minutes_ago=1)])) == 1
     for _ in range(5):
         assert player._random_start_entry() is entries[2]
 
@@ -246,9 +263,32 @@ def test_automatic_start_relaxes_repeat_rules_when_library_is_exhausted(mode: st
     )
     entries = player.playable_entries()
     player._library = _library(player)
-    assert player.restore_repeat_history(
-        _Catalog([_saved_play(entries[0], minutes_ago=1)])
-    ) == 1
+    assert player.restore_repeat_history(_Catalog([_saved_play(entries[0], minutes_ago=1)])) == 1
+    assert player._random_start_entry() in entries
+
+
+def test_automatic_start_can_repeat_a_one_track_library_after_restored_history() -> None:
+    player = _player(
+        "random",
+        [("Only Artist", "Only Song")],
+        repeat_rules={
+            "track": {"tracks": 1},
+            "artist": {"tracks": 3},
+            "album": {"tracks": 0},
+            "title": {"tracks": 0},
+        },
+    )
+    entry = player.playable_entries()[0]
+    player._library = _library(player)
+    assert player.restore_repeat_history(_Catalog([_saved_play(entry, minutes_ago=1)])) == 1
+    assert player._random_start_entry() is entry
+
+
+def test_automatic_start_relaxes_bpm_range_when_it_excludes_every_song() -> None:
+    player = _player("random", [("Artist A", "One"), ("Artist B", "Two")])
+    entries = player.playable_entries()
+    player._library = _library(player)
+    player._bpm_range = (180.0, 190.0)
     assert player._random_start_entry() in entries
 
 

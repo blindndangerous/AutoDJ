@@ -1020,19 +1020,10 @@ class Player:
                 self._seed_clock_cursor = picked.next_cursor
                 return self._dmca_checked(picked.entry, context)
             context = dmca or self._pick_context()
-            # Startup has no current track to exclude. Reuse the ordinary
-            # shuffle eligibility and relaxation.
-            from autodj.similarity import SimilarityError
-
             try:
                 chosen = self._pick_pure_shuffle(None, context)
-            except SimilarityError:
-                if dmca is None:
-                    return None
-                try:
-                    chosen = self._pick_pure_shuffle(None, replace(context, complement=None))
-                except SimilarityError:
-                    return None
+            except Exception as exc:
+                chosen = self._fallback_pick(None, context, exc)
         else:
             chosen = self._sim.random_entry()
         if dmca is None or chosen is None:
@@ -2222,9 +2213,7 @@ class Player:
             logger.info("Repeat rules: %d plays from before the restart count", len(records))
         return len(records)
 
-    def _pick_pure_shuffle(
-        self, current: IndexEntry | None, context: _PickContext
-    ) -> IndexEntry:
+    def _pick_pure_shuffle(self, current: IndexEntry | None, context: _PickContext) -> IndexEntry:
         """Random pick from tracks not in *context*'s history, honouring the BPM range.
 
         Silent tracks are never picked.  When every eligible track was
@@ -2437,7 +2426,7 @@ class Player:
             return relaxed, mode
 
     def _fallback_pick(
-        self, current: IndexEntry, context: _PickContext, reason: Exception
+        self, current: IndexEntry | None, context: _PickContext, reason: Exception
     ) -> IndexEntry:
         """Pick a random track after the normal pick failed with *reason*.
 
@@ -2445,8 +2434,9 @@ class Player:
         but avoids repeats as far as the library allows: first a track
         outside the recent history, then one that is not protected (see
         :class:`_PickContext`), then anything but *current*, then *current*
-        itself (a one-track library).  Every step is tried first among the
-        tracks inside the hard BPM range, the same rule pure shuffle uses;
+        itself (a one-track library). At startup there is no *current*, so
+        the fallback can use any audible track. Every step is tried first
+        among tracks inside the hard BPM range, the same rule pure shuffle uses;
         only when no track at all is inside the range are the steps tried
         again without it.  Silent tracks are never picked.
 
@@ -2467,11 +2457,12 @@ class Player:
         if bpm_range is not None:
             lo, hi = bpm_range
             in_range = [entry for entry in audible if entry.bpm > 0 and lo <= entry.bpm <= hi]
-        recent = set(context.recent) | {current.path}
+        current_paths = {current.path} if current is not None else set()
+        recent = set(context.recent) | current_paths
         tiers: tuple[AbstractSet[str], ...] = (
             recent,
-            context.protected | {current.path},
-            {current.path},
+            context.protected | current_paths,
+            current_paths,
             set(),
         )
         chosen: IndexEntry | None = None
@@ -2495,7 +2486,7 @@ class Player:
             logger.warning(
                 "Could not pick a track to follow %s (%s: %s); picking one at random "
                 "instead until the normal pick works again.%s",
-                current.display_name,
+                current.display_name if current is not None else "the automatic start",
                 type(reason).__name__,
                 reason,
                 ignored_note,
