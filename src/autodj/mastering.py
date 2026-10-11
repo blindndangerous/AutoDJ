@@ -303,7 +303,7 @@ class ContinuousMaster:
 
     @staticmethod
     def _fallback(audio: np.ndarray) -> np.ndarray:
-        # Prepared sources retain 6 dB headroom; apply the chain's final
+        # Blended sources retain 6 dB headroom; apply the chain's final
         # makeup and bound peaks while the processor recovers.
         return np.clip(audio * _MAKEUP, -_LIMIT, _LIMIT).astype(np.float32, copy=False)
 
@@ -336,12 +336,13 @@ class ContinuousMaster:
             if proc is None or generation != active_generation:
                 if proc is not None:
                     self._stop_pipeline(proc, writer, reader, stop, post_proc)
-                if mode == "stereotool" and preset is not None:
-                    # Build after stopping the old child so one temp file can be reused safely.
-                    preset = self._runtime_stereotool_preset(preset)
                 try:
+                    command_preset = None
+                    if mode == "stereotool" and preset is not None:
+                        # Build after stopping the old child so one temp file can be reused safely.
+                        command_preset = self._runtime_stereotool_preset(preset)
                     proc = self._factory(  # nosec B603 -- configured executable, fixed argv, no shell
-                        _command(mode, self._stereotool_path, preset),
+                        _command(mode, self._stereotool_path, command_preset),
                         stdin=subprocess.PIPE,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.DEVNULL,

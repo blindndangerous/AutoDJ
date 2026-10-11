@@ -205,3 +205,27 @@ def test_agc_preset_io_runs_on_master_lifecycle_thread(tmp_path: Path) -> None:
         assert started and started[0] != caller
     finally:
         master.close()
+
+
+def test_runtime_preset_failure_keeps_master_worker_in_fallback(
+    monkeypatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "Night.sts"
+    source.write_text("[Pre Compressor]\nDrive=4\n")
+    mode = ["off"]
+    master = ContinuousMaster(mode=lambda: mode[0], preset=lambda: source)
+
+    def fail(_signature):
+        raise OSError("temp directory unavailable")
+
+    monkeypatch.setattr(master, "_runtime_stereotool_preset", fail)
+    try:
+        mode[0] = "stereotool"
+        master.process(np.zeros((BLOCK_FRAMES, 2), dtype=np.float32))
+        deadline = time.monotonic() + 2
+        while master.error is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert master.error and "temp directory unavailable" in master.error
+        assert master._worker.is_alive()
+    finally:
+        master.close()
