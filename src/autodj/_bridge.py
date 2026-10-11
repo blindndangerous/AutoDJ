@@ -325,7 +325,10 @@ class PlayerBridge:
         """Return the latest plays across sessions, oldest first."""
         with self._history_lock:
             return [
-                {key: row[key] for key in ("title", "artist", "duration", "played_at")}
+                {
+                    key: row.get(key)
+                    for key in ("event_id", "path", "title", "artist", "duration", "played_at")
+                }
                 for row in self._play_history
             ]
 

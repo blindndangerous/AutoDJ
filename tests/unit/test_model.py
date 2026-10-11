@@ -179,13 +179,20 @@ class TestMuqWrapper:
 
     def test_model_called_with_no_grad(self) -> None:
         """Model inference should run inside torch.no_grad() for efficiency."""
+        import torch
+
         model = _make_mock_model()
+        grad_enabled = []
+        model.side_effect = lambda *args, **kwargs: (
+            grad_enabled.append(torch.is_grad_enabled()) or model.return_value
+        )
         wrapper = MuqWrapper(model=model, device="cpu")
 
         audio = np.zeros(24000, dtype=np.float32)
         wrapper.embed_array(audio, sample_rate=24000)
 
         model.assert_called_once()
+        assert grad_enabled == [False]
 
     def test_resamples_to_muq_rate_when_needed(self) -> None:
         """Audio not at 24000 Hz must be resampled before the model sees it."""

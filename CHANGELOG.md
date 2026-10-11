@@ -15,6 +15,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   restarts and are included in backups. Trusted proxy addresses control when forwarded client
   addresses are used.
 
+- Track info buttons in Now Playing, Queue, Search results, History, library browse and voice
+  liners open the same details and cue editor. The Return to History, Return to Queue & Search
+  and other view-specific buttons restore focus to the source item, or explain when it has gone.
+  An old play with no saved path, or a recording removed from the library, gets a spoken explanation.
 - Richer repeat rules for picking songs.
   - An artist credit counts for every artist it names: "feat.", "ft.", "featuring" and "vs."
     always split it, and "&", "and", "x", "with" and commas split it when the parts look like

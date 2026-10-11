@@ -56,6 +56,25 @@ describe("card headings", () => {
 });
 
 describe("tab arrow keys", () => {
+  it("focuses the destination heading if a Return target disconnects before hashchange", async () => {
+    installIndex();
+    window.location.hash = "#track-info";
+    vi.resetModules();
+    const { initViewRouter: freshRouter, returnToView } = await import(
+      "../../src/autodj/static/modules/tabs.js");
+    try {
+      freshRouter();
+      const source = document.createElement("button");
+      document.querySelector("#panel-queue").append(source);
+      expect(returnToView("queue", source)).toBe(true);
+      source.remove();
+      await vi.waitFor(() => expect(document.querySelector("#panel-queue").hidden).toBe(false));
+      expect(document.activeElement).toBe(document.querySelector("#panel-queue summary"));
+    } finally {
+      window.location.hash = "";
+    }
+  });
+
   it("places Track info after Queue & Search in both cached markup and keyboard order", async () => {
     installIndex();
     const info = document.getElementById("tab-track-info");
