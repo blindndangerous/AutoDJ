@@ -520,6 +520,7 @@ def test_run_doctor_check_order(tmp_path: Path) -> None:
 
     assert [check.name for check in report.checks] == [
         "configuration",
+        "dmca",
         "python",
         "music-path",
         "beets-db",

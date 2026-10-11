@@ -1387,6 +1387,18 @@ class NowPlayingConfig(_Section):
             raise ValueError("nowplaying.history_limit must be between 0 and 20")
 
 
+@dataclass
+class DmcaConfig(_Section):
+    """Optional US statutory-webcasting programming safeguards."""
+
+    SECTION: ClassVar[str] = "dmca"
+    enabled: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise TypeError("dmca.enabled must be true or false")
+
+
 @dataclass(frozen=True)
 class WebhookConfig:
     """One outbound track-change destination, stored in config.local.toml."""
@@ -1458,6 +1470,7 @@ class AutoDJConfig:
     stream: StreamConfig = field(default_factory=StreamConfig)
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     nowplaying: NowPlayingConfig = field(default_factory=NowPlayingConfig)
+    dmca: DmcaConfig = field(default_factory=DmcaConfig)
     webhooks: tuple[WebhookConfig, ...] = ()
     config_sources: tuple[str, ...] = ("defaults",)
 
@@ -1564,6 +1577,7 @@ _SECTION_TYPES: tuple[type[_Section], ...] = (
     StreamConfig,
     RecordingConfig,
     NowPlayingConfig,
+    DmcaConfig,
 )
 
 

@@ -548,13 +548,13 @@ def records_from_plays(rows: Iterable[Mapping[str, Any]], now: float) -> list[Pl
 HISTORY_LIMIT = 5000
 
 
-def prune_history(history: Any, rules: RepeatRules, now: float) -> None:
+def prune_history(history: Any, rules: RepeatRules, now: float, minimum_seconds: float = 0) -> None:
     """Drop records no rule can look at any more from the left of *history* (a deque).
 
     At most :data:`HISTORY_LIMIT` records are kept, so a pick that copies
     and walks the history stays quick even with week-long windows.
     """
-    keep, seconds = rules.keep_tracks, rules.keep_seconds
+    keep, seconds = rules.keep_tracks, max(rules.keep_seconds, minimum_seconds)
     history_limit = max(HISTORY_LIMIT, rules.keep_tracks)
     while history and (
         len(history) > history_limit
@@ -563,13 +563,17 @@ def prune_history(history: Any, rules: RepeatRules, now: float) -> None:
         history.popleft()
 
 
-def plays_to_load(rules: RepeatRules) -> int:
+def plays_to_load(rules: RepeatRules, minimum_seconds: float = 0) -> int:
     """How many saved plays to load at startup so every window starts full.
 
     The track window's count, the artist and title windows' counts, and,
     when any rule counts minutes, up to :data:`HISTORY_LIMIT` plays.
     """
-    needed = HISTORY_LIMIT if rules.keep_seconds > 0 else min(rules.keep_tracks, HISTORY_LIMIT)
+    needed = (
+        HISTORY_LIMIT
+        if max(rules.keep_seconds, minimum_seconds) > 0
+        else min(rules.keep_tracks, HISTORY_LIMIT)
+    )
     return max(rules.track_window, needed)
 
 

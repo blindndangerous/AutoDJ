@@ -189,6 +189,53 @@ describe("now-playing settings", () => {
     expect(byId("settings-status").textContent).toBe("");
   });
 
+  it("in DMCA mode shows the status and keeps show-next focusable but unavailable", async () => {
+    const ui = install();
+    const box = byId("np-show-next");
+    const status = byId("dmca-status");
+    const reason = byId("np-show-next-dmca");
+    expect(status.hidden).toBe(true);
+    expect(reason.hidden).toBe(true);
+    expect(box.hasAttribute("aria-disabled")).toBe(false);
+
+    ui.apply({ stream_mode: true, settings: { playback: {
+      dmca_enabled: true, nowplaying_show_next: true,
+    } } });
+    expect(status.hidden).toBe(false);
+    expect(status.textContent).toMatch(/^DMCA mode is on: /);
+    expect(status.getAttribute("role")).toBeNull();
+    expect(box.getAttribute("aria-disabled")).toBe("true");
+    expect(box.disabled).toBe(false);
+    expect(box.checked).toBe(false);
+    expect(reason.hidden).toBe(false);
+    expect(box.getAttribute("aria-describedby")).toBe("np-show-next-desc np-show-next-dmca");
+    // A push without settings changes nothing.
+    ui.apply({ stream_mode: true });
+    expect(box.getAttribute("aria-disabled")).toBe("true");
+
+    box.focus();
+    box.click();
+    expect(box.checked).toBe(false);
+    await said("settings-status", reason.textContent.trim());
+    expect(saveShowNext).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(box);
+
+    ui.apply({ stream_mode: true, settings: { playback: {
+      dmca_enabled: false, nowplaying_show_next: true,
+    } } });
+    expect(status.hidden).toBe(true);
+    expect(reason.hidden).toBe(true);
+    expect(box.hasAttribute("aria-disabled")).toBe(false);
+    expect(box.getAttribute("aria-describedby")).toBe("np-show-next-desc");
+    expect(box.checked).toBe(true);
+  });
+
+  it("shows the DMCA status outside stream mode too", () => {
+    const ui = install();
+    ui.apply({ stream_mode: false, settings: { playback: { dmca_enabled: true } } });
+    expect(byId("dmca-status").hidden).toBe(false);
+  });
+
   it("follows the pushed show-next setting", () => {
     const ui = install();
     const box = byId("np-show-next");

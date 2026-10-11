@@ -607,6 +607,8 @@ class PlayNextBody(BaseModel):
 
     path: str
     now: bool = False  # if True, also skip the current track
+    # DMCA mode: queue it even though it breaks a limit (the operator said so).
+    confirm: StrictBool = False
 
 
 class QueueReorderBody(BaseModel):
@@ -2050,6 +2052,11 @@ def create_app(
     async def api_stream_settings(body: StreamSettingsBody) -> dict:
         """Change the stream bitrate (listeners reconnect), continuous play or name."""
         access = _require_stream_mode()
+        if body.show_next and bridge.player._cfg.dmca.enabled:
+            raise HTTPException(
+                status_code=409,
+                detail="DMCA mode is on, so the next song is never shown publicly.",
+            )
         if body.bitrate is not None:
             try:
                 await asyncio.to_thread(bridge.set_stream_bitrate, body.bitrate)
@@ -2383,9 +2390,43 @@ def create_app(
         bridge.save_persistent_state()
         return {"muted": muted}
 
-    @app.post("/api/play-next")
-    async def api_play_next(body: PlayNextBody) -> dict[str, bool]:
+    def _dmca_refusal(body: PlayNextBody, *, append: bool) -> JSONResponse | None:
+        """A 409 naming the DMCA limits a queued song would break, unless *body* confirms it.
+
+        The song is not queued until the operator confirms; a confirmed
+        song is queued and the limits it breaks are logged.
+        """
+        if not bridge.player._cfg.dmca.enabled:
+            return None
+        entry = bridge.entry_for_path(body.path)
+        if entry is None:
+            raise HTTPException(status_code=404, detail=_TRACK_GONE_DETAIL)
+        now = body.now and not append
+        broken = bridge.dmca_queue_limits(entry, now=now, append=append)
+        if not broken:
+            return None
+        limits = "; ".join(broken)
+        if body.confirm:
+            logger.warning(
+                "DMCA mode: the operator queued %s although it breaks the limit: %s",
+                entry.display_name,
+                limits,
+            )
+            return None
+        where = "now" if now else "at the end of the queue" if append else "next"
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": f"DMCA mode: playing this song {where} would mean {limits}.",
+                "field": "confirm",
+            },
+        )
+
+    @app.post("/api/play-next", response_model=None)
+    async def api_play_next(body: PlayNextBody) -> dict[str, bool] | JSONResponse:
         """Insert a track at the head of the queue."""
+        if refusal := _dmca_refusal(body, append=False):
+            return refusal
         if not bridge.play_next(body.path, now=body.now):
             raise HTTPException(status_code=404, detail=_TRACK_GONE_DETAIL)
         nowplaying.refresh()
@@ -2401,9 +2442,11 @@ def create_app(
     # Queue manipulation
     # ------------------------------------------------------------------
 
-    @app.post("/api/queue/add")
-    async def api_queue_add(body: PlayNextBody) -> dict[str, bool]:
+    @app.post("/api/queue/add", response_model=None)
+    async def api_queue_add(body: PlayNextBody) -> dict[str, bool] | JSONResponse:
         """Append a track to the user-ordered queue."""
+        if refusal := _dmca_refusal(body, append=True):
+            return refusal
         if not bridge.queue_add(body.path):
             raise HTTPException(status_code=404, detail=_TRACK_GONE_DETAIL)
         nowplaying.refresh()
