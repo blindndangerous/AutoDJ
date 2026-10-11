@@ -1,5 +1,5 @@
 // Settings number fields: crossfade and fade-in length, the EQ duck
-// cutoff, repeat windows, how widely similarity picks spread, phrase
+// cutoff, how widely similarity picks spread, phrase
 // length, the beatmatch stretch limit and glide, the filter sweep floor,
 // transition effect level and the ReplayGain target and peak limit, plus
 // the filter sweep switch.
@@ -23,16 +23,6 @@ const NUMBER_FIELDS = [
     key: "pbFadeIn", url: "/api/playback-settings", field: "fade_in_seconds",
     label: "Fade-in seconds", min: 0, max: 20, integer: false,
     read: (st) => st.playback?.fade_in_seconds,
-  },
-  {
-    key: "pbNoRepeat", url: "/api/playback-settings", field: "no_repeat_window",
-    label: "Tracks before a song can repeat", min: 0, max: 100000, integer: true,
-    read: (st) => st.playback?.no_repeat_window,
-  },
-  {
-    key: "pbArtistRepeat", url: "/api/playback-settings", field: "artist_repeat_window",
-    label: "Tracks before an artist can repeat", min: 0, max: 100, integer: true,
-    read: (st) => st.playback?.artist_repeat_window,
   },
   {
     key: "djPhraseBars", url: "/api/djmix", field: "phrase_bars",
@@ -94,6 +84,16 @@ const NUMBER_FIELDS = [
     key: "pbQuietBoost", url: "/api/playback-settings", field: "quiet_boost_db",
     label: "Boost quiet sections", min: 0, max: 12, integer: false,
     read: (st) => st.playback?.quiet_boost_db,
+  },
+  {
+    key: "pbIntroLift", url: "/api/playback-settings", field: "intro_lift_max_db",
+    label: "Quiet intro lift limit", min: 0, max: 6, integer: false,
+    read: (st) => st.playback?.intro_lift_max_db,
+  },
+  {
+    key: "pbStereoTrim", url: "/api/playback-settings", field: "stereotool_input_trim_db",
+    label: "Stereo Tool input trim", min: -12, max: 6, integer: false,
+    read: (st) => st.playback?.stereotool_input_trim_db,
   },
 ];
 

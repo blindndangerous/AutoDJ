@@ -16,7 +16,6 @@ from autodj.config import PlaybackConfig
 from autodj.repeat_rules import (
     HISTORY_LIMIT,
     MAX_REPEAT_MINUTES,
-    STARTER_RELATED_ARTISTS,
     ArtistSplitter,
     PlayRecord,
     RepeatFilter,
@@ -28,12 +27,10 @@ from autodj.repeat_rules import (
     build_filter,
     featured_in_title,
     load_related_artists,
-    load_related_artists_or_warn,
     parse_related_artists,
     plays_to_load,
     prune_history,
     records_from_plays,
-    starter_related_artists,
     title_key,
 )
 
@@ -302,8 +299,8 @@ class TestRelatedArtists:
             b'single_acts = ["Tom Petty and the Heartbreakers"]\n'
             b'[related]\n"Bruno Mars" = ["The Hooligans"]\n'
         )
-        related = load_related_artists(str(path), starter=True)
-        assert related.related_to("bruno mars") == {"silk sonic", "hooligans"}
+        related = load_related_artists(str(path))
+        assert related.related_to("bruno mars") == {"hooligans"}
         assert related.single_acts == ("Tom Petty and the Heartbreakers",)
         assert load_related_artists(str(path)).related_to("bruno mars") == {"hooligans"}
 
@@ -311,7 +308,7 @@ class TestRelatedArtists:
         assert load_related_artists(None).links == {}
 
     def test_missing_file(self, tmp_path: Path) -> None:
-        with pytest.raises(FileNotFoundError, match="related_artists_file"):
+        with pytest.raises(FileNotFoundError, match="related artists file"):
             load_related_artists(str(tmp_path / "nope.toml"))
 
     def test_bad_toml(self, tmp_path: Path) -> None:
@@ -320,11 +317,12 @@ class TestRelatedArtists:
         with pytest.raises(ValueError, match="not valid TOML"):
             load_related_artists(path)
 
-    def test_starter_list(self) -> None:
-        related = starter_related_artists()
+    def test_bundled_sample_file(self) -> None:
+        related = load_related_artists(
+            Path(__file__).parents[2] / "src/autodj/data/related-artists.toml"
+        )
         assert related.related_to("bruno mars") == {"silk sonic"}
         assert related.related_to("anderson paak") >= {"silk sonic"}
-        assert len(STARTER_RELATED_ARTISTS) < 40
 
 
 # ---------------------------------------------------------------------------
@@ -337,29 +335,44 @@ def _record(i: int, artist: str = "", title: str = "", started: float = 0.0, alb
 
 
 class TestRepeatRules:
-    def test_from_playback_defaults_follow_the_old_keys(self) -> None:
-        rules = RepeatRules.from_playback(PlaybackConfig(artist_repeat_window=5))
-        assert (rules.track_window, rules.artist_window, rules.title_window) == (500, 5, 5)
-        assert (rules.track_minutes, rules.artist_minutes, rules.title_minutes) == (0, 0, 0)
+    def test_from_playback_defaults(self) -> None:
+        rules = RepeatRules.from_playback(PlaybackConfig())
+        assert (
+            rules.track_window,
+            rules.artist_window,
+            rules.album_window,
+            rules.title_window,
+        ) == (50, 8, 0, 0)
+        assert (
+            rules.track_minutes,
+            rules.artist_minutes,
+            rules.album_minutes,
+            rules.title_minutes,
+        ) == (0, 0, 0, 0)
 
     def test_from_playback_new_keys(self) -> None:
-        pb = PlaybackConfig(
-            no_repeat_minutes=120,
-            artist_repeat_minutes=30,
-            title_repeat_window=10,
-            title_repeat_minutes=240,
+        pb = PlaybackConfig.from_dict(
+            {
+                "repeat_rules": {
+                    "track": {"tracks": 500, "minutes": 120},
+                    "artist": {"tracks": 3, "minutes": 30},
+                    "album": {"tracks": 3},
+                    "title": {"tracks": 10, "minutes": 240},
+                }
+            }
         )
         rules = RepeatRules.from_playback(pb, track_window=7)
-        assert rules == RepeatRules(7, 120.0, 3, 30.0, 10, 240.0)
+        assert rules == RepeatRules(7, 120.0, 3, 30.0, 10, 240.0, album_window=3)
         assert rules.keep_tracks == 10
         assert rules.keep_seconds == 240 * 60
 
-    def test_an_older_settings_object_reads_defaults(self) -> None:
-        pb = SimpleNamespace(no_repeat_window=9, artist_repeat_window=2, no_repeat_minutes=True)
-        assert RepeatRules.from_playback(pb) == RepeatRules(9, 0.0, 2, 0.0, 2, 0.0)
+    @pytest.mark.parametrize("name", ["artist", "album", "title"])
+    def test_group_track_limits_stop_at_5000(self, name: str) -> None:
+        with pytest.raises(ValueError, match=f"{name} tracks"):
+            PlaybackConfig.from_dict({"repeat_rules": {name: {"tracks": 5001}}})
 
     def test_prune_keeps_what_a_count_or_minute_window_needs(self) -> None:
-        rules = RepeatRules(artist_window=2, title_window=1, artist_minutes=10)
+        rules = RepeatRules(artist_window=2, title_window=1, artist_minutes=10, album_window=0)
         history = deque(_record(i, started=i * 60.0) for i in range(30))
         prune_history(history, rules, now=30 * 60.0)
         # 10 minutes back from minute 30 keeps the starts after minute 20.
@@ -369,6 +382,15 @@ class TestRepeatRules:
 
 
 class TestBuildFilter:
+    def test_album_window_is_independent_from_artist_window(self) -> None:
+        history = [_record(1, "Old Artist", "Old Song", album="Old Album")]
+        rules = RepeatRules(artist_window=0, album_window=1, title_window=0)
+        repeat, _ = build_filter(history, rules, 0.0, ArtistSplitter())
+        assert repeat.artists == set()
+        assert repeat.albums == {"old album"}
+        assert repeat.reason(_entry(artist="Other Artist", album="Old Album")) == "same album"
+        assert repeat.reason(_entry(artist="Old Artist", album="New Album")) is None
+
     def test_count_windows(self) -> None:
         history = [
             _record(1, "Old Artist", "Old Song"),
@@ -412,7 +434,7 @@ class TestBuildFilter:
 
     def test_zero_turns_a_rule_off(self) -> None:
         history = [_record(1, "Some Artist", "Some Song", album="Some Album")]
-        rules = RepeatRules(artist_window=0, title_window=0)
+        rules = RepeatRules(artist_window=0, title_window=0, album_window=0)
         repeat, paths = build_filter(history, rules, 0.0, ArtistSplitter())
         assert not repeat
         assert repeat(_entry(artist="Some Artist", title="Some Song", album="Some Album"))
@@ -434,7 +456,9 @@ class TestBuildFilter:
 
     def test_reasons_and_summary(self) -> None:
         history = [_record(1, "Some Artist", "Jingle Bells", album="Xmas")]
-        repeat, _ = build_filter(history, RepeatRules(), 0.0, ArtistSplitter())
+        repeat, _ = build_filter(
+            history, RepeatRules(album_window=1, title_window=1), 0.0, ArtistSplitter()
+        )
         candidates = [
             _entry("a", artist="Some Artist"),
             _entry("b", artist="Other Act", album="XMAS"),
@@ -453,54 +477,15 @@ class TestBuildFilter:
 
 
 class TestPlaybackConfigRepeatKeys:
-    def test_defaults_keep_the_old_behaviour(self) -> None:
-        pb = PlaybackConfig()
-        assert pb.no_repeat_minutes == pb.artist_repeat_minutes == pb.title_repeat_minutes == 0
-        assert pb.title_repeat_window is None
-        assert pb.related_artists_file is None
-        assert pb.related_artists_starter is False
-
-    def test_old_config_keys_still_load(self) -> None:
-        pb = PlaybackConfig.from_dict({"no_repeat_window": 50, "artist_repeat_window": 4})
-        rules = RepeatRules.from_playback(pb)
-        assert (rules.track_window, rules.artist_window, rules.title_window) == (50, 4, 4)
-
-    def test_valid_new_keys(self) -> None:
-        pb = PlaybackConfig.from_dict(
-            {
-                "no_repeat_minutes": 90,
-                "artist_repeat_minutes": 30.5,
-                "title_repeat_window": 0,
-                "title_repeat_minutes": MAX_REPEAT_MINUTES,
-                "related_artists_file": "~/related.toml",
-                "related_artists_starter": True,
-            }
-        )
-        assert pb.no_repeat_minutes == 90.0
-        assert isinstance(pb.no_repeat_minutes, float)
-        assert pb.title_repeat_window == 0
-        assert pb.related_artists_file == str(Path("~/related.toml").expanduser())
-
-    def test_empty_file_means_none(self) -> None:
-        assert PlaybackConfig(related_artists_file="").related_artists_file is None
-
-    @pytest.mark.parametrize(
-        ("key", "value", "error"),
-        [
-            ("no_repeat_minutes", -1, ValueError),
-            ("artist_repeat_minutes", MAX_REPEAT_MINUTES + 1, ValueError),
-            ("title_repeat_minutes", "60", TypeError),
-            ("no_repeat_minutes", True, TypeError),
-            ("title_repeat_window", -1, ValueError),
-            ("title_repeat_window", 2.5, TypeError),
-            ("title_repeat_window", True, TypeError),
-            ("related_artists_file", 3, TypeError),
-            ("related_artists_starter", "yes", TypeError),
-        ],
-    )
-    def test_invalid_values_fail_loudly(self, key: str, value: object, error: type) -> None:
-        with pytest.raises(error, match=f"playback.{key}"):
-            PlaybackConfig.from_dict({key: value})
+    def test_new_keys_reject_invalid_values(self) -> None:
+        for repeat_rules in (
+            {"artist": {"tracks": -1}},
+            {"track": {"minutes": 10081}},
+            {"title": {"tracks": 2.5}},
+            {"album": {"minutes": float("inf")}},
+        ):
+            with pytest.raises(ValueError):
+                PlaybackConfig.from_dict({"repeat_rules": repeat_rules})
 
 
 # ---------------------------------------------------------------------------
@@ -591,7 +576,7 @@ class TestHistoryBounds:
         assert plays_to_load(RepeatRules(track_window=0, artist_window=0, title_window=7)) == 7
         assert plays_to_load(RepeatRules(track_window=10, title_minutes=60)) == HISTORY_LIMIT
         assert plays_to_load(RepeatRules(track_window=9000, title_minutes=60)) == 9000
-        assert plays_to_load(RepeatRules(0, 0, 0, 0, 0, 0)) == 0
+        assert plays_to_load(RepeatRules(0, 0, 0, 0, 0, 0, album_window=0)) == 0
 
     def test_a_start_in_the_future_never_counts_for_a_rule_without_minutes(self) -> None:
         # The wall clock was set back: the record is 100 s in the future.
@@ -640,26 +625,3 @@ class TestRecordsFromPlays:
             {"path": "d", "played_at": "2025-12-31T23:59:59+00:00"},
         ]
         assert [r.path for r in records_from_plays(rows, now)] == ["d"]
-
-
-class TestLoadRelatedArtistsOrWarn:
-    def test_a_good_file_has_no_problem(self, tmp_path: Path) -> None:
-        path = tmp_path / "related.toml"
-        path.write_bytes(b'[related]\n"A B" = ["C D"]\n')
-        related, problem = load_related_artists_or_warn(str(path))
-        assert problem is None
-        assert related.related_to("a b") == {"c d"}
-
-    @pytest.mark.parametrize(
-        "content", [b"[related\n", b"related = 3\n", b'[related]\n"A" = "B"\n', b"\xff\xfe", None]
-    )
-    def test_a_bad_file_falls_back(self, tmp_path: Path, content: bytes | None) -> None:
-        path = tmp_path / "related.toml"
-        if content is not None:
-            path.write_bytes(content)
-        related, problem = load_related_artists_or_warn(str(path), starter=True)
-        assert problem is not None
-        assert str(path) in problem
-        assert related.related_to("bruno mars") == {"silk sonic"}
-        related, _ = load_related_artists_or_warn(str(path))
-        assert related.links == {}

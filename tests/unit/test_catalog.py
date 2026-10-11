@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from autodj.catalog import LibraryCatalog
+from autodj.catalog import _SCHEMA, LibraryCatalog
 from autodj.indexer import FEATURE_DIM, IndexEntry
 
 
@@ -29,6 +29,22 @@ def test_seed_sources_migrates_once_and_keeps_explicit_empty(tmp_path: Path) -> 
         catalog.set_setting("sources_seeded", True)
         assert not catalog.seed_sources(music, liners)
         assert catalog.sources("music") == []
+
+
+def test_intro_lift_column_migrates_and_persists(tmp_path: Path) -> None:
+    db = tmp_path / "catalog.db"
+    with closing(sqlite3.connect(db)) as conn:
+        conn.executescript(_SCHEMA.replace("intro_lift_db REAL,", ""))
+    music = tmp_path / "music"
+    music.mkdir()
+    song = music / "song.wav"
+    song.write_bytes(b"source")
+    with LibraryCatalog(db) as catalog:
+        catalog.put_entry(entry(song))
+        assert catalog.record_for_path(song)["intro_lift_db"] is None
+        catalog.set_intro_lift(song, 3.25)
+    with LibraryCatalog(db) as catalog:
+        assert catalog.record_for_path(song)["intro_lift_db"] == 3.25
 
 
 def test_overlapping_sources_deduplicate_and_liners_are_excluded_from_music(tmp_path: Path) -> None:

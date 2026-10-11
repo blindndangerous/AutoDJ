@@ -62,7 +62,6 @@ from autodj.repeat_rules import (
     TrackKeyCache,
     artist_key,
     build_filter,
-    load_related_artists_or_warn,
     plays_to_load,
     prune_history,
     records_from_plays,
@@ -86,6 +85,7 @@ if TYPE_CHECKING:
     from autodj.transitions import BeatSync, TransitionFx
 
 logger = logging.getLogger(__name__)
+repeat_logger = logging.getLogger(f"{__name__}.repeat")
 
 # Default output sample rate; sounddevice converts if the device differs.
 _DEFAULT_SR = 44_100
@@ -310,7 +310,7 @@ def effective_no_repeat_window(configured: int, library_size: int) -> int:
         return configured
     effective = max(1, library_size - max(4, library_size // 10))
     logger.warning(
-        "playback.no_repeat_window=%d but library has only %d tracks; "
+        "playback.repeat_rules.track.tracks=%d but library has only %d tracks; "
         "using %d so the picker always has candidates.",
         configured,
         library_size,
@@ -323,7 +323,7 @@ def apply_repeat_windows(player: Any) -> None:
     """Give *player* the repeat rules its configuration now asks for.
 
     Used when the web UI or restored web state changes
-    ``playback.no_repeat_window`` or ``playback.artist_repeat_window`` on
+    ``playback.repeat_rules`` on
     a running player, and when the library size changes.  Cheap when
     nothing changed: :meth:`PlayerState.set_repeat_rules` keeps equal
     rules as they are.
@@ -341,7 +341,7 @@ def apply_repeat_windows(player: Any) -> None:
     player._state.set_repeat_rules(
         RepeatRules.from_playback(
             pb,
-            track_window=effective_no_repeat_window(int(pb.no_repeat_window), library_size),
+            track_window=effective_no_repeat_window(pb.repeat_rules.track.tracks, library_size),
             related=getattr(player, "_related_artists", None),
         )
     )
@@ -349,6 +349,14 @@ def apply_repeat_windows(player: Any) -> None:
 
 def _log_repeat_blocks(repeat: RepeatFilter, picked: IndexEntry) -> None:
     """Log which repeat rules held candidates back before *picked* was chosen."""
+    for path, reason in repeat.held_back.items():
+        repeat_logger.debug(
+            "Candidate excluded from pool by repeat rule (rules may be relaxed): "
+            "candidate=%s reason=%s selected=%s",
+            path,
+            reason,
+            picked.path,
+        )
     summary = repeat.summary()
     if summary:
         logger.info(
@@ -357,6 +365,32 @@ def _log_repeat_blocks(repeat: RepeatFilter, picked: IndexEntry) -> None:
             summary,
             picked.display_name,
         )
+
+
+def _join_recent(saved: list[str], recent: list[str]) -> list[str]:
+    """The track window's paths after putting *saved* plays ahead of *recent*.
+
+    Both are oldest first.  *recent* (the window in memory) always stays
+    whole at the end, so loading saved plays never shortens it.  Saved
+    plays it already holds, as a run inside it or as the run it starts
+    with, are not added twice.  Only positions whose first path matches
+    are compared, so a long window costs about one pass.
+    """
+    if not recent:
+        return list(saved)
+    if not saved:
+        return list(recent)
+    size = len(saved)
+    first = saved[0]
+    for index in range(len(recent) - size + 1):
+        if recent[index] == first and recent[index : index + size] == saved:
+            return list(recent)
+    start_path = recent[0]
+    for start, path in enumerate(saved):
+        # The earliest match is the longest overlap.
+        if path == start_path and saved[start:] == recent[: size - start]:
+            return [*saved[:start], *recent]
+    return [*saved, *recent]
 
 
 @dataclass
@@ -372,9 +406,9 @@ class PlayerState:
             bounded to *no_repeat_window* entries.
         no_repeat_window: Maximum number of tracks kept in *recently_played*.
         artist_repeat_window: Picks before an artist may repeat.
-        repeat_rules: Every repeat rule.  Left out, it is built from the
-            two windows, the title window following the artist one.  When
-            given, it sets the two windows.
+        repeat_rules: Every repeat rule. Left out, it uses the track and
+            artist windows, with album and title disabled. When given, it
+            sets the two windows.
         play_history: The track starts the artist, album and title rules
             and the minute windows look at, oldest first (see
             :class:`~autodj.repeat_rules.PlayRecord`).
@@ -409,8 +443,8 @@ class PlayerState:
     pre_queue_seed: IndexEntry | None = None
     is_paused: bool = False
     should_stop: bool = False
-    no_repeat_window: int = 500
-    artist_repeat_window: int = 3
+    no_repeat_window: int = 50
+    artist_repeat_window: int = 8
     repeat_rules: RepeatRules | None = None
     recently_played: deque = field(default_factory=deque)
     play_history: deque[PlayRecord] = field(default_factory=deque)
@@ -428,7 +462,8 @@ class PlayerState:
             self.repeat_rules = RepeatRules(
                 track_window=self.no_repeat_window,
                 artist_window=self.artist_repeat_window,
-                title_window=self.artist_repeat_window,
+                album_window=0,
+                title_window=0,
             )
         self.no_repeat_window = self.repeat_rules.track_window
         self.artist_repeat_window = self.repeat_rules.artist_window
@@ -460,30 +495,30 @@ class PlayerState:
             self.play_history = deque(self.play_history)
             prune_history(self.play_history, rules, self.clock())
 
-    def resize_repeat_windows(self, no_repeat_window: int, artist_repeat_window: int) -> None:
-        """Change the track and artist windows; the title window follows the artist one."""
-        self.set_repeat_rules(
-            replace(
-                self.rules,
-                track_window=no_repeat_window,
-                artist_window=artist_repeat_window,
-                title_window=artist_repeat_window,
-            )
-        )
-
     def restore_history(self, records: list[PlayRecord]) -> None:
         """Put plays from before a restart (oldest first) ahead of the history.
 
         Fills the track window's paths and the artist, album and title
         history, so the rules hold after a restart as they did before.
-        Takes ``history_lock``.
+        Run again after a settings save, it never shortens the track
+        window: the paths in memory stay, and saved plays only go ahead of
+        them (see :func:`_join_recent`).  Takes ``history_lock``.
         """
         with self.history_lock:
             maxlen = self.recently_played.maxlen
-            self.recently_played = deque(
-                [*(record.path for record in records), *self.recently_played], maxlen=maxlen
-            )
+            if self.play_history:
+                first = self.play_history[0]
+                records = [record for record in records if record.started < first.started]
+                # The catalog and playback loop use separate timestamps for one start.
+                if (
+                    records
+                    and records[-1].path == first.path
+                    and first.started - records[-1].started < 5.0
+                ):
+                    records.pop()
+            paths = _join_recent([record.path for record in records], list(self.recently_played))
             self.play_history = deque([*records, *self.play_history])
+            self.recently_played = deque(paths, maxlen=maxlen)
             prune_history(self.play_history, self.rules, self.clock())
 
     def record_played(self, entry: IndexEntry) -> None:
@@ -797,23 +832,25 @@ class Player:
         # picker still has variety.
         library_size = len(getattr(sim_index, "entries", []) or [])
         effective = effective_no_repeat_window(
-            int(cfg.playback.no_repeat_window),
+            cfg.playback.repeat_rules.track.tracks,
             library_size,
         )
-        # Read once: a changed related artists file applies after a restart.
-        # A bad file is reported and skipped; it never stops the player.
-        related_file = getattr(cfg.playback, "related_artists_file", None)
-        starter = getattr(cfg.playback, "related_artists_starter", False) is True
-        self._related_artists: RelatedArtists
-        self._related_artists, self.related_artists_problem = load_related_artists_or_warn(
-            related_file if isinstance(related_file, str) else None, starter=starter
+        from autodj.related_artist_file import (
+            load_configured_related_artists,
+            unused_related_artists_message,
         )
-        if self.related_artists_problem:
-            logger.warning(
-                "%s. Picking goes on with %s.",
-                self.related_artists_problem,
-                "the starter list only" if starter else "no related artists",
+
+        try:
+            self._related_artists = (
+                load_configured_related_artists(cfg.index.active_dir)
+                if cfg.playback.repeat_rules.use_related_artists
+                else RelatedArtists()
             )
+            self.related_artists_problem = None
+        except (OSError, ValueError) as exc:
+            self._related_artists = RelatedArtists()
+            self.related_artists_problem = unused_related_artists_message(exc)
+            logger.warning("Related artists file was not used: %s", exc)
         # (library entries, their keys), rebuilt when the library changes;
         # see _track_keys.  Its own lock: the build can take a while on a
         # large library, and _pick_lock must never make a track start wait.
@@ -1964,13 +2001,17 @@ class Player:
                 if cached is not None and cached[1].splitter.known == known:
                     cached = (entries, cached[1])
                 else:
-                    related = getattr(self, "_related_artists", None) or RelatedArtists()
+                    related = (
+                        getattr(self, "_related_artists", None) or RelatedArtists()
+                        if self._cfg.playback.repeat_rules.use_related_artists
+                        else RelatedArtists()
+                    )
                     splitter = ArtistSplitter(known, related.single_acts)
                     cached = (entries, TrackKeyCache(splitter))
                 self._key_cache = cached
             return cached[1]
 
-    def restore_repeat_history(self, catalog: Any) -> int:
+    def restore_repeat_history(self, catalog: Any, *, refresh: bool = False) -> int:
         """Load the plays from before a restart into the repeat rules.
 
         Reads only as many saved plays as the windows can look at (see
@@ -1983,13 +2024,18 @@ class Player:
         Returns:
             How many plays were loaded.
         """
-        if getattr(self, "_repeat_history_restored", False):
+        if getattr(self, "_repeat_history_restored", False) and not refresh:
             return 0
         self._repeat_history_restored = True
         limit = plays_to_load(self._state.rules)
         if limit <= 0:
             return 0
-        records = records_from_plays(catalog.recent_plays(limit), time.time())
+        rows = catalog.recent_plays(limit)
+        library = getattr(self, "_library", None)
+        if library is not None:
+            # Plays the library has not written to SQLite yet count too.
+            rows.extend(library.pending_history())
+        records = records_from_plays(rows, time.time())
         if records:
             self._state.restore_history(records)
             logger.info("Repeat rules: %d plays from before the restart count", len(records))
@@ -2007,7 +2053,8 @@ class Player:
 
         from autodj.similarity import SimilarityError
 
-        excluded = set(context.recent)
+        protected = context.protected | {current.path}
+        excluded = set(context.recent) | protected
 
         def eligible(entry: IndexEntry) -> bool:
             if entry.is_silent:
@@ -2019,27 +2066,41 @@ class Player:
 
         entries = self.playable_entries()
         repeat = context.repeat
-        pool = [e for e in entries if e.path not in excluded and eligible(e) and repeat(e)]
-        protected = context.protected | {current.path}
-        if not pool:
+        history = (
+            self._library.last_played()
+            if self._cfg.playback.pick_mode == "least_recent" and self._library is not None
+            else None
+        )
+
+        def choose(blocked: set[str] | frozenset[str], use_rules: bool = True) -> IndexEntry | None:
+            def allowed(entry: IndexEntry) -> bool:
+                return (
+                    entry.path not in blocked
+                    and eligible(entry)
+                    and (not use_rules or repeat(entry))
+                )
+
+            if history is not None and entries:
+                from autodj.clockwheel import least_recent
+
+                return least_recent(entries, history, allowed=allowed)
+            pool = [entry for entry in entries if allowed(entry)]
+            return _rnd.choice(pool) if pool else None  # nosec B311 -- non-security
+
+        chosen = choose(excluded)
+        if chosen is None:
             logger.warning(
                 "Pure shuffle exhausted eligible non-recent tracks; relaxing recent-track exclusion"
             )
-            pool = [e for e in entries if e.path not in protected and eligible(e) and repeat(e)]
-        if not pool and repeat:
+            chosen = choose(protected)
+        if chosen is None and repeat:
             logger.warning(
                 "Pure shuffle found no track the artist, album and title repeat rules allow; "
                 "relaxing them"
             )
-            pool = [e for e in entries if e.path not in protected and eligible(e)]
-        if not pool:
+            chosen = choose(protected, use_rules=False)
+        if chosen is None:
             raise SimilarityError("No candidates satisfy hard filters for pure shuffle.")
-        if self._cfg.playback.pick_mode == "least_recent" and self._library is not None:
-            from autodj.clockwheel import least_recent
-
-            chosen = least_recent(pool, self._library.last_played())
-        else:
-            chosen = _rnd.choice(pool)  # nosec B311 -- non-security
         _log_repeat_blocks(repeat, chosen)
         return chosen
 
@@ -2056,7 +2117,9 @@ class Player:
         ):
             return None
         try:
-            entry = self._sim.find_distant(current.path, context.recent, allowed=context.repeat)
+            protected = context.protected | {current.path}
+            recent = deque([*context.recent, *sorted(protected - set(context.recent))])
+            entry = self._sim.find_distant(current.path, recent, allowed=context.repeat)
             _log_repeat_blocks(context.repeat, entry)
             _CONSOLE.print("  [bold cyan]◈ Discovery track[/bold cyan]")
             return entry
@@ -2165,7 +2228,9 @@ class Player:
 
         # --- Normal similarity search ---
         try:
-            picked = self._sim.find_next_for_path(recently_played=context.recent, **search)
+            protected = context.protected | {current.path}
+            recent = deque([*context.recent, *sorted(protected - set(context.recent))])
+            picked = self._sim.find_next_for_path(recently_played=recent, **search)
             _log_repeat_blocks(context.repeat, picked)
             return picked, mode
         except SimilarityError:
@@ -2281,7 +2346,7 @@ class Player:
         """Use prepared sources with a master processor, keeping source positions."""
         if self._cfg.playback.loudness_processing not in {"smooth", "stereotool"}:
             audio = load_stereo(entry.path, SAMPLE_RATE, self._max_render_seconds())
-            return self._apply_replaygain(audio, entry.path)
+            return self._lift_intro(self._apply_replaygain(audio, entry.path), entry)
         from autodj.processing import (
             PREPARED_LINER_GAIN,
             prepare_source,
@@ -2312,7 +2377,24 @@ class Player:
         if record and record["kind"] == "liner":
             # Keep existing prepared liner caches while reducing their former +4.5 dB lift to +3 dB.
             return (audio * PREPARED_LINER_GAIN).astype(np.float32)
-        return audio
+        return self._lift_intro(audio, entry)
+
+    def _lift_intro(self, audio: np.ndarray, entry: IndexEntry) -> np.ndarray:
+        mode = self._cfg.playback.loudness_processing or (
+            "replaygain" if self._cfg.replaygain.enabled else "off"
+        )
+        if mode == "off":
+            return audio
+        max_db = self._cfg.playback.intro_lift_max_db
+        if max_db <= 0:
+            return audio
+        record = self._library.catalog.record_for_path(entry.path) if self._library else None
+        if record is not None and record["kind"] == "liner":
+            return audio
+        from autodj.intro_lift import apply_intro_lift
+
+        lift = record.get("intro_lift_db") if record else None
+        return apply_intro_lift(audio, SAMPLE_RATE, min(max_db, lift or 0.0))
 
     def _prepare_in_background(self, entry: IndexEntry, kind: str, quiet_boost_db: float) -> None:
         """Refresh one prepared source on a worker thread, once per path at a time."""

@@ -12,8 +12,10 @@ import pytest
 from autodj._bridge import PlayerBridge
 from autodj.config import NowPlayingConfig
 from autodj.player import PlayerState
+from autodj.repeat_settings import RepeatRule, RepeatSettings
 from autodj.runtime_state import (
     STATE_VERSION,
+    SavedStateError,
     load_into_bridge,
     save_from_player,
     state_file_for,
@@ -29,6 +31,9 @@ def _make_player() -> SimpleNamespace:
         pick_mode="similarity",
         loudness_processing=None,
         quiet_boost_db=9.0,
+        intro_lift_max_db=4.0,
+        stereotool_input_trim_db=0.0,
+        stereotool_preset="included",
         post_queue_seed="last_queued",
         key_notation="camelot",
         key_prefer_flats=False,
@@ -47,13 +52,13 @@ def _make_player() -> SimpleNamespace:
         liners_pick_mode="random",
         liners_duck_db=-12.0,
         liners_talk_up=False,
-        no_repeat_window=20,
-        artist_repeat_window=3,
+        repeat_rules=RepeatSettings(track=RepeatRule(tracks=20)),
         crossfade_bass_cutoff_hz=180.0,
         pick_top_k=1,
         pick_temperature=0.3,
     )
     cfg = SimpleNamespace(
+        index=SimpleNamespace(active_dir=None),
         transitions=SimpleNamespace(effect="none", wet_mix=1.0),
         djmix=SimpleNamespace(
             harmonic_mode="off",
@@ -141,8 +146,6 @@ def _warnings(caplog: pytest.LogCaptureFixture, field: str) -> int:
         ({"playback": {"stream_bitrate": 100}}, "stream_bitrate"),
         ({"playback": {"stream_bitrate": "320"}}, "stream_bitrate"),
         ({"playback": {"stream_bitrate": True}}, "stream_bitrate"),
-        ({"playback": {"no_repeat_window": -1}}, "no_repeat_window"),
-        ({"playback": {"artist_repeat_window": 2.5}}, "artist_repeat_window"),
         ({"playback": {"transition_wet_mix": 2.0}}, "transition_wet_mix"),
         ({"playback": {"replaygain_target_db": "loud"}}, "replaygain_target_db"),
         ({"playback": {"volume": True}}, "volume"),
@@ -567,8 +570,8 @@ class TestRoundTrip:
         p1._cfg.transitions.wet_mix = 0.6
         p1._cfg.replaygain.target_db = -18.0
         p1._cfg.playback.quiet_boost_db = 6.5
-        p1._cfg.playback.no_repeat_window = 50
-        p1._cfg.playback.artist_repeat_window = 5
+        p1._cfg.playback.repeat_rules.track.tracks = 50
+        p1._cfg.playback.repeat_rules.artist.tracks = 5
         p1._cfg.playback.crossfade_seconds = 6.0
         p1._cfg.playback.fade_in_seconds = 1.5
         p1._cfg.playback.crossfade_eq_duck = True
@@ -675,15 +678,19 @@ class TestRoundTrip:
             "pick_top_k",
             "pick_temperature",
             "replaygain_max_clip_safe_gain",
-            "no_repeat_window",
-            "artist_repeat_window",
+            "repeat_rules",
             "transition_wet_mix",
             "replaygain_target_db",
             "quiet_boost_db",
+            "intro_lift_max_db",
+            "stereotool_input_trim_db",
+            "stereotool_preset",
             "volume",
             "is_muted",
             # Bridge-visible derived session values are never persisted.
             "library_size",
+            "related_artists_default_file",
+            "related_artists_problem",
         }
         # Config-only absolute path is neither browser-visible nor persisted.
         assert "liners_folder" not in saved["playback"]
@@ -693,6 +700,7 @@ class TestRoundTrip:
         assert stored["schema_version"] == STATE_VERSION
         assert "available_presets" not in stored
         assert "library_size" not in stored["playback"]
+        assert "related_artists_problem" not in stored["playback"]
         assert "liners_folder" not in stored["playback"]
         # The gapless switches are web settings now, saved like the rest.
         assert stored["playback"]["prefetch_next_track"] is False
@@ -708,6 +716,7 @@ class TestRoundTrip:
             if key
             not in {
                 "library_size",
+                "related_artists_default_file",
                 "liners_folder",
             }
         }
@@ -753,3 +762,45 @@ class TestRoundTrip:
         }
         assert "invalid eq.low" in caplog.text
         assert "invalid eq.mid" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "no_repeat_window",
+        "no_repeat_minutes",
+        "artist_repeat_window",
+        "artist_repeat_minutes",
+        "title_repeat_window",
+        "title_repeat_minutes",
+        "related_artists_file",
+        "related_artists_starter",
+    ],
+)
+def test_removed_repeat_state_key_is_rejected(tmp_path, key):
+    _write_state(tmp_path, {"playback": {key: 1}})
+    with pytest.raises(SavedStateError, match=r"web_state\.json") as error:
+        _load(_make_player(), tmp_path)
+    assert key in str(error.value)
+    assert "Settings > Picking > Repeats" in str(error.value)
+
+
+def test_repeat_state_rejects_nested_file_path(tmp_path):
+    _write_state(tmp_path, {"playback": {"repeat_rules": {"related_artists_file": "secret"}}})
+    with pytest.raises(SavedStateError, match=r"repeat_rules\.related_artists_file"):
+        _load(_make_player(), tmp_path)
+
+
+def test_missing_related_file_does_not_discard_restored_repeat_rules(tmp_path, caplog):
+    rules = RepeatSettings(
+        artist=RepeatRule(tracks=12, minutes=80),
+        use_related_artists=True,
+    )
+    _write_state(tmp_path, {"playback": {"repeat_rules": rules.model_dump()}})
+    player = _make_player()
+    player._cfg.index.active_dir = tmp_path
+    (tmp_path / "related-artists.toml").write_text("[related\n", encoding="utf-8")
+    _load(player, tmp_path)
+    assert player._cfg.playback.repeat_rules == rules
+    assert player._state.rules.artist_window == 12
+    assert "Related artists file was not used" in caplog.text

@@ -25,6 +25,7 @@ from urllib.parse import urlencode
 import pytest
 
 from autodj.config import ServerConfig, TimeChecksConfig
+from autodj.repeat_settings import RepeatRule, RepeatSettings
 from autodj.server import PlaybackSettingsBody, PlayerBridge, create_app
 
 from ._helpers import NO_INDEX_DIR, _make_entry, _make_player_mock, _make_sim_mock
@@ -37,6 +38,13 @@ def _tls_files(tmp_path: Path) -> dict[str, str]:
     cert.write_text("cert", encoding="utf-8")
     key.write_text("key", encoding="utf-8")
     return {"ssl_certfile": str(cert), "ssl_keyfile": str(key)}
+
+
+def _set_repeat_settings(cfg_mock, active_dir: Path) -> None:
+    cfg_mock.playback.repeat_rules = RepeatSettings(
+        track=RepeatRule(tracks=50), artist=RepeatRule(tracks=3)
+    )
+    cfg_mock.index.active_dir = active_dir
 
 
 def _register_index_entry(bridge, entry) -> None:
@@ -505,6 +513,8 @@ class TestLiners:
             {"bogus_field": 1},
             {"liners_enabled": True, "liners_duck_db": 60.0},
             {"liners_enabled": True, "liners_duck_db": -31.0},
+            {"no_repeat_window": 2},
+            {"artist_repeat_window": 1},
         ],
     )
     def test_playback_settings_reject_liner_root_and_unknown_fields(
@@ -644,6 +654,121 @@ class TestLiners:
 
 
 # ---------------------------------------------------------------------------
+# Repeat settings endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestRepeatSettings:
+    @staticmethod
+    def _payload() -> dict:
+        return {
+            "repeat_rules": {
+                "track": {"tracks": 7, "minutes": 10},
+                "artist": {"tracks": 4, "minutes": 20},
+                "album": {"tracks": 2, "minutes": 30},
+                "title": {"tracks": 5, "minutes": 40},
+                "use_related_artists": True,
+            }
+        }
+
+    @staticmethod
+    def _client(bridge, tmp_path):
+        from fastapi.testclient import TestClient
+
+        active_dir = tmp_path / "index"
+        active_dir.mkdir()
+        bridge.player._cfg.index.active_dir = active_dir
+        bridge.save_persistent_state = MagicMock()
+        return TestClient(create_app(bridge))
+
+    def test_nested_repeat_settings_round_trip_and_file_reload(self, bridge, tmp_path) -> None:
+        client = self._client(bridge, tmp_path)
+        path = bridge.player._cfg.index.active_dir / "related-artists.toml"
+        path.write_text('[related]\n"Alpha" = ["Beta"]\n', encoding="utf-8")
+        payload = self._payload()
+
+        response = client.post("/api/playback-settings", json=payload)
+
+        assert response.status_code == 200
+        assert response.json()["playback"]["repeat_rules"] == payload["repeat_rules"]
+        assert bridge.player._state.rules.related.related_to("alpha") == {"beta"}
+
+        path.write_text('[related]\n"Alpha" = ["Gamma"]\n', encoding="utf-8")
+        response = client.post("/api/playback-settings", json=payload)
+
+        assert response.status_code == 200
+        assert bridge.player._state.rules.related.related_to("alpha") == {"gamma"}
+        assert bridge.save_persistent_state.call_count == 2
+
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            {"track": {"tracks": -1}},
+            {"artist": {"minutes": 10081}},
+        ],
+    )
+    def test_nested_repeat_ranges_are_rejected(self, bridge, tmp_path, rule) -> None:
+        client = self._client(bridge, tmp_path)
+        before = bridge.player._cfg.playback.repeat_rules.model_dump()
+
+        response = client.post("/api/playback-settings", json={"repeat_rules": rule})
+
+        assert response.status_code == 422
+        assert bridge.player._cfg.playback.repeat_rules.model_dump() == before
+        bridge.save_persistent_state.assert_not_called()
+
+    def test_invalid_related_file_keeps_live_repeat_settings(self, bridge, tmp_path) -> None:
+        client = self._client(bridge, tmp_path)
+        path = bridge.player._cfg.index.active_dir / "related-artists.toml"
+        path.write_text('[related]\n"Alpha" = ["Beta"]\n', encoding="utf-8")
+        payload = self._payload()
+        assert client.post("/api/playback-settings", json=payload).status_code == 200
+        rules = bridge.player._cfg.playback.repeat_rules
+        state_rules = bridge.player._state.rules
+        bridge.save_persistent_state.reset_mock()
+        path.write_text("[related\n", encoding="utf-8")
+
+        response = client.post("/api/playback-settings", json=payload)
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "The related artists file is not valid: line 1."
+        assert bridge.player._cfg.playback.repeat_rules is rules
+        assert bridge.player._state.rules is state_rules
+        assert bridge.player._state.rules.related.related_to("alpha") == {"beta"}
+        bridge.save_persistent_state.assert_not_called()
+        assert bridge.get_settings()["playback"]["related_artists_problem"].startswith(
+            "The related artists file is not valid"
+        )
+
+    def test_api_rejects_related_file_path(self, bridge, tmp_path) -> None:
+        client = self._client(bridge, tmp_path)
+        payload = self._payload()
+        payload["repeat_rules"]["related_artists_file"] = str(tmp_path / "secret.toml")
+        response = client.post("/api/playback-settings", json=payload)
+        assert response.status_code == 422
+        bridge.save_persistent_state.assert_not_called()
+
+    def test_broken_file_does_not_block_save_when_disabled(self, bridge, tmp_path) -> None:
+        client = self._client(bridge, tmp_path)
+        path = bridge.player._cfg.index.active_dir / "related-artists.toml"
+        path.write_text("[related\n", encoding="utf-8")
+        payload = self._payload()
+        payload["repeat_rules"]["use_related_artists"] = False
+        response = client.post("/api/playback-settings", json=payload)
+        assert response.status_code == 200
+        assert response.json()["playback"]["repeat_rules"]["use_related_artists"] is False
+
+    def test_invalid_file_error_does_not_echo_file_keys(self, bridge, tmp_path) -> None:
+        client = self._client(bridge, tmp_path)
+        path = bridge.player._cfg.index.active_dir / "related-artists.toml"
+        path.write_text('secret_api_token = "private"\n', encoding="utf-8")
+        response = client.post("/api/playback-settings", json=self._payload())
+        assert response.status_code == 400
+        assert response.json()["detail"] == "The related artists file is not valid."
+        assert "secret_api_token" not in response.text
+
+
+# ---------------------------------------------------------------------------
 # Profile bundle endpoints
 # ---------------------------------------------------------------------------
 
@@ -660,7 +785,7 @@ class TestProfiles:
         from fastapi.testclient import TestClient
 
         # Re-anchor profile root to tmp_path so the test is hermetic.
-        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        bridge.player._cfg.index.active_dir = tmp_path / "idx"
         (tmp_path / "idx").mkdir()
 
         tc = TestClient(create_app(bridge))
@@ -675,7 +800,7 @@ class TestProfiles:
     def test_profile_invalid_name_rejected(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        bridge.player._cfg.index.active_dir = tmp_path / "idx"
         (tmp_path / "idx").mkdir()
         tc = TestClient(create_app(bridge))
         resp = tc.post("/api/profiles", json={"name": "../escape"})
@@ -684,7 +809,7 @@ class TestProfiles:
     def test_profile_delete(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        bridge.player._cfg.index.active_dir = tmp_path / "idx"
         (tmp_path / "idx").mkdir()
         tc = TestClient(create_app(bridge))
         tc.post("/api/profiles", json={"name": "Tmp"})
@@ -696,7 +821,7 @@ class TestProfiles:
     def test_profile_apply_pushes_settings(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        bridge.player._cfg.index.active_dir = tmp_path / "idx"
         (tmp_path / "idx").mkdir()
         tc = TestClient(create_app(bridge))
         tc.post(
@@ -725,7 +850,7 @@ class TestProfiles:
 
         idx = tmp_path / "idx"
         idx.mkdir()
-        bridge.player._cfg.index.active_dir = str(idx)
+        bridge.player._cfg.index.active_dir = idx
         tc = TestClient(create_app(bridge))
         tc.post("/api/profiles", json={"name": "Loud", "crossfade_seconds": 7.5})
 
@@ -758,7 +883,7 @@ class TestProfiles:
     def test_profile_save_rejects_bad_choice(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        bridge.player._cfg.index.active_dir = tmp_path / "idx"
         (tmp_path / "idx").mkdir()
         tc = TestClient(create_app(bridge))
 
@@ -770,7 +895,7 @@ class TestProfiles:
     def test_profile_save_rejects_unknown_keys(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        bridge.player._cfg.index.active_dir = tmp_path / "idx"
         (tmp_path / "idx").mkdir()
         tc = TestClient(create_app(bridge))
 
@@ -783,7 +908,7 @@ class TestProfiles:
     def test_stored_profile_with_unknown_key_is_400(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        bridge.player._cfg.index.active_dir = tmp_path / "idx"
         (tmp_path / "idx").mkdir()
         (tmp_path / "profiles").mkdir()
         (tmp_path / "profiles" / "Old.json").write_text(
@@ -806,7 +931,7 @@ class TestProfiles:
 
         from autodj.profiles import ProfileSnapshot, ProfileStore
 
-        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        bridge.player._cfg.index.active_dir = tmp_path / "idx"
         (tmp_path / "idx").mkdir()
         ProfileStore(tmp_path / "profiles").save(
             ProfileSnapshot(name="Broken", crossfade_seconds=9.0, transition_mode="bogus")
@@ -825,7 +950,7 @@ class TestProfiles:
     def test_profile_delete_bad_name_400(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        bridge.player._cfg.index.active_dir = tmp_path / "idx"
         (tmp_path / "idx").mkdir()
         tc = TestClient(create_app(bridge))
         resp = tc.delete("/api/profiles/..%2Fescape")
@@ -834,7 +959,7 @@ class TestProfiles:
     def test_profile_delete_missing_404(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        bridge.player._cfg.index.active_dir = tmp_path / "idx"
         (tmp_path / "idx").mkdir()
         tc = TestClient(create_app(bridge))
         resp = tc.delete("/api/profiles/Nope")
@@ -843,7 +968,7 @@ class TestProfiles:
     def test_profile_apply_bad_name_400(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        bridge.player._cfg.index.active_dir = tmp_path / "idx"
         (tmp_path / "idx").mkdir()
         tc = TestClient(create_app(bridge))
         resp = tc.post("/api/profiles/..%2Fescape/apply")
@@ -861,7 +986,7 @@ class TestProfiles:
             offloaded.append(getattr(function, "__name__", repr(function)))
             return await real_to_thread(function, *args, **kwargs)
 
-        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        bridge.player._cfg.index.active_dir = tmp_path / "idx"
         (tmp_path / "idx").mkdir()
         folder = tmp_path / "liners"
         folder.mkdir()
@@ -893,7 +1018,7 @@ class TestProfiles:
     def test_profile_apply_missing_404(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        bridge.player._cfg.index.active_dir = tmp_path / "idx"
         (tmp_path / "idx").mkdir()
         tc = TestClient(create_app(bridge))
         resp = tc.post("/api/profiles/Nope/apply")
@@ -1579,7 +1704,7 @@ class TestServeFunction:
             manager.return_value.entries_snapshot.return_value = ()
             yield
 
-    def test_serve_starts_uvicorn(self, caplog) -> None:
+    def test_serve_starts_uvicorn(self, caplog, tmp_path) -> None:
         """serve() should call uvicorn.run with the FastAPI app."""
         import logging
         from unittest.mock import MagicMock, patch
@@ -1590,8 +1715,7 @@ class TestServeFunction:
 
         # Build a proper cfg mock
         cfg_mock = MagicMock()
-        cfg_mock.playback.no_repeat_window = 50
-        cfg_mock.playback.artist_repeat_window = 3
+        _set_repeat_settings(cfg_mock, tmp_path)
         cfg_mock.playback.crossfade_seconds = 3.0
         cfg_mock.time_checks = TimeChecksConfig()
         cfg_mock.server = ServerConfig()
@@ -1617,7 +1741,7 @@ class TestServeFunction:
         )
         assert client.get("/api/version").status_code == 200
 
-    def test_serve_starts_player_thread(self) -> None:
+    def test_serve_starts_player_thread(self, tmp_path) -> None:
         """serve() launches a daemon Player thread before starting uvicorn."""
         import threading
         from unittest.mock import MagicMock, patch
@@ -1625,8 +1749,7 @@ class TestServeFunction:
         from autodj.server import serve
 
         cfg_mock = MagicMock()
-        cfg_mock.playback.no_repeat_window = 50
-        cfg_mock.playback.artist_repeat_window = 3
+        _set_repeat_settings(cfg_mock, tmp_path)
         cfg_mock.playback.crossfade_seconds = 3.0
         cfg_mock.time_checks = TimeChecksConfig()
         cfg_mock.server = ServerConfig()
@@ -1653,8 +1776,7 @@ class TestServeFunction:
         from autodj.server import serve
 
         cfg_mock = MagicMock()
-        cfg_mock.playback.no_repeat_window = 50
-        cfg_mock.playback.artist_repeat_window = 3
+        _set_repeat_settings(cfg_mock, tmp_path)
         cfg_mock.playback.crossfade_seconds = 3.0
         cfg_mock.time_checks = TimeChecksConfig()
         cfg_mock.server = ServerConfig()
@@ -1756,7 +1878,7 @@ class TestServeFunction:
         with patch("importlib.util.find_spec", side_effect=ValueError("mocked")):
             assert _missing_audio_modules() == []
 
-    def test_serve_uses_server_config_host_and_port_by_default(self) -> None:
+    def test_serve_uses_server_config_host_and_port_by_default(self, tmp_path) -> None:
         from unittest.mock import MagicMock, patch
 
         from autodj.server import serve
@@ -1764,8 +1886,7 @@ class TestServeFunction:
         cfg = MagicMock()
         cfg.time_checks = TimeChecksConfig()
         cfg.server = ServerConfig(host="127.0.0.2", port=9090)
-        cfg.playback.no_repeat_window = 50
-        cfg.playback.artist_repeat_window = 3
+        _set_repeat_settings(cfg, tmp_path)
         cfg.playback.crossfade_seconds = 3.0
         sim = _make_sim_mock()
 
@@ -1840,7 +1961,7 @@ class TestServeFunction:
         player_class.assert_not_called()
         mock_uvicorn.assert_not_called()
 
-    def test_serve_allows_specific_authenticated_lan_without_policy_lists(self) -> None:
+    def test_serve_allows_specific_authenticated_lan_without_policy_lists(self, tmp_path) -> None:
         from unittest.mock import MagicMock, patch
 
         from autodj.server import serve
@@ -1849,8 +1970,7 @@ class TestServeFunction:
         cfg.index.index_dir = NO_INDEX_DIR
         cfg.time_checks = TimeChecksConfig()
         cfg.server = ServerConfig(host="192.168.1.10", access_token="s" * 32)
-        cfg.playback.no_repeat_window = 50
-        cfg.playback.artist_repeat_window = 3
+        _set_repeat_settings(cfg, tmp_path)
         cfg.playback.crossfade_seconds = 3.0
 
         with (
@@ -1898,8 +2018,7 @@ class TestServeFunction:
             allowed_origins=[origin],
             **tls_files,
         )
-        cfg.playback.no_repeat_window = 50
-        cfg.playback.artist_repeat_window = 3
+        _set_repeat_settings(cfg, tmp_path)
         cfg.playback.crossfade_seconds = 3.0
 
         with (
@@ -1948,8 +2067,7 @@ class TestServeFunction:
         cfg.index.index_dir = tmp_path
         cfg.time_checks = TimeChecksConfig()
         cfg.server = ServerConfig(access_token="s" * 32)
-        cfg.playback.no_repeat_window = 50
-        cfg.playback.artist_repeat_window = 3
+        _set_repeat_settings(cfg, tmp_path)
         cfg.playback.crossfade_seconds = 3.0
 
         def start() -> tuple[str, object]:
