@@ -454,6 +454,7 @@ function applyState(s) {
   _stateApplicationGeneration += 1;
   _lastState = s;
   bumpLinerTrackCount(s);
+  timeCheckControls?.noteTrack(s);
   noteTrackForHistory(s);
 
   // Stream mode never starts the deck engine, whatever browser_playback
@@ -2304,6 +2305,9 @@ clockwheelPanelControls = installClockwheelPanel();
 schedulerPanelControls = installSchedulerPanel();
 
 import { installLiners, bumpLinerTrackCount } from "./modules/liners.js";
+import { installTimeChecks } from "./modules/time-checks.js";
+
+let timeCheckControls = null;
 
 const _linerEls = {
   lnEnabled:       document.getElementById("ln-enabled"),
@@ -2347,62 +2351,64 @@ function startAuthenticatedApp(initialState) {
   installLibraryJobs(_libEls);
   // Audio dependencies are owned by the audio engine. Inject closures
   // that read its live bindings and stop liner playback after auth expiry.
-  installLiners(_linerEls, {
-    postSettings,
-    // Scheduled liners join music that is playing: none fires while
-    // paused, or after a hard stop (the session ended) until the listener
-    // has pressed Play again.  Nor during a crossfade: "every N songs"
-    // counts the new track the moment the fade starts, and a liner then
-    // talked over the transition.  It waits for the fade to finish.
-    canPlay: () => authenticatedActivityActive && !!_ctx && !!_lastBrowserPlayback
-      && playbackEnabled && !_lastState?.is_paused && !crossfading,
-    // Whenever the server mixes the audio (stream mode or --server-audio),
-    // Test asks the server to play the liner into that mix; only browser
-    // playback plays it on this page.
-    testOnServer: () => _lastStreamMode || _lastState?.browser_playback === false,
-    // Test in browser playback is a preview: it plays at the page volume
-    // whether or not music is playing, and only Mute keeps it silent.
-    // Runs inside the click, so the audio graph can start here.
-    prepareTest: () => {
-      if (!authenticatedInteractionEnabled() || !_lastBrowserPlayback) {
-        return LINER_OFFLINE_TEXT;
-      }
-      if (_lastState?.is_muted) return LINER_MUTED_TEXT;
-      const audioContext = ensureAudioGraph();
-      if (!audioContext) return LINER_NO_AUDIO_TEXT;
-      if (audioContext.state === "suspended") {
-        void audioContext.resume().catch(() => {});
-      }
-      return null;
-    },
-    playLiner: async (
-      arrayBuf, duckDb, epoch = captureAuthenticatedRequestEpoch(),
-    ) => {
-      if (!authenticatedInteractionEnabled() || !_ctx
-          || !isAuthenticatedRequestCurrent(epoch)) return false;
-      const audioContext = _ctx;
-      const audioBuf = await audioContext.decodeAudioData(arrayBuf);
-      if (!authenticatedInteractionEnabled() || _ctx !== audioContext
-          || !isAuthenticatedRequestCurrent(epoch)) return false;
-      const src = audioContext.createBufferSource();
-      src.buffer = audioBuf;
-      // The liner goes through the master gain like the music it ducks,
-      // so it follows the page volume and Mute, but not Pause.
-      src.connect(_master);
-      const duckLin = Math.pow(10, duckDb / 20);
-      const dur = audioBuf.duration;
-      const t0 = audioContext.currentTime;
-      // Only music that is playing is ducked.  The duck has a gain of its
-      // own after both decks, so a crossfade running under the liner (a
-      // Test press, or a fade that starts mid-liner) keeps its ramps and
-      // both of its decks are ducked.
-      if (playbackEnabled && !_lastState?.is_paused) duckMusic(duckLin, dur);
-      activeLinerSources.add(src);
-      src.addEventListener("ended", () => activeLinerSources.delete(src), { once: true });
-      src.start(t0);
-      return true;
-    },
-  });
+  // Whenever the server mixes the audio (stream mode or --server-audio),
+  // Test asks the server to play the liner or time check into that mix;
+  // only browser playback plays it on this page.
+  const testOnServer = () => _lastStreamMode || _lastState?.browser_playback === false;
+  // Scheduled liners and the time check after the hour join music that is
+  // playing: none plays while paused, or after a hard stop (the session
+  // ended) until the listener has pressed Play again.  Nor during a
+  // crossfade: "every N songs" counts the new track the moment the fade
+  // starts, and a liner then talked over the transition.  It waits for the
+  // fade to finish.
+  const canPlayLiner = () => authenticatedActivityActive && !!_ctx && !!_lastBrowserPlayback
+    && playbackEnabled && !_lastState?.is_paused && !crossfading;
+  // Test in browser playback is a preview: it plays at the page volume
+  // whether or not music is playing, and only Mute keeps it silent.
+  // Runs inside the click, so the audio graph can start here.
+  const prepareLinerTest = () => {
+    if (!authenticatedInteractionEnabled() || !_lastBrowserPlayback) return LINER_OFFLINE_TEXT;
+    if (_lastState?.is_muted) return LINER_MUTED_TEXT;
+    const audioContext = ensureAudioGraph();
+    if (!audioContext) return LINER_NO_AUDIO_TEXT;
+    if (audioContext.state === "suspended") void audioContext.resume().catch(() => {});
+    return null;
+  };
+  const playVoiceLiner = async (
+    arrayBuf, duckDb, epoch = captureAuthenticatedRequestEpoch(),
+  ) => {
+    if (!authenticatedInteractionEnabled() || !_ctx
+        || !isAuthenticatedRequestCurrent(epoch)) return false;
+    const audioContext = _ctx;
+    const audioBuf = await audioContext.decodeAudioData(arrayBuf);
+    if (!authenticatedInteractionEnabled() || _ctx !== audioContext
+        || !isAuthenticatedRequestCurrent(epoch)) return false;
+    const src = audioContext.createBufferSource();
+    src.buffer = audioBuf;
+    // The liner goes through the master gain like the music it ducks,
+    // so it follows the page volume and Mute, but not Pause.
+    src.connect(_master);
+    const duckLin = Math.pow(10, duckDb / 20);
+    const dur = audioBuf.duration;
+    const t0 = audioContext.currentTime;
+    // Only music that is playing is ducked.  The duck has a gain of its
+    // own after both decks, so a crossfade running under the liner (a
+    // Test press, or a fade that starts mid-liner) keeps its ramps and
+    // both of its decks are ducked.
+    if (playbackEnabled && !_lastState?.is_paused) duckMusic(duckLin, dur);
+    activeLinerSources.add(src);
+    src.addEventListener("ended", () => activeLinerSources.delete(src), { once: true });
+    src.start(t0);
+    return true;
+  };
+  const linerAudio = {
+    canPlay: canPlayLiner,
+    testOnServer,
+    prepareTest: prepareLinerTest,
+    playLiner: playVoiceLiner,
+  };
+  timeCheckControls = installTimeChecks(linerAudio);
+  installLiners(_linerEls, { postSettings, ...linerAudio });
   applyState(initialState);
   connectWS();
   // Opening the page straight at #history fires no hashchange, so the

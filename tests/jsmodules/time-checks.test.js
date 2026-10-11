@@ -1,0 +1,223 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { initSubtabs } from "../../src/autodj/static/modules/subtabs.js";
+import { installTimeChecks } from "../../src/autodj/static/modules/time-checks.js";
+
+// The real Settings markup, so the ids, labels and live region the module
+// relies on are the ones the page ships.
+function installIndex() {
+  const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  template.content.querySelectorAll("script, link").forEach((node) => node.remove());
+  document.body.replaceChildren(template.content.cloneNode(true));
+}
+
+const byId = (id) => document.getElementById(id);
+const liveText = () => vi.waitFor(() => {
+  const text = byId("tc-status").textContent;
+  if (!text) throw new Error("nothing said yet");
+  return text;
+});
+
+function server(overrides = {}) {
+  const settings = { enabled: true, hour_format: "12", rule: "after_hour_song",
+    timezone: "UTC", duck_db: -12, missing_minutes: 1439, tts_available: true, ...overrides };
+  return vi.fn(async (url, options = {}) => {
+    if (options.method === "PUT") return { ...settings, ...JSON.parse(options.body) };
+    if (url.endsWith("/test")) return { message: "Time check played" };
+    return settings;
+  });
+}
+
+beforeEach(installIndex);
+
+describe("Time checks panel markup", () => {
+  it("is a Settings subtab between Voice liners and Schedule, with no aria-controls", () => {
+    const tab = byId("stab-time-checks");
+    expect(tab.getAttribute("role")).toBe("tab");
+    expect(tab.hasAttribute("aria-controls")).toBe(false);
+    expect(tab.previousElementSibling.id).toBe("stab-liners");
+    expect(tab.nextElementSibling.id).toBe("stab-schedule");
+    const panel = byId(tab.dataset.panel);
+    expect(panel.id).toBe("spanel-time-checks");
+    expect(panel.getAttribute("role")).toBe("tabpanel");
+    expect(panel.getAttribute("aria-labelledby")).toBe("stab-time-checks");
+    expect(panel.querySelector(":scope > h3").textContent).toBe("Time checks");
+  });
+
+  it("labels and describes every control with native elements", () => {
+    expect(byId("tc-enabled").type).toBe("checkbox");
+    expect(byId("tc-hour-format").tagName).toBe("SELECT");
+    expect([...byId("tc-hour-format").options].map((o) => o.value)).toEqual(["12", "24"]);
+    expect(byId("tc-rule").tagName).toBe("SELECT");
+    expect([...byId("tc-rule").options].map((o) => o.value)).toEqual(["off", "after_hour_song"]);
+    for (const id of ["tc-enabled", "tc-hour-format", "tc-rule"]) {
+      const label = document.querySelector(`label[for="${id}"]`);
+      expect(label?.textContent.trim(), id).toBeTruthy();
+    }
+    const test = byId("tc-test");
+    expect(test.tagName).toBe("BUTTON");
+    expect(test.type).toBe("button");
+    expect(test.textContent).toBe("Play a time check now");
+    for (const id of ["tc-enabled", "tc-hour-format", "tc-rule", "tc-test"]) {
+      const ref = byId(id).getAttribute("aria-describedby");
+      expect(byId(ref)?.textContent.trim(), id).toBeTruthy();
+    }
+    const status = byId("tc-status");
+    expect(status.getAttribute("role")).toBe("status");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(status.getAttribute("aria-atomic")).toBe("true");
+    expect(byId("tc-clips-status").getAttribute("aria-live")).toBeNull();
+  });
+});
+
+describe("time checks panel", () => {
+  it("shows clip coverage and the time zone, and saves a changed switch out loud", async () => {
+    const request = server();
+    const controls = installTimeChecks({ request, interval: () => {} });
+    await controls.refresh();
+    expect(byId("tc-clips-status").textContent).toBe(
+      "1 of 1440 minute clips recorded. Text to speech says the minutes without a clip. "
+      + "Times are in the station time zone, UTC.",
+    );
+    expect(byId("tc-enabled").checked).toBe(true);
+    expect(byId("tc-rule").value).toBe("after_hour_song");
+    const format = byId("tc-hour-format");
+    format.value = "24";
+    format.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith("/api/time-checks",
+      expect.objectContaining({ method: "PUT", body: expect.stringContaining('"hour_format":"24"') })));
+    expect(await liveText()).toBe("Time check settings saved.");
+  });
+
+  it("says when minutes without a clip are skipped", async () => {
+    const controls = installTimeChecks({
+      request: server({ tts_available: false, missing_minutes: 1440 }), interval: () => {} });
+    await controls.refresh();
+    expect(byId("tc-clips-status").textContent).toContain(
+      "0 of 1440 minute clips recorded. No text to speech is set up");
+  });
+
+  it("puts a failed save back and says why", async () => {
+    const base = server();
+    const request = vi.fn((url, options = {}) => options.method === "PUT"
+      ? Promise.reject(new Error("Server busy")) : base(url, options));
+    const controls = installTimeChecks({ request, interval: () => {} });
+    await controls.refresh();
+    const enabled = byId("tc-enabled");
+    enabled.checked = false;
+    enabled.dispatchEvent(new Event("change"));
+    expect(await liveText()).toBe("Could not save time check settings: Server busy");
+    expect(enabled.checked).toBe(true);
+  });
+
+  it("refreshes the coverage when its subtab is shown", async () => {
+    const request = server();
+    byId("panel-settings").hidden = false;
+    installTimeChecks({ request, interval: () => {} });
+    const store = { getItem: () => null, setItem: () => {} };
+    initSubtabs(byId("settings-tabs"), { storage: store });
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+    byId("stab-time-checks").click();
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+  });
+
+  it("plays on the server and says the result when the server mixes", async () => {
+    const request = server();
+    installTimeChecks({ request, interval: () => {} });
+    byId("tc-test").click();
+    expect(await liveText()).toBe("Time check played.");
+    expect(request).toHaveBeenCalledWith("/api/time-checks/test", { method: "POST" });
+  });
+
+  it("says why server playback failed", async () => {
+    const base = server();
+    const request = vi.fn((url, options) => url.endsWith("/test")
+      ? Promise.reject(new Error("The stream must be playing to air a time check"))
+      : base(url, options));
+    installTimeChecks({ request, interval: () => {} });
+    byId("tc-test").click();
+    expect(await liveText()).toBe(
+      "Time check failed: The stream must be playing to air a time check");
+  });
+
+  it("plays in this browser through the voice liner path, or says why not", async () => {
+    const binary = vi.fn(async () => new ArrayBuffer(8));
+    const playLiner = vi.fn(async () => true);
+    let refusal = "Browser playback is muted.";
+    const controls = installTimeChecks({ request: server({ duck_db: -9 }), binary, playLiner,
+      testOnServer: () => false, prepareTest: () => refusal, interval: () => {} });
+    await controls.refresh();
+    byId("tc-test").click();
+    expect(await liveText()).toBe("Browser playback is muted.");
+    expect(binary).not.toHaveBeenCalled();
+    refusal = null;
+    byId("tc-status").textContent = "";
+    byId("tc-test").click();
+    expect(await liveText()).toBe("Time check played.");
+    expect(binary).toHaveBeenCalledWith("/api/time-checks/preview");
+    expect(playLiner).toHaveBeenCalledWith(expect.any(ArrayBuffer), -9);
+  });
+});
+
+describe("the check after the hour in browser playback", () => {
+  it("plays once, silently, when the song that crossed the hour ends", async () => {
+    const binary = vi.fn(async () => new ArrayBuffer(8));
+    const playLiner = vi.fn(async () => true);
+    let clock = new Date("2026-10-11T03:59:00Z");
+    const controls = installTimeChecks({ request: server(), binary, playLiner,
+      testOnServer: () => false, canPlay: () => true, now: () => clock, interval: () => {} });
+    await controls.refresh();
+    controls.noteTrack({ current_track: { path: "first.mp3" } });
+    clock = new Date("2026-10-11T04:02:00Z");
+    controls.noteTrack({ current_track: { path: "second.mp3" } });
+    controls.noteTrack({ current_track: { path: "second.mp3" } });
+    await vi.waitFor(() => expect(playLiner).toHaveBeenCalledWith(expect.any(ArrayBuffer), -12));
+    clock = new Date("2026-10-11T04:05:00Z");
+    controls.noteTrack({ current_track: { path: "third.mp3" } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(playLiner).toHaveBeenCalledOnce();
+    expect(byId("tc-status").textContent).toBe("");
+  });
+
+  it("waits for the crossfade to finish before playing the pending hour", async () => {
+    const playLiner = vi.fn(async () => true);
+    let ready = false;
+    let tick;
+    let clock = new Date("2026-10-11T03:59:00Z");
+    const controls = installTimeChecks({ request: server(), binary: async () => new ArrayBuffer(8),
+      playLiner, testOnServer: () => false, canPlay: () => ready, now: () => clock,
+      interval: (callback) => { tick = callback; } });
+    await controls.refresh();
+    controls.noteTrack({ current_track: { path: "first.mp3" } });
+    clock = new Date("2026-10-11T04:02:00Z");
+    controls.noteTrack({ current_track: { path: "second.mp3" } });
+    expect(playLiner).not.toHaveBeenCalled();
+    ready = true;
+    tick();
+    await vi.waitFor(() => expect(playLiner).toHaveBeenCalledOnce());
+  });
+
+  it("leaves the check to the server when the server mixes, and to nobody when off", async () => {
+    const playLiner = vi.fn(async () => true);
+    let clock = new Date("2026-10-11T03:59:00Z");
+    for (const [settings, onServer] of [[{}, true], [{ rule: "off" }, false],
+      [{ enabled: false }, false]]) {
+      installIndex();
+      const controls = installTimeChecks({ request: server(settings),
+        binary: async () => new ArrayBuffer(8), playLiner, testOnServer: () => onServer,
+        canPlay: () => true, now: () => clock, interval: () => {} });
+      await controls.refresh();
+      clock = new Date("2026-10-11T03:59:00Z");
+      controls.noteTrack({ current_track: { path: "first.mp3" } });
+      clock = new Date("2026-10-11T04:02:00Z");
+      controls.noteTrack({ current_track: { path: "second.mp3" } });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(playLiner).not.toHaveBeenCalled();
+  });
+});

@@ -80,7 +80,16 @@ def test_actions_and_upcoming_come_from_the_server(
     client.post("/api/schedule", json=event(repeat="interval", interval_minutes=30))
     data = client.get("/api/schedule").json()
     actions = {action["name"]: action for action in data["actions"]}
-    assert set(actions) == {"profile", "preset", "pick_mode", "liner", "stream", "discovery"}
+    assert set(actions) == {
+        "profile",
+        "preset",
+        "pick_mode",
+        "liner",
+        "time_check",
+        "stream",
+        "discovery",
+    }
+    assert actions["time_check"]["fields"] == []
     assert actions["profile"]["fields"][0]["options"] == [{"value": "Evening", "label": "Evening"}]
     assert actions["liner"]["fields"][0]["options"] == [
         {"value": "station-id.wav", "label": "station-id.wav"}

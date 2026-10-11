@@ -24,7 +24,7 @@ from urllib.parse import urlencode
 
 import pytest
 
-from autodj.config import ServerConfig
+from autodj.config import ServerConfig, TimeChecksConfig
 from autodj.server import PlaybackSettingsBody, PlayerBridge, create_app
 
 from ._helpers import NO_INDEX_DIR, _make_entry, _make_player_mock, _make_sim_mock
@@ -1593,6 +1593,7 @@ class TestServeFunction:
         cfg_mock.playback.no_repeat_window = 50
         cfg_mock.playback.artist_repeat_window = 3
         cfg_mock.playback.crossfade_seconds = 3.0
+        cfg_mock.time_checks = TimeChecksConfig()
         cfg_mock.server = ServerConfig()
         sim = _make_sim_mock()
 
@@ -1627,6 +1628,7 @@ class TestServeFunction:
         cfg_mock.playback.no_repeat_window = 50
         cfg_mock.playback.artist_repeat_window = 3
         cfg_mock.playback.crossfade_seconds = 3.0
+        cfg_mock.time_checks = TimeChecksConfig()
         cfg_mock.server = ServerConfig()
         sim = _make_sim_mock()
 
@@ -1654,6 +1656,7 @@ class TestServeFunction:
         cfg_mock.playback.no_repeat_window = 50
         cfg_mock.playback.artist_repeat_window = 3
         cfg_mock.playback.crossfade_seconds = 3.0
+        cfg_mock.time_checks = TimeChecksConfig()
         cfg_mock.server = ServerConfig()
         cfg_mock.index.index_dir = tmp_path
         sim = _make_sim_mock()
@@ -1759,6 +1762,7 @@ class TestServeFunction:
         from autodj.server import serve
 
         cfg = MagicMock()
+        cfg.time_checks = TimeChecksConfig()
         cfg.server = ServerConfig(host="127.0.0.2", port=9090)
         cfg.playback.no_repeat_window = 50
         cfg.playback.artist_repeat_window = 3
@@ -1782,6 +1786,7 @@ class TestServeFunction:
         from autodj.server import serve
 
         cfg = MagicMock()
+        cfg.time_checks = TimeChecksConfig()
         cfg.server = ServerConfig()
         original_server = cfg.server
         sim = _make_sim_mock()
@@ -1812,6 +1817,7 @@ class TestServeFunction:
 
         weak = "do-not-print-me"
         cfg = MagicMock()
+        cfg.time_checks = TimeChecksConfig()
         cfg.server = ServerConfig()
         cfg.server.host = "192.168.1.10"
         cfg.server.access_token = weak
@@ -1841,6 +1847,7 @@ class TestServeFunction:
 
         cfg = MagicMock()
         cfg.index.index_dir = NO_INDEX_DIR
+        cfg.time_checks = TimeChecksConfig()
         cfg.server = ServerConfig(host="192.168.1.10", access_token="s" * 32)
         cfg.playback.no_repeat_window = 50
         cfg.playback.artist_repeat_window = 3
@@ -1881,6 +1888,7 @@ class TestServeFunction:
         tls_files = _tls_files(tmp_path) if tls else {}
         cfg = MagicMock()
         cfg.index.index_dir = NO_INDEX_DIR
+        cfg.time_checks = TimeChecksConfig()
         cfg.server = ServerConfig(
             host="0.0.0.0",
             port=port,
@@ -1938,6 +1946,7 @@ class TestServeFunction:
 
         cfg = MagicMock()
         cfg.index.index_dir = tmp_path
+        cfg.time_checks = TimeChecksConfig()
         cfg.server = ServerConfig(access_token="s" * 32)
         cfg.playback.no_repeat_window = 50
         cfg.playback.artist_repeat_window = 3
@@ -1986,6 +1995,7 @@ class TestServeFunction:
 
         cfg = MagicMock()
         cfg.index.index_dir = NO_INDEX_DIR
+        cfg.time_checks = TimeChecksConfig()
         cfg.server = ServerConfig(
             host="0.0.0.0",
             access_token="s" * 32,
@@ -4055,6 +4065,7 @@ class TestReloadIndexFromDisk:
         bridge = MagicMock()
         bridge.player._cfg.index.active_dir = tmp_path
         bridge.player._cfg.server.station_timezone = "UTC"
+        bridge.player._cfg.time_checks = TimeChecksConfig()
         bridge.sim.manifest = "generation 1"
         bridge.sim.ntotal = 5
         bridge.reload_index_from_disk.side_effect = lambda: reloaded.set()

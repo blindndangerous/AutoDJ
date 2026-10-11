@@ -129,6 +129,15 @@ The liner *root directory* comes only from configuration. `/api/playback-setting
 must pass that route's field rule, so the file can neither store nor restore `liners_folder`.
 Treat a paired browser as trusted.
 
+Time check settings, preview, and test routes under `/api/time-checks` also require a paired
+browser. The browser receives clip coverage and the station time zone, but no configured clip
+paths or TTS command. It can change only enabled, hour format, and rule; paths and executable
+arguments come from local configuration. TTS runs with an argument array and a 20-second timeout,
+without a shell, on a worker thread. The spoken text is built on the server from the station clock
+("It's 3:05"); no browser input reaches the command line or the SAPI script, which speaks its
+stdin as plain text. Preview and test can start the TTS program, once for each new minute's text,
+because results are cached; one synthesis runs at a time.
+
 `GET /api/history/export` returns the play log for a date range: titles, artists, albums, ISRC
 and label tags, file paths inside the music folders and performance counts. Like every other `/api`
 route it needs an allowed Host, and a session whenever the server requires one. It is a GET with

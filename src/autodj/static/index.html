@@ -453,6 +453,7 @@
     <button type="button" role="tab" id="stab-sound" data-subview="sound" data-panel="spanel-sound" aria-selected="false" tabindex="-1">Sound</button>
     <button type="button" role="tab" id="stab-display" data-subview="display" data-panel="spanel-display" aria-selected="false" tabindex="-1">Display and keys</button>
     <button type="button" role="tab" id="stab-liners" data-subview="liners" data-panel="spanel-liners" aria-selected="false" tabindex="-1">Voice liners</button>
+    <button type="button" role="tab" id="stab-time-checks" data-subview="time-checks" data-panel="spanel-time-checks" aria-selected="false" tabindex="-1">Time checks</button>
     <button type="button" role="tab" id="stab-schedule" data-subview="schedule" data-panel="spanel-schedule" aria-selected="false" tabindex="-1">Schedule</button>
     <button type="button" role="tab" id="stab-stream" data-subview="stream" data-panel="spanel-stream" aria-selected="false" tabindex="-1" hidden>Stream</button>
     <button type="button" role="tab" id="stab-access" data-subview="access" data-panel="spanel-access" aria-selected="false" tabindex="-1">Profiles and access</button>
@@ -1114,6 +1115,54 @@
       <h4>Files</h4>
       <ul id="ln-file-list" aria-label="Voice liner files"></ul>
     </fieldset>
+  </div>
+
+  <div class="card" role="tabpanel" id="spanel-time-checks" aria-labelledby="stab-time-checks" hidden>
+    <h3>Time checks</h3>
+    <!-- time-checks.js fills this panel when it is seen.  The clip folder,
+         intro and outro clips and the text-to-speech command are set only in
+         config.toml.  Each result of a setting or the button is said once
+         through #tc-status. -->
+    <p class="card-desc">
+      Say the station time over the music, from a recorded clip for each minute or from text to speech. The clip folder, intro and outro clips and the text-to-speech command are set in config.toml.
+    </p>
+
+    <div id="tc-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+
+    <div class="settings-check">
+      <input type="checkbox" id="tc-enabled" aria-describedby="tc-enabled-desc">
+      <label for="tc-enabled">Enable time checks</label>
+    </div>
+    <span class="setting-desc" id="tc-enabled-desc">
+      Lets the rule below and Time check events in Schedule play. Play a time check now works either way.
+    </span>
+    <div class="settings-row">
+      <label for="tc-hour-format">Hour format</label>
+      <select id="tc-hour-format" aria-describedby="tc-hour-format-desc">
+        <option value="12">12-hour</option>
+        <option value="24">24-hour</option>
+      </select>
+    </div>
+    <span class="setting-desc" id="tc-hour-format-desc">
+      How text to speech says the time: “It’s 3:05” or “It’s 15:05”, and on the hour “It’s 3 o’clock” or “It’s 15 hundred”, with “It’s midnight” and “It’s noon” in both. Recorded clips play as they are.
+    </span>
+    <div class="settings-row">
+      <label for="tc-rule">When to play</label>
+      <select id="tc-rule" aria-describedby="tc-rule-desc">
+        <option value="off">Only from Schedule or the button</option>
+        <option value="after_hour_song">After the song that crosses the hour</option>
+      </select>
+    </div>
+    <span class="setting-desc" id="tc-rule-desc">
+      After the song playing at the top of the hour ends, say the time as the next song starts, in place of a voice liner. It uses the voice liner duck depth and, when the server mixes the music, Talk up to the vocal. For set times, add a Time check event in Schedule.
+    </span>
+
+    <h4>Recordings</h4>
+    <p id="tc-clips-status"></p>
+    <button type="button" id="tc-test" aria-describedby="tc-test-desc">Play a time check now</button>
+    <span class="setting-desc" id="tc-test-desc">
+      Plays the current time on the stream or server audio when the server mixes the music; otherwise in this browser.
+    </span>
   </div>
 
   <div class="card" role="tabpanel" id="spanel-schedule" aria-labelledby="stab-schedule" hidden>

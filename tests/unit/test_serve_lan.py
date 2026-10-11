@@ -12,7 +12,7 @@ import pytest
 from click.testing import CliRunner
 
 from autodj.cli import _serve_url, _stage_serve_server, cli
-from autodj.config import ServerConfig, StreamConfig, load_config
+from autodj.config import ServerConfig, StreamConfig, TimeChecksConfig, load_config
 from autodj.lan import load_or_create_access_token
 
 _DETECTED = ["127.0.0.1", "192.168.1.20", "::1", "localhost", "nas", "nas.local"]
@@ -31,6 +31,7 @@ def _cfg(tmp_path: Path, server: ServerConfig | None = None) -> MagicMock:
     cfg.presets = {}
     cfg.index.name = "default"
     cfg.index.index_dir = tmp_path / "index"
+    cfg.time_checks = TimeChecksConfig()
     cfg.server = server or ServerConfig()
     cfg.stream = StreamConfig()
     cfg.config_sources = ("defaults",)
@@ -354,6 +355,7 @@ def _run_serve(
     cfg.playback.no_repeat_window = 50
     cfg.playback.artist_repeat_window = 3
     cfg.playback.crossfade_seconds = 3.0
+    cfg.time_checks = TimeChecksConfig()
     cfg.server = server
     sim = MagicMock()
     sim.entries = []

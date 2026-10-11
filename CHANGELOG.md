@@ -10,6 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Spoken time checks (Settings, Time checks) use a recorded `HH_MM` clip or a cached external
+  TTS command, with optional intro and outro clips. They play from a Schedule action or after the
+  song that crosses the hour, in the station time zone, with the voice liner duck and talk-up; the
+  check after the hour takes the place of that song change's automatic liner. Settings choose
+  12- or 24-hour speech; doctor reports missing recordings, and backups include the clips and the
+  saved switches. `scripts/time_check_sapi.ps1` speaks with a chosen Windows SAPI voice.
+
 - A scheduler for timed events (Settings, Schedule). Events run once, daily, on weekdays, on
   chosen days, or every N minutes within an optional window, in the station time zone
   (`[server] station_timezone`). They switch profiles, presets or song picking, play liners,

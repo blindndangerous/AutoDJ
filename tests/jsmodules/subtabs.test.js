@@ -53,7 +53,7 @@ describe("Settings subtabs markup", () => {
     const tabs = [...byId("settings-tabs").querySelectorAll('[role="tab"]')];
     expect(tabs.map((tab) => tab.textContent)).toEqual([
       "Transitions", "DJ mixing", "Song picking", "Sound", "Display and keys",
-      "Voice liners", "Schedule", "Stream", "Profiles and access",
+      "Voice liners", "Time checks", "Schedule", "Stream", "Profiles and access",
     ]);
     for (const tab of tabs) {
       expect(tab.hasAttribute("aria-controls")).toBe(false);
@@ -73,7 +73,7 @@ describe("Settings subtabs markup", () => {
     for (const id of [
       "pb-bass-cutoff", "dj-max-stretch", "dj-glide-bars", "dj-sweep-floor", "pb-pick-top-k",
       "pb-pick-temperature", "pb-rg-clip", "pb-prefetch", "pb-silence-trigger",
-      "stream-station-name",
+      "stream-station-name", "tc-enabled", "tc-hour-format", "tc-rule",
     ]) {
       const control = byId(id);
       expect(document.querySelector(`label[for="${id}"]`), id).not.toBeNull();

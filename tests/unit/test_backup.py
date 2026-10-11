@@ -55,6 +55,26 @@ def test_schedule_is_backed_up_and_restored(tmp_path: Path) -> None:
     assert json.loads(schedule.read_text(encoding="utf-8"))["schema_version"] == 1
 
 
+def test_time_checks_settings_and_recordings_survive_restore(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    state = cfg.index.active_dir / "time_checks.json"
+    state.write_text(
+        '{"version":1,"settings":{"enabled":true,"hour_format":"12","rule":"off"}}',
+        encoding="utf-8",
+    )
+    clips = cfg.index.active_dir / "time_checks"
+    clips.mkdir()
+    (clips / "03_05.wav").write_bytes(b"clip")
+    archive = create_backup(cfg, tmp_path / "time-checks.zip", force=False)
+    with zipfile.ZipFile(archive) as backup:
+        assert {"index/time_checks.json", "time_checks/03_05.wav"} <= set(backup.namelist())
+    state.unlink()
+    (clips / "03_05.wav").unlink()
+    restore_backup(cfg, archive, force=True)
+    assert json.loads(state.read_text(encoding="utf-8"))["settings"]["enabled"]
+    assert (clips / "03_05.wav").read_bytes() == b"clip"
+
+
 def _publish(cfg: AutoDJConfig, title: str) -> None:
     entry = IndexEntry(
         path=str(cfg.library.music_dir / "song.flac"),
