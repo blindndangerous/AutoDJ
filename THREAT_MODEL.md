@@ -229,6 +229,37 @@ response status is known. The WebSocket only pushes state; frames a browser send
 ignored. WebSocket connection, error, and disconnect events are audited. These records support
 single-user incident review but do not provide per-user attribution.
 
+## Relay credentials (outbound)
+
+Relays (`[stream.relays.<name>]`) push the stream to external Icecast or Shoutcast servers.
+This is the only place AutoDJ holds a credential for another system:
+
+- Each relay's source password comes from `config.toml`, `config.local.toml` (recommended, so the
+  shared file can be committed or copied without it) or `AUTODJ_STREAM_RELAY_<NAME>_PASSWORD`.
+  An environment variable only sets the password of a relay a TOML file already names; it
+  cannot add a relay.
+- The password is never written to `web_state.json`, the relay status file, logs, `autodj
+  doctor` output, any `/api` response or the WebSocket state. The browser sees only each relay's
+  name, server type, host, port, mount or stream ID, state and last error. Error texts are built
+  from fixed wording, HTTP status numbers and operating-system error descriptions, never from
+  request URLs, so they cannot carry the password. The configuration object hides it from its
+  printed form.
+- On the wire the password goes only to the configured host, as each protocol requires: in an
+  HTTP Basic `Authorization` header for Icecast (the source login and `/admin/metadata`), and as
+  plain text for Shoutcast (the source login line and the `pass` query parameter of
+  `/admin.cgi`, the only way Shoutcast accepts title updates). Relays do not use TLS, so anyone
+  who can watch the path to the server can read the password. Use a source password that is not
+  used anywhere else, and prefer hosts reached over networks you trust.
+- `autodj doctor` only opens and closes a TCP connection to each relay's source port; it sends
+  no password and does not log in.
+- The running server writes `relay-status.json` in the index folder (names, states and errors,
+  no passwords) so `autodj doctor` can show the last reported state.
+- Relays are outbound connections only. They add no listening port and no route, and the
+  server's replies are read only up to a fixed size during login and title updates.
+- While any relay is enabled the station keeps playing with no local listeners, so the operator's
+  library is being sent to the external server whenever AutoDJ runs in stream mode. Set
+  `enabled = false` to stop a relay without deleting it.
+
 ## Backup and restore boundary
 
 A backup is a plain ZIP file: the published index generation, `dj_meta.db`, `web_state.json`,

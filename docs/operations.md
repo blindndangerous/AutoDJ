@@ -547,6 +547,91 @@ track, never mid-song.
 
 The listening address stays the same across restarts. There is no key to copy or renew.
 
+### Relaying to Icecast and Shoutcast
+
+AutoDJ can push the same station to one or more hosted Icecast or Shoutcast servers, so a
+station can use a host's listener capacity and directory listings as well as direct
+connections. Relays run in stream mode only. Supported servers:
+
+- Icecast 2.4 or later, which accepts a source over HTTP PUT.
+- Shoutcast 1 (DNAS 1.9).
+- Shoutcast 2 (DNAS 2), through its Shoutcast 1 source login with a stream ID.
+
+Describe each server as a named table in `config.toml`:
+
+```toml
+[stream.relays.main]
+type = "icecast"
+host = "radio.example.com"
+port = 8000
+mount = "/live"
+
+[stream.relays.backup]
+type = "shoutcast2"
+host = "sc.example.net"
+port = 8000
+stream_id = 1
+bitrate = 128
+```
+
+Put each password in `config.local.toml` under the same table name, where it is merged with
+the table above:
+
+```toml
+[stream.relays.main]
+password = "the source password from your host"
+```
+
+Or set it in the environment as `AUTODJ_STREAM_RELAY_<NAME>_PASSWORD`, with the name
+upper-cased and `-` written as `_`, for example `AUTODJ_STREAM_RELAY_MAIN_PASSWORD`. A relay
+without a password stops AutoDJ at startup with an error naming the table.
+
+The keys:
+
+- `type`: `icecast`, `shoutcast1` or `shoutcast2`. Required.
+- `host`: the server's host name or IP address, without `http://`, port or path. Required.
+- `password`: the source password. Required.
+- `port`: the server's listener port, default 8000. Shoutcast sources log in on the port above
+  it (8001 for 8000), as Shoutcast expects, so give the port listeners use.
+- `mount`: Icecast only, and required there: the mount point, such as `/live`.
+- `user`: Icecast only: the source user name, default `source`.
+- `stream_id`: Shoutcast 2 only: the stream ID, default 1.
+- `bitrate`: 128, 192, 256 or 320. Leave it out to send exactly the stream's own audio, which
+  needs no extra encoder and follows the Quality setting. A relay with its own bitrate gets a
+  second FFmpeg encoder, shared by every relay with that bitrate.
+- `public`: `true` asks the server to list the station in its public directories. Default
+  `false`.
+- `enabled`: `false` keeps the table but does not connect. Default `true`.
+
+What a relay does:
+
+- **It keeps the station playing.** While any relay is enabled, the station plays as if
+  "Keep playing without listeners" were on, even with nobody connected to AutoDJ itself,
+  because AutoDJ cannot see the relay's listeners. Pause still pauses everyone.
+- **It sends the song title** to the server each time a new song starts, through Icecast's
+  `/admin/metadata` or Shoutcast's `/admin.cgi`, timed to the audio like the stream's own
+  titles. A failed title update is shown and logged, and the next song tries again.
+- **It reconnects on its own.** When the server cannot be reached, refuses the login or drops
+  the connection, the relay tries again after 1 second, then 2, 4 and so on, up to once a
+  minute. A connection that lasted 30 seconds starts the count again. The audio sent after a
+  reconnect is live; nothing is saved up while disconnected. A server too slow to take the
+  audio (more than 5 seconds behind) is disconnected and tried again. Changing Quality makes
+  the relays that send the stream's own audio log in again at the new bitrate.
+- **It never slows down the stream.** Each relay sends from its own queue and threads, so a
+  stalled server cannot hold up the mix or the other listeners.
+
+Settings, Stream, lists each relay with its state, read as one sentence each: "connecting",
+"live", "not connected, trying again" with the last error, or "off in the configuration". The
+list is plain text and does not interrupt the screen reader when it changes. The log has one
+warning when a relay starts failing and a line when it is live again. `autodj doctor` checks
+that each server answers on its source port, without sending the password, and shows the state
+the running AutoDJ last reported (it writes `relay-status.json` in the index folder whenever a
+relay changes state).
+
+The password crosses the network to the server as the protocol requires: in an HTTP Basic
+login for Icecast, and as plain text for Shoutcast, including in title updates. AutoDJ does
+not use TLS for relays, so use a host you trust on networks you trust. See the threat model.
+
 ### Troubleshooting
 
 - **"Stream mode needs ffmpeg on the PATH"** — install ffmpeg and make sure it is on the PATH
@@ -561,6 +646,14 @@ The listening address stays the same across restarts. There is no key to copy or
 - **A player gets a 503 "Stream listener limit reached"** — `max_listeners` (default 8) is full.
   Raise `[stream] max_listeners` (or `AUTODJ_STREAM_MAX_LISTENERS`) if you regularly have more
   simultaneous listeners.
+- **A relay says "the server rejected the user name or password"** — check the password in
+  `config.local.toml` and, for Icecast, the `user` and `mount`. Many hosts give a separate
+  source password; the admin password is not always accepted.
+- **A relay says "the mount point may already be in use"** — another source, perhaps an
+  earlier AutoDJ that has not let go yet, is connected to that Icecast mount. The relay keeps
+  trying and takes over once the mount is free.
+- **A relay to Shoutcast cannot connect** — Shoutcast takes sources on the port above its
+  listener port. Give the listener port in `port`, and make sure the one above it is open.
 - **A player gets a 503 "stream encoder failed"** — ffmpeg crashed repeatedly (five times within
   a minute) and the encoder is cooling down for 60 seconds before it tries again. Check that
   ffmpeg is present and working (`ffmpeg -version`), then try the address again after a minute.
