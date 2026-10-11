@@ -29,6 +29,7 @@ import { installSeekController } from "./modules/seek-controller.js";
 import { installLibraryFolders } from "./modules/library-folders.js";
 import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
 import { createStreamMode, createStreamSettings } from "./modules/stream-mode.js";
+import { initSubtabs } from "./modules/subtabs.js";
 
 if (isDebug()) {
   console.log("[autodj] debug logging ENABLED " +
@@ -154,6 +155,8 @@ btnListen.addEventListener("click", () => {
   _listenOptedIn = true;
   void streamMode.toggleListen();
 });
+// Settings subtabs (./modules/subtabs.js).  Stream shows only in stream mode.
+const settingsTabs = initSubtabs(document.getElementById("settings-tabs"));
 // Settings > Stream.
 const streamSettings = createStreamSettings({
   doc: document,
@@ -162,6 +165,10 @@ const streamSettings = createStreamSettings({
     postSettings("/api/stream/settings", { bitrate: value }, control),
   saveContinuous: (value, control) =>
     postSettings("/api/stream/settings", { continuous: value }, control),
+  saveStationName: (value, control) =>
+    postSettings("/api/stream/settings", { station_name: value }, control),
+  setAvailable: (available) => settingsTabs.setTabHidden("stream", !available),
+  focusAway: () => settingsTabs.focusSelected(),
   srStatus: document.getElementById("sr-status"),
   settingsStatus,
 });
@@ -712,6 +719,8 @@ const _settingsEls = () => ({
   keyNotation, keyPreferFlats,
   bpmLo, bpmHi,
   discEnabled, discEvery,
+  pbPrefetch: document.getElementById("pb-prefetch"),
+  pbSilenceTrigger: document.getElementById("pb-silence-trigger"),
 });
 
 function postSettings(url, body, control) {
@@ -1036,8 +1045,7 @@ installQueueClear({
 });
 
 // ----------------------------------------------------------------
-// Settings: crossfade and fade-in, repeat windows, phrase length, filter
-// sweep, effect level, ReplayGain target -- ./modules/mix-settings.js.
+// Settings number fields and the filter sweep switch -- ./modules/mix-settings.js.
 // ----------------------------------------------------------------
 import {
   applyMixSettings, installMixSettings, resetMixSettings,
@@ -1052,6 +1060,13 @@ const _mixEls = {
   djFilterSweep:  document.getElementById("dj-filter-sweep"),
   txWetMix:       document.getElementById("tx-wet-mix"),
   pbRgTarget:     document.getElementById("pb-rg-target"),
+  pbRgClip:       document.getElementById("pb-rg-clip"),
+  pbBassCutoff:   document.getElementById("pb-bass-cutoff"),
+  pbPickTopK:     document.getElementById("pb-pick-top-k"),
+  pbPickTemperature: document.getElementById("pb-pick-temperature"),
+  djMaxStretch:   document.getElementById("dj-max-stretch"),
+  djGlideBars:    document.getElementById("dj-glide-bars"),
+  djSweepFloor:   document.getElementById("dj-sweep-floor"),
 };
 installMixSettings(_mixEls, {
   postSettings,
@@ -1060,13 +1075,13 @@ installMixSettings(_mixEls, {
 
 // ----------------------------------------------------------------
 // Settings: Profiles and Browser access -- ./modules/profiles.js and
-// ./modules/devices.js.  Both load when their card is opened.
+// ./modules/devices.js.  Both load when their Settings subtab is shown.
 // ----------------------------------------------------------------
 import { installProfiles } from "./modules/profiles.js";
 import { installAccess } from "./modules/devices.js";
 
 const _profileEls = {
-  card:       document.getElementById("profiles-card"),
+  card:       document.getElementById("spanel-access"),
   nameInput:  document.getElementById("profile-name"),
   saveButton: document.getElementById("profile-save"),
   list:       document.getElementById("profile-list"),
@@ -1075,7 +1090,7 @@ const _profileEls = {
 installProfiles(_profileEls, { getSettings: () => _lastState?.settings || null });
 
 const _accessEls = {
-  card:     document.getElementById("access-card"),
+  card:     document.getElementById("spanel-access"),
   note:     document.getElementById("access-note"),
   controls: document.getElementById("access-controls"),
   signOut:  document.getElementById("access-sign-out"),

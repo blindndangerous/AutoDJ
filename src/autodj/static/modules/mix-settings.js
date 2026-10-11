@@ -1,5 +1,7 @@
-// Settings number fields: crossfade and fade-in length, repeat windows,
-// phrase length, transition effect level and the ReplayGain target, plus
+// Settings number fields: crossfade and fade-in length, the EQ duck
+// cutoff, repeat windows, how widely similarity picks spread, phrase
+// length, the beatmatch stretch limit and glide, the filter sweep floor,
+// transition effect level and the ReplayGain target and peak limit, plus
 // the filter sweep switch.
 //
 // Each number field carries the same range the server accepts
@@ -49,6 +51,44 @@ const NUMBER_FIELDS = [
     key: "pbRgTarget", url: "/api/playback-settings", field: "replaygain_target_db",
     label: "ReplayGain target loudness", min: -30, max: 0, integer: false,
     read: (st) => st.playback?.replaygain_target_db,
+  },
+  {
+    key: "pbRgClip", url: "/api/playback-settings", field: "replaygain_max_clip_safe_gain",
+    label: "ReplayGain peak limit", min: 0.1, max: 2, integer: false,
+    read: (st) => st.playback?.replaygain_max_clip_safe_gain,
+  },
+  {
+    key: "pbBassCutoff", url: "/api/playback-settings", field: "crossfade_bass_cutoff_hz",
+    label: "EQ duck cutoff", min: 20, max: 1000, integer: false,
+    read: (st) => st.playback?.crossfade_bass_cutoff_hz,
+  },
+  {
+    key: "pbPickTopK", url: "/api/playback-settings", field: "pick_top_k",
+    label: "Choose among the closest songs", min: 1, max: 100, integer: true,
+    read: (st) => st.playback?.pick_top_k,
+  },
+  {
+    key: "pbPickTemperature", url: "/api/playback-settings", field: "pick_temperature",
+    label: "Pick randomness", min: 0, max: 10, integer: false,
+    read: (st) => st.playback?.pick_temperature,
+  },
+  {
+    // Shown in percent, stored as a fraction.
+    key: "djMaxStretch", url: "/api/djmix", field: "beatmatch_max_stretch",
+    label: "Beatmatch stretch limit", min: 0, max: 50, integer: false,
+    read: (st) => (typeof st.djmix?.beatmatch_max_stretch === "number"
+      ? Math.round(st.djmix.beatmatch_max_stretch * 1000) / 10 : undefined),
+    toServer: (value) => value / 100,
+  },
+  {
+    key: "djGlideBars", url: "/api/djmix", field: "beatmatch_glide_bars",
+    label: "Glide back", min: 0, max: 64, integer: true,
+    read: (st) => st.djmix?.beatmatch_glide_bars,
+  },
+  {
+    key: "djSweepFloor", url: "/api/djmix", field: "filter_sweep_floor_hz",
+    label: "Filter sweep floor", min: 20, max: 5000, integer: false,
+    read: (st) => st.djmix?.filter_sweep_floor_hz,
   },
 ];
 

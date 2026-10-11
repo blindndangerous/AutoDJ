@@ -687,11 +687,17 @@
       display: none !important;
     }
     /* A setting that only matters while another one is on shows only
-       then.  display: none also takes the label, field and description
+       then.  "id" follows a checkbox, "a|b" either of two, "id=value"
+       and "id!=value" a select.  display: none also takes the label, field and description
        out of the accessibility tree together. */
     body:has(#dj-phrase-align:not(:checked)) [data-show-when="dj-phrase-align"],
-    body:has(#pb-replaygain:not(:checked)) [data-show-when="pb-replaygain"],
-    body:not(:has(#pb-replaygain option[value="replaygain"]:checked)) [data-show-when="loudness_processing=replaygain"],
+    body:has(#dj-beatmatch:not(:checked)) [data-show-when="dj-beatmatch"],
+    body:has(#dj-beatmatch:not(:checked)):has(#dj-key-shift:not(:checked)) [data-show-when="dj-beatmatch|dj-key-shift"],
+    body:has(#transition-select option[value="none"]:checked) [data-show-when="transition-select!=none"],
+    body:has(#dj-filter-sweep:not(:checked)) [data-show-when="dj-filter-sweep"],
+    body:has(#pb-eq-duck:not(:checked)) [data-show-when="pb-eq-duck"],
+    body:not(:has(#pb-replaygain option[value="replaygain"]:checked)) [data-show-when="pb-replaygain=replaygain"],
+    body:not(:has(#pb-pick-mode option[value="similarity"]:checked)) [data-show-when="pb-pick-mode=similarity"],
     body:has(#key-notation option[value="musical"]:not(:checked)) [data-show-when="key-notation=musical"],
     body:has(#disc-enabled:not(:checked)) [data-show-when="disc-enabled"],
     body:has(#ln-enabled:not(:checked)) [data-show-when="ln-enabled"] {
@@ -1056,12 +1062,13 @@
       border-bottom: 1px solid var(--border);
       padding: 0.25rem 1rem;
     }
-    #view-nav [role="tablist"] {
+    #view-nav [role="tablist"],
+    .subtabs {
       display: flex;
       flex-wrap: wrap;
       gap: 0.25rem;
     }
-    #view-nav [role="tab"] {
+    #view-nav [role="tab"], .subtabs [role="tab"] {
       display: inline-block;
       padding: 0.5rem 0.9rem;
       color: var(--text);
@@ -1072,14 +1079,18 @@
       font-weight: 500;
       cursor: pointer;
     }
-    #view-nav [role="tab"]:hover,
-    #view-nav [role="tab"]:focus-visible {
+    #view-nav [role="tab"]:hover, .subtabs [role="tab"]:hover,
+    #view-nav [role="tab"]:focus-visible, .subtabs [role="tab"]:focus-visible {
       background: var(--btn-bg);
       color: var(--btn-text);
     }
-    #view-nav [role="tab"][aria-selected="true"] {
+    #view-nav [role="tab"][aria-selected="true"], .subtabs [role="tab"][aria-selected="true"] {
       background: var(--accent);
       color: #000;
+    }
+    /* Settings subtabs sit inside the panel, under its heading. */
+    .subtabs {
+      margin: 0.5rem 0 1rem;
     }
     /* Section headings get tabindex -1 for focus management; suppress the
        focus ring on programmatic focus so it doesn't look like a stale
@@ -1088,7 +1099,7 @@
 
     @media (max-width: 720px) {
       #view-nav { padding: 0.25rem 0.5rem; }
-      #view-nav [role="tab"] { padding: 0.6rem 0.8rem; }
+      #view-nav [role="tab"], .subtabs [role="tab"] { padding: 0.6rem 0.8rem; }
     }
 
     /* ----------------------------------------------------------------
@@ -1170,14 +1181,14 @@
       #search-input,
       select,
       textarea,
-      #view-nav [role="tab"] {
+      #view-nav [role="tab"], .subtabs [role="tab"] {
         border-color: CanvasText;
       }
       button,
       input,
       select,
       textarea,
-      #view-nav [role="tab"] {
+      #view-nav [role="tab"], .subtabs [role="tab"] {
         background: Canvas;
         color: CanvasText;
       }
@@ -1213,7 +1224,7 @@
          tab fill to Canvas, which made the selected tab and a pressed
          toggle identical to their neighbours.  System highlight colours
          and a heavier border bring the state back. */
-      #view-nav [role="tab"][aria-selected="true"],
+      #view-nav [role="tab"][aria-selected="true"], .subtabs [role="tab"][aria-selected="true"],
       button[aria-pressed="true"] {
         background: Highlight;
         color: HighlightText;

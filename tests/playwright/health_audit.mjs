@@ -69,14 +69,19 @@ export async function audit(name, launcher) {
     }
   } catch (e) { out.unhandled.push("select " + e); }
 
-  // Click each visible tab so panels render
-  for (const sel of ["[role='tab']"]) {
-    const tabs = await page.$$(sel);
-    for (const t of tabs) {
-      try { await t.click(); await page.waitForTimeout(150); }
-      catch (e) { out.unhandled.push("tab " + e); }
-    }
+  // Click each section tab so panels render, then each Settings subtab
+  // shown (Stream only in stream mode) with the Settings view open.
+  for (const t of await page.$$("#view-nav [role='tab']")) {
+    try { await t.click(); await page.waitForTimeout(150); }
+    catch (e) { out.unhandled.push("tab " + e); }
   }
+  try {
+    await page.locator("#tab-settings").click();
+    for (const t of await page.$$("#settings-tabs [role='tab']:not([hidden])")) {
+      try { await t.click(); await page.waitForTimeout(150); }
+      catch (e) { out.unhandled.push("subtab " + e); }
+    }
+  } catch (e) { out.unhandled.push("subtab " + e); }
 
   // Probe page-side health
   out.probe = await page.evaluate(() => {

@@ -350,6 +350,13 @@ export function createStreamSettings({
   fetchInfo,
   saveBitrate,
   saveContinuous = async () => false,
+  saveStationName = async () => false,
+  // Told when the Stream settings appear and go, so the Settings subtab
+  // for them can follow.
+  setAvailable = () => {},
+  // Where focus goes when the Stream settings vanish while focus is in
+  // them.  The default suits a page that keeps them in a <details> card.
+  focusAway = null,
   srStatus,
   settingsStatus,
   hostname = doc.location.hostname,
@@ -374,6 +381,7 @@ export function createStreamSettings({
   const m3u = doc.getElementById("stream-m3u");
   const bitrate = doc.getElementById("stream-bitrate");
   const continuous = doc.getElementById("stream-continuous");
+  const stationName = doc.getElementById("stream-station-name");
   const listeners = doc.getElementById("stream-listeners");
   let active = false;
   let lastEventKey = null;
@@ -388,6 +396,8 @@ export function createStreamSettings({
   // Quality saves: the value the server last confirmed, the newest
   // choice not yet sent, the settle timer and whether a save is out.
   let savedBitrate = bitrate.value;
+  // The station name the server last confirmed.
+  let savedStationName = stationName?.value ?? "";
   let pendingBitrate = null;
   let settleTimer = null;
   let saving = false;
@@ -412,6 +422,13 @@ export function createStreamSettings({
     savedBitrate = String(info.bitrate);
     if (doc.activeElement !== bitrate) bitrate.value = savedBitrate;
     if (doc.activeElement !== continuous) continuous.checked = Boolean(info.continuous);
+    showStationName(info.station_name);
+  }
+
+  function showStationName(name) {
+    if (!stationName || typeof name !== "string") return;
+    savedStationName = name;
+    if (doc.activeElement !== stationName && stationName.value !== name) stationName.value = name;
   }
 
   async function refresh() {
@@ -456,6 +473,7 @@ export function createStreamSettings({
     lastEventKey = null;
     stopBitrateSaves();
     fieldset.hidden = true;
+    setAvailable(false);
   }
 
   // Sign-out: clear the address along with the rest of the session state.
@@ -484,13 +502,20 @@ export function createStreamSettings({
       // would fall to the page top, so it goes to the Settings heading.
       const hadFocus = fieldset.contains(doc.activeElement);
       hide();
-      if (hadFocus) fieldset.closest("details")?.querySelector("summary")?.focus();
+      if (hadFocus) {
+        if (focusAway) focusAway();
+        else fieldset.closest("details")?.querySelector("summary")?.focus();
+      }
       return;
     }
-    if (fieldset.hidden) fieldset.hidden = false;
+    if (fieldset.hidden) {
+      fieldset.hidden = false;
+      setAvailable(true);
+    }
     const text = listenerText(Number(state.stream_listeners) || 0);
     if (listeners.textContent !== text) listeners.textContent = text;
     applyPushedBitrate(state);
+    showStationName(state.settings?.playback?.stream_station_name);
     const key = eventKey(state.stream_event);
     if (!active) {
       active = true;
@@ -585,6 +610,16 @@ export function createStreamSettings({
     } finally {
       continuous.disabled = false;
     }
+  });
+  stationName?.addEventListener("change", async () => {
+    const chosen = stationName.value.trim();
+    if (chosen === savedStationName) {
+      stationName.value = savedStationName;
+      return;
+    }
+    // The server refuses a blank name and says so; the field goes back.
+    if (await saveStationName(chosen, stationName)) savedStationName = chosen;
+    else stationName.value = savedStationName;
   });
 
   return {

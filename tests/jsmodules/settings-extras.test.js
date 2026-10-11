@@ -136,6 +136,64 @@ describe("mix settings", () => {
       "/api/playback-settings", { transition_wet_mix: 0.75 }, els.txWetMix,
     ));
   });
+
+  it("shows the beatmatch stretch limit in percent and saves it as a fraction", async () => {
+    document.body.innerHTML = `
+      <input type="number" id="stretch" value="8">
+      <p id="settings-status"></p><div id="status-toast" hidden></div>`;
+    const els = { djMaxStretch: document.querySelector("#stretch") };
+    const settingsStatus = document.querySelector("#settings-status");
+    const postSettings = vi.fn().mockResolvedValue(true);
+    installMixSettings(els, { postSettings, settingsStatus });
+    applyMixSettings({ djmix: { beatmatch_max_stretch: 0.125 } }, els);
+    expect(els.djMaxStretch.value).toBe("12.5");
+
+    els.djMaxStretch.value = "6";
+    els.djMaxStretch.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledWith(
+      "/api/djmix", { beatmatch_max_stretch: 0.06 }, els.djMaxStretch,
+    ));
+  });
+
+  it("saves the new number settings to their routes and refuses out-of-range values", async () => {
+    document.body.innerHTML = `
+      <input type="number" id="top-k" value="1">
+      <input type="number" id="glide" value="8">
+      <input type="number" id="clip" value="1">
+      <p id="settings-status"></p><div id="status-toast" hidden></div>`;
+    const els = {
+      pbPickTopK: document.querySelector("#top-k"),
+      djGlideBars: document.querySelector("#glide"),
+      pbRgClip: document.querySelector("#clip"),
+    };
+    const settingsStatus = document.querySelector("#settings-status");
+    const postSettings = vi.fn().mockResolvedValue(true);
+    installMixSettings(els, { postSettings, settingsStatus });
+    applyMixSettings({
+      playback: { pick_top_k: 3, replaygain_max_clip_safe_gain: 1 },
+      djmix: { beatmatch_glide_bars: 8 },
+    }, els);
+    expect(els.pbPickTopK.value).toBe("3");
+
+    els.pbPickTopK.value = "5";
+    els.pbPickTopK.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledWith(
+      "/api/playback-settings", { pick_top_k: 5 }, els.pbPickTopK,
+    ));
+    els.djGlideBars.value = "4";
+    els.djGlideBars.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledWith(
+      "/api/djmix", { beatmatch_glide_bars: 4 }, els.djGlideBars,
+    ));
+
+    postSettings.mockClear();
+    els.pbRgClip.value = "3";
+    els.pbRgClip.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(settingsStatus.textContent).toBe(
+      "Could not save ReplayGain peak limit: enter a number from 0.1 to 2.  It is still 1.",
+    ));
+    expect(postSettings).not.toHaveBeenCalled();
+  });
 });
 
 describe("profiles", () => {

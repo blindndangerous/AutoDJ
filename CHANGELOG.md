@@ -8,10 +8,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- More settings can be changed on the Settings page instead of in `config.toml`. They are saved
+  on the server and survive a restart:
+  - the EQ duck cutoff
+  - how many of the closest songs a similarity pick chooses among, and how randomly
+  - the beatmatch stretch limit, and how many bars a beatmatched or key-shifted song takes to glide back
+  - the filter sweep floor
+  - the ReplayGain peak limit
+  - whether the browser loads the next song early, and whether it crossfades when a song goes quiet
+  - in stream mode, the station name that players show
+- Settings that have no effect are hidden:
+  - with saved segue points, the transition effect and every DJ-mix option
+  - the effect level and effect sync while no transition effect is chosen
+  - drop mixing and the beatmatch stretch limit while Beatmatch is off
+  - the glide while both Beatmatch and Key shift are off
+  - the EQ duck cutoff while EQ ducking is off
+  - the filter sweep floor while the sweep is off
+  - the pick spread outside Similarity picking
+
 ### Fixed
 
 - Radio streams use HTTP framing that works with HTTP/1.0 players such as Winamp,
   avoiding chunk markers that can disrupt audio and track titles.
+- Moving between tabs no longer makes screen readers say "selected" twice.
+- The ReplayGain target loudness setting shows again when ReplayGain is chosen; it was always hidden.
+- A setting with two descriptions now hides both when it does not apply, not just the first.
 
 ### Changed
 
@@ -19,6 +42,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Anyone who can reach the server can listen without a key; browser controls still require
   pairing when LAN authentication is enabled. Existing keyed links keep working, and Settings
   no longer shows "Make new link".
+- The Settings page is split into subtabs: Transitions, DJ mixing, Song picking, Sound, Display
+  and keys, Voice liners, Stream (in stream mode only) and Profiles and access. They work like the
+  section tabs, and the page remembers the last one used in this browser.
 - Indexing, DJ analysis and server playback now share one audio loader. FFmpeg decodes MP3, AAC,
   M4A and MP4 files everywhere, and soundfile decodes WAV, FLAC and the other formats, with FFmpeg
   as the fallback. A file that indexes now also plays, and analysis hears songs at the same level

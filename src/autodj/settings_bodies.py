@@ -78,12 +78,26 @@ class PresetBody(BaseModel):
 
 
 class StreamSettingsBody(BaseModel):
-    """Partial stream settings update for bitrate and continuous playback."""
+    """Partial stream settings update: bitrate, continuous playback and station name."""
 
     model_config = ConfigDict(extra="forbid")
 
     bitrate: Literal[128, 192, 256, 320] | None = None
     continuous: bool | None = Field(default=None, strict=True)
+    station_name: Annotated[str, Field(max_length=100)] | None = None
+
+    @field_validator("station_name")
+    @classmethod
+    def _check_station_name(cls, value: str | None) -> str | None:
+        """Refuse a blank name, or one with control characters, as config.toml does."""
+        if value is None:
+            return None
+        name = value.strip()
+        if not name:
+            raise ValueError("station_name must not be blank")
+        if not name.isprintable():
+            raise ValueError("station_name must not contain control characters")
+        return name
 
 
 class TransitionBody(BaseModel):
@@ -110,6 +124,14 @@ class DjMixBody(BaseModel):
     filter_sweep: bool | None = None
     vocal_guard: bool | None = None
     phrase_bars: Annotated[int, Field(ge=1, le=64)] | None = None
+    # The ranges here are the ones the Settings panel's number fields use.
+    beatmatch_max_stretch: Annotated[float, Field(ge=0.0, le=0.5, allow_inf_nan=False)] | None = (
+        None
+    )
+    beatmatch_glide_bars: Annotated[int, Field(ge=0, le=64)] | None = None
+    filter_sweep_floor_hz: (
+        Annotated[float, Field(ge=20.0, le=5000.0, allow_inf_nan=False)] | None
+    ) = None
 
     @field_validator("harmonic_mode")
     @classmethod
@@ -170,6 +192,16 @@ class PlaybackSettingsBody(BaseModel):
     replaygain_target_db: Annotated[float, Field(ge=-30.0, le=0.0, allow_inf_nan=False)] | None = (
         None
     )
+    replaygain_max_clip_safe_gain: (
+        Annotated[float, Field(ge=0.1, le=2.0, allow_inf_nan=False)] | None
+    ) = None
+    crossfade_bass_cutoff_hz: (
+        Annotated[float, Field(ge=20.0, le=1000.0, allow_inf_nan=False)] | None
+    ) = None
+    pick_top_k: Annotated[int, Field(ge=1, le=100)] | None = None
+    pick_temperature: Annotated[float, Field(ge=0.0, le=10.0, allow_inf_nan=False)] | None = None
+    prefetch_next_track: bool | None = None
+    silence_trigger_crossfade: bool | None = None
 
     @model_validator(mode="after")
     def _check_choices(self) -> PlaybackSettingsBody:

@@ -399,29 +399,84 @@
 
   <!-- ============================================================
        View: Settings — the mix and playback options a DJ changes during
-       a set.  Startup-only options (library folder, server address,
-       pick_top_k and the like) stay in config.toml.
+       a set, split into subtabs (subtabs.js) so each screen stays short.
+       Startup-only options (library folder, server address and the like)
+       stay in config.toml.
        ============================================================ -->
   <section data-view="settings" id="panel-settings" role="tabpanel" hidden aria-labelledby="tab-settings">
+  <h2>Settings</h2>
 
-  <details class="card" open>
-    <summary><h2>Settings</h2></summary>
+  <!-- Single shared status region for failures (success is silent — checkbox
+       state already announced by the AT). -->
+  <div id="settings-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
 
-    <!-- Single shared status region for failures (success is silent — checkbox
-         state already announced by the AT). -->
-    <div id="settings-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+  <!-- Like the section tabs, these carry no aria-controls: that relation
+       made NVDA speak the focused tab twice.  data-panel names the panel,
+       and each panel's aria-labelledby names it after its tab.  The
+       Stream tab shows only in stream mode. -->
+  <div role="tablist" class="subtabs" id="settings-tabs" aria-label="Settings groups" aria-orientation="horizontal">
+    <button type="button" role="tab" id="stab-transitions" data-subview="transitions" data-panel="spanel-transitions" aria-selected="false" tabindex="-1">Transitions</button>
+    <button type="button" role="tab" id="stab-djmix" data-subview="djmix" data-panel="spanel-djmix" aria-selected="false" tabindex="-1">DJ mixing</button>
+    <button type="button" role="tab" id="stab-picking" data-subview="picking" data-panel="spanel-picking" aria-selected="false" tabindex="-1">Song picking</button>
+    <button type="button" role="tab" id="stab-sound" data-subview="sound" data-panel="spanel-sound" aria-selected="false" tabindex="-1">Sound</button>
+    <button type="button" role="tab" id="stab-display" data-subview="display" data-panel="spanel-display" aria-selected="false" tabindex="-1">Display and keys</button>
+    <button type="button" role="tab" id="stab-liners" data-subview="liners" data-panel="spanel-liners" aria-selected="false" tabindex="-1">Voice liners</button>
+    <button type="button" role="tab" id="stab-stream" data-subview="stream" data-panel="spanel-stream" aria-selected="false" tabindex="-1" hidden>Stream</button>
+    <button type="button" role="tab" id="stab-access" data-subview="access" data-panel="spanel-access" aria-selected="false" tabindex="-1">Profiles and access</button>
+  </div>
 
+  <div class="card" role="tabpanel" id="spanel-transitions" aria-labelledby="stab-transitions" hidden>
+    <h3>Transitions</h3>
     <fieldset>
-      <legend>Preset and transition</legend>
+      <legend>Crossfade</legend>
       <div class="settings-row">
-        <label for="preset-select">Preset</label>
-        <select id="preset-select" aria-describedby="preset-desc">
-          <option value="">(none)</option>
+        <label for="pb-transition-mode">Transition mode</label>
+        <select id="pb-transition-mode" aria-describedby="pb-transition-mode-desc">
+          <option value="full_intro_outro">Full intro and outro</option>
+          <option value="outro_fade">Outro fade</option>
+          <option value="fixed_skip_silence">Fixed (skip silence)</option>
+          <option value="fixed">Fixed</option>
+          <option value="saved_points">Use saved segue points</option>
         </select>
       </div>
-      <span class="setting-desc" id="preset-desc">
-        Guide track selection toward a chosen tempo over time. For example, <em>wakeup</em> rises from 70 to 130 BPM and <em>chill</em> stays near 75 BPM. Add your own presets in config.toml.
+      <span class="setting-desc" id="pb-transition-mode-desc">
+        <em>Full intro and outro</em> overlaps the detected intro and outro, fading for the shorter of the two (1 to 12 seconds). <em>Outro fade</em> uses the ending song’s outro length. <em>Fixed (skip silence)</em> uses Crossfade seconds and skips leading silence. <em>Fixed</em> uses Crossfade seconds at the end of the file. <em>Use saved segue points</em> uses your saved cues and crossfade length for station handoffs, including liners; it requires stream or server audio playback.
       </span>
+      <p id="pb-saved-points-note" hidden>Uses each track’s saved Segue point and the configured crossfade length. Other transition effects and alignment options are not used.</p>
+      <div class="settings-row">
+        <label for="pb-crossfade">Crossfade seconds</label>
+        <input type="number" id="pb-crossfade" min="0" max="20" step="0.5" value="3" aria-describedby="pb-crossfade-desc">
+      </div>
+      <span class="setting-desc" id="pb-crossfade-desc">
+        How long the gain ramp between tracks lasts.  2-3 s feels natural for most music; 5-8 s for ambient or testing transition effects.  0 cuts from one track to the next with no fade and no transition effect.  In Full intro and outro and Outro fade modes, tracks with detected markers fade for 1 to 12 seconds instead, even at 0.
+      </span>
+
+      <div class="settings-row">
+        <label for="pb-fade-in">Fade-in seconds</label>
+        <input type="number" id="pb-fade-in" min="0" max="20" step="0.5" value="3" aria-describedby="pb-fade-in-desc">
+      </div>
+      <span class="setting-desc" id="pb-fade-in-desc">
+        How long the incoming track takes to reach full volume.  0 <span aria-hidden="true">=</span><span class="visually-hidden">means</span> incoming track starts at full volume immediately when the crossfade begins (no ramp-up).  Capped at crossfade length.
+      </span>
+      <div class="settings-check">
+        <input type="checkbox" id="pb-eq-duck" aria-describedby="pb-eq-duck-desc">
+        <label for="pb-eq-duck">EQ-ducked crossfade</label>
+      </div>
+      <span class="setting-desc" id="pb-eq-duck-desc">
+        Reduce bass in the ending song during the overlap to keep the two bass lines from competing. For stream and server audio playback.
+      </span>
+      <div class="settings-row" data-show-when="pb-eq-duck">
+        <label for="pb-bass-cutoff">EQ duck cutoff (hertz)</label>
+        <input type="number" id="pb-bass-cutoff" min="20" max="1000" step="10" value="180"
+               inputmode="numeric" aria-describedby="pb-bass-cutoff-desc">
+      </div>
+      <span class="setting-desc" id="pb-bass-cutoff-desc" data-show-when="pb-eq-duck">
+        Bass below this frequency is lowered in the ending song during the overlap, from 20 to 1000.  The default, 180, covers kick drums and bass lines.  For stream and server audio playback.
+      </span>
+    </fieldset>
+
+    <fieldset data-saved-points="hide">
+      <legend>Transition effect</legend>
       <div class="settings-row">
         <label for="transition-select">Transition effect</label>
         <select id="transition-select" aria-describedby="transition-desc">
@@ -472,12 +527,12 @@
       <span class="setting-desc" id="fx-https-note" hidden>
         Some transition effects need HTTPS.  This page was opened over plain HTTP, so crossfades this browser plays skip gate stutter, bitcrusher, freeze and glitch: they play a plain crossfade, and random and rotate leave them out.
       </span>
-      <div class="settings-row">
+      <div class="settings-row" data-show-when="transition-select!=none">
         <label for="tx-wet-mix">Transition effect level (percent)</label>
         <input type="number" id="tx-wet-mix" min="0" max="100" step="5" value="100"
                inputmode="decimal" aria-describedby="tx-wet-mix-desc">
       </div>
-      <span class="setting-desc" id="tx-wet-mix-desc">
+      <span class="setting-desc" id="tx-wet-mix-desc" data-show-when="transition-select!=none">
         How much of the transition effect sits on top of the plain crossfade, from 0 (plain crossfade only) to 100 (full effect).
       </span>
       <!-- Per-effect detail is read on demand, not on every focus of the
@@ -525,189 +580,25 @@
           <li><strong>rotate</strong> cycles through every effect in order</li>
         </ul>
       </details>
-    </fieldset>
-
-    <fieldset>
-      <legend>DJ-mix toggles</legend>
-      <div class="settings-row">
-        <label for="harmonic-mode">Harmonic mixing</label>
-        <select id="harmonic-mode" aria-describedby="dj-harmonic-desc">
-          <option value="off">off (no key filter)</option>
-          <option value="compatible">compatible (Camelot match, plus or minus 1, relative)</option>
-          <option value="strict">strict (same Camelot position only)</option>
-          <option value="neighbour">neighbour (same side, plus or minus 1 only)</option>
-          <option value="mood_change">mood change (relative major or minor only)</option>
-          <option value="energy_boost">energy boost (same side, plus 2 jump)</option>
-        </select>
-      </div>
-      <span class="setting-desc" id="dj-harmonic-desc">
-        Restrict next-track picks to harmonically related keys.
-        <strong>compatible</strong> is the classic Camelot rule (same position, <span aria-hidden="true">±</span><span class="visually-hidden">plus or minus </span>1, or relative major<span aria-hidden="true">/</span><span class="visually-hidden"> or </span>minor) — broadest pool.
-        <strong>strict</strong> only allows the exact same key.
-        <strong>neighbour</strong> walks the wheel one step at a time, no mode flips.
-        <strong>mood change</strong> swaps major<span aria-hidden="true">↔</span><span class="visually-hidden"> and </span>minor only (energy stays, mood flips).
-        <strong>energy boost</strong> picks two steps up the wheel — each track is two semitones up, so the set lifts over time.  Pick <strong>off</strong> to disable the harmonic filter completely.
-      </span>
-
-      <div class="settings-check">
-        <input type="checkbox" id="dj-beatmatch" aria-describedby="dj-beatmatch-desc">
-        <label for="dj-beatmatch">Beatmatch</label>
-      </div>
-      <span class="setting-desc" id="dj-beatmatch-desc">
-        Match the new song’s tempo to the ending song during the crossfade, within the configured stretch limit (8 percent by default). For stream and server audio playback.
-      </span>
-
-      <div class="settings-check">
-        <input type="checkbox" id="dj-drop-mix" aria-describedby="dj-drop-mix-desc">
-        <label for="dj-drop-mix">Drop mixing</label>
-      </div>
-      <span class="setting-desc" id="dj-drop-mix-desc">
-        With Beatmatch on, line up the new song’s drop with the end of a section in the playing song. Its build-up plays underneath; Auto adds a noise riser. Uses a marked Drop cue or a reliable detected drop. Falls back to a normal mix if the drop is more than 90 seconds in or would cut the playing song more than 32 seconds short. For stream and server audio playback.
-      </span>
-
-      <div class="settings-check">
-        <input type="checkbox" id="dj-key-shift" aria-describedby="dj-key-shift-desc">
-        <label for="dj-key-shift">Key shift</label>
-      </div>
-      <span class="setting-desc" id="dj-key-shift-desc">
-        If shifting the new song by one or two semitones makes its key fit, use that key during the crossfade, then ease back to its original key. Tempo stays unchanged. Songs with unknown keys or larger clashes keep their original key. For stream and server audio playback.
-      </span>
-
-      <div class="settings-check">
-        <input type="checkbox" id="dj-phrase-align" aria-describedby="dj-phrase-desc">
-        <label for="dj-phrase-align">Phrase align</label>
-      </div>
-      <span class="setting-desc" id="dj-phrase-desc">
-        Start the crossfade at a nearby musical phrase boundary. Uses the detected beat grid; without one, the track fades at its usual point. Works with browser, stream and server audio playback.
-      </span>
-      <div class="settings-row" data-show-when="dj-phrase-align">
-        <label for="dj-phrase-bars">Phrase length (bars)</label>
-        <input type="number" id="dj-phrase-bars" min="1" max="64" step="1" value="8"
-               inputmode="numeric" aria-describedby="dj-phrase-bars-desc">
-      </div>
-      <span class="setting-desc" id="dj-phrase-bars-desc" data-show-when="dj-phrase-align">
-        How many bars make one phrase, a whole number from 1 to 64.  8 suits most dance music; 16 or 32 waits for longer phrases.
-      </span>
-
-      <div class="settings-check">
-        <input type="checkbox" id="dj-outro-intro" aria-describedby="dj-outro-desc">
-        <label for="dj-outro-intro">Outro <span aria-hidden="true">/</span><span class="visually-hidden">and</span> intro align</label>
-      </div>
-      <span class="setting-desc" id="dj-outro-desc">
-        Auto-detect each track's outro on first play and start the crossfade there, with the new track coming in at its first sound.  For stream and server audio playback.
-      </span>
-
-      <div class="settings-check">
-        <input type="checkbox" id="dj-filter-sweep" aria-describedby="dj-filter-sweep-desc">
-        <label for="dj-filter-sweep">Filter sweep</label>
-      </div>
-      <span class="setting-desc" id="dj-filter-sweep-desc">
-        Close a low-pass filter over the outgoing track during the crossfade, so it fades out muffled while the new track comes in clear.  For stream and server audio playback.
-      </span>
-
-      <div class="settings-check">
-        <input type="checkbox" id="dj-vocal-guard" checked aria-describedby="dj-vocal-guard-desc">
-        <label for="dj-vocal-guard">Keep vocals apart</label>
-      </div>
-      <span class="setting-desc" id="dj-vocal-guard-desc">
-        When both tracks have synced lyrics, shorten or move the crossfade so the outgoing singer finishes before the incoming one starts.  The fade is never made longer, or shorter than 1 second; when nothing works it stays as it was.  On by default.  For stream and server audio playback.
-      </span>
-    </fieldset>
-
-    <fieldset>
-      <legend>Playback</legend>
-      <div class="settings-check">
-        <input type="checkbox" id="pb-eq-duck" aria-describedby="pb-eq-duck-desc">
-        <label for="pb-eq-duck">EQ-ducked crossfade</label>
-      </div>
-      <span class="setting-desc" id="pb-eq-duck-desc">
-        Reduce bass in the ending song during the overlap to keep the two bass lines from competing. For stream and server audio playback.
-      </span>
-
-      <div class="settings-row">
-        <label for="pb-pick-mode">Pick mode</label>
-        <select id="pb-pick-mode" aria-describedby="pb-pick-mode-desc">
-          <option value="similarity">Similarity (default)</option>
-          <option value="random">Random walk (uniform random)</option>
-          <option value="least_recent">Least recently played</option>
-          <option value="clock">Clockwheel</option>
-        </select>
-      </div>
-      <span class="setting-desc" id="pb-pick-mode-desc">
-        <em>Similarity</em> chooses a song that sounds like the last one. <em>Random walk</em> chooses at random. <em>Least recently played</em> prefers songs that have waited longest. <em>Clockwheel</em> follows your folder rotation, restarting it at a song handoff near the chosen minute marks.
-      </span>
-
-      <div class="settings-check">
-        <input type="checkbox" id="pb-anchor-seed" aria-describedby="pb-anchor-desc">
-        <label for="pb-anchor-seed">Anchor to seed</label>
-      </div>
-      <span class="setting-desc" id="pb-anchor-desc">
-        Keep similarity picks close to the song that started the session, instead of following each new song. Discovery can still choose a different-sounding track.
-      </span>
-
-      <div class="settings-row">
-        <label for="pb-no-repeat">Tracks before a song can repeat</label>
-        <input type="number" id="pb-no-repeat" min="0" max="100000" step="1" value="500"
-               inputmode="numeric" aria-describedby="pb-no-repeat-desc">
-      </div>
-      <span class="setting-desc" id="pb-no-repeat-desc">
-        How many recently played tracks the picker avoids, a whole number from 0 to 100000.  0 lets a song come back straight away.  When the library holds fewer tracks than this, AutoDJ uses a smaller number so it always has something to pick.
-      </span>
-
-      <div class="settings-row">
-        <label for="pb-artist-repeat">Tracks before an artist can repeat</label>
-        <input type="number" id="pb-artist-repeat" min="0" max="100" step="1" value="3"
-               inputmode="numeric" aria-describedby="pb-artist-repeat-desc">
-      </div>
-      <span class="setting-desc" id="pb-artist-repeat-desc">
-        How many of the latest tracks are checked for the same artist, album or song title, a whole number from 0 to 100.  0 turns this check off.
-      </span>
-
-      <div class="settings-check">
-        <input type="checkbox" id="pb-show-lyrics" aria-describedby="pb-show-lyrics-desc">
-        <label for="pb-show-lyrics">Show lyrics</label>
-      </div>
-      <span class="setting-desc" id="pb-show-lyrics-desc">
-        Display timed (LRC) or plain lyrics in the Lyrics card.
-      </span>
-
-      <div class="settings-row">
-        <label for="pb-replaygain">Output processing</label>
-        <select id="pb-replaygain" aria-describedby="pb-rg-desc">
-          <option value="off">Off</option>
-          <option value="replaygain">ReplayGain</option>
-          <option value="smooth">Smooth</option>
-          <option value="stereotool">Stereo Tool (free preset)</option>
-        </select>
-      </div>
-      <span class="setting-desc" id="pb-rg-desc">
-        <em>Off</em> leaves levels unchanged. <em>ReplayGain</em> adjusts tracks using their loudness tags. <em>Smooth</em> balances source levels and compresses the mix. <em>Stereo Tool</em> balances sources and runs the mix through the bundled free preset; its executable must be configured on the server. For stream and server audio playback.
-      </span>
-      <div class="settings-row" data-show-when="pb-replaygain">
-        <label for="pb-rg-target">ReplayGain target loudness (decibels)</label>
-        <input type="number" id="pb-rg-target" min="-30" max="0" step="1" value="-14"
-               inputmode="decimal" aria-describedby="pb-rg-target-desc">
-      </div>
-      <span class="setting-desc" id="pb-rg-target-desc" data-show-when="pb-replaygain">
-        The loudness every tagged track is brought to, from minus 30 to 0.  Minus 14 is the default; minus 18 is the original ReplayGain reference and plays quieter.  For stream and server audio playback.
-      </span>
-
-      <div class="settings-check">
+      <div class="settings-check" data-show-when="transition-select!=none">
         <input type="checkbox" id="pb-beat-sync-fx" aria-describedby="pb-beat-sync-fx-desc">
         <label for="pb-beat-sync-fx">Beat-sync transition FX</label>
       </div>
-      <span class="setting-desc" id="pb-beat-sync-fx-desc">
+      <span class="setting-desc" id="pb-beat-sync-fx-desc" data-show-when="transition-select!=none">
         Time rhythmic effects to the songs’ beats and fit sweeps, risers and reverbs to whole bars. Uses ordinary timing when beat or tempo data is missing. For browser crossfades only.
       </span>
 
-      <div class="settings-check">
+      <div class="settings-check" data-show-when="transition-select!=none">
         <input type="checkbox" id="pb-key-sync-fx" aria-describedby="pb-key-sync-fx-desc">
         <label for="pb-key-sync-fx">Key-sync pitched FX</label>
       </div>
-      <span class="setting-desc" id="pb-key-sync-fx-desc">
+      <span class="setting-desc" id="pb-key-sync-fx-desc" data-show-when="transition-select!=none">
         Tune air horn, dub siren and ring modulator to the songs’ root notes, moving from the old key to the new one during the fade. Without a detected key, each effect uses its usual pitch. For browser crossfades only.
       </span>
+    </fieldset>
 
+    <fieldset>
+      <legend>Skip</legend>
       <div class="settings-check">
         <input type="checkbox" id="pb-beatmatch-on-skip" aria-describedby="pb-beatmatch-on-skip-desc">
         <label for="pb-beatmatch-on-skip">Beatmatch on skip</label>
@@ -728,36 +619,174 @@
       <span class="setting-desc" id="pb-skip-style-desc">
         How Skip ends the playing track when the server does the mixing, in stream mode or with server audio.  <em>Quick fade</em> (the default) fades it out in a fraction of a second.  <em>Echo out</em> cuts the music and lets its echoes ring out.  <em>Backspin</em> spins the record backwards to a stop.  <em>Loop roll</em> repeats a short loop that rolls faster as it fades.  Each effect lasts one to two beats, at most 2 seconds, and ends on a beat when the track's tempo is known; then the next track starts.  Browser playback keeps its own skip.
       </span>
+    </fieldset>
+  </div>
 
-      <div class="settings-row">
-        <label for="audio-device">Audio output device</label>
-        <select id="audio-device" aria-describedby="audio-device-desc">
-          <option value="">System default</option>
-        </select>
-        <button type="button" id="audio-device-refresh"
-                title="Grant the browser microphone permission so device names show up.  Permission is dropped immediately — no audio is captured.">
-          Show device names
-        </button>
+  <div class="card" role="tabpanel" id="spanel-djmix" aria-labelledby="stab-djmix" hidden>
+    <h3>DJ mixing</h3>
+    <p data-saved-points="note" hidden>These options are not used with saved segue points.  To use them, choose another Transition mode under Transitions.</p>
+    <fieldset data-saved-points="hide">
+      <legend>Tempo and key</legend>
+      <div class="settings-check">
+        <input type="checkbox" id="dj-beatmatch" aria-describedby="dj-beatmatch-desc">
+        <label for="dj-beatmatch">Beatmatch</label>
       </div>
-      <span class="setting-desc" id="audio-device-desc">
-        Choose the browser’s speakers or headphones, where your browser supports this. Show device names briefly requests microphone access to reveal their names; it does not record audio. The choice is saved in this browser. Server audio uses <code>[playback] audio_device</code> in config.toml.
+      <span class="setting-desc" id="dj-beatmatch-desc">
+        Match the new song’s tempo to the ending song during the crossfade, within the configured stretch limit (8 percent by default). For stream and server audio playback.
+      </span>
+      <div class="settings-row" data-show-when="dj-beatmatch">
+        <label for="dj-max-stretch">Beatmatch stretch limit (percent)</label>
+        <input type="number" id="dj-max-stretch" min="0" max="50" step="1" value="8"
+               inputmode="decimal" aria-describedby="dj-max-stretch-desc">
+      </div>
+      <span class="setting-desc" id="dj-max-stretch-desc" data-show-when="dj-beatmatch">
+        The most the new song’s tempo may change to match the ending song, from 0 to 50 percent.  Songs further apart than this mix without beatmatching.  The default is 8.
+      </span>
+      <div class="settings-row" data-show-when="dj-beatmatch|dj-key-shift">
+        <label for="dj-glide-bars">Glide back (bars)</label>
+        <input type="number" id="dj-glide-bars" min="0" max="64" step="1" value="8"
+               inputmode="numeric" aria-describedby="dj-glide-bars-desc">
+      </div>
+      <span class="setting-desc" id="dj-glide-bars-desc" data-show-when="dj-beatmatch|dj-key-shift">
+        After a beatmatched or key-shifted crossfade, how many bars the new song takes to ease back to its own tempo and key, a whole number from 0 to 64.  0 returns it at once.  The default is 8.  For stream and server audio playback.
+      </span>
+      <div class="settings-check" data-show-when="dj-beatmatch">
+        <input type="checkbox" id="dj-drop-mix" aria-describedby="dj-drop-mix-desc">
+        <label for="dj-drop-mix">Drop mixing</label>
+      </div>
+      <span class="setting-desc" id="dj-drop-mix-desc" data-show-when="dj-beatmatch">
+        With Beatmatch on, line up the new song’s drop with the end of a section in the playing song. Its build-up plays underneath; Auto adds a noise riser. Uses a marked Drop cue or a reliable detected drop. Falls back to a normal mix if the drop is more than 90 seconds in or would cut the playing song more than 32 seconds short. For stream and server audio playback.
       </span>
 
+      <div class="settings-check">
+        <input type="checkbox" id="dj-key-shift" aria-describedby="dj-key-shift-desc">
+        <label for="dj-key-shift">Key shift</label>
+      </div>
+      <span class="setting-desc" id="dj-key-shift-desc">
+        If shifting the new song by one or two semitones makes its key fit, use that key during the crossfade, then ease back to its original key. Tempo stays unchanged. Songs with unknown keys or larger clashes keep their original key. For stream and server audio playback.
+      </span>
+    </fieldset>
+
+    <fieldset data-saved-points="hide">
+      <legend>Timing</legend>
+      <div class="settings-check">
+        <input type="checkbox" id="dj-phrase-align" aria-describedby="dj-phrase-desc">
+        <label for="dj-phrase-align">Phrase align</label>
+      </div>
+      <span class="setting-desc" id="dj-phrase-desc">
+        Start the crossfade at a nearby musical phrase boundary. Uses the detected beat grid; without one, the track fades at its usual point. Works with browser, stream and server audio playback.
+      </span>
+      <div class="settings-row" data-show-when="dj-phrase-align">
+        <label for="dj-phrase-bars">Phrase length (bars)</label>
+        <input type="number" id="dj-phrase-bars" min="1" max="64" step="1" value="8"
+               inputmode="numeric" aria-describedby="dj-phrase-bars-desc">
+      </div>
+      <span class="setting-desc" id="dj-phrase-bars-desc" data-show-when="dj-phrase-align">
+        How many bars make one phrase, a whole number from 1 to 64.  8 suits most dance music; 16 or 32 waits for longer phrases.
+      </span>
+      <div class="settings-check">
+        <input type="checkbox" id="dj-outro-intro" aria-describedby="dj-outro-desc">
+        <label for="dj-outro-intro">Outro <span aria-hidden="true">/</span><span class="visually-hidden">and</span> intro align</label>
+      </div>
+      <span class="setting-desc" id="dj-outro-desc">
+        Auto-detect each track's outro on first play and start the crossfade there, with the new track coming in at its first sound.  For stream and server audio playback.
+      </span>
+      <div class="settings-check">
+        <input type="checkbox" id="dj-vocal-guard" checked aria-describedby="dj-vocal-guard-desc">
+        <label for="dj-vocal-guard">Keep vocals apart</label>
+      </div>
+      <span class="setting-desc" id="dj-vocal-guard-desc">
+        When both tracks have synced lyrics, shorten or move the crossfade so the outgoing singer finishes before the incoming one starts.  The fade is never made longer, or shorter than 1 second; when nothing works it stays as it was.  On by default.  For stream and server audio playback.
+      </span>
+    </fieldset>
+
+    <fieldset data-saved-points="hide">
+      <legend>Filter sweep</legend>
+      <div class="settings-check">
+        <input type="checkbox" id="dj-filter-sweep" aria-describedby="dj-filter-sweep-desc">
+        <label for="dj-filter-sweep">Filter sweep</label>
+      </div>
+      <span class="setting-desc" id="dj-filter-sweep-desc">
+        Close a low-pass filter over the outgoing track during the crossfade, so it fades out muffled while the new track comes in clear.  For stream and server audio playback.
+      </span>
+      <div class="settings-row" data-show-when="dj-filter-sweep">
+        <label for="dj-sweep-floor">Filter sweep floor (hertz)</label>
+        <input type="number" id="dj-sweep-floor" min="20" max="5000" step="10" value="250"
+               inputmode="numeric" aria-describedby="dj-sweep-floor-desc">
+      </div>
+      <span class="setting-desc" id="dj-sweep-floor-desc" data-show-when="dj-filter-sweep">
+        How far down the filter closes by the end of the crossfade, from 20 to 5000.  Lower sounds more muffled.  The default is 250.
+      </span>
+    </fieldset>
+  </div>
+
+  <div class="card" role="tabpanel" id="spanel-picking" aria-labelledby="stab-picking" hidden>
+    <h3>Song picking</h3>
+    <fieldset>
+      <legend>Picking</legend>
       <div class="settings-row">
-        <label for="pb-transition-mode">Transition mode</label>
-        <select id="pb-transition-mode" aria-describedby="pb-transition-mode-desc">
-          <option value="full_intro_outro">Full intro and outro</option>
-          <option value="outro_fade">Outro fade</option>
-          <option value="fixed_skip_silence">Fixed (skip silence)</option>
-          <option value="fixed">Fixed</option>
-          <option value="saved_points">Use saved segue points</option>
+        <label for="preset-select">Preset</label>
+        <select id="preset-select" aria-describedby="preset-desc">
+          <option value="">(none)</option>
         </select>
       </div>
-      <span class="setting-desc" id="pb-transition-mode-desc">
-        <em>Full intro and outro</em> overlaps the detected intro and outro, fading for the shorter of the two (1 to 12 seconds). <em>Outro fade</em> uses the ending song’s outro length. <em>Fixed (skip silence)</em> uses Crossfade seconds and skips leading silence. <em>Fixed</em> uses Crossfade seconds at the end of the file. <em>Use saved segue points</em> uses your saved cues and crossfade length for station handoffs, including liners; it requires stream or server audio playback.
+      <span class="setting-desc" id="preset-desc">
+        Guide track selection toward a chosen tempo over time. For example, <em>wakeup</em> rises from 70 to 130 BPM and <em>chill</em> stays near 75 BPM. Add your own presets in config.toml.
       </span>
-      <p id="pb-saved-points-note" hidden>Uses each track’s saved Segue point and the configured crossfade length. Other transition effects and alignment options are not used.</p>
-
+      <div class="settings-row">
+        <label for="pb-pick-mode">Pick mode</label>
+        <select id="pb-pick-mode" aria-describedby="pb-pick-mode-desc">
+          <option value="similarity">Similarity (default)</option>
+          <option value="random">Random walk (uniform random)</option>
+          <option value="least_recent">Least recently played</option>
+          <option value="clock">Clockwheel</option>
+        </select>
+      </div>
+      <span class="setting-desc" id="pb-pick-mode-desc">
+        <em>Similarity</em> chooses a song that sounds like the last one. <em>Random walk</em> chooses at random. <em>Least recently played</em> prefers songs that have waited longest. <em>Clockwheel</em> follows your folder rotation, restarting it at a song handoff near the chosen minute marks.
+      </span>
+      <div class="settings-row" data-show-when="pb-pick-mode=similarity">
+        <label for="pb-pick-top-k">Choose among the closest songs</label>
+        <input type="number" id="pb-pick-top-k" min="1" max="100" step="1" value="1"
+               inputmode="numeric" aria-describedby="pb-pick-top-k-desc">
+      </div>
+      <span class="setting-desc" id="pb-pick-top-k-desc" data-show-when="pb-pick-mode=similarity">
+        How many of the closest-sounding songs a similarity pick chooses among, a whole number from 1 to 100.  1, the default, always takes the closest one.
+      </span>
+      <div class="settings-row" data-show-when="pb-pick-mode=similarity">
+        <label for="pb-pick-temperature">Pick randomness</label>
+        <input type="number" id="pb-pick-temperature" min="0" max="10" step="0.05" value="0.3"
+               inputmode="decimal" aria-describedby="pb-pick-temperature-desc">
+      </div>
+      <span class="setting-desc" id="pb-pick-temperature-desc" data-show-when="pb-pick-mode=similarity">
+        How evenly a pick spreads over those closest songs, from 0 to 10.  0 always takes the closest; higher numbers give the others more of a chance.  No effect while the number above is 1.  The default is 0.3.
+      </span>
+      <div class="settings-row">
+        <label for="harmonic-mode">Harmonic mixing</label>
+        <select id="harmonic-mode" aria-describedby="dj-harmonic-desc">
+          <option value="off">off (no key filter)</option>
+          <option value="compatible">compatible (Camelot match, plus or minus 1, relative)</option>
+          <option value="strict">strict (same Camelot position only)</option>
+          <option value="neighbour">neighbour (same side, plus or minus 1 only)</option>
+          <option value="mood_change">mood change (relative major or minor only)</option>
+          <option value="energy_boost">energy boost (same side, plus 2 jump)</option>
+        </select>
+      </div>
+      <span class="setting-desc" id="dj-harmonic-desc">
+        Restrict next-track picks to harmonically related keys.
+        <strong>compatible</strong> is the classic Camelot rule (same position, <span aria-hidden="true">±</span><span class="visually-hidden">plus or minus </span>1, or relative major<span aria-hidden="true">/</span><span class="visually-hidden"> or </span>minor) — broadest pool.
+        <strong>strict</strong> only allows the exact same key.
+        <strong>neighbour</strong> walks the wheel one step at a time, no mode flips.
+        <strong>mood change</strong> swaps major<span aria-hidden="true">↔</span><span class="visually-hidden"> and </span>minor only (energy stays, mood flips).
+        <strong>energy boost</strong> picks two steps up the wheel — each track is two semitones up, so the set lifts over time.  Pick <strong>off</strong> to disable the harmonic filter completely.
+      </span>
+      <div class="settings-check">
+        <input type="checkbox" id="pb-anchor-seed" aria-describedby="pb-anchor-desc">
+        <label for="pb-anchor-seed">Anchor to seed</label>
+      </div>
+      <span class="setting-desc" id="pb-anchor-desc">
+        Keep similarity picks close to the song that started the session, instead of following each new song. Discovery can still choose a different-sounding track.
+      </span>
       <div class="settings-row">
         <label for="pb-post-queue-seed">After queue empties, seed from</label>
         <select id="pb-post-queue-seed" aria-describedby="pb-post-queue-seed-desc">
@@ -768,39 +797,26 @@
       <span class="setting-desc" id="pb-post-queue-seed-desc">
         Choose where similarity picks resume after your queue finishes: from the last queued song, or from the song that was playing when you started the queue.
       </span>
+    </fieldset>
 
+    <fieldset>
+      <legend>Repeats</legend>
       <div class="settings-row">
-        <label for="key-notation">Key notation</label>
-        <select id="key-notation" aria-describedby="key-notation-desc">
-          <option value="camelot">Camelot (8A or 8B)</option>
-          <option value="musical">Musical (C, A minor, F sharp minor)</option>
-        </select>
+        <label for="pb-no-repeat">Tracks before a song can repeat</label>
+        <input type="number" id="pb-no-repeat" min="0" max="100000" step="1" value="500"
+               inputmode="numeric" aria-describedby="pb-no-repeat-desc">
       </div>
-      <span class="setting-desc" id="key-notation-desc">
-        Show keys as Camelot positions (8A, 8B) or musical names (C, A minor). The key wheel always uses Camelot positions.
-      </span>
-      <div class="settings-row" data-show-when="key-notation=musical">
-        <label for="key-prefer-flats">Use flats</label>
-        <input type="checkbox" id="key-prefer-flats" aria-describedby="key-prefer-flats-desc">
-      </div>
-      <span class="setting-desc" id="key-prefer-flats-desc" data-show-when="key-notation=musical">
-        Show flats such as D flat instead of sharps such as C sharp.
+      <span class="setting-desc" id="pb-no-repeat-desc">
+        How many recently played tracks the picker avoids, a whole number from 0 to 100000.  0 lets a song come back straight away.  When the library holds fewer tracks than this, AutoDJ uses a smaller number so it always has something to pick.
       </span>
 
       <div class="settings-row">
-        <label for="pb-crossfade">Crossfade seconds</label>
-        <input type="number" id="pb-crossfade" min="0" max="20" step="0.5" value="3" aria-describedby="pb-crossfade-desc">
+        <label for="pb-artist-repeat">Tracks before an artist can repeat</label>
+        <input type="number" id="pb-artist-repeat" min="0" max="100" step="1" value="3"
+               inputmode="numeric" aria-describedby="pb-artist-repeat-desc">
       </div>
-      <span class="setting-desc" id="pb-crossfade-desc">
-        How long the gain ramp between tracks lasts.  2-3 s feels natural for most music; 5-8 s for ambient or testing transition effects.  0 cuts from one track to the next with no fade and no transition effect.  In Full intro and outro and Outro fade modes, tracks with detected markers fade for 1 to 12 seconds instead, even at 0.
-      </span>
-
-      <div class="settings-row">
-        <label for="pb-fade-in">Fade-in seconds</label>
-        <input type="number" id="pb-fade-in" min="0" max="20" step="0.5" value="3" aria-describedby="pb-fade-in-desc">
-      </div>
-      <span class="setting-desc" id="pb-fade-in-desc">
-        How long the incoming track takes to reach full volume.  0 <span aria-hidden="true">=</span><span class="visually-hidden">means</span> incoming track starts at full volume immediately when the crossfade begins (no ramp-up).  Capped at crossfade length.
+      <span class="setting-desc" id="pb-artist-repeat-desc">
+        How many of the latest tracks are checked for the same artist, album or song title, a whole number from 0 to 100.  0 turns this check off.
       </span>
     </fieldset>
 
@@ -836,6 +852,103 @@
         Occasionally choose from the quarter of the library that sounds least like the current selection. This adds variety when similarity picks sound too alike.
       </span>
     </fieldset>
+  </div>
+
+  <div class="card" role="tabpanel" id="spanel-sound" aria-labelledby="stab-sound" hidden>
+    <h3>Sound</h3>
+    <fieldset>
+      <legend>Output processing</legend>
+      <div class="settings-row">
+        <label for="pb-replaygain">Output processing</label>
+        <select id="pb-replaygain" aria-describedby="pb-rg-desc">
+          <option value="off">Off</option>
+          <option value="replaygain">ReplayGain</option>
+          <option value="smooth">Smooth</option>
+          <option value="stereotool">Stereo Tool (free preset)</option>
+        </select>
+      </div>
+      <span class="setting-desc" id="pb-rg-desc">
+        <em>Off</em> leaves levels unchanged. <em>ReplayGain</em> adjusts tracks using their loudness tags. <em>Smooth</em> balances source levels and compresses the mix. <em>Stereo Tool</em> balances sources and runs the mix through the bundled free preset; its executable must be configured on the server. For stream and server audio playback.
+      </span>
+      <div class="settings-row" data-show-when="pb-replaygain=replaygain">
+        <label for="pb-rg-target">ReplayGain target loudness (decibels)</label>
+        <input type="number" id="pb-rg-target" min="-30" max="0" step="1" value="-14"
+               inputmode="decimal" aria-describedby="pb-rg-target-desc">
+      </div>
+      <span class="setting-desc" id="pb-rg-target-desc" data-show-when="pb-replaygain=replaygain">
+        The loudness every tagged track is brought to, from minus 30 to 0.  Minus 14 is the default; minus 18 is the original ReplayGain reference and plays quieter.  For stream and server audio playback.
+      </span>
+      <div class="settings-row" data-show-when="pb-replaygain=replaygain">
+        <label for="pb-rg-clip">ReplayGain peak limit</label>
+        <input type="number" id="pb-rg-clip" min="0.1" max="2" step="0.05" value="1"
+               inputmode="decimal" aria-describedby="pb-rg-clip-desc">
+      </div>
+      <span class="setting-desc" id="pb-rg-clip-desc" data-show-when="pb-replaygain=replaygain">
+        ReplayGain never raises a track so far that its tagged peak goes above this level, from 0.1 to 2.  1, the default, prevents clipping; above 1 allows some.  For stream and server audio playback.
+      </span>
+    </fieldset>
+
+    <fieldset>
+      <legend>Browser playback</legend>
+      <div class="settings-row">
+        <label for="audio-device">Audio output device</label>
+        <select id="audio-device" aria-describedby="audio-device-desc">
+          <option value="">System default</option>
+        </select>
+        <button type="button" id="audio-device-refresh"
+                title="Grant the browser microphone permission so device names show up.  Permission is dropped immediately — no audio is captured.">
+          Show device names
+        </button>
+      </div>
+      <span class="setting-desc" id="audio-device-desc">
+        Choose the browser’s speakers or headphones, where your browser supports this. Show device names briefly requests microphone access to reveal their names; it does not record audio. The choice is saved in this browser. Server audio uses <code>[playback] audio_device</code> in config.toml.
+      </span>
+      <div class="settings-check">
+        <input type="checkbox" id="pb-prefetch" checked aria-describedby="pb-prefetch-desc">
+        <label for="pb-prefetch">Load the next song early</label>
+      </div>
+      <span class="setting-desc" id="pb-prefetch-desc">
+        Start loading the next song as soon as it is picked, so it starts without a gap.  Turn this off only on a slow or metered connection.  On by default.  For browser playback.
+      </span>
+      <div class="settings-check">
+        <input type="checkbox" id="pb-silence-trigger" checked aria-describedby="pb-silence-trigger-desc">
+        <label for="pb-silence-trigger">Crossfade when a song goes quiet</label>
+      </div>
+      <span class="setting-desc" id="pb-silence-trigger-desc">
+        Start the crossfade early when the playing song has gone silent past its halfway point, so long fade-outs leave no dead air.  On by default.  For browser playback.
+      </span>
+    </fieldset>
+  </div>
+
+  <div class="card" role="tabpanel" id="spanel-display" aria-labelledby="stab-display" hidden>
+    <h3>Display and keys</h3>
+    <fieldset>
+      <legend>Display</legend>
+      <div class="settings-check">
+        <input type="checkbox" id="pb-show-lyrics" aria-describedby="pb-show-lyrics-desc">
+        <label for="pb-show-lyrics">Show lyrics</label>
+      </div>
+      <span class="setting-desc" id="pb-show-lyrics-desc">
+        Display timed (LRC) or plain lyrics in the Lyrics card.
+      </span>
+      <div class="settings-row">
+        <label for="key-notation">Key notation</label>
+        <select id="key-notation" aria-describedby="key-notation-desc">
+          <option value="camelot">Camelot (8A or 8B)</option>
+          <option value="musical">Musical (C, A minor, F sharp minor)</option>
+        </select>
+      </div>
+      <span class="setting-desc" id="key-notation-desc">
+        Show keys as Camelot positions (8A, 8B) or musical names (C, A minor). The key wheel always uses Camelot positions.
+      </span>
+      <div class="settings-row" data-show-when="key-notation=musical">
+        <label for="key-prefer-flats">Use flats</label>
+        <input type="checkbox" id="key-prefer-flats" aria-describedby="key-prefer-flats-desc">
+      </div>
+      <span class="setting-desc" id="key-prefer-flats-desc" data-show-when="key-notation=musical">
+        Show flats such as D flat instead of sharps such as C sharp.
+      </span>
+    </fieldset>
 
     <fieldset>
       <legend>Announcements</legend>
@@ -858,53 +971,10 @@
         Single-key shortcuts such as Space, N, M, the arrow keys and the question mark.  Turn this off if they clash with your screen reader or other keys you use; buttons and sliders keep working as usual.  Saved in this browser only.
       </span>
     </fieldset>
+  </div>
 
-
-    <!-- Stream mode only (autodj serve --stream); stream-mode.js shows it.
-         The listener count is plain text, not a live region. -->
-    <fieldset id="stream-settings" hidden>
-      <legend>Stream</legend>
-      <div class="settings-row">
-        <label for="stream-url">Stream address</label>
-        <input type="text" id="stream-url" readonly aria-describedby="stream-url-desc">
-        <button type="button" id="stream-copy">Copy address</button>
-      </div>
-      <span class="setting-desc" id="stream-url-desc">
-        Add this address to Sonos or any player as a radio station. Anyone who can reach AutoDJ can listen.
-      </span>
-      <!-- Plain text while the address lookup has not succeeded; not live. -->
-      <p class="stream-detail" id="stream-url-note" hidden></p>
-      <!-- Shown when the page was opened as localhost / 127.x / ::1: the
-           copied address would then only work on this machine.  Plain
-           text, not live. -->
-      <p class="stream-detail" id="stream-loopback-note" hidden>This address only works on this computer. Open AutoDJ using its network address (see the start-up message) to copy a link for speakers.</p>
-      <p class="stream-detail"><a id="stream-m3u" download="autodj.m3u">Download playlist file (.m3u)</a></p>
-      <p class="stream-detail" id="stream-listeners"></p>
-      <div class="settings-row">
-        <label for="stream-bitrate">Quality</label>
-        <select id="stream-bitrate" aria-describedby="stream-bitrate-desc">
-          <option value="128">128 kbps</option>
-          <option value="192">192 kbps</option>
-          <option value="256">256 kbps</option>
-          <option value="320">320 kbps</option>
-        </select>
-      </div>
-      <span class="setting-desc" id="stream-bitrate-desc">
-        Higher sounds better and uses more network.  Changing it makes every speaker reconnect for a moment.
-      </span>
-      <div class="settings-check">
-        <input type="checkbox" id="stream-continuous" aria-describedby="stream-continuous-desc">
-        <label for="stream-continuous">Keep playing without listeners</label>
-      </div>
-      <span class="setting-desc" id="stream-continuous-desc">
-        Keep the station running even when nobody is listening. When off, it starts when a listener connects and stops after a short wait once the last listener leaves.
-      </span>
-    </fieldset>
-  </details>
-
-  <!-- Voice liners -->
-  <details class="card">
-    <summary><h2>Voice liners</h2></summary>
+  <div class="card" role="tabpanel" id="spanel-liners" aria-labelledby="stab-liners" hidden>
+    <h3>Voice liners</h3>
     <p class="card-desc">
       IDs, jingles and voice tracks. Add liner folders in Library tools or upload a file below. Use Track info beside a liner to edit its Segue and Overlap start.
     </p>
@@ -1000,15 +1070,69 @@
       <span class="setting-desc" id="ln-upload-replace-desc">
         When a liner with the same file name is already in the folder, overwrite it.  Unticked, that upload is refused.
       </span>
-      <h3>Files</h3>
+      <h4>Files</h4>
       <ul id="ln-file-list" aria-label="Voice liner files"></ul>
     </fieldset>
-  </details>
+  </div>
 
-  <!-- Profiles: named snapshots of the settings above.  The list loads
-       when the card is opened. -->
-  <details class="card" id="profiles-card">
-    <summary><h2>Profiles</h2></summary>
+  <div class="card" role="tabpanel" id="spanel-stream" aria-labelledby="stab-stream" hidden>
+    <h3>Stream</h3>
+    <!-- Stream mode only (autodj serve --stream); stream-mode.js shows it
+         and its subtab.  The listener count is plain text, not a live
+         region. -->
+    <fieldset id="stream-settings" hidden>
+      <legend>Stream</legend>
+      <div class="settings-row">
+        <label for="stream-url">Stream address</label>
+        <input type="text" id="stream-url" readonly aria-describedby="stream-url-desc">
+        <button type="button" id="stream-copy">Copy address</button>
+      </div>
+      <span class="setting-desc" id="stream-url-desc">
+        Add this address to Sonos or any player as a radio station. Anyone who can reach AutoDJ can listen.
+      </span>
+      <!-- Plain text while the address lookup has not succeeded; not live. -->
+      <p class="stream-detail" id="stream-url-note" hidden></p>
+      <!-- Shown when the page was opened as localhost / 127.x / ::1: the
+           copied address would then only work on this machine.  Plain
+           text, not live. -->
+      <p class="stream-detail" id="stream-loopback-note" hidden>This address only works on this computer. Open AutoDJ using its network address (see the start-up message) to copy a link for speakers.</p>
+      <p class="stream-detail"><a id="stream-m3u" download="autodj.m3u">Download playlist file (.m3u)</a></p>
+      <p class="stream-detail" id="stream-listeners"></p>
+      <div class="settings-row">
+        <label for="stream-station-name">Station name</label>
+        <input type="text" id="stream-station-name" maxlength="100" autocomplete="off"
+               aria-describedby="stream-station-name-desc">
+      </div>
+      <span class="setting-desc" id="stream-station-name-desc">
+        The name players such as Sonos and VLC show for this station, up to 100 characters.  A player shows a new name the next time it connects.
+      </span>
+      <div class="settings-row">
+        <label for="stream-bitrate">Quality</label>
+        <select id="stream-bitrate" aria-describedby="stream-bitrate-desc">
+          <option value="128">128 kbps</option>
+          <option value="192">192 kbps</option>
+          <option value="256">256 kbps</option>
+          <option value="320">320 kbps</option>
+        </select>
+      </div>
+      <span class="setting-desc" id="stream-bitrate-desc">
+        Higher sounds better and uses more network.  Changing it makes every speaker reconnect for a moment.
+      </span>
+      <div class="settings-check">
+        <input type="checkbox" id="stream-continuous" aria-describedby="stream-continuous-desc">
+        <label for="stream-continuous">Keep playing without listeners</label>
+      </div>
+      <span class="setting-desc" id="stream-continuous-desc">
+        Keep the station running even when nobody is listening. When off, it starts when a listener connects and stops after a short wait once the last listener leaves.
+      </span>
+    </fieldset>
+  </div>
+
+  <div class="card" role="tabpanel" id="spanel-access" aria-labelledby="stab-access" hidden>
+    <h3>Profiles and access</h3>
+    <!-- profiles.js and devices.js load their lists when this panel is
+         seen; subtabs.js gives it the open and toggle of a card. -->
+    <h4>Profiles</h4>
     <p class="card-desc">
       Save a mix setup and restore it later. Profiles include the preset, tempo range, key matching, transition mode and fade lengths, track selection, output processing, effect sync, beatmatch on skip, and liner enable and rotation settings.
     </p>
@@ -1025,14 +1149,12 @@
         Letters, digits, spaces, dashes and underscores, up to 64 characters.  Saving under a name that already exists asks before replacing it.
       </span>
     </fieldset>
-    <h3 id="profile-list-heading">Saved profiles</h3>
+    <h5 id="profile-list-heading">Saved profiles</h5>
     <ul id="profile-list" aria-labelledby="profile-list-heading"></ul>
-  </details>
 
-  <!-- Browser access: only meaningful when the server asks browsers to
-       pair (LAN mode).  Loads when the card is opened. -->
-  <details class="card" id="access-card">
-    <summary><h2>Browser access</h2></summary>
+    <!-- Browser access: only meaningful when the server asks browsers to
+         pair (LAN mode). -->
+    <h4>Browser access</h4>
     <div id="access-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     <p id="access-note" hidden>This server does not ask browsers to pair, so there is nothing to sign out of or revoke.</p>
     <div id="access-controls" hidden>
@@ -1040,10 +1162,10 @@
       <span class="setting-desc" id="access-sign-out-desc">
         Ends this browser's pairing.  Using AutoDJ here again needs a new pairing code from the server.
       </span>
-      <h3 id="device-list-heading">Paired devices</h3>
+      <h5 id="device-list-heading">Paired devices</h5>
       <button type="button" id="access-refresh">Refresh device list</button>
       <ul id="device-list" aria-labelledby="device-list-heading"></ul>
-      <h3>Pair a new device</h3>
+      <h5>Pair a new device</h5>
       <button type="button" id="pair-toggle" aria-expanded="false" aria-controls="pair-panel"
               aria-describedby="pair-toggle-desc">Show pairing code</button>
       <span class="setting-desc" id="pair-toggle-desc">
@@ -1059,7 +1181,7 @@
         <button type="button" id="pair-refresh">Refresh code</button>
       </div>
     </div>
-  </details>
+  </div>
 
   </section>
   <!-- ============================================================

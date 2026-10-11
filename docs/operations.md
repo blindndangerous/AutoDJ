@@ -220,7 +220,7 @@ the replaced files within five minutes.
 
 ### Paired devices
 
-In the web page, Settings, Browser access lists every paired device with when it was paired and
+In the web page, Settings, Profiles and access lists every paired device with when it was paired and
 when it was last seen, and marks this browser. Each row has Rename and Revoke. Names are 1 to 64
 printable characters. **Show pairing code** shows a code with a Copy button and how long it stays
 valid; the code changes by itself every five minutes and cannot be edited. Each code pairs one
@@ -501,17 +501,17 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
 ### Controls while streaming
 
 - **Skip** takes effect immediately on the server with a short fade. A speaker hears it a few
-  seconds later, once its own playback buffer catches up. **Skip style** (Settings, Playback, or
+  seconds later, once its own playback buffer catches up. **Skip style** (Settings, Transitions, or
   `[playback] skip_style`) can make it a DJ-style exit instead: Echo out, Backspin or Loop roll.
   Each lasts one to two beats, at most 2 seconds, and ends on a beat when the song's tempo is
   trusted; then the next song starts. Skip style applies to stream mode and server audio only;
   browser playback keeps its own skip.
 - **Voice liners** fire on the same triggers as in the browser. With **Talk up to the vocal**
-  (Voice liners, Mix, or `[playback] liners_talk_up`), a liner due as a song starts is timed to end
+  (Settings, Voice liners, Mix, or `[playback] liners_talk_up`), a liner due as a song starts is timed to end
   just before the singing comes in: at the first line of the song's synced lyrics, or else at its
   detected intro end. A liner too long for the intro starts during the crossfade when that fits,
   and otherwise plays as the song starts. Liners played by the browser are not timed this way.
-- **Keep vocals apart** (Settings, DJ-mix toggles, or `[djmix] vocal_guard`, on by default) shortens
+- **Keep vocals apart** (Settings, DJ mixing, or `[djmix] vocal_guard`, on by default) shortens
   or moves a crossfade when both songs have synced lyrics, so the outgoing singer finishes before
   the incoming one starts. The fade never gets longer, or shorter than 1 second; when nothing
   avoids the clash it is left as it was. Songs without synced lyrics crossfade as before.
@@ -527,6 +527,9 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
   the machine's own speakers, and the page's "Listen here" playback follows them. Stream
   listeners and speakers still hear the stream at full level.
 - Quality (bitrate) is chosen under Settings, Stream: 128, 192, 256 or 320 kbps, default 320.
+- **Station name**, also under Settings, Stream, is the name Sonos, VLC and other players show
+  for the station (`[stream] station_name`, default AutoDJ). A player shows a new name the next
+  time it connects.
   Changing it restarts the encoder; every listener, including speakers, reconnects on its own a
   moment later.
 
