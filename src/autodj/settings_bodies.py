@@ -71,12 +71,16 @@ class VolumeBody(BaseModel):
     volume: FiniteFloat
 
 
-class EqBody(BaseModel):
-    """Request body for POST /api/eq; gains are clamped by the bridge."""
+EqGain = Annotated[float, Field(ge=0.0, le=2.0, allow_inf_nan=False)]
+"""EQ band multiplier: 0 (cut) to 2 (boost), 1 is unity — the bridge's range."""
 
-    low: FiniteFloat | None = None
-    mid: FiniteFloat | None = None
-    high: FiniteFloat | None = None
+
+class EqBody(BaseModel):
+    """Request body for POST /api/eq; a band outside 0 to 2 is refused."""
+
+    low: EqGain | None = None
+    mid: EqGain | None = None
+    high: EqGain | None = None
 
 
 class PresetBody(BaseModel):

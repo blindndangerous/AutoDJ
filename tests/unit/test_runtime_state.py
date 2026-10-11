@@ -728,8 +728,9 @@ class TestRoundTrip:
         player = _make_player()
         _load(player, tmp_path)
         assert PlayerBridge(player, player._sim).get_eq() == {
-            "low": 2.0,
+            "low": 1.0,
             "mid": 1.0,
             "high": 0.5,
         }
+        assert "invalid eq.low" in caplog.text
         assert "invalid eq.mid" in caplog.text

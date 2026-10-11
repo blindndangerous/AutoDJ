@@ -2498,13 +2498,14 @@ class TestEqEndpoint:
         assert data["mid"] == 1.5
         assert data["high"] == 2.0
 
-    def test_post_eq_clamps(self, bridge) -> None:
+    @pytest.mark.parametrize("body", [{"low": -0.1}, {"high": 2.01}, {"mid": 100.0}])
+    def test_post_eq_rejects_out_of_range_bands(self, bridge, body) -> None:
         from fastapi.testclient import TestClient
 
+        bridge.player._eq_low = bridge.player._eq_mid = bridge.player._eq_high = 1.0
         tc = TestClient(create_app(bridge))
-        data = tc.post("/api/eq", json={"low": -5.0, "high": 100.0}).json()
-        assert data["low"] == 0.0
-        assert data["high"] == 2.0
+        assert tc.post("/api/eq", json=body).status_code == 422
+        assert bridge.get_eq() == {"low": 1.0, "mid": 1.0, "high": 1.0}
 
     def test_post_eq_partial(self, bridge) -> None:
         from fastapi.testclient import TestClient
