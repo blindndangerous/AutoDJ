@@ -288,17 +288,6 @@ class RelatedArtists:
         """The name *key* was written as, or *key* itself."""
         return self.names.get(key, key)
 
-    def merged(self, other: RelatedArtists) -> RelatedArtists:
-        """Both sets of links, joined artist by artist."""
-        links = {key: set(values) for key, values in self.links.items()}
-        for key, values in other.links.items():
-            links.setdefault(key, set()).update(values)
-        return RelatedArtists(
-            {key: frozenset(values) for key, values in links.items()},
-            {**self.names, **other.names},
-            (*self.single_acts, *other.single_acts),
-        )
-
 
 def parse_related_artists(data: Mapping[str, Any], source: str) -> RelatedArtists:
     """Validate a related artists table (the parsed TOML file).
@@ -355,38 +344,40 @@ def parse_related_artists(data: Mapping[str, Any], source: str) -> RelatedArtist
     )
 
 
+#: The largest related artists file AutoDJ reads, in bytes.
+MAX_RELATED_ARTISTS_BYTES = 1024 * 1024
+
+
+class RelatedArtistsFileTooLargeError(ValueError):
+    """The related artists file is over :data:`MAX_RELATED_ARTISTS_BYTES`."""
+
+
 def load_related_artists(path: str | Path | None) -> RelatedArtists:
     """Read and validate the related artists file at *path*.
 
+    The size is checked before reading, so a huge file is never loaded.
+
     Raises:
         FileNotFoundError: *path* is set but there is no such file.
-        ValueError: The file is not valid TOML or not a valid related
+        RelatedArtistsFileTooLargeError: The file is over
+            :data:`MAX_RELATED_ARTISTS_BYTES`.
+        ValueError: The file is not valid TOML (the cause is the
+            :class:`tomllib.TOMLDecodeError`) or not a valid related
             artists file (see :func:`parse_related_artists`).
     """
     if not path:
         return RelatedArtists()
     file = Path(path)
     if not file.is_file():
-        raise FileNotFoundError(f"playback.related_artists_file not found: {file}")
+        raise FileNotFoundError(f"related artists file not found: {file}")
+    if file.stat().st_size > MAX_RELATED_ARTISTS_BYTES:
+        raise RelatedArtistsFileTooLargeError(f"related artists file is larger than 1 MiB: {file}")
     try:
         with file.open("rb") as handle:
             data = tomllib.load(handle)
     except tomllib.TOMLDecodeError as exc:
         raise ValueError(f"{file}: not valid TOML: {exc}") from exc
     return parse_related_artists(data, str(file))
-
-
-def load_related_artists_or_warn(path: str | Path | None) -> tuple[RelatedArtists, str | None]:
-    """Like :func:`load_related_artists`, but a bad file never stops AutoDJ.
-
-    Returns:
-        The related artists and ``None``; or, when the file is missing,
-        unreadable or invalid, no links and a sentence naming the problem.
-    """
-    try:
-        return load_related_artists(path), None
-    except (OSError, ValueError) as exc:  # tomllib.TOMLDecodeError is a ValueError
-        return RelatedArtists(), f"playback.related_artists_file {path} was not used: {exc}"
 
 
 # ---------------------------------------------------------------------------
@@ -418,14 +409,14 @@ class RepeatRules:
         related: Links between artists, and single acts.
     """
 
-    track_window: int = 500
+    track_window: int = 50
     track_minutes: float = 0.0
-    artist_window: int = 3
+    artist_window: int = 8
     artist_minutes: float = 0.0
-    title_window: int = 3
+    title_window: int = 0
     title_minutes: float = 0.0
     related: RelatedArtists = field(default_factory=RelatedArtists)
-    album_window: int = 3
+    album_window: int = 0
     album_minutes: float = 0.0
 
     @classmethod
@@ -765,12 +756,14 @@ def build_filter(
 
 __all__ = [
     "HISTORY_LIMIT",
+    "MAX_RELATED_ARTISTS_BYTES",
     "MAX_REPEAT_MINUTES",
     "REASONS",
     "SINGLE_ACTS",
     "ArtistSplitter",
     "PlayRecord",
     "RelatedArtists",
+    "RelatedArtistsFileTooLargeError",
     "RepeatFilter",
     "RepeatRules",
     "TrackKeyCache",
@@ -780,7 +773,6 @@ __all__ = [
     "build_filter",
     "featured_in_title",
     "load_related_artists",
-    "load_related_artists_or_warn",
     "parse_related_artists",
     "plays_to_load",
     "prune_history",

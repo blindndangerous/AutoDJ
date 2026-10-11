@@ -284,15 +284,3 @@ def test_backup_refuses_an_old_format_index(tmp_path: Path) -> None:
         create_backup(cfg, tmp_path / "backup.zip", force=False)
 
     assert not list(tmp_path.glob("*backup.zip*"))
-
-
-def test_backup_restores_migrated_related_artist_copy(tmp_path):
-    cfg = _config(tmp_path / "station")
-    name = "related-artists-migrated-" + "a" * 16 + ".toml"
-    path = cfg.index.active_dir / name
-    original = '[related]\n"Bruno Mars" = ["Silk Sonic", "The Hooligans"]\n'
-    path.write_text(original, encoding="utf-8")
-    archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
-    path.write_text("[related]\n", encoding="utf-8")
-    restore_backup(cfg, archive, force=True)
-    assert path.read_text(encoding="utf-8") == original

@@ -27,7 +27,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from autodj.liners import LINER_PICK_MODES
-from autodj.repeat_settings import LEGACY_REPEAT_FIELDS, RepeatSettings, migrate_repeat_settings
+from autodj.repeat_settings import REMOVED_REPEAT_KEYS, RepeatSettings
 
 DEFAULT_STEREOTOOL_PATH = (
     "./tools/stereo-tool/stereo_tool_cmd.exe"
@@ -254,7 +254,10 @@ class UnknownConfigKeysError(ValueError):
     def __init__(self, section: str, keys: Iterable[str]) -> None:
         self.section = section
         self.keys = tuple(sorted(keys))
-        super().__init__(f"unknown [{section}] keys: {list(self.keys)}")
+        message = f"unknown [{section}] keys: {list(self.keys)}"
+        if section == "playback" and REMOVED_REPEAT_KEYS.intersection(self.keys):
+            message += "; remove old repeat keys and re-enter limits in Settings > Picking > Repeats or [playback.repeat_rules]"
+        super().__init__(message)
 
 
 def _field_names(cls: Any) -> set[str]:
@@ -319,22 +322,6 @@ class PlaybackConfig(_Section):
     """
 
     SECTION: ClassVar[str] = "playback"
-
-    @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> Self:
-        if not isinstance(data, Mapping):
-            raise TypeError(f"{cls.SECTION} section must be a table")
-        explicit_rules = "repeat_rules" in data
-        legacy_values = {key: value for key, value in data.items() if key in LEGACY_REPEAT_FIELDS}
-        if legacy_values:
-            migrated = migrate_repeat_settings(data)
-            data = {key: value for key, value in data.items() if key not in LEGACY_REPEAT_FIELDS}
-            data["repeat_rules"] = migrated
-        elif "repeat_rules" in data:
-            data = {**data, "repeat_rules": RepeatSettings.model_validate(data["repeat_rules"])}
-        result = super().from_dict(data)
-        result.__dict__["_legacy_repeat_settings"] = {} if explicit_rules else legacy_values
-        return result
 
     crossfade_seconds: float = 3.0
     fade_in_seconds: float = 3.0

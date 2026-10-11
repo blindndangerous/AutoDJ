@@ -1360,6 +1360,7 @@ class PlayerBridge:
 
         names = sorted(set(BUILTIN_PRESETS.keys()) | set(cfg.presets.keys()))
         bpm_range = p._bpm_range
+        related_problem = getattr(p, "related_artists_problem", None)
         return {
             "preset": preset.name if preset else None,
             "available_presets": names,
@@ -1395,6 +1396,9 @@ class PlayerBridge:
                 "show_lyrics": pb.show_lyrics,
                 "beat_sync_fx": bool(pb.beat_sync_fx),
                 "repeat_rules": pb.repeat_rules.model_dump(),
+                "related_artists_problem": related_problem
+                if isinstance(related_problem, str)
+                else None,
                 "related_artists_default_file": str(
                     (Path(cfg.index.active_dir) / "related-artists.toml").resolve()
                 )
@@ -1504,24 +1508,31 @@ class PlayerBridge:
         player = self.player
         cfg = player._cfg
         if body.repeat_rules is not None:
-            from autodj.related_artist_file import load_configured_related_artists
+            from autodj.related_artist_file import (
+                invalid_related_artists_message,
+                load_configured_related_artists,
+                unused_related_artists_message,
+            )
+            from autodj.repeat_rules import RelatedArtists
 
-            # Validate the file before changing any live settings.
-            try:
-                related = load_configured_related_artists(
-                    cfg.index.active_dir, body.repeat_rules.related_artists_file
-                )
-                player.related_artists_problem = None
-            except (OSError, ValueError) as exc:
-                if not restoring:
-                    raise
-                from autodj.repeat_rules import RelatedArtists
-
-                related = RelatedArtists()
-                player.related_artists_problem = str(exc)
-                logger.warning("Related artists file was not used: %s", exc)
+            related = RelatedArtists()
+            problem = None
+            # The file is read only while it is in use, so a broken one
+            # never blocks saving the other rules.
+            if body.repeat_rules.use_related_artists:
+                try:
+                    related = load_configured_related_artists(cfg.index.active_dir)
+                except (OSError, ValueError) as exc:
+                    if not restoring:
+                        # Refused before any setting changes; the old rules stay.
+                        message = invalid_related_artists_message(exc)
+                        player.related_artists_problem = message
+                        raise ValueError(message) from exc
+                    problem = unused_related_artists_message(exc)
+                    logger.warning("Related artists file was not used: %s", exc)
             values["repeat_rules"] = body.repeat_rules
             player._related_artists = related
+            player.related_artists_problem = problem
             if hasattr(player, "_key_cache_lock"):
                 with player._key_cache_lock:
                     player._key_cache = None
