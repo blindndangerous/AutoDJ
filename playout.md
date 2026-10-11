@@ -2,7 +2,7 @@ AutoDJ is the basis for this station. AutoDJ has folder management, editable son
 
 On this machine, open [AutoDJ](http://127.0.0.1:8081). To start it again from this folder, run `.venv\Scripts\python.exe -m autodj serve --stream --no-server-audio`. In the browser, use Listen to hear the stream. Keep playing without listeners controls whether the station continues after you stop listening.
 
-The sound references are the B and C versions of the [latest listening examples](local/playout-round9/index.html): B uses Smooth; C uses Stereo Tool. The [saved track points](playout-cues.md) and [earlier research](playout-research.md) remain separate.
+The sound references are the B and C versions of the latest listening examples (`local/playout-round9/index.html`, local only): B uses Smooth; C uses Stereo Tool. The [saved track points](playout-cues.md) and [earlier research](playout-research.md) remain separate.
 
 The [station test results](playout-test-results.md) include the imported folders, verification results and a recording of the running station.
 
@@ -51,7 +51,7 @@ The station settings are:
 - Talk up to the vocal: on. Saved-point playback fits the liner's main content before the incoming vocal, using the outgoing Outro only when Allow start over outro is checked, and delaying incoming music when needed. The remaining tail can continue underneath.
 - Duck depth: use the existing setting at 0 dB. There is no extra duck control for this setup.
 - Output processing: Stereo Tool (free preset) for the next listening pass. Smooth (Type B), Off and ReplayGain remain available. ReplayGain keeps its target-loudness field. Smooth and Stereo Tool share the prepared tracks, without adding ReplayGain. The choice is saved in playback profiles. A change takes effect when a newly prepared song reaches playback; the playing song and its prepared handoff finish with their current setting.
-- Boost quiet sections: 9 dB by default, adjustable from 0 to 12 dB with Smooth or Stereo Tool. This is the maximum gain available across the whole song. After a change, tracks are prepared again as they are loaded or scanned; a song already cued may keep the previous setting.
+- Boost quiet sections: 9 dB by default, adjustable from 0 to 12 dB with Smooth or Stereo Tool. This is the maximum gain available across the whole song. After a change, each track is prepared again in the background when it is next loaded, or during a scan, and keeps its previous preparation until the new one is ready. The next library scan deletes prepared audio files that nothing uses any more.
 - Low, mid and high EQ: saved across restarts. The station uses Low at +3 dB, with Mid and High at 0 dB.
 - Keep playing without listeners: on for unattended operation. Leave it off for the existing listener-triggered stream behavior.
 - Clockwheel: import the PAL text file under Library tools, give it a name, and choose resync minutes. 0 means near the top of each hour; 0, 30 adds the half-hour. An empty list disables resync.
@@ -60,7 +60,7 @@ The clock chooses each next item as playback advances. It preserves PAL folder o
 
 Queue items can be added, removed and reordered during playback. Once a song starts, its next handoff is already prepared. The page identifies that next song so it is clear where queue changes take effect. Play now interrupts the prepared sequence. Skipping before the next song has begun starts it at its Start point, preserving its unheard intro.
 
-Smooth and Stereo Tool use B music preparation: -22 LUFS with slow leveling capped by Boost quiet sections, now 9 dB by default. Common liner preparation uses 3:1 voice compression and a -17.5 LUFS target. There is 6 dB of mixing headroom. Prepared liners play 1.5 dB lower than before, for an intended 3 dB lift above music. Smooth then uses the continuous v2-style compressor and limiter; Stereo Tool keeps the preset from our C examples, followed by a 5.8 dB output lift and an oversampled peak limiter with a -1.2 dB ceiling, 5 ms attack and 100 ms release. The chosen processor stays running across songs and liners. Original files remain unchanged; prepared versions are cached.
+Smooth and Stereo Tool use B music preparation: -22 LUFS with slow leveling capped by Boost quiet sections, now 9 dB by default. Common liner preparation uses 3:1 voice compression and a -17.5 LUFS target. There is 6 dB of mixing headroom. Prepared liners play 1.5 dB lower than before, for an intended 3 dB lift above music. Smooth then uses the continuous v2-style compressor and limiter; Stereo Tool keeps the preset from our C examples, followed by a 5.8 dB output lift and an oversampled peak limiter with a -1.8 dB ceiling, 5 ms attack and 100 ms release. The chosen processor stays running across songs and liners. Original files remain unchanged; prepared versions are cached.
 
 The earlier examples used individual levels for the produced IDs and Plague. The common liner preset will not reproduce those levels exactly. Listen to raw voice and produced imaging before changing that shared preset. Output gain stays fixed during a programme; per-excerpt loudness matching from the audition files is not part of live playback. An offline check of three saved mixes reproduced the B master output exactly with today's Smooth filters. Flat EQ means 100%, labelled Unity, or 0 dB; the EQ repair preserves that sound.
 

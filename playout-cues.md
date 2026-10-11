@@ -1,6 +1,6 @@
 **Points for the supplied audio**
 
-The [playout guide](playout.md) describes how these are used. These music points come from the accepted [round-nine recordings](local/playout-round9/index.html), with exact source details in [results.json](local/playout-round9/results.json). Times refer to positions in the original file. A dash means a point has not been supplied; for playback, an unset Intro gives no intro time and an unset Outro gives no early talk-over time.
+The [playout guide](playout.md) describes how these are used. These music points come from the accepted round-nine recordings (`local/playout-round9/index.html`, local only), with exact source details in results.json (`local/playout-round9/results.json`, local only). Times refer to positions in the original file. A dash means a point has not been supplied; for playback, an unset Intro gives no intro time and an unset Outro gives no early talk-over time.
 
 | Track | Start | Intro | Outro | Segue | End |
 | --- | --- | --- | --- | --- | --- |

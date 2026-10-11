@@ -93,9 +93,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the next song's intro overlap the liner when timing allows. Overlap start cannot be later
   than the liner's segue.
 - Smooth and Stereo Tool offer "Boost quiet sections", defaulting to 9 dB. It applies throughout
-  music tracks. After a change, tracks are prepared again as they are loaded or scanned;
-  a song already cued may keep the previous setting.
-- Stereo Tool output gains 5.8 dB through a final peak limiter, with a -1.2 dB ceiling,
+  music tracks. After a change, each track is prepared again in the background when it is
+  next loaded, or during a scan; it keeps its previous preparation until the new one is ready.
+  The next library scan deletes prepared audio files that nothing uses any more.
+- Stereo Tool output gains 5.8 dB through a final peak limiter, with a -1.8 dB ceiling,
   5 ms attack and 100 ms release. Its existing compression preset is unchanged.
 - Liners play 1.5 dB lower with Smooth or Stereo Tool processing, reducing their intended
   lift above music from 4.5 dB to 3 dB. Existing prepared audio and cue points are retained.
