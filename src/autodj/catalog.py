@@ -117,8 +117,9 @@ class LibraryCatalog:
         """Add columns an older catalog file lacks.
 
         These are the liner ``allow_outro`` flag and the play log's
-        ``performances`` count.  The checks and the changes share one write transaction, so a second
-        process opening the same old file waits, then finds the columns.
+        ``performances`` count.  The checks and the changes share one write
+        transaction, so a second process opening the same old file waits,
+        then finds the columns.
         """
         db = self._db()
         db.execute("BEGIN IMMEDIATE")
