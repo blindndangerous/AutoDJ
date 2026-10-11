@@ -160,3 +160,19 @@ repos:
         language: system
         pass_filenames: false
         files: \.(js|mjs)$
+
+      - id: vitest
+        name: frontend tests
+        entry: npm test
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
+        files: ^(src/autodj/static/|tests/jsmodules/|tests/playwright/|package(-lock)?\.json$|vitest\.config\.js$|eslint\.config\.js$|\.pre-commit-config\.yaml$)
+
+      - id: knip
+        name: frontend unused code
+        entry: npm run deadcode
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
+        files: ^(src/autodj/static/|tests/jsmodules/|tests/playwright/|package(-lock)?\.json$|vitest\.config\.js$|eslint\.config\.js$|\.pre-commit-config\.yaml$)

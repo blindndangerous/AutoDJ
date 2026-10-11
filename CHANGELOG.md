@@ -153,6 +153,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Local test runs use separate temporary directories instead of clearing a shared `tmp` folder.
+
 - Unknown or removed configuration settings now produce warnings and are ignored instead of
   blocking startup. Saved browser settings follow the same rule, preserving valid repeat limits
   alongside obsolete keys. Invalid values for supported configuration settings still fail validation.
@@ -173,6 +175,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A setting with two descriptions now hides both when it does not apply, not just the first.
 
 ### Changed
+
+- Pre-push checks now run frontend tests and the unused-code scan for web UI changes, including
+  markup and styles. Contributing documents how to run checks with dependencies already installed.
 
 - Old repeat keys in `config.toml` and `web_state.json` are ignored with a warning.
   Re-enter any limits that still use those keys in Settings > Picking > Repeats.

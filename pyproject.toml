@@ -72,7 +72,7 @@ packages = ["src/autodj"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=autodj --cov-report=term-missing --basetemp=tmp --timeout=60"
+addopts = "--cov=autodj --cov-report=term-missing --timeout=60"
 asyncio_mode = "auto"
 filterwarnings = [
     "error:unclosed database.*:ResourceWarning",

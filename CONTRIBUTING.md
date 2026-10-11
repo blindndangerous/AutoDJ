@@ -20,11 +20,41 @@ uv run pre-commit install
 uv run python scripts/ci_pytest.py
 npm run lint
 npm test
+npm run deadcode
 ```
 
 Full suite must remain green. `scripts/ci_pytest.py` fails below 90% line coverage (`fail_under` in
 `pyproject.toml`); there is no branch floor. Add a test only for a defect it would catch, not to
 raise the number. New behavior needs focused tests.
+
+## Checks with tools already installed
+
+For a small fix, run its regression test first. `--no-sync` uses the existing project
+Python environment without installing or replacing packages:
+
+```bash
+uv run --no-sync python -m pytest tests/unit/test_repeat_pick_modes.py --no-cov
+```
+
+Before pushing, run the full Python and frontend checks:
+
+```bash
+uv run --no-sync python scripts/ci_pytest.py
+npm run lint
+npm test
+npm run deadcode
+```
+
+The focused run disables coverage because a single test file cannot meet the whole-project
+coverage floor. The full run keeps that floor. Pytest uses its normal numbered temporary
+directories, so separate runs do not clear a shared repository `tmp` folder. Python tests
+use one worker by default; leave that default when the station is running.
+
+These commands do not require Git hooks to be installed. Once hooks are installed, pushes
+that change frontend code, markup, styles or test configuration also run Vitest and Knip.
+Installing every hook still requires the external scanners listed in
+`.pre-commit-config.yaml`. Browser audits should use a separate test server and library,
+not the live station. GitHub still checks both operating systems and the container.
 
 ## Branching + commits
 
