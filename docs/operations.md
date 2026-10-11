@@ -743,7 +743,7 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
   read-only. Uploads (up to 2 MB) live in `index/stereo-tool-presets` beside the active index
   folder and survive restarts. Deleting the active upload in Settings switches to Included
   first; a preset file removed by hand is replaced by Included when Stereo Tool next starts. Stereo Tool's
-  command-line integration exposes a preset file, but no individual processor parameters.
+  settings use preset files; AutoDJ applies the drive boost to a temporary copy, leaving your saved preset unchanged.
   `[playback] stereotool_input_trim_db` adjusts the input from -12 to +6 dB before the fixed
   output limiter. `[playback] stereotool_agc_drive_db` (0 to 12, default 7) raises the selected
   preset's `[Pre Compressor] Drive` after the tracks are blended; 0 keeps its base value and does
@@ -755,8 +755,8 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
   it fades back to normal by eight seconds. Zero disables it. Analysis caches the source's
   peak-safe opening lift in `library.db`; already cataloged songs get it on their next library scan.
   ReplayGain browser, server audio and stream playback use the cached lift, with decoded server
-  audio checked against its peak again. Smooth, Stereo Tool and Off playback leave intro levels
-  alone.
+  audio checked against its peak again. Smooth and Stereo Tool use their continuous processors instead of this intro-only lift.
+  Off leaves the source unchanged.
 - **Page volume and mute** affect only the page's own "Listen here" playback in the browser.
   Each speaker keeps its own volume, set on the speaker or in its own app.
 - **With `--server-audio` as well**, the page's volume and Mute also set the volume and mute of
