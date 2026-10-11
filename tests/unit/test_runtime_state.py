@@ -15,7 +15,6 @@ from autodj.player import PlayerState
 from autodj.repeat_settings import RepeatRule, RepeatSettings
 from autodj.runtime_state import (
     STATE_VERSION,
-    SavedStateError,
     load_into_bridge,
     save_from_player,
     state_file_for,
@@ -112,7 +111,13 @@ def _load(player: SimpleNamespace, index_dir: Path) -> None:
 
 
 def _warnings(caplog: pytest.LogCaptureFixture, field: str) -> int:
-    return len([r for r in caplog.records if f"invalid {field} " in r.message])
+    return len(
+        [
+            r
+            for r in caplog.records
+            if any(f"{kind} {field} " in r.message for kind in ("invalid", "unknown"))
+        ]
+    )
 
 
 @pytest.mark.parametrize(
@@ -198,14 +203,14 @@ def test_one_invalid_field_is_warned_and_the_rest_still_apply(
     }
 
 
-def test_retired_quiet_boost_in_saved_state_is_silently_ignored(tmp_path: Path, caplog) -> None:
+def test_retired_quiet_boost_in_saved_state_warns_and_is_ignored(tmp_path: Path, caplog) -> None:
     player = _make_player()
     _write_state(tmp_path, {"playback": {"quiet_boost_db": 11, "stereotool_agc_drive_db": 6}})
 
     _load(player, tmp_path)
 
     assert player._cfg.playback.stereotool_agc_drive_db == 6
-    assert "quiet_boost_db" not in caplog.text
+    assert "quiet_boost_db" in caplog.text
 
 
 @pytest.mark.parametrize("version", [None, 0, 3, "2", True])
@@ -789,18 +794,48 @@ class TestRoundTrip:
         "related_artists_starter",
     ],
 )
-def test_removed_repeat_state_key_is_rejected(tmp_path, key):
-    _write_state(tmp_path, {"playback": {key: 1}})
-    with pytest.raises(SavedStateError, match=r"web_state\.json") as error:
-        _load(_make_player(), tmp_path)
-    assert key in str(error.value)
-    assert "Settings > Picking > Repeats" in str(error.value)
+def test_removed_repeat_state_key_warns_and_preserves_settings(tmp_path, key, caplog):
+    _write_state(tmp_path, {"playback": {key: "private-value", "volume": 0.6}})
+    player = _make_player()
+    _load(player, tmp_path)
+    assert key in caplog.text
+    assert "private-value" not in caplog.text
+    assert player._state.volume == 0.6
 
 
-def test_repeat_state_rejects_nested_file_path(tmp_path):
-    _write_state(tmp_path, {"playback": {"repeat_rules": {"related_artists_file": "secret"}}})
-    with pytest.raises(SavedStateError, match=r"repeat_rules\.related_artists_file"):
-        _load(_make_player(), tmp_path)
+def test_repeat_state_ignores_unknown_keys_without_losing_rules(tmp_path, caplog):
+    _write_state(
+        tmp_path,
+        {
+            "playback": {
+                "repeat_rules": {
+                    "related_artists_file": "private-path",
+                    "future_option": True,
+                    "artist": {"tracks": 0, "minutes": 40, "future_limit": 1},
+                    "title": {"tracks": 0, "minutes": 460},
+                }
+            }
+        },
+    )
+    player = _make_player()
+    _load(player, tmp_path)
+    rules = player._cfg.playback.repeat_rules
+    assert rules.artist.minutes == 40 and rules.artist.tracks == 0
+    assert rules.title.minutes == 460 and rules.title.tracks == 0
+    assert "related_artists_file" in caplog.text
+    assert "future_limit" in caplog.text
+    assert "private-path" not in caplog.text
+
+
+def test_removed_repeat_keys_are_shared_and_grouped():
+    from autodj.repeat_settings import removed_saved_repeat_keys
+
+    assert removed_saved_repeat_keys(
+        {"playback": {"no_repeat_minutes": 40, "repeat_rules": {"related_artists_file": ""}}}
+    ) == {
+        "playback": ("no_repeat_minutes",),
+        "playback.repeat_rules": ("related_artists_file",),
+    }
 
 
 def test_missing_related_file_does_not_discard_restored_repeat_rules(tmp_path, caplog):

@@ -477,6 +477,9 @@ def cmd_setup(arguments: tuple[str, ...]) -> None:
 
 
 @cli.command("doctor")
+@click.option(
+    "--name", "index_name", default=None, help="Named index to check (defaults to [index].name)."
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
 @click.option(
     "--fix/--no-fix",
@@ -485,7 +488,7 @@ def cmd_setup(arguments: tuple[str, ...]) -> None:
     "By default, ask before each repair in an interactive terminal.",
 )
 @click.pass_context
-def cmd_doctor(ctx: click.Context, as_json: bool, fix: bool | None) -> None:
+def cmd_doctor(ctx: click.Context, as_json: bool, fix: bool | None, index_name: str | None) -> None:
     """Check configuration, storage, dependencies, model, network, and stream health."""
     from autodj.doctor import (
         CheckStatus,
@@ -515,8 +518,13 @@ def cmd_doctor(ctx: click.Context, as_json: bool, fix: bool | None) -> None:
         )
         click.echo(report.to_json())
         raise click.exceptions.Exit(1) from None
+    _apply_index_name(cfg, index_name)
     report = run_doctor(cfg)
     click.echo(report.to_json() if as_json else render_text(report))
+    if offer_repairs and _doctor_repair_saved_settings(cfg, report, fix is True):
+        click.echo("Rechecking after repairs...")
+        report = run_doctor(cfg)
+        click.echo(render_text(report))
     if offer_repairs and _doctor_create_directories(cfg, report, fix is True):
         click.echo("Rechecking after repairs...")
         report = run_doctor(cfg)
@@ -536,44 +544,52 @@ def _doctor_load_config(
     auto_fix: bool,
     as_json: bool,
 ) -> AutoDJConfig:
-    """Offer backed-up repairs for unsupported keys, then retry normal validation."""
-    from autodj.config import UnknownConfigKeysError
+    """Offer optional cleanup of unsupported keys, then load normal configuration."""
     from autodj.doctor_repair import plan_unknown_key_repairs
 
-    try:
-        return _load_cfg_or_exit(config_path, show_error=not as_json)
-    except click.exceptions.Exit as exc:
-        if as_json:
-            raise
-        if not offer_repairs:
-            if isinstance(exc.__cause__, UnknownConfigKeysError):
-                click.echo(
-                    "Run `autodj doctor` in a terminal to review repairs, or use --fix "
-                    "to apply supported repairs automatically, with the same --config."
-                )
-            raise
+    if offer_repairs:
         try:
             repairs = plan_unknown_key_repairs(config_path)
-            if not repairs:
-                if isinstance(exc.__cause__, UnknownConfigKeysError):
-                    click.echo("No safe automatic edit is available; edit these keys manually.")
-                raise exc
-            for repair in repairs:
-                click.echo(f"Remove unsupported keys from {repair.path}:")
-                for section, keys in repair.keys_by_section.items():
-                    click.echo(f"  [{section}]: {list(keys)}")
-            if not auto_fix and not click.confirm(
-                "Apply this repair (one backup per affected file)?", default=False
-            ):
-                raise exc
-            for repair in repairs:
-                backup = repair.apply()
-                click.echo(f"Repaired {repair.path}. Backup: {backup}")
+            if repairs:
+                for repair in repairs:
+                    click.echo(f"Remove unsupported keys from {repair.path}:")
+                    for section, keys in repair.keys_by_section.items():
+                        click.echo(f"  [{section}]: {list(keys)}")
+                if auto_fix or click.confirm(
+                    "Apply this repair (one backup per affected file)?", default=False
+                ):
+                    for repair in repairs:
+                        backup = repair.apply()
+                        click.echo(f"Repaired {repair.path}. Backup: {backup}")
         except (OSError, ValueError, RuntimeError) as repair_error:
             raise click.ClickException(
                 f"Could not repair configuration: {repair_error}"
             ) from repair_error
-    return _load_cfg_or_exit(config_path)
+    return _load_cfg_or_exit(config_path, show_error=not as_json)
+
+
+def _doctor_repair_saved_settings(cfg: AutoDJConfig, report: DoctorReport, auto_fix: bool) -> bool:
+    from autodj.doctor_repair import plan_saved_state_repair
+
+    if not any(check.repair == "repair-saved-settings" for check in report.checks):
+        return False
+    repair = plan_saved_state_repair(cfg.index.active_dir)
+    if repair is None:
+        click.echo(
+            "No safe automatic edit is available for saved settings; review the details above."
+        )
+        return False
+    click.echo(f"Remove obsolete repeat keys from {repair.path}:")
+    for section, keys in repair.keys_by_section.items():
+        click.echo(f"  [{section}]: {list(keys)}")
+    if not auto_fix and not click.confirm("Apply this repair (with a backup)?", default=False):
+        return False
+    try:
+        backup = repair.apply()
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise click.ClickException(f"Could not repair saved settings: {exc}") from exc
+    click.echo(f"Repaired {repair.path}. Backup: {backup}")
+    return True
 
 
 def _doctor_create_directories(cfg: AutoDJConfig, report: DoctorReport, auto_fix: bool) -> bool:
@@ -1242,6 +1258,30 @@ class _ServeCommand(click.Command):
                 if ctx.obj and ctx.obj.get("config_path"):
                     hint += " Use the same --config option."
                 click.echo(hint, err=True)
+                server = sys.modules.get("autodj.server")
+                started = server is not None and server.STARTUP_COMPLETE.is_set()
+                if (
+                    sys.stdin.isatty()
+                    and not started
+                    and not os.environ.get("AUTODJ_DOCTOR_ACTIVE")
+                ):
+                    import subprocess  # nosec B404 -- fixed command, argv only, no shell
+
+                    try:
+                        if click.confirm("Run AutoDJ Doctor now?", default=False, err=True):
+                            args = [sys.executable, "-m", "autodj"]
+                            if ctx.obj and ctx.obj.get("config_path"):
+                                args.extend(["--config", str(ctx.obj["config_path"])])
+                            args.append("doctor")
+                            if ctx.params.get("index_name"):
+                                args.extend(["--name", ctx.params["index_name"]])
+                            environment = os.environ.copy()
+                            environment["AUTODJ_RUNTIME"] = "current"
+                            environment["AUTODJ_DOCTOR_ACTIVE"] = "1"
+                            subprocess.run(args, env=environment, check=False)  # nosec B603
+                            click.echo("After resolving the checks, run your serve command again.")
+                    except (OSError, click.Abort, KeyboardInterrupt) as doctor_error:
+                        click.echo(f"Doctor did not finish: {doctor_error}", err=True)
             raise
 
 
@@ -1385,7 +1425,6 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
       uv run autodj serve --lan
       uv run autodj serve --server-audio
     """
-    from autodj.runtime_state import SavedStateError
     from autodj.server import serve
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
@@ -1473,9 +1512,6 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
             stream=cfg.stream.enabled,
             lan_configured_hosts=lan_configured_hosts,
         )
-    except SavedStateError as exc:
-        console.print(f"[bold red]Saved web settings not loaded:[/] {escape(str(exc))}")
-        raise click.exceptions.Exit(1) from exc
     except KeyboardInterrupt:
         console.print("\n[yellow]Stopped.[/]")
 

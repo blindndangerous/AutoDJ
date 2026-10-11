@@ -136,6 +136,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Unknown or removed configuration settings now produce warnings and are ignored instead of
+  blocking startup. Saved browser settings follow the same rule, preserving valid repeat limits
+  alongside obsolete keys. Invalid values for supported configuration settings still fail validation.
+  Doctor offers optional cleanup with a backup; nonempty old related-artist paths need manual review.
+  Failed `serve` commands offer to run Doctor in a terminal with the same configuration and named
+  index. `autodj doctor --name` also lets you select that index yourself.
+
 - When a liner's segue moves earlier, move any later saved overlap back to the segue.
   Track Info now matches playback, and subsequent cue edits can be saved.
 
@@ -150,8 +157,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Old repeat keys in `config.toml` and `web_state.json` are rejected. Remove them by hand
-  and re-enter limits in Settings > Picking > Repeats.
+- Old repeat keys in `config.toml` and `web_state.json` are ignored with a warning.
+  Re-enter any limits that still use those keys in Settings > Picking > Repeats.
 - Random walk, least recently played and clock picks now hold back the same album and the same
   song title as well as the same artist, like similarity picks always did. Discovery picks now
   follow the artist, album and title rules too.

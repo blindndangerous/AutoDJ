@@ -10,12 +10,16 @@ AutoDJ resolves defaults, `config.toml`, sibling `config.local.toml`, environmen
 explicit CLI flags. `config.local.toml` is read only when a `config.toml` was loaded next to it;
 on its own it is ignored. Omitting `--config` is valid. Explicitly naming a missing file is an error. Put
 access tokens only in ignored local configuration or `AUTODJ_ACCESS_TOKEN`. An unknown section or
-key in either file, such as a setting a newer AutoDJ removed, is an error that names it.
+key in either file, such as a setting a newer AutoDJ removed, produces a warning and is ignored.
+Invalid values for supported settings still need fixing.
 
 ## Diagnose before serving
 
-If `autodj serve` exits with an error, it suggests running `autodj doctor` to troubleshoot.
-Use the same `--config` option when diagnosing a custom configuration.
+If `autodj serve` exits with an error in an interactive terminal, it offers to run
+`autodj doctor` with the same Python environment, configuration and named index.
+Doctor still asks before repairs. After resolving the checks, run your serve command again.
+In scripts, serve prints the suggestion without prompting. To run Doctor yourself, use the
+same `--config` and `--name` options as serve.
 
 Run `uv run autodj doctor`. Use `uv run autodj doctor --json` for automation. A required failed
 check returns exit 1. In an interactive terminal, doctor offers to remove unsupported config
@@ -25,6 +29,13 @@ in one edit per affected file, saving one uniquely named backup beside each orig
 preserving unrelated settings and formatting, then retrying validation.
 Review the key names before accepting: a misspelled setting may need correcting instead of removing.
 Complex TOML edits that cannot be made safely are left for manual correction.
+
+Doctor also warns about obsolete repeat settings in `web_state.json` in the selected index.
+Startup ignores those keys and loads the other settings. Doctor offers optional cleanup,
+with a backup, while preserving current
+repeat limits, EQ and other saved values. An empty old `related_artists_file` setting can be
+removed this way. A nonempty path needs manual review so you can preserve its related-artist
+data. Malformed files and unsupported saved-state versions are left unchanged.
 
 Use `uv run autodj doctor --fix` to apply supported repairs automatically without prompting.
 Without flags, doctor asks before each repair in an interactive terminal. Use `--no-fix`
@@ -1203,7 +1214,7 @@ the rules and the collecting societies are different.
 
 Repeat limits are edited in Settings > Picking > Repeats and stored in
 `web_state.json`. Old repeat keys in `config.toml` or `web_state.json` are
-rejected; remove them by hand and re-enter limits in that panel. The related
+ignored with a warning; re-enter any limits that still use those keys in that panel. The related
 artists file is `index/<name>/related-artists.toml` and is read only when
 **Use related artists** is enabled. It must be at most 1 MiB.
 
