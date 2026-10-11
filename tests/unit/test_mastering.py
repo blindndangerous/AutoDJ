@@ -25,10 +25,12 @@ def test_live_pipeline_processes_continuously_and_closes() -> None:
     master = ContinuousMaster()
     output = []
     try:
+        deadline = time.monotonic()
         for index in range(55):
             block = _block(0.03 if index >= 20 else 0.0)
             output.append(master.process(block))
-            time.sleep(BLOCK_SECONDS)
+            deadline = max(deadline, time.monotonic()) + BLOCK_SECONDS
+            time.sleep(max(0, deadline - time.monotonic()))
         audible = [sample for sample in output if np.any(sample)]
         assert audible
         assert all(np.isfinite(sample).all() for sample in audible)
@@ -80,15 +82,18 @@ def test_killed_ffmpeg_recovers_without_dropping_the_live_timeline() -> None:
     master = ContinuousMaster()
     outputs = []
     try:
+        deadline = time.monotonic()
         for _ in range(45):
             outputs.append(master.process(_block(0.04)))
-            time.sleep(BLOCK_SECONDS)
+            deadline = max(deadline, time.monotonic()) + BLOCK_SECONDS
+            time.sleep(max(0, deadline - time.monotonic()))
         process = master._proc
         assert process is not None and process.poll() is None
         process.kill()
         for _ in range(100):
             outputs.append(master.process(_block(0.04)))
-            time.sleep(BLOCK_SECONDS)
+            deadline = max(deadline, time.monotonic()) + BLOCK_SECONDS
+            time.sleep(max(0, deadline - time.monotonic()))
         assert master.restarts == 1
         assert master.error is None
         assert all(np.isfinite(block).all() for block in outputs)

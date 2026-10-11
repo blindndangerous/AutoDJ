@@ -39,6 +39,7 @@ _FAILURE_WINDOW = 60.0
 _COOLDOWN = 60.0
 _BLOCK_SECONDS = 882 / SAMPLE_RATE
 _PCM_QUEUE_SECONDS = 2.0
+_THREAD_JOIN_TIMEOUT = 5.0
 
 
 class StreamSink(Protocol):
@@ -611,9 +612,9 @@ class StreamOutput:
             encoder.close()
         except Exception:
             logger.debug("Closing the stream encoder raised", exc_info=True)
-        self._writer.join(timeout=5)
+        self._writer.join(timeout=_THREAD_JOIN_TIMEOUT)
         if self._writer.is_alive():
             logger.debug("Stream writer thread did not stop within the close timeout")
-        reader.join(timeout=5)
+        reader.join(timeout=_THREAD_JOIN_TIMEOUT)
         if reader.is_alive():
             logger.debug("Stream reader thread did not stop within the close timeout")

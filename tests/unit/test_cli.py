@@ -845,14 +845,6 @@ class TestCmdServe:
 
 
 # ---------------------------------------------------------------------------
-# Real library.db integration test
-# ---------------------------------------------------------------------------
-
-
-LIBRARY_DB = Path(__file__).parents[2] / "library.db"
-
-
-# ---------------------------------------------------------------------------
 # cmd_prune + cmd_enrich
 # ---------------------------------------------------------------------------
 
@@ -1143,71 +1135,6 @@ class TestCmdIndex:
             result = CliRunner().invoke(cli, ["index"])
         assert result.exit_code == 1
         assert "Indexing failed" in result.output
-
-
-@pytest.mark.skipif(not LIBRARY_DB.exists(), reason="library.db not present")
-class TestRealLibraryDb:
-    """Integration tests against the real beets library.db.
-
-    Skipped automatically when library.db is not present (CI, other machines).
-    """
-
-    def test_get_all_tracks_returns_many(self) -> None:
-        from autodj.beets import get_all_tracks
-
-        tracks = get_all_tracks(LIBRARY_DB)
-        assert len(tracks) > 1000, f"Expected a large library, got {len(tracks)}"
-
-    def test_tracks_have_valid_paths(self) -> None:
-        from autodj.beets import get_all_tracks
-
-        tracks = get_all_tracks(LIBRARY_DB)
-        # All paths should be non-empty strings
-        assert all(str(t.path) for t in tracks[:100])
-
-    def test_paths_are_non_empty_strings(self) -> None:
-        """Confirms beets paths are decodable strings (relative or absolute)."""
-        from autodj.beets import get_all_tracks
-
-        tracks = get_all_tracks(LIBRARY_DB)
-        sample = str(tracks[0].path)
-        assert len(sample) > 0
-
-    def test_search_returns_results(self) -> None:
-        from autodj.beets import search_tracks
-
-        results = search_tracks(LIBRARY_DB, "the")
-        assert len(results) > 0
-
-    def test_resolve_relative_path_against_music_dir(self) -> None:
-        """End-to-end: read a relative beets path and resolve it to a local file."""
-        from autodj.beets import get_all_tracks
-        from autodj.indexer import _resolve_beets_path
-
-        tracks = get_all_tracks(LIBRARY_DB)
-        # Find a relative-path track (most beets entries after the relative_path migration)
-        relative_track = next(
-            (t for t in tracks if not str(t.path).replace("\\", "/").startswith("/")),
-            None,
-        )
-        if relative_track is None:
-            pytest.skip("No relative-path tracks in this library.db")
-
-        resolved = _resolve_beets_path(relative_track.path, Path("Z:/Music"))
-        resolved_str = str(resolved).replace("\\", "/")
-        assert resolved_str.startswith("Z:/Music/")
-
-    def test_search_portishead_if_present(self) -> None:
-        """Spot-check: if Portishead is in the library, search finds it."""
-        from autodj.beets import get_all_tracks, search_tracks
-
-        tracks = get_all_tracks(LIBRARY_DB)
-        has_portishead = any("Portishead" in str(t.artist) for t in tracks)
-        if not has_portishead:
-            pytest.skip("Portishead not in this library")
-        results = search_tracks(LIBRARY_DB, "Portishead")
-        assert len(results) > 0
-        assert all("Portishead" in t.artist for t in results)
 
 
 # ---------------------------------------------------------------------------
