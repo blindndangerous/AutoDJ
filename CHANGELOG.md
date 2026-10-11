@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Radio streams use HTTP framing that works with HTTP/1.0 players such as Winamp,
+  avoiding chunk markers that can disrupt audio and track titles.
+
+### Changed
+
+- Radio listening uses `/stream.mp3`, with `/stream.m3u` for players that need a playlist.
+  Anyone who can reach the server can listen without a key; browser controls still require
+  pairing when LAN authentication is enabled. Existing keyed links keep working, and Settings
+  no longer shows "Make new link".
+
 ## [0.20.0] - 2026-10-11
 
 ### Added

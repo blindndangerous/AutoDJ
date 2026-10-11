@@ -11,11 +11,9 @@
 //     "Set stopped" already said it once.
 //   - A station event is spoken once per (id, seq).  The first event seen
 //     after page load is only remembered, so a reload never repeats it.
-//   - "Make new link" on this page speaks its own confirmation, so the
-//     link_changed event its rotation causes is not spoken again here
-//     (claimLinkChange).  Other open pages still hear the event once.
+//   - Legacy link_changed events are still announced and refresh the
+//     address shown in Settings.
 
-import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
 
 export const STREAM_DELAY_ESTIMATE_S = 3;
@@ -93,9 +91,6 @@ export function createStreamMode({
   let lookupTimer = null;
   let seenFirstApply = false;
   let lastEventKey = null;
-  // Set while this page's own "Make new link" is in flight.  The token
-  // lets a late release leave a newer claim alone.
-  let linkClaim = null;
 
   function say(text, tone = "info") {
     announceStatus(srStatus, text, { dwellMs: 4000, force: true, tone });
@@ -144,7 +139,7 @@ export function createStreamMode({
     say(text, "error");
   }
 
-  // Always asks for the link again: "Make new link" retires the old one.
+  // Always asks for the current link, including after a dropped connection.
   // A failed silent retry is reported as the dropped connection it follows.
   async function connect({ retry = false } = {}) {
     const mine = ++generation;
@@ -259,10 +254,6 @@ export function createStreamMode({
     }
     if (!event || key === lastEventKey) return;
     lastEventKey = key;
-    if (event.name === "link_changed" && linkClaim) {
-      linkClaim = null;
-      return;
-    }
     const text = EVENT_TEXT[event.name];
     if (text) say(text);
   }
@@ -298,26 +289,14 @@ export function createStreamMode({
     return STREAM_DELAY_ESTIMATE_S;
   }
 
-  // Marks the next link_changed event as already announced by this page.
-  // Returns a release for a rotation that failed, so a later change made
-  // elsewhere is still spoken.
-  function claimLinkChange() {
-    const token = {};
-    linkClaim = token;
-    return () => {
-      if (linkClaim === token) linkClaim = null;
-    };
-  }
-
   return {
-    apply, toggleListen, delaySeconds, stop, claimLinkChange,
+    apply, toggleListen, delaySeconds, stop,
     isListening: () => listening,
   };
 }
 
 // ----------------------------------------------------------------
-// Settings > Stream: the address, the playlist file, the quality and
-// "Make new link".
+// Settings > Stream: the address, the playlist file and the quality.
 //
 // Speech rules:
 //   - The listener count and the "not loaded yet" note are plain text,
@@ -325,17 +304,16 @@ export function createStreamMode({
 //   - The "only works on this computer" note is fixed plain text, shown
 //     once at start-up when the page was opened on a loopback address,
 //     and then also describes the address field and Copy address.
-//   - Copy and "Make new link" are user actions, so their confirmations
-//     are forced: pressing Copy twice is heard twice.
+//   - Copy is a user action, so its confirmation is forced: pressing it
+//     twice is heard twice.
 //   - Copy never moves focus through the address field on success: NVDA
-//     would read the whole secret address aloud.
+//     would read the whole address aloud.
 //   - Failures of a user action go to the settings region with the error
 //     tone, like every other settings failure.
 //   - The quality select is never rewritten while it has focus or while
 //     a change of it is still being saved.
 // ----------------------------------------------------------------
 
-const LINK_MADE_TEXT = "New stream link made. The old link no longer works.";
 const COPIED_TEXT = "Stream address copied.";
 const COPY_FAILED_TEXT = "Could not copy. Select the address and copy it yourself.";
 export const NOT_LOADED_NOTE = "Stream address not loaded yet.";
@@ -345,9 +323,6 @@ export const NOT_LOADED_NOTE = "Stream address not loaded yet.";
 export const BITRATE_SETTLE_MS = 600;
 // While the address is missing, a state push retries at most this often.
 export const ADDRESS_RETRY_MS = 10000;
-// A claimed link_changed that has not arrived by then never will.
-export const LINK_CLAIM_TIMEOUT_MS = 10000;
-
 // The copied address is built from this page's origin, so a page opened
 // as localhost copies a link that a speaker on the network cannot reach.
 function isLoopbackHost(hostname) {
@@ -373,10 +348,8 @@ function eventKey(event) {
 export function createStreamSettings({
   doc,
   fetchInfo,
-  rotate,
   saveBitrate,
   saveContinuous = async () => false,
-  claimLinkChange = () => () => {},
   srStatus,
   settingsStatus,
   hostname = doc.location.hostname,
@@ -401,7 +374,6 @@ export function createStreamSettings({
   const m3u = doc.getElementById("stream-m3u");
   const bitrate = doc.getElementById("stream-bitrate");
   const continuous = doc.getElementById("stream-continuous");
-  const rotateBtn = doc.getElementById("stream-rotate");
   const listeners = doc.getElementById("stream-listeners");
   let active = false;
   let lastEventKey = null;
@@ -413,11 +385,6 @@ export function createStreamSettings({
   let lookup = null;
   let lastAttempt = -Infinity;
   let failureSpoken = false;
-  // Set from "Make new link" until its link_changed event arrives, so
-  // that event does not fetch what the rotate reply already gave us.
-  let ownRotation = null;
-  // True while the "Make new link" confirmation is open.
-  let confirming = false;
   // Quality saves: the value the server last confirmed, the newest
   // choice not yet sent, the settle timer and whether a save is out.
   let savedBitrate = bitrate.value;
@@ -487,13 +454,11 @@ export function createStreamSettings({
     generation += 1;
     lookup = null;
     lastEventKey = null;
-    ownRotation = null;
     stopBitrateSaves();
-    if (confirming) doc.getElementById("confirm-dialog")?.close();
     fieldset.hidden = true;
   }
 
-  // Sign-out: the address is a secret, so it leaves the page.
+  // Sign-out: clear the address along with the rest of the session state.
   function reset() {
     hide();
     url.value = "";
@@ -517,7 +482,7 @@ export function createStreamSettings({
       if (!active) return;
       // A server restart without --stream: focus inside the section
       // would fall to the page top, so it goes to the Settings heading.
-      const hadFocus = fieldset.contains(doc.activeElement) || confirming;
+      const hadFocus = fieldset.contains(doc.activeElement);
       hide();
       if (hadFocus) fieldset.closest("details")?.querySelector("summary")?.focus();
       return;
@@ -537,12 +502,7 @@ export function createStreamSettings({
     if (key !== lastEventKey) {
       lastEventKey = key;
       if (state.stream_event?.name === "link_changed") {
-        // This page's own rotation already filled the new link.
-        if (ownRotation) {
-          ownRotation = null;
-          return;
-        }
-        // Another page made a new link: the address shown here is dead.
+        // A legacy link change means the address shown here is stale.
         void refresh();
         return;
       }
@@ -625,49 +585,6 @@ export function createStreamSettings({
     } finally {
       continuous.disabled = false;
     }
-  });
-
-  // Claims the link_changed event this rotation causes, both for speech
-  // (stream mode) and for the address lookup (here).
-  function claimOwnRotation() {
-    const releaseSpeech = claimLinkChange();
-    const token = {};
-    ownRotation = token;
-    return () => {
-      releaseSpeech();
-      if (ownRotation === token) ownRotation = null;
-    };
-  }
-
-  rotateBtn.addEventListener("click", async () => {
-    confirming = true;
-    const confirmed = await confirmAction(doc, {
-      title: "Make a new stream link?",
-      message: "Every speaker using the current link stops, and you will need to add the new link to them.",
-      confirmLabel: "Make new link",
-    });
-    confirming = false;
-    if (!active) return;
-    // Cancel, Escape and confirm all leave focus on the button.
-    rotateBtn.focus();
-    if (!confirmed) return;
-    const release = claimOwnRotation();
-    let info;
-    try {
-      info = await rotate();
-    } catch (err) {
-      release();
-      if (!active || isAuthFailure(err)) return;
-      announceStatus(settingsStatus, `Could not make a new link: ${err.message}`,
-        { dwellMs: 6000, force: true, tone: "error" });
-      return;
-    }
-    // The event normally arrives within a push or two; a claim that
-    // outlives that would swallow a later change made elsewhere.
-    setTimeout(release, LINK_CLAIM_TIMEOUT_MS);
-    if (!active) return;
-    fill(info);
-    announceStatus(srStatus, LINK_MADE_TEXT, { dwellMs: 5000, force: true });
   });
 
   return {

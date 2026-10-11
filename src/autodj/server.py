@@ -25,8 +25,8 @@ Routes
 ``POST /api/play-next``     → queue a track by path to play after the current one
 ``WS   /ws``                → push state JSON every 1 second
 
-Stream mode (``serve --stream``) adds ``GET /stream/<secret>.mp3`` and
-``.m3u`` (no login; the secret is the credential) and the authenticated
+Stream mode (``serve --stream``) adds ``GET /stream.mp3`` and
+``GET /stream.m3u`` (no login required) and the authenticated
 ``GET /api/stream``, ``POST /api/stream/rotate`` and
 ``POST /api/stream/settings``.
 """
@@ -433,17 +433,19 @@ class _RevalidatedStaticFiles(StaticFiles):
 
 
 class _GZipExceptStream(GZipMiddleware):
-    """Gzip responses, except the live /stream/ route.
+    """Gzip responses, except the radio stream routes.
 
     Starlette leaves audio/*, images, 206 partial responses and bodies that
     are already encoded alone.  But it holds back every response's headers
     until the first body bytes, and a live stream's first bytes can take a
-    while, so /stream/ bypasses it: a speaker gets its 200 at once.
+    while, so stream routes bypass it: a speaker gets its 200 at once.
     """
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Pass /stream/ requests straight through; gzip the rest."""
-        if scope["type"] == "http" and scope["path"].startswith("/stream/"):
+        """Pass stream requests straight through; gzip the rest."""
+        if scope["type"] == "http" and (
+            scope["path"] in {"/stream.mp3", "/stream.m3u"} or scope["path"].startswith("/stream/")
+        ):
             await self.app(scope, receive, send)
             return
         await super().__call__(scope, receive, send)
@@ -1621,19 +1623,24 @@ def create_app(
             raise HTTPException(status_code=404, detail="Not Found")
 
     @app.api_route("/stream/{name}", methods=["GET", "HEAD"])
+    @app.api_route("/stream.{name}", methods=["GET", "HEAD"])
     async def api_stream_audio(name: str, request: Request) -> Response:
         """Serve the MP3 stream, or a one-line playlist pointing at it.
 
         ``HEAD`` answers with the same checks and headers but no body and
         without becoming a listener.
         """
-        ext = _stream_name(name)
+        if request.url.path in {"/stream.mp3", "/stream.m3u"}:
+            _require_stream_mode()
+            ext = name
+        else:
+            ext = _stream_name(name)
         head = request.method == "HEAD"
         headers = {"Cache-Control": "no-store"}
         if ext == "m3u":
             scheme = "https" if request.url.scheme == "https" else "http"
             host = request.headers.get("host", "")
-            body = f"{scheme}://{host}/stream/{bridge.stream_secret.value}.mp3\n".encode()
+            body = f"{scheme}://{host}/stream.mp3\n".encode()
             if head:
                 headers["Content-Length"] = str(len(body))
                 body = b""
@@ -1679,7 +1686,7 @@ def create_app(
 
     @app.post("/api/stream/rotate")
     async def api_stream_rotate() -> dict:
-        """Make a new stream link; the old one stops working at once."""
+        """Rotate legacy keyed links; the public listening address stays the same."""
         _require_stream_mode()
         try:
             await asyncio.to_thread(bridge.rotate_stream_secret)
@@ -2906,6 +2913,8 @@ def serve(
         "log_level": "warning",
     }
     if stream:
+        # HTTP/1.0 radio players need close-delimited audio, not chunked framing.
+        uvicorn_kwargs["http"] = "h11"
         uvicorn_kwargs["timeout_graceful_shutdown"] = _STREAM_SHUTDOWN_GRACE_SECONDS
     reloaders: list[CertificateReloader] = []
     if ssl_certfile is not None and ssl_keyfile is not None:

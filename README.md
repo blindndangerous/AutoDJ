@@ -113,6 +113,9 @@ on the web page. See [Operations](docs/operations.md#radio-stream-sonos-vlc-and-
 for adding the station to Sonos and VLC, what the playback controls do while streaming, and
 troubleshooting.
 
+The stream uses `/stream.mp3` (or `/stream.m3u` for a playlist). Anyone who can reach the
+server can listen without a key. Browser controls still require pairing in LAN mode.
+
 ## Commands
 
 Every command takes `--help`, for example `uv run autodj serve --help`. The global options

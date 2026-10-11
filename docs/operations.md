@@ -433,10 +433,9 @@ strangers on the internet. After the Access login, pair each remote browser as u
 request through the tunnel reaches AutoDJ from the `cloudflared` machine's address, so the
 per-address limit on wrong pairing codes counts all remote browsers together.
 
-The radio stream link (`/stream/<secret>.mp3`) works at home. Through the tunnel it is behind
-Access too, so players that cannot log in, such as Sonos, cannot use it from outside. Do not
-share the stream link: anyone who has it and can reach AutoDJ can listen. If it leaks, use "Make
-new link" in Settings, Stream.
+The radio stream link (`/stream.mp3`) works at home. Through the tunnel it is behind
+Access too, so players that cannot log in, such as Sonos, cannot use it from outside.
+On the local network, anyone who can reach AutoDJ can listen without pairing.
 
 ## Radio stream (Sonos, VLC and other players)
 
@@ -466,6 +465,10 @@ count is shown below the address. The address is built from the address the page
 with, so a page opened as `localhost` or `127.0.0.1` gives a link only that computer can use (the
 page says so); open AutoDJ by the network address in its start-up message before copying a link
 for a speaker.
+
+The listening address is `/stream.mp3`, with a playlist at `/stream.m3u`. Anyone who can
+reach the server can listen without pairing. Playback controls and settings still require
+pairing when LAN authentication is enabled. Existing links containing a stream key still work.
 
 ### Adding the station to Sonos
 
@@ -514,7 +517,7 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
   Changing it restarts the encoder; every listener, including speakers, reconnects on its own a
   moment later.
 
-### Idle sets and "Make new link"
+### Idle sets
 
 The stream starts idle: nothing plays until a listener connects. The first listener to connect
 starts a new set from the beginning of a track. While at least one listener stays connected the
@@ -523,9 +526,7 @@ set keeps playing; a listener that disconnects and reconnects within 30 seconds
 connected, the set stops; the next listener to connect starts a fresh set from the start of a
 track, never mid-song.
 
-"Make new link" (Settings, Stream) replaces the stream secret. Every current listener,
-including any connected speaker, is disconnected at once, and the old address stops working.
-Use it if the address was shared somewhere it should not have been.
+The listening address stays the same across restarts. There is no key to copy or renew.
 
 ### Troubleshooting
 
@@ -664,7 +665,7 @@ Do not copy these; they belong to the machine that made them:
 - `index/.access-token`, the LAN pairing secret. Copying it would let every browser paired with
   one machine use the other.
 - `index/.paired-devices.sqlite3`, the paired browsers and their sessions.
-- `index/.stream-secret`, the secret in the radio stream address.
+- `index/.stream-secret`, used by legacy keyed stream addresses.
 - Any `-wal`, `-shm`, `.lock` or `.tmp` file. The index lock file is made when it is needed.
 
 Run `uv run autodj doctor` on the destination before serving. Copying replaces the destination's
@@ -686,8 +687,8 @@ index, so the next `autodj index` there starts from the copied one.
 
 Backups do not include `config.toml` or `config.local.toml`. Copy those yourself
 and keep them with the archive. Backups also leave out the pairing secret, the paired browsers and
-the stream secret, so after a restore on a new machine you pair your browsers again and use the new
-stream address.
+the legacy stream secret, so after a restore on a new machine you pair your browsers again.
+Use the new machine's address followed by `/stream.mp3` to listen.
 
 Backup is safe while AutoDJ is serving: it copies the index under the index's own lock and
 both databases through SQLite's backup API, so it never picks up a half-written index. It refuses to

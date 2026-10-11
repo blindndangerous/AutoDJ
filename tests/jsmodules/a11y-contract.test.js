@@ -1601,7 +1601,7 @@ describe("static accessibility contracts", () => {
     expect(audio.getAttribute("preload")).toBe("none");
   });
 
-  it("gives the Stream settings labelled controls, a silent count and a titled dialog", () => {
+  it("gives the Stream settings labelled controls and a silent count", () => {
     installDocument();
     const labelText = (id) => document.querySelector(`label[for="${id}"]`)
       ?.textContent.replace(/\s+/g, " ").trim();
@@ -1647,13 +1647,6 @@ describe("static accessibility contracts", () => {
       .toEqual(["128", "192", "256", "320"]);
     expect(describedBy(quality).every(Boolean)).toBe(true);
 
-    const rotate = document.querySelector("#stream-rotate");
-    expect(rotate.tagName).toBe("BUTTON");
-    expect(rotate.getAttribute("type")).toBe("button");
-    expect(rotate.textContent.trim()).toBe("Make new link");
-    expect(describedBy(rotate)).toHaveLength(1);
-    expect(describedBy(rotate).every(Boolean)).toBe(true);
-
     // Visible text only: a live count would speak every connect and drop.
     const count = document.querySelector("#stream-listeners");
     expect(count.hasAttribute("aria-live")).toBe(false);
@@ -1669,13 +1662,12 @@ describe("static accessibility contracts", () => {
     expect(note.hasAttribute("role")).toBe(false);
     expect(note.hasAttribute("aria-hidden")).toBe(false);
 
-    // Make new link asks in the shared confirmation: a plain native
-    // modal named by its own heading, described by its message, with
-    // Cancel first.
+  });
+
+  it("keeps the shared confirmation dialog accessible", () => {
+    installDocument();
     const dialog = document.querySelector("#confirm-dialog");
     expect(dialog.tagName).toBe("DIALOG");
-    // A modal inside a hidden tab panel (display: none) never renders,
-    // so the dialog sits outside every panel and card.
     expect(dialog.closest("main, section, details, [hidden]")).toBeNull();
     const title = document.getElementById(dialog.getAttribute("aria-labelledby"));
     expect(title.tagName).toBe("H2");
