@@ -1,13 +1,14 @@
-"""Continuous, non-blocking FFmpeg master processing for the mix bus."""
+"""Continuous, non-blocking master processing for the mix bus."""
 
 from __future__ import annotations
 
 import collections
 import contextlib
 import logging
-import subprocess  # nosec B404 -- FFmpeg uses a fixed argv pipeline, never a shell
+import subprocess  # nosec B404 -- processors use fixed argv pipelines, never a shell
 import threading
 from collections.abc import Callable
+from pathlib import Path
 from typing import Final
 
 import numpy as np
@@ -24,6 +25,8 @@ STARTUP_BLOCKS: Final = 12
 # The extra cushion absorbs short Windows pipe/thread scheduling gaps, including
 # the first blocks after a restarted FFmpeg process.
 _OUTPUT_GUARD_BLOCKS: Final = STARTUP_BLOCKS + 6
+# Aligned Stereo Tool pipes need two fewer queued blocks for the same 480 ms delay.
+_STEREOTOOL_GUARD_BLOCKS: Final = 16
 _MEASURED_PIPELINE_BLOCKS: Final = _OUTPUT_GUARD_BLOCKS + 6
 _QUEUE_BLOCKS: Final = _OUTPUT_GUARD_BLOCKS + 20
 _LIMIT: Final = 0.87096359
@@ -34,7 +37,22 @@ def _creation_flags() -> int:
     return getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
-def _command() -> list[str]:
+def _command(mode: str = "smooth", stereotool_path: str = "stereo_tool_cmd") -> list[str]:
+    if mode == "stereotool":
+        return [
+            stereotool_path,
+            "-",
+            "-",
+            "-b",
+            "32f",
+            "-r",
+            str(SAMPLE_RATE),
+            "-s",
+            str(Path(__file__).with_name("presets") / "stereo-tool-free.sts"),
+            "-l",
+            "1024",
+            "-q",
+        ]
     return [
         "ffmpeg",
         "-hide_banner",
@@ -63,24 +81,34 @@ def _command() -> list[str]:
 
 
 class ContinuousMaster:
-    """A persistent raw-PCM FFmpeg pipeline; ``process`` never waits on I/O.
+    """A persistent raw-PCM processor; ``process`` never waits on I/O.
 
     The input and output queues are bounded. A short output cushion absorbs
-    FFmpeg scheduling jitter and establishes the advertised continuous delay.
+    scheduling jitter and establishes the advertised continuous delay.
     """
 
     def __init__(
-        self, *, popen_factory: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen
+        self,
+        *,
+        popen_factory: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
+        mode: Callable[[], str] = lambda: "smooth",
+        stereotool_path: str = "stereo_tool_cmd",
     ) -> None:
         self._factory = popen_factory
+        self._select_mode = mode
+        self._mode = mode()
+        self._stereotool_path = stereotool_path
+        self._output_guard_blocks = (
+            _STEREOTOOL_GUARD_BLOCKS if self._mode == "stereotool" else _OUTPUT_GUARD_BLOCKS
+        )
         self._lock = threading.RLock()
         self._changed = threading.Event()
         self._closed = False
-        self._enabled = True
+        self._enabled = self._mode in {"smooth", "stereotool"}
         self._generation = 0
         self._input: collections.deque[tuple[int, bytes]] = collections.deque()
         self._output: collections.deque[tuple[int, np.ndarray]] = collections.deque()
-        # Keep a fixed-latency copy of input so a failed/restarting FFmpeg
+        # Keep a fixed-latency copy of input so a failed/restarting
         # process can bypass without shifting or repeating the timeline.
         self._fallback_delay: collections.deque[np.ndarray] = collections.deque(
             maxlen=_MEASURED_PIPELINE_BLOCKS + 1
@@ -100,8 +128,7 @@ class ContinuousMaster:
 
     @property
     def latency_seconds(self) -> float:
-        # Measured with an impulse through the shipped filter chain: the
-        # startup cushion plus FFmpeg's resampler/limiter buffering.
+        # Measured pipeline delay, including processor buffering and output cushion.
         return _MEASURED_PIPELINE_BLOCKS * BLOCK_SECONDS
 
     @property
@@ -126,11 +153,12 @@ class ContinuousMaster:
             return audio
 
         audio = np.nan_to_num(audio, copy=False)
+        mode = self._select_mode()
         with self._lock:
             if self._closed:
                 return self._fallback(audio)
-            if not self._enabled:
-                self._switch(True)
+            if not self._enabled or mode != self._mode:
+                self._switch(True, mode)
             audio = np.ascontiguousarray(audio)
             self._fallback_delay.append(audio.copy())
             if self._failed:
@@ -140,14 +168,16 @@ class ContinuousMaster:
                 self._input.popleft()
                 self._set_error("master input queue overflow; dropped oldest block")
             self._input.append((generation, audio.tobytes()))
-            if len(self._output) > _OUTPUT_GUARD_BLOCKS and self._output[0][0] == generation:
+            if not self._ready and len(self._output) > self._output_guard_blocks:
+                self._ready = True
+            if self._ready and self._output and self._output[0][0] == generation:
                 output = self._output.popleft()[1]
                 self._output_cond.notify_all()
                 if self._recovering:
                     if not np.any(output):
                         fallback = self._delayed_fallback()
                         self._recovery_outputs += 1
-                        if self._recovery_outputs >= _OUTPUT_GUARD_BLOCKS:
+                        if self._recovery_outputs >= self._output_guard_blocks:
                             self._recovering = False
                             self._error = None
                             self._overflow_reported = False
@@ -166,20 +196,31 @@ class ContinuousMaster:
                         self._overflow_reported = False
                         self._healthy_outputs = 0
                 return output
+            if self._ready:
+                self._set_error("master output underrun; restarting processor")
+                self._restarts += 1
+                self._switch(True)
             if self._recovering:
                 return self._delayed_fallback()
             return np.zeros_like(audio)
 
-    def _switch(self, enabled: bool) -> None:
+    def _switch(self, enabled: bool, mode: str | None = None) -> None:
+        changing_processor = enabled and self._enabled
         self._enabled = enabled
+        if mode is not None:
+            self._mode = mode
+        self._output_guard_blocks = (
+            _STEREOTOOL_GUARD_BLOCKS if self._mode == "stereotool" else _OUTPUT_GUARD_BLOCKS
+        )
         self._generation += 1
         self._input.clear()
         self._output.clear()
         self._ready = False
         self._failed = False
-        self._recovering = False
+        self._recovering = changing_processor
         self._recovery_outputs = 0
-        self._fallback_delay.clear()
+        if not changing_processor:
+            self._fallback_delay.clear()
         self._changed.set()
         self._output_cond.notify_all()
 
@@ -199,7 +240,7 @@ class ContinuousMaster:
     @staticmethod
     def _fallback(audio: np.ndarray) -> np.ndarray:
         # Prepared sources retain 6 dB headroom; apply the chain's final
-        # makeup and bound peaks while FFmpeg recovers.
+        # makeup and bound peaks while the processor recovers.
         return np.clip(audio * _MAKEUP, -_LIMIT, _LIMIT).astype(np.float32, copy=False)
 
     def _lifecycle(self) -> None:
@@ -212,6 +253,8 @@ class ContinuousMaster:
                 closed = self._closed
                 enabled = self._enabled
                 generation = self._generation
+                mode = self._mode
+            name = "Stereo Tool" if mode == "stereotool" else "FFmpeg"
             if closed:
                 self._stop_pipeline(proc, writer, reader, stop)
                 return
@@ -228,8 +271,8 @@ class ContinuousMaster:
                 if proc is not None:
                     self._stop_pipeline(proc, writer, reader, stop)
                 try:
-                    proc = self._factory(  # nosec B603 -- fixed FFmpeg argv, no shell
-                        _command(),
+                    proc = self._factory(  # nosec B603 -- configured executable, fixed argv, no shell
+                        _command(mode, self._stereotool_path),
                         stdin=subprocess.PIPE,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.DEVNULL,
@@ -237,7 +280,7 @@ class ContinuousMaster:
                         creationflags=_creation_flags(),
                     )
                     if proc.stdin is None or proc.stdout is None:
-                        raise OSError("FFmpeg master pipes unavailable")
+                        raise OSError(f"{name} master pipes unavailable")
                 except Exception as exc:
                     proc = None
                     with self._lock:
@@ -248,7 +291,7 @@ class ContinuousMaster:
                         self._recovery_outputs = 0
                         self._input.clear()
                         self._output.clear()
-                        self._error = f"FFmpeg master unavailable: {exc}"
+                        self._error = f"{name} master unavailable: {exc}"
                         self._restarts += 1
                     self._changed.wait(0.5)
                     self._changed.clear()
@@ -271,7 +314,7 @@ class ContinuousMaster:
                 with self._lock:
                     if active_generation == self._generation and self._enabled:
                         self._proc = proc
-                        self._ready = True
+                        self._ready = False
                         self._failed = False
                         self._overflow_reported = False
                         if not self._recovering:
@@ -295,7 +338,7 @@ class ContinuousMaster:
                     self._recovery_outputs = 0
                     self._input.clear()
                     self._output.clear()
-                    self._error = f"FFmpeg master exited ({proc.returncode}); using limited bypass"
+                    self._error = f"{name} master exited ({proc.returncode}); using limited bypass"
                     self._restarts += 1
                 proc = writer = reader = None
                 stop = None
@@ -312,16 +355,29 @@ class ContinuousMaster:
         stdin = proc.stdin
         if stdin is None:
             return
+        # Stereo Tool's CLI drops samples on short input chunks; feed full 1024-frame blocks.
+        write_bytes = (1024 if self._mode == "stereotool" else BLOCK_FRAMES) * 2 * 4
+        pending = bytearray()
         while not stop.is_set():
             with self._lock:
+                if generation != self._generation or not self._enabled:
+                    return
                 block = self._input.popleft() if self._input else None
             if block is None:
                 stop.wait(0.005)
                 continue
             if block[0] != generation:
                 continue
+            pending.extend(block[1])
             try:
-                stdin.write(block[1])
+                while len(pending) >= write_bytes:
+                    payload = memoryview(bytes(pending[:write_bytes]))
+                    del pending[:write_bytes]
+                    while payload:
+                        written = stdin.write(payload)
+                        if not written:
+                            return
+                        payload = payload[written:]
             except (BrokenPipeError, OSError, ValueError):
                 return
 
@@ -356,7 +412,7 @@ class ContinuousMaster:
                     ):
                         # Keep the queue bounded without discarding timeline
                         # blocks when the bus is briefly delayed. Backpressure
-                        # propagates through FFmpeg's pipe until consumption
+                        # propagates through the processor's pipe until consumption
                         # resumes.
                         self._output_cond.wait(timeout=0.1)
                     if stop.is_set():

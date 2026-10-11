@@ -143,6 +143,9 @@ max_listeners = 8
 station_name = "AutoDJ"
 
 [playback]
+# Optional Stereo Tool command-line executable. Select its free preset under
+# Loudness processing in the browser after installing it separately.
+# stereotool_path = "stereo_tool_cmd"
 # Duration of the crossfade between tracks, in seconds, 0 to 20.  In the
 # "full_intro_outro" and "outro_fade" modes below, a track with detected
 # markers fades for 1 to 12 s instead, even at 0.  Otherwise 0 cuts from one

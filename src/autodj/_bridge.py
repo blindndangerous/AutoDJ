@@ -888,9 +888,11 @@ class PlayerBridge:
             "playout": {
                 "processing": processing
                 or ("replaygain" if self.player._cfg.replaygain.enabled else "off"),
-                "error": master.error if master is not None and processing == "smooth" else None,
+                "error": master.error
+                if master is not None and processing in {"smooth", "stereotool"}
+                else None,
                 "latency_seconds": master.latency_seconds
-                if master is not None and processing == "smooth"
+                if master is not None and processing in {"smooth", "stereotool"}
                 else 0.0,
                 "queue_locked": bool(
                     playing is not None

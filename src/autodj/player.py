@@ -2136,7 +2136,7 @@ class Player:
     def _apply_replaygain(self, audio: np.ndarray, path: str) -> np.ndarray:
         """Apply ReplayGain normalisation when enabled in config; else no-op."""
         if (
-            self._cfg.playback.loudness_processing in {"off", "smooth"}
+            self._cfg.playback.loudness_processing in {"off", "smooth", "stereotool"}
             or not self._cfg.replaygain.enabled
         ):
             return audio
@@ -2153,8 +2153,8 @@ class Player:
         return (audio * gain).astype(np.float32)
 
     def _load_playout_audio(self, entry: IndexEntry) -> np.ndarray:
-        """Use prepared sources in Smooth mode, retaining original sample positions."""
-        if self._cfg.playback.loudness_processing != "smooth":
+        """Use prepared sources with a master processor, keeping source positions."""
+        if self._cfg.playback.loudness_processing not in {"smooth", "stereotool"}:
             audio = load_stereo(entry.path, SAMPLE_RATE, self._max_render_seconds())
             return self._apply_replaygain(audio, entry.path)
         from autodj.processing import prepare_source
@@ -3646,13 +3646,30 @@ class Player:
         meta_a = self._outgoing_meta(audio_a_full, SAMPLE_RATE, current.path)
         self._play_glide_in(audio_a_full, start_offset, glide_in)
         audio_a = audio_a_full[start_offset:]
+        processing = self._cfg.playback.loudness_processing or ""
         if next_entry is None:
-            return RenderedTrack(current, audio_a, None, 0, "", start_offset=start_offset)
+            return RenderedTrack(
+                current,
+                audio_a,
+                None,
+                0,
+                "",
+                start_offset=start_offset,
+                loudness_processing=processing,
+            )
         meta_b = self._peek_incoming_meta(next_entry)
         eff_s = self._effective_crossfade_seconds(meta_a, meta_b, current.length)
         crossfade = int(eff_s * SAMPLE_RATE)
         if crossfade >= len(audio_a):
-            return RenderedTrack(current, audio_a, next_entry, 0, "", start_offset=start_offset)
+            return RenderedTrack(
+                current,
+                audio_a,
+                next_entry,
+                0,
+                "",
+                start_offset=start_offset,
+                loudness_processing=processing,
+            )
         # meta_a's outro/beat markers are absolute positions in the FULL
         # track, so the crossfade start must be located there too -- not in
         # audio_a, which already had start_offset samples cut off the
@@ -3661,7 +3678,15 @@ class Player:
         audio_b_loaded = self._load_incoming(next_entry, SAMPLE_RATE, crossfade)
         if audio_b_loaded is None:
             # Too long to mix in: play this track out; the next render skips it.
-            return RenderedTrack(current, audio_a, next_entry, 0, "", start_offset=start_offset)
+            return RenderedTrack(
+                current,
+                audio_a,
+                next_entry,
+                0,
+                "",
+                start_offset=start_offset,
+                loudness_processing=processing,
+            )
         intro = self._skip_incoming_silence_samples(audio_b_loaded, SAMPLE_RATE, meta_b=meta_b)
         drop = self._drop_mix(
             current,
@@ -3711,7 +3736,13 @@ class Player:
         a_trimmed = audio_a[: a_start + crossfade]
         if crossfade == 0 or len(audio_b) < crossfade:
             return RenderedTrack(
-                current, a_trimmed, next_entry, intro, "", start_offset=start_offset
+                current,
+                a_trimmed,
+                next_entry,
+                intro,
+                "",
+                start_offset=start_offset,
+                loudness_processing=processing,
             )
         glide = self._incoming_glide(audio_b_loaded, intro, match, crossfade)
         if glide is not None:
@@ -3757,4 +3788,5 @@ class Player:
             next_glide=glide,
             overlap_frames=crossfade,
             next_entry_offset=intro,
+            loudness_processing=processing,
         )

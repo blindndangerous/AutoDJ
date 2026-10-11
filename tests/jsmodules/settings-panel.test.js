@@ -44,7 +44,7 @@ function makeEls() {
     pbPureShuffle:   cb(),
     pbShowLyrics:    cb(),
     pbAnchorSeed:    cb(),
-    pbLoudness:      sel(["off", "replaygain", "smooth"]),
+    pbLoudness:      sel(["off", "replaygain", "smooth", "stereotool"]),
     pbRgTarget:      num(),
     pbFadeIn:        num(),
     djPhraseBars:    num(),
@@ -148,6 +148,19 @@ describe("applySettingsState", () => {
     applySettingsState({ playback: { pure_shuffle: true, replaygain_enabled: true } }, els);
     expect(els.pbPickMode.value).toBe("random");
     expect(els.pbLoudness.value).toBe("replaygain");
+  });
+
+  it("selects and saves Stereo Tool processing", () => {
+    const els = makeEls();
+    applySettingsState({ playback: { loudness_processing: "stereotool" } }, els);
+    expect(els.pbLoudness.value).toBe("stereotool");
+    const save = vi.fn();
+    installSettingsControls(els, save);
+    els.pbLoudness.value = "stereotool";
+    els.pbLoudness.dispatchEvent(new Event("change"));
+    expect(save).toHaveBeenCalledWith(
+      "/api/playback-settings", { loudness_processing: "stereotool" }, els.pbLoudness,
+    );
   });
 
   it("hides settings that do not apply to saved-point transitions", () => {

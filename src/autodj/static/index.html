@@ -652,12 +652,17 @@
         Display timed (LRC) or plain lyrics in the Lyrics card.
       </span>
 
-      <div class="settings-check">
-        <input type="checkbox" id="pb-replaygain" aria-describedby="pb-rg-desc">
-        <label for="pb-replaygain">ReplayGain normalisation</label>
+      <div class="settings-row">
+        <label for="pb-replaygain">Loudness processing</label>
+        <select id="pb-replaygain" aria-describedby="pb-rg-desc">
+          <option value="off">Off</option>
+          <option value="replaygain">ReplayGain</option>
+          <option value="smooth">Smooth</option>
+          <option value="stereotool">Stereo Tool (free preset)</option>
+        </select>
       </div>
       <span class="setting-desc" id="pb-rg-desc">
-        Apply embedded ReplayGain track-gain tags so every track plays at a consistent loudness.  Tracks without tags play unchanged.  Used when the server does the mixing, in stream mode or with server audio; crossfades played by this browser ignore it.
+        Choose Off, ReplayGain, Smooth, or the free Stereo Tool preset.  Applies when the server does the mixing, in stream mode or with server audio; crossfades played by this browser ignore it.
       </span>
       <div class="settings-row" data-show-when="pb-replaygain">
         <label for="pb-rg-target">ReplayGain target loudness (decibels)</label>

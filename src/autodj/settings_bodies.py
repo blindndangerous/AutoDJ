@@ -141,7 +141,7 @@ class PlaybackSettingsBody(BaseModel):
     fade_in_seconds: FadeSeconds | None = None
     crossfade_eq_duck: bool | None = None
     pick_mode: Literal["similarity", "random", "least_recent", "clock"] | None = None
-    loudness_processing: Literal["off", "replaygain", "smooth"] | None = None
+    loudness_processing: Literal["off", "replaygain", "smooth", "stereotool"] | None = None
     pure_shuffle: bool | None = None
     anchor_to_seed: bool | None = None
     replaygain_enabled: bool | None = None

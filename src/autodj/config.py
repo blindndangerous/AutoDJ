@@ -184,7 +184,7 @@ TRANSITION_MODES: tuple[str, ...] = (
 )
 
 PICK_MODES: tuple[str, ...] = ("similarity", "random", "least_recent", "clock")
-LOUDNESS_PROCESSING_MODES: tuple[str, ...] = ("off", "replaygain", "smooth")
+LOUDNESS_PROCESSING_MODES: tuple[str, ...] = ("off", "replaygain", "smooth", "stereotool")
 
 KEY_NOTATIONS: tuple[str, ...] = (
     "camelot",
@@ -341,6 +341,8 @@ class PlaybackConfig(_Section):
     pick_mode: str = "similarity"
     # None follows the legacy [replaygain].enabled setting.
     loudness_processing: str | None = None
+    # Executable name or path used by Stereo Tool processing; installation setting.
+    stereotool_path: str = "stereo_tool_cmd"
     # Where the similarity engine seeds from after a user-built queue
     # empties.  "last_queued" (default) continues from the final queued
     # track -- the user steered the set, the auto-DJ follows.
@@ -481,6 +483,8 @@ class PlaybackConfig(_Section):
         self.pick_mode = _validate_pick_mode(str(self.pick_mode))
         if self.loudness_processing is not None:
             self.loudness_processing = _validate_loudness_processing(str(self.loudness_processing))
+        if not isinstance(self.stereotool_path, str) or not self.stereotool_path.strip():
+            raise ValueError("playback.stereotool_path must be a non-empty string")
         self.skip_style = _validate_skip_style(str(self.skip_style))
         self.post_queue_seed = _validate_post_queue_seed(str(self.post_queue_seed))
         self.pick_top_k = int(self.pick_top_k)

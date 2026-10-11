@@ -12,7 +12,7 @@ def test_playback_body_accepts_pick_modes(mode: str) -> None:
     assert PlaybackSettingsBody.model_validate({"pick_mode": mode}).pick_mode == mode
 
 
-@pytest.mark.parametrize("mode", ("off", "replaygain", "smooth"))
+@pytest.mark.parametrize("mode", ("off", "replaygain", "smooth", "stereotool"))
 def test_playback_body_accepts_loudness_modes(mode: str) -> None:
     assert (
         PlaybackSettingsBody.model_validate({"loudness_processing": mode}).loudness_processing
@@ -36,6 +36,11 @@ def test_playback_body_accepts_saved_points_and_legacy_fields() -> None:
 def test_playback_body_rejects_unknown_modes(field: str, value: str) -> None:
     with pytest.raises(ValidationError):
         PlaybackSettingsBody.model_validate({field: value})
+
+
+def test_playback_body_rejects_stereotool_install_path() -> None:
+    with pytest.raises(ValidationError):
+        PlaybackSettingsBody.model_validate({"stereotool_path": "custom-command"})
 
 
 def test_config_transition_modes_include_saved_points() -> None:

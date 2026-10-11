@@ -344,17 +344,18 @@ def test_get_state_reads_the_current_track_once(bridge) -> None:
     assert state["duration"] == 200.0
 
 
-def test_state_exposes_continuous_processing_and_prepared_handoff(bridge) -> None:
+@pytest.mark.parametrize("mode", ["smooth", "stereotool"])
+def test_state_exposes_continuous_processing_and_prepared_handoff(bridge, mode) -> None:
     from types import SimpleNamespace
 
-    bridge.player._active_processing_mode = "smooth"
+    bridge.player._active_processing_mode = mode
     bridge.player._continuous_master = SimpleNamespace(
         error="Processor restarting", latency_seconds=0.28
     )
     bridge.player._playing_render = SimpleNamespace(full_audio=object(), next_entry=object())
     status = bridge.get_state()["playout"]
     assert status == {
-        "processing": "smooth",
+        "processing": mode,
         "error": "Processor restarting",
         "latency_seconds": 0.28,
         "queue_locked": True,

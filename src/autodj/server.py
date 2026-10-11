@@ -519,7 +519,7 @@ class ProfileSaveBody(BaseModel):
     fade_in_seconds: FadeSeconds | None = None
     pure_shuffle: bool | None = None
     pick_mode: Literal["similarity", "random", "least_recent", "clock"] | None = None
-    loudness_processing: Literal["off", "replaygain", "smooth"] | None = None
+    loudness_processing: Literal["off", "replaygain", "smooth", "stereotool"] | None = None
     anchor_to_seed: bool | None = None
     liners_enabled: bool | None = None
     liners_pick_mode: str | None = None
@@ -2767,13 +2767,18 @@ def serve(
     if player.bus is not None:
         from autodj.mastering import ContinuousMaster
 
-        player._continuous_master = ContinuousMaster()
+        def processing_mode() -> str:
+            return (
+                getattr(player, "_active_processing_mode", cfg.playback.loudness_processing)
+                or "off"
+            )
+
+        player._continuous_master = ContinuousMaster(
+            mode=processing_mode, stereotool_path=cfg.playback.stereotool_path
+        )
         player.bus.set_master(
             player._continuous_master,
-            enabled=lambda: (
-                getattr(player, "_active_processing_mode", cfg.playback.loudness_processing)
-                == "smooth"
-            ),
+            enabled=lambda: processing_mode() in {"smooth", "stereotool"},
         )
 
     if cfg.playback.import_external_cues:

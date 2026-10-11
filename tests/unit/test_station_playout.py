@@ -123,12 +123,32 @@ def test_queue_edit_revalidates_liner_reservation(station):
     assert player._queue_pick_is_stale(result)
 
 
-def test_smooth_does_not_stack_replaygain(station):
+@pytest.mark.parametrize("mode", ["smooth", "stereotool"])
+def test_master_processing_does_not_stack_replaygain(station, mode):
     player, *_ = station
-    player._cfg.playback.loudness_processing = "smooth"
+    player._cfg.playback.loudness_processing = mode
     player._cfg.replaygain.enabled = True
     audio = np.ones((10, 2), dtype=np.float32)
     assert player._apply_replaygain(audio, "missing.mp3") is audio
+
+
+@pytest.mark.parametrize("mode", ["smooth", "stereotool"])
+def test_master_processing_reuses_prepared_sources(station, mode, tmp_path, monkeypatch):
+    player, (entry, *_), _points = station
+    player._cfg.playback.loudness_processing = mode
+    prepared = tmp_path / "prepared.wav"
+    prepared.touch()
+    player._library.catalog.record_for_path = lambda _path: {
+        "prepared_path": str(prepared),
+        "kind": "music",
+    }
+    audio = np.ones((100, 2), dtype=np.float32)
+    load = MagicMock(return_value=audio)
+    monkeypatch.setattr("autodj.player.load_stereo", load)
+    assert Player._load_playout_audio(player, entry) is audio
+    assert load.call_args.args[0] == str(prepared)
+    result = player._render_track(entry, None, 0)
+    assert result.loudness_processing == mode
 
 
 def test_early_skip_restores_unheard_intro_but_late_skip_does_not(station, monkeypatch):

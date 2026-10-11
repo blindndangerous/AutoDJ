@@ -1233,6 +1233,21 @@ class TestRenderTrackFeatures:
         ):
             self._render(player)
 
+    @pytest.mark.parametrize("mode", ["smooth", "stereotool"])
+    @pytest.mark.parametrize(
+        "crossfade,has_next", [(2.0, True), (0.0, True), (20.0, True), (2.0, False)]
+    )
+    def test_legacy_render_keeps_master_processing_mode(self, mode, crossfade, has_next):
+        player = self._make_player_with_audio(crossfade_seconds=crossfade)
+        player._cfg.playback.loudness_processing = mode
+        audio = np.zeros((4 * 44100, 2), dtype=np.float32)
+        with patch.object(player, "_load_playout_audio", return_value=audio):
+            result = player._render_track(
+                player._sim.entries[0], player._sim.entries[1] if has_next else None, 0
+            )
+        assert result is not None
+        assert result.loudness_processing == mode
+
     def test_filter_sweep_path(self) -> None:
         self._render(self._make_player_with_audio(filter_sweep=True))
 
