@@ -16,12 +16,15 @@ from autodj.beets import Track
 from autodj.catalog import LibraryCatalog, _path
 from autodj.indexer import (
     FEATURE_DIM,
+    LIBRARY_DECODE_LOG,
     IndexEntry,
     _detect_moves,
     _embed_new_tracks,
+    _finish_decode_report,
     file_fingerprint,
 )
 from autodj.processing import analyze_basic, prepare_source
+from autodj.stereo import DecodeReport
 
 logger = logging.getLogger(__name__)
 
@@ -610,6 +613,7 @@ class LibraryManager:
 def analyse_library(cfg: AutoDJConfig, wrapper: MuqWrapper) -> int:
     """Embed pending catalog tracks without publishing a FAISS generation."""
     manager = LibraryManager(cfg, _EmptySimilarity())
+    report = DecodeReport()
     try:
         pending = manager.analysis_pending()
         completed = 0
@@ -644,13 +648,16 @@ def analyse_library(cfg: AutoDJConfig, wrapper: MuqWrapper) -> int:
                 manager.catalog.set_vector(entry.path, vectors[-1])
                 completed += 1
 
-            _embed_new_tracks(
-                [track],
-                wrapper,
-                workers=1,
-                checkpoint=checkpoint,
-                throttle_ms=cfg.index.throttle_ms,
-            )
+            with report:
+                _embed_new_tracks(
+                    [track],
+                    wrapper,
+                    workers=1,
+                    checkpoint=checkpoint,
+                    throttle_ms=cfg.index.throttle_ms,
+                    report=report,
+                )
+        _finish_decode_report(report, cfg.index.active_dir / LIBRARY_DECODE_LOG)
         return completed
     finally:
         manager.close()

@@ -27,8 +27,9 @@ Install [Git](https://git-scm.com/downloads) and
 [uv](https://docs.astral.sh/uv/getting-started/installation/) first. The project requires Python
 3.14; the launcher can obtain that interpreter. Running AutoDJ does not need Node.js; the server
 serves the web UI files as they are in the checkout. Install [FFmpeg](https://ffmpeg.org/download.html)
-and put it on the PATH if your library has `.mp3`, `.m4a`, `.mp4` or `.aac` files: AutoDJ indexes those
-with FFmpeg, and without it `autodj index` skips them with a warning. Stream mode also needs it.
+and put it on the PATH if your library has `.mp3`, `.m4a`, `.mp4` or `.aac` files: AutoDJ indexes,
+analyses and plays those with FFmpeg, and without it `autodj index` skips them with a warning.
+Stream mode also needs it.
 
 ```bash
 git clone https://github.com/blindndangerous/AutoDJ
