@@ -182,7 +182,7 @@ export function installSearch({
     if (btn.dataset.points === "true") {
       searchResults.dispatchEvent(new CustomEvent("autodj:edit-points", {
         bubbles: true,
-        detail: { path, kind: btn.dataset.kind || "music" },
+        detail: { path, kind: btn.dataset.kind || "music", opener: btn },
       }));
       return;
     }

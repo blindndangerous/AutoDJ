@@ -256,6 +256,11 @@ describe("liner file controls", () => {
     expect(list.querySelectorAll("li")).toHaveLength(2);
     expect(list.querySelectorAll('button[aria-label="Track info for same.wav"]')).toHaveLength(2);
     expect([...list.querySelectorAll("button")].some((button) => button.textContent === "Track info")).toBe(true);
+    const info = list.querySelectorAll('button[aria-label="Track info for same.wav"]')[1];
+    const edit = vi.fn();
+    document.addEventListener("autodj:edit-points", edit, { once: true });
+    info.click();
+    expect(edit.mock.calls[0][0].detail).toEqual({ path: "Y:/two/same.wav", kind: "liner", opener: info });
     list.querySelector("button").click();
     expect(onDelete).toHaveBeenCalledWith("record-a", expect.anything(), "same.wav");
   });
