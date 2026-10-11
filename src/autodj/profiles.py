@@ -82,6 +82,7 @@ class ProfileSnapshot:
         anchor_to_seed: Anchor-to-seed toggle.
         liners_enabled: Voice liner master toggle.
         liners_pick_mode: Liner rotation mode.
+        cart_page: Name of the cart page shown when the profile was saved.
     """
 
     name: str
@@ -98,10 +99,12 @@ class ProfileSnapshot:
     fade_in_seconds: float | None = None
     pure_shuffle: bool | None = None
     pick_mode: str | None = None
+    clockwheel: str | None = None
     loudness_processing: str | None = None
     anchor_to_seed: bool | None = None
     liners_enabled: bool | None = None
     liners_pick_mode: str | None = None
+    cart_page: str | None = None
 
     def to_dict(self) -> dict:
         """Return a plain JSON-serialisable representation."""

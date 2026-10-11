@@ -1,0 +1,47 @@
+"""Clockwheel routes need a paired browser and keep strict request bodies."""
+
+from types import SimpleNamespace
+
+from fastapi.testclient import TestClient
+
+from autodj.catalog import LibraryCatalog
+from autodj.server import PlayerBridge, create_app
+
+from ._helpers import _make_player_mock, _make_sim_mock
+
+_SECRET = "pairing-secret-that-is-at-least-32-bytes"
+
+
+def test_clockwheel_routes_need_pairing_and_strict_bodies(tmp_path):
+    player = _make_player_mock()
+    player._cfg.server.access_token = _SECRET
+    player._cfg.index.active_dir = tmp_path
+    player._cfg.index.index_dir = tmp_path
+    player._cfg.presets = {}
+    with LibraryCatalog(tmp_path / "library.sqlite") as catalog:
+        bridge = PlayerBridge(player=player, sim=_make_sim_mock())
+        bridge.library = SimpleNamespace(catalog=catalog, entry_for_path=lambda _path: None)
+        app = create_app(bridge)
+        app.state.security_policy.now = lambda: 1_000
+        client = TestClient(app)
+        assert client.get("/api/library/clock").status_code == 401
+        assert client.post("/api/library/clock/active", json={"name": None}).status_code == 401
+
+        code = app.state.request_pairing_code()[0]
+        paired = client.post("/api/pair", json={"code": code, "device_name": "Desk"})
+        assert paired.status_code == 200
+
+        listed = client.get("/api/library/clock")
+        assert listed.status_code == 200
+        assert listed.json()["names"] == []
+        extra = client.post("/api/library/clock/active", json={"name": None, "extra": True})
+        assert extra.status_code == 422
+        assert client.post("/api/library/clock/active", json={}).status_code == 422
+        assert client.get("/api/library/clock/..%5Csecrets").status_code == 400
+        assert client.get("/api/library/clock/CON").status_code == 400
+        assert client.get("/api/library/clock/Nothing").status_code == 404
+        unknown = client.post(
+            "/api/library/clock",
+            json={"version": 1, "name": "X", "steps": [], "resync_minutes": [0], "path": "C:/"},
+        )
+        assert unknown.status_code == 422

@@ -442,6 +442,20 @@ class MixBus:
         self._liner_pos = 0
         self._start_duck_ramp(gain)
 
+    def stop_liner(self) -> None:
+        """Fade out the liner that is playing; the music comes back up when it ends.
+
+        The fade takes 40 ms, like the duck ramp, so the stop does not
+        click.  A liner cued for later is left waiting.
+        """
+        with self._lock:
+            if self._liner is None:
+                return
+            tail = self._liner[self._liner_pos : self._liner_pos + _DUCK_RAMP_FRAMES]
+            fade = np.linspace(1.0, 0.0, len(tail), dtype=np.float32)[:, None]
+            self._liner = tail * fade
+            self._liner_pos = 0
+
     def _check_cue(self, track: RenderedTrack, pos: int) -> None:
         """Start the waiting liner once *track* has played to its cue (lock held)."""
         cue = self._liner_cue

@@ -16,9 +16,14 @@ AutoDJ is a single-user local music player with these exposed surfaces:
 - LAN mode requires either an access token or explicit `--insecure-lan`, plus exact Host and Origin
   allowlists. `AUTODJ_ACCESS_TOKEN` is supported for secret injection. `serve --lan` fills in
   both allowlists and the token automatically; see "Automatic LAN mode" below.
-- Backup and restore trust the configured index, liners, profiles and Stereo Tool preset
-  locations. Restore
-  checks member names and the AutoDJ version before it replaces anything.
+- Backup and restore trust the configured index, liners, profiles, clockwheels and Stereo Tool
+  preset locations. Restore checks member names and the AutoDJ version before it replaces anything.
+- Clockwheel routes require a paired browser. Names are checked as safe file names (no path
+  separators, dots or Windows device names) before any file is touched. Steps name a registered
+  library folder by ID plus a path inside it with no `..`, drive letter or backslash, and a track
+  step must be a track the catalog holds; the browser never sends a full path. Unknown fields and
+  step types are refused. PAL import parses a limited declarative subset and never executes
+  uploaded text.
 - Broadcast recordings contain listener-facing encoded audio only. The recording folder is
   chosen in `config.toml` or `config.local.toml` and is never accepted as an API parameter or
   sent to the browser.
@@ -138,6 +143,14 @@ related-artists file the browser can enable is `related-artists.toml` in the act
 AutoDJ checks its size before reading and refuses files larger than 1 MiB. Browser errors do
 not include artist names or unexpected top-level keys from that file.
 Treat a paired browser as trusted.
+
+The cart wall routes under `/api/carts` require a paired browser like every other `/api` route.
+A slot names a voice liner by catalog ID or liner-folder file name, or an uploaded clip by file
+name, never a path; the names pass the same checks as `/api/liners/file`. Uploaded clips go to
+the `carts` folder in the active index folder, with the voice liner size cap and extension list,
+are never overwritten, and are deleted again if they do not decode. `carts.json` is validated
+when the server starts, and a file that fails is set aside. Backups include the wall and the
+uploads. A paired browser can play carts into the server audio or stream output.
 
 Time check settings, preview, and test routes under `/api/time-checks` also require a paired
 browser. The browser receives clip coverage and the station time zone, but no configured clip

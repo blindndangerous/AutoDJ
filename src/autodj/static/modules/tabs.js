@@ -6,7 +6,7 @@
 
 import { markSelected, tabForKey } from "./tablist.js";
 
-const VIEW_NAMES = ["now", "queue", "track-info", "history", "settings", "library"];
+const VIEW_NAMES = ["now", "queue", "carts", "track-info", "history", "settings", "library"];
 
 const _viewSections = new Map();
 const _viewLinks = new Map();

@@ -1339,6 +1339,43 @@ These steps apply to a native installation from a source checkout.
 7. Start loopback-only and check that the version in the page footer is the release you checked
    out before enabling LAN access.
 
+## Cart wall
+
+The **Carts** tab, after Queue & Search, holds four pages of twelve numbered carts for station
+IDs, jingles and sound effects. Each button is named for its cart, for example "Cart 3, Station
+ID, 0:07", or "Cart 4, empty". Press a cart to play it; an empty cart opens in the editor.
+
+In the editor, choose the cart, its name, its clip and what happens to the music while it plays:
+
+- Duck lowers the music by the voice liner duck depth.
+- Over leaves the music at full volume.
+- Replace fades the music out. The song keeps playing silently under the cart and fades back in
+  when the cart ends, so it resumes at its later position.
+
+A clip is a voice liner from the library or the liner folder, or an audio file uploaded under
+**Uploaded clips**. Uploads use the voice liner extensions and the `[server]
+liner_upload_max_mib` limit, must decode as audio, and never replace a clip with the same name. A
+clip still on a cart cannot be deleted. **Rename this page** names the page shown.
+
+One cart plays at a time: a new one cuts off the last, and **Stop carts** fades it out. Each
+open paired page says "Cart 3, Station ID, playing" when a cart starts and "... ended" or
+"... stopped" when it finishes, from any tab.
+
+With focus on the cart wall, keys 1 to 9, 0, minus and equals play carts 1 to 12 on the page
+shown, and Page Up and Page Down change the page. The keys do nothing in text fields and
+dropdowns, and the **Enable keyboard shortcuts** checkbox (Settings, Display and keys) turns
+them off. With NVDA, switch to focus mode first (NVDA+Space).
+
+Carts play through the voice liner path. In server audio and stream mode the server mixes them
+in, and they need playback running: a cart is refused while the stream is idle or paused. In
+browser playback the page that plays the cart plays it, as the voice liner Test button does.
+
+The server keeps the wall in `carts.json` in the active index folder and the uploads in its
+`carts/` folder. The file is versioned; one that cannot be read is moved aside as
+`carts.json.bad-<id>` and an empty wall loads. Backups include the wall and the uploads. Saving
+a profile records the name of the cart page shown, and applying the profile shows that page; a
+profile whose page has been renamed is refused.
+
 ## Scheduler
 
 Open **Settings**, then **Schedule** to add timed station events. An event runs once, every day,
@@ -1357,8 +1394,11 @@ Actions:
 - Switch the Stereo Tool preset, to Included or an uploaded one. It takes effect when Output
   processing is Stereo Tool, restarts the processor at once and never skips the song playing. A
   preset deleted after the event was saved makes its runs fail in words.
-- Change song picking, for example to the clockwheel imported in Library tools.
+- Change song picking. Besides similar songs, random and least recently played, the choices are
+  the active clockwheel and each saved clockwheel by name; a named one also becomes the active one.
 - Play a voice liner or station ID. This needs server audio or stream mode.
+- Play a cart by page and cart number, with its saved duck, over or replace mode. This needs
+  server audio or stream mode.
 - Play a time check. This needs server audio or stream mode.
 - Start or stop the stream (stream mode). Start keeps the station playing without listeners,
   stop keeps it off the air even with listeners, and automatic hands control back to the
@@ -1381,6 +1421,67 @@ out, so the server still starts. Events are not replayed after downtime: a one-t
 time passed while AutoDJ was stopped is disabled and recorded as missed, and an event more than
 two minutes late (the computer slept) is recorded as missed instead of running. The schedule
 holds at most 100 events.
+
+## Clockwheels
+
+A clockwheel is a repeating order of steps that song picking follows when **Pick mode** (Settings, Picking) is set
+to **Clockwheel**. Keep as many as you like in the **Library tools** tab, **Clockwheels**: create,
+duplicate, rename, delete, activate one, or turn the clockwheel off. Only the active one plays.
+Profiles remember the active clockwheel, and a schedule event can switch to one by name.
+
+Step types:
+
+- **Music** or **Voice liner** from a registered library folder, or from a folder inside it such
+  as `Rock/Live` (the library folder must then add subfolders). Each step can include subfolders,
+  choose the least recently played or a random track, and follow or ignore the repeat rules. A
+  liner step plays over the start of the next music step; two liner steps cannot be next to each
+  other.
+- **A specific track**, by its path inside a registered music folder. It follows the repeat rules;
+  when they hold it back, the clockwheel moves on to the next step.
+- **Switch preset**: the next song is picked and mixed with that preset.
+
+The editor lists the steps in order, each read as "Step 3 of 12, music from Rock", with Edit,
+Move up, Move down, Duplicate and Delete buttons. Alt+Up and Alt+Down move the step whose button
+has focus, and focus moves with it. Nothing is saved until you press **Save clockwheel**; opening
+another clockwheel with unsaved changes asks first. **Restart at these minutes past each hour**
+sends the clockwheel back to step 1 at the song change nearest each minute.
+
+Each clockwheel is one JSON file in `clockwheels/` in the active index folder, named after the
+clockwheel and included in `autodj backup`. Names allow letters, digits, spaces, dashes and
+underscores, up to 64. The format is versioned and checked strictly; an unknown field, step type
+or version stops that clockwheel from loading, says why in the editor and the server log, and
+leaves the clock off while the station keeps playing:
+
+```json
+{
+  "version": 1,
+  "name": "Morning",
+  "steps": [
+    {"type": "music", "source": "<library folder ID>", "folder": "Rock",
+     "recursive": false, "selection": "least_recent", "enforce_rules": true},
+    {"type": "liner", "source": "<library folder ID>", "folder": "",
+     "recursive": false, "selection": "random", "enforce_rules": false},
+    {"type": "track", "source": "<library folder ID>", "path": "Album/Song.flac"},
+    {"type": "settings", "preset": "winddown"}
+  ],
+  "resync_minutes": [0]
+}
+```
+
+`source` is the ID of a registered library folder, so the file never holds a full path; removing
+that folder from the library stops the clockwheel until you edit its steps. Later features (carts,
+time checks, ad breaks) add their own step types through `autodj.clockwheel_store.register_step_type`.
+
+**Import .PAL** turns a SAM Broadcaster `.PAL` file into a new clockwheel, once; the `.PAL` file
+is not used after that. Only `Dir[...]` and `SubDir[...]` lines with `QueueBottom` are read, and
+nothing in the file runs. Each folder must be a registered music or voice liner folder, or a folder
+inside one that adds subfolders; the innermost registered folder is used. A folder above every
+registered folder (for example `SubDir['C:\Station']` when only `C:\Station\Rock` is registered)
+is refused: register the parent folder, or edit that step after the import.
+
+Upgrading from the single clockwheel: the clock saved by earlier versions is not read. The
+Clockwheels section and the server log say so. Import the `.PAL` file again under a name, then
+press **Activate**.
 
 ## Spoken time checks
 
