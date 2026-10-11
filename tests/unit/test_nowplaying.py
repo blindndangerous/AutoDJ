@@ -70,12 +70,14 @@ def test_snapshot_exposes_metadata_without_paths() -> None:
     assert payload["next_track"] is None
     assert payload["listener_count"] == 3
     assert payload["history"][0]["title"] == "Earlier"
-    assert payload["history"] == [{
-        "artist": "Old",
-        "title": "Earlier",
-        "duration": 90,
-        "played_at": "2026-01-01T00:00:00+00:00",
-    }]
+    assert payload["history"] == [
+        {
+            "artist": "Old",
+            "title": "Earlier",
+            "duration": 90,
+            "played_at": "2026-01-01T00:00:00+00:00",
+        }
+    ]
     assert payload["current_track"]["album"] == "Album"
     assert feed.snapshot()["current_track"]["elapsed"] == 5
     assert "secret" not in str(payload) and "private" not in str(payload)

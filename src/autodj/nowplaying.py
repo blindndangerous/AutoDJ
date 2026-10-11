@@ -103,7 +103,9 @@ class NowPlaying:
             "history": [
                 {key: row.get(key) for key in ("artist", "title", "duration", "played_at")}
                 for row in reversed(history[-limit:])
-            ] if limit else [],
+            ]
+            if limit
+            else [],
             "listener_count": self.bridge.stream.listener_count if self.bridge.stream else 0,
             "stream_path": "/stream.mp3",
         }
