@@ -418,23 +418,20 @@ export function installLibraryFolders({ document: doc = document, request = requ
     if (!button) return;
     try {
       const name = button.dataset.preview;
-      const time = parsePointTime(doc.querySelector(`[data-point="${name}"]`).value);
-      if (time == null && currentKind === "liner" && name === "overlap_start") {
-        const effectiveSegue = parsePointTime(doc.querySelector('[data-point="segue"]').value)
-          ?? parsePointTime(doc.querySelector('[data-point="end"]').value);
-        if (effectiveSegue == null) throw new Error("Set Segue or End before previewing the blank Overlap start.");
-        const preview = doc.getElementById("points-preview");
-        if (!preview) throw new Error("Preview audio is unavailable.");
-        preview.currentTime = effectiveSegue;
-        await preview.play();
-        return;
+      let time = parsePointTime(doc.querySelector(`[data-point="${name}"]`).value);
+      if (currentKind === "liner" && name === "overlap_start") {
+        if (time == null) {
+          time = parsePointTime(doc.querySelector('[data-point="segue"]').value)
+            ?? parsePointTime(doc.querySelector('[data-point="end"]').value);
+          if (time == null) throw new Error("Set Segue or End before previewing the blank Overlap start.");
+        } else {
+          time += parsePointTime(doc.querySelector('[data-point="start"]').value) ?? 0;
+        }
       }
       if (time == null) throw new Error("Enter a time before previewing it.");
       const preview = doc.getElementById("points-preview");
       if (!preview) throw new Error("Preview audio is unavailable.");
-      preview.currentTime = currentKind === "liner" && button.dataset.preview === "overlap_start"
-        ? (parsePointTime(doc.querySelector('[data-point="start"]').value) ?? 0) + time
-        : time;
+      preview.currentTime = time;
       await preview.play();
     }
     catch (error) { pointSay(error.message, true); }
