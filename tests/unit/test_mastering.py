@@ -160,6 +160,15 @@ def test_stereotool_command_uses_packaged_preset_and_float_audio() -> None:
     assert command[command.index("-l") + 1] == "1024"
 
 
+def test_stereotool_command_defaults_to_packaged_executable_path() -> None:
+    expected = (
+        "./tools/stereo-tool/stereo_tool_cmd.exe"
+        if os.name == "nt"
+        else "./tools/stereo-tool/stereo_tool_cmd"
+    )
+    assert _command("stereotool")[0] == expected
+
+
 @pytest.mark.parametrize("partial_write", [False, True])
 def test_stereotool_writer_preserves_samples_across_unaligned_bus_blocks(partial_write) -> None:
     master = ContinuousMaster(mode=lambda: "off")

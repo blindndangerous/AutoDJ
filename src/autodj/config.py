@@ -26,6 +26,12 @@ from urllib.parse import urlsplit
 
 from autodj.liners import LINER_PICK_MODES
 
+DEFAULT_STEREOTOOL_PATH = (
+    "./tools/stereo-tool/stereo_tool_cmd.exe"
+    if os.name == "nt"
+    else "./tools/stereo-tool/stereo_tool_cmd"
+)
+
 if TYPE_CHECKING:
     from autodj.presets import Preset
 
@@ -342,7 +348,7 @@ class PlaybackConfig(_Section):
     # None follows the legacy [replaygain].enabled setting.
     loudness_processing: str | None = None
     # Executable name or path used by Stereo Tool processing; installation setting.
-    stereotool_path: str = "stereo_tool_cmd"
+    stereotool_path: str = DEFAULT_STEREOTOOL_PATH
     # Where the similarity engine seeds from after a user-built queue
     # empties.  "last_queued" (default) continues from the final queued
     # track -- the user steered the set, the auto-DJ follows.

@@ -13,6 +13,7 @@ from typing import Final
 
 import numpy as np
 
+from autodj.config import DEFAULT_STEREOTOOL_PATH
 from autodj.processing import MASTER_FILTER
 from autodj.stereo import SAMPLE_RATE
 
@@ -37,7 +38,7 @@ def _creation_flags() -> int:
     return getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
-def _command(mode: str = "smooth", stereotool_path: str = "stereo_tool_cmd") -> list[str]:
+def _command(mode: str = "smooth", stereotool_path: str = DEFAULT_STEREOTOOL_PATH) -> list[str]:
     if mode == "stereotool":
         return [
             stereotool_path,
@@ -92,7 +93,7 @@ class ContinuousMaster:
         *,
         popen_factory: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
         mode: Callable[[], str] = lambda: "smooth",
-        stereotool_path: str = "stereo_tool_cmd",
+        stereotool_path: str = DEFAULT_STEREOTOOL_PATH,
     ) -> None:
         self._factory = popen_factory
         self._select_mode = mode

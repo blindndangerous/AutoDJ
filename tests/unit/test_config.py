@@ -726,7 +726,9 @@ def test_playback_pick_and_loudness_modes_validate_and_keep_legacy_default() -> 
         assert PlaybackConfig.from_dict({"pick_mode": mode}).pick_mode == mode
     for mode in ("off", "replaygain", "smooth", "stereotool"):
         assert PlaybackConfig.from_dict({"loudness_processing": mode}).loudness_processing == mode
-    assert PlaybackConfig.from_dict({}).stereotool_path == "stereo_tool_cmd"
+    from autodj.config import DEFAULT_STEREOTOOL_PATH
+
+    assert defaults.stereotool_path == DEFAULT_STEREOTOOL_PATH
     assert PlaybackConfig.from_dict(
         {"stereotool_path": "C:/tools/stereo_tool_cmd"}
     ).stereotool_path == ("C:/tools/stereo_tool_cmd")
