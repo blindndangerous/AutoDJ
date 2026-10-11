@@ -175,6 +175,22 @@ def test_least_recent_stops_checking_rules_after_the_oldest_eligible_track() -> 
     assert context.repeat.held_back == {entries[2].path: "same artist"}
 
 
+@pytest.mark.parametrize("mode", ["random", "least_recent"])
+def test_disabled_repeat_limits_still_protect_playing_and_prepared_tracks(mode: str) -> None:
+    player = _player(
+        mode,
+        [("One", "A"), ("Two", "B"), ("Three", "C")],
+        repeat_rules={
+            name: {"tracks": 0, "minutes": 0} for name in ("artist", "album", "title", "track")
+        },
+    )
+    player._library = _library(player)
+    current, prepared, remaining = player.playable_entries()
+    context = replace(player._pick_context(), protected=frozenset({prepared.path}))
+    for _ in range(5):
+        assert player._pick_pure_shuffle(current, context) is remaining
+
+
 def test_minute_windows_use_the_state_clock() -> None:
     now = [0.0]
     player = _player(

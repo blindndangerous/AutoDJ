@@ -2031,7 +2031,8 @@ class Player:
 
         from autodj.similarity import SimilarityError
 
-        excluded = set(context.recent)
+        protected = context.protected | {current.path}
+        excluded = set(context.recent) | protected
 
         def eligible(entry: IndexEntry) -> bool:
             if entry.is_silent:
@@ -2065,7 +2066,6 @@ class Player:
             return _rnd.choice(pool) if pool else None  # nosec B311 -- non-security
 
         chosen = choose(excluded)
-        protected = context.protected | {current.path}
         if chosen is None:
             logger.warning(
                 "Pure shuffle exhausted eligible non-recent tracks; relaxing recent-track exclusion"
