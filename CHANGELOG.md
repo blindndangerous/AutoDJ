@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `autodj analyse-library` runs advanced analysis for songs added through Library folders
+  with advanced analysis enabled. The web interface normally starts this job in the background.
 - `autodj migrate-index` previews a schema-3 to schema-4 conversion; `--apply` saves a verified
   recovery copy before converting, keeping the existing analysis. Interactive `autodj serve`
   offers to do this and continue startup. Services print instructions without waiting for input.

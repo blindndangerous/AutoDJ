@@ -136,6 +136,27 @@ Every command takes `--help`, for example `uv run autodj serve --help`. The glob
 - `autodj backup` and `autodj restore` archive and restore index and user data.
 - `autodj devices list`, `rename`, `revoke`, `reset`, and `pairing-code` manage paired browsers.
 
+### Starting without flags
+
+With no configuration or environment overrides, `autodj serve`:
+
+- Serves the web interface at `http://127.0.0.1:8080`, accessible on this computer only.
+- Uses browser playback. The server chooses tracks, but the browser plays and mixes them.
+- Leaves the radio stream and server speaker output off.
+- Uses the named index `default` and does not open a browser automatically; add `--open` for that.
+- Offers a backed-up schema-3 conversion in an interactive terminal if the index needs it.
+  It only converts after you accept; non-interactive startup prints the manual command and exits.
+
+For station playout with the server mixing the songs, liners and output processing, use
+`autodj serve --stream`. Add `--server-audio` to hear that mix on the server's speakers too,
+and `--lan` to allow other devices to connect. `--stream` is an existing option; the new
+`migrate-index` command only upgrades stored index data and does not select a playback mode.
+
+These are the built-in defaults, not a reset of your installation. `config.toml`,
+`config.local.toml` and environment variables can change the address, port, index and stream
+setting. Saved web settings also restore playback preferences. See [Configuration](#configuration)
+for precedence and `autodj serve --help` for the available flags.
+
 ## Containers
 
 In Docker, AutoDJ runs in LAN mode: it listens on all of the machine's network interfaces, and
