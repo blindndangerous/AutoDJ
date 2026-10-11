@@ -242,7 +242,7 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Five tabs:
   - **Transitions**: the transition mode, crossfade and fade-in length, EQ ducking and its cutoff, the transition effect and its level, and how Skip ends a track.
   - **DJ mixing**: beatmatching with its stretch limit and glide back, drop mixing, key shift, phrase and outro alignment, keeping vocals apart, and the filter sweep with its floor.
   - **Song picking**: preset, pick mode, how widely similarity picks spread, harmonic mixing, repeat windows, BPM range and discovery.
-  - **Sound**: output processing, Boost quiet sections for Smooth and Stereo Tool (9 dB by default), the ReplayGain target and peak limit, the browser's audio output device, early loading of the next song and the crossfade on silence.
+  - **Sound**: output processing, upload and select Stereo Tool presets, Stereo Tool input trim, Boost quiet sections, a peak-safe quiet intro lift, the ReplayGain target and peak limit, the browser's audio output device, early loading of the next song and the crossfade on silence.
   - **Display and keys**: lyrics, key notation, announcements and keyboard shortcuts.
   - **Voice liners**.
   - **Stream**: only in stream mode.  It holds the station name, the address, quality and continuous play.

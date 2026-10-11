@@ -371,6 +371,9 @@ class PlaybackConfig(_Section):
     # None follows the legacy [replaygain].enabled setting.
     loudness_processing: str | None = None
     quiet_boost_db: float = 9.0
+    intro_lift_max_db: float = 4.0
+    stereotool_input_trim_db: float = 0.0
+    stereotool_preset: str = "included"
     # Executable name or path used by Stereo Tool processing; installation setting.
     stereotool_path: str = DEFAULT_STEREOTOOL_PATH
     # Where the similarity engine seeds from after a user-built queue
@@ -519,6 +522,18 @@ class PlaybackConfig(_Section):
         self.quiet_boost_db = float(self.quiet_boost_db)
         if not math.isfinite(self.quiet_boost_db) or not 0 <= self.quiet_boost_db <= 12:
             raise ValueError("playback.quiet_boost_db must be between 0 and 12")
+        self.intro_lift_max_db = float(self.intro_lift_max_db)
+        if not math.isfinite(self.intro_lift_max_db) or not 0 <= self.intro_lift_max_db <= 6:
+            raise ValueError("playback.intro_lift_max_db must be between 0 and 6")
+        self.stereotool_input_trim_db = float(self.stereotool_input_trim_db)
+        if (
+            not math.isfinite(self.stereotool_input_trim_db)
+            or not -12 <= self.stereotool_input_trim_db <= 6
+        ):
+            raise ValueError("playback.stereotool_input_trim_db must be between -12 and 6")
+        from autodj.stereotool_presets import validate_preset_name
+
+        validate_preset_name(self.stereotool_preset)
         if not isinstance(self.stereotool_path, str) or not self.stereotool_path.strip():
             raise ValueError("playback.stereotool_path must be a non-empty string")
         self.skip_style = _validate_skip_style(str(self.skip_style))

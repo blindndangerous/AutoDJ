@@ -55,6 +55,7 @@ _SCHEMA = """
         embedded_at REAL NOT NULL DEFAULT 0, size INTEGER NOT NULL DEFAULT 0,
         fingerprint TEXT NOT NULL DEFAULT '', points TEXT NOT NULL DEFAULT '{}',
         point_sources TEXT NOT NULL DEFAULT '{}', prepared_path TEXT,
+        intro_lift_db REAL,
         last_played REAL NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS catalog_settings (
@@ -113,8 +114,8 @@ class LibraryCatalog:
     def _add_missing_columns(self) -> None:
         """Add columns an older catalog file lacks.
 
-        These are the liner ``allow_outro`` flag and the play log's
-        ``performances`` count.  The checks and the changes share one write
+        These are the liner ``allow_outro`` flag, the cached quiet-intro
+        ``intro_lift_db`` and the play log's ``performances`` count.  The checks and the changes share one write
         transaction, so a second process opening the same old file waits,
         then finds the columns.
         """
@@ -126,6 +127,8 @@ class LibraryCatalog:
                 db.execute(
                     "ALTER TABLE catalog_entries ADD COLUMN allow_outro INTEGER NOT NULL DEFAULT 0"
                 )
+            if "intro_lift_db" not in entries:
+                db.execute("ALTER TABLE catalog_entries ADD COLUMN intro_lift_db REAL")
             have = {row[1] for row in db.execute("PRAGMA table_info(play_history)")}
             if "performances" not in have:
                 db.execute("ALTER TABLE play_history ADD COLUMN performances INTEGER")
@@ -475,7 +478,7 @@ class LibraryCatalog:
                 # Changed bytes, including retagging, invalidate cues and derived audio too.
                 self._db().execute("DELETE FROM catalog_vectors WHERE entry_id=?", (record_id,))
                 self._db().execute(
-                    "UPDATE catalog_entries SET prepared_path=NULL, points='{}', point_sources='{}' "
+                    "UPDATE catalog_entries SET prepared_path=NULL, intro_lift_db=NULL, points='{}', point_sources='{}' "
                     "WHERE id=?",
                     (record_id,),
                 )
@@ -517,6 +520,15 @@ class LibraryCatalog:
             except BaseException:
                 self._db().rollback()
                 raise
+
+    def set_intro_lift(self, path: str | Path, lift_db: float) -> None:
+        """Cache the source opening's maximum safe lift after analysis."""
+        with self._lock:
+            self._db().execute(
+                "UPDATE catalog_entries SET intro_lift_db=? WHERE path=?",
+                (lift_db, _path(path)),
+            )
+            self._db().commit()
 
     def seed_entries(self, entries: Iterable[IndexEntry]) -> int:
         """Import existing indexed records without replacing catalog metadata."""
@@ -735,6 +747,7 @@ class LibraryCatalog:
                 "points": json.loads(row["points"]),
                 "point_sources": json.loads(row["point_sources"]),
                 "prepared_path": row["prepared_path"],
+                "intro_lift_db": row["intro_lift_db"],
                 "last_played": row["last_played"],
             }
             result.update({n: row[n] for n in _ENTRY_FIELDS})

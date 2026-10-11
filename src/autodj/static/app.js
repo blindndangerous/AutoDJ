@@ -1068,11 +1068,16 @@ const _mixEls = {
   djGlideBars:    document.getElementById("dj-glide-bars"),
   djSweepFloor:   document.getElementById("dj-sweep-floor"),
   pbQuietBoost:   document.getElementById("pb-quiet-boost"),
+  pbIntroLift:    document.getElementById("pb-intro-lift"),
+  pbStereoTrim:   document.getElementById("pb-stereo-trim"),
 };
 installMixSettings(_mixEls, {
   postSettings,
   settingsStatus,
 });
+
+import { installStereoToolPresets } from "./modules/stereo-tool-presets.js";
+installStereoToolPresets({ status: settingsStatus });
 
 // ----------------------------------------------------------------
 // Settings: Profiles and Browser access -- ./modules/profiles.js and

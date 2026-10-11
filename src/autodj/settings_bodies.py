@@ -215,6 +215,20 @@ class PlaybackSettingsBody(BaseModel):
     prefetch_next_track: bool | None = None
     silence_trigger_crossfade: bool | None = None
     quiet_boost_db: Annotated[float, Field(ge=0.0, le=12.0, allow_inf_nan=False)] | None = None
+    intro_lift_max_db: Annotated[float, Field(ge=0.0, le=6.0, allow_inf_nan=False)] | None = None
+    stereotool_input_trim_db: (
+        Annotated[float, Field(ge=-12.0, le=6.0, allow_inf_nan=False)] | None
+    ) = None
+    stereotool_preset: str | None = None
+
+    @field_validator("stereotool_preset")
+    @classmethod
+    def _preset_name(cls, value: str | None) -> str | None:
+        if value is not None:
+            from autodj.stereotool_presets import validate_preset_name
+
+            validate_preset_name(value)
+        return value
 
     @model_validator(mode="after")
     def _check_choices(self) -> PlaybackSettingsBody:

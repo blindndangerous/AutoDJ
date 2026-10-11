@@ -524,6 +524,19 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
 - **Seek** is not available while streaming. The seek slider is hidden on the page, and the comma
   and full-stop keyboard shortcuts announce "Seeking is not available while streaming."
 - **EQ** is applied once, on the server, so every listener hears the same shaped sound.
+- **Sound processing** is chosen in Settings, Sound. Stereo Tool loads the selected `.sts` preset
+  when its processor starts; changing the preset restarts it. The bundled Included preset is
+  read-only. Uploads (up to 2 MB) live in `index/stereo-tool-presets` beside the active index
+  folder and survive restarts. Deleting the active upload in Settings switches to Included
+  first; a preset file removed by hand is replaced by Included when Stereo Tool next starts. Stereo Tool's
+  command-line integration exposes a preset file, but no individual processor parameters.
+  `[playback] stereotool_input_trim_db` adjusts the input from -12 to +6 dB before the fixed
+  output limiter. `[playback] quiet_boost_db` (0 to 12) controls offline quiet-section balancing.
+  `[playback] intro_lift_max_db` (0 to 6, default 4) caps an extra lift for a quiet opening;
+  it fades back to normal by eight seconds. Zero disables it. Analysis caches the source's
+  peak-safe opening lift in `library.db`; already cataloged songs get it on their next library scan.
+  Browser playback, server audio and streams use the same cached lift, with decoded server audio
+  checked against its peak again. Off processing leaves the source unchanged.
 - **Page volume and mute** affect only the page's own "Listen here" playback in the browser.
   Each speaker keeps its own volume, set on the speaker or in its own app.
 - **With `--server-audio` as well**, the page's volume and Mute also set the volume and mute of
@@ -937,7 +950,7 @@ the rules and the collecting societies are different.
 - `library.db`, the station's registered folders, track data and cues, last-played times and
   complete play history.
 - Every file in the liners folder (`[playback] liners_folder`, or `index/<name>/liners`) and in
-  `index/profiles`.
+  `index/profiles`, plus uploaded presets in `index/stereo-tool-presets`.
 - `manifest.json`, which records the AutoDJ version that made the archive and lists its files.
 
 Backups do not include `config.toml` or `config.local.toml`. Copy those yourself

@@ -95,6 +95,16 @@ const NUMBER_FIELDS = [
     label: "Boost quiet sections", min: 0, max: 12, integer: false,
     read: (st) => st.playback?.quiet_boost_db,
   },
+  {
+    key: "pbIntroLift", url: "/api/playback-settings", field: "intro_lift_max_db",
+    label: "Quiet intro lift limit", min: 0, max: 6, integer: false,
+    read: (st) => st.playback?.intro_lift_max_db,
+  },
+  {
+    key: "pbStereoTrim", url: "/api/playback-settings", field: "stereotool_input_trim_db",
+    label: "Stereo Tool input trim", min: -12, max: 6, integer: false,
+    read: (st) => st.playback?.stereotool_input_trim_db,
+  },
 ];
 
 const _serverValue = new WeakMap();

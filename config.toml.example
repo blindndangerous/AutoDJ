@@ -175,7 +175,13 @@ station_name = "AutoDJ"
 [playback]
 # Maximum gain for quiet sections with Smooth or Stereo Tool, in dB (0 to 12).
 quiet_boost_db = 9.0
-# Optional Stereo Tool command-line executable. Select its free preset under
+# Extra lift for a quiet opening, returning to normal within 8 seconds (0 to 6; 0 disables).
+intro_lift_max_db = 4.0
+# Stereo Tool input gain before its output limiter, from -12 to +6 dB.
+stereotool_input_trim_db = 0.0
+# "included" or a .sts filename uploaded in Settings > Sound.
+stereotool_preset = "included"
+# Optional Stereo Tool command-line executable. Select a preset under
 # Output processing in the browser after installing it separately.
 # Defaults to ./tools/stereo-tool/stereo_tool_cmd.exe on Windows or
 # ./tools/stereo-tool/stereo_tool_cmd elsewhere; set this to override it.

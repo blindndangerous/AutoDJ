@@ -213,6 +213,20 @@ def test_restore_refuses_another_minor_version(tmp_path: Path) -> None:
         restore_backup(cfg, archive, force=True)
 
 
+def test_uploaded_stereo_tool_preset_survives_backup_restore(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    folder = cfg.index.active_dir.parent / "stereo-tool-presets"
+    folder.mkdir()
+    preset = folder / "Night.sts"
+    preset.write_bytes(b"[Processing]\nOutput Gain=0\n")
+    archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
+    with zipfile.ZipFile(archive) as opened:
+        assert opened.read("stereo-tool-presets/Night.sts") == preset.read_bytes()
+    preset.unlink()
+    restore_backup(cfg, archive, force=True)
+    assert preset.read_bytes() == b"[Processing]\nOutput Gain=0\n"
+
+
 @pytest.mark.parametrize(
     "name",
     ["../escape.mp3", "/abs.mp3", "C:/abs.mp3", "liners/../../escape.mp3", "liners\\..\\x.mp3"],

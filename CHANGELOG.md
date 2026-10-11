@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Stereo Tool presets can be uploaded, selected and deleted in Settings, Sound. The included
+  preset remains read-only; uploaded presets survive restarts and are included in backups.
+- Stereo Tool input trim is adjustable from -12 to +6 dB. Quiet song openings can receive up
+  to 4 dB of peak-safe lift by default, returning to normal within eight seconds. The limit
+  is adjustable from 0 to 6 dB, with 0 disabling the lift.
 - Richer repeat rules for picking songs.
   - An artist credit counts for every artist it names: "feat.", "ft.", "featuring" and "vs."
     always split it, and "&", "and", "x", "with" and commas split it when the parts look like
