@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Stream operators can set an optional listener password in `config.local.toml`, limit
+  connections per address, and disconnect or ban addresses from Settings, Stream. Bans survive
+  restarts and are included in backups. Trusted proxy addresses control when forwarded client
+  addresses are used.
+
 - Track info buttons in Now Playing, Queue, Search results, History, library browse and voice
   liners open the same details and cue editor. The Return to History, Return to Queue & Search
   and other view-specific buttons restore focus to the source item, or explain when it has gone.

@@ -172,6 +172,7 @@ class Listener:
         self._size = 0
         self._event = asyncio.Event()
         self.closed = False
+        self._aborted = False
 
     def push(self, data: bytes, title: str) -> bool:
         """Queue *data*; returns ``False`` when the listener is too far behind.
@@ -205,6 +206,8 @@ class Listener:
                         break
                     data = self._queue.popleft()
                     self._size -= len(data)
+                if self._aborted:
+                    return
                 yield data
             if self.closed:
                 return
@@ -214,6 +217,15 @@ class Listener:
     def close(self) -> None:
         """Stop the listener after it drains what it has."""
         self.closed = True
+        self._loop.call_soon_threadsafe(self._event.set)
+
+    def abort(self) -> None:
+        """Stop now and discard queued audio after an operator disconnect."""
+        with self._lock:
+            self.closed = True
+            self._aborted = True
+            self._queue.clear()
+            self._size = 0
         self._loop.call_soon_threadsafe(self._event.set)
 
 

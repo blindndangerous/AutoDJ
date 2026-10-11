@@ -1394,6 +1394,7 @@ class PlayerBridge:
                 "stream_bitrate": int(cfg.stream.bitrate),
                 "stream_continuous": bool(cfg.stream.continuous),
                 "stream_station_name": cfg.stream.station_name,
+                "stream_max_listeners_per_address": cfg.stream.max_listeners_per_address,
                 "volume": float(p._state.volume),
                 "is_muted": bool(p._state.is_muted),
             },

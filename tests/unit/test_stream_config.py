@@ -11,6 +11,8 @@ from autodj.config import StreamConfig, load_config, parse_env_bool
 
 def test_defaults() -> None:
     cfg = StreamConfig()
+    assert cfg.max_listeners_per_address == 0
+    assert "listener_password" not in repr(cfg)
     assert (
         cfg.enabled,
         cfg.continuous,
@@ -42,6 +44,12 @@ def test_valid_bitrates(bitrate: int) -> None:
         {"idle_grace_seconds": "thirty"},
         {"max_listeners": 0},
         {"max_listeners": "eight"},
+        {"max_listeners_per_address": -1},
+        {"max_listeners_per_address": True},
+        {"trusted_proxies": ["not-an-address"]},
+        {"listener_password": "secret"},
+        {"listener_user": "radio"},
+        {"listener_user": "ra:dio", "listener_password": "secret"},
         {"station_name": ""},
         {"enabled": "yes"},
         {"continuous": "true"},
@@ -61,6 +69,21 @@ def test_toml_and_environment(tmp_path: Path) -> None:
     )
     assert cfg.stream.bitrate == 256
     assert cfg.stream.enabled is False
+
+
+def test_private_listener_credentials_and_proxy_config(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[stream]\nmax_listeners_per_address = 0\ntrusted_proxies = ["192.0.2.0/24"]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "config.local.toml").write_text(
+        '[stream]\nlistener_user = "radio"\nlistener_password = "secret"\n', encoding="utf-8"
+    )
+    stream = load_config(path).stream
+    assert stream.max_listeners_per_address == 0
+    assert stream.trusted_proxies == ["192.0.2.0/24"]
+    assert (stream.listener_user, stream.listener_password) == ("radio", "secret")
 
 
 def test_continuous_config_and_environment(tmp_path: Path) -> None:

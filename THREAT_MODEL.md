@@ -31,9 +31,10 @@ its certificate against the domain (`originServerName`), with Cloudflare Access 
 one-time PIN policy) in front and `cloudflared` set to refuse requests without a valid Access
 token; see [docs/operations.md](docs/operations.md#https-with-your-own-domain). Access decides
 who reaches AutoDJ at all; AutoDJ's pairing and Host and Origin checks still apply behind it.
-Every tunnelled request arrives from the `cloudflared` machine's address, so the per-address
-pairing lockout counts all remote browsers as one client, and someone who passed Access could
-use up that budget and delay other remote pairings for one code window. Never expose AutoDJ to
+Every tunnelled request arrives from the `cloudflared` machine's address. In stream mode, without
+a matching `trusted_proxies` entry, the per-address pairing lockout counts all remote browsers as one
+client, and someone who passed Access could use up that budget and delay other remote pairings
+for one code window. Never expose AutoDJ to
 the internet without Access, including through port forwarding.
 
 AutoDJ reloads a renewed certificate and key when their files change, checked every five
@@ -200,7 +201,8 @@ What a listener can and cannot do:
 - Every other check in `SecurityMiddleware` still applies to them, including the Host allowlist,
   so the name typed into the player must be one this AutoDJ instance is configured to accept.
 - `/stream.` followed by anything else, and any path under `/stream/`, is not public: it needs
-  a session like any other path, and then returns 404.
+  a session like any other path, and then returns 404. Optional HTTP Basic credentials protect
+  only `/stream.mp3` and `/stream.m3u`; the playlist never includes them.
 
 What the operator should know:
 
@@ -208,15 +210,23 @@ What the operator should know:
   Network reach decides exposure, not a secret. On a home LAN, everyone on the LAN can listen.
   Through a tunnel, a port forward or a public address, anyone on the internet who learns the
   address can listen. Sharing the address is the same as inviting listeners.
-- To limit who can listen, limit who can reach the server: put the tunnel behind an access
-  policy, such as Cloudflare Access as `docs/operations.md` describes, or do not expose the
-  stream.
-- `max_listeners` (default 8) bounds concurrent connections, and a listener beyond it gets 503
-  without affecting anyone already connected. This limits resource use, not who connects.
-  Because listening is public, anyone who can reach the port can take every slot and keep real
-  listeners out. There is no per-address limit, ban list or listener password yet. An operator
-  who needs a large or untrusted audience should relay the stream to a dedicated Icecast or
+- An optional listener password in `config.local.toml` limits who can listen, but HTTP Basic
+  carries it in plain text unless AutoDJ serves HTTPS. Some radio players cannot send it. A
+  tunnel access policy is another option when the player supports it.
+- `max_listeners` (default 8) bounds all connections. `max_listeners_per_address` (default 0,
+  off) can limit connections from one IP address. Operators can disconnect and ban addresses or
+  CIDRs in Settings, Stream; bans persist and apply immediately. These controls
+  reduce listener-slot exhaustion, though distributed clients and clients behind a shared
+  address can still fill the slots. Forwarded addresses count only when the direct proxy peer
+  is in `trusted_proxies`. Untrusted peers cannot change their address using forwarding headers;
+  trusted proxies must append or replace those headers correctly. A single IPv6 address is
+  counted; one host can use multiple addresses in a /64. An operator who needs a large or
+  untrusted audience should relay the stream to a dedicated Icecast or
   Shoutcast server (roadmap issue #37) rather than expose AutoDJ itself.
+- Listener password checks run before ban checks, so unauthenticated requests do not reveal ban
+  status. Five failed Basic-auth attempts per address per minute trigger a temporary throttle.
+  Paired browsers can see listener addresses and User-Agent names. `listener_bans.json` contains
+  banned IP addresses and is included in backups.
 
 Removed keyed links:
 

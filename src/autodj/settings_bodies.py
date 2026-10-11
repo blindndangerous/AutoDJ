@@ -97,6 +97,7 @@ class StreamSettingsBody(BaseModel):
     bitrate: Literal[128, 192, 256, 320] | None = None
     continuous: bool | None = Field(default=None, strict=True)
     station_name: Annotated[str, Field(max_length=100)] | None = None
+    max_listeners_per_address: Annotated[int, Field(ge=0, le=100, strict=True)] | None = None
 
     @field_validator("station_name")
     @classmethod

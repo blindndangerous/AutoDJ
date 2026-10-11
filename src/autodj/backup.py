@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
 
 # Files of the index folder a backup holds besides the generation files.
-INDEX_FILES = ("dj_meta.db", "library.db", "web_state.json", im.MANIFEST_NAME)
+INDEX_FILES = ("dj_meta.db", "library.db", "web_state.json", "listener_bans.json", im.MANIFEST_NAME)
 _FOLDERS = ("liners", "profiles")
 
 
@@ -120,8 +120,10 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
             snapshot = Path(temp) / "index"
             _snapshot_index(roots["index"], snapshot)
             members: dict[str, Path] = {}
-            web_state = roots["index"] / "web_state.json"
-            for path in [*sorted(snapshot.glob("*")), web_state]:
+            state_files = [
+                roots["index"] / name for name in ("web_state.json", "listener_bans.json")
+            ]
+            for path in [*sorted(snapshot.glob("*")), *state_files]:
                 if path.is_file():
                     members[f"index/{path.name}"] = path
             for top in _FOLDERS:
