@@ -156,16 +156,15 @@ PY
 printf '[stream]\nenabled = true\n' > config.toml
 docker compose up -d --force-recreate
 wait_until_healthy
-stream_secret="$(cat "$AUTODJ_INDEX_DIR/.stream-secret")"
 
 # The smoke library has no tracks, so the stream only carries the encoded silence the bus sends
-# while idle. Assert that the route, secret and encoder wiring answer: 200, audio/mpeg, and ICY
+# while idle. Assert that the public route and encoder wiring answer: 200, audio/mpeg, and ICY
 # metadata headers. A check of real music frames is left to a real library.
 stream_headers="$smoke_root/autodj-stream-headers.txt"
 curl --silent --show-error --max-time 5 \
   --dump-header "$stream_headers" --output /dev/null \
   --header "Icy-MetaData: 1" \
-  "$base_url/stream/${stream_secret}.mp3" || true
+  "$base_url/stream.mp3" || true
 grep -Eiq '^HTTP/[0-9.]+ 200' "$stream_headers"
 grep -Eiq '^content-type: *audio/mpeg' "$stream_headers"
 grep -Eiq '^icy-name:' "$stream_headers"

@@ -182,8 +182,8 @@ What a listener can and cannot do:
   static files, they are the only routes exempt from the session cookie check.
 - Every other check in `SecurityMiddleware` still applies to them, including the Host allowlist,
   so the name typed into the player must be one this AutoDJ instance is configured to accept.
-- `/stream.` followed by anything else is not public: it needs a session like any other path,
-  and then returns 404.
+- `/stream.` followed by anything else, and any path under `/stream/`, is not public: it needs
+  a session like any other path, and then returns 404.
 
 What the operator should know:
 
@@ -201,16 +201,13 @@ What the operator should know:
   who needs a large or untrusted audience should relay the stream to a dedicated Icecast or
   Shoutcast server (roadmap issue #37) rather than expose AutoDJ itself.
 
-Older keyed links:
+Removed keyed links:
 
-- Earlier versions needed a secret in the listening address, `/stream/<secret>.mp3`. That
-  secret is still created and stored in `<index_dir>/.stream-secret` with the access token's file
-  permissions. Existing keyed links keep working; a wrong secret returns 404 and is compared in
-  constant time.
-- The secret no longer protects anything, since the public address plays the same audio. The
-  Settings page no longer offers "Make new link". The authenticated `POST /api/stream/rotate`
-  route remains: it replaces the secret and disconnects every listener, including listeners on
-  the public address, who can reconnect at once.
+- Earlier versions put a secret in the listening address, `/stream/<secret>.mp3` and
+  `/stream/<secret>.m3u`. Those links and the `POST /api/stream/rotate` route that replaced the
+  secret have been removed, so there is no stream secret left to leak or guess.
+- AutoDJ no longer creates or reads `<index_dir>/.stream-secret`. An existing file is left in
+  place, is not used, and can be deleted.
 
 HTTP framing:
 

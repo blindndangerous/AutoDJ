@@ -362,7 +362,7 @@ def _lan_network_check(cfg: AutoDJConfig) -> DoctorCheck:
         pairing (``insecure_lan``); FAIL when the saved token cannot be read.
     """
     from autodj.lan import AccessTokenError, detect_lan_hosts, lan_bind_host, read_access_token
-    from autodj.stream_secret import access_token_path
+    from autodj.secret_files import access_token_path
 
     server = cfg.server
     detail: dict[str, Any] = {

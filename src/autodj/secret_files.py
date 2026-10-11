@@ -1,14 +1,12 @@
-"""Secret files under ``<index_dir>``: the radio stream's listen-only secret.
+"""Private files under ``<index_dir>`` that LAN pairing keeps.
 
-Also holds the paths of the paired-devices database and the saved access
-token, and the private-file helpers :mod:`autodj.lan` uses for the token.
+Holds the paths of the paired-devices database and the saved access token,
+and the private-file helpers :mod:`autodj.lan` uses for the token.
 """
 
 from __future__ import annotations
 
-import hmac
 import os
-import re
 import secrets
 import tempfile
 from pathlib import Path
@@ -19,21 +17,10 @@ if TYPE_CHECKING:
 
     from autodj.config import AutoDJConfig
 
-_VALID = re.compile(r"^[A-Za-z0-9_-]{43}$")
-
-
-class StreamSecretError(Exception):
-    """The stream secret file exists but cannot be read or written."""
-
 
 def paired_devices_path(cfg: AutoDJConfig) -> Path:
     """Return the paired-devices database path."""
     return Path(cfg.index.index_dir) / ".paired-devices.sqlite3"
-
-
-def stream_secret_path(cfg: AutoDJConfig) -> Path:
-    """Return the stream secret file path, beside the paired-devices database."""
-    return Path(cfg.index.index_dir) / ".stream-secret"
 
 
 def access_token_path(cfg: AutoDJConfig) -> Path:
@@ -111,56 +98,3 @@ def load_or_create_secret(
         value = secrets.token_urlsafe(32)
         write_secret(path, value, error=error, what=what)
     return value
-
-
-class StreamSecret:
-    """A 43-character URL-safe secret stored in one private file."""
-
-    def __init__(self, path: Path, value: str) -> None:
-        """Wrap an already validated *value* stored at *path*."""
-        self._path = path
-        self.value = value
-
-    @classmethod
-    def load_or_create(cls, path: Path, *, forbidden: str | None = None) -> StreamSecret:
-        """Load the secret, creating or replacing it when missing or invalid.
-
-        Args:
-            path: Secret file path.
-            forbidden: A value the secret must never equal (the access token,
-                or a value being replaced).
-
-        Raises:
-            StreamSecretError: If the file cannot be read or written.
-        """
-        value = load_or_create_secret(
-            path,
-            valid=lambda text: bool(_VALID.match(text)) and text != forbidden,
-            error=StreamSecretError,
-            what="stream secret",
-        )
-        return cls(path, value)
-
-    def matches(self, candidate: str) -> bool:
-        """Return whether *candidate* equals the secret, in constant time.
-
-        Returns False if *candidate* cannot be encoded as UTF-8 (e.g., contains
-        lone surrogates), preventing UnicodeEncodeError on untrusted input.
-        """
-        try:
-            candidate_bytes = candidate.encode("utf-8")
-        except UnicodeEncodeError:
-            return False
-        return hmac.compare_digest(candidate_bytes, self.value.encode("ascii"))
-
-    def rotate(self) -> str:
-        """Replace the secret with a new one and return it.
-
-        Raises:
-            StreamSecretError: The new secret could not be saved; the old
-                one stays in force (in memory and on disk).
-        """
-        value = secrets.token_urlsafe(32)
-        write_secret(self._path, value, error=StreamSecretError, what="stream secret")
-        self.value = value
-        return value

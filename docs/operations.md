@@ -481,7 +481,10 @@ for a speaker.
 
 The listening address is `/stream.mp3`, with a playlist at `/stream.m3u`. Anyone who can
 reach the server can listen without pairing. Playback controls and settings still require
-pairing when LAN authentication is enabled. Existing links containing a stream key still work.
+pairing when LAN authentication is enabled. Older addresses containing a stream key, such as
+`/stream/<secret>.mp3`, no longer work: set any speaker or player saved with one to
+`/stream.mp3`. AutoDJ no longer uses the `index/.stream-secret` file those versions made, and you
+can delete it.
 
 ### Adding the station to Sonos
 
@@ -681,7 +684,8 @@ Do not copy these; they belong to the machine that made them:
 - `index/.access-token`, the LAN pairing secret. Copying it would let every browser paired with
   one machine use the other.
 - `index/.paired-devices.sqlite3`, the paired browsers and their sessions.
-- `index/.stream-secret`, used by legacy keyed stream addresses.
+- `index/.stream-secret`, if it is there. Older versions made it for keyed stream addresses;
+  AutoDJ no longer uses it, and you can delete it.
 - Any `-wal`, `-shm`, `.lock` or `.tmp` file. The index lock file is made when it is needed.
 
 Run `uv run autodj doctor` on the destination before serving. Copying replaces the destination's
@@ -702,8 +706,8 @@ index, so the next `autodj index` there starts from the copied one.
 - `manifest.json`, which records the AutoDJ version that made the archive and lists its files.
 
 Backups do not include `config.toml` or `config.local.toml`. Copy those yourself
-and keep them with the archive. Backups also leave out the pairing secret, the paired browsers and
-the legacy stream secret, so after a restore on a new machine you pair your browsers again.
+and keep them with the archive. Backups also leave out the pairing secret and the paired browsers, so
+after a restore on a new machine you pair your browsers again.
 Use the new machine's address followed by `/stream.mp3` to listen.
 
 Backup is safe while AutoDJ is serving: it copies the index under the index's own lock and

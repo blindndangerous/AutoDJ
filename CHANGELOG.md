@@ -40,8 +40,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Radio listening uses `/stream.mp3`, with `/stream.m3u` for players that need a playlist.
   Anyone who can reach the server can listen without a key; browser controls still require
-  pairing when LAN authentication is enabled. Existing keyed links keep working, and Settings
-  no longer shows "Make new link".
+  pairing when LAN authentication is enabled.
 - The Settings page is split into subtabs: Transitions, DJ mixing, Song picking, Sound, Display
   and keys, Voice liners, Stream (in stream mode only) and Profiles and access. They work like the
   section tabs, and the page remembers the last one used in this browser.
@@ -57,6 +56,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Removed
 
+- **Breaking:** the old keyed stream addresses, `/stream/<secret>.mp3` and `/stream/<secret>.m3u`,
+  and the `POST /api/stream/rotate` route that made a new one. A speaker or player saved with a
+  keyed address must be set to `/stream.mp3` or `/stream.m3u` instead. AutoDJ no longer creates
+  or reads `index/.stream-secret`. It does not delete an existing one; the file is unused and you
+  can delete it.
 - The librosa file-loading fallback. Librosa still detects beats, tempo and audio features.
 
 ## [0.20.0] - 2026-10-11

@@ -1667,9 +1667,9 @@ class TestServeFunction:
         assert captured["dry_run"] is False
         assert captured["stream_mode"] is True
         assert captured["server_audio_too"] is False
-        secret = captured["create_app_kwargs"]["stream_secret"]
-        assert secret is not None
-        assert (tmp_path / ".stream-secret").read_text(encoding="utf-8").strip() == secret.value
+        assert captured["create_app_kwargs"]["stream_mode"] is True
+        # Keyed stream links are gone: stream mode keeps no secret file.
+        assert not (tmp_path / ".stream-secret").exists()
         assert captured["uvicorn_kwargs"]["timeout_graceful_shutdown"] == 3
         assert captured["uvicorn_kwargs"]["http"] == "h11"
         player = captured["player"]
@@ -1686,21 +1686,17 @@ class TestServeFunction:
         assert captured["dry_run"] is True
         assert captured["stream_mode"] is False
         assert captured["server_audio_too"] is False
-        assert captured["create_app_kwargs"]["stream_secret"] is None
+        assert captured["create_app_kwargs"]["stream_mode"] is False
         assert "timeout_graceful_shutdown" not in captured["uvicorn_kwargs"]
         assert not (tmp_path / ".stream-secret").exists()
 
-    def test_serve_stream_exits_when_the_secret_cannot_be_stored(self, tmp_path) -> None:
-        from autodj.stream_secret import StreamSecretError
-
-        with (
-            patch(
-                "autodj.server.StreamSecret.load_or_create",
-                side_effect=StreamSecretError("cannot write stream secret at x: denied"),
-            ),
-            pytest.raises(SystemExit, match="Stream mode cannot start: cannot write"),
-        ):
-            self._serve_capturing_player(tmp_path, stream=True)
+    def test_serve_stream_leaves_an_old_secret_file_alone(self, tmp_path) -> None:
+        """An old ``.stream-secret`` is no longer read, changed or deleted."""
+        old = tmp_path / ".stream-secret"
+        old.write_bytes(b"x" * 43 + b"\n")
+        captured = self._serve_capturing_player(tmp_path, no_playback=True, stream=True)
+        assert captured["create_app_kwargs"]["stream_mode"] is True
+        assert old.read_bytes() == b"x" * 43 + b"\n"
 
     def test_serve_records_the_seed_only_in_browser_mode(self, tmp_path) -> None:
         with patch("autodj.server.PlayerBridge.record_seed") as record:

@@ -27,8 +27,7 @@ Routes
 
 Stream mode (``serve --stream``) adds ``GET /stream.mp3`` and
 ``GET /stream.m3u`` (no login required) and the authenticated
-``GET /api/stream``, ``POST /api/stream/rotate`` and
-``POST /api/stream/settings``.
+``GET /api/stream`` and ``POST /api/stream/settings``.
 """
 
 from __future__ import annotations
@@ -39,7 +38,6 @@ import functools
 import json
 import logging
 import os
-import re
 import shutil
 import ssl
 import stat
@@ -83,6 +81,7 @@ from autodj.icy import METAINT
 from autodj.index_manifest import IndexConsistencyError, read_manifest
 from autodj.lan import PAIRING_ON_REQUEST_HINT, format_lan_banner, lan_urls, running_in_container
 from autodj.pairing import DeviceRegistry
+from autodj.secret_files import paired_devices_path
 from autodj.security import (
     COOKIE_NAME,
     PAIRING_BODY_MAX_BYTES,
@@ -107,12 +106,6 @@ from autodj.settings_bodies import (
     validate_playback_choices,
 )
 from autodj.stream import EncoderUnavailableError, ListenerLimitError
-from autodj.stream_secret import (
-    StreamSecret,
-    StreamSecretError,
-    paired_devices_path,
-    stream_secret_path,
-)
 from autodj.tls import CertificateReloader
 from autodj.version import current_version
 
@@ -127,7 +120,6 @@ _WS_SEND_TIMEOUT_SECONDS = 2.0
 # Stream listeners stay connected until they hang up, so uvicorn would wait
 # for them forever on Ctrl+C; give them this long, then cancel them.
 _STREAM_SHUTDOWN_GRACE_SECONDS = 3
-_STREAM_NAME = re.compile(r"^(?P<secret>[A-Za-z0-9_-]{1,128})\.(?P<ext>mp3|m3u)$")
 _ALAC_PREFETCH_TIMEOUT_SECONDS = 5.0
 # Room for the multipart framing around an uploaded liner.
 _MULTIPART_OVERHEAD_BYTES = 64 * 1024
@@ -443,9 +435,7 @@ class _GZipExceptStream(GZipMiddleware):
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Pass stream requests straight through; gzip the rest."""
-        if scope["type"] == "http" and (
-            scope["path"] in {"/stream.mp3", "/stream.m3u"} or scope["path"].startswith("/stream/")
-        ):
+        if scope["type"] == "http" and scope["path"] in {"/stream.mp3", "/stream.m3u"}:
             await self.app(scope, receive, send)
             return
         await super().__call__(scope, receive, send)
@@ -877,7 +867,6 @@ def _header_text(value: str) -> str:
 
 def _start_stream_station(
     bridge: PlayerBridge,
-    secret: StreamSecret,
     liner_folder: Path,
     loop: asyncio.AbstractEventLoop,
     first_track: IndexEntry | None = None,
@@ -890,7 +879,6 @@ def _start_stream_station(
 
     Args:
         bridge: The bridge whose player was built in stream mode.
-        secret: The stream secret.
         liner_folder: Where liners are read from.
         loop: The event loop listeners are served on.
         first_track: The first set's first track (``--seed``), if given.
@@ -935,7 +923,7 @@ def _start_stream_station(
     )
     if first_track is not None:
         station.start_with(first_track, "seed")
-    bridge.attach_stream(stream=stream_out, secret=secret, station=station)
+    bridge.attach_stream(stream=stream_out, station=station)
     bridge.attach_liner_scheduler(scheduler)
     bus.add_output(stream_out)
     return stream_out
@@ -1051,7 +1039,7 @@ def create_app(
     player_thread: threading.Thread | None = None,
     *,
     secure_cookie: bool = False,
-    stream_secret: StreamSecret | None = None,
+    stream_mode: bool = False,
     stream_first_track: IndexEntry | None = None,
     server_audio: bool = False,
 ) -> FastAPI:
@@ -1060,9 +1048,9 @@ def create_app(
     Args:
         bridge: A fully initialised :class:`PlayerBridge`.
         player_thread: Optional main player thread to join during shutdown.
-        stream_secret: In stream mode, the stream secret; the app then
-            starts the stream output and station when it starts up (the
-            bridge's player must have been built in stream mode).
+        stream_mode: Start the stream output and station when the app
+            starts up (the bridge's player must have been built in stream
+            mode).
         stream_first_track: In stream mode, the track the first set
             starts with (``--seed``).
         server_audio: Plain ``--server-audio`` (no stream): voice liners
@@ -1103,11 +1091,10 @@ def create_app(
         """FastAPI lifespan: start/stop background tasks."""
         stream_out: StreamOutput | None = None
         stream_ticker: asyncio.Task[None] | None = None
-        if stream_secret is not None:
+        if stream_mode:
             stream_out = await asyncio.to_thread(
                 _start_stream_station,
                 bridge,
-                stream_secret,
                 _resolve_liner_folder(),
                 asyncio.get_running_loop(),
                 stream_first_track,
@@ -1602,39 +1589,22 @@ def create_app(
     # Radio stream (stream mode only; 404 otherwise)
     # ------------------------------------------------------------------
 
-    def _stream_name(name: str) -> str:
-        """Return ``"mp3"`` or ``"m3u"`` for a valid secret; else 404.
-
-        The secret is 256 random bits compared in constant time, so a wrong
-        one is just not found; there is nothing worth rate limiting.
-        """
-        match = _STREAM_NAME.match(name)
-        if (
-            bridge.stream_mode
-            and match is not None
-            and bridge.stream_secret.matches(match["secret"])
-        ):
-            return match["ext"]
-        raise HTTPException(status_code=404, detail="Not Found")
-
     def _require_stream_mode() -> None:
         """404 unless the server is in stream mode."""
         if not bridge.stream_mode:
             raise HTTPException(status_code=404, detail="Not Found")
 
-    @app.api_route("/stream/{name}", methods=["GET", "HEAD"])
-    @app.api_route("/stream.{name}", methods=["GET", "HEAD"])
-    async def api_stream_audio(name: str, request: Request) -> Response:
-        """Serve the MP3 stream, or a one-line playlist pointing at it.
+    @app.api_route("/stream.{ext}", methods=["GET", "HEAD"])
+    async def api_stream_audio(ext: str, request: Request) -> Response:
+        """Serve ``/stream.mp3``, or ``/stream.m3u``, a one-line playlist pointing at it.
 
-        ``HEAD`` answers with the same checks and headers but no body and
-        without becoming a listener.
+        Any other ``/stream.*`` name is not found.  ``HEAD`` answers with
+        the same checks and headers but no body and without becoming a
+        listener.
         """
-        if request.url.path in {"/stream.mp3", "/stream.m3u"}:
-            _require_stream_mode()
-            ext = name
-        else:
-            ext = _stream_name(name)
+        _require_stream_mode()
+        if ext not in {"mp3", "m3u"}:
+            raise HTTPException(status_code=404, detail="Not Found")
         head = request.method == "HEAD"
         headers = {"Cache-Control": "no-store"}
         if ext == "m3u":
@@ -1682,19 +1652,6 @@ def create_app(
     async def api_stream_info() -> dict:
         """Return the stream URL paths, bitrate, listener count and state."""
         _require_stream_mode()
-        return bridge.stream_info()
-
-    @app.post("/api/stream/rotate")
-    async def api_stream_rotate() -> dict:
-        """Rotate legacy keyed links; the public listening address stays the same."""
-        _require_stream_mode()
-        try:
-            await asyncio.to_thread(bridge.rotate_stream_secret)
-        except StreamSecretError as exc:
-            logger.error("Could not rotate the stream secret: %s", exc)
-            raise HTTPException(
-                status_code=500, detail="Could not save the new stream link"
-            ) from exc
         return bridge.stream_info()
 
     @app.post("/api/stream/settings")
@@ -2738,10 +2695,6 @@ def serve(
     HTTPS is on when ``cfg.server.ssl_certfile`` and ``ssl_keyfile`` are set;
     a :class:`~autodj.tls.CertificateReloader` then loads renewed files into
     the running server.
-
-    Raises:
-        SystemExit: *stream* is set and the stream secret file cannot be
-            read or written.
     """
     from dataclasses import replace
 
@@ -2779,15 +2732,6 @@ def serve(
                 "Open the web UI from any device on your network.",
             )
         no_playback = True
-
-    stream_secret: StreamSecret | None = None
-    if stream:
-        try:
-            stream_secret = StreamSecret.load_or_create(
-                stream_secret_path(cfg), forbidden=cfg.server.access_token
-            )
-        except StreamSecretError as exc:
-            raise SystemExit(f"Stream mode cannot start: {exc}") from exc
 
     player = Player(
         cfg,
@@ -2848,7 +2792,7 @@ def serve(
         bridge,
         player_thread=player_thread,
         secure_cookie=secure_cookie,
-        stream_secret=stream_secret,
+        stream_mode=stream,
         stream_first_track=seed_entry if stream else None,
         server_audio=not no_playback and not stream,
     )

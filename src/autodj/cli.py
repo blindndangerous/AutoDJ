@@ -39,7 +39,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 
-from autodj.stream_secret import paired_devices_path
+from autodj.secret_files import paired_devices_path
 
 if TYPE_CHECKING:
     from autodj.beets import Track
@@ -297,7 +297,7 @@ def _stage_serve_server(
 
     from autodj.config import is_loopback_bind, validate_server_exposure
     from autodj.lan import AccessTokenError, lan_server_config
-    from autodj.stream_secret import access_token_path
+    from autodj.secret_files import access_token_path
 
     server = cfg.server
     cli_tls = ssl_certfile is not None or ssl_keyfile is not None
@@ -668,7 +668,7 @@ def _server_with_saved_token(cfg: AutoDJConfig) -> ServerConfig:
     from dataclasses import replace
 
     from autodj.lan import AccessTokenError, read_access_token
-    from autodj.stream_secret import access_token_path
+    from autodj.secret_files import access_token_path
 
     if cfg.server.access_token is not None:
         return cfg.server
