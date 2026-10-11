@@ -534,6 +534,7 @@ def test_run_doctor_check_order(tmp_path: Path) -> None:
         "network-safety",
         "stream",
         "related-artists",
+        "time-checks",
     ]
 
 
