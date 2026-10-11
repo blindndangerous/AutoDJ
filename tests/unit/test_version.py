@@ -141,8 +141,11 @@ def test_installed_version_is_returned(monkeypatch) -> None:
         current_version.cache_clear()
 
 
-def test_api_version_derives_from_project_metadata() -> None:
-    assert create_app(MagicMock()).version == current_version()
+def test_api_version_derives_from_project_metadata(tmp_path: Path) -> None:
+    bridge = MagicMock()
+    bridge.player._cfg.server.station_timezone = "UTC"
+    bridge.player._cfg.index.active_dir = tmp_path
+    assert create_app(bridge).version == current_version()
 
 
 def test_version_endpoint_uses_same_accessor() -> None:

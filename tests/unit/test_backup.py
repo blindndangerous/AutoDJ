@@ -43,6 +43,18 @@ def _config(root: Path) -> AutoDJConfig:
     return cfg
 
 
+def test_schedule_is_backed_up_and_restored(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    schedule = cfg.index.active_dir / "schedule.json"
+    schedule.write_text('{"schema_version":1,"events":[],"runs":[]}', encoding="utf-8")
+    archive = create_backup(cfg, tmp_path / "schedule.zip", force=False)
+    with zipfile.ZipFile(archive) as backup:
+        assert "index/schedule.json" in backup.namelist()
+    schedule.unlink()
+    restore_backup(cfg, archive, force=True)
+    assert json.loads(schedule.read_text(encoding="utf-8"))["schema_version"] == 1
+
+
 def _publish(cfg: AutoDJConfig, title: str) -> None:
     entry = IndexEntry(
         path=str(cfg.library.music_dir / "song.flac"),

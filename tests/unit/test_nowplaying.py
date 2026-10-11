@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import time
 import urllib.error
-from datetime import date
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -60,7 +60,7 @@ def test_snapshot_exposes_metadata_without_paths() -> None:
         stream=SimpleNamespace(listener_count=3),
         history_snapshot=history_snapshot,
     )
-    feed = NowPlaying(bridge)
+    feed = NowPlaying(bridge, timezone="UTC")
     payload = feed.snapshot()
     assert payload["schema"] == 2
     assert payload["next_track"] is None
@@ -229,11 +229,17 @@ def _feed_bridge(listeners: list[int]) -> SimpleNamespace:
     )
 
 
-def test_peak_listeners_today_resets_at_local_midnight_and_uptime_counts_up() -> None:
+def test_peak_listeners_today_resets_at_station_midnight_and_uptime_counts_up() -> None:
     listeners = [2]
-    day = [date(2026, 10, 11)]
+    # 23:00 on 10 October in Denver, after midnight UTC.
+    now = [datetime(2026, 10, 11, 5, 0, tzinfo=UTC)]
     clock = [100.0]
-    feed = NowPlaying(_feed_bridge(listeners), today=lambda: day[0], monotonic=lambda: clock[0])
+    feed = NowPlaying(
+        _feed_bridge(listeners),
+        timezone="America/Denver",
+        clock=lambda: now[0],
+        monotonic=lambda: clock[0],
+    )
     assert feed.refresh()["peak_listeners_today"] == 2
     listeners[0] = 5
     feed.refresh()
@@ -243,9 +249,9 @@ def test_peak_listeners_today_resets_at_local_midnight_and_uptime_counts_up() ->
     assert payload["listener_count"] == 1
     assert payload["peak_listeners_today"] == 5
     assert payload["uptime_seconds"] == 90
-    # A new day starts from whoever is listening, even before anyone
-    # connects or a song changes.
-    day[0] = date(2026, 10, 12)
+    # Midnight in Denver (06:00 UTC) starts a new day from whoever is
+    # listening, even before anyone connects or a song changes.
+    now[0] = datetime(2026, 10, 11, 6, 0, tzinfo=UTC)
     assert feed.snapshot()["peak_listeners_today"] == 1
     listeners[0] = 3
     assert feed.refresh()["peak_listeners_today"] == 3

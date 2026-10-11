@@ -15,6 +15,8 @@ uploaded to a cloud service.
 - Mood presets that adjust tempo targets during a set. To define your own, add
   `[presets.NAME]` tables to `config.toml`; `config.toml.example` shows how.
 - Voice liners that play spoken clips over the music on a schedule.
+- A scheduler that switches profiles, presets or the clockwheel, plays liners, starts or stops the
+  stream and turns discovery on or off at set times.
 - Lyrics from sidecar files or tags, with scrolling and highlighting when timestamps are available.
 - Offline use after installing dependencies and downloading the model. The first indexing run
   downloads model weights from Hugging Face unless you provide a local checkpoint.
@@ -253,6 +255,7 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Six tabs:
   - **Sound**: output processing, Boost quiet sections for Smooth and Stereo Tool (9 dB by default), the ReplayGain target and peak limit, the browser's audio output device, early loading of the next song and the crossfade on silence.
   - **Display and keys**: lyrics, key notation, announcements and keyboard shortcuts.
   - **Voice liners**.
+  - **Schedule**: timed events, the next few runs, and recent results.
   - **Stream**: only in stream mode.  It holds the station name, the address, quality and continuous play.
   - **Profiles and access**: **Profiles** saves the current settings under a name to apply later.  **Browser access** (with `--lan`) signs this browser out, renames or revokes paired devices, and shows the pairing code for adding another.
 

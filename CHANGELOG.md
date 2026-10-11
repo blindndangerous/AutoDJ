@@ -10,6 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A scheduler for timed events (Settings, Schedule). Events run once, daily, on weekdays, on
+  chosen days, or every N minutes within an optional window, in the station time zone
+  (`[server] station_timezone`). They switch profiles, presets or song picking, play liners,
+  start or stop the stream, or turn discovery on or off, with hard or soft timing. The panel
+  lists the next events and recent runs; the schedule is saved in `schedule.json` and backed up.
+
 - A public now-playing feed at `/api/nowplaying`: JSON with the station name, the song playing, recent
   songs and the listener count, for web pages, overlays and other services. It needs no pairing and
   never includes file paths.
@@ -18,7 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     holds up playback.
   - The next song stays out of the feed unless you turn on **Show the next song publicly** (or
     `[nowplaying] show_next`), since some webcasting licences forbid announcing songs in advance.
-  - The feed also reports today's peak listener count (since local midnight, reset when AutoDJ
+  - The feed also reports today's peak listener count (since midnight in the station time zone, reset when AutoDJ
     restarts) and how long AutoDJ has been running. Its schema version is now 2.
   - A public status page at `/status` shows the station name, the song playing, the next song when
     allowed, listeners now, today's peak and the uptime, as plain text that works without

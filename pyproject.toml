@@ -36,6 +36,8 @@ dependencies = [
     "mutagen>=1.47.0", # tags, ReplayGain, cover art, embedded lyrics, ALAC detection
     "scipy>=1.13.0", # biquad filters (EQ duck, sweeps, transitions)
     "filelock>=3.32.5", # cross-process index manifest lock
+    "tzdata>=2026.1", # IANA time zones on Windows
+    "tzlocal>=5.3.1,<6", # detect the system IANA zone, including on Windows
 ]
 
 [project.optional-dependencies]
@@ -166,7 +168,8 @@ extend_exclude = ["tests", "tmp"]
 # a transitive runtime dep that FastAPI uses for form uploads.  pytest
 # / pytest-cov / pytest-asyncio / hypothesis are test tools loaded by
 # pytest itself, not imported in src/.  httpx2 is the starlette
-# TestClient backend + direct ASGI client, used only in tests.
+# TestClient backend + direct ASGI client, used only in tests.  tzdata is
+# the IANA time zone database that zoneinfo reads on Windows.
 DEP002 = [
     "python-multipart",
     "pytest",
@@ -175,6 +178,7 @@ DEP002 = [
     "pytest-timeout",
     "hypothesis",
     "httpx2",
+    "tzdata",
 ]
 
 [tool.vulture]

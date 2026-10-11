@@ -102,6 +102,8 @@ from autodj.playlog import (
     soundexchange_filename,
     soundexchange_report,
 )
+from autodj.scheduler import system_timezone
+from autodj.scheduler_api import install_scheduler
 from autodj.secret_files import paired_devices_path
 from autodj.security import (
     COOKIE_NAME,
@@ -1092,6 +1094,10 @@ async def _tick_stream_workers(
                 group.create_task(_tick_every_second(name, worker, sleep))
 
 
+# A schedule event is a few hundred bytes; this leaves ample room.
+_SCHEDULE_BODY_MAX_BYTES = 16 * 1024
+
+
 def create_app(
     bridge: PlayerBridge,
     player_thread: threading.Thread | None = None,
@@ -1121,7 +1127,9 @@ def create_app(
     _ws_clients: set[_WebSocketClient] = set()
     _ws_lock = asyncio.Lock()
     _lyrics_read_gate = asyncio.Semaphore(1)
-    nowplaying = NowPlaying(bridge)
+    # The station time zone: scheduled events and the feed's daily peak.
+    station_timezone = bridge.player._cfg.server.station_timezone or system_timezone()
+    nowplaying = NowPlaying(bridge, timezone=station_timezone)
     webhooks = WebhookWorker(getattr(bridge.player._cfg, "webhooks", ()))
 
     # Both run on playout threads (mix bus, station), so a fault here is
@@ -1175,6 +1183,16 @@ def create_app(
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         """FastAPI lifespan: start/stop background tasks."""
+        station_schedule.start()
+        loop = asyncio.get_running_loop()
+
+        def schedule_track_changed() -> None:
+            # The mix-bus thread calls this; it only hands over to the loop.
+            with contextlib.suppress(RuntimeError):  # the loop closed at shutdown
+                loop.call_soon_threadsafe(station_schedule.track_changed)
+
+        bridge.scheduler_track_changed = schedule_track_changed
+        schedule_ticker = asyncio.create_task(_tick_schedule())
         stream_out: StreamOutput | None = None
         stream_ticker: asyncio.Task[None] | None = None
         if stream_mode:
@@ -1199,6 +1217,10 @@ def create_app(
         try:
             yield
         finally:
+            bridge.scheduler_track_changed = None
+            schedule_ticker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await schedule_ticker
             webhooks.close()
             # Graceful teardown.  Order matters:
             #   1. Tell the Player thread to leave its wait-loop.  It is
@@ -1285,6 +1307,15 @@ def create_app(
             apply_repeat_windows(bridge.player)
             await asyncio.sleep(2)
 
+    async def _tick_schedule() -> None:
+        """Run due scheduled events once a second; a failure never stops the timer."""
+        while True:
+            await asyncio.sleep(1)
+            try:
+                await station_schedule.tick()
+            except Exception:
+                logger.exception("Scheduler tick failed")
+
     # No /docs, /redoc or /openapi.json: the web UI does not use them, and
     # a full map of every route and body schema is reconnaissance material
     # for anyone who reaches the port.
@@ -1357,6 +1388,7 @@ def create_app(
     body_limits: dict[str, Callable[[], int]] = {
         "/api/pair": lambda: PAIRING_BODY_MAX_BYTES,
         "/api/liners/upload": lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
+        "/api/schedule": lambda: _SCHEDULE_BODY_MAX_BYTES,
     }
     app.add_middleware(SecurityMiddleware, policy=policy, body_limits=body_limits)
     # Compresses the page, scripts and JSON; audio, cover art and Range
@@ -2949,6 +2981,25 @@ def create_app(
                 logger.warning("Index watcher: %s", exc)
             await asyncio.sleep(10)
 
+    async def _publish_schedule(message: dict[str, Any]) -> None:
+        await _broadcast_and_prune(_ws_clients, _ws_lock, json.dumps(message))
+
+    def _liner_names() -> list[str]:
+        from autodj.liners import LinerLibrary
+
+        return [path.name for path in LinerLibrary.from_folder(_resolve_liner_folder()).files]
+
+    # Features with scheduler actions register them on station_schedule
+    # here, before the lifespan starts it.
+    station_schedule = install_scheduler(
+        app,
+        bridge,
+        timezone=station_timezone,
+        apply_profile=api_profile_apply,
+        profile_names=lambda: _profile_store().list_names(),
+        liner_names=_liner_names,
+        publish=_publish_schedule,
+    )
     return app
 
 

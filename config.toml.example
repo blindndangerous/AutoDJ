@@ -90,6 +90,9 @@ model_dir = "models"
 throttle_ms = 0
 
 [server]
+# Time zone for scheduled events (Settings, Schedule), as an IANA name.
+# Omit to use the system time zone (UTC when the system has no IANA name).
+# station_timezone = "America/Denver"
 host = "127.0.0.1"
 port = 8080
 # access_token = "generate-at-least-32-random-bytes"  # Internal pairing/session secret.

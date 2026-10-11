@@ -4054,6 +4054,7 @@ class TestReloadIndexFromDisk:
         reloaded = Event()
         bridge = MagicMock()
         bridge.player._cfg.index.active_dir = tmp_path
+        bridge.player._cfg.server.station_timezone = "UTC"
         bridge.sim.manifest = "generation 1"
         bridge.sim.ntotal = 5
         bridge.reload_index_from_disk.side_effect = lambda: reloaded.set()
@@ -4072,6 +4073,7 @@ class TestReloadIndexFromDisk:
         monkeypatch.setattr("autodj.server.read_manifest", lambda _: "generation 2")
         bridge = MagicMock()
         bridge.player._cfg.index.active_dir = tmp_path
+        bridge.player._cfg.server.station_timezone = "UTC"
         bridge.sim.manifest = "generation 1"
         bridge.reload_index_from_disk.side_effect = [IndexConsistencyError("torn copy"), 5]
 

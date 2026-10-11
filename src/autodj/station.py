@@ -65,6 +65,7 @@ class Station:
         self._lock = threading.Lock()
         self._empty_since: float | None = None
         self._warned_empty = False
+        self._scheduled_override: bool | None = None
         # Set while idle by "Play now", "Random" or --seed: the next set
         # starts with it instead of the queue or a shuffle pick.
         self._start_entry: Any = None
@@ -87,6 +88,12 @@ class Station:
         """
         count = self._stream.listener_count
         with self._lock:
+            if self._scheduled_override is False:
+                return
+            if self._scheduled_override is True:
+                if not self._bus.playing:
+                    self._start()
+                return
             if count > 0:
                 self._empty_since = None
                 if not self._bus.playing:
@@ -104,6 +111,19 @@ class Station:
                 self._empty_since = now
             elif now - self._empty_since >= self._grace:
                 self._stop()
+
+    def set_scheduled_playing(self, playing: bool | None) -> None:
+        """Hold the set playing (``True``) or stopped (``False``) whoever listens.
+
+        ``None`` hands control back to the listener count.  The hold lasts
+        until the next scheduled change or a restart.
+        """
+        with self._lock:
+            self._scheduled_override = playing
+            if playing and not self._bus.playing:
+                self._start()
+            elif playing is False and self._bus.playing:
+                self._stop(reason="scheduled event")
 
     def start_with(self, entry: Any, pick_mode: str) -> bool:
         """Make *entry* the first track of the next set, if the station is idle.
@@ -163,12 +183,15 @@ class Station:
         logger.info("Stream set started with %s", getattr(entry, "display_name", entry))
         self._on_event("set_started")
 
-    def _stop(self) -> None:
+    def _stop(self, reason: str | None = None) -> None:
         """End the set and forget the track it cut short (station lock held)."""
         self._bus.stop_set()
         current = self._player.end_set()
         if current is not None:
             self._forget(current)
         self._empty_since = None
-        logger.info("Stream set stopped: no listeners for %.0f s", self._grace)
+        if reason is None:
+            logger.info("Stream set stopped: no listeners for %.0f s", self._grace)
+        else:
+            logger.info("Stream set stopped: %s", reason)
         self._on_event("set_stopped")

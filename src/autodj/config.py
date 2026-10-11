@@ -24,6 +24,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Self
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from autodj.liners import LINER_PICK_MODES
 
@@ -985,11 +986,17 @@ class ServerConfig(_Section):
     allowed_origins: list[str] | None = None
     session_ttl_seconds: int = 90 * 24 * 60 * 60
     liner_upload_max_bytes: int = 50 * _MIB
+    station_timezone: str | None = None
     ssl_certfile: str | None = None
     ssl_keyfile: str | None = None
 
     def __post_init__(self) -> None:
         """Normalize and validate server settings after initialization."""
+        if self.station_timezone is not None:
+            try:
+                ZoneInfo(self.station_timezone)
+            except (TypeError, ValueError, ZoneInfoNotFoundError) as exc:
+                raise ValueError("server.station_timezone must be an IANA time zone") from exc
         for name in ("ssl_certfile", "ssl_keyfile"):
             value = getattr(self, name)
             if value is not None and (not isinstance(value, str) or not value.strip()):

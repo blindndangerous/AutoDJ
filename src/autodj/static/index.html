@@ -453,6 +453,7 @@
     <button type="button" role="tab" id="stab-sound" data-subview="sound" data-panel="spanel-sound" aria-selected="false" tabindex="-1">Sound</button>
     <button type="button" role="tab" id="stab-display" data-subview="display" data-panel="spanel-display" aria-selected="false" tabindex="-1">Display and keys</button>
     <button type="button" role="tab" id="stab-liners" data-subview="liners" data-panel="spanel-liners" aria-selected="false" tabindex="-1">Voice liners</button>
+    <button type="button" role="tab" id="stab-schedule" data-subview="schedule" data-panel="spanel-schedule" aria-selected="false" tabindex="-1">Schedule</button>
     <button type="button" role="tab" id="stab-stream" data-subview="stream" data-panel="spanel-stream" aria-selected="false" tabindex="-1" hidden>Stream</button>
     <button type="button" role="tab" id="stab-access" data-subview="access" data-panel="spanel-access" aria-selected="false" tabindex="-1">Profiles and access</button>
   </div>
@@ -1113,6 +1114,104 @@
       <h4>Files</h4>
       <ul id="ln-file-list" aria-label="Voice liner files"></ul>
     </fieldset>
+  </div>
+
+  <div class="card" role="tabpanel" id="spanel-schedule" aria-labelledby="stab-schedule" hidden>
+    <h3>Schedule</h3>
+    <!-- scheduler-panel.js fills this panel when it is seen, and again when
+         the server says the schedule changed or an event ran.  The lists
+         are plain text, not live regions: each result of a button is said
+         once through #schedule-status. -->
+    <p>Change the station at set times, in the station time zone: <span id="schedule-timezone"></span>.</p>
+    <div id="schedule-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+    <h4 id="schedule-upcoming-heading">Next events</h4>
+    <ul id="schedule-upcoming" aria-labelledby="schedule-upcoming-heading"></ul>
+    <h4 id="schedule-events-heading">Events</h4>
+    <ul id="schedule-events" aria-labelledby="schedule-events-heading"></ul>
+    <button type="button" id="schedule-add">Add event</button>
+    <!-- Add and Edit share this form.  It checks its own fields: an error
+         is said, the field gets aria-invalid and focus, and the words stay
+         in #schedule-form-error. -->
+    <form id="schedule-form" novalidate hidden>
+      <fieldset>
+        <legend id="schedule-form-legend">Add event</legend>
+        <p id="schedule-form-error" class="field-error" hidden></p>
+        <div class="settings-row">
+          <label for="schedule-name">Name</label>
+          <input type="text" id="schedule-name" maxlength="100" autocomplete="off" required>
+        </div>
+        <div class="settings-row">
+          <label for="schedule-action">Action</label>
+          <select id="schedule-action"></select>
+        </div>
+        <!-- The chosen action's settings, built from what the server lists. -->
+        <div id="schedule-params"></div>
+        <div class="settings-row">
+          <label for="schedule-repeat">Repeat</label>
+          <select id="schedule-repeat">
+            <option value="once">Once</option>
+            <option value="daily">Every day</option>
+            <option value="weekdays">Weekdays, Monday to Friday</option>
+            <option value="days">On chosen days</option>
+            <option value="interval">Every few minutes</option>
+          </select>
+        </div>
+        <!-- data-repeat lists the repeat choices each part belongs to. -->
+        <div class="settings-row" data-repeat="once">
+          <label for="schedule-date">Date</label>
+          <input type="date" id="schedule-date" required>
+        </div>
+        <div class="settings-row" data-repeat="once daily weekdays days">
+          <label for="schedule-time">Time</label>
+          <input type="time" id="schedule-time" required>
+        </div>
+        <fieldset id="schedule-days" data-repeat="days">
+          <legend>Days</legend>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-0" value="0"><label for="schedule-day-0">Monday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-1" value="1"><label for="schedule-day-1">Tuesday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-2" value="2"><label for="schedule-day-2">Wednesday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-3" value="3"><label for="schedule-day-3">Thursday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-4" value="4"><label for="schedule-day-4">Friday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-5" value="5"><label for="schedule-day-5">Saturday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-6" value="6"><label for="schedule-day-6">Sunday</label></div>
+        </fieldset>
+        <div data-repeat="interval">
+          <div class="settings-row">
+            <label for="schedule-interval">Minutes between runs</label>
+            <input type="number" id="schedule-interval" min="1" max="1440" step="1" required>
+          </div>
+          <div class="settings-row">
+            <label for="schedule-window-start">Active from</label>
+            <input type="time" id="schedule-window-start" aria-describedby="schedule-window-desc">
+          </div>
+          <div class="settings-row">
+            <label for="schedule-window-end">Active until</label>
+            <input type="time" id="schedule-window-end" aria-describedby="schedule-window-desc">
+          </div>
+          <span class="setting-desc" id="schedule-window-desc">
+            Optional.  Leave both empty to run all day.  The window may cross midnight, such as 22:00 until 02:00.
+          </span>
+        </div>
+        <div class="settings-row">
+          <label for="schedule-timing">Timing</label>
+          <select id="schedule-timing" aria-describedby="schedule-timing-desc">
+            <option value="soft">Soft</option>
+            <option value="hard">Hard</option>
+          </select>
+        </div>
+        <span class="setting-desc" id="schedule-timing-desc">
+          Soft waits for the current song to end.  Hard runs on time and, except for stream events, fades the current song out.
+        </span>
+        <div class="settings-check">
+          <input type="checkbox" id="schedule-enabled">
+          <label for="schedule-enabled">Enabled</label>
+        </div>
+        <button type="submit" id="schedule-save">Save event</button>
+        <button type="button" id="schedule-cancel">Cancel</button>
+      </fieldset>
+    </form>
+    <h4 id="schedule-runs-heading">Recent runs</h4>
+    <ul id="schedule-runs" aria-labelledby="schedule-runs-heading"></ul>
   </div>
 
   <div class="card" role="tabpanel" id="spanel-stream" aria-labelledby="stab-stream" hidden>
