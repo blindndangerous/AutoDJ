@@ -1026,3 +1026,32 @@ def test_relays_start_with_the_stream_and_keep_the_station_playing(tmp_path: Pat
     assert all(relay.status()["state"] == "stopped" for relay in relays._relays)
     assert all(output._closed for output in relays.outputs)
     assert password not in (tmp_path / "relay-status.json").read_text(encoding="utf-8")
+
+
+def test_stream_listeners_are_counted_for_the_play_log(stream_app, bridge) -> None:
+    """Each connection reports its client to the bridge, and its end too."""
+    client, stream = stream_app
+    seen: list[tuple[str, tuple[str, str]]] = []
+    bridge.listener_connected = lambda who: seen.append(("in", who))
+    bridge.listener_disconnected = lambda who: seen.append(("out", who))
+    with client.stream("GET", "/stream.mp3", headers={"User-Agent": "VLC/3.0"}) as response:
+        assert response.status_code == 200
+        next(response.iter_bytes())
+    assert seen == [("in", ("testclient", "VLC/3.0")), ("out", ("testclient", "VLC/3.0"))]
+    stream.remove_listener.assert_called_with(stream.add_listener.return_value)
+
+
+def test_a_failed_count_still_frees_the_listener(stream_app, bridge) -> None:
+    client, stream = stream_app
+    left: list[tuple[str, str]] = []
+
+    def broken(_who):
+        raise RuntimeError("count failed")
+
+    bridge.listener_connected = broken
+    bridge.listener_disconnected = left.append
+    assert (
+        TestClient(client.app, raise_server_exceptions=False).get("/stream.mp3").status_code == 500
+    )
+    stream.remove_listener.assert_called_once_with(stream.add_listener.return_value)
+    assert left == [("testclient", "testclient")]

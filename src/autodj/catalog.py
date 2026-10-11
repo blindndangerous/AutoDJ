@@ -37,6 +37,41 @@ _POINTS = ("start", "intro", "outro", "segue", "end", "overlap_start")
 _POINT_SOURCES = {"auto", "lyrics", "analysis", "user", "imported"}
 
 
+_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS catalog_sources (
+        id TEXT PRIMARY KEY, path TEXT NOT NULL, kind TEXT NOT NULL,
+        recursive INTEGER NOT NULL, advanced INTEGER NOT NULL,
+        UNIQUE(kind, path)
+    );
+    CREATE TABLE IF NOT EXISTS catalog_entries (
+        id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE, kind TEXT NOT NULL,
+        title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
+        album TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
+        bpm REAL NOT NULL DEFAULT 0, year INTEGER NOT NULL DEFAULT 0,
+        length REAL NOT NULL DEFAULT 0, energy REAL NOT NULL DEFAULT 0,
+        key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
+        tempo_confidence REAL NOT NULL DEFAULT 0,
+        embedded_at REAL NOT NULL DEFAULT 0, size INTEGER NOT NULL DEFAULT 0,
+        fingerprint TEXT NOT NULL DEFAULT '', points TEXT NOT NULL DEFAULT '{}',
+        point_sources TEXT NOT NULL DEFAULT '{}', prepared_path TEXT,
+        last_played REAL NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS catalog_settings (
+        key TEXT PRIMARY KEY, value TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS play_history (
+        event_id TEXT PRIMARY KEY NOT NULL, entry_id TEXT, path TEXT,
+        title TEXT NOT NULL, artist TEXT NOT NULL, duration REAL NOT NULL,
+        played_at TEXT NOT NULL, interrupted INTEGER NOT NULL DEFAULT 0,
+        performances INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS catalog_vectors (
+        entry_id TEXT PRIMARY KEY REFERENCES catalog_entries(id) ON DELETE CASCADE,
+        vector BLOB NOT NULL
+    );
+"""
+
+
 def _path(path: str | Path) -> str:
     value = os.path.abspath(os.path.expanduser(os.fspath(path)))
     value = os.path.normpath(value)
@@ -64,42 +99,39 @@ class LibraryCatalog:
         self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        self._conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS catalog_sources (
-                id TEXT PRIMARY KEY, path TEXT NOT NULL, kind TEXT NOT NULL,
-                recursive INTEGER NOT NULL, advanced INTEGER NOT NULL,
-                UNIQUE(kind, path)
-            );
-            CREATE TABLE IF NOT EXISTS catalog_entries (
-                id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE, kind TEXT NOT NULL,
-                title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
-                album TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
-                bpm REAL NOT NULL DEFAULT 0, year INTEGER NOT NULL DEFAULT 0,
-                length REAL NOT NULL DEFAULT 0, energy REAL NOT NULL DEFAULT 0,
-                key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
-                tempo_confidence REAL NOT NULL DEFAULT 0,
-                embedded_at REAL NOT NULL DEFAULT 0, size INTEGER NOT NULL DEFAULT 0,
-                fingerprint TEXT NOT NULL DEFAULT '', points TEXT NOT NULL DEFAULT '{}',
-                point_sources TEXT NOT NULL DEFAULT '{}', prepared_path TEXT,
-                last_played REAL NOT NULL DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS catalog_settings (
-                key TEXT PRIMARY KEY, value TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS play_history (
-                event_id TEXT PRIMARY KEY NOT NULL, entry_id TEXT, path TEXT,
-                title TEXT NOT NULL, artist TEXT NOT NULL, duration REAL NOT NULL,
-                played_at TEXT NOT NULL, interrupted INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS catalog_vectors (
-                entry_id TEXT PRIMARY KEY REFERENCES catalog_entries(id) ON DELETE CASCADE,
-                vector BLOB NOT NULL
-            );
-            """
-        )
-        self._conn.commit()
-        self._migrate_legacy_history()
+        try:
+            self._conn.executescript(_SCHEMA)
+            self._add_performances_column()
+            self._migrate_legacy_history()
+        except BaseException:
+            # Not a catalog (or unreadable): do not leave the file open.
+            self._conn.close()
+            self._conn = None
+            raise
+
+    def _add_performances_column(self) -> None:
+        """Give a play log from before listener counts its ``performances`` column.
+
+        The check and the change share one write transaction, so a second
+        process opening the same old file waits, then finds the column.
+        """
+        db = self._db()
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            have = {row[1] for row in db.execute("PRAGMA table_info(play_history)")}
+            if "performances" not in have:
+                db.execute("ALTER TABLE play_history ADD COLUMN performances INTEGER")
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+
+    @staticmethod
+    def _count(value: Any) -> int | None:
+        """Return a performance count, or ``None`` when *value* is not one."""
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None
+        return value
 
     @staticmethod
     def _valid_played_at(value: Any) -> bool:
@@ -171,7 +203,11 @@ class LibraryCatalog:
                 raise
 
     def write_history(self, rows: Sequence[dict], interrupted: Sequence[str] = ()) -> None:
-        """Append unique play events and mark any supplied events interrupted."""
+        """Append unique play events and mark any supplied events interrupted.
+
+        A row for an event already stored only raises its ``performances``,
+        which grows as listeners join during the play.
+        """
         clean_rows = []
         for row in rows:
             event_id = row.get("event_id") if isinstance(row, dict) else None
@@ -198,6 +234,7 @@ class LibraryCatalog:
                     row["artist"],
                     duration,
                     row["played_at"],
+                    self._count(row.get("performances")),
                 )
             )
         interrupted = tuple(
@@ -208,9 +245,13 @@ class LibraryCatalog:
             try:
                 db.execute("BEGIN")
                 db.executemany(
-                    "INSERT INTO play_history (event_id,entry_id,path,title,artist,duration,played_at) "
-                    "VALUES (?,(SELECT id FROM catalog_entries WHERE path=?),?,?,?,?,?) "
-                    "ON CONFLICT(event_id) DO NOTHING",
+                    "INSERT INTO play_history (event_id,entry_id,path,title,artist,duration,"
+                    "played_at,performances) "
+                    "VALUES (?,(SELECT id FROM catalog_entries WHERE path=?),?,?,?,?,?,?) "
+                    # A play is written again when a listener joins during it.
+                    "ON CONFLICT(event_id) DO UPDATE SET performances="
+                    "max(COALESCE(performances,0),excluded.performances) "
+                    "WHERE excluded.performances IS NOT NULL",
                     clean_rows,
                 )
                 db.executemany(
@@ -261,6 +302,32 @@ class LibraryCatalog:
                     "AND (e.kind IS NULL OR e.kind='music') "
                     "ORDER BY h.rowid DESC LIMIT ?) ORDER BY row ASC",
                     (limit,),
+                )
+                .fetchall()
+            )
+            return [dict(row) for row in rows]
+
+    def play_log(self) -> list[dict]:
+        """Return every completed play, oldest first, with its record's details.
+
+        ``path``, ``album`` and ``kind`` come from the catalog record the
+        play refers to (by id, so a moved file gives its new path), or from
+        the record at the played path.  ``album`` and ``kind`` are ``None``
+        when neither exists, as for plays migrated from the old
+        settings-based history, which also have no path.  ``performances``
+        is how many listeners heard the play (see :mod:`autodj.playlog`), or
+        ``None`` for plays logged before AutoDJ counted them.
+        """
+        with self._lock:
+            rows = (
+                self._db()
+                .execute(
+                    "SELECT h.played_at,h.duration,h.title,h.artist,"
+                    "COALESCE(e.path,h.path) AS path,e.album,e.kind,"
+                    "h.performances "
+                    "FROM play_history h LEFT JOIN catalog_entries e ON e.id="
+                    "COALESCE(h.entry_id,(SELECT id FROM catalog_entries WHERE path=h.path)) "
+                    "WHERE h.interrupted=0 ORDER BY h.rowid"
                 )
                 .fetchall()
             )

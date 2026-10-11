@@ -395,6 +395,36 @@
       <input type="number" id="hist-goto" min="1" value="1">
       <button type="button" id="hist-go">Go to page</button>
     </nav>
+    <!-- Saves the whole play log between two dates, not just the 500 rows
+         above.  The outcome is announced through #sr-status. -->
+    <form id="hist-export" aria-labelledby="hist-export-heading" novalidate>
+      <h3 id="hist-export-heading">Export play log</h3>
+      <p id="hist-export-help">Saves the plays between two dates, both included, for
+        royalty reports.  The play log has one row per play: start and end time, seconds
+        played, artist, title, album, ISRC, label, kind, file and listeners.  The SoundExchange
+        Report of Use lists songs only, one line per recording.</p>
+      <label for="hist-export-from">From</label>
+      <input type="date" id="hist-export-from" required aria-describedby="hist-export-help">
+      <label for="hist-export-to">To</label>
+      <input type="date" id="hist-export-to" required>
+      <label for="hist-export-format">Format</label>
+      <select id="hist-export-format">
+        <option value="csv">Play log (CSV)</option>
+        <option value="soundexchange">SoundExchange Report of Use</option>
+      </select>
+      <fieldset id="hist-export-soundexchange" hidden>
+        <legend>SoundExchange report</legend>
+        <label for="hist-export-service">Name of service</label>
+        <input type="text" id="hist-export-service" maxlength="200" autocomplete="organization">
+        <label for="hist-export-category">Transmission category</label>
+        <select id="hist-export-category">
+          <option value="A">A: webcast that is not a broadcast simulcast</option>
+          <option value="B">B: simulcast of a broadcast station</option>
+          <option value="C">C: news, talk, sports or business programming</option>
+        </select>
+      </fieldset>
+      <button type="submit" id="hist-export-button">Export</button>
+    </form>
   </section>
 
   <!-- ============================================================

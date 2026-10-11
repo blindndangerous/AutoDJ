@@ -1564,6 +1564,146 @@ def cmd_list_indexes(ctx: click.Context) -> None:  # pragma: no cover -- filesys
 
 
 # ---------------------------------------------------------------------------
+# export-plays subcommand
+# ---------------------------------------------------------------------------
+
+
+@cli.command("export-plays")
+@click.option(
+    "--from",
+    "from_text",
+    required=True,
+    metavar="DATE",
+    help="First day to export, YYYY-MM-DD (or an ISO 8601 date and time).",
+)
+@click.option(
+    "--to",
+    "to_text",
+    required=True,
+    metavar="DATE",
+    help="Last day to export, YYYY-MM-DD, included (or an ISO 8601 date and time).",
+)
+@click.option(
+    "--out",
+    "out_path",
+    default=None,
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="Write the CSV to this file instead of standard output.",
+)
+@click.option(
+    "--format",
+    "report_format",
+    type=click.Choice(["csv", "soundexchange"]),
+    default="csv",
+    show_default=True,
+    help="csv: one row per play.  soundexchange: a Report of Use for US webcasting.",
+)
+@click.option("--service", default="", help="Name of service, for --format soundexchange.")
+@click.option(
+    "--category",
+    default="A",
+    show_default=True,
+    help="SoundExchange transmission category code (A, B, C, H, I, J, K or L).",
+)
+@click.option(
+    "--channel", default="", help="Channel or program name, for --format soundexchange (optional)."
+)
+@click.option(
+    "--missing",
+    is_flag=True,
+    help=(
+        "List the songs lacking ISRC, label or other reporting fields instead of the plays,"
+        " marking those SoundExchange cannot match."
+    ),
+)
+@click.option(
+    "--name",
+    "index_name",
+    default=None,
+    type=str,
+    help="Named index whose play log to export (default: [index] name).",
+)
+@click.pass_context
+def cmd_export_plays(
+    ctx: click.Context,
+    from_text: str,
+    to_text: str,
+    out_path: Path | None,
+    report_format: str,
+    service: str,
+    category: str,
+    channel: str,
+    missing: bool,
+    index_name: str | None,
+) -> None:
+    """Export the play log between two dates as CSV, for royalty reports.
+
+    Writes one row per play: start, end, duration played, artist, title,
+    album, ISRC, label, kind, the path inside the music folder and the
+    performances (listeners who heard it).  Times are local, with their UTC offset.  With
+    --format soundexchange it writes a SoundExchange Report of Use instead:
+    songs only, one line per recording.  A summary goes to standard error.
+
+    \b
+    Examples:
+      uv run autodj export-plays --from 2026-09-01 --to 2026-09-30 --out september.csv
+      uv run autodj export-plays --from 2026-09-01 --to 2026-09-30 --missing
+      uv run autodj export-plays --from 2026-09-01 --to 2026-09-30 --format soundexchange --service "My Station"
+    """
+    from autodj.catalog import LibraryCatalog
+    from autodj.playlog import (
+        missing_csv,
+        parse_bound,
+        plays_between,
+        plays_csv,
+        soundexchange_report,
+        summary,
+    )
+
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    _apply_index_name(cfg, index_name)
+    try:
+        start = parse_bound(from_text)
+        end = parse_bound(to_text, end=True)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc)) from exc
+    db = cfg.index.active_dir / "library.db"
+    if not db.is_file():
+        click.echo(f"No play log found: {db} does not exist.", err=True)
+        raise click.exceptions.Exit(1)
+    try:
+        with LibraryCatalog(db) as catalog:
+            plays = plays_between(catalog, start, end)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc)) from exc
+    except sqlite3.Error as exc:
+        click.echo(f"Could not read the play log in {db}: {exc}", err=True)
+        raise click.exceptions.Exit(1) from exc
+    if missing:
+        text = missing_csv(plays)
+    elif report_format == "soundexchange":
+        try:
+            text = soundexchange_report(plays, service, category, channel)
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from exc
+    else:
+        text = plays_csv(plays)
+    data = text.encode("utf-8")
+    if out_path is None:
+        # Bytes, so Windows text mode does not double the CSV's CRLF endings.
+        sys.stdout.flush()
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+    else:
+        try:
+            out_path.write_bytes(data)
+        except OSError as exc:
+            click.echo(f"Could not write {out_path}: {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+    click.echo(summary(plays), err=True)
+
+
+# ---------------------------------------------------------------------------
 # stats subcommand
 # ---------------------------------------------------------------------------
 

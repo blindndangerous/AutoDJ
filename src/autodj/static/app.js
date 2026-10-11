@@ -1993,6 +1993,7 @@ const _libEls = {
 // History tab
 // ----------------------------------------------------------------
 import { formatPlayedAt, historyNeedsDates } from "./modules/history-format.js";
+import { installHistoryExport } from "./modules/history-export.js";
 
 let _histPage = 1;
 // The history request in flight: a newer one aborts it.
@@ -2166,6 +2167,10 @@ function noteTrackForHistory(s) {
       const v = parseInt(e.target.value, 10);
       if (v > 0) void fetchHistory(v, { announce: true });
     }
+  });
+  installHistoryExport({
+    announce: (message, tone) => announceStatus(document.getElementById("sr-status"), message,
+      { dwellMs: tone === "error" ? 6000 : 3000, force: true, tone }),
   });
 }
 
