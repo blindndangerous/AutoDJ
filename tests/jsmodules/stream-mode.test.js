@@ -38,7 +38,7 @@ function setup({ fetchInfo, beforePlay = vi.fn() } = {}) {
   audio.play = vi.fn(() => Promise.resolve());
   audio.pause = vi.fn();
   audio.load = vi.fn();
-  const info = fetchInfo || vi.fn(async () => ({ path: "/stream/SECRET.mp3" }));
+  const info = fetchInfo || vi.fn(async () => ({ path: "/stream.mp3" }));
   const button = document.getElementById("btn-listen");
   const mode = createStreamMode({
     audio,
@@ -98,7 +98,7 @@ describe("stream mode", () => {
     mode.apply({ stream_mode: true, stream_state: "idle" });
     await mode.toggleListen();
     expect(fetchInfo).toHaveBeenCalledOnce();
-    expect(audio.src).toContain("/stream/SECRET.mp3");
+    expect(audio.src).toContain("/stream.mp3");
     expect(audio.play).toHaveBeenCalled();
     expect(button.getAttribute("aria-pressed")).toBe("true");
     expect(button.textContent.trim()).toContain("Listen here");
@@ -135,19 +135,19 @@ describe("stream mode", () => {
     mode.apply({ stream_mode: true, stream_state: "idle" });
     const pending = mode.toggleListen();
     expect(button.getAttribute("aria-pressed")).toBe("true");
-    resolveInfo({ path: "/stream/ONE.mp3" });
+    resolveInfo({ path: "/stream.mp3?try=one" });
     await pending;
     await mode.toggleListen();
     const again = mode.toggleListen();
-    resolveInfo({ path: "/stream/TWO.mp3" });
+    resolveInfo({ path: "/stream.mp3?try=two" });
     await again;
     expect(fetchInfo).toHaveBeenCalledTimes(2);
-    expect(audio.src).toContain("/stream/TWO.mp3");
+    expect(audio.src).toContain("/stream.mp3?try=two");
   });
 
   it("gives every listen a fresh media URL while preserving path query and hash", async () => {
     const { mode, audio } = setup({
-      fetchInfo: vi.fn(async () => ({ path: "/stream/SECRET.mp3?format=mp3#live" })),
+      fetchInfo: vi.fn(async () => ({ path: "/stream.mp3?format=mp3#live" })),
     });
     mode.apply({ stream_mode: true, stream_state: "playing" });
     await mode.toggleListen();
@@ -156,7 +156,7 @@ describe("stream mode", () => {
     await mode.toggleListen();
     const second = new URL(audio.src);
 
-    expect(first.pathname).toBe("/stream/SECRET.mp3");
+    expect(first.pathname).toBe("/stream.mp3");
     expect(first.searchParams.get("format")).toBe("mp3");
     expect(first.hash).toBe("#live");
     expect(first.searchParams.get("connection")).toBeTruthy();
@@ -176,7 +176,7 @@ describe("stream mode", () => {
     mode.apply({ stream_mode: true, stream_state: "idle" });
     const first = mode.toggleListen();
     await mode.toggleListen();
-    resolveInfo({ path: "/stream/LATE.mp3" });
+    resolveInfo({ path: "/stream.mp3?try=late" });
     await first;
     expect(button.getAttribute("aria-pressed")).toBe("false");
     expect(audio.play).not.toHaveBeenCalled();
@@ -269,7 +269,7 @@ describe("stream mode", () => {
     const fetchInfo = vi.fn(async () => {
       calls += 1;
       if (calls > 1) throw new TypeError("Failed to fetch");
-      return { path: "/stream/SECRET.mp3" };
+      return { path: "/stream.mp3" };
     });
     const { mode, audio, button, sr } = setup({ fetchInfo });
     const say = vi.spyOn(sr, "textContent", "set");
@@ -297,7 +297,7 @@ describe("stream mode", () => {
     const fetchInfo = vi.fn(async () => {
       calls += 1;
       if (calls === 2 || calls === 3) throw new TypeError("Failed to fetch");
-      return { path: "/stream/SECRET.mp3" };
+      return { path: "/stream.mp3" };
     });
     const { mode, audio, button, sr } = setup({ fetchInfo });
     mode.apply({ stream_mode: true, stream_state: "playing" });
@@ -472,9 +472,15 @@ describe("stream mode", () => {
     mode.apply({ stream_mode: true, stream_state: "idle", stream_event: { id: "a", seq: 2, name: "set_stopped" } });
     await tick();
     expect(sr.textContent).toBe("Set stopped. Nobody is listening.");
-    mode.apply({ stream_mode: true, stream_state: "idle", stream_event: { id: "a", seq: 3, name: "link_changed" } });
+  });
+
+  it("says nothing for an event name it does not know", async () => {
+    const { mode, sr } = setup();
+    mode.apply({ stream_mode: true, stream_state: "idle", stream_event: { id: "a", seq: 1, name: "set_started" } });
+    // link_changed came from the removed keyed links; an older server could still send it.
+    mode.apply({ stream_mode: true, stream_state: "idle", stream_event: { id: "a", seq: 2, name: "link_changed" } });
     await tick();
-    expect(sr.textContent).toBe("Stream link changed. Speakers using the old link have stopped.");
+    expect(sr.textContent).toBe("");
   });
 
   it("treats a restarted server's first event as new", async () => {
@@ -551,7 +557,7 @@ describe("stream mode", () => {
 });
 
 const INFO = { path: "/stream.mp3", m3u_path: "/stream.m3u", bitrate: 320, listeners: 0, state: "idle" };
-const NEW_INFO = { ...INFO, path: "/stream/NEW.mp3", m3u_path: "/stream/NEW.m3u" };
+const NEW_INFO = { ...INFO, path: "/stream.mp3?v=new", m3u_path: "/stream.m3u?v=new" };
 const COPY_FAIL = "Could not copy. Select the address and copy it yourself.";
 // The copy handler writes its answer on a zero-delay timer queued only
 // after the clipboard attempt settles, so a fixed tick() can win that
@@ -705,22 +711,18 @@ describe("stream settings", () => {
     expect(select.value).toBe("192");
   });
 
-  it("refreshes the address when another page makes a new link", async () => {
+  it("does not look the address up again on station events", async () => {
     settingsDom();
     const fetchInfo = vi.fn(async () => INFO);
     const { ui } = makeSettings({ fetchInfo });
     ui.apply({ stream_mode: true, stream_event: { id: "a", seq: 1, name: "set_started" } });
     await tick();
-    fetchInfo.mockResolvedValue(NEW_INFO);
-    ui.apply({ stream_mode: true, stream_event: { id: "a", seq: 1, name: "set_started" } });
     ui.apply({ stream_mode: true, stream_event: { id: "a", seq: 2, name: "set_stopped" } });
-    await tick();
-    expect(fetchInfo).toHaveBeenCalledOnce();
     ui.apply({ stream_mode: true, stream_event: { id: "a", seq: 3, name: "link_changed" } });
     await tick();
-    expect(fetchInfo).toHaveBeenCalledTimes(2);
-    expect(byId("stream-url").value).toBe(`${location.origin}/stream/NEW.mp3`);
-    expect(byId("stream-m3u").getAttribute("href")).toBe("/stream/NEW.m3u");
+    expect(fetchInfo).toHaveBeenCalledOnce();
+    expect(byId("stream-url").value).toBe(`${location.origin}/stream.mp3`);
+    expect(byId("stream-m3u").getAttribute("href")).toBe("/stream.m3u");
   });
 
   it("does not let a slow lookup overwrite a newer link", async () => {
@@ -729,13 +731,13 @@ describe("stream settings", () => {
     const fetchInfo = vi.fn(() => new Promise((resolve) => { replies.push(resolve); }));
     const { ui } = makeSettings({ fetchInfo });
     ui.apply({ stream_mode: true, stream_event: { id: "a", seq: 1, name: "set_started" } });
-    ui.apply({ stream_mode: true, stream_event: { id: "a", seq: 2, name: "link_changed" } });
+    void ui.refresh();
     await tick();
     replies[1](NEW_INFO);
     await tick();
     replies[0](INFO);
     await tick();
-    expect(byId("stream-url").value).toBe(`${location.origin}/stream/NEW.mp3`);
+    expect(byId("stream-url").value).toBe(`${location.origin}/stream.mp3?v=new`);
   });
 
   it("reports a failed address lookup once, in the settings region", async () => {

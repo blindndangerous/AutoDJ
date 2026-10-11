@@ -1754,7 +1754,7 @@ describe("stream mode", () => {
     const { fetchImpl } = await setupApp({
       initialState: streamState,
       onRequest: (url) => url === "/api/stream"
-        ? jsonResponse({ path: "/stream/SECRET.mp3", m3u_path: "/stream/SECRET.m3u" })
+        ? jsonResponse({ path: "/stream.mp3", m3u_path: "/stream.m3u" })
         : lyricsFor("a.mp3"),
     });
     const audio = document.getElementById("stream-audio");
@@ -1763,12 +1763,12 @@ describe("stream mode", () => {
     const listen = document.getElementById("btn-listen");
     const lookups = () => fetchImpl.mock.calls.filter(([url]) => url === "/api/stream").length;
     await vi.waitFor(() => expect(document.getElementById("stream-url").value)
-      .toContain("/stream/SECRET.mp3"));
+      .toContain("/stream.mp3"));
     const before = lookups();
 
     listen.click();
     await vi.waitFor(() => expect(audio.play).toHaveBeenCalledOnce());
-    expect(new URL(audio.src).pathname).toBe("/stream/SECRET.mp3");
+    expect(new URL(audio.src).pathname).toBe("/stream.mp3");
     expect(new URL(audio.src).searchParams.has("connection")).toBe(true);
     expect(listen.getAttribute("aria-pressed")).toBe("true");
     expect(lookups()).toBe(before + 1);
@@ -1782,7 +1782,7 @@ describe("stream mode", () => {
     const { webSocket, WebSocketImpl } = await setupApp({
       initialState: streamState,
       onRequest: (url) => url === "/api/stream"
-        ? jsonResponse({ path: "/stream/SECRET.mp3", m3u_path: "/stream/SECRET.m3u" })
+        ? jsonResponse({ path: "/stream.mp3", m3u_path: "/stream.m3u" })
         : lyricsFor("a.mp3"),
     });
     const audio = document.getElementById("stream-audio");
@@ -1822,7 +1822,7 @@ describe("stream mode", () => {
         return jsonResponse({ required: true, authenticated: authChecks === 1 });
       },
       onRequest: (url) => url === "/api/stream"
-        ? jsonResponse({ path: "/stream/SECRET.mp3", m3u_path: "/stream/SECRET.m3u" })
+        ? jsonResponse({ path: "/stream.mp3", m3u_path: "/stream.m3u" })
         : lyricsFor("a.mp3"),
     });
     const audio = document.getElementById("stream-audio");
@@ -2022,7 +2022,7 @@ describe("stream mode", () => {
       const { webSocket, WebSocketImpl } = await setupApp({
         initialState: { volume: quiet },
         onRequest: (url) => url === "/api/stream"
-          ? jsonResponse({ path: "/stream/SECRET.mp3", m3u_path: "/stream/SECRET.m3u" })
+          ? jsonResponse({ path: "/stream.mp3", m3u_path: "/stream.m3u" })
           : lyricsFor("a.mp3"),
       });
       const audio = document.getElementById("stream-audio");
@@ -2300,7 +2300,7 @@ describe("stream mode", () => {
       onRequest: (url) => {
         if (expire) return jsonResponse({ detail: "Authentication required" }, 401);
         return url === "/api/stream"
-          ? jsonResponse({ path: "/stream/SECRET.mp3" })
+          ? jsonResponse({ path: "/stream.mp3" })
           : lyricsFor("a.mp3");
       },
     });
@@ -2324,7 +2324,7 @@ describe("stream mode", () => {
 
   describe("stream settings", () => {
     const oldInfo = {
-      path: "/stream/OLD.mp3", m3u_path: "/stream/OLD.m3u", bitrate: 320, listeners: 1, state: "playing",
+      path: "/stream.mp3", m3u_path: "/stream.m3u", bitrate: 320, listeners: 1, state: "playing",
     };
     const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
     const stationServer = (overrides = {}) => (url, options) => {
@@ -2343,8 +2343,8 @@ describe("stream mode", () => {
       await setupApp({ initialState: streamState, onRequest: stationServer() });
       expect(document.getElementById("stream-settings").hidden).toBe(false);
       await vi.waitFor(() => expect(document.getElementById("stream-url").value)
-        .toBe(`${location.origin}/stream/OLD.mp3`));
-      expect(document.getElementById("stream-m3u").getAttribute("href")).toBe("/stream/OLD.m3u");
+        .toBe(`${location.origin}/stream.mp3`));
+      expect(document.getElementById("stream-m3u").getAttribute("href")).toBe("/stream.m3u");
       expect(document.getElementById("stream-listeners").textContent).toBe("1 listener");
     });
 
@@ -2357,7 +2357,7 @@ describe("stream mode", () => {
       });
       const quality = document.getElementById("stream-bitrate");
       await vi.waitFor(() => expect(document.getElementById("stream-url").value)
-        .toContain("/stream/OLD.mp3"));
+        .toContain("/stream.mp3"));
       for (const value of ["256", "192", "128"]) {
         quality.value = value;
         quality.dispatchEvent(new Event("change"));
@@ -2400,7 +2400,7 @@ describe("stream mode", () => {
         location.hash = "#settings";
         window.dispatchEvent(new Event("hashchange"));
         await vi.waitFor(() => expect(document.getElementById("stream-url").value)
-          .toBe(`${location.origin}/stream/OLD.mp3`));
+          .toBe(`${location.origin}/stream.mp3`));
         expect(note.hidden).toBe(true);
       } finally {
         location.hash = "";

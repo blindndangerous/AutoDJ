@@ -457,14 +457,13 @@ def _safe_public_prefix(path: str, prefix: str) -> bool:
 def _is_public_path(path: str) -> bool:
     """Return whether a request path is accessible without authentication.
 
-    Listening does not require pairing. Legacy keyed links under ``/stream/``
-    still have their key checked by the route; control APIs require a session.
+    Listening (``/stream.mp3`` and ``/stream.m3u``) does not require
+    pairing; control APIs require a session.
     """
     return (
         path in _PUBLIC_FILES
         or path in {"/stream.mp3", "/stream.m3u"}
         or _safe_public_prefix(path, "/modules/")
-        or _safe_public_prefix(path, "/stream/")
     )
 
 

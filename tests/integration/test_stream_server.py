@@ -13,7 +13,6 @@ from fastapi.testclient import TestClient
 from autodj._bridge import PlayerBridge, StreamSeekUnavailable
 from autodj.server import create_app
 from autodj.stream import EncoderUnavailableError, ListenerLimitError
-from autodj.stream_secret import StreamSecret
 
 from ._helpers import _make_entry, _make_player_mock, _make_sim_mock
 
@@ -32,30 +31,52 @@ def _stream_mock() -> MagicMock:
 
 
 @pytest.fixture
-def stream_app(bridge, tmp_path: Path):
-    secret = StreamSecret.load_or_create(tmp_path / ".stream-secret")
+def stream_app(bridge):
     stream = _stream_mock()
     bridge.player._cfg.stream.enabled = True
-    bridge.attach_stream(stream=stream, secret=secret, station=MagicMock(state="idle"))
+    bridge.attach_stream(stream=stream, station=MagicMock(state="idle"))
     app = create_app(bridge)
-    return TestClient(app), secret, stream
+    return TestClient(app), stream
 
 
 # -- the stream routes -------------------------------------------------------
 
 
-def test_wrong_secret_is_404(stream_app) -> None:
-    client, _secret, stream = stream_app
-    assert client.get("/stream/" + "x" * 43 + ".mp3").status_code == 404
-    assert client.get("/stream/.mp3").status_code == 404
-    assert client.get("/stream/" + "x" * 43 + ".ogg").status_code == 404
+_OLD_KEYED_PATHS = (
+    "/stream/" + "x" * 43 + ".mp3",
+    "/stream/" + "x" * 43 + ".m3u",
+    "/stream/.mp3",
+    "/stream/anything.ogg",
+)
+
+
+def test_old_keyed_links_are_not_found(stream_app) -> None:
+    """The removed ``/stream/<secret>.mp3`` and ``.m3u`` links are 404 for any key."""
+    client, stream = stream_app
+    for path in _OLD_KEYED_PATHS:
+        assert client.get(path).status_code == 404, path
+        assert client.head(path).status_code == 404, path
     stream.add_listener.assert_not_called()
 
 
+def test_only_mp3_and_m3u_are_served_under_stream_dot(stream_app) -> None:
+    client, stream = stream_app
+    for path in ("/stream.ogg", "/stream.aac", "/stream.pls"):
+        assert client.get(path).status_code == 404, path
+        assert client.head(path).status_code == 404, path
+    stream.add_listener.assert_not_called()
+
+
+def test_rotate_route_is_gone(stream_app) -> None:
+    client, stream = stream_app
+    assert client.post("/api/stream/rotate").status_code in (404, 405)
+    stream.disconnect_all.assert_not_called()
+
+
 @pytest.mark.parametrize("query", ["", "?connection=new-listener"])
-def test_right_secret_streams_mp3(stream_app, query) -> None:
-    client, secret, stream = stream_app
-    with client.stream("GET", f"/stream/{secret.value}.mp3{query}") as response:
+def test_stream_mp3_streams(stream_app, query) -> None:
+    client, stream = stream_app
+    with client.stream("GET", f"/stream.mp3{query}") as response:
         assert response.status_code == 200
         assert response.headers["content-type"] == "audio/mpeg"
         assert response.headers["cache-control"] == "no-store"
@@ -65,8 +86,8 @@ def test_right_secret_streams_mp3(stream_app, query) -> None:
     stream.remove_listener.assert_called_with(stream.add_listener.return_value)
 
 
-def test_stream_needs_no_session_when_authentication_is_on(bridge, tmp_path: Path) -> None:
-    """Public stream URLs work without pairing; stream controls still need login."""
+def _authenticated_stream_client(bridge, tmp_path: Path) -> TestClient:
+    """A stream-mode app with pairing on, and a client that has not paired."""
     from autodj.config import ServerConfig
 
     bridge.player._cfg.server = ServerConfig(
@@ -74,25 +95,47 @@ def test_stream_needs_no_session_when_authentication_is_on(bridge, tmp_path: Pat
         allowed_origins=["http://testserver"],
         access_token="t" * 32,
     )
-    secret = StreamSecret.load_or_create(tmp_path / ".stream-secret")
-    bridge.attach_stream(stream=_stream_mock(), secret=secret, station=MagicMock(state="idle"))
-    client = TestClient(create_app(bridge))
+    bridge.player._cfg.index.active_dir = tmp_path
+    bridge.player._cfg.index.index_dir = tmp_path
+    bridge.attach_stream(stream=_stream_mock(), station=MagicMock(state="idle"))
+    return TestClient(create_app(bridge))
+
+
+def test_stream_needs_no_session_when_authentication_is_on(bridge, tmp_path: Path) -> None:
+    """Public stream URLs work without pairing; stream controls still need login."""
+    client = _authenticated_stream_client(bridge, tmp_path)
     assert client.get("/api/stream").status_code == 401
     assert client.post("/api/stream/settings", json={"bitrate": 192}).status_code == 401
-    assert client.get(f"/stream/{secret.value}.m3u").status_code == 200
-    with client.stream("GET", f"/stream/{secret.value}.mp3") as response:
-        assert response.status_code == 200
+    assert client.get("/stream.m3u").status_code == 200
+    assert client.head("/stream.m3u").status_code == 200
+    assert client.head("/stream.mp3").status_code == 200
     with client.stream("GET", "/stream.mp3", headers={"Accept-Encoding": "gzip"}) as response:
         assert response.status_code == 200
         assert "content-encoding" not in response.headers
         assert next(response.iter_bytes())[:2] == b"\xff\xfb"
 
 
+def test_old_keyed_links_need_a_session_and_then_are_not_found(bridge, tmp_path: Path) -> None:
+    """Keyed links are no longer public: no session is 401, a paired browser gets 404."""
+    client = _authenticated_stream_client(bridge, tmp_path)
+    client.app.state.security_policy.now = lambda: 1_000
+    for path in (*_OLD_KEYED_PATHS, "/stream.ogg"):
+        assert client.get(path).status_code == 401, path
+        assert client.head(path).status_code == 401, path
+    assert client.post("/api/stream/rotate").status_code == 401
+    code = client.app.state.request_pairing_code()[0]
+    paired = client.post("/api/pair", json={"code": code, "device_name": "Den"})
+    assert paired.status_code == 200
+    for path in (*_OLD_KEYED_PATHS, "/stream.ogg"):
+        assert client.get(path).status_code == 404, path
+        assert client.head(path).status_code == 404, path
+    assert client.post("/api/stream/rotate").status_code in (404, 405)
+    bridge.stream.add_listener.assert_not_called()
+
+
 def test_icy_headers_when_asked(stream_app) -> None:
-    client, secret, stream = stream_app
-    with client.stream(
-        "GET", f"/stream/{secret.value}.mp3", headers={"Icy-MetaData": "1"}
-    ) as response:
+    client, stream = stream_app
+    with client.stream("GET", "/stream.mp3", headers={"Icy-MetaData": "1"}) as response:
         assert response.headers["icy-metaint"] == "16000"
         assert response.headers["icy-name"] == "AutoDJ"
         assert response.headers["icy-br"] == "320"
@@ -100,8 +143,8 @@ def test_icy_headers_when_asked(stream_app) -> None:
 
 
 def test_m3u_points_at_stream(stream_app) -> None:
-    client, secret, stream = stream_app
-    response = client.get(f"/stream/{secret.value}.m3u")
+    client, stream = stream_app
+    response = client.get("/stream.m3u")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("audio/x-mpegurl")
     assert response.headers["cache-control"] == "no-store"
@@ -109,44 +152,25 @@ def test_m3u_points_at_stream(stream_app) -> None:
     stream.add_listener.assert_not_called()
 
 
-def test_keyless_m3u_points_at_short_stream_url(stream_app) -> None:
-    client, _secret, stream = stream_app
-    response = client.get("/stream.m3u")
-    assert response.status_code == 200
-    assert response.text.strip() == "http://testserver/stream.mp3"
-    stream.add_listener.assert_not_called()
-
-
-def test_rotate_invalidates_old_url(stream_app) -> None:
-    client, secret, stream = stream_app
-    old = secret.value
-    data = client.post("/api/stream/rotate").json()
-    assert old not in data["path"]
-    assert data["path"] == "/stream.mp3"
-    assert client.get(f"/stream/{old}.mp3").status_code == 404
-    stream.disconnect_all.assert_called_once()
-    assert client.get("/api/status").json()["stream_event"]["name"] == "link_changed"
-
-
 def test_host_check_still_applies(stream_app) -> None:
-    client, _secret, stream = stream_app
+    client, stream = stream_app
     response = client.get("/stream.mp3", headers={"Host": "evil.example"})
     assert response.status_code in (400, 403, 421)
     stream.add_listener.assert_not_called()
 
 
 def test_listener_limit_is_503(stream_app) -> None:
-    client, secret, stream = stream_app
+    client, stream = stream_app
     stream.add_listener.side_effect = ListenerLimitError("listener limit reached")
-    response = client.get(f"/stream/{secret.value}.mp3")
+    response = client.get("/stream.mp3")
     assert response.status_code == 503
     assert "limit" in response.text.lower()
 
 
 def test_encoder_cooldown_is_503(stream_app) -> None:
-    client, secret, stream = stream_app
+    client, stream = stream_app
     stream.add_listener.side_effect = EncoderUnavailableError("stream encoder failed")
-    response = client.get(f"/stream/{secret.value}.mp3")
+    response = client.get("/stream.mp3")
     assert response.status_code == 503
     assert "stream encoder failed" in response.text
 
@@ -157,7 +181,7 @@ def test_stream_routes_are_404_in_browser_mode(client) -> None:
     assert client.get("/stream.m3u").status_code == 404
     assert client.head("/stream.mp3").status_code == 404
     assert client.get("/api/stream").status_code == 404
-    assert client.post("/api/stream/rotate").status_code == 404
+    assert client.post("/api/stream/rotate").status_code in (404, 405)
     assert client.post("/api/stream/settings", json={"bitrate": 192}).status_code == 404
 
 
@@ -165,7 +189,7 @@ def test_stream_routes_are_404_in_browser_mode(client) -> None:
 
 
 def test_stream_info(stream_app) -> None:
-    client, _secret, stream = stream_app
+    client, stream = stream_app
     stream.listener_count = 2
     assert client.get("/api/stream").json() == {
         "path": "/stream.mp3",
@@ -179,7 +203,7 @@ def test_stream_info(stream_app) -> None:
 
 
 def test_bitrate_setting_validated_and_applied(stream_app, bridge) -> None:
-    client, _secret, stream = stream_app
+    client, stream = stream_app
     bridge.save_persistent_state = MagicMock()
     assert client.post("/api/stream/settings", json={"bitrate": 64}).status_code == 422
     assert client.post("/api/stream/settings", json={"bitrate": 192, "x": 1}).status_code == 422
@@ -191,7 +215,7 @@ def test_bitrate_setting_validated_and_applied(stream_app, bridge) -> None:
 
 
 def test_continuous_setting_is_strict_and_persisted(stream_app, bridge) -> None:
-    client, _secret, stream = stream_app
+    client, stream = stream_app
     bridge.save_persistent_state = MagicMock()
     assert client.post("/api/stream/settings", json={"continuous": "true"}).status_code == 422
     response = client.post("/api/stream/settings", json={"continuous": True})
@@ -203,7 +227,7 @@ def test_continuous_setting_is_strict_and_persisted(stream_app, bridge) -> None:
 
 
 def test_station_name_is_validated_applied_and_persisted(stream_app, bridge) -> None:
-    client, _secret, stream = stream_app
+    client, stream = stream_app
     bridge.save_persistent_state = MagicMock()
     assert client.post("/api/stream/settings", json={"station_name": "  "}).status_code == 422
     bridge.save_persistent_state.assert_not_called()
@@ -216,7 +240,7 @@ def test_station_name_is_validated_applied_and_persisted(stream_app, bridge) -> 
 
 
 def test_bitrate_encoder_failure_is_503_and_not_persisted(stream_app, bridge) -> None:
-    client, _secret, stream = stream_app
+    client, stream = stream_app
     bridge.save_persistent_state = MagicMock()
     stream.set_bitrate.side_effect = EncoderUnavailableError("stream encoder failed")
     response = client.post("/api/stream/settings", json={"bitrate": 128})
@@ -227,7 +251,7 @@ def test_bitrate_encoder_failure_is_503_and_not_persisted(stream_app, bridge) ->
 
 
 def test_state_reports_stream_mode(stream_app) -> None:
-    client, _secret, stream = stream_app
+    client, stream = stream_app
     stream.listener_count = 3
     state = client.get("/api/status").json()
     assert state["stream_mode"] is True
@@ -268,7 +292,7 @@ def test_seek_refused_in_stream_mode(stream_app) -> None:
 def _stream_bridge(scheduler=None) -> tuple[PlayerBridge, MagicMock]:
     bridge = PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock())
     stream = _stream_mock()
-    bridge.attach_stream(stream=stream, secret=MagicMock(), station=MagicMock(state="idle"))
+    bridge.attach_stream(stream=stream, station=MagicMock(state="idle"))
     if scheduler is not None:
         bridge.attach_liner_scheduler(scheduler)
     return bridge, stream
@@ -446,7 +470,7 @@ def test_set_stream_bitrate_rejects_unknown_values() -> None:
 # -- app start-up and shutdown in stream mode --------------------------------
 
 
-def test_lifespan_starts_the_station_and_shuts_it_down_first(tmp_path: Path) -> None:
+def test_lifespan_starts_the_station_and_shuts_it_down_first() -> None:
     from unittest.mock import patch
 
     from autodj.station import Station
@@ -457,11 +481,10 @@ def test_lifespan_starts_the_station_and_shuts_it_down_first(tmp_path: Path) -> 
     player.bus = MagicMock()
     player.bus.playing = False
     bridge = PlayerBridge(player=player, sim=_make_sim_mock())
-    secret = StreamSecret.load_or_create(tmp_path / ".stream-secret")
     order: list[str] = []
     player.bus.remove_output.side_effect = lambda _out: order.append("remove_output")
     with patch("autodj.stream.FfmpegEncoder", FakeEncoder):
-        app = create_app(bridge, stream_secret=secret)
+        app = create_app(bridge, stream_mode=True)
         with TestClient(app) as client:
             assert bridge.stream_mode
             stream = bridge.stream
@@ -623,9 +646,9 @@ def test_non_ascii_station_name_streams_with_icy(stream_app, bridge) -> None:
     """Driven at the ASGI level: TestClient itself cannot carry non-ASCII headers."""
     import asyncio
 
-    client, secret, stream = stream_app
+    client, stream = stream_app
     bridge.player._cfg.stream.station_name = "Радио 🎵 Café"
-    path = f"/stream/{secret.value}.mp3"
+    path = "/stream.mp3"
     scope = {
         "type": "http",
         "asgi": {"version": "3.0", "spec_version": "2.4"},
@@ -660,20 +683,19 @@ def test_non_ascii_station_name_streams_with_icy(stream_app, bridge) -> None:
     stream.remove_listener.assert_called_with(stream.add_listener.return_value)
 
 
-def test_failure_building_the_response_frees_the_listener_slot(tmp_path: Path) -> None:
+def test_failure_building_the_response_frees_the_listener_slot() -> None:
     from unittest.mock import patch
 
     from tests.unit._fakes import FakeEncoder
 
     bridge = _lifespan_bridge()
-    secret = StreamSecret.load_or_create(tmp_path / ".stream-secret")
     with (
         patch("autodj.stream.FfmpegEncoder", FakeEncoder),
         patch("autodj.server._ListenerResponse", side_effect=RuntimeError("boom")),
-        TestClient(create_app(bridge, stream_secret=secret)) as client,
+        TestClient(create_app(bridge, stream_mode=True)) as client,
     ):
         quiet = TestClient(client.app, raise_server_exceptions=False)
-        response = quiet.get(f"/stream/{secret.value}.mp3")
+        response = quiet.get("/stream.mp3")
         assert response.status_code == 500
         assert bridge.stream.listener_count == 0
 
@@ -704,7 +726,7 @@ def test_failure_while_sending_frees_the_listener_slot() -> None:
 
 
 def test_head_on_the_stream_sends_headers_only(stream_app) -> None:
-    client, _secret, stream = stream_app
+    client, stream = stream_app
     response = client.head("/stream.mp3", headers={"Icy-MetaData": "1"})
     assert response.status_code == 200
     assert response.headers["content-type"] == "audio/mpeg"
@@ -717,18 +739,13 @@ def test_head_on_the_stream_sends_headers_only(stream_app) -> None:
 
 
 def test_head_on_the_playlist_sends_headers_only(stream_app) -> None:
-    client, _secret, _stream = stream_app
+    client, _stream = stream_app
     body = client.get("/stream.m3u").content
     response = client.head("/stream.m3u")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("audio/x-mpegurl")
     assert response.headers["content-length"] == str(len(body))
     assert response.content == b""
-
-
-def test_head_with_a_wrong_secret_is_404(stream_app) -> None:
-    client, *_ = stream_app
-    assert client.head("/stream/" + "z" * 43 + ".mp3").status_code == 404
 
 
 def _real_station(bridge: PlayerBridge, *, playing: bool) -> Any:
@@ -825,30 +842,16 @@ def test_shutdown_does_not_wait_for_a_liner_decode() -> None:
     release.set()
 
 
-def test_rotate_failure_is_a_clear_500_and_keeps_the_link(stream_app) -> None:
-    from unittest.mock import patch
-
-    client, secret, stream = stream_app
-    old = secret.value
-    with patch("autodj.stream_secret.write_private_file", side_effect=OSError("disk full")):
-        response = client.post("/api/stream/rotate")
-    assert response.status_code == 500
-    assert response.json()["detail"] == "Could not save the new stream link"
-    assert secret.value == old
-    stream.disconnect_all.assert_not_called()
-
-
-def test_stream_shutdown_failure_still_stops_the_player(tmp_path: Path, caplog) -> None:
+def test_stream_shutdown_failure_still_stops_the_player(caplog) -> None:
     from unittest.mock import patch
 
     from tests.unit._fakes import FakeEncoder
 
     bridge = _lifespan_bridge()
     bridge.player.bus.remove_output.side_effect = RuntimeError("bus gone")
-    secret = StreamSecret.load_or_create(tmp_path / ".stream-secret")
     with (
         patch("autodj.stream.FfmpegEncoder", FakeEncoder),
-        TestClient(create_app(bridge, stream_secret=secret)),
+        TestClient(create_app(bridge, stream_mode=True)),
     ):
         stream = bridge.stream
     assert "Stopping the stream" in caplog.text
@@ -857,17 +860,16 @@ def test_stream_shutdown_failure_still_stops_the_player(tmp_path: Path, caplog) 
     assert bridge.player._state.should_stop is True
 
 
-def test_seed_becomes_the_first_sets_first_track(tmp_path: Path) -> None:
+def test_seed_becomes_the_first_sets_first_track() -> None:
     from unittest.mock import patch
 
     from tests.unit._fakes import FakeEncoder
 
     bridge = _lifespan_bridge()
     seed = _make_entry(2)
-    secret = StreamSecret.load_or_create(tmp_path / ".stream-secret")
     with (
         patch("autodj.stream.FfmpegEncoder", FakeEncoder),
-        TestClient(create_app(bridge, stream_secret=secret, stream_first_track=seed)),
+        TestClient(create_app(bridge, stream_mode=True, stream_first_track=seed)),
     ):
         bus = bridge.player.bus
         bus.start_set.side_effect = lambda: setattr(bus, "playing", True)
@@ -881,7 +883,7 @@ def test_stream_headers_go_out_before_the_first_audio(stream_app) -> None:
     import asyncio
     import contextlib
 
-    client, _secret, stream = stream_app
+    client, stream = stream_app
 
     async def silent():
         await asyncio.Event().wait()
@@ -936,7 +938,7 @@ def test_stream_http_framing_matches_the_players_protocol(stream_app, version) -
 
     import uvicorn
 
-    client, _secret, stream = stream_app
+    client, stream = stream_app
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         config = uvicorn.Config(

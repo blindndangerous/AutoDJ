@@ -250,7 +250,7 @@ def test_unwritable_token_file_fails_clearly(
     def refuse(path: Path, text: str) -> None:
         raise PermissionError("read-only volume")
 
-    monkeypatch.setattr("autodj.stream_secret.write_private_file", refuse)
+    monkeypatch.setattr("autodj.secret_files.write_private_file", refuse)
 
     with pytest.raises(AccessTokenError, match="cannot write access token"):
         load_or_create_access_token(tmp_path / ".access-token")
@@ -410,7 +410,7 @@ def test_server_lan_setting_is_read_and_type_checked() -> None:
 def test_access_token_path_sits_beside_paired_devices(tmp_path: Path) -> None:
     from types import SimpleNamespace
 
-    from autodj.stream_secret import access_token_path, paired_devices_path
+    from autodj.secret_files import access_token_path, paired_devices_path
 
     cfg: Any = SimpleNamespace(index=SimpleNamespace(index_dir=tmp_path))
 

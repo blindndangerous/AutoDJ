@@ -11,8 +11,6 @@
 //     "Set stopped" already said it once.
 //   - A station event is spoken once per (id, seq).  The first event seen
 //     after page load is only remembered, so a reload never repeats it.
-//   - Legacy link_changed events are still announced and refresh the
-//     address shown in Settings.
 
 import { announceStatus } from "./live-region.js";
 
@@ -24,7 +22,6 @@ const IDLE_TEXT =
 const EVENT_TEXT = {
   set_started: "New set started.",
   set_stopped: "Set stopped. Nobody is listening.",
-  link_changed: "Stream link changed. Speakers using the old link have stopped.",
 };
 const BLOCKED_TEXT = "The browser blocked playback. Press Listen here again.";
 const NOT_LOADED_TEXT = "The stream did not load. It may be full or not running.";
@@ -173,7 +170,7 @@ export function createStreamMode({
 
   // A stream that never played is a failed start (for example the
   // listener limit).  Once it has played, a drop gets one silent retry
-  // (a link change or a blip); a second drop before audio plays again is
+  // (a bitrate change or a blip); a second drop before audio plays again is
   // reported.
   function onDropped() {
     if (!listening) return;
@@ -341,10 +338,6 @@ function isAuthFailure(err) {
   return Boolean(err) && err.name === "AuthenticationRequiredError";
 }
 
-function eventKey(event) {
-  return event ? `${event.id}|${event.seq}` : null;
-}
-
 export function createStreamSettings({
   doc,
   fetchInfo,
@@ -384,7 +377,6 @@ export function createStreamSettings({
   const stationName = doc.getElementById("stream-station-name");
   const listeners = doc.getElementById("stream-listeners");
   let active = false;
-  let lastEventKey = null;
   // Bumped by every source of stream details, so a slow lookup cannot
   // overwrite a newer link.
   let generation = 0;
@@ -470,7 +462,6 @@ export function createStreamSettings({
     active = false;
     generation += 1;
     lookup = null;
-    lastEventKey = null;
     stopBitrateSaves();
     fieldset.hidden = true;
     setAvailable(false);
@@ -516,21 +507,11 @@ export function createStreamSettings({
     if (listeners.textContent !== text) listeners.textContent = text;
     applyPushedBitrate(state);
     showStationName(state.settings?.playback?.stream_station_name);
-    const key = eventKey(state.stream_event);
     if (!active) {
       active = true;
-      lastEventKey = key;
       showNote(!url.value);
       void refresh();
       return;
-    }
-    if (key !== lastEventKey) {
-      lastEventKey = key;
-      if (state.stream_event?.name === "link_changed") {
-        // A legacy link change means the address shown here is stale.
-        void refresh();
-        return;
-      }
     }
     retryIfMissing({ throttle: true });
   }

@@ -60,3 +60,12 @@ Browser playback from ADR 3 stays the default for `autodj serve`.
   apart, and the per-track path already had the gap and replay bugs.
 - Stream from the browser. A browser tab cannot serve an address to a
   Sonos speaker, and the stream would stop whenever the tab closed.
+
+## Update, 2026-10-11: keyed stream links removed
+
+The keyed addresses `/stream/<secret>.mp3` and `/stream/<secret>.m3u`, the
+`POST /api/stream/rotate` route and the stream secret are gone. Listening
+uses only the public `/stream.mp3` and `/stream.m3u` addresses, so the
+stream is no longer a second credential beside pairing. AutoDJ no longer
+creates or reads `index/.stream-secret`; an existing file is unused and
+can be deleted. `THREAT_MODEL.md` describes what public listening exposes.

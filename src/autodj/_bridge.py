@@ -101,10 +101,9 @@ class PlayerBridge:
     # ``--stream``); ``None`` in browser-driven mode, where the browser
     # evaluates liner triggers itself and the "Test liner" route is a no-op.
     liner_scheduler: Any = None
-    # Stream mode (``serve --stream``): the stream output, its secret and
-    # the station, set together by :meth:`attach_stream`.
+    # Stream mode (``serve --stream``): the stream output and the station,
+    # set together by :meth:`attach_stream`.
     stream: Any = None
-    stream_secret: Any = None
     station: Any = None
     # History is appended on the mix-bus thread, trimmed by the station's
     # tick and read by request handlers.
@@ -131,16 +130,14 @@ class PlayerBridge:
         """Whether the mix is served as a radio stream."""
         return self.stream is not None
 
-    def attach_stream(self, *, stream: Any, secret: Any, station: Any) -> None:
+    def attach_stream(self, *, stream: Any, station: Any) -> None:
         """Switch the bridge into stream mode.
 
         Args:
             stream: The :class:`~autodj.stream.StreamOutput`.
-            secret: The :class:`~autodj.stream_secret.StreamSecret`.
             station: The :class:`~autodj.station.Station`.
         """
         self.stream = stream
-        self.stream_secret = secret
         self.station = station
 
     def attach_liner_scheduler(self, scheduler: Any) -> None:
@@ -175,7 +172,7 @@ class PlayerBridge:
         event whose ``(id, seq)`` it has not seen.
 
         Args:
-            name: ``"set_started"``, ``"set_stopped"`` or ``"link_changed"``.
+            name: ``"set_started"`` or ``"set_stopped"``.
         """
         with self._event_lock:
             seq = self._station_event["seq"] + 1 if self._station_event else 1
@@ -192,12 +189,6 @@ class PlayerBridge:
             "listeners": int(self.stream.listener_count),
             "state": self.station.state,
         }
-
-    def rotate_stream_secret(self) -> None:
-        """Replace the stream secret and disconnect every listener."""
-        self.stream_secret.rotate()
-        self.stream.disconnect_all()
-        self.announce_station_event("link_changed")
 
     def set_stream_bitrate(self, bitrate: int) -> None:
         """Restart the stream encoder at *bitrate* and remember it.

@@ -166,33 +166,56 @@ configured hosts, because container addresses are not reachable from the network
 allowed. The Compose service uses the host network and sets `AUTODJ_HOST_NETWORK=1`, so it prints
 the detected addresses as a bare-metal server does.
 
-## Stream URL, secret and security
+## Radio stream listening
 
 Stream mode (`autodj serve --stream`, or `[stream] enabled = true`, which the Compose service
-reads from `config.toml`) serves the live mix as MP3 at `/stream/<secret>.mp3`, plus `/stream/<secret>.m3u`, a
-one-line playlist naming the same URL. The secret is a bearer credential for listening only:
+reads from `config.toml`) serves the live mix as MP3 at `/stream.mp3`, plus `/stream.m3u`, a
+one-line playlist naming the same address. Like an Icecast mount with no listener
+authentication, listening is public: anyone who can reach the server and knows the address can
+listen. This is deliberate. A station is meant to be heard, and radio players such as Sonos,
+Winamp and car head units cannot pair or sign in.
 
-- It is 32 random bytes, URL-safe base64, created on first start in stream mode and stored in
-  `<index_dir>/.stream-secret`, beside the paired-devices database, never in `config.toml` and
-  never equal to the access token. It gets the same file permissions as the access token: mode
-  0600 on Linux and macOS, the index folder's permissions on Windows.
-- Anyone who has the URL can listen; it carries no control surface and cannot pair a browser,
-  change settings, or reach any other endpoint. The stream route is exempt from the session
-  cookie check for that reason, but every other check in `SecurityMiddleware` still applies,
-  including the Host allowlist, so the name typed into the player must be one this AutoDJ
-  instance is configured to accept.
-- A wrong secret returns 404 and is compared in constant time. Wrong secrets are not rate
-  limited: the secret is 256 random bits, so guessing it is hopeless at any request rate.
-- "Make new link" (`POST /api/stream/rotate`, authenticated, from the Settings, Stream section)
-  replaces the secret, disconnects every current listener, and makes the old URL 404
-  immediately. Rotation is the revocation mechanism: use it if the link is shared somewhere it
-  should not be.
-- `max_listeners` (default 8) bounds concurrent connections; a listener beyond it gets 503
-  without affecting anyone already connected. This limits resource use, not who can connect: any
-  device that can reach the port and has the current URL may take one of those slots.
-- The stream carries the operator's own library and voice liners to whoever holds the link. Treat
-  the URL the same way as a paired browser: do not publish it outside the LAN it was generated
-  for, and use "Make new link" if it leaks.
+What a listener can and cannot do:
+
+- The two stream paths carry audio only. They have no control surface: a listener cannot pair a
+  browser, change settings, see the queue, or reach any other endpoint. They join the short list
+  of routes exempt from the session cookie check (`_PUBLIC_FILES` and `_is_public_path` in
+  `security.py`): the page's own static files and modules, `/healthz`, `/api/version`,
+  `/api/auth/status` and `/api/pair`.
+- Every other check in `SecurityMiddleware` still applies to them, including the Host allowlist,
+  so the name typed into the player must be one this AutoDJ instance is configured to accept.
+- `/stream.` followed by anything else, and any path under `/stream/`, is not public: it needs
+  a session like any other path, and then returns 404.
+
+What the operator should know:
+
+- The stream carries the operator's own library and voice liners to anyone who can reach it.
+  Network reach decides exposure, not a secret. On a home LAN, everyone on the LAN can listen.
+  Through a tunnel, a port forward or a public address, anyone on the internet who learns the
+  address can listen. Sharing the address is the same as inviting listeners.
+- To limit who can listen, limit who can reach the server: put the tunnel behind an access
+  policy, such as Cloudflare Access as `docs/operations.md` describes, or do not expose the
+  stream.
+- `max_listeners` (default 8) bounds concurrent connections, and a listener beyond it gets 503
+  without affecting anyone already connected. This limits resource use, not who connects.
+  Because listening is public, anyone who can reach the port can take every slot and keep real
+  listeners out. There is no per-address limit, ban list or listener password yet. An operator
+  who needs a large or untrusted audience should relay the stream to a dedicated Icecast or
+  Shoutcast server (roadmap issue #37) rather than expose AutoDJ itself.
+
+Removed keyed links:
+
+- Earlier versions put a secret in the listening address, `/stream/<secret>.mp3` and
+  `/stream/<secret>.m3u`. Those links and the `POST /api/stream/rotate` route that replaced the
+  secret have been removed, so there is no stream secret left to leak or guess.
+- AutoDJ no longer creates or reads `<index_dir>/.stream-secret`. An existing file is left in
+  place, is not used, and can be deleted.
+
+HTTP framing:
+
+- In stream mode Uvicorn uses the h11 protocol implementation for every route, so HTTP/1.0
+  players receive close-delimited audio instead of chunked framing they cannot read. This changes
+  parsing performance, not what is accepted: the same middleware, limits and routes apply.
 
 ## Request and audit records
 

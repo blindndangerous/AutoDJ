@@ -107,8 +107,8 @@ class IndexConfig(_Section):
     "chill" index for evening listening, etc.  Each named index lives
     in its own sub-directory ``<index_dir>/<name>/`` with its own FAISS
     files, metadata, web state, liners and dj-meta cache.  Profiles, paired
-    browsers, the stream secret and the access token live in
-    ``<index_dir>`` and are shared by every named index.
+    browsers and the access token live in ``<index_dir>`` and are shared
+    by every named index.
 
     Attributes:
         index_dir: Base directory holding all named indexes.

@@ -22,7 +22,7 @@ from autodj.config import (
     is_loopback_bind,
     validate_access_token,
 )
-from autodj.stream_secret import load_or_create_secret, read_secret
+from autodj.secret_files import load_or_create_secret, read_secret
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
