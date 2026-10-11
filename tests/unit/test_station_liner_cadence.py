@@ -47,7 +47,7 @@ def test_every_three_station_tracks_commits_liner_after_tracks_three_and_six(
         record_for_id=lambda _identifier: {"path": liner.path},
         entry_for_path=lambda _path: liner,
     )
-    context = SimpleNamespace(queue_reserved=None)
+    context = SimpleNamespace(queue_reserved=None, complement=None)
 
     committed_after: list[int] = []
     for song_number in range(1, 8):

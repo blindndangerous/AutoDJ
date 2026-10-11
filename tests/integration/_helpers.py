@@ -19,6 +19,7 @@ from types import MethodType
 from unittest.mock import MagicMock, PropertyMock
 
 from autodj.config import (
+    DmcaConfig,
     NowPlayingConfig,
     RecordingConfig,
     ServerConfig,
@@ -105,6 +106,7 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     cfg.stream = StreamConfig()
     cfg.nowplaying = NowPlayingConfig()
     cfg.time_checks = TimeChecksConfig()
+    cfg.dmca = DmcaConfig()
     cfg.recording = RecordingConfig(NO_INDEX_DIR / "recordings")
     cfg.webhooks = ()
     cfg.transitions.effect = "none"

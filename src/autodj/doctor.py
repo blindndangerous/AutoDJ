@@ -554,6 +554,7 @@ def run_doctor(
     return DoctorReport(
         (
             _configuration_check(cfg),
+            _dmca_check(cfg),
             _python_check(python_version),
             _path_check("music-path", cfg.library.music_dir, writable=False),
             _beets_db_check(cfg),
@@ -610,3 +611,18 @@ def _time_checks_check(cfg: AutoDJConfig) -> DoctorCheck:
     return DoctorCheck(
         "time-checks", CheckStatus.WARN if problems else CheckStatus.PASS, summary, detail
     )
+
+
+def _dmca_check(cfg: AutoDJConfig) -> DoctorCheck:
+    """Name any setting that conflicts with DMCA mode, and how to fix it."""
+    if not cfg.dmca.enabled:
+        return DoctorCheck("dmca", CheckStatus.PASS, "off")
+    if cfg.nowplaying.show_next:
+        return DoctorCheck(
+            "dmca",
+            CheckStatus.WARN,
+            "on, with a conflicting setting",
+            "[nowplaying] show_next = true asks to announce the next song, which DMCA mode "
+            "never does. Set show_next = false so the setting matches what listeners see.",
+        )
+    return DoctorCheck("dmca", CheckStatus.PASS, "on", "no conflicting settings")

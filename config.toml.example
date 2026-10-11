@@ -550,6 +550,14 @@ revision = "main"
 # bpm_end   = 140
 # curve     = "slide"
 
+[dmca]
+# DMCA mode: keep to the US statutory webcasting licence's performance
+# complement (album, artist and box-set limits in any three hours) in every
+# pick mode, warn before queueing a song that breaks it, and never show the
+# next song publicly. Read when the server starts. General information, not
+# legal advice; see docs/operations.md, "DMCA mode".
+enabled = false
+
 # Public now-playing feed at /api/nowplaying.
 [nowplaying]
 # Show the upcoming song on the public feed. Off by default: some webcasting

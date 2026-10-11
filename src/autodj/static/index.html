@@ -1421,6 +1421,12 @@
         </span>
         <p class="stream-detail"><a id="np-status-open" href="/status" target="_blank" rel="noopener">Open the status page (new tab)</a></p>
         <p class="stream-detail" id="np-loopback-note" hidden>These links only work on this computer. Open AutoDJ using its network address (see the start-up message) to copy links other devices can reach.</p>
+        <!-- DMCA mode ([dmca] enabled in config.toml, read at start-up).
+             Plain text, not live: it only changes on a restart.  While it
+             is on, nowplaying-settings.js shows both notes, marks the
+             show-next box aria-disabled (still focusable, so NVDA reads
+             it and why) and adds the reason to its description. -->
+        <p class="stream-detail" id="dmca-status" hidden>DMCA mode is on: song picks keep to the album, artist and box set limits, songs that would break them are queued only after you confirm, and the next song is never shown publicly.</p>
         <div class="settings-check">
           <input type="checkbox" id="np-show-next" aria-describedby="np-show-next-desc">
           <label for="np-show-next">Show the next song publicly</label>
@@ -1428,6 +1434,7 @@
         <span class="setting-desc" id="np-show-next-desc">
           Add the upcoming song to the now-playing feed. Off by default, because some webcasting licences, such as the US statutory licence, do not allow announcing songs in advance.
         </span>
+        <span class="setting-desc" id="np-show-next-dmca" hidden>Not available: DMCA mode is on, so the next song is never shown publicly. Turn DMCA mode off in config.toml to use it.</span>
         <p class="stream-detail" id="np-webhooks-intro">Track-change webhooks</p>
         <ul class="stream-detail" id="np-webhooks-list" aria-labelledby="np-webhooks-intro" hidden></ul>
         <p class="stream-detail" id="np-webhooks-empty" hidden></p>
@@ -1779,8 +1786,9 @@
 
 <!-- Shared confirmation for actions that cannot be undone (Clear queue,
      Delete profile, Delete liner, Sign out, Revoke device, Make new
-     link).  modules/confirm-dialog.js fills in the words; Cancel is
-     first and gets focus. -->
+     link), and for queueing a song over a DMCA limit (Queue anyway).
+     modules/confirm-dialog.js fills in the words; Cancel is first and
+     gets focus. -->
 <dialog id="confirm-dialog" aria-labelledby="confirm-title"
         aria-describedby="confirm-message">
   <form method="dialog">
