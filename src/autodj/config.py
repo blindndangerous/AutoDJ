@@ -1320,6 +1320,10 @@ class StreamConfig(_Section):
     bitrate: int = 320
     idle_grace_seconds: float = 30.0
     max_listeners: int = 8
+    max_listeners_per_address: int = 0
+    trusted_proxies: list[str] = field(default_factory=list)
+    listener_user: str = ""
+    listener_password: str = field(default="", repr=False)
     station_name: str = "AutoDJ"
     relays: dict[str, RelayConfig] = field(default_factory=dict)
 
@@ -1353,6 +1357,31 @@ class StreamConfig(_Section):
             raise TypeError("stream.max_listeners must be an integer")
         if not 1 <= self.max_listeners <= 100:
             raise ValueError("stream.max_listeners must be between 1 and 100")
+        if isinstance(self.max_listeners_per_address, bool) or not isinstance(
+            self.max_listeners_per_address, int
+        ):
+            raise TypeError("stream.max_listeners_per_address must be an integer")
+        if not 0 <= self.max_listeners_per_address <= 100:
+            raise ValueError("stream.max_listeners_per_address must be between 0 and 100")
+        if not isinstance(self.trusted_proxies, list) or not all(
+            isinstance(item, str) for item in self.trusted_proxies
+        ):
+            raise TypeError("stream.trusted_proxies must be a list of addresses or CIDRs")
+        import ipaddress
+
+        for item in self.trusted_proxies:
+            try:
+                ipaddress.ip_network(item, strict=False)
+            except ValueError as exc:
+                raise ValueError(f"invalid stream.trusted_proxies entry: {item}") from exc
+        if not isinstance(self.listener_user, str) or not isinstance(self.listener_password, str):
+            raise TypeError("stream listener credentials must be strings")
+        if self.listener_password and not self.listener_user:
+            raise ValueError("stream.listener_user is required with listener_password")
+        if self.listener_user and not self.listener_password:
+            raise ValueError("stream.listener_password is required with listener_user")
+        if ":" in self.listener_user:
+            raise ValueError("stream.listener_user must not contain ':'")
         if not isinstance(self.station_name, str) or not self.station_name.strip():
             raise ValueError("stream.station_name must be a non-empty string")
         if not self.station_name.isprintable():

@@ -9,6 +9,7 @@ import time
 import numpy as np
 import pytest
 
+from autodj import stream
 from autodj.icy import encode_metadata
 from autodj.stream import EncoderUnavailableError, ListenerLimitError, StreamOutput
 from tests.unit._fakes import FakeEncoder
@@ -248,6 +249,17 @@ async def test_listener_drains_remaining_chunks_after_close() -> None:
     out.close()
 
 
+async def test_listener_abort_discards_queue_and_ends_response_now() -> None:
+    out = StreamOutput(320, 8, encoder_factory=FakeEncoder, loop=asyncio.get_running_loop())
+    listener = out.add_listener(icy=False)
+    listener.push(b"queued burst", "")
+    listener.abort()
+    out.remove_listener(listener)
+    assert [chunk async for chunk in listener.chunks()] == []
+    assert out.listener_count == 0
+    out.close()
+
+
 async def test_remove_listener_is_idempotent(output: StreamOutput) -> None:
     listener = output.add_listener(icy=False)
     output.remove_listener(listener)
@@ -282,7 +294,9 @@ async def test_encoder_exit_triggers_automatic_restart() -> None:
     out.close()
 
 
-async def test_restart_encoder_swallows_close_errors() -> None:
+async def test_restart_encoder_swallows_close_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(stream, "_THREAD_JOIN_TIMEOUT", 0.05)
+
     class BadClose(FakeEncoder):
         def close(self) -> None:
             raise RuntimeError("boom")
@@ -562,7 +576,9 @@ class ForeverBlockingEncoder(FakeEncoder):
 
 async def test_close_logs_when_a_thread_outlives_the_join_timeout(
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(stream, "_THREAD_JOIN_TIMEOUT", 0.05)
     out = StreamOutput(
         320, 8, encoder_factory=ForeverBlockingEncoder, loop=asyncio.get_running_loop()
     )
@@ -571,7 +587,7 @@ async def test_close_logs_when_a_thread_outlives_the_join_timeout(
     assert encoder.write_started.wait(1.0)
     try:
         with caplog.at_level("DEBUG", logger="autodj.stream"):
-            out.close()  # both threads are stuck; each 5s join times out
+            out.close()  # both threads are stuck; each short join times out
         messages = [r.message for r in caplog.records]
         assert any("Stream writer thread did not stop" in m for m in messages)
         assert any("Stream reader thread did not stop" in m for m in messages)

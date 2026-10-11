@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from autodj import audio_meta
+from autodj import catalog as catalog_module
 from autodj.catalog import LibraryCatalog
 from autodj.indexer import IndexEntry
 from autodj.playlog import (
@@ -558,7 +559,9 @@ class TestPerformanceCounts:
                         outcome.append(str(exc))
                 return iter(rows)
 
-        monkeypatch.setattr(sqlite3, "connect", lambda *a, **k: connect(*a, factory=Racing, **k))
+        monkeypatch.setattr(
+            catalog_module, "_connect", lambda *a, **k: connect(*a, factory=Racing, **k)
+        )
         with LibraryCatalog(path) as catalog:  # no "duplicate column name"
             assert catalog.play_log()[0]["performances"] is None
         # The other process had to wait for our write lock; once it gets it,

@@ -161,10 +161,15 @@ class TestEffectLevels:
 class TestDispatcher:
     """apply_transition routes each effect correctly + falls back on NONE."""
 
-    @pytest.mark.parametrize("effect", list(TransitionFx))
+    @pytest.mark.parametrize(
+        "effect",
+        [
+            effect
+            for effect in TransitionFx
+            if effect not in (TransitionFx.RANDOM, TransitionFx.ROTATE)
+        ],
+    )
     def test_all_effects_dispatch_cleanly(self, effect) -> None:
-        if effect in (TransitionFx.RANDOM, TransitionFx.ROTATE):
-            pytest.skip("meta modes resolved separately by pick_effect")
         a = _audio()
         b = _audio()
         tail, head, extra = apply_transition(a, b, SR, effect)

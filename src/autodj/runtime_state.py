@@ -59,6 +59,7 @@ _OWN_ROUTE_PLAYBACK_FIELDS = frozenset(
         "stream_continuous",
         "stream_station_name",
         "nowplaying_show_next",
+        "stream_max_listeners_per_address",
     }
 )
 #: Playback keys mirrored into ``web_state.json``.
@@ -231,6 +232,15 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
         )
         if show_next is not _INVALID:
             player._cfg.nowplaying.show_next = show_next
+    if "stream_max_listeners_per_address" in playback:
+        limit = _checked(
+            StreamSettingsBody,
+            "max_listeners_per_address",
+            playback["stream_max_listeners_per_address"],
+            "stream_max_listeners_per_address",
+        )
+        if limit is not _INVALID and limit is not None:
+            player._cfg.stream.max_listeners_per_address = limit
 
     values: dict[str, Any] = {}
     for field, saved in playback.items():

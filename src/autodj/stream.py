@@ -39,6 +39,7 @@ _FAILURE_WINDOW = 60.0
 _COOLDOWN = 60.0
 _BLOCK_SECONDS = 882 / SAMPLE_RATE
 _PCM_QUEUE_SECONDS = 2.0
+_THREAD_JOIN_TIMEOUT = 5.0
 
 
 class StreamSink(Protocol):
@@ -171,6 +172,7 @@ class Listener:
         self._size = 0
         self._event = asyncio.Event()
         self.closed = False
+        self._aborted = False
 
     def push(self, data: bytes, title: str) -> bool:
         """Queue *data*; returns ``False`` when the listener is too far behind.
@@ -204,6 +206,8 @@ class Listener:
                         break
                     data = self._queue.popleft()
                     self._size -= len(data)
+                if self._aborted:
+                    return
                 yield data
             if self.closed:
                 return
@@ -213,6 +217,15 @@ class Listener:
     def close(self) -> None:
         """Stop the listener after it drains what it has."""
         self.closed = True
+        self._loop.call_soon_threadsafe(self._event.set)
+
+    def abort(self) -> None:
+        """Stop now and discard queued audio after an operator disconnect."""
+        with self._lock:
+            self.closed = True
+            self._aborted = True
+            self._queue.clear()
+            self._size = 0
         self._loop.call_soon_threadsafe(self._event.set)
 
 
@@ -611,9 +624,9 @@ class StreamOutput:
             encoder.close()
         except Exception:
             logger.debug("Closing the stream encoder raised", exc_info=True)
-        self._writer.join(timeout=5)
+        self._writer.join(timeout=_THREAD_JOIN_TIMEOUT)
         if self._writer.is_alive():
             logger.debug("Stream writer thread did not stop within the close timeout")
-        reader.join(timeout=5)
+        reader.join(timeout=_THREAD_JOIN_TIMEOUT)
         if reader.is_alive():
             logger.debug("Stream reader thread did not stop within the close timeout")

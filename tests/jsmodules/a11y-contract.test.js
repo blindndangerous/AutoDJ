@@ -851,7 +851,7 @@ function focusContractControls() {
 }
 
 function nativeChoiceControlsRemainNative(css = cssSource) {
-  const rules = parseCss(css);
+  const rules = css === cssSource ? cssRules : parseCss(css);
   installDocument({ css });
   for (const type of ["checkbox", "radio"]) {
     for (const checked of [false, true]) {
@@ -1199,100 +1199,68 @@ describe("static accessibility contracts", () => {
     expect(contrast("#8aa4d6", "#16213e")).toBeGreaterThanOrEqual(3);
     expect(boundariesMeetContract()).toBe(true);
     expect(nativeChoiceControlsRemainNative()).toBe(true);
-    expect(nativeChoiceControlsRemainNative(`${cssSource}\n
-      input[type="checkbox"] { appearance: none; }
-    `)).toBe(false);
-    expect(nativeChoiceControlsRemainNative(`${cssSource}\n
-      input[type="radio"] { border: 1px solid #8aa4d6; }
-    `)).toBe(false);
-    expect(nativeChoiceControlsRemainNative(`${cssSource}\n
-      input[type="checkbox"] { border-left: 1px solid #8aa4d6; }
-    `)).toBe(false);
-    expect(nativeChoiceControlsRemainNative(`${cssSource}\n
-      input[type="checkbox"]:checked { appearance: none; }
-    `)).toBe(false);
-    expect(nativeChoiceControlsRemainNative(`${cssSource}\n
-      input[type="radio"]:checked { appearance: none; }
-    `)).toBe(false);
-    expect(nativeChoiceControlsRemainNative(`${cssSource}\n
-      @media (max-width: 600px) {
-        input[type="checkbox"]:checked { appearance: none; }
-      }
-    `)).toBe(false);
-    expect(nativeChoiceControlsRemainNative(`${cssSource}\n
-      @media (min-width: 1000px) {
-        input[type="radio"]:not(:checked) { border-left: 1px solid #8aa4d6; }
-      }
-    `)).toBe(false);
-    expect(nativeChoiceControlsRemainNative(`${cssSource}\n
-      @media (max-width: 600px) {
-        @media (prefers-reduced-motion: reduce) {
-          input[type="checkbox"]:not(:checked) { appearance: none; }
-        }
-      }
-    `)).toBe(false);
-    expect(nativeChoiceControlsRemainNative(`${cssSource}\n
-      @media (forced-colors: none) and (min-width: 1000px) {
-        input[type="radio"]:checked { appearance: none; }
-      }
-    `)).toBe(false);
-    expect(nativeChoiceControlsRemainNative(`${cssSource}\n
-      @media print {
-        input[type="checkbox"]:checked { appearance: none; }
-      }
-    `)).toBe(true);
-    expect(nativeChoiceControlsRemainNative(`${cssSource}\n
-      @media (min-width: 800px) and (max-width: 900px) {
-        input[type="radio"]:checked { appearance: none; }
-      }
-    `)).toBe(false);
-    expect(boundariesMeetContract(
-      `${cssSource}\n#btn-skip { border-color: #8aa4d6ff; }`,
-    )).toBe(true);
-    expect(boundariesMeetContract(
-      `${cssSource}\n#btn-skip { border-color: rgba(138, 164, 214, 0); }`,
-    )).toBe(false);
-    for (const [label, selector] of [
-      ["button", "#btn-skip"],
-      ["range", "#eq-mid"],
-      ["number", "#bpm-hi"],
-      ["file", "#ln-upload"],
-      ["select", "#transition-select"],
-      ["textarea", "#a11y-textarea-fixture"],
-      ["tab", "#view-nav #tab-queue"],
-    ]) {
-      expect(boundariesMeetContract(
-        `${cssSource}\n${selector} { border: none; }`,
-      ), label).toBe(false);
-    }
-
     expect(lastValue(":focus-visible", "outline")).toBe(
       "2px solid var(--accent)",
     );
     expect(contrast("#7eb3e8", "#16213e")).toBeGreaterThanOrEqual(3);
     expect(focusOutlinesMeetContract()).toBe(true);
+  });
+
+  it.each([
+    ["checkbox appearance", 'input[type="checkbox"] { appearance: none; }', false],
+    ["radio border", 'input[type="radio"] { border: 1px solid #8aa4d6; }', false],
+    ["checkbox border-left", 'input[type="checkbox"] { border-left: 1px solid #8aa4d6; }', false],
+    ["checked checkbox", 'input[type="checkbox"]:checked { appearance: none; }', false],
+    ["checked radio", 'input[type="radio"]:checked { appearance: none; }', false],
+    ["small-screen checkbox", '@media (max-width: 600px) { input[type="checkbox"]:checked { appearance: none; } }', false],
+    ["large-screen radio", '@media (min-width: 1000px) { input[type="radio"]:not(:checked) { border-left: 1px solid #8aa4d6; } }', false],
+    ["nested reduced motion", '@media (max-width: 600px) { @media (prefers-reduced-motion: reduce) { input[type="checkbox"]:not(:checked) { appearance: none; } } }', false],
+    ["forced-colors none", '@media (forced-colors: none) and (min-width: 1000px) { input[type="radio"]:checked { appearance: none; } }', false],
+    ["print checkbox", '@media print { input[type="checkbox"]:checked { appearance: none; } }', true],
+    ["bounded screen width", '@media (min-width: 800px) and (max-width: 900px) { input[type="radio"]:checked { appearance: none; } }', false],
+  ])("keeps native choice controls for %s", (_label, rule, expected) => {
+    expect(nativeChoiceControlsRemainNative(`${cssSource}\n${rule}`)).toBe(expected);
+  });
+
+  it.each([
+    ["opaque border color", "#btn-skip { border-color: #8aa4d6ff; }", true],
+    ["transparent border color", "#btn-skip { border-color: rgba(138, 164, 214, 0); }", false],
+  ])("checks %s", (_label, rule, expected) => {
+    expect(boundariesMeetContract(`${cssSource}\n${rule}`)).toBe(expected);
+  });
+
+  it.each([
+    ["button", "#btn-skip"],
+    ["range", "#eq-mid"],
+    ["number", "#bpm-hi"],
+    ["file", "#ln-upload"],
+    ["select", "#transition-select"],
+    ["textarea", "#a11y-textarea-fixture"],
+    ["tab", "#view-nav #tab-queue"],
+  ])("rejects missing boundary on %s", (_label, selector) => {
+    expect(boundariesMeetContract(`${cssSource}\n${selector} { border: none; }`)).toBe(false);
+  });
+
+  it.each([
+    ["opaque outline color", "#btn-skip:focus-visible { outline-color: #7eb3e8ff; }", true],
+    ["transparent outline color", "#btn-skip:focus-visible { outline-color: rgba(126, 179, 232, 0); }", false],
+  ])("checks %s", (_label, rule, expected) => {
+    expect(focusOutlinesMeetContract(`${cssSource}\n${rule}`)).toBe(expected);
+  });
+
+  it.each([
+    ["button", "#btn-skip"],
+    ["tab", "#tab-queue"],
+    ["auth token", "#auth-token"],
+    ["auth device", "#auth-device-name"],
+    ["transition", "#transition-select"],
+    ["textarea", "#a11y-textarea-fixture"],
+    ["equalizer", "#eq-mid"],
+    ["phrase alignment", "#dj-phrase-align"],
+  ])("rejects missing focus outline on %s", (_label, selector) => {
     expect(focusOutlinesMeetContract(
-      `${cssSource}\n#btn-skip:focus-visible { outline-color: #7eb3e8ff; }`,
-    )).toBe(true);
-    expect(focusOutlinesMeetContract(
-      `${cssSource}\n#btn-skip:focus-visible {
-        outline-color: rgba(126, 179, 232, 0);
-      }`,
+      `${cssSource}\n${selector}:focus-visible { outline: none; }`,
     )).toBe(false);
-    for (const selector of [
-      "#btn-skip",
-      "#tab-queue",
-      "#auth-token",
-      "#auth-device-name",
-      "#transition-select",
-      "#a11y-textarea-fixture",
-      "#eq-mid",
-      "#dj-phrase-align",
-    ]) {
-      expect(focusOutlinesMeetContract(
-        `${cssSource}\n${selector}:focus-visible { outline: none; }`,
-      ), selector).toBe(false);
-    }
   });
 
   it("honors the complete reduced-motion preference", () => {
@@ -1618,7 +1586,8 @@ describe("static accessibility contracts", () => {
     expect(fieldset.previousElementSibling.tagName).toBe("H3");
     expect(fieldset.previousElementSibling.textContent).toBe("Stream");
     expect(document.querySelector("#stab-stream").hidden).toBe(true);
-    expect(fieldset.querySelector("h1, h2, h3, h4, h5, h6")).toBeNull();
+    expect([...fieldset.querySelectorAll("h4")].map((heading) => heading.textContent.trim()))
+      .toEqual(["Listeners", "Bans"]);
 
     const name = document.querySelector("#stream-station-name");
     expect(name.getAttribute("type")).toBe("text");
@@ -1659,6 +1628,13 @@ describe("static accessibility contracts", () => {
     expect(count.hasAttribute("role")).toBe(false);
     expect(count.closest("[aria-live], [role=status], [role=alert], [role=log]")).toBeNull();
     expect(fieldset.contains(count)).toBe(true);
+    expect(count.closest("section").getAttribute("aria-labelledby"))
+      .toBe("listener-control-title");
+    expect(labelText("stream-per-address")).toContain("Connections per address");
+    expect(document.getElementById("listener-ban-new").textContent.trim()).toBe("Add address ban");
+    for (const id of ["listener-ban-address", "listener-ban-duration", "listener-ban-note"]) {
+      expect(labelText(id)).toBeTruthy();
+    }
 
     // The "not loaded yet" note is visible text, silent like the count.
     const note = document.querySelector("#stream-url-note");

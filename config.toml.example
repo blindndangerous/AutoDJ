@@ -138,6 +138,11 @@ idle_grace_seconds = 30.0
 
 # Maximum concurrent listener connections.
 max_listeners = 8
+# Limit simultaneous connections from one resolved address; 0 disables this limit.
+max_listeners_per_address = 0
+# Only these direct proxy peers may supply X-Forwarded-For and X-Forwarded-Proto.
+trusted_proxies = []
+# Optional listener_user and listener_password belong in config.local.toml only.
 
 # Station name announced to players via the icy-name header.
   station_name = "AutoDJ"

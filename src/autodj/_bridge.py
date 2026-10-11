@@ -333,7 +333,10 @@ class PlayerBridge:
         """Return the latest plays across sessions, oldest first."""
         with self._history_lock:
             return [
-                {key: row[key] for key in ("title", "artist", "duration", "played_at")}
+                {
+                    key: row.get(key)
+                    for key in ("event_id", "path", "title", "artist", "duration", "played_at")
+                }
                 for row in self._play_history
             ]
 
@@ -1404,6 +1407,7 @@ class PlayerBridge:
                 "stream_continuous": bool(cfg.stream.continuous),
                 "stream_station_name": cfg.stream.station_name,
                 "nowplaying_show_next": cfg.nowplaying.show_next,
+                "stream_max_listeners_per_address": cfg.stream.max_listeners_per_address,
                 "volume": float(p._state.volume),
                 "is_muted": bool(p._state.is_muted),
             },

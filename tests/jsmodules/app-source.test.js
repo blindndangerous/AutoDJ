@@ -10,6 +10,7 @@ const moduleMocks = [
   "../../src/autodj/static/modules/media-session.js",
   "../../src/autodj/static/modules/audio-engine.js",
 ];
+const hashListeners = [];
 
 function jsonResponse(body, status = 200) {
   return new globalThis.Response(JSON.stringify(body), {
@@ -47,6 +48,11 @@ async function setupApp({
   },
 } = {}) {
   vi.resetModules();
+  const addListener = window.addEventListener;
+  window.addEventListener = function (type, listener, options) {
+    if (type === "hashchange") hashListeners.push(listener);
+    return addListener.call(this, type, listener, options);
+  };
   const dialog = installDocument();
   const linerModule = await vi.importActual(moduleMocks[1]);
   const stopAllDecks = audio.stopAllDecks || vi.fn();
@@ -155,10 +161,12 @@ async function setupApp({
   try {
     await vi.waitFor(() => expect(WebSocketImpl).toHaveBeenCalledOnce());
   } catch (error) {
+    window.addEventListener = addListener;
     throw new Error(`${error.message}; connection=${document.querySelector("#conn-status")?.textContent}; requests=${fetchImpl.mock.calls.map(([url]) => url).join(",")}`, {
       cause: error,
     });
   }
+  window.addEventListener = addListener;
   return {
     bumpLinerTrackCount,
     dialog,
@@ -177,6 +185,7 @@ async function setupApp({
 }
 
 afterEach(() => {
+  for (const listener of hashListeners.splice(0)) window.removeEventListener("hashchange", listener);
   vi.useRealTimers();
   vi.unstubAllGlobals();
   for (const modulePath of moduleMocks) vi.doUnmock(modulePath);
@@ -1301,8 +1310,7 @@ describe("app request behavior", () => {
   });
 
   it("loads history on a direct #history visit and pages without losing focus", async () => {
-    // App instances left by earlier tests still listen for hashchange;
-    // let them react against an inert fetch rather than the network.
+    // Let the initial hashchange settle before installing this app instance.
     vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
     window.location.hash = "#history";
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1344,6 +1352,237 @@ describe("app request behavior", () => {
     }
   });
 
+  it("opens Track info from History and returns focus to its row button", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    window.location.hash = "#history";
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    try {
+      const { fetchImpl } = await setupApp({
+        onRequest: (url) => url.startsWith("/api/history")
+          ? jsonResponse({ total: 1, page: 1, pages: 1, items: [{
+            event_id: "play-1", path: "M:/song.flac", played_at: "2026-01-01T00:00:00Z",
+            title: "Song", artist: "Artist", duration: 60,
+          }] })
+          : url.startsWith("/api/library/points?")
+            ? jsonResponse({ path: "M:/song.flac", title: "Song", artist: "Artist", kind: "music", points: {} })
+            : jsonResponse({ ok: true }),
+      });
+      document.dispatchEvent(new Event("DOMContentLoaded"));
+      const button = await vi.waitFor(() => {
+        const found = document.querySelector("#history-tbody .history-info");
+        expect(found).not.toBeNull();
+        return found;
+      });
+      expect(button.getAttribute("aria-label")).toBe("Track info for Artist — Song");
+      button.focus();
+      button.click();
+      await vi.waitFor(() => expect(document.querySelector("#panel-track-info").hidden).toBe(false));
+      expect(document.querySelector("#track-info-heading").textContent).toBe("Track info: Artist — Song");
+      const back = document.querySelector("#track-info-return");
+      expect(back.hidden).toBe(false);
+      expect(back.textContent).toBe("Return to History");
+      const historyCalls = () => fetchImpl.mock.calls.filter(([url]) => url.startsWith("/api/history"));
+      const beforeReturn = historyCalls().length;
+      const focusEvents = [];
+      document.addEventListener("focusin", (event) => focusEvents.push(event.target));
+      back.click();
+      await vi.waitFor(() => expect(document.querySelector("#panel-history").hidden).toBe(false));
+      await vi.waitFor(() => expect(document.activeElement).toBe(
+        document.querySelector("#history-tbody .history-info")));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(historyCalls()).toHaveLength(beforeReturn);
+      expect(document.querySelector("#history-tbody .history-info")).toBe(button);
+      expect(focusEvents.filter((node) => node.classList?.contains("history-info"))).toEqual([button]);
+      expect(document.querySelector("#sr-status").textContent).toBe("");
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
+  it("keeps the History page on Return but opens page 1 on a normal visit", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    window.location.hash = "#history";
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    try {
+      const { fetchImpl } = await setupApp({ onRequest: (url) => url.startsWith("/api/history")
+        ? jsonResponse({ total: 51, page: Number(new URL(url, "http://x").searchParams.get("page")), pages: 2,
+          items: [{ event_id: `play-${new URL(url, "http://x").searchParams.get("page")}`,
+            path: "M:/song.flac", played_at: "2026-01-01T00:00:00Z", title: "Song", artist: "A", duration: 60 }] })
+        : url.startsWith("/api/library/points?")
+          ? jsonResponse({ path: "M:/song.flac", title: "Song", kind: "music", points: {} })
+          : jsonResponse({ ok: true }) });
+      await vi.waitFor(() => expect(document.querySelector("#history-tbody .history-info")).not.toBeNull());
+      document.querySelector("#hist-next").click();
+      await vi.waitFor(() => expect(document.querySelector("#hist-page-info").textContent).toBe("Page 2 of 2"));
+      document.querySelector("#history-tbody .history-info").click();
+      await vi.waitFor(() => expect(document.querySelector("#panel-track-info").hidden).toBe(false));
+      const historyCalls = () => fetchImpl.mock.calls.filter(([url]) => url.startsWith("/api/history"));
+      const beforeReturn = historyCalls().length;
+      document.querySelector("#track-info-return").click();
+      await vi.waitFor(() => expect(document.querySelector("#panel-history").hidden).toBe(false));
+      expect(document.querySelector("#hist-page-info").textContent).toBe("Page 2 of 2");
+      expect(historyCalls()).toHaveLength(beforeReturn);
+      document.querySelector("#tab-now").click();
+      await vi.waitFor(() => expect(document.querySelector("#panel-now").hidden).toBe(false));
+      document.querySelector("#tab-history").click();
+      await vi.waitFor(() => expect(historyCalls()).toHaveLength(beforeReturn + 1));
+      expect(historyCalls().at(-1)[0]).toContain("page=1");
+      await vi.waitFor(() => expect(document.querySelector("#hist-page-info").textContent).toBe("Page 1 of 2"));
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
+  it("explains why a history entry without a recording path has no Track info", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    window.location.hash = "#history";
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    try {
+      await setupApp({
+        onRequest: (url) => url.startsWith("/api/history")
+          ? jsonResponse({ total: 1, page: 1, pages: 1, items: [{
+            played_at: "2026-01-01T00:00:00Z", title: "Old song", artist: "Artist", duration: 60,
+          }] })
+          : jsonResponse({ ok: true }),
+      });
+      document.dispatchEvent(new Event("DOMContentLoaded"));
+      const button = await vi.waitFor(() => {
+        const found = document.querySelector("#history-tbody .history-info");
+        expect(found).not.toBeNull();
+        return found;
+      });
+      button.click();
+      await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent).toContain("no saved recording path"));
+      expect(document.querySelector("#panel-history").hidden).toBe(false);
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
+  it("keeps History visible and the invoking button focused when points return 404", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    window.location.hash = "#history";
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    try {
+      await setupApp({ onRequest: (url) => url.startsWith("/api/history")
+        ? jsonResponse({ total: 1, page: 1, pages: 1, items: [{
+          event_id: "gone", path: "M:/gone.flac", played_at: "2026-01-01T00:00:00Z",
+          title: "Gone", artist: "A", duration: 60,
+        }] })
+        : url.startsWith("/api/library/points?")
+          ? jsonResponse({ detail: "Not found" }, 404) : jsonResponse({ ok: true }) });
+      const button = await vi.waitFor(() => {
+        const found = document.querySelector("#history-tbody .history-info");
+        expect(found).not.toBeNull();
+        return found;
+      });
+      button.focus();
+      button.click();
+      await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent)
+        .toContain("no longer in the library"));
+      expect(document.querySelector("#panel-history").hidden).toBe(false);
+      expect(document.querySelector("#panel-track-info").hidden).toBe(true);
+      expect(document.activeElement).toBe(button);
+      expect(document.querySelector("#points-status").textContent).toBe("");
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
+  it("focuses the queue list when its source item disappears before Return completes", async () => {
+    window.location.hash = "#queue";
+    try {
+      await setupApp({ onRequest: (url) => url.startsWith("/api/library/points?")
+        ? jsonResponse({ path: "M:/song.flac", title: "Song", kind: "music", points: {} })
+        : jsonResponse({ ok: true }) });
+      const { renderQueue } = await import("../../src/autodj/static/modules/queue.js");
+      const list = document.querySelector("#queue-list");
+      const els = { queueList: list, queueCount: document.querySelector("#queue-count") };
+      renderQueue([{ path: "M:/song.flac", title: "Song" }], els);
+      const opener = list.querySelector('[data-action="info"]');
+      opener.click();
+      await vi.waitFor(() => expect(document.querySelector("#panel-track-info").hidden).toBe(false));
+      document.querySelector("#track-info-return").click();
+      renderQueue([], els);
+      window.dispatchEvent(new window.HashChangeEvent("hashchange", {
+        newURL: new URL("#track-info", location.href).href,
+      }));
+      await vi.waitFor(() => expect(document.querySelector("#panel-queue").hidden).toBe(false));
+      await vi.waitFor(() => expect(document.activeElement).toBe(list));
+      expect(document.querySelector("#sr-status").textContent).toContain("no longer in the queue");
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
+  it("returns to Now Playing and the Settings liner button", async () => {
+    window.location.hash = "#now";
+    try {
+      await setupApp({
+        initialState: { current_track: { path: "M:/song.flac", title: "Song" } },
+        onRequest: (url) => url.startsWith("/api/library/points?")
+          ? jsonResponse({ path: decodeURIComponent(url.split("path=")[1]), title: "Song", kind: "music", points: {} })
+          : jsonResponse({ ok: true }),
+      });
+      const nowButton = document.querySelector("#edit-current-points");
+      nowButton.click();
+      await vi.waitFor(() => expect(document.querySelector("#panel-track-info").hidden).toBe(false));
+      expect(document.querySelector("#track-info-return").textContent).toBe("Return to Now Playing");
+      document.querySelector("#track-info-return").click();
+      await vi.waitFor(() => expect(document.activeElement).toBe(nowButton));
+
+      window.location.hash = "#settings";
+      await vi.waitFor(() => expect(document.querySelector("#panel-settings").hidden).toBe(false));
+      const liner = document.createElement("button");
+      liner.type = "button";
+      liner.dataset.path = "N:/liner.wav";
+      liner.setAttribute("aria-label", "Track info for liner.wav");
+      document.querySelector("#ln-file-list").append(liner);
+      document.dispatchEvent(new CustomEvent("autodj:edit-points", {
+        detail: { path: "N:/liner.wav", kind: "liner", opener: liner },
+      }));
+      await vi.waitFor(() => expect(document.querySelector("#panel-track-info").hidden).toBe(false));
+      expect(document.querySelector("#track-info-return").textContent).toBe("Return to Settings");
+      document.querySelector("#track-info-return").click();
+      await vi.waitFor(() => expect(document.activeElement).toBe(liner));
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
+  it("returns to a queue Track info button after the queue redraws", async () => {
+    window.location.hash = "#queue";
+    try {
+      await setupApp({
+        onRequest: (url) => url.startsWith("/api/library/points?")
+          ? jsonResponse({ path: "M:/song.flac", title: "Song", kind: "music", points: {} })
+          : jsonResponse({ ok: true }),
+      });
+      const { renderQueue } = await import("../../src/autodj/static/modules/queue.js");
+      const queueList = document.querySelector("#queue-list");
+      const els = { queueList, queueCount: document.querySelector("#queue-count") };
+      renderQueue([{ path: "M:/song.flac", title: "Song" }], els);
+      const original = queueList.querySelector('[data-action="info"]');
+      original.focus();
+      original.click();
+      await vi.waitFor(() => expect(document.querySelector("#panel-track-info").hidden).toBe(false));
+      renderQueue([{ path: "M:/song.flac", title: "Song" }], els);
+      const replacement = queueList.querySelector('[data-action="info"]');
+      expect(replacement).not.toBe(original);
+      document.querySelector("#track-info-return").click();
+      await vi.waitFor(() => expect(document.activeElement).toBe(replacement));
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
   it("adds a new track to the top of history page 1 without rebuilding the rows", async () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
     window.location.hash = "#history";
@@ -1376,6 +1615,108 @@ describe("app request behavior", () => {
       expect(tbody.children[0].textContent).toContain("Second");
       expect(tbody.children[1]).toBe(firstRow);
       expect(status.textContent).toBe("");
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
+  it("moves focus to the new last History row when a live update trims the focused play", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    window.location.hash = "#history";
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const old = Array.from({ length: 50 }, (_, index) => ({
+      event_id: `old-${index}`, path: `M:/old-${index}.flac`,
+      played_at: new Date(Date.UTC(2026, 0, 1, 0, 50 - index)).toISOString(),
+      title: `Old ${index}`, artist: "A", duration: 60,
+    }));
+    const fresh = { event_id: "new", path: "M:/new.flac", played_at: "2026-01-01T01:00:00Z",
+      title: "New", artist: "B", duration: 60 };
+    let items = old;
+    try {
+      const { webSocket } = await setupApp({
+        initialState: { current_track: { path: "M:/old.flac" } },
+        onRequest: (url) => url.startsWith("/api/history")
+          ? jsonResponse({ total: items.length, page: 1, pages: 1, items }) : jsonResponse({ ok: true }),
+      });
+      const tbody = document.querySelector("#history-tbody");
+      await vi.waitFor(() => expect(tbody.children).toHaveLength(50));
+      const focused = tbody.querySelectorAll(".history-info")[49];
+      focused.focus();
+      items = [fresh, ...old.slice(0, 49)];
+      webSocket.onmessage({ data: JSON.stringify({ current_track: { path: "M:/new.flac" },
+        browser_playback: false, discovery_available: false, duration: 60, elapsed: 0, eq: {},
+        is_muted: false, is_paused: false, next_track: null, queue: [], settings: null, volume: 1 }) });
+      await vi.waitFor(() => expect(tbody.querySelector("[data-history-id='new']")).not.toBeNull());
+      expect(focused.isConnected).toBe(false);
+      expect(document.activeElement).toBe(tbody.querySelectorAll(".history-info")[49]);
+      expect(document.querySelector("#sr-status").textContent).toContain("no longer in the displayed History rows");
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
+  it("keeps stale History rows and announces a background refresh error", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    window.location.hash = "#history";
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const yesterday = new Date(Date.now() - 2 * 86400000).toISOString();
+    const today = new Date().toISOString();
+    let historyCall = 0;
+    try {
+      const { webSocket } = await setupApp({
+        initialState: { current_track: { path: "M:/old.flac" } },
+        onRequest: (url) => {
+          if (!url.startsWith("/api/history")) return jsonResponse({ ok: true });
+          historyCall += 1;
+          if (historyCall === 3) return jsonResponse({ detail: "History offline" }, 503);
+          const item = historyCall === 1
+            ? { event_id: "old", played_at: yesterday, path: "M:/old.flac", title: "Old" }
+            : { event_id: "new", played_at: today, path: "M:/new.flac", title: "New" };
+          return jsonResponse({ total: 1, page: 1, pages: 1, items: [item] });
+        },
+      });
+      const button = await vi.waitFor(() => {
+        const found = document.querySelector("#history-tbody .history-info");
+        expect(found).not.toBeNull();
+        return found;
+      });
+      button.focus();
+      webSocket.onmessage({ data: JSON.stringify({ current_track: { path: "M:/new.flac" },
+        browser_playback: false, discovery_available: false, duration: 60, elapsed: 0, eq: {},
+        is_muted: false, is_paused: false, next_track: null, queue: [], settings: null, volume: 1 }) });
+      await vi.waitFor(() => expect(historyCall).toBe(3));
+      await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent)
+        .toContain("Could not refresh history: History offline"));
+      expect(document.activeElement).toBe(button);
+      expect(button.isConnected).toBe(true);
+      expect(document.querySelector("#history-table").hidden).toBe(false);
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
+  it("focuses the nearest History row and explains when the focused play leaves a refreshed page", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    window.location.hash = "#history";
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    let items = ["one", "two", "three"].map((name) => ({
+      event_id: name, path: `M:/${name}.flac`, played_at: "2026-01-01T00:00:00Z",
+      title: name, artist: "A", duration: 60,
+    }));
+    try {
+      await setupApp({ onRequest: (url) => url.startsWith("/api/history")
+        ? jsonResponse({ total: items.length, page: 1, pages: 1, items }) : jsonResponse({ ok: true }) });
+      const tbody = document.querySelector("#history-tbody");
+      await vi.waitFor(() => expect(tbody.querySelectorAll(".history-info")).toHaveLength(3));
+      tbody.querySelectorAll(".history-info")[1].focus();
+      items = [items[0], items[2]];
+      document.querySelector("#hist-refresh").click();
+      await vi.waitFor(() => expect(tbody.querySelectorAll(".history-info")).toHaveLength(2));
+      expect(document.activeElement.dataset.historyId).toBe("three");
+      expect(document.querySelector("#sr-status").textContent).toContain("no longer on this History page");
     } finally {
       window.location.hash = "";
       await new Promise((resolve) => setTimeout(resolve, 0));

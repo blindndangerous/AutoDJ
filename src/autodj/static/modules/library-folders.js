@@ -3,6 +3,8 @@ import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, reques
 import { fmtTrack } from "./dom-helpers.js";
 import { lastSeenWords } from "./devices.js";
 import { formatPlayedAt } from "./history-format.js";
+import { announceStatus } from "./live-region.js";
+import { returnToView } from "./tabs.js";
 
 const POINTS = ["start", "intro", "outro", "segue", "end", "overlap_start"];
 
@@ -55,6 +57,12 @@ export function installLibraryFolders({ document: doc = document, request = requ
   const editor = doc.getElementById("points-editor");
   const pointStatus = doc.getElementById("points-status");
   const pointPath = doc.getElementById("points-path");
+  const returnButton = doc.createElement("button");
+  returnButton.type = "button";
+  returnButton.id = "track-info-return";
+  returnButton.hidden = true;
+  returnButton.textContent = "Return to track list";
+  doc.getElementById("track-info-heading")?.insertAdjacentElement("afterend", returnButton);
   const allowOutro = doc.getElementById("points-allow-outro");
   const allowOutroLabel = doc.getElementById("points-allow-outro-label");
   let timer = null;
@@ -69,6 +77,55 @@ export function installLibraryFolders({ document: doc = document, request = requ
   let actionAnnouncement = 0;
   let suspended = false;
   let addError = null;
+  let returnTarget = null;
+  let returnView = null;
+  let returnMatch = null;
+  let returnContainer = null;
+
+  returnButton.addEventListener("click", () => {
+    if (!returnView) return;
+    returnToView(returnView, () => {
+      const panel = doc.querySelector(`section[data-view="${returnView}"]`);
+      const replacement = returnMatch && [...panel.querySelectorAll("button")]
+        .filter((button) => !button.disabled && returnMatch.matches(button))[returnMatch.occurrence];
+      if (returnTarget?.isConnected && !returnTarget.disabled && panel.contains(returnTarget)) return returnTarget;
+      if (replacement) return replacement;
+      const list = returnContainer?.isConnected ? returnContainer
+        : returnContainer?.id ? doc.getElementById(returnContainer.id) : null;
+      const heading = Array.from(panel.children).find((child) => child.tagName === "H2");
+      const fallback = list || heading || panel.querySelector("summary") || doc.getElementById(`tab-${returnView}`);
+      fallback?.setAttribute("tabindex", "-1");
+      announceStatus(doc.getElementById("sr-status"), {
+        "queue-list": "That track is no longer in the queue.",
+        "search-results": "That track is no longer in the search results.",
+        "library-browse-results": "That track is no longer in the library list.",
+        "history-table": "That play is no longer in History.",
+        "ln-file-list": "That liner is no longer in the list.",
+      }[returnContainer?.id] || "That track is no longer in this list.",
+      { dwellMs: 6000, force: true, tone: "error" });
+      return fallback;
+    });
+  });
+
+  function rememberReturn(opener) {
+    const panel = opener?.closest?.("section[data-view]");
+    returnView = panel?.dataset.view !== "track-info" ? panel?.dataset.view : null;
+    returnTarget = returnView ? opener : null;
+    returnContainer = returnTarget?.closest("ul, ol, table") || null;
+    if (returnTarget) {
+      const label = opener.getAttribute("aria-label");
+      const path = opener.dataset.path;
+      const action = opener.dataset.action;
+      const matches = (button) => button.getAttribute("aria-label") === label
+        && button.dataset.path === path && button.dataset.action === action;
+      returnMatch = {
+        matches,
+        occurrence: [...panel.querySelectorAll("button")].filter(matches).indexOf(opener),
+      };
+      returnButton.textContent = `Return to ${doc.getElementById(`tab-${returnView}`)?.textContent?.trim() || returnView}`;
+    } else returnMatch = null;
+    returnButton.hidden = !returnTarget;
+  }
 
   function requestCurrent(epoch, generation) {
     return !suspended && generation === protectedGeneration && isAuthenticatedRequestCurrent(epoch);
@@ -354,10 +411,12 @@ export function installLibraryFolders({ document: doc = document, request = requ
       save.focus();
     });
   }
-  async function openEditor(path, kind = "music") {
+  async function openEditor(path, kind = "music", opener = null) {
     if (suspended || opening || saving) return;
-    if (!path) { showTrackInfo(); pointSay("Choose a track first.", true); return; }
-    if (path === currentPath && savedFields !== fieldSnapshot()) { showTrackInfo(); return; }
+    const sourceList = opener?.closest?.("ul, ol, table");
+    const sourcePanel = opener?.closest?.("section[data-view]");
+    if (!path) { rememberReturn(opener); showTrackInfo(); pointSay("Choose a track first.", true); return; }
+    if (path === currentPath && savedFields !== fieldSnapshot()) { rememberReturn(opener); showTrackInfo(); return; }
     opening = true;
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
@@ -380,19 +439,50 @@ export function installLibraryFolders({ document: doc = document, request = requ
         preview.pause();
         preview.src = `/api/audio?path=${encodeURIComponent(currentPath)}`;
       }
+      rememberReturn(opener);
       showTrackInfo();
       pointSay("");
     } catch (error) {
-      if (requestCurrent(epoch, generation)) { showTrackInfo(); pointSay(`Could not load track info: ${error.message}`, true); }
+      if (requestCurrent(epoch, generation)) {
+        const message = error.status === 404
+          ? "This recording is no longer in the library. Its current details and cue points are unavailable."
+          : `Could not load track info: ${error.message}`;
+        if (error.status === 404 && opener) {
+          if (opener.isConnected && !opener.disabled) opener.focus();
+          else {
+            const list = sourceList?.isConnected ? sourceList
+              : sourceList?.id ? doc.getElementById(sourceList.id) : null;
+            const fallback = list || Array.from(sourcePanel?.children || [])
+              .find((child) => child.tagName === "H2") || sourcePanel?.querySelector("summary");
+            if (fallback?.tagName !== "SUMMARY") fallback?.setAttribute("tabindex", "-1");
+            fallback?.focus();
+          }
+          announceStatus(doc.getElementById("sr-status"), message, { force: true, tone: "error" });
+          return;
+        }
+        rememberReturn(opener);
+        if (error.status === 404) {
+          currentPath = null;
+          editor.hidden = true;
+          pointPath.value = "";
+          const details = doc.getElementById("track-info-details");
+          if (details) { details.replaceChildren(); details.hidden = true; }
+          const preview = doc.getElementById("points-preview");
+          if (preview) { preview.pause(); preview.removeAttribute("src"); preview.load(); }
+          doc.getElementById("track-info-heading").textContent = "Track info";
+        }
+        showTrackInfo();
+        announceStatus(pointStatus, message, { force: true, tone: "error" });
+      }
     }
     finally { if (generation === protectedGeneration) { editor.inert = false; opening = false; } }
   }
-  doc.getElementById("edit-current-points").addEventListener("click", () => {
+  doc.getElementById("edit-current-points").addEventListener("click", (event) => {
     const track = getCurrentTrack();
-    void openEditor(track?.path, track?.kind || "music");
+    void openEditor(track?.path, track?.kind || "music", event.currentTarget);
   });
   const onEditPoints = (event) => {
-    void openEditor(event.detail?.path, event.detail?.kind || "music");
+    void openEditor(event.detail?.path, event.detail?.kind || "music", event.detail?.opener || doc.activeElement);
   };
   doc.addEventListener("autodj:edit-points", onEditPoints);
   doc.getElementById("points-load")?.addEventListener("click", () => void openEditor(pointPath.value.trim(), currentKind));
@@ -467,6 +557,11 @@ export function installLibraryFolders({ document: doc = document, request = requ
     status.textContent = "";
     progress.textContent = "";
     pointStatus.textContent = "";
+    returnTarget = null;
+    returnView = null;
+    returnMatch = null;
+    returnContainer = null;
+    returnButton.hidden = true;
     pointPath.value = "";
     for (const name of POINTS) {
       doc.querySelector(`[data-point="${name}"]`).value = "";
@@ -484,5 +579,5 @@ export function installLibraryFolders({ document: doc = document, request = requ
     if (preview) { preview.pause(); preview.removeAttribute("src"); preview.load(); }
   }
   function resume() { suspended = false; updatePolling(); }
-  return { refresh, openEditor, clearProtectedData, resume, destroy() { clearProtectedData(); window.removeEventListener("hashchange", updatePolling); doc.removeEventListener("visibilitychange", updatePolling); doc.removeEventListener("autodj:edit-points", onEditPoints); } };
+  return { refresh, openEditor, clearProtectedData, resume, destroy() { clearProtectedData(); returnButton.remove(); window.removeEventListener("hashchange", updatePolling); doc.removeEventListener("visibilitychange", updatePolling); doc.removeEventListener("autodj:edit-points", onEditPoints); } };
 }

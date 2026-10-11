@@ -4127,6 +4127,8 @@ class TestHistoryEndpoint:
                 "title": "A",
                 "artist": "X",
                 "duration": 180.0,
+                "path": "/music/a.flac",
+                "event_id": "play-a",
                 "played_at": "2026-01-01T00:00:00+00:00",
             },
             {
@@ -4141,6 +4143,8 @@ class TestHistoryEndpoint:
         assert data["total"] == 2
         assert data["items"][0]["title"] == "B"
         assert data["items"][1]["title"] == "A"
+        assert data["items"][1]["path"] == "/music/a.flac"
+        assert data["items"][1]["event_id"] == "play-a"
 
     def test_pagination_page_count(self) -> None:
         entries = [
