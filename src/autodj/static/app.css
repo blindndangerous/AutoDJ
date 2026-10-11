@@ -699,6 +699,8 @@
     body:has(#dj-filter-sweep:not(:checked)) [data-show-when="dj-filter-sweep"],
     body:has(#pb-eq-duck:not(:checked)) [data-show-when="pb-eq-duck"],
     body:not(:has(#pb-replaygain option[value="replaygain"]:checked)) [data-show-when="pb-replaygain=replaygain"],
+    body:not(:has(#pb-replaygain option[value="stereotool"]:checked)) [data-show-when="pb-replaygain=stereotool"],
+    body:has(#pb-replaygain option[value="off"]:checked) [data-show-when="pb-replaygain!=off"],
     body:not(:has(#pb-pick-mode option[value="similarity"]:checked)) [data-show-when="pb-pick-mode=similarity"],
     body:has(#key-notation option[value="musical"]:not(:checked)) [data-show-when="key-notation=musical"],
     body:has(#disc-enabled:not(:checked)) [data-show-when="disc-enabled"],

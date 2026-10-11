@@ -29,6 +29,7 @@ from autodj.repeat_rules import (
     TrackKeyCache,
     plays_to_load,
 )
+from autodj.repeat_settings import RepeatSettings
 from autodj.similarity import SimilarityIndex
 from tests.unit._fakes import make_cfg_mock, make_entry
 
@@ -267,8 +268,10 @@ def _sim(tracks) -> SimilarityIndex:
 
 def _player(pick_mode: str = "similarity", tracks=TRACKS, *, dmca: bool = True) -> Player:
     cfg = make_cfg_mock()
+    # Only the track rule (one song), so the DMCA limits are all that holds songs back.
+    rules = {"track": {"tracks": 1}, "artist": {"tracks": 0}, "album": {"tracks": 0}}
     cfg.playback = PlaybackConfig(
-        pick_mode=pick_mode, no_repeat_window=1, artist_repeat_window=0, title_repeat_window=0
+        pick_mode=pick_mode, repeat_rules=RepeatSettings.model_validate(rules)
     )
     cfg.dmca = DmcaConfig(enabled=dmca)
     player = Player(cfg, _sim(tracks), dry_run=True)

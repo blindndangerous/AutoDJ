@@ -1021,13 +1021,12 @@ def test_no_relays_no_relay_checks(tmp_path: Path) -> None:
 def test_related_artists_check(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     check = doctor._related_artists_check(cfg)
-    assert (check.status, check.summary) == (doctor.CheckStatus.PASS, "no related artists file")
-    cfg.playback.related_artists_starter = True
-    assert doctor._related_artists_check(cfg).summary == "starter list only"
+    assert check.status == doctor.CheckStatus.PASS
+    assert "Sample will be copied" in check.summary
 
-    path = tmp_path / "related.toml"
+    path = cfg.index.active_dir / "related-artists.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b'[related]\n"Bruno Mars" = ["The Hooligans"]\n')
-    cfg.playback.related_artists_file = str(path)
     check = doctor._related_artists_check(cfg)
     assert check.status is doctor.CheckStatus.PASS
     assert str(path) in check.summary
@@ -1036,11 +1035,14 @@ def test_related_artists_check(tmp_path: Path) -> None:
 @pytest.mark.parametrize("content", [b"[related\n", b"related = 3\n", None])
 def test_related_artists_check_warns_about_a_bad_file(tmp_path: Path, content) -> None:
     cfg = _config(tmp_path)
-    path = tmp_path / "related.toml"
+    path = cfg.index.active_dir / "related-artists.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
     if content is not None:
         path.write_bytes(content)
-    cfg.playback.related_artists_file = str(path)
     check = doctor._related_artists_check(cfg)
-    assert check.status is doctor.CheckStatus.WARN
-    assert str(path) in check.detail
+    assert check.status is (
+        doctor.CheckStatus.WARN if content is not None else doctor.CheckStatus.PASS
+    )
+    if content is not None:
+        assert str(path) in check.detail
     assert check.repair is None

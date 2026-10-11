@@ -80,7 +80,15 @@ def test_actions_and_upcoming_come_from_the_server(
     client.post("/api/schedule", json=event(repeat="interval", interval_minutes=30))
     data = client.get("/api/schedule").json()
     actions = {action["name"]: action for action in data["actions"]}
-    assert set(actions) == {"profile", "preset", "pick_mode", "liner", "stream", "discovery"}
+    assert set(actions) == {
+        "profile",
+        "preset",
+        "stereo_tool_preset",
+        "pick_mode",
+        "liner",
+        "stream",
+        "discovery",
+    }
     assert actions["profile"]["fields"][0]["options"] == [{"value": "Evening", "label": "Evening"}]
     assert actions["liner"]["fields"][0]["options"] == [
         {"value": "station-id.wav", "label": "station-id.wav"}
@@ -195,6 +203,45 @@ def test_builtin_actions_report_failures_in_words(
     bridge.library.catalog.get_setting.return_value = {"slots": [{"folder": "music"}]}
     assert run("pick_mode", {"mode": "clock"})["result"] == "ok"
     assert bridge.player._cfg.playback.pick_mode == "clock"
+
+
+def test_switch_stereo_tool_preset_lists_uploads_and_applies_them(
+    rig: tuple[TestClient, PlayerBridge, Path],
+) -> None:
+    client, bridge, active = rig
+    bridge.save_persistent_state = MagicMock()
+    folder = active.parent / "stereo-tool-presets"
+    folder.mkdir()
+    (folder / "Night.sts").write_text("[A]\nB=1\n", encoding="utf-8")
+
+    actions = {action["name"]: action for action in client.get("/api/schedule").json()["actions"]}
+    field = actions["stereo_tool_preset"]["fields"][0]
+    assert actions["stereo_tool_preset"]["description"] == "Switch Stereo Tool preset"
+    assert field["label"] == "Stereo Tool preset"
+    assert field["options"] == [
+        {"value": "included", "label": "included"},
+        {"value": "Night.sts", "label": "Night.sts"},
+    ]
+
+    refused = client.post(
+        "/api/schedule", json=event(action="stereo_tool_preset", params={"name": "Gone.sts"})
+    )
+    assert refused.json()["detail"] == "Stereo Tool preset Gone.sts was not found"
+    created = client.post(
+        "/api/schedule", json=event(action="stereo_tool_preset", params={"name": "Night.sts"})
+    ).json()
+    assert created["action_text"] == "Switch Stereo Tool preset: Night.sts"
+    url = f"/api/schedule/{created['id']}/run"
+    assert client.post(url).json()["result"] == "ok"
+    assert bridge.player._cfg.playback.stereotool_preset == "Night.sts"
+    bridge.save_persistent_state.assert_called()
+
+    # Deleted after the event was saved: the run fails in words, the setting stays.
+    (folder / "Night.sts").unlink()
+    bridge.player._cfg.playback.stereotool_preset = "included"
+    failed = client.post(url).json()
+    assert (failed["result"], failed["message"]) == ("error", "preset Night.sts was not found")
+    assert bridge.player._cfg.playback.stereotool_preset == "included"
 
 
 def test_a_profile_removed_after_saving_fails_its_run_in_words(

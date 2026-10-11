@@ -119,46 +119,36 @@ entries with softmax weights.
 
 ## Repeat avoidance and discovery
 
-`PlayerState` keeps `recently_played` as a deque bounded by
-`no_repeat_window` (default 500), and `play_history`, the path, artist, album,
-title and start time of each recent track. `src/autodj/repeat_rules.py` turns
-that history into three rules:
+New installations start with a 50-track limit for the same track and an 8-track
+limit for the same artist. Album, title and all minute limits start at zero.
+Saved settings take precedence over these defaults.
 
-- Track: the same file, within `no_repeat_window` tracks or
-  `no_repeat_minutes` minutes.
-- Artist: any artist the candidate credits, or a related one, was credited
-  within `artist_repeat_window` tracks (default 3) or
-  `artist_repeat_minutes` minutes. The same album is held back by the same
-  window, as before.
-- Title: the same song in any version, within `title_repeat_window` tracks
-  or `title_repeat_minutes` minutes. Unset, `title_repeat_window` follows
-  `artist_repeat_window`, which covered titles on its own before.
+Edit all four rules under **Settings > Picking > Repeats**:
 
-A count of 0 or minutes of 0 turns that half of a rule off. With both set, a
-candidate is held back if either catches it. Minutes count from when a
-track started, measured when the pick is made; in server audio and stream
-mode that is about one track ahead of when the pick plays, so a minute
-window holds back a little more than its length.
+- Artist: any artist credited on a recent track, including related artists when enabled.
+- Album: the same album name, independent of the artist limit.
+- Track: the same audio file.
+- Title: the same song title across versions, such as a radio edit and a live recording.
 
-The rules survive a restart. At startup the player reads the latest plays
-from the station's saved play history (`play_history` in `library.db`), as
-many as the windows can look at, and counts them like plays from this run:
-a song that started 30 minutes before a restart is still held back by a
-60-minute window afterwards. Only plays that started count; a play a set stop
-cut short does not, as in the history viewer. Minute windows use the wall
-clock. A saved play dated after the current time (the clock was set back) is
-skipped at startup; one recorded during this run that ends up in the future
-counts as just played until the clock catches up. The artist, album and
-title rules remember at most 5000 plays (`HISTORY_LIMIT`), a week of
-two-minute tracks; a larger window looks only that far back.
+Each has a Tracks box and a Minutes box. Zero turns off that limit. When both
+are set, a candidate must clear both limits. Minutes count from when a track
+started to when the next pick is made. Server playout picks ahead, so a song
+may be held back a little longer than the chosen time.
 
-The track and artist windows can be changed while AutoDJ runs, under
-Settings, Song picking ("Tracks before a song can repeat" and "Tracks before
-an artist can repeat"); the new value applies to the next pick and is saved
-in `web_state.json`. The other repeat settings are read from `config.toml`
-for now. When the library holds no more tracks than `no_repeat_window`, the
-player uses a smaller window so that at least a tenth of the library (and at
-least 4 tracks) stays available.
+Save applies the rules to future picks and stores them in `web_state.json`.
+The current song and already prepared queue are left alone. Saved play history
+counts after a restart and when you increase a limit. A play interrupted by a
+set stop does not count, as in the history viewer. Future-dated saved plays are
+skipped if the clock has moved backwards. Minute limits use up to 5000 recent
+plays; artist, album and title track limits allow at most 5000. If the library is too
+small for the track rule, AutoDJ reduces its effective count to leave at least
+a tenth of the library (and at least four tracks) available.
+
+Old repeat keys in `config.toml` and `web_state.json` are rejected with an
+error. Remove them by hand and re-enter limits in Settings > Picking > Repeats.
+Optional config defaults use
+`[playback.repeat_rules]`, with `track`, `artist`, `album` and `title` tables
+containing `tracks` and `minutes`; saved web settings take precedence.
 
 ### Titles
 
@@ -200,35 +190,53 @@ Artist names ignore case, accents, punctuation and a leading "The".
 
 ### Related artists
 
-`related_artists_file` names a TOML file whose `[related]` table maps an
-artist to a list of artists it holds back. Links are one-way and are not
-followed further: "Bruno Mars" = ["Silk Sonic"] holds back Silk Sonic after
-Bruno Mars, but not Bruno Mars after Silk Sonic. `related_artists_starter =
-true` adds a short built-in list of side projects, duos and aliases
-(`STARTER_RELATED_ARTISTS`). Both are read when AutoDJ starts. A file
-that is missing, unreadable or invalid does not stop AutoDJ: the server log
-warns once, naming the file and the problem, and picking goes on with the
-starter list (when it is on) or no related artists. `autodj doctor` reports
-the same problem under "related-artists".
+The **Use related artists** checkbox applies the artist limits to links in a
+TOML file. The default is `index/<name>/related-artists.toml`; AutoDJ copies the
+shipped sample there only when it is absent. Upgrades never replace an existing
+user copy. The Settings page shows this fixed location. The browser cannot
+choose another path. The file must be at most 1 MiB.
+Edit the file, then save repeat settings to reload it without restarting playback.
+
+The `[related]` table maps an artist to the artists it holds back. Links are
+one-way and are not followed further. For example, `"Bruno Mars" = ["Silk Sonic"]`
+holds back Silk Sonic after Bruno Mars; add the reverse entry for both directions.
+The optional `single_acts` list identifies credits that should never be split
+while **Use related artists** is enabled.
+
+An invalid file is refused when you save with **Use related artists** on,
+leaving the previous rules in use. At startup, an invalid file produces a
+warning and the other repeat rules still work. The Repeats panel and
+`autodj doctor` report the problem.
 
 ### Where the rules apply
 
 - Similarity and anchored picks pass the rules to `find_next_for_path`.
 - Discovery picks from the least similar quarter of the tracks the rules
   allow.
-- Random walk and least recently played pick among the tracks the rules
-  allow.
+- Random walk picks among the tracks the rules allow. Least recently played
+  checks songs from oldest play time to newest and stops at the first one
+  allowed. Never-played songs come first; ties are tried in random order.
+  Clock slots using least recently played work the same way.
 - Clock slots marked EnforceRules use the rules; NoRules slots ignore them,
   as before. When every matching track is held back, the clock relaxes the
   artist, album and title rules for that pick, then the track window, and
   logs which one it relaxed.
 - When no track passes, the rules are relaxed rather than stopping the
   music. The fallback pick after a failed pick ignores them, as before.
+- Automatic picks exclude the playing, prepared and starting tracks even when
+  every repeat limit is zero.
 - Tracks you queue, play now, or choose as the seed are never held back.
 
 Each pick that held candidates back logs a line at info level, such as
 "Repeat rules held back 3 candidates (1 same artist, 1 related artist, 1 same
 title)". A similarity pick only counts the nearest candidates it looked at.
+Least-recent picks count only the candidates checked before finding an eligible
+song. Random picks check the whole pool, so their counts may be higher.
+At DEBUG level, `autodj.player.repeat` also records each candidate examined by
+the artist, related-artist, album or title rules, its reason, and the selected
+path. The row means the candidate was excluded from that pool by the repeat
+rule; the rule can be relaxed before selection. These rows do not include
+tracks excluded only by the separate track-count or minute windows.
 
 Each track's keys (its split artists, album and title) are worked out once
 per library snapshot and then looked up, so a pick that checks every track

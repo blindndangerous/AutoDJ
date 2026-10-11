@@ -18,6 +18,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and Queue anyway or Cancel. The public feed, the status page and webhooks never show the next
   song, Settings, Stream says the mode is on, and `autodj doctor` names conflicting settings.
 
+- Stereo Tool presets can be uploaded, selected and deleted in Settings, Sound. The included
+  preset remains read-only; uploaded presets survive restarts and are included in backups.
+  A scheduled event can switch the Stereo Tool preset (Settings, Schedule).
+- Stereo Tool input trim is adjustable from -12 to +6 dB. Quiet song openings can receive up
+  to 4 dB of peak-safe lift by default, returning to normal within eight seconds. The limit
+  is adjustable from 0 to 6 dB, with 0 disabling the lift.
+
 - A scheduler for timed events (Settings, Schedule). Events run once, daily, on weekdays, on
   chosen days, or every N minutes within an optional window, in the station time zone
   (`[server] station_timezone`). They switch profiles, presets or song picking, play liners,
@@ -58,18 +65,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     separate artists. "Simon & Garfunkel", "Earth, Wind & Fire" and "Mumford & Sons" stay one act.
   - Song titles match in any version, so "Jingle Bells", "Jingle Bells (Live)" and
     "JINGLE BELLS - Remastered 2009" are one song.
-  - Related artists: `related_artists_file` names a TOML file that links an artist to others it
-    holds back, one way, so Bruno Mars can hold back Silk Sonic. `related_artists_starter = true`
-    adds a short built-in list of side projects, duos and aliases.
-  - New `[playback]` settings: `no_repeat_minutes`, `artist_repeat_minutes` and
-    `title_repeat_minutes` hold a track, an artist or a song title back for a number of minutes,
-    and `title_repeat_window` sets the title rule's own number of tracks.
-  - The rules count plays from before a restart, read from the saved play history, so a song
-    played 30 minutes before a restart is still held back by a 60-minute window.
-  - The server log says which rule held songs back on each pick.
-  - A related artists file that is missing or invalid does not stop AutoDJ: the log warns, and
-    `autodj doctor` reports it.
-  - These settings are in `config.toml` only for now; Settings page controls follow.
+  - Settings > Picking > Repeats has separate artist, album, track and title rules.
+    Each accepts tracks, minutes or both; zero turns off that limit. Save applies changes
+    to future picks, uses saved play history and remembers the settings across restarts.
+    Fresh installations default to 50 tracks for the same track and 8 for the same artist;
+    album, title and all minute limits start at zero. Artist, album and title track
+    limits are capped at 5000.
+  - Least-recent picks, including clock slots, check songs from oldest to newest and stop
+    at the first eligible song. Ties stay random; rules relax only after none qualify.
+  - Use related artists applies the artist limit to links in an editable TOML file.
+    AutoDJ copies the sample to `index/<name>/related-artists.toml` on first use and never
+    overwrites an existing copy during upgrades. Save repeat settings to reload file edits.
+    The fixed file is included in backups and capped at 1 MiB.
+  - An invalid related-artist file is refused when saving. At startup the other rules still
+    work, and the Repeats panel, log and `autodj doctor` identify the file problem.
 - Export the play log for royalty reports, from "Export play log" in the History tab or with
   `autodj export-plays --from DATE --to DATE`. The CSV has one row per play: start and end time,
   seconds played, artist, title, album, ISRC, label, kind, file and performances. ISRC and label
@@ -128,9 +137,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- `artist_repeat_window` keeps its meaning: the same artist, album or song title within that many
-  picks. A title now matches its other versions, and an artist matches every artist a credit
-  names. Set `title_repeat_window` to give titles a different number of picks.
+- Old repeat keys in `config.toml` and `web_state.json` are rejected. Remove them by hand
+  and re-enter limits in Settings > Picking > Repeats.
 - Random walk, least recently played and clock picks now hold back the same album and the same
   song title as well as the same artist, like similarity picks always did. Discovery picks now
   follow the artist, album and title rules too.
