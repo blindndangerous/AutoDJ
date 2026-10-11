@@ -107,6 +107,7 @@ def make_cfg_mock() -> MagicMock:
     cfg.library.beets_db = None
     cfg.library.music_dir = None
     cfg.index.active_dir = None
+    cfg.server.station_timezone = "UTC"
     return cfg
 
 

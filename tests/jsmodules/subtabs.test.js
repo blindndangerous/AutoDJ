@@ -53,7 +53,7 @@ describe("Settings subtabs markup", () => {
     const tabs = [...byId("settings-tabs").querySelectorAll('[role="tab"]')];
     expect(tabs.map((tab) => tab.textContent)).toEqual([
       "Transitions", "DJ mixing", "Song picking", "Sound", "Display and keys",
-      "Voice liners", "Stream", "Profiles and access",
+      "Voice liners", "Schedule", "Stream", "Profiles and access",
     ]);
     for (const tab of tabs) {
       expect(tab.hasAttribute("aria-controls")).toBe(false);
@@ -112,7 +112,7 @@ describe("initSubtabs", () => {
     press(document.activeElement, "End");
     expect(document.activeElement).toBe(byId("stab-access"));
     press(document.activeElement, "ArrowLeft");
-    expect(document.activeElement).toBe(byId("stab-liners"));
+    expect(document.activeElement).toBe(byId("stab-schedule"));
     press(document.activeElement, "Home");
     expect(document.activeElement).toBe(first);
   });

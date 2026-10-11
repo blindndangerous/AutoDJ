@@ -80,7 +80,7 @@ describe("search requests", () => {
     expect(button.getAttribute("aria-label")).toBe("Track info for Song");
     expect(button.textContent).toContain("Track info");
     button.click();
-    expect(onEditPoints).toHaveBeenCalledWith({ path: "M:/music/song.flac", kind: "music" });
+    expect(onEditPoints).toHaveBeenCalledWith({ path: "M:/music/song.flac", kind: "music", opener: button });
     vi.unstubAllGlobals();
   });
 
@@ -239,7 +239,7 @@ describe("library browsing", () => {
     els.searchResults.addEventListener("autodj:edit-points", (event) => { editDetail = event.detail; }, { once: true });
     const edit = els.searchResults.querySelector('[data-points="true"]');
     edit.click();
-    expect(editDetail).toEqual({ path: "N:/voice/liner.wav", kind: "liner" });
+    expect(editDetail).toEqual({ path: "N:/voice/liner.wav", kind: "liner", opener: edit });
     els.nextPage.focus();
     els.nextPage.click();
     await vi.waitFor(() => expect(els.searchResults.textContent).toContain("Next liner"));

@@ -4,12 +4,12 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 import autodj
-from autodj.server import _version_info
+from autodj.server import _version_info, create_app
 from autodj.version import (
     _project_version,
     _source_pyproject,
@@ -139,6 +139,13 @@ def test_installed_version_is_returned(monkeypatch) -> None:
         assert current_version() == "2.3.4"
     finally:
         current_version.cache_clear()
+
+
+def test_api_version_derives_from_project_metadata(tmp_path: Path) -> None:
+    bridge = MagicMock()
+    bridge.player._cfg.server.station_timezone = "UTC"
+    bridge.player._cfg.index.active_dir = tmp_path
+    assert create_app(bridge).version == current_version()
 
 
 def test_version_endpoint_uses_same_accessor() -> None:

@@ -5,12 +5,14 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from autodj._bridge import PlayerBridge, StreamSeekUnavailable
+from autodj.listener_access import proxy_allowlist
 from autodj.server import create_app
 from autodj.stream import EncoderUnavailableError, ListenerLimitError
 
@@ -21,22 +23,26 @@ def _stream_mock() -> MagicMock:
     stream = MagicMock()
     stream.listener_count = 0
     listener = MagicMock()
+    listener.closed = False
+    listener.abort.side_effect = lambda: setattr(listener, "closed", True)
 
     async def chunks():
         yield b"\xff\xfb\x90\x00" + b"\x00" * 413
 
     listener.chunks = chunks
     stream.add_listener.return_value = listener
+    stream.remove_listener.side_effect = lambda target: setattr(target, "closed", True)
     return stream
 
 
 @pytest.fixture
-def stream_app(bridge):
+def stream_app(bridge, tmp_path: Path):
     stream = _stream_mock()
+    bridge.player._cfg.index.active_dir = tmp_path
     bridge.player._cfg.stream.enabled = True
     bridge.attach_stream(stream=stream, station=MagicMock(state="idle"))
     app = create_app(bridge)
-    return TestClient(app), stream
+    return TestClient(app, client=("192.0.2.4", 50000)), stream
 
 
 # -- the stream routes -------------------------------------------------------
@@ -98,7 +104,7 @@ def _authenticated_stream_client(bridge, tmp_path: Path) -> TestClient:
     bridge.player._cfg.index.active_dir = tmp_path
     bridge.player._cfg.index.index_dir = tmp_path
     bridge.attach_stream(stream=_stream_mock(), station=MagicMock(state="idle"))
-    return TestClient(create_app(bridge))
+    return TestClient(create_app(bridge), client=("192.0.2.4", 50000))
 
 
 def test_stream_needs_no_session_when_authentication_is_on(bridge, tmp_path: Path) -> None:
@@ -106,6 +112,9 @@ def test_stream_needs_no_session_when_authentication_is_on(bridge, tmp_path: Pat
     client = _authenticated_stream_client(bridge, tmp_path)
     assert client.get("/api/stream").status_code == 401
     assert client.post("/api/stream/settings", json={"bitrate": 192}).status_code == 401
+    for path in ("/api/stream/listeners", "/api/stream/bans"):
+        assert client.get(path).status_code == 401
+    assert client.post("/api/stream/bans", json={"address": "192.0.2.4"}).status_code == 401
     assert client.get("/stream.m3u").status_code == 200
     assert client.head("/stream.m3u").status_code == 200
     assert client.head("/stream.mp3").status_code == 200
@@ -150,6 +159,194 @@ def test_m3u_points_at_stream(stream_app) -> None:
     assert response.headers["cache-control"] == "no-store"
     assert response.text.strip() == "http://testserver/stream.mp3"
     stream.add_listener.assert_not_called()
+
+
+def test_playlist_uses_forwarded_https_only_from_trusted_peer(bridge) -> None:
+    bridge.player._cfg.stream.trusted_proxies = ["198.51.100.5"]
+    bridge.attach_stream(stream=_stream_mock(), station=MagicMock(state="idle"))
+    app = ProxyHeadersMiddleware(
+        create_app(bridge), trusted_hosts=proxy_allowlist(bridge.player._cfg.stream.trusted_proxies)
+    )
+    headers = {"X-Forwarded-Proto": "https"}
+    trusted = TestClient(app, client=("198.51.100.5", 50000))
+    assert trusted.get("/stream.m3u", headers=headers).text == "https://testserver/stream.mp3\n"
+    untrusted = TestClient(app, client=("203.0.113.5", 50000))
+    assert untrusted.get("/stream.m3u", headers=headers).text == "http://testserver/stream.mp3\n"
+
+
+def test_listener_password_protects_mp3_and_playlist(bridge) -> None:
+    stream = _stream_mock()
+    bridge.player._cfg.stream.listener_user = "radio"
+    bridge.player._cfg.stream.listener_password = "secret"
+    bridge.attach_stream(stream=stream, station=MagicMock(state="idle"))
+    client = TestClient(create_app(bridge), client=("192.0.2.4", 50000))
+    for path in ("/stream.mp3", "/stream.m3u"):
+        response = client.get(path)
+        assert response.status_code == 401
+        assert response.headers["www-authenticate"] == 'Basic realm="AutoDJ"'
+        assert client.head(path).status_code == 401
+    playlist = client.get("/stream.m3u", auth=("radio", "secret"))
+    assert playlist.status_code == 200
+    assert "secret" not in playlist.text
+    assert client.head("/stream.mp3", auth=("radio", "secret")).status_code == 200
+    assert client.get("/stream.m3u", auth=("radio", "wrong")).status_code == 401
+    assert client.get("/api/stream/listeners").json()["password_set"] is True
+    stream.add_listener.assert_not_called()
+
+
+@pytest.mark.parametrize("authorization", ["radio secret", "Basic %%%", "Basic bm9jb2xvbg=="])
+def test_malformed_listener_authorization_is_rejected(bridge, authorization: str) -> None:
+    bridge.player._cfg.stream.listener_user = "radio"
+    bridge.player._cfg.stream.listener_password = "secret"
+    bridge.attach_stream(stream=_stream_mock(), station=MagicMock(state="idle"))
+    client = TestClient(create_app(bridge), client=("192.0.2.4", 50000))
+    response = client.get("/stream.m3u", headers={"Authorization": authorization})
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == 'Basic realm="AutoDJ"'
+
+
+def test_failed_listener_auth_is_throttled_before_ban_status(bridge, tmp_path: Path) -> None:
+    bridge.player._cfg.index.active_dir = tmp_path
+    bridge.player._cfg.stream.listener_user = "radio"
+    bridge.player._cfg.stream.listener_password = "secret"
+    bridge.attach_stream(stream=_stream_mock(), station=MagicMock(state="idle"))
+    client = TestClient(create_app(bridge), client=("192.0.2.4", 50000))
+    assert client.post("/api/stream/bans", json={"address": "192.0.2.4"}).status_code == 200
+    for _ in range(5):
+        assert client.get("/stream.m3u").status_code == 401
+    assert client.get("/stream.m3u").status_code == 429
+    assert client.get("/stream.m3u", auth=("radio", "secret")).status_code == 429
+
+
+def test_per_address_limit_kick_and_ban_routes(stream_app) -> None:
+    client, stream = stream_app
+    registry = client.app.state.listener_access
+    registry.max_per_address = 1
+    ident, listener = registry.add(stream, "192.0.2.4", "VLC", icy=False)
+    assert client.get("/stream.mp3").status_code == 503
+    kicked = client.delete(f"/api/stream/listeners/{ident}")
+    assert kicked.status_code == 200
+    assert listener.closed
+    assert registry.listeners() == []
+    assert client.get("/stream.mp3").status_code == 200
+    ident, listener = registry.add(stream, "192.0.2.4", "VLC", icy=False)
+    banned = client.post("/api/stream/bans", json={"address": "192.0.2.4"})
+    assert banned.status_code == 200
+    assert listener.closed
+    assert registry.listeners() == []
+    assert client.get("/stream.m3u").status_code == 403
+
+
+async def test_kick_route_ends_open_stream_response(stream_app) -> None:
+    import asyncio
+
+    from autodj.stream import Listener
+
+    client, stream = stream_app
+    loop = asyncio.get_running_loop()
+    stream.add_listener.side_effect = lambda icy: Listener(icy, 1024, loop)
+    stream.remove_listener.side_effect = lambda listener: listener.close()
+    path = "/stream.mp3"
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", b"testserver")],
+        "client": ("192.0.2.4", 50000),
+        "server": ("testserver", 80),
+    }
+    sent: list[dict] = []
+    started = asyncio.Event()
+
+    async def receive() -> dict:
+        await asyncio.Event().wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+        if message["type"] == "http.response.start":
+            started.set()
+
+    task = asyncio.create_task(client.app(scope, receive, send))
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        ident = client.app.state.listener_access.listeners()[0]["id"]
+        kick = next(
+            route.endpoint
+            for route in client.app.routes
+            if route.path == "/api/stream/listeners/{ident}"
+        )
+        assert (await kick(ident))["address"] == "192.0.2.4"
+        await asyncio.wait_for(task, 2)
+        assert sent[-1] == {"type": "http.response.body", "body": b"", "more_body": False}
+        assert client.app.state.listener_access.listeners() == []
+    finally:
+        task.cancel()
+
+
+def test_corrupt_bans_file_does_not_prevent_startup(bridge, tmp_path: Path) -> None:
+    bridge.player._cfg.index.active_dir = tmp_path
+    (tmp_path / "listener_bans.json").write_text("broken", encoding="utf-8")
+    bridge.attach_stream(stream=_stream_mock(), station=MagicMock(state="idle"))
+    client = TestClient(create_app(bridge), client=("192.0.2.4", 50000))
+    assert client.get("/stream.m3u").status_code == 200
+    assert len(list(tmp_path.glob("listener_bans.json.*.bad"))) == 1
+
+
+def test_ban_write_failure_returns_json_error(stream_app) -> None:
+    client, _stream = stream_app
+    with patch("autodj.listener_access.atomic_write", side_effect=OSError("disk full")):
+        response = client.post("/api/stream/bans", json={"address": "192.0.2.4"})
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Could not save listener ban"
+    assert client.post("/api/stream/bans", json={"address": "192.0.2.4"}).status_code == 200
+    with patch("autodj.listener_access.atomic_write", side_effect=OSError("disk full")):
+        response = client.delete("/api/stream/bans?address=192.0.2.4")
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Could not remove listener ban"
+
+
+def test_ban_api_blocks_stream_and_survives_new_app(bridge, tmp_path: Path) -> None:
+    bridge.player._cfg.index.active_dir = tmp_path
+    bridge.attach_stream(stream=_stream_mock(), station=MagicMock(state="idle"))
+    client = TestClient(create_app(bridge), client=("192.0.2.4", 50000))
+    created = client.post(
+        "/api/stream/bans",
+        json={
+            "address": "192.0.2.0/24",
+            "minutes": 60,
+            "note": "too many connections",
+        },
+    )
+    assert created.status_code == 200, created.text
+    assert client.get("/stream.m3u").status_code == 403
+    assert client.head("/stream.mp3").status_code == 403
+    assert client.get("/api/stream/bans").json()["bans"][0]["note"] == "too many connections"
+    assert client.get("/api/stream/listeners").json()["password_set"] is False
+    restarted = TestClient(create_app(bridge), client=("192.0.2.4", 50000))
+    assert restarted.get("/stream.m3u").status_code == 403
+    assert restarted.delete("/api/stream/bans?address=192.0.2.0%2F24").status_code == 200
+    assert restarted.get("/stream.m3u").status_code == 200
+
+
+def test_per_address_limit_setting_updates_admission(stream_app) -> None:
+    client, _stream = stream_app
+    assert (
+        client.post("/api/stream/settings", json={"max_listeners_per_address": 0}).status_code
+        == 200
+    )
+    assert client.get("/api/stream/listeners").json()["max_per_address"] == 0
+    assert (
+        client.post("/api/stream/settings", json={"max_listeners_per_address": -1}).status_code
+        == 422
+    )
+    assert client.get("/api/stream/listeners").json()["max_per_address"] == 0
 
 
 def test_host_check_still_applies(stream_app) -> None:
@@ -197,6 +394,7 @@ def test_stream_info(stream_app) -> None:
         "bitrate": 320,
         "continuous": False,
         "station_name": "AutoDJ",
+        "show_next": False,
         "listeners": 2,
         "state": "idle",
         "relays": [],
@@ -224,6 +422,19 @@ def test_continuous_setting_is_strict_and_persisted(stream_app, bridge) -> None:
     assert response.json()["continuous"] is True
     assert bridge.player._cfg.stream.continuous is True
     stream.set_bitrate.assert_not_called()
+    bridge.save_persistent_state.assert_called_once()
+
+
+def test_show_next_is_strict_persisted_and_reaches_the_public_feed(stream_app, bridge) -> None:
+    client, _stream = stream_app
+    bridge.save_persistent_state = MagicMock()
+    # The upcoming song stays private until the operator turns it on.
+    assert client.get("/api/nowplaying").json()["next_track"] is None
+    assert client.post("/api/stream/settings", json={"show_next": "true"}).status_code == 422
+    response = client.post("/api/stream/settings", json={"show_next": True})
+    assert response.status_code == 200 and response.json()["show_next"] is True
+    assert bridge.player._cfg.nowplaying.show_next is True
+    assert client.get("/api/nowplaying").json()["next_track"]["title"] == "Song 1"
     bridge.save_persistent_state.assert_called_once()
 
 
@@ -486,7 +697,7 @@ def test_lifespan_starts_the_station_and_shuts_it_down_first() -> None:
     player.bus.remove_output.side_effect = lambda _out: order.append("remove_output")
     with patch("autodj.stream.FfmpegEncoder", FakeEncoder):
         app = create_app(bridge, stream_mode=True)
-        with TestClient(app) as client:
+        with TestClient(app, client=("192.0.2.4", 50000)) as client:
             assert bridge.stream_mode
             stream = bridge.stream
             assert isinstance(stream, StreamOutput)
@@ -627,7 +838,7 @@ def test_tick_stream_workers_skips_what_is_missing() -> None:
 
 
 def test_history_route_reads_the_hooked_history(bridge) -> None:
-    client = TestClient(create_app(bridge))
+    client = TestClient(create_app(bridge), client=("192.0.2.4", 50000))
     bridge.on_track_started(_make_entry(3))
     items = client.get("/api/history").json()["items"]
     assert [row["title"] for row in items] == ["Song 3"]
@@ -693,9 +904,9 @@ def test_failure_building_the_response_frees_the_listener_slot() -> None:
     with (
         patch("autodj.stream.FfmpegEncoder", FakeEncoder),
         patch("autodj.server._ListenerResponse", side_effect=RuntimeError("boom")),
-        TestClient(create_app(bridge, stream_mode=True)) as client,
+        TestClient(create_app(bridge, stream_mode=True), client=("192.0.2.4", 50000)) as client,
     ):
-        quiet = TestClient(client.app, raise_server_exceptions=False)
+        quiet = TestClient(client.app, raise_server_exceptions=False, client=("192.0.2.4", 50000))
         response = quiet.get("/stream.mp3")
         assert response.status_code == 500
         assert bridge.stream.listener_count == 0
@@ -852,7 +1063,7 @@ def test_stream_shutdown_failure_still_stops_the_player(caplog) -> None:
     bridge.player.bus.remove_output.side_effect = RuntimeError("bus gone")
     with (
         patch("autodj.stream.FfmpegEncoder", FakeEncoder),
-        TestClient(create_app(bridge, stream_mode=True)),
+        TestClient(create_app(bridge, stream_mode=True), client=("192.0.2.4", 50000)),
     ):
         stream = bridge.stream
     assert "Stopping the stream" in caplog.text
@@ -870,7 +1081,10 @@ def test_seed_becomes_the_first_sets_first_track() -> None:
     seed = _make_entry(2)
     with (
         patch("autodj.stream.FfmpegEncoder", FakeEncoder),
-        TestClient(create_app(bridge, stream_mode=True, stream_first_track=seed)),
+        TestClient(
+            create_app(bridge, stream_mode=True, stream_first_track=seed),
+            client=("192.0.2.4", 50000),
+        ),
     ):
         bus = bridge.player.bus
         bus.start_set.side_effect = lambda: setattr(bus, "playing", True)
@@ -1010,7 +1224,7 @@ def test_relays_start_with_the_stream_and_keep_the_station_playing(tmp_path: Pat
     )
     with (
         patch("autodj.stream.FfmpegEncoder", FakeEncoder),
-        TestClient(create_app(bridge, stream_mode=True)) as client,
+        TestClient(create_app(bridge, stream_mode=True), client=("192.0.2.4", 50000)) as client,
     ):
         relays = bridge.relays
         bus = bridge.player.bus
@@ -1037,7 +1251,7 @@ def test_stream_listeners_are_counted_for_the_play_log(stream_app, bridge) -> No
     with client.stream("GET", "/stream.mp3", headers={"User-Agent": "VLC/3.0"}) as response:
         assert response.status_code == 200
         next(response.iter_bytes())
-    assert seen == [("in", ("testclient", "VLC/3.0")), ("out", ("testclient", "VLC/3.0"))]
+    assert seen == [("in", ("192.0.2.4", "VLC/3.0")), ("out", ("192.0.2.4", "VLC/3.0"))]
     stream.remove_listener.assert_called_with(stream.add_listener.return_value)
 
 
@@ -1051,7 +1265,10 @@ def test_a_failed_count_still_frees_the_listener(stream_app, bridge) -> None:
     bridge.listener_connected = broken
     bridge.listener_disconnected = left.append
     assert (
-        TestClient(client.app, raise_server_exceptions=False).get("/stream.mp3").status_code == 500
+        TestClient(client.app, raise_server_exceptions=False, client=("192.0.2.4", 50000))
+        .get("/stream.mp3")
+        .status_code
+        == 500
     )
     stream.remove_listener.assert_called_once_with(stream.add_listener.return_value)
-    assert left == [("testclient", "testclient")]
+    assert left == [("192.0.2.4", "testclient")]

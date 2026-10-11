@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from autodj._bridge import PlayerBridge
+from autodj.config import NowPlayingConfig
 from autodj.player import PlayerState
 from autodj.runtime_state import (
     STATE_VERSION,
@@ -74,7 +75,13 @@ def _make_player() -> SimpleNamespace:
         playback=playback,
         index=SimpleNamespace(active_dir=Path(".")),
         replaygain=SimpleNamespace(enabled=False, target_db=-14.0, max_clip_safe_gain=1.0),
-        stream=SimpleNamespace(bitrate=320, continuous=False, station_name="AutoDJ"),
+        stream=SimpleNamespace(
+            bitrate=320,
+            continuous=False,
+            station_name="AutoDJ",
+            max_listeners_per_address=0,
+        ),
+        nowplaying=NowPlayingConfig(),
         presets={},
     )
     return SimpleNamespace(
@@ -442,6 +449,16 @@ class TestLoadInto:
         _load(player, tmp_path)
         assert player._cfg.stream.station_name == "Kitchen Radio"
 
+    def test_nowplaying_visibility_restores_and_rejects_non_boolean(self, tmp_path) -> None:
+        player = _make_player()
+        _write_state(tmp_path, {"playback": {"nowplaying_show_next": False}})
+        _load(player, tmp_path)
+        assert player._cfg.nowplaying.show_next is False
+        _write_state(tmp_path, {"playback": {"nowplaying_show_next": "false"}})
+        player._cfg.nowplaying.show_next = True
+        _load(player, tmp_path)
+        assert player._cfg.nowplaying.show_next is True
+
     def test_new_mix_numbers_out_of_range_are_skipped(self, tmp_path, caplog) -> None:
         player = _make_player()
         _write_state(
@@ -656,6 +673,8 @@ class TestRoundTrip:
             "stream_bitrate",
             "stream_continuous",
             "stream_station_name",
+            "nowplaying_show_next",
+            "stream_max_listeners_per_address",
             "crossfade_bass_cutoff_hz",
             "pick_top_k",
             "pick_temperature",

@@ -5,8 +5,10 @@ that wrote it and the list of files) and these members:
 
 - ``index/index-manifest.json`` and the two generation files it names
   (``tracks.gN.db`` and ``vectors.gN.index``): the live index generation.
-- ``index/dj_meta.db``, ``index/library.db`` and ``index/web_state.json`` from the active index folder.
-- ``liners/...``, ``profiles/...`` and ``stereo-tool-presets/...``: operator files.
+- ``index/dj_meta.db``, ``index/library.db``, ``index/web_state.json``,
+  ``index/schedule.json`` and ``index/listener_bans.json`` from the active index folder.
+- ``liners/...`` and ``profiles/...``: every file in those folders.
+- ``stereo-tool-presets/...``: the uploaded ``.sts`` presets.
 """
 
 from __future__ import annotations
@@ -31,7 +33,14 @@ if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
 
 # Files of the index folder a backup holds besides the generation files.
-INDEX_FILES = ("dj_meta.db", "library.db", "web_state.json", im.MANIFEST_NAME)
+INDEX_FILES = (
+    "dj_meta.db",
+    "library.db",
+    "web_state.json",
+    "schedule.json",
+    "listener_bans.json",
+    im.MANIFEST_NAME,
+)
 _FOLDERS = ("liners", "profiles", "stereo-tool-presets")
 
 
@@ -121,8 +130,11 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
             snapshot = Path(temp) / "index"
             _snapshot_index(roots["index"], snapshot)
             members: dict[str, Path] = {}
-            web_state = roots["index"] / "web_state.json"
-            for path in [*sorted(snapshot.glob("*")), web_state]:
+            state_files = [
+                roots["index"] / name
+                for name in ("web_state.json", "schedule.json", "listener_bans.json")
+            ]
+            for path in [*sorted(snapshot.glob("*")), *state_files]:
                 if path.is_file():
                     members[f"index/{path.name}"] = path
             for top in _FOLDERS:

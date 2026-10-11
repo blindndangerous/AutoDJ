@@ -17,6 +17,8 @@ import numpy as np
 
 from autodj.indexer import IndexEntry, file_fingerprint
 
+_connect = sqlite3.connect
+
 _ENTRY_FIELDS = (
     "title",
     "artist",
@@ -99,7 +101,7 @@ class LibraryCatalog:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self._conn: sqlite3.Connection | None = sqlite3.connect(self.path, check_same_thread=False)
+        self._conn: sqlite3.Connection | None = _connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         try:
             self._conn.executescript(_SCHEMA)

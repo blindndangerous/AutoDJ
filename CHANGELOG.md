@@ -15,6 +15,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Stereo Tool input trim is adjustable from -12 to +6 dB. Quiet song openings can receive up
   to 4 dB of peak-safe lift by default, returning to normal within eight seconds. The limit
   is adjustable from 0 to 6 dB, with 0 disabling the lift.
+
+- A scheduler for timed events (Settings, Schedule). Events run once, daily, on weekdays, on
+  chosen days, or every N minutes within an optional window, in the station time zone
+  (`[server] station_timezone`). They switch profiles, presets or song picking, play liners,
+  start or stop the stream, or turn discovery on or off, with hard or soft timing. The panel
+  lists the next events and recent runs; the schedule is saved in `schedule.json` and backed up.
+
+- A public now-playing feed at `/api/nowplaying`: JSON with the station name, the song playing, recent
+  songs and the listener count, for web pages, overlays and other services. It needs no pairing and
+  never includes file paths.
+  - Track-change webhooks, set up in `config.local.toml`, send the same details as JSON or as a
+    Discord message. Delivery runs in the background and retries, so a slow destination never
+    holds up playback.
+  - The next song stays out of the feed unless you turn on **Show the next song publicly** (or
+    `[nowplaying] show_next`), since some webcasting licences forbid announcing songs in advance.
+  - The feed also reports today's peak listener count (since midnight in the station time zone, reset when AutoDJ
+    restarts) and how long AutoDJ has been running. Its schema version is now 2.
+  - A public status page at `/status` shows the station name, the song playing, the next song when
+    allowed, listeners now, today's peak and the uptime, as plain text that works without
+    JavaScript and updates every 15 seconds when it can. Screen readers hear the song line only
+    when the song changes.
+  - In stream mode, Settings, Stream has a **Now-playing feed** group: the feed's link and the
+    status page's link, each with a Copy button, the show-next checkbox, and a list of webhooks
+    by host, format and last result, each with a **Send test** button that says whether the test
+    arrived.
+
+- Stream operators can set an optional listener password in `config.local.toml`, limit
+  connections per address, and disconnect or ban addresses from Settings, Stream. Bans survive
+  restarts and are included in backups. Trusted proxy addresses control when forwarded client
+  addresses are used.
+
+- Track info buttons in Now Playing, Queue, Search results, History, library browse and voice
+  liners open the same details and cue editor. The Return to History, Return to Queue & Search
+  and other view-specific buttons restore focus to the source item, or explain when it has gone.
+  An old play with no saved path, or a recording removed from the library, gets a spoken explanation.
 - Richer repeat rules for picking songs.
   - An artist credit counts for every artist it names: "feat.", "ft.", "featuring" and "vs."
     always split it, and "&", "and", "x", "with" and commas split it when the parts look like

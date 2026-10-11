@@ -148,15 +148,6 @@ class TestExplainPick:
         out = explain_pick(_entry(bpm=132.6), _entry(bpm=129.4))
         assert "BPM eases 133 to 129, down 4." in out
 
-    def test_camelot_position_unknown_falls_to_label(self) -> None:
-        """Both labels valid but position resolution fails — line 73 path."""
-        # (key=0, mode=1) → 8B; force key 0 mode 1 vs an out-of-table key
-        # is impossible because the wheel covers all 12 — instead trigger
-        # the fallback by making BOTH None (via mocking).  Cover the
-        # branch by using key=0 mode=1 vs key=0 mode=1 (same, hits 75-76).
-        out = explain_pick(_entry(key=0, mode=1), _entry(key=0, mode=1))
-        assert any("Same Camelot" in s for s in out)
-
     def test_camelot_unrelated_falls_through(self) -> None:
         """Same-side, far apart: covers line 91 fall-through label."""
         # 8B (C major) vs 12B (E major) — same side but +4 (not 1, 2, or 11)

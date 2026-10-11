@@ -43,6 +43,18 @@ def _config(root: Path) -> AutoDJConfig:
     return cfg
 
 
+def test_schedule_is_backed_up_and_restored(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    schedule = cfg.index.active_dir / "schedule.json"
+    schedule.write_text('{"schema_version":1,"events":[],"runs":[]}', encoding="utf-8")
+    archive = create_backup(cfg, tmp_path / "schedule.zip", force=False)
+    with zipfile.ZipFile(archive) as backup:
+        assert "index/schedule.json" in backup.namelist()
+    schedule.unlink()
+    restore_backup(cfg, archive, force=True)
+    assert json.loads(schedule.read_text(encoding="utf-8"))["schema_version"] == 1
+
+
 def _publish(cfg: AutoDJConfig, title: str) -> None:
     entry = IndexEntry(
         path=str(cfg.library.music_dir / "song.flac"),
@@ -111,7 +123,13 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
     liners = active / "liners"
     profiles = active.parent / "profiles"
     _publish(cfg, "Kept")
-    (active / "web_state.json").write_text('{"volume": 1}', encoding="utf-8")
+    (active / "web_state.json").write_text(
+        '{"playback": {"nowplaying_show_next": false}}', encoding="utf-8"
+    )
+    (active / "listener_bans.json").write_text(
+        '{"bans": [{"address": "192.0.2.1/32", "expires_at": null, "note": "abuse"}]}',
+        encoding="utf-8",
+    )
     liners.mkdir()
     (liners / "station.mp3").write_bytes(b"liner")
     (profiles / "night").mkdir(parents=True)
@@ -128,6 +146,7 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
 
     _publish(cfg, "Replaced")
     (active / "web_state.json").write_text('{"volume": 0}', encoding="utf-8")
+    (active / "listener_bans.json").write_text('{"bans": []}', encoding="utf-8")
     (liners / "extra.mp3").write_bytes(b"new")
     with closing(_dj_meta(cfg)) as conn:
         conn.execute("DELETE FROM cues")
@@ -142,13 +161,21 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
 
     assert "pass --force" in refused.output
     assert restored.exit_code == 0, restored.output
-    assert "Restored 8 files." in restored.output
+    assert "Restored 9 files." in restored.output
     assert _indexed_title(cfg) == "Kept"
     assert sorted(path.name for path in active.glob("*.g*")) == [
         "tracks.g00000000000000000001.db",
         "vectors.g00000000000000000001.index",
     ]
-    assert (active / "web_state.json").read_text(encoding="utf-8") == '{"volume": 1}'
+    assert (active / "web_state.json").read_text(encoding="utf-8") == (
+        '{"playback": {"nowplaying_show_next": false}}'
+    )
+    assert (
+        json.loads((active / "listener_bans.json").read_text(encoding="utf-8"))["bans"][0][
+            "address"
+        ]
+        == "192.0.2.1/32"
+    )
     assert sorted(path.name for path in liners.iterdir()) == ["station.mp3"]
     assert (profiles / "night" / "profile.json").read_text(encoding="utf-8") == "{}"
     with closing(sqlite3.connect(active / "dj_meta.db")) as conn:
