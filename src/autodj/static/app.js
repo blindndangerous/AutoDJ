@@ -30,6 +30,8 @@ import { installLibraryFolders } from "./modules/library-folders.js";
 import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
 import { installSchedulerPanel } from "./modules/scheduler-panel.js";
 import { createStreamMode, createStreamSettings } from "./modules/stream-mode.js";
+import { installNowPlayingSettings } from "./modules/nowplaying-settings.js";
+import { createListenerControls } from "./modules/listener-controls.js";
 import { initSubtabs } from "./modules/subtabs.js";
 
 if (isDebug()) {
@@ -173,6 +175,21 @@ const streamSettings = createStreamSettings({
   srStatus: document.getElementById("sr-status"),
   settingsStatus,
 });
+// Settings > Stream > Now-playing feed: its link, show-next and webhooks.
+const nowPlayingSettings = installNowPlayingSettings({
+  doc: document,
+  request: requestJson,
+  saveShowNext: (value, control) =>
+    postSettings("/api/stream/settings", { show_next: value }, control),
+  srStatus: document.getElementById("sr-status"),
+  settingsStatus,
+});
+const listenerControls = createListenerControls(
+  document, settingsStatus,
+  (value, control) => postSettings(
+    "/api/stream/settings", { max_listeners_per_address: value }, control,
+  ),
+);
 // A lookup that failed while another tab showed was never heard; opening
 // Settings tries again.
 window.addEventListener("hashchange", () => {
@@ -217,6 +234,8 @@ function clearProtectedSessionData() {
   _seekController?.cancel();
   streamMode.stop();
   streamSettings.reset();
+  nowPlayingSettings?.reset();
+  listenerControls.reset();
   resetTrackCaches();
   historyRequest?.abort();
   resetLyricState();
@@ -450,6 +469,8 @@ function applyState(s) {
   _lastStreamServerAudio = inStream && Boolean(s.stream_server_audio);
   streamMode.apply(s);
   streamSettings.apply(s);
+  nowPlayingSettings?.apply(s);
+  listenerControls.apply(s);
   const browserMode = Boolean(s.browser_playback) && !inStream;
 
   // Now Playing
@@ -2016,9 +2037,14 @@ let _histWithDate = false;
 let _histPlayingPath = null;
 
 function historyRowHtml(it, withDate) {
+  const name = escHtml(fmtTrack(it));
+  const path = escHtml(it.path || "");
+  const historyId = escHtml(it.event_id || `${it.played_at}:${it.path || ""}`);
   return `<tr>
       <td>${escHtml(formatPlayedAt(it.played_at, withDate))}</td>
-      <td>${escHtml(it.title)}</td>
+      <td>${escHtml(it.title)} <button type="button" class="history-info"
+        data-path="${path}" data-history-id="${historyId}"
+        aria-label="Track info for ${name}">Track info</button></td>
       <td>${escHtml(it.artist)}</td>
       <td>${_fmtDuration(it.duration)}</td>
     </tr>`;
@@ -2044,6 +2070,16 @@ function _fmtDuration(sec) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
+function focusRemainingHistoryRow(tbody, index, message) {
+  const buttons = [...tbody.querySelectorAll(".history-info")];
+  const target = buttons[Math.min(index, buttons.length - 1)]
+    || document.querySelector("#panel-history > h2");
+  if (target?.tagName !== "BUTTON") target?.setAttribute("tabindex", "-1");
+  target?.focus();
+  announceStatus(document.getElementById("sr-status"), message,
+    { dwellMs: 6000, force: true, mirror: false });
+}
+
 // announce: "page" says where paging landed; "refresh" confirms a
 // Refresh press even when nothing changed.
 async function fetchHistory(page, { announce = false } = {}) {
@@ -2060,12 +2096,22 @@ async function fetchHistory(page, { announce = false } = {}) {
     const empty = document.getElementById("history-empty");
     const pag   = document.getElementById("history-pagination");
     _histNewestAt = null;
+    const focusedButton = tbody.contains(document.activeElement)
+      ? document.activeElement.closest(".history-info") : null;
+    const focusedIndex = focusedButton
+      ? [...tbody.querySelectorAll(".history-info")].indexOf(focusedButton) : -1;
+    let focusLost = false;
     if (!data.total) {
+      tbody.replaceChildren();
       table.setAttribute("hidden", "");
       pag.setAttribute("hidden", "");
       empty.textContent = "No playback history yet.";
       empty.removeAttribute("hidden");
-      if (announce === "refresh") {
+      if (focusedIndex >= 0) {
+        focusRemainingHistoryRow(tbody, focusedIndex, "That play is no longer on this History page.");
+        focusLost = true;
+      }
+      if (announce === "refresh" && !focusLost) {
         announceStatus(document.getElementById("sr-status"),
           "History refreshed.  No tracks played yet.", { dwellMs: 3000, force: true, mirror: false });
       }
@@ -2074,7 +2120,17 @@ async function fetchHistory(page, { announce = false } = {}) {
     empty.setAttribute("hidden", "");
     table.removeAttribute("hidden");
     const withDate = historyNeedsDates(data.items);
+    const focusedId = focusedButton?.dataset.historyId;
     tbody.innerHTML = data.items.map((it) => historyRowHtml(it, withDate)).join("");
+    if (focusedId) {
+      const replacement = [...tbody.querySelectorAll(".history-info")]
+        .find((button) => button.dataset.historyId === focusedId);
+      if (replacement) replacement.focus();
+      else {
+        focusRemainingHistoryRow(tbody, focusedIndex, "That play is no longer on this History page.");
+        focusLost = true;
+      }
+    }
     if (data.page === 1) {
       _histNewestAt = data.items[0].played_at;
       _histWithDate = withDate;
@@ -2083,7 +2139,7 @@ async function fetchHistory(page, { announce = false } = {}) {
     pag.removeAttribute("hidden");
     // Prev / Next / Go leave focus where it was, so say where they landed.
     // The page label is already on screen, hence no visible mirror.
-    if (announce) {
+    if (announce && !focusLost) {
       announceStatus(document.getElementById("sr-status"),
         announce === "refresh" ? `History refreshed.  ${pageText}.` : pageText,
         { dwellMs: 3000, force: true, mirror: false });
@@ -2095,6 +2151,12 @@ async function fetchHistory(page, { announce = false } = {}) {
     const table = document.getElementById("history-table");
     const pag = document.getElementById("history-pagination");
     const empty = document.getElementById("history-empty");
+    if (!announce && tbody?.contains(document.activeElement)) {
+      announceStatus(document.getElementById("sr-status"),
+        `Could not refresh history: ${err.message}`,
+        { dwellMs: 6000, force: true, tone: "error" });
+      return;
+    }
     if (tbody) tbody.replaceChildren();
     if (table) table.setAttribute("hidden", "");
     if (pag) pag.setAttribute("hidden", "");
@@ -2139,11 +2201,17 @@ async function addNewHistoryRows() {
     return;
   }
   const tbody = document.getElementById("history-tbody");
+  const focusedButton = tbody.contains(document.activeElement)
+    ? document.activeElement.closest(".history-info") : null;
+  const focusedIndex = focusedButton
+    ? [...tbody.querySelectorAll(".history-info")].indexOf(focusedButton) : -1;
   // A template parses table rows on their own, without a table around them.
   const rows = document.createElement("template");
   rows.innerHTML = fresh.map((it) => historyRowHtml(it, _histWithDate)).join("");
   tbody.prepend(rows.content);
   while (tbody.children.length > 50) tbody.lastElementChild.remove();
+  if (focusedButton && !focusedButton.isConnected) focusRemainingHistoryRow(tbody, focusedIndex,
+    "That play is no longer in the displayed History rows.");
   _histNewestAt = data.items[0].played_at;
   showHistoryPaging(data);
 }
@@ -2157,6 +2225,19 @@ function noteTrackForHistory(s) {
 }
 
 {
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest?.(".history-info");
+    if (!button || !document.getElementById("history-tbody").contains(button)) return;
+    if (!button.dataset.path) {
+      announceStatus(document.getElementById("sr-status"),
+        "Track info is unavailable because this history entry has no saved recording path.",
+        { dwellMs: 6000, force: true, tone: "error" });
+      return;
+    }
+    document.dispatchEvent(new CustomEvent("autodj:edit-points", {
+      detail: { path: button.dataset.path, kind: "music", opener: button },
+    }));
+  });
   const stepPage = (button, delta) => {
     if (button.getAttribute("aria-disabled") === "true") return;
     void fetchHistory(_histPage + delta, { announce: true });
@@ -2184,11 +2265,12 @@ function noteTrackForHistory(s) {
   });
 }
 
-window.addEventListener("hashchange", () => {
-  if (historyViewShown()) fetchHistory(1);
+window.addEventListener("hashchange", (event) => {
+  if (event.newURL && new URL(event.newURL).hash !== location.hash) return;
+  if (historyViewShown() && !isReturningToView("history")) void fetchHistory(1);
 });
 
-import { initViewRouter } from "./modules/tabs.js";
+import { initViewRouter, isReturningToView } from "./modules/tabs.js";
 
 initViewRouter();
 

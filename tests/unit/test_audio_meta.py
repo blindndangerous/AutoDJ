@@ -272,12 +272,6 @@ class TestReadReplayGainVorbis:
 
         from autodj.audio_meta import read_replaygain
 
-        # Block import by setting the module to a sentinel that raises
-        # on attribute access
-        class _Block:
-            def __getattr__(self, _):
-                raise ImportError("blocked")
-
         # Actual unimport: remove from sys.modules and add finder that raises.
         # Easier: patch _the function's import with monkeypatch_dict trick.
         # Instead patch builtins.__import__:

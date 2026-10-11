@@ -117,9 +117,16 @@ for adding the station to Sonos and VLC, what the playback controls do while str
 troubleshooting.
 
 The stream uses `/stream.mp3` (or `/stream.m3u` for a playlist). Anyone who can reach the
-server can listen without a key. Browser controls still require pairing in LAN mode. Older
+server can listen without a key by default. Operators can set an optional listener password,
+limit connections per address, and disconnect or ban listeners from Settings, Stream. Browser
+controls still require pairing in LAN mode. Older
 keyed addresses such as `/stream/<secret>.mp3` no longer work, so set any player saved with one
 to `/stream.mp3`.
+
+The public `/api/nowplaying` JSON feed lets pages show the station's current song, upcoming song,
+recent plays and listener count, and the public `/status` page shows the same to listeners as plain text. The upcoming song is hidden unless you turn on `[nowplaying] show_next`. Track-change
+webhooks can send the same metadata to other services or Discord; configure their URLs in
+`config.local.toml`. See [Operations](docs/operations.md#now-playing-feed-and-webhooks).
 
 ### Relay to Icecast or Shoutcast
 
@@ -235,10 +242,11 @@ and copy it to the mounted index directory before starting Compose.
 
 ## How to use the web UI
 
-After `autodj serve`, point a browser at `http://localhost:8080`.  Five tabs:
+After `autodj serve`, point a browser at `http://localhost:8080`.  Six tabs:
 
 - **Now Playing.**  What is playing, the next track, album art, lyrics, the cue strip on the progress bar.
 - **Queue & Search.**  Find any track in your library and choose Play now, Play next (straight after the current track) or Add to queue (at the end).  Move queued tracks up, down or to the top, remove them, or clear the whole queue; each move says the new position, such as "Moved Alpha to position 2 of 5".
+- **Track info.**  View a recording's details and edit its cue points. Open it from Now Playing, Queue, Search results, History, library browse or the voice liner list. Use the Return to History, Return to Queue & Search or other view-specific button to return to the source item.
 - **History.**  What has played, newest first, one page at a time.  Times get a date when the page holds tracks from before today.  While page 1 is shown, each new song is added to the top on its own.  Refresh history reloads the page you are on.  Export play log saves every play between two dates, for royalty reports: a CSV with one row per play (times, seconds played, artist, title, album, ISRC, label, kind, file and performances, meaning listeners who heard it) or a SoundExchange Report of Use.  `autodj export-plays` does the same from the command line; see [Play log export](docs/operations.md#play-log-export).
 - **Settings.**  Split into subtabs, so each screen holds one group.  Move between them with the arrow keys, Home and End, as with the section tabs; the page remembers the last one you used.
   - **Transitions**: the transition mode, crossfade and fade-in length, EQ ducking and its cutoff, the transition effect and its level, and how Skip ends a track.

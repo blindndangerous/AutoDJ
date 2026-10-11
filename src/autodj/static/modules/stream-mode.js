@@ -322,7 +322,7 @@ export const BITRATE_SETTLE_MS = 600;
 export const ADDRESS_RETRY_MS = 10000;
 // The copied address is built from this page's origin, so a page opened
 // as localhost copies a link that a speaker on the network cannot reach.
-function isLoopbackHost(hostname) {
+export function isLoopbackHost(hostname) {
   const host = String(hostname || "").toLowerCase().replace(/^\[|\]$/g, "");
   return host === "localhost" || host.endsWith(".localhost")
     || host === "::1" || /^127\.\d+\.\d+\.\d+$/.test(host);

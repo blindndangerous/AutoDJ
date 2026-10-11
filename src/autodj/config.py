@@ -1327,6 +1327,10 @@ class StreamConfig(_Section):
     bitrate: int = 320
     idle_grace_seconds: float = 30.0
     max_listeners: int = 8
+    max_listeners_per_address: int = 0
+    trusted_proxies: list[str] = field(default_factory=list)
+    listener_user: str = ""
+    listener_password: str = field(default="", repr=False)
     station_name: str = "AutoDJ"
     relays: dict[str, RelayConfig] = field(default_factory=dict)
 
@@ -1360,12 +1364,86 @@ class StreamConfig(_Section):
             raise TypeError("stream.max_listeners must be an integer")
         if not 1 <= self.max_listeners <= 100:
             raise ValueError("stream.max_listeners must be between 1 and 100")
+        if isinstance(self.max_listeners_per_address, bool) or not isinstance(
+            self.max_listeners_per_address, int
+        ):
+            raise TypeError("stream.max_listeners_per_address must be an integer")
+        if not 0 <= self.max_listeners_per_address <= 100:
+            raise ValueError("stream.max_listeners_per_address must be between 0 and 100")
+        if not isinstance(self.trusted_proxies, list) or not all(
+            isinstance(item, str) for item in self.trusted_proxies
+        ):
+            raise TypeError("stream.trusted_proxies must be a list of addresses or CIDRs")
+        import ipaddress
+
+        for item in self.trusted_proxies:
+            try:
+                ipaddress.ip_network(item, strict=False)
+            except ValueError as exc:
+                raise ValueError(f"invalid stream.trusted_proxies entry: {item}") from exc
+        if not isinstance(self.listener_user, str) or not isinstance(self.listener_password, str):
+            raise TypeError("stream listener credentials must be strings")
+        if self.listener_password and not self.listener_user:
+            raise ValueError("stream.listener_user is required with listener_password")
+        if self.listener_user and not self.listener_password:
+            raise ValueError("stream.listener_password is required with listener_user")
+        if ":" in self.listener_user:
+            raise ValueError("stream.listener_user must not contain ':'")
         if not isinstance(self.station_name, str) or not self.station_name.strip():
             raise ValueError("stream.station_name must be a non-empty string")
         if not self.station_name.isprintable():
             # It is sent as an HTTP header (icy-name): no control characters.
             raise ValueError("stream.station_name must not contain control characters")
         self.idle_grace_seconds = float(self.idle_grace_seconds)
+
+
+@dataclass
+class NowPlayingConfig(_Section):
+    """Public now-playing feed settings (``[nowplaying]``)."""
+
+    SECTION: ClassVar[str] = "nowplaying"
+    show_next: bool = False
+    history_limit: int = 5
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.show_next, bool):
+            raise TypeError("nowplaying.show_next must be true or false")
+        if isinstance(self.history_limit, bool) or not isinstance(self.history_limit, int):
+            raise TypeError("nowplaying.history_limit must be an integer")
+        if not 0 <= self.history_limit <= 20:
+            raise ValueError("nowplaying.history_limit must be between 0 and 20")
+
+
+@dataclass(frozen=True)
+class WebhookConfig:
+    """One outbound track-change destination, stored in config.local.toml."""
+
+    url: str = field(repr=False)
+    format: str = "generic"
+    events: tuple[str, ...] = ("track_change",)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.url, str):
+            raise TypeError("webhooks.url must be a string")
+        parsed = urlsplit(self.url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username:
+            raise ValueError("webhooks.url must be an HTTP or HTTPS URL without user info")
+        try:
+            if parsed.port == 0:
+                raise ValueError("webhooks.url has an invalid port")
+        except ValueError as exc:
+            raise ValueError("webhooks.url has an invalid port") from exc
+        if len(self.url) > 2048 or not self.url.isprintable():
+            raise ValueError("webhooks.url is too long or contains control characters")
+        if not isinstance(self.format, str) or self.format not in {"generic", "discord"}:
+            raise ValueError("webhooks.format must be generic or discord")
+        if (
+            not isinstance(self.events, (list, tuple))
+            or not all(isinstance(event, str) for event in self.events)
+            or set(self.events) != {"track_change"}
+        ):
+            raise ValueError("webhooks.events must contain only track_change")
+        object.__setattr__(self, "events", tuple(self.events))
 
 
 # ---------------------------------------------------------------------------
@@ -1405,6 +1483,8 @@ class AutoDJConfig:
     transitions: TransitionsConfig = field(default_factory=lambda: TransitionsConfig())
     server: ServerConfig = field(default_factory=ServerConfig)
     stream: StreamConfig = field(default_factory=StreamConfig)
+    nowplaying: NowPlayingConfig = field(default_factory=NowPlayingConfig)
+    webhooks: tuple[WebhookConfig, ...] = ()
     config_sources: tuple[str, ...] = ("defaults",)
 
 
@@ -1508,6 +1588,7 @@ _SECTION_TYPES: tuple[type[_Section], ...] = (
     TransitionsConfig,
     ServerConfig,
     StreamConfig,
+    NowPlayingConfig,
 )
 
 
@@ -1548,7 +1629,7 @@ def _build_config(
     if not isinstance(presets_raw, Mapping):
         raise TypeError("presets section must be a table")
 
-    unknown_sections = set(raw) - {t.SECTION for t in _SECTION_TYPES} - {"presets"}
+    unknown_sections = set(raw) - {t.SECTION for t in _SECTION_TYPES} - {"presets", "webhooks"}
     if unknown_sections:
         raise ValueError(f"unknown config sections: {sorted(unknown_sections)}")
     sections: dict[str, Any] = {
@@ -1556,10 +1637,22 @@ def _build_config(
     }
     return AutoDJConfig(
         **sections,
+        webhooks=_load_webhooks(raw.get("webhooks", [])),
         presets=load_user_presets(presets_raw),
         config_path=config_path,
         config_sources=tuple(sources),
     )
+
+
+def _load_webhooks(raw: Any) -> tuple[WebhookConfig, ...]:
+    if not isinstance(raw, list) or len(raw) > 10:
+        raise ValueError("webhooks must be an array of at most 10 tables")
+    hooks = []
+    for item in raw:
+        if not isinstance(item, Mapping) or set(item) - {"url", "format", "events"}:
+            raise ValueError("webhooks entries require url, format and optional events")
+        hooks.append(WebhookConfig(**item))
+    return tuple(hooks)
 
 
 def load_config(
@@ -1584,7 +1677,10 @@ def load_config(
 
     if candidate.exists():
         with candidate.open("rb") as fh:
-            raw = _deep_merge(raw, tomllib.load(fh))
+            shared = tomllib.load(fh)
+            if "webhooks" in shared:
+                raise ValueError("webhooks belong only in config.local.toml")
+            raw = _deep_merge(raw, shared)
         loaded_path = candidate
         sources.append(str(candidate))
     elif explicit:

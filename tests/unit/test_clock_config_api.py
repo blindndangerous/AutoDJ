@@ -6,7 +6,7 @@ import pytest
 from fastapi import HTTPException
 
 from autodj.catalog import LibraryCatalog
-from autodj.config import ServerConfig
+from autodj.config import ServerConfig, StreamConfig
 from autodj.server import ClockBody, PalImportBody, create_app
 
 
@@ -16,9 +16,14 @@ class Library:
 
 
 def app_for(catalog):
-    # The schedule file goes in active_dir; these tests never write it.
-    cfg = SimpleNamespace(server=ServerConfig(), index=SimpleNamespace(active_dir="unused"))
-    player = SimpleNamespace(_cfg=cfg, _clock_status="Idle")
+    player = SimpleNamespace(
+        _cfg=SimpleNamespace(
+            server=ServerConfig(),
+            stream=StreamConfig(),
+            index=SimpleNamespace(active_dir="index"),
+        ),
+        _clock_status="Idle",
+    )
     player.configure_clock = Mock()
     bridge = SimpleNamespace(player=player, library=Library(catalog))
     app = create_app(bridge)

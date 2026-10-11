@@ -181,7 +181,7 @@ export function installQueueButtons(els) {
     const path   = btn.dataset.path;
     if (action === "info") {
       queueList.ownerDocument.dispatchEvent(new CustomEvent("autodj:edit-points", {
-        detail: { path, kind: "music" },
+        detail: { path, kind: "music", opener: btn },
       }));
       return;
     }

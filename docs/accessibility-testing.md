@@ -84,6 +84,13 @@ Before every release, each flow below must be sampled with either NVDA and Firef
 - Stream mode (`serve --stream`): the Settings, Stream subtab, the station name, Copy address,
   the quality choice and listener count, and Listen here starting and stopping the stream in the page,
   and still playing, with nothing said by the stream, after the page's connection drops and returns.
+- Stream mode, Settings, Stream, Now-playing feed: Copy now-playing link said once per press,
+  Show the next song publicly saved and its result said once, the webhook list read as plain text
+  (or the config.local.toml note when there are none), and each Send test naming its host and
+  saying "Sending" and then the result once, with focus staying on the button.
+- The public status page (`/status`): read with headings and the definition list, with and
+  without JavaScript; the song line said once, politely, when the song changes, and nothing said
+  on a poll that finds the same song; the next song shown only while it is allowed.
 - Voice liners: uploading a liner, Test now, and each rotation mode, including the spoken
   result when an upload or test fails.
 - EQ: each band's slider, its spoken value, and resetting the bands.

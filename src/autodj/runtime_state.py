@@ -52,7 +52,15 @@ STATE_VERSION = 2
 #: Saved under ``playback`` but set by their own routes (``/api/volume``,
 #: ``/api/mute``, ``/api/stream/settings``).
 _OWN_ROUTE_PLAYBACK_FIELDS = frozenset(
-    {"volume", "is_muted", "stream_bitrate", "stream_continuous", "stream_station_name"}
+    {
+        "volume",
+        "is_muted",
+        "stream_bitrate",
+        "stream_continuous",
+        "stream_station_name",
+        "nowplaying_show_next",
+        "stream_max_listeners_per_address",
+    }
 )
 #: Playback keys mirrored into ``web_state.json``.
 PERSISTED_PLAYBACK_FIELDS = frozenset(PlaybackSettingsBody.model_fields) | (
@@ -215,6 +223,24 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
         )
         if name is not _INVALID and name is not None:
             player._cfg.stream.station_name = name
+    if "nowplaying_show_next" in playback:
+        show_next = _checked(
+            StreamSettingsBody,
+            "show_next",
+            playback["nowplaying_show_next"],
+            "nowplaying_show_next",
+        )
+        if show_next is not _INVALID:
+            player._cfg.nowplaying.show_next = show_next
+    if "stream_max_listeners_per_address" in playback:
+        limit = _checked(
+            StreamSettingsBody,
+            "max_listeners_per_address",
+            playback["stream_max_listeners_per_address"],
+            "stream_max_listeners_per_address",
+        )
+        if limit is not _INVALID and limit is not None:
+            player._cfg.stream.max_listeners_per_address = limit
 
     values: dict[str, Any] = {}
     for field, saved in playback.items():

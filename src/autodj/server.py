@@ -33,8 +33,11 @@ Stream mode (``serve --stream``) adds ``GET /stream.mp3`` and
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import functools
+import hmac
 import json
 import logging
 import os
@@ -81,6 +84,15 @@ from autodj.clockwheel import ClockSlot, parse_pal, validate_clock, validate_res
 from autodj.icy import METAINT
 from autodj.index_manifest import IndexConsistencyError, read_manifest
 from autodj.lan import PAIRING_ON_REQUEST_HINT, format_lan_banner, lan_urls, running_in_container
+from autodj.listener_access import (
+    AddressLimitError,
+    BannedAddressError,
+    ListenerAccess,
+    ListenerAuthLimiter,
+    normalize_address,
+    proxy_allowlist,
+)
+from autodj.nowplaying import NowPlaying
 from autodj.pairing import DeviceRegistry
 from autodj.playlog import (
     missing_fields,
@@ -116,9 +128,11 @@ from autodj.settings_bodies import (
     VolumeBody,
     validate_playback_choices,
 )
+from autodj.status_page import STATUS_PAGE_CSP, render_status_page
 from autodj.stream import EncoderUnavailableError, ListenerLimitError
 from autodj.tls import CertificateReloader
 from autodj.version import current_version
+from autodj.webhooks import WebhookWorker
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
@@ -127,6 +141,17 @@ if TYPE_CHECKING:
     from autodj.stream import StreamOutput
 
 logger = logging.getLogger(__name__)
+
+
+class ListenerBanBody(BaseModel):
+    """An address or CIDR to block from the public stream."""
+
+    model_config = ConfigDict(extra="forbid")
+    address: str
+    minutes: int | None = PydanticField(default=None, ge=1, le=525600)
+    note: str = PydanticField(default="", max_length=200)
+
+
 _WS_SEND_TIMEOUT_SECONDS = 2.0
 # Stream listeners stay connected until they hang up, so uvicorn would wait
 # for them forever on Ctrl+C; give them this long, then cancel them.
@@ -326,6 +351,7 @@ async def _broadcast_state_once(
     clients: set[_WebSocketClient],
     clients_lock: asyncio.Lock,
     failures: _BroadcastFailureLog,
+    listener_revision: int | None = None,
 ) -> None:
     """Push the player state to every WebSocket client, if any are connected.
 
@@ -336,7 +362,10 @@ async def _broadcast_state_once(
     if not clients:
         return
     try:
-        payload = json.dumps(bridge.get_state())
+        state = bridge.get_state()
+        if listener_revision is not None:
+            state["stream_listener_revision"] = listener_revision
+        payload = json.dumps(state)
         await _broadcast_and_prune(clients, clients_lock, payload)
     except Exception as exc:
         failures.failed(exc)
@@ -1097,6 +1126,34 @@ def create_app(
     _ws_clients: set[_WebSocketClient] = set()
     _ws_lock = asyncio.Lock()
     _lyrics_read_gate = asyncio.Semaphore(1)
+    nowplaying = NowPlaying(bridge)
+    webhooks = WebhookWorker(getattr(bridge.player._cfg, "webhooks", ()))
+
+    # Both run on playout threads (mix bus, station), so a fault here is
+    # logged and never reaches playback.
+    def _track_started() -> None:
+        try:
+            webhooks.submit(nowplaying.refresh())
+        except Exception:
+            logger.exception("Could not publish now-playing state")
+
+    def _public_state_changed() -> None:
+        try:
+            nowplaying.refresh()
+        except Exception:
+            logger.exception("Could not refresh now-playing state")
+
+    cfg = bridge.player._cfg
+    stream_cfg = cfg.stream
+    listener_access = (
+        ListenerAccess(
+            Path(cfg.index.active_dir) / "listener_bans.json",
+            stream_cfg.max_listeners_per_address,
+        )
+        if stream_mode or (isinstance(bridge, PlayerBridge) and bridge.stream_mode)
+        else None
+    )
+    listener_auth_limiter = ListenerAuthLimiter()
 
     async def _read_lyrics_owned(path: str) -> list[dict[str, object]]:
         """Run one path read at a time without cancellation leaking capacity."""
@@ -1153,6 +1210,7 @@ def create_app(
         if bridge.library is not None:
             bridge.library.start_scan()
             library_ticker = asyncio.create_task(_tick_library())
+        webhooks.start()
         try:
             yield
         finally:
@@ -1160,6 +1218,7 @@ def create_app(
             schedule_ticker.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await schedule_ticker
+            webhooks.close()
             # Graceful teardown.  Order matters:
             #   1. Tell the Player thread to leave its wait-loop.  It is
             #      a daemon thread so the process can exit either way,
@@ -1265,6 +1324,7 @@ def create_app(
         redoc_url=None,
         openapi_url=None,
     )
+    app.state.listener_access = listener_access
 
     @app.exception_handler(RequestValidationError)
     async def _validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
@@ -1297,6 +1357,8 @@ def create_app(
         secure_cookie=secure_cookie,
         device_is_active=(device_registry.is_active if device_registry is not None else None),
     )
+    bridge.public_state_changed = _public_state_changed
+    bridge.track_started_callback = _track_started
     # Read-only handles for serve()'s startup banner and for tests; the
     # routes and the middleware use these same objects directly.
     app.state.security_policy = policy
@@ -1604,6 +1666,27 @@ def create_app(
             return {"status": "ok"}
         return {"status": "ok", "tracks": bridge.sim.ntotal}
 
+    @app.api_route("/api/nowplaying", methods=["GET", "HEAD"])
+    async def api_nowplaying() -> JSONResponse:
+        """Return public metadata with no file paths or pairing details."""
+        return JSONResponse(
+            nowplaying.snapshot(),
+            headers={"Cache-Control": "no-cache", "Access-Control-Allow-Origin": "*"},
+        )
+
+    @app.api_route("/status", methods=["GET", "HEAD"], response_class=HTMLResponse)
+    async def get_status_page() -> HTMLResponse:
+        """Serve the public station status page, built from the same feed."""
+        return HTMLResponse(
+            render_status_page(nowplaying.snapshot(), stream_mode=bridge.stream_mode),
+            headers={
+                "Cache-Control": "no-cache",
+                "Content-Security-Policy": STATUS_PAGE_CSP,
+                "X-Content-Type-Options": "nosniff",
+                "Referrer-Policy": "no-referrer",
+            },
+        )
+
     @app.get("/api/history")
     async def api_history(
         page: int = Query(1, ge=1),
@@ -1692,10 +1775,11 @@ def create_app(
     # Radio stream (stream mode only; 404 otherwise)
     # ------------------------------------------------------------------
 
-    def _require_stream_mode() -> None:
+    def _require_stream_mode() -> ListenerAccess:
         """404 unless the server is in stream mode."""
-        if not bridge.stream_mode:
+        if not bridge.stream_mode or listener_access is None:
             raise HTTPException(status_code=404, detail="Not Found")
+        return listener_access
 
     @app.api_route("/stream.{ext}", methods=["GET", "HEAD"])
     async def api_stream_audio(ext: str, request: Request) -> Response:
@@ -1705,13 +1789,49 @@ def create_app(
         the same checks and headers but no body and without becoming a
         listener.
         """
-        _require_stream_mode()
+        access = _require_stream_mode()
         if ext not in {"mp3", "m3u"}:
             raise HTTPException(status_code=404, detail="Not Found")
+        try:
+            address = normalize_address(request.client.host if request.client else "")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid listener address") from exc
+        if stream_cfg.listener_password:
+            if listener_auth_limiter.blocked(address):
+                raise HTTPException(
+                    status_code=429,
+                    detail="Too many failed listener logins; try again in one minute",
+                    headers={"Retry-After": "60"},
+                )
+            auth = request.headers.get("authorization", "")
+            try:
+                scheme, encoded = auth.split(" ", 1)
+                user, password = (
+                    base64.b64decode(encoded, validate=True).decode("utf-8").split(":", 1)
+                )
+            except (ValueError, UnicodeError, binascii.Error):
+                scheme, user, password = "", "", ""
+            valid_user = hmac.compare_digest(
+                user.encode("utf-8"), stream_cfg.listener_user.encode("utf-8")
+            )
+            valid_password = hmac.compare_digest(
+                password.encode("utf-8"), stream_cfg.listener_password.encode("utf-8")
+            )
+            if scheme.lower() != "basic" or not (valid_user and valid_password):
+                listener_auth_limiter.failed(address)
+                logger.info("Failed listener Basic authentication from %s", address)
+                realm = _header_text(stream_cfg.station_name.replace('"', "'").replace("\\", ""))
+                raise HTTPException(
+                    status_code=401,
+                    detail="Listener credentials required",
+                    headers={"WWW-Authenticate": f'Basic realm="{realm}"'},
+                )
+        if await asyncio.to_thread(access.banned, address):
+            raise HTTPException(status_code=403, detail="Listener address banned")
         head = request.method == "HEAD"
         headers = {"Cache-Control": "no-store"}
         if ext == "m3u":
-            scheme = "https" if request.url.scheme == "https" else "http"
+            scheme = request.url.scheme
             host = request.headers.get("host", "")
             body = f"{scheme}://{host}/stream.mp3\n".encode()
             if head:
@@ -1720,7 +1840,6 @@ def create_app(
             return Response(body, media_type="audio/x-mpegurl", headers=headers)
         icy = request.headers.get("icy-metadata", "").strip() == "1"
         if icy:
-            stream_cfg = bridge.player._cfg.stream
             headers.update(
                 {
                     "icy-metaint": str(METAINT),
@@ -1735,23 +1854,29 @@ def create_app(
         stream = bridge.stream
         try:
             # Off the loop: a dead encoder is replaced here (spawns ffmpeg).
-            listener = await asyncio.to_thread(stream.add_listener, icy=icy)
-        except ListenerLimitError as exc:
+            ident, listener = await asyncio.to_thread(
+                access.add, stream, address, request.headers.get("user-agent", ""), icy=icy
+            )
+        except (ListenerLimitError, AddressLimitError) as exc:
             raise HTTPException(status_code=503, detail="Stream listener limit reached") from exc
+        except BannedAddressError as exc:
+            raise HTTPException(status_code=403, detail="Listener address banned") from exc
         except EncoderUnavailableError as exc:
             raise HTTPException(status_code=503, detail="stream encoder failed") from exc
         # Who is listening, for the play log's performance counts.
         client = (
-            request.client.host if request.client else "",
+            address,
             request.headers.get("user-agent", ""),
         )
 
         def release() -> None:
-            stream.remove_listener(listener)
+            access.remove(ident)
             bridge.listener_disconnected(client)
+            nowplaying.refresh()
 
         try:
             bridge.listener_connected(client)
+            nowplaying.refresh()
             return _ListenerResponse(
                 listener.chunks(),
                 on_close=release,
@@ -1768,10 +1893,78 @@ def create_app(
         _require_stream_mode()
         return bridge.stream_info()
 
+    @app.get("/api/webhooks")
+    async def api_webhooks() -> list[dict[str, str | int]]:
+        """Show redacted webhook destinations to a paired browser."""
+        return webhooks.status()
+
+    @app.post("/api/webhooks/{index}/test")
+    async def api_webhook_test(index: int) -> dict[str, bool]:
+        """Send the current public snapshot to one configured webhook."""
+        if index < 0 or index >= len(webhooks.configs):
+            raise HTTPException(status_code=404, detail="Webhook not found")
+        result = webhooks.submit(nowplaying.snapshot(), index)
+        assert result is not None
+        try:
+            delivered = await asyncio.wait_for(asyncio.wrap_future(result), timeout=20)
+        except TimeoutError:
+            delivered = False
+        return {"delivered": delivered}
+
+    @app.get("/api/stream/listeners")
+    async def api_stream_listeners() -> dict:
+        access = _require_stream_mode()
+        return {
+            "listeners": await asyncio.to_thread(access.listeners),
+            "revision": access.revision,
+            "password_set": bool(stream_cfg.listener_password),
+            "max_per_address": access.max_per_address,
+        }
+
+    @app.delete("/api/stream/listeners/{ident}")
+    async def api_stream_kick(ident: str) -> dict:
+        access = _require_stream_mode()
+        address = await asyncio.to_thread(access.kick, ident)
+        if address is None:
+            raise HTTPException(status_code=404, detail="Listener already disconnected")
+        return {"address": address}
+
+    @app.get("/api/stream/bans")
+    async def api_stream_bans() -> dict:
+        access = _require_stream_mode()
+        return {"bans": await asyncio.to_thread(access.bans)}
+
+    @app.post("/api/stream/bans")
+    async def api_stream_ban(body: ListenerBanBody) -> dict:
+        access = _require_stream_mode()
+        try:
+            return {
+                "ban": await asyncio.to_thread(access.ban, body.address, body.minutes, body.note)
+            }
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except OSError as exc:
+            logger.error("Could not save listener ban", exc_info=True)
+            raise HTTPException(status_code=503, detail="Could not save listener ban") from exc
+
+    @app.delete("/api/stream/bans")
+    async def api_stream_unban(address: str) -> dict:
+        access = _require_stream_mode()
+        try:
+            removed = await asyncio.to_thread(access.unban, address)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except OSError as exc:
+            logger.error("Could not remove listener ban", exc_info=True)
+            raise HTTPException(status_code=503, detail="Could not remove listener ban") from exc
+        if not removed:
+            raise HTTPException(status_code=404, detail="Ban not found")
+        return {"address": address}
+
     @app.post("/api/stream/settings")
     async def api_stream_settings(body: StreamSettingsBody) -> dict:
         """Change the stream bitrate (listeners reconnect), continuous play or name."""
-        _require_stream_mode()
+        access = _require_stream_mode()
         if body.bitrate is not None:
             try:
                 await asyncio.to_thread(bridge.set_stream_bitrate, body.bitrate)
@@ -1782,6 +1975,12 @@ def create_app(
         if body.station_name is not None:
             # Read per stream request, so each player shows it when it next connects.
             bridge.player._cfg.stream.station_name = body.station_name
+        if body.show_next is not None:
+            bridge.player._cfg.nowplaying.show_next = body.show_next
+        nowplaying.refresh()
+        if body.max_listeners_per_address is not None:
+            stream_cfg.max_listeners_per_address = body.max_listeners_per_address
+            access.max_per_address = body.max_listeners_per_address
         await asyncio.to_thread(bridge.save_persistent_state)
         return bridge.stream_info()
 
@@ -2102,6 +2301,7 @@ def create_app(
         """Insert a track at the head of the queue."""
         if not bridge.play_next(body.path, now=body.now):
             raise HTTPException(status_code=404, detail=_TRACK_GONE_DETAIL)
+        nowplaying.refresh()
         return {"ok": True}
 
     @app.get("/api/search")
@@ -2119,17 +2319,24 @@ def create_app(
         """Append a track to the user-ordered queue."""
         if not bridge.queue_add(body.path):
             raise HTTPException(status_code=404, detail=_TRACK_GONE_DETAIL)
+        nowplaying.refresh()
         return {"ok": True}
 
     @app.post("/api/queue/remove")
     async def api_queue_remove(body: PlayNextBody) -> dict[str, bool]:
         """Remove a track from the user-ordered queue."""
-        return {"ok": bridge.queue_remove(body.path)}
+        removed = bridge.queue_remove(body.path)
+        if removed:
+            nowplaying.refresh()
+        return {"ok": removed}
 
     @app.post("/api/queue/reorder")
     async def api_queue_reorder(body: QueueReorderBody) -> dict[str, bool]:
         """Reorder the user-ordered queue."""
-        return {"ok": bridge.queue_reorder(body.paths)}
+        changed = bridge.queue_reorder(body.paths)
+        if changed:
+            nowplaying.refresh()
+        return {"ok": changed}
 
     # ------------------------------------------------------------------
     # Cover art and lyrics
@@ -2229,6 +2436,7 @@ def create_app(
             # No JSON body or malformed payload — endpoint accepts either.
             logger.debug("repick_next: no JSON body, blacklist not set")
         bridge.repick_next(blacklist_path=blacklist)
+        nowplaying.refresh()
         return JSONResponse(bridge.get_state())
 
     @app.post("/api/random-track")
@@ -2748,7 +2956,17 @@ def create_app(
         failures = _BroadcastFailureLog()
         while True:
             await asyncio.sleep(1)
-            await _broadcast_state_once(bridge, _ws_clients, _ws_lock, failures)
+            if bridge.stream_mode and listener_access is not None:
+                # One revision per tick covers churn, encoder resets and expired bans.
+                await asyncio.to_thread(listener_access.listeners)
+                await asyncio.to_thread(listener_access.prune_expired)
+            await _broadcast_state_once(
+                bridge,
+                _ws_clients,
+                _ws_lock,
+                failures,
+                listener_access.revision if listener_access is not None else None,
+            )
 
     async def _index_watcher_loop() -> None:  # pragma: no cover — long-running task
         """Reload each newly published index generation every 10 seconds."""
@@ -3003,6 +3221,9 @@ def serve(
     if stream:
         # HTTP/1.0 radio players need close-delimited audio, not chunked framing.
         uvicorn_kwargs["http"] = "h11"
+        # Uvicorn rewrites request.client and scheme only for configured proxy peers.
+        uvicorn_kwargs["proxy_headers"] = True
+        uvicorn_kwargs["forwarded_allow_ips"] = proxy_allowlist(cfg.stream.trusted_proxies)
         uvicorn_kwargs["timeout_graceful_shutdown"] = _STREAM_SHUTDOWN_GRACE_SECONDS
     reloaders: list[CertificateReloader] = []
     if ssl_certfile is not None and ssl_keyfile is not None:
