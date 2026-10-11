@@ -525,8 +525,16 @@ class TestPerformanceCounts:
         _old_play_log(path)
         with LibraryCatalog(path) as catalog:
             assert catalog.play_log()[0]["performances"] is None
+            # The repeat rules read the same table: a migrated play with no
+            # path is left out, and new plays with counts reach both readers.
+            assert catalog.recent_plays(10) == []
+            catalog.write_history(
+                [_row("new", tmp_path / "a.flac", "New", T0) | {"performances": 3}]
+            )
+            assert [p["title"] for p in catalog.recent_plays(10)] == ["New"]
+            assert catalog.play_log()[-1]["performances"] == 3
         with LibraryCatalog(path) as catalog:  # reopening finds the column already there
-            assert len(catalog.play_log()) == 1
+            assert len(catalog.play_log()) == 2
 
     def test_two_processes_upgrading_at_once_both_open(self, tmp_path, monkeypatch) -> None:
         """Another process cannot add the column between our check and our change."""
