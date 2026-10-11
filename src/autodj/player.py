@@ -1131,7 +1131,9 @@ class Player:
         recent = set(context.recent)
         entries = self.playable_entries()
         eligible = tuple(
-            entry for entry in entries if not entry.is_silent and entry.path not in context.protected
+            entry
+            for entry in entries
+            if not entry.is_silent and entry.path not in context.protected
         )
         # DMCA mode holds every slot to the complement, even one that does
         # not enforce the repeat rules.

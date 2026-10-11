@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections import deque
 import logging
+from collections import deque
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -178,6 +178,25 @@ def test_clock_slot_without_rules_skips_protected_and_allows_recent(selection: s
     picked = player._clock_pick(context, 0)
 
     assert picked.entry == recent
+
+
+@pytest.mark.parametrize("kind", ["music", "track"])
+@pytest.mark.parametrize("unavailable", ["protected", "silent"])
+def test_unenforced_clock_slot_skips_unavailable_music(kind: str, unavailable: str) -> None:
+    player = _clock_player([("Artist", "Unavailable")])
+    entry = player.playable_entries()[0]
+    player._clock_slots = [
+        ClockSlot(folder="Z:/Music", kind=kind, path=entry.path, enforce_rules=False)
+    ]
+    context = player._pick_context()
+    if unavailable == "protected":
+        context = replace(context, protected=frozenset({entry.path}))
+    else:
+        silent = make_entry(0)
+        silent.path = entry.path
+        silent.energy = 0.0
+        player._library.entries_snapshot = lambda kind="music": () if kind == "liner" else (silent,)
+    assert player._clock_pick(context, 0).entry is None
 
 
 def test_discovery_honours_the_rules() -> None:
