@@ -2,12 +2,14 @@
 
 from pathlib import Path
 
+import pytest
+
 from autodj.related_artist_file import (
     ensure_related_artists_file,
+    invalid_related_artists_message,
     load_configured_related_artists,
-    migrate_legacy_related_file,
 )
-from autodj.repeat_rules import load_related_artists
+from autodj.repeat_rules import RelatedArtistsFileTooLargeError, load_related_artists
 
 
 def test_copies_bundled_sample_on_first_use(tmp_path: Path) -> None:
@@ -16,13 +18,6 @@ def test_copies_bundled_sample_on_first_use(tmp_path: Path) -> None:
     assert destination == tmp_path / "related-artists.toml"
     assert "Bruno Mars" in destination.read_text(encoding="utf-8")
     assert "single_acts = []" in destination.read_text(encoding="utf-8")
-
-
-def test_custom_path_is_returned_without_creating_it(tmp_path: Path) -> None:
-    custom = tmp_path / "custom.toml"
-
-    assert ensure_related_artists_file(tmp_path, str(custom)) == custom
-    assert not custom.exists()
 
 
 def test_repeated_call_preserves_user_edits(tmp_path: Path) -> None:
@@ -43,45 +38,42 @@ def test_loader_without_an_active_directory_is_empty() -> None:
     assert not load_configured_related_artists(None).links
 
 
-def test_legacy_starter_migration_copies_union_and_preserves_source(tmp_path: Path) -> None:
-    source = tmp_path / "custom.toml"
-    original = b'single_acts = ["Custom Band"]\n[related]\n"Custom Artist" = ["Custom Project"]\n'
-    source.write_bytes(original)
+def test_related_artists_file_over_one_mib_is_rejected_unread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "related-artists.toml"
+    path.write_bytes(b" " * (1024 * 1024 + 1))
 
-    migrated = migrate_legacy_related_file(
-        tmp_path / "index", {"related_artists_file": str(source), "related_artists_starter": True}
+    def no_read(*_args, **_kwargs):
+        raise AssertionError("the file was opened")
+
+    monkeypatch.setattr(Path, "open", no_read)
+    with pytest.raises(RelatedArtistsFileTooLargeError) as error:
+        load_related_artists(path)
+    assert invalid_related_artists_message(error.value) == (
+        "The related artists file is larger than 1 MiB."
     )
 
-    assert migrated is not None
-    assert source.read_bytes() == original
-    related = load_related_artists(migrated)
-    assert related.related_to("bruno mars") == {"silk sonic"}
-    assert related.related_to("custom artist") == {"custom project"}
-    assert "Custom Band" in related.single_acts
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        (b'secret = "x"\n[related\n', "The related artists file is not valid: line 2."),
+        (b'secret_token = "private"\n', "The related artists file is not valid."),
+    ],
+    ids=["toml syntax", "unexpected key"],
+)
+def test_browser_message_names_no_file_content(
+    tmp_path: Path, content: bytes, message: str
+) -> None:
+    path = tmp_path / "related-artists.toml"
+    path.write_bytes(content)
+    with pytest.raises(ValueError) as error:
+        load_related_artists(path)
+    assert invalid_related_artists_message(error.value) == message
 
 
-def test_legacy_starter_migration_reuses_copy_without_source(tmp_path: Path) -> None:
-    source = tmp_path / "custom.toml"
-    source.write_text('[related]\n"Custom Artist" = ["First Project"]\n', encoding="utf-8")
-    legacy = {"related_artists_file": str(source), "related_artists_starter": True}
-    migrated = Path(migrate_legacy_related_file(tmp_path / "index", legacy))
-    migrated.write_text('[related]\n"User Edit" = ["Kept"]\n', encoding="utf-8")
-    source.unlink()
-
-    assert migrate_legacy_related_file(tmp_path / "index", legacy) == str(migrated)
-    assert "User Edit" in migrated.read_text(encoding="utf-8")
-
-
-def test_legacy_starter_migration_uses_different_copy_for_each_source(tmp_path: Path) -> None:
-    one, two = tmp_path / "one.toml", tmp_path / "two.toml"
-    one.write_text("", encoding="utf-8")
-    two.write_text("", encoding="utf-8")
-
-    first = migrate_legacy_related_file(
-        tmp_path / "index", {"related_artists_file": str(one), "related_artists_starter": True}
+def test_browser_message_for_an_unreadable_file() -> None:
+    assert invalid_related_artists_message(PermissionError("C:/secret")) == (
+        "The related artists file could not be read."
     )
-    second = migrate_legacy_related_file(
-        tmp_path / "index", {"related_artists_file": str(two), "related_artists_starter": True}
-    )
-
-    assert first != second

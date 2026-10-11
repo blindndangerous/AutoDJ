@@ -832,38 +832,66 @@
       </span>
     </fieldset>
 
-    <fieldset>
+    <!-- The rules' shared help is the outer group's description, read once
+         when focus enters Repeats, not repeated on all eight boxes. -->
+    <fieldset aria-describedby="repeat-rules-desc">
       <legend>Repeats</legend>
-      <span class="setting-desc" id="repeat-rules-desc">Set a track limit, a time limit, or both. 0 disables that limit. Track limits are whole numbers from 0 to 100000; time limits can be decimals from 0 to 10080 minutes.</span>
+      <p class="setting-desc" id="repeat-rules-desc">Each rule has a Tracks limit and a Minutes limit; when both are set, a repeat waits for both. 0 turns a limit off. Tracks are whole numbers, up to 100000 for the same track and up to 5000 for artist, album and title. Minutes go up to 10080 (one week) and can have decimals.</p>
       <fieldset>
         <legend>Prevent the same artist from repeating within</legend>
-        <div class="settings-row"><label for="repeat-artist-tracks">Tracks</label><input type="number" id="repeat-artist-tracks" min="0" max="100000" step="1" value="8" inputmode="numeric" aria-describedby="repeat-rules-desc"></div>
-        <div class="settings-row"><label for="repeat-artist-minutes">Minutes</label><input type="number" id="repeat-artist-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal" aria-describedby="repeat-rules-desc"></div>
+        <div class="settings-row">
+          <label for="repeat-artist-tracks">Tracks</label>
+          <input type="number" id="repeat-artist-tracks" min="0" max="5000" step="1" value="8" inputmode="numeric">
+        </div>
+        <div class="settings-row">
+          <label for="repeat-artist-minutes">Minutes</label>
+          <input type="number" id="repeat-artist-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
+        </div>
       </fieldset>
-      <div class="settings-check">
-        <input type="checkbox" id="repeat-use-related-artists">
-        <label for="repeat-use-related-artists">Use related artists</label>
-      </div>
+      <fieldset>
+        <legend>Related artists</legend>
+        <div class="settings-check">
+          <input type="checkbox" id="repeat-use-related-artists" aria-describedby="repeat-related-desc repeat-related-status">
+          <label for="repeat-use-related-artists">Use related artists</label>
+        </div>
+        <p class="setting-desc" id="repeat-related-desc">The artist rule also holds back the artists linked in related-artists.toml in the index folder: <code id="repeat-related-default">index/&lt;name&gt;/related-artists.toml</code>. Edit that file, then save repeat settings to reload it.</p>
+        <!-- A problem found in the file at startup or on save; empty and
+             hidden while there is none. -->
+        <p class="setting-desc" id="repeat-related-status" hidden></p>
+      </fieldset>
       <fieldset>
         <legend>Prevent the same album from repeating within</legend>
-        <div class="settings-row"><label for="repeat-album-tracks">Tracks</label><input type="number" id="repeat-album-tracks" min="0" max="100000" step="1" value="0" inputmode="numeric" aria-describedby="repeat-rules-desc"></div>
-        <div class="settings-row"><label for="repeat-album-minutes">Minutes</label><input type="number" id="repeat-album-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal" aria-describedby="repeat-rules-desc"></div>
+        <div class="settings-row">
+          <label for="repeat-album-tracks">Tracks</label>
+          <input type="number" id="repeat-album-tracks" min="0" max="5000" step="1" value="0" inputmode="numeric">
+        </div>
+        <div class="settings-row">
+          <label for="repeat-album-minutes">Minutes</label>
+          <input type="number" id="repeat-album-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
+        </div>
       </fieldset>
       <fieldset>
         <legend>Prevent the same track from repeating within</legend>
-        <div class="settings-row"><label for="repeat-track-tracks">Tracks</label><input type="number" id="repeat-track-tracks" min="0" max="100000" step="1" value="50" inputmode="numeric" aria-describedby="repeat-rules-desc"></div>
-        <div class="settings-row"><label for="repeat-track-minutes">Minutes</label><input type="number" id="repeat-track-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal" aria-describedby="repeat-rules-desc"></div>
+        <div class="settings-row">
+          <label for="repeat-track-tracks">Tracks</label>
+          <input type="number" id="repeat-track-tracks" min="0" max="100000" step="1" value="50" inputmode="numeric">
+        </div>
+        <div class="settings-row">
+          <label for="repeat-track-minutes">Minutes</label>
+          <input type="number" id="repeat-track-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
+        </div>
       </fieldset>
       <fieldset>
         <legend>Prevent the same title from repeating within</legend>
-        <div class="settings-row"><label for="repeat-title-tracks">Tracks</label><input type="number" id="repeat-title-tracks" min="0" max="100000" step="1" value="0" inputmode="numeric" aria-describedby="repeat-rules-desc"></div>
-        <div class="settings-row"><label for="repeat-title-minutes">Minutes</label><input type="number" id="repeat-title-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal" aria-describedby="repeat-rules-desc"></div>
+        <div class="settings-row">
+          <label for="repeat-title-tracks">Tracks</label>
+          <input type="number" id="repeat-title-tracks" min="0" max="5000" step="1" value="0" inputmode="numeric">
+        </div>
+        <div class="settings-row">
+          <label for="repeat-title-minutes">Minutes</label>
+          <input type="number" id="repeat-title-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
+        </div>
       </fieldset>
-      <div class="settings-row">
-        <label for="repeat-related-file">Related artists file</label>
-        <input type="text" id="repeat-related-file" autocomplete="off" aria-describedby="repeat-related-file-desc">
-      </div>
-      <span class="setting-desc" id="repeat-related-file-desc">Leave blank to use the station default: <code id="repeat-related-default">Loading…</code>. AutoDJ creates a sample there if missing and never overwrites an existing file. Edit the file, then save these settings to reload it.</span>
       <button type="button" id="repeat-save">Save repeat settings</button>
     </fieldset>
 

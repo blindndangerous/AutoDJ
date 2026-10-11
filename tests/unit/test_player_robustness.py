@@ -381,7 +381,7 @@ class TestHistoryLock:
         done = threading.Event()
 
         def resize() -> None:
-            state.resize_repeat_windows(3, 1)
+            state.set_repeat_rules(replace(state.rules, track_window=3, artist_window=1))
             done.set()
 
         with player._pick_lock:

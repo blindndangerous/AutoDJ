@@ -15,7 +15,7 @@ import pytest
 from autodj.clockwheel import ClockSlot
 from autodj.config import PlaybackConfig
 from autodj.indexer import FEATURE_DIM
-from autodj.player import Player, PlayerState, apply_repeat_windows
+from autodj.player import Player, PlayerState, _join_recent, apply_repeat_windows
 from autodj.repeat_rules import RepeatRules
 from autodj.repeat_settings import RepeatSettings
 from autodj.similarity import SimilarityIndex
@@ -47,18 +47,20 @@ def _sim(tracks: list[tuple[str, str]]) -> SimilarityIndex:
 
 
 def _player(
-    pick_mode: str = "similarity", tracks=TRACKS, *, repeat_rules: dict | None = None
+    pick_mode: str = "similarity",
+    tracks=TRACKS,
+    *,
+    repeat_rules: dict | None = None,
+    active_dir: Path | None = None,
 ) -> Player:
     cfg = make_cfg_mock()
+    cfg.index.active_dir = active_dir or Path(__file__).parents[2] / "src" / "autodj" / "data"
     defaults = {
         "track": {"tracks": 1},
         "artist": {"tracks": 3},
         "album": {"tracks": 3},
         "title": {"tracks": 3},
         "use_related_artists": True,
-        "related_artists_file": str(
-            Path(__file__).parents[2] / "src" / "autodj" / "data" / "related-artists.toml"
-        ),
     }
     cfg.playback = PlaybackConfig(
         pick_mode=pick_mode,
@@ -107,6 +109,30 @@ def test_anchored_similarity_honours_the_rules() -> None:
     player._anchor_to_seed, player._seed_path = True, current.path
     picked, how = player._choose_by_mode(current, player._pick_context())
     assert (picked.title, how) == ("Fine Song", "anchored")
+
+
+def test_similarity_with_zero_limits_excludes_current_pending_and_starting() -> None:
+    zero = {name: {"tracks": 0, "minutes": 0} for name in ("track", "artist", "album", "title")}
+    player = _player(repeat_rules={**zero, "use_related_artists": False})
+    current, pending, starting = player.playable_entries()[:3]
+    context = player._pick_context(pending=pending, starting=starting)
+    assert not context.recent
+    picked, _ = player._choose_by_mode(current, context)
+    assert picked.path not in {current.path, pending.path, starting.path}
+
+
+def test_discovery_with_zero_limits_excludes_current_pending_and_starting() -> None:
+    zero = {name: {"tracks": 0, "minutes": 0} for name in ("track", "artist", "album", "title")}
+    player = _player(repeat_rules={**zero, "use_related_artists": False})
+    current, pending, starting = player.playable_entries()[:3]
+    player._discovery_every = 1
+    player._state.discovery_enabled = True
+    player._state.track_number = 1
+    picked = player._try_discovery(
+        current, player._pick_context(pending=pending, starting=starting)
+    )
+    assert picked is not None
+    assert picked.path not in {current.path, pending.path, starting.path}
 
 
 def test_clock_pick_honours_the_rules() -> None:
@@ -250,11 +276,9 @@ def test_the_pick_logs_which_rules_held_tracks_back(caplog) -> None:
 
 
 def test_related_artists_file_is_read_at_start(tmp_path: Path) -> None:
-    path = tmp_path / "related.toml"
+    path = tmp_path / "related-artists.toml"
     path.write_bytes(b'[related]\n"Other Artist" = ["Allowed Artist"]\n')
-    player = _player(
-        "random", repeat_rules={"related_artists_file": str(path), "use_related_artists": True}
-    )
+    player = _player("random", active_dir=tmp_path)
     with player._pick_lock:
         player._state.record_played(player.playable_entries()[3])
     context = player._pick_context()
@@ -291,11 +315,11 @@ def test_player_state_built_from_rules_sets_the_old_windows() -> None:
     state = PlayerState(repeat_rules=RepeatRules(track_window=9, artist_window=4))
     assert (state.no_repeat_window, state.artist_repeat_window) == (9, 4)
     assert state.recently_played.maxlen == 9
-    state.resize_repeat_windows(5, 2)
+    state.set_repeat_rules(RepeatRules(track_window=5, artist_window=2))
     assert (state.rules.track_window, state.rules.artist_window, state.rules.title_window) == (
         5,
         2,
-        2,
+        0,
     )
 
 
@@ -441,6 +465,57 @@ def test_restored_plays_come_before_this_runs_plays() -> None:
     assert list(player._state.recently_played) == [entries[3].path, entries[0].path]
 
 
+def test_refresh_does_not_shrink_track_window_when_database_is_shorter() -> None:
+    player = _player(
+        "random",
+        repeat_rules={
+            "track": {"tracks": 4},
+            "artist": {"tracks": 0},
+            "album": {"tracks": 0},
+            "title": {"tracks": 0},
+        },
+    )
+    entries = player.playable_entries()
+    for entry in entries[:4]:
+        player._state.record_played(entry)
+    assert not player._state.play_history
+    expected = [entry.path for entry in entries[:4]]
+    player.restore_repeat_history(_Catalog([_saved_play(entries[3], minutes_ago=1)]), refresh=True)
+    assert list(player._state.recently_played) == expected
+
+
+@pytest.mark.parametrize(
+    ("saved", "recent", "joined"),
+    [
+        (["a", "b"], [], ["a", "b"]),
+        ([], ["a", "b"], ["a", "b"]),
+        (["b", "c"], ["a", "b", "c", "d"], ["a", "b", "c", "d"]),
+        (["x", "y", "a", "b"], ["a", "b", "c"], ["x", "y", "a", "b", "c"]),
+        (["x", "y"], ["a", "b"], ["x", "y", "a", "b"]),
+    ],
+    ids=["startup", "nothing saved", "saved inside", "saved overlaps", "no overlap"],
+)
+def test_saved_plays_join_the_track_window_without_shortening_it(saved, recent, joined) -> None:
+    assert _join_recent(saved, recent) == joined
+
+
+def test_refresh_includes_pending_history_writes() -> None:
+    player = _player(
+        "random",
+        repeat_rules={
+            "track": {"tracks": 4},
+            "artist": {"tracks": 0},
+            "album": {"tracks": 1},
+            "title": {"tracks": 0},
+        },
+    )
+    entry = player.playable_entries()[2]
+    player._library = SimpleNamespace(pending_history=lambda: [_saved_play(entry, minutes_ago=0)])
+    player.restore_repeat_history(_Catalog([]), refresh=True)
+    assert list(player._state.recently_played) == [entry.path]
+    assert player._state.play_history[0].album == entry.album
+
+
 # ---------------------------------------------------------------------------
 # A bad related artists file
 # ---------------------------------------------------------------------------
@@ -448,23 +523,44 @@ def test_restored_plays_come_before_this_runs_plays() -> None:
 
 @pytest.mark.parametrize(
     "content",
-    [b"[related\n", b"related = 3\n", b'[related]\n"A" = "B"\n', None],
-    ids=["bad toml", "related not a table", "value not a list", "missing file"],
+    [b"[related\n", b"related = 3\n", b'[related]\n"A" = "B"\n'],
+    ids=["bad toml", "related not a table", "value not a list"],
 )
 def test_a_bad_related_artists_file_does_not_stop_the_player(
-    tmp_path: Path, caplog, content: bytes | None
+    tmp_path: Path, caplog, content: bytes
 ) -> None:
-    path = tmp_path / "related.toml"
-    if content is not None:
-        path.write_bytes(content)
+    path = tmp_path / "related-artists.toml"
+    path.write_bytes(content)
     with caplog.at_level(logging.WARNING, logger="autodj.player"):
-        player = _player(
-            "random",
-            repeat_rules={"related_artists_file": str(path), "use_related_artists": True},
-        )
-    assert str(path) in player.related_artists_problem
+        player = _player("random", active_dir=tmp_path)
+    assert player.related_artists_problem.startswith("The related artists file is not valid")
+    assert player.related_artists_problem.endswith(
+        "Related artists are off until the file is fixed and repeat settings are saved."
+    )
+    assert str(path) not in player.related_artists_problem
     assert str(path) in caplog.text
     assert player._state.rules.related.links == {}
+
+
+def test_related_artists_file_is_not_loaded_when_disabled(tmp_path: Path) -> None:
+    (tmp_path / "related-artists.toml").write_text("[related\n", encoding="utf-8")
+    player = _player("random", active_dir=tmp_path, repeat_rules={"use_related_artists": False})
+    assert player.related_artists_problem is None
+    assert player._state.rules.related.links == {}
+
+
+def test_single_acts_only_apply_while_related_artists_enabled(tmp_path: Path) -> None:
+    (tmp_path / "related-artists.toml").write_text(
+        'single_acts = ["Calvin Harris & Dua Lipa"]\n', encoding="utf-8"
+    )
+    tracks = [("Calvin Harris & Dua Lipa", "One"), ("Other Artist", "Two")]
+    off = _player(
+        "random", tracks, active_dir=tmp_path, repeat_rules={"use_related_artists": False}
+    )
+    on = _player("random", tracks, active_dir=tmp_path)
+    entry = off.playable_entries()[0]
+    assert "calvin harris" in off._track_keys().keys(entry).artists
+    assert "calvin harris" not in on._track_keys().keys(entry).artists
 
 
 # ---------------------------------------------------------------------------
@@ -535,5 +631,5 @@ def test_history_refresh_keeps_separate_plays_of_the_same_track():
     )
     entry = make_entry(0)
     state.play_history.append(PlayRecord.of(entry, 900))
-    state.restore_history([PlayRecord.of(entry, 600), PlayRecord.of(entry, 900.001)])
+    state.restore_history([PlayRecord.of(entry, 600), PlayRecord.of(entry, 897)])
     assert [record.started for record in state.play_history] == [600, 900]
