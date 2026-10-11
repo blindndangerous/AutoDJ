@@ -310,7 +310,9 @@ class TestRelatedArtists:
             load_related_artists(path)
 
     def test_bundled_sample_file(self) -> None:
-        related = load_related_artists(Path(__file__).parents[2] / "src/autodj/data/related-artists.toml")
+        related = load_related_artists(
+            Path(__file__).parents[2] / "src/autodj/data/related-artists.toml"
+        )
         assert related.related_to("bruno mars") == {"silk sonic"}
         assert related.related_to("anderson paak") >= {"silk sonic"}
 
@@ -327,16 +329,30 @@ def _record(i: int, artist: str = "", title: str = "", started: float = 0.0, alb
 class TestRepeatRules:
     def test_from_playback_defaults_follow_the_old_keys(self) -> None:
         rules = RepeatRules.from_playback(PlaybackConfig())
-        assert (rules.track_window, rules.artist_window, rules.album_window, rules.title_window) == (500, 3, 3, 3)
-        assert (rules.track_minutes, rules.artist_minutes, rules.album_minutes, rules.title_minutes) == (0, 0, 0, 0)
+        assert (
+            rules.track_window,
+            rules.artist_window,
+            rules.album_window,
+            rules.title_window,
+        ) == (500, 3, 3, 3)
+        assert (
+            rules.track_minutes,
+            rules.artist_minutes,
+            rules.album_minutes,
+            rules.title_minutes,
+        ) == (0, 0, 0, 0)
 
     def test_from_playback_new_keys(self) -> None:
-        pb = PlaybackConfig.from_dict({"repeat_rules": {
-            "track": {"tracks": 500, "minutes": 120},
-            "artist": {"tracks": 3, "minutes": 30},
-            "album": {"tracks": 3},
-            "title": {"tracks": 10, "minutes": 240},
-        }})
+        pb = PlaybackConfig.from_dict(
+            {
+                "repeat_rules": {
+                    "track": {"tracks": 500, "minutes": 120},
+                    "artist": {"tracks": 3, "minutes": 30},
+                    "album": {"tracks": 3},
+                    "title": {"tracks": 10, "minutes": 240},
+                }
+            }
+        )
         rules = RepeatRules.from_playback(pb, track_window=7)
         assert rules == RepeatRules(7, 120.0, 3, 30.0, 10, 240.0)
         assert rules.keep_tracks == 10
@@ -449,7 +465,12 @@ class TestPlaybackConfigRepeatKeys:
     def test_legacy_keys_migrate(self) -> None:
         pb = PlaybackConfig.from_dict({"no_repeat_window": 50, "artist_repeat_window": 4})
         rules = RepeatRules.from_playback(pb)
-        assert (rules.track_window, rules.artist_window, rules.album_window, rules.title_window) == (50, 4, 4, 4)
+        assert (
+            rules.track_window,
+            rules.artist_window,
+            rules.album_window,
+            rules.title_window,
+        ) == (50, 4, 4, 4)
 
     def test_new_keys_reject_invalid_values(self) -> None:
         for repeat_rules in (

@@ -423,10 +423,14 @@ class TestPlaybackConfig:
             PlaybackConfig.from_dict({"server_max_track_minutes": value})
 
     def test_legacy_repeat_settings_migrate(self) -> None:
-        pb = PlaybackConfig.from_dict({
-            "no_repeat_window": 50, "artist_repeat_window": 4,
-            "artist_repeat_minutes": 10, "related_artists_starter": True,
-        })
+        pb = PlaybackConfig.from_dict(
+            {
+                "no_repeat_window": 50,
+                "artist_repeat_window": 4,
+                "artist_repeat_minutes": 10,
+                "related_artists_starter": True,
+            }
+        )
         assert pb.repeat_rules.track.tracks == 50
         assert pb.repeat_rules.artist.tracks == pb.repeat_rules.album.tracks == 4
         assert pb.repeat_rules.artist.minutes == pb.repeat_rules.album.minutes == 10
@@ -434,22 +438,30 @@ class TestPlaybackConfig:
         assert pb.repeat_rules.use_related_artists
 
     def test_title_migration_inherits_artist_count_only(self) -> None:
-        pb = PlaybackConfig.from_dict({
-            "artist_repeat_window": 7, "artist_repeat_minutes": 12,
-            "title_repeat_minutes": 90,
-        })
+        pb = PlaybackConfig.from_dict(
+            {
+                "artist_repeat_window": 7,
+                "artist_repeat_minutes": 12,
+                "title_repeat_minutes": 90,
+            }
+        )
         assert pb.repeat_rules.title.tracks == 7
         assert pb.repeat_rules.title.minutes == 90
-        explicit_none = PlaybackConfig.from_dict({
-            "artist_repeat_window": 7, "title_repeat_window": None,
-        })
+        explicit_none = PlaybackConfig.from_dict(
+            {
+                "artist_repeat_window": 7,
+                "title_repeat_window": None,
+            }
+        )
         assert explicit_none.repeat_rules.title.tracks == 7
 
     def test_new_repeat_rules_override_legacy(self) -> None:
-        pb = PlaybackConfig.from_dict({
-            "repeat_rules": {"track": {"tracks": 8}, "artist": {"tracks": 2}},
-            "no_repeat_window": 500,
-        })
+        pb = PlaybackConfig.from_dict(
+            {
+                "repeat_rules": {"track": {"tracks": 8}, "artist": {"tracks": 2}},
+                "no_repeat_window": 500,
+            }
+        )
         assert pb.repeat_rules.track.tracks == 8
 
     def test_legacy_repeat_keys_are_not_public_fields(self) -> None:

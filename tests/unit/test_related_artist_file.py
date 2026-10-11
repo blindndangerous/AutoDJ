@@ -77,7 +77,11 @@ def test_legacy_starter_migration_uses_different_copy_for_each_source(tmp_path: 
     one.write_text("", encoding="utf-8")
     two.write_text("", encoding="utf-8")
 
-    first = migrate_legacy_related_file(tmp_path / "index", {"related_artists_file": str(one), "related_artists_starter": True})
-    second = migrate_legacy_related_file(tmp_path / "index", {"related_artists_file": str(two), "related_artists_starter": True})
+    first = migrate_legacy_related_file(
+        tmp_path / "index", {"related_artists_file": str(one), "related_artists_starter": True}
+    )
+    second = migrate_legacy_related_file(
+        tmp_path / "index", {"related_artists_file": str(two), "related_artists_starter": True}
+    )
 
     assert first != second

@@ -224,6 +224,11 @@ the other repeat rules still work. `autodj doctor` reports the file problem.
 Each pick that held candidates back logs a line at info level, such as
 "Repeat rules held back 3 candidates (1 same artist, 1 related artist, 1 same
 title)". A similarity pick only counts the nearest candidates it looked at.
+At DEBUG level, `autodj.player.repeat` also records each candidate examined by
+the artist, related-artist, album or title rules, its reason, and the selected
+path. The row means the candidate was excluded from that pool by the repeat
+rule; the rule can be relaxed before selection. These rows do not include
+tracks excluded only by the separate track-count or minute windows.
 
 Each track's keys (its split artists, album and title) are worked out once
 per library snapshot and then looked up, so a pick that checks every track

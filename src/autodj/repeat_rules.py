@@ -261,6 +261,7 @@ class ArtistSplitter:
 # Related artists
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class RelatedArtists:
     """One-way links between artists, and credits never to split.
@@ -444,6 +445,7 @@ class RepeatRules:
             related: The loaded related artists.
         """
         settings = playback.repeat_rules
+
         def values(rule: Any) -> tuple[int, float]:
             return rule.tracks, rule.minutes
 
@@ -458,7 +460,11 @@ class RepeatRules:
             artist_minutes=artist_minutes,
             title_window=title_window,
             title_minutes=title_minutes,
-            related=(related if related is not None and settings.use_related_artists else RelatedArtists()),
+            related=(
+                related
+                if related is not None and settings.use_related_artists
+                else RelatedArtists()
+            ),
             album_window=album_window,
             album_minutes=album_minutes,
         )
@@ -471,7 +477,10 @@ class RepeatRules:
     @property
     def keep_seconds(self) -> float:
         """How many seconds of history any minute window can look at."""
-        return max(self.track_minutes, self.artist_minutes, self.album_minutes, self.title_minutes) * 60.0
+        return (
+            max(self.track_minutes, self.artist_minutes, self.album_minutes, self.title_minutes)
+            * 60.0
+        )
 
 
 @dataclass(frozen=True)

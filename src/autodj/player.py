@@ -85,6 +85,7 @@ if TYPE_CHECKING:
     from autodj.transitions import BeatSync, TransitionFx
 
 logger = logging.getLogger(__name__)
+repeat_logger = logging.getLogger(f"{__name__}.repeat")
 
 # Default output sample rate; sounddevice converts if the device differs.
 _DEFAULT_SR = 44_100
@@ -348,6 +349,14 @@ def apply_repeat_windows(player: Any) -> None:
 
 def _log_repeat_blocks(repeat: RepeatFilter, picked: IndexEntry) -> None:
     """Log which repeat rules held candidates back before *picked* was chosen."""
+    for path, reason in repeat.held_back.items():
+        repeat_logger.debug(
+            "Candidate excluded from pool by repeat rule (rules may be relaxed): "
+            "candidate=%s reason=%s selected=%s",
+            path,
+            reason,
+            picked.path,
+        )
     summary = repeat.summary()
     if summary:
         logger.info(
@@ -484,7 +493,7 @@ class PlayerState:
             if self.play_history:
                 first = self.play_history[0]
                 records = [record for record in records if record.started < first.started]
-                # The play log timestamps the same start a little later or earlier.
+                # shortcut: starts within 1s share a play; use IDs if rapid replays must count.
                 if (
                     records
                     and records[-1].path == first.path

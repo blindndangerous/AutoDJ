@@ -197,9 +197,19 @@ def test_track_count_window_and_minutes_combine() -> None:
 def test_the_pick_logs_which_rules_held_tracks_back(caplog) -> None:
     player = _player("random")
     current = _played_first(player)
-    with caplog.at_level(logging.INFO, logger="autodj.player"):
+    caplog.set_level(logging.INFO, logger="autodj.player")
+    with caplog.at_level(logging.DEBUG, logger="autodj.player.repeat"):
         player._choose_by_mode(current, player._pick_context())
     assert "1 same artist, 1 related artist, 1 same title" in caplog.text
+    rows = {
+        record.getMessage() for record in caplog.records if record.name == "autodj.player.repeat"
+    }
+    entries = player.playable_entries()
+    assert rows == {
+        "Candidate excluded from pool by repeat rule (rules may be relaxed): "
+        f"candidate={entries[i].path} reason={reason} selected={entries[4].path}"
+        for i, reason in HELD_BACK.items()
+    }
 
 
 def test_related_artists_file_is_read_at_start(tmp_path: Path) -> None:
