@@ -302,7 +302,7 @@ describe("clock folder and points controls", () => {
     return vi.fn(async (url) => ({
       path: decodeURIComponent(url.split("path=")[1] || "M:/one.flac"),
       title: url.includes("two") ? "Two" : "One", artist: "Artist", kind: "music",
-      last_played: 172800, analysis: "ready", prepared: true,
+      last_played: 172800, analysis: "ready", loudness_ready: true,
       points: { intro: 8, end: 180 }, point_sources: { intro: "analysis" },
     }));
   }

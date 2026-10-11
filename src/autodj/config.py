@@ -334,9 +334,9 @@ class PlaybackConfig(_Section):
     pick_mode: str = "similarity"
     # None follows the legacy [replaygain].enabled setting.
     loudness_processing: str | None = None
-    quiet_boost_db: float = 9.0
     intro_lift_max_db: float = 4.0
     stereotool_input_trim_db: float = 0.0
+    stereotool_agc_drive_db: float = 7.0
     stereotool_preset: str = "included"
     # Executable name or path used by Stereo Tool processing; installation setting.
     stereotool_path: str = DEFAULT_STEREOTOOL_PATH
@@ -479,9 +479,6 @@ class PlaybackConfig(_Section):
         self.pick_mode = _validate_pick_mode(str(self.pick_mode))
         if self.loudness_processing is not None:
             self.loudness_processing = _validate_loudness_processing(str(self.loudness_processing))
-        self.quiet_boost_db = float(self.quiet_boost_db)
-        if not math.isfinite(self.quiet_boost_db) or not 0 <= self.quiet_boost_db <= 12:
-            raise ValueError("playback.quiet_boost_db must be between 0 and 12")
         self.intro_lift_max_db = float(self.intro_lift_max_db)
         if not math.isfinite(self.intro_lift_max_db) or not 0 <= self.intro_lift_max_db <= 6:
             raise ValueError("playback.intro_lift_max_db must be between 0 and 6")
@@ -491,6 +488,12 @@ class PlaybackConfig(_Section):
             or not -12 <= self.stereotool_input_trim_db <= 6
         ):
             raise ValueError("playback.stereotool_input_trim_db must be between -12 and 6")
+        self.stereotool_agc_drive_db = float(self.stereotool_agc_drive_db)
+        if (
+            not math.isfinite(self.stereotool_agc_drive_db)
+            or not 0 <= self.stereotool_agc_drive_db <= 12
+        ):
+            raise ValueError("playback.stereotool_agc_drive_db must be between 0 and 12")
         from autodj.stereotool_presets import validate_preset_name
 
         validate_preset_name(self.stereotool_preset)

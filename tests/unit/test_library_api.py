@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from autodj.indexer import FEATURE_DIM
 from autodj.library import LibraryManager
+from autodj.processing import PREPARATION_VERSION, TARGET_LUFS
 from autodj.server import (
     LibraryFolderBody,
     LibraryFolderUpdateBody,
@@ -123,18 +124,29 @@ def test_points_validate_and_keep_manual_values_without_analysis(library_api, tm
     assert invalid.value.status_code == 400
 
 
-def test_track_points_reports_playback_and_analysis_state(library_api, tmp_path):
+def test_track_points_reports_playback_and_analysis_state(library_api):
     manager, call, _app = library_api
     music = manager.cfg.library.music_dir / "song.flac"
     music.touch()
-    prepared = tmp_path / "prepared.wav"
-    prepared.write_bytes(b"prepared")
-    manager.catalog.put_entry(make_entry(music), prepared_path=str(prepared))
+    manager.catalog.put_entry(make_entry(music))
+    stat = music.stat()
+    lufs = TARGET_LUFS["music"] - 2
+    manager.catalog.set_loudness(
+        music,
+        {
+            "version": PREPARATION_VERSION,
+            "kind": "music",
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+            "lufs": lufs,
+            "gain_db": 2,
+        },
+    )
     manager.refresh()
 
     record = call("GET", "/api/library/points", str(music))
     assert record["playable"]
-    assert record["prepared"]
+    assert record["loudness_ready"]
     assert record["analysis"] == "pending"
     assert record["key_label"] == "--"
 

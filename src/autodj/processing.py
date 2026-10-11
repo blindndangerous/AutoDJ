@@ -1,35 +1,34 @@
-"""Offline source preparation for smooth radio playback."""
+"""In-memory audio preparation and cue analysis for radio playback."""
 
 from __future__ import annotations
 
-import hashlib
-import json
+import logging
 import math
-import os
 import re
-import subprocess  # nosec B404 -- audio preparation uses only fixed FFmpeg argv, no shell
-import tempfile
-import time
-from collections.abc import Iterable
+import shutil
+import subprocess  # nosec B404 -- audio processing uses fixed FFmpeg argv, no shell
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-import soundfile as sf
 
-from autodj.stereo import SAMPLE_RATE, load_stereo
+from autodj.stereo import SAMPLE_RATE, TrackTooLongError, load_stereo
 
 if TYPE_CHECKING:
     from autodj.indexer import IndexEntry
 
-PREPARATION_VERSION = "type-b-v1"
-HEADROOM_DB = -6.0
-PREPARED_LINER_GAIN = 10 ** (-1.5 / 20)
+logger = logging.getLogger(__name__)
+
+PREPARATION_VERSION = "loudness-v1"
+TARGET_LUFS = {"music": -28.0, "liner": -25.0}
+MIN_GAIN_DB, MAX_GAIN_DB = -60.0, 18.0
+_FFMPEG_TIMEOUT_S = 600
+_READ_CHUNK_BYTES = 1 << 16
 VOICE_FILTER = (
     "highpass=f=70,acompressor=threshold=0.063095734:ratio=3:attack=10:release=180:"
     "makeup=1:knee=4:link=maximum:detection=rms"
 )
-MUSIC_FILTER = "dynaudnorm=f=500:g=15:p=0.75:m=1.584893192:r=0.089125094:n=1:b=1:t=0"
 MASTER_FILTER = (
     "volume=6dB,acompressor=threshold=0.16:ratio=2:attack=30:release=400:"
     "makeup=1:knee=6:link=maximum:detection=rms,volume=9.01dB,"
@@ -37,272 +36,204 @@ MASTER_FILTER = (
     "level=0:latency=1,aresample=44100"
 )
 
-# Only names prepare_source writes: a bare cache key, or a versioned music prefix and key.
-_PREPARED_NAME = re.compile(r"(?:[a-z0-9.-]+-music-[0-9.]+-)?[0-9a-f]{64}\.wav")
-_LOUDNESS = re.compile(r'\{\s*"input_i".*?\}', re.S)
-_TIMEOUT_S = 600
+_LUFS = re.compile(r"\bI:\s*(-?\d+(?:\.\d+)?)\s* LUFS")
 
 
-def _run(command: list[str | Path]) -> str:
-    args = [str(part) for part in command]
+def _run_ffmpeg(command: list[str]) -> subprocess.CompletedProcess[bytes]:
     try:
-        result = subprocess.run(  # nosec B603 -- fixed FFmpeg argv, no shell
-            args,
+        return subprocess.run(  # nosec B603 -- fixed FFmpeg argv, no shell
+            command,
             capture_output=True,
-            timeout=_TIMEOUT_S,
             check=False,
+            timeout=_FFMPEG_TIMEOUT_S,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError(f"audio processing failed: {args[0]}") from exc
-    log = (result.stdout + result.stderr).decode("utf-8", errors="replace")
-    if result.returncode:
-        raise RuntimeError(f"{args[0]} failed ({result.returncode}): {log[-2000:]}")
-    return log
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"ffmpeg timed out after {_FFMPEG_TIMEOUT_S}s: {command[0]}") from exc
 
 
-def _measure(path: Path, filters: str = "") -> float:
-    audio_filter = f"{filters}," if filters else ""
-    log = _run(
+def _stream_ffmpeg(command: list[str]) -> tuple[int, bytearray, bytes]:
+    """Run FFmpeg and gather its stdout in one growing, writable buffer.
+
+    subprocess.run returns stdout as immutable bytes, and writable samples
+    built from that need a second full-size copy: two whole decoded tracks
+    in memory at once.  A bytearray can back the samples directly.
+    """
+    proc = subprocess.Popen(  # nosec B603 -- fixed FFmpeg argv, no shell
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    stdout, stderr = proc.stdout, proc.stderr
+    if stdout is None or stderr is None:  # pragma: no cover - PIPE always gives both
+        proc.kill()
+        raise RuntimeError("ffmpeg pipes unavailable")
+    timed_out = threading.Event()
+
+    def expire() -> None:
+        timed_out.set()
+        proc.kill()
+
+    errors: list[bytes] = []
+    # Drain stderr alongside stdout so a chatty decode cannot fill its pipe and stall.
+    drain = threading.Thread(target=lambda: errors.append(stderr.read()), daemon=True)
+    timer = threading.Timer(_FFMPEG_TIMEOUT_S, expire)
+    timer.daemon = True
+    drain.start()
+    timer.start()
+    output = bytearray()
+    try:
+        while data := stdout.read(_READ_CHUNK_BYTES):
+            output += data
+        returncode = proc.wait()
+    finally:
+        timer.cancel()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        drain.join()
+        stdout.close()
+        stderr.close()
+    if timed_out.is_set():
+        raise RuntimeError(f"ffmpeg timed out after {_FFMPEG_TIMEOUT_S}s: {command[0]}")
+    return returncode, output, b"".join(errors)
+
+
+def _kind(kind: str) -> float:
+    try:
+        return TARGET_LUFS[kind]
+    except KeyError as exc:
+        raise ValueError("kind must be 'music' or 'liner'") from exc
+
+
+def analyze_loudness(source: Path, kind: str = "music") -> dict[str, object]:
+    """Measure integrated source loudness for caller-owned metadata caching."""
+    _kind(kind)
+    source = Path(source)
+    before = source.stat()
+    filters = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo"
+    if kind == "liner":
+        filters += f",{VOICE_FILTER}"
+    result = _run_ffmpeg(
         [
-            "ffmpeg",
+            shutil.which("ffmpeg") or "ffmpeg",
             "-hide_banner",
             "-nostats",
+            "-nostdin",
             "-i",
-            path,
+            str(source),
+            "-map",
+            "0:a:0",
+            "-vn",
             "-af",
-            f"{audio_filter}loudnorm=I=-24:TP=-1:LRA=7:print_format=json",
+            f"{filters},ebur128=peak=none",
             "-f",
             "null",
             "-",
-        ]
+        ],
     )
-    blocks = _LOUDNESS.findall(log)
-    if not blocks:
-        raise ValueError(f"could not measure loudness: {path}")
-    value = json.loads(blocks[-1]).get("input_i")
-    try:
-        lufs = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"invalid loudness measurement: {path}") from exc
-    if not math.isfinite(lufs):
-        raise ValueError(f"silent or invalid audio: {path}")
-    return lufs
+    log = (result.stdout + result.stderr).decode("utf-8", errors="replace")
+    if result.returncode:
+        raise RuntimeError(f"ffmpeg loudness measurement failed: {log[-1000:]}")
+    values = _LUFS.findall(log)
+    if not values:
+        raise ValueError(f"silent or invalid audio: {source}")
+    lufs = float(values[-1])
+    if not math.isfinite(lufs) or lufs <= -65:
+        raise ValueError(f"silent or invalid audio: {source}")
+    after = source.stat()
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise RuntimeError(f"source changed during loudness measurement: {source}")
+    gain_db = _kind(kind) - lufs
+    if not MIN_GAIN_DB <= gain_db <= MAX_GAIN_DB:
+        raise ValueError(f"required gain outside safe range: {source}")
+    return {
+        "version": PREPARATION_VERSION,
+        "kind": kind,
+        "size": before.st_size,
+        "mtime_ns": before.st_mtime_ns,
+        "lufs": lufs,
+        "gain_db": gain_db,
+    }
 
 
-def _validate_audio(path: Path, frames: int | None = None) -> int:
-    info = sf.info(path)
-    if (
-        info.samplerate != SAMPLE_RATE
-        or info.channels != 2
-        or info.frames <= 0
-        or (frames is not None and info.frames != frames)
-    ):
-        raise ValueError(f"invalid prepared audio: {path}")
-    audible = False
-    with sf.SoundFile(path) as audio:
-        while True:
-            block = audio.read(262_144, dtype="float32", always_2d=True)
-            if not len(block):
-                break
-            if not np.isfinite(block).all():
-                raise ValueError(f"non-finite audio: {path}")
-            audible |= bool(np.any(block))
-    if not audible:
-        raise ValueError(f"silent audio: {path}")
-    return info.frames
-
-
-def _cache_key(source: Path, kind: str, quiet_boost_db: float = 9.0) -> str:
-    stat = source.stat()
-    digest = hashlib.sha256()
-    with source.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    settings = f"{quiet_boost_db:g}\0" if kind == "music" else ""
-    identity = (
-        f"{PREPARATION_VERSION}\0{kind}\0{settings}"
-        f"{stat.st_size}\0{stat.st_mtime_ns}\0{digest.hexdigest()}"
-    )
-    return hashlib.sha256(identity.encode()).hexdigest()
-
-
-def prepared_source_matches(path: Path, kind: str, quiet_boost_db: float = 9.0) -> bool:
-    """Check a catalog cache path's processing settings without reading its source."""
-    path = Path(path)
-    if not path.is_file():
+def loudness_matches(measurement: dict | None, source: Path, kind: str = "music") -> bool:
+    """Return whether cached measurement belongs to the current source/settings."""
+    if not isinstance(measurement, dict):
         return False
-    if kind == "liner":
-        return True
-    return kind == "music" and path.name.startswith(
-        f"{PREPARATION_VERSION}-music-{quiet_boost_db:g}-"
-    )
-
-
-def _norm(path: str | Path) -> str:
-    return os.path.normcase(os.path.normpath(os.path.abspath(os.fspath(path))))
-
-
-def remove_stale_prepared(
-    cache_dir: Path,
-    keep: Iterable[str | Path],
-    quiet_boost_db: float = 9.0,
-    *,
-    min_age_seconds: float = 600.0,
-) -> tuple[int, int]:
-    """Delete outdated prepared WAVs from AutoDJ's own cache folder.
-
-    Only regular files directly inside ``cache_dir`` with a name
-    :func:`prepare_source` writes are candidates.  Files listed in ``keep``
-    (catalog sources and the prepared paths records still use), music
-    prepared with the current settings, and anything modified in the last
-    ``min_age_seconds`` stay.  Returns (files removed, bytes freed).
-    """
-    cache_dir = Path(cache_dir)
-    if not cache_dir.is_dir():
-        return 0, 0
-    kept = {_norm(path) for path in keep}
-    current = f"{PREPARATION_VERSION}-music-{quiet_boost_db:g}-"
-    cutoff = time.time() - min_age_seconds
-    removed = freed = 0
-    for path in cache_dir.iterdir():
-        name = path.name
-        if not _PREPARED_NAME.fullmatch(name) or name.startswith(current) or _norm(path) in kept:
-            continue
-        try:
-            if path.is_symlink() or not path.is_file():
-                continue
-            stat = path.stat()
-            if stat.st_mtime > cutoff:
-                continue
-            path.unlink()
-        except OSError:
-            continue
-        removed += 1
-        freed += stat.st_size
-    return removed, freed
-
-
-def prepare_source(
-    source: Path, cache_dir: Path, kind: str = "music", quiet_boost_db: float = 9.0
-) -> Path:
-    """Decode and prepare one immutable source into a deterministic WAV cache."""
-    if kind not in ("music", "liner"):
-        raise ValueError("kind must be 'music' or 'liner'")
-    if not math.isfinite(quiet_boost_db) or not 0 <= quiet_boost_db <= 12:
-        raise ValueError("quiet_boost_db must be between 0 and 12")
-    source = Path(source)
-    cache_dir = Path(cache_dir)
-    if not source.is_file():
-        raise FileNotFoundError(source)
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    prefix = f"{PREPARATION_VERSION}-music-{quiet_boost_db:g}-" if kind == "music" else ""
-    destination = cache_dir / f"{prefix}{_cache_key(source, kind, quiet_boost_db)}.wav"
-    if destination.is_file():
-        try:
-            _validate_audio(destination)
-            return destination
-        except (OSError, RuntimeError):
-            pass
-        except ValueError:
-            pass
-        destination.unlink(missing_ok=True)
-
-    temp_paths: list[Path] = []
-
-    def temporary() -> Path:
-        fd, name = tempfile.mkstemp(dir=cache_dir, suffix=".wav", prefix=".prepare-")
-        os.close(fd)
-        path = Path(name)
-        temp_paths.append(path)
-        return path
-
-    decoded, staged, final = temporary(), temporary(), temporary()
     try:
-        _run(
-            [
-                "ffmpeg",
-                "-hide_banner",
-                "-nostats",
-                "-v",
-                "error",
-                "-y",
-                "-i",
-                source,
-                "-vn",
-                "-ar",
-                str(SAMPLE_RATE),
-                "-ac",
-                "2",
-                "-c:a",
-                "pcm_f32le",
-                decoded,
-            ]
+        target = _kind(kind)
+        stat = Path(source).stat()
+        lufs, gain = float(measurement["lufs"]), float(measurement["gain_db"])
+        return (
+            measurement["version"] == PREPARATION_VERSION
+            and measurement["kind"] == kind
+            and measurement["size"] == stat.st_size
+            and measurement["mtime_ns"] == stat.st_mtime_ns
+            and math.isfinite(lufs)
+            and lufs > -65
+            and math.isfinite(gain)
+            and MIN_GAIN_DB <= gain <= MAX_GAIN_DB
+            and math.isclose(gain, target - lufs, abs_tol=0.01)
         )
-        frames = _validate_audio(decoded)
+    except (KeyError, TypeError, ValueError, OverflowError, OSError):
+        return False
 
-        voice = kind == "liner"
-        target = -17.5 if voice else -22.0
-        voice_filter = VOICE_FILTER if voice else ""
-        gain = target - _measure(decoded, voice_filter)
-        if not voice:
-            music_filter = MUSIC_FILTER.replace(
-                "m=1.584893192", f"m={10 ** (quiet_boost_db / 20):.9f}"
-            )
-            _run(
-                [
-                    "ffmpeg",
-                    "-hide_banner",
-                    "-nostats",
-                    "-v",
-                    "error",
-                    "-y",
-                    "-i",
-                    decoded,
-                    "-af",
-                    f"volume={gain:.9f}dB,{music_filter}",
-                    "-ar",
-                    str(SAMPLE_RATE),
-                    "-ac",
-                    "2",
-                    "-c:a",
-                    "pcm_f32le",
-                    staged,
-                ]
-            )
-            correction = target - _measure(staged)
-            input_path = staged
-            filters = f"volume={correction:.9f}dB,volume={HEADROOM_DB}dB"
-        else:
-            input_path = decoded
-            filters = f"{VOICE_FILTER},volume={gain:.9f}dB,volume={HEADROOM_DB}dB"
-        _run(
-            [
-                "ffmpeg",
-                "-hide_banner",
-                "-nostats",
-                "-v",
-                "error",
-                "-y",
-                "-i",
-                input_path,
-                "-af",
-                filters,
-                "-ar",
-                str(SAMPLE_RATE),
-                "-ac",
-                "2",
-                "-c:a",
-                "pcm_f32le",
-                final,
-            ]
+
+def load_processed_audio(
+    source: Path, measurement: dict, kind: str = "music", max_seconds: float | None = None
+) -> np.ndarray:
+    """Decode the original source and apply its cached constant loudness gain."""
+    _kind(kind)
+    if not loudness_matches(measurement, source, kind):
+        raise ValueError("stale or invalid loudness measurement")
+    source = Path(source)
+    gain_db = float(measurement["gain_db"])
+    filters = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo"
+    if kind == "liner":
+        filters += f",{VOICE_FILTER}"
+    filters += f",volume={gain_db:.9f}dB"
+    command = [
+        shutil.which("ffmpeg") or "ffmpeg",
+        "-hide_banner",
+        "-v",
+        "error",
+        "-nostdin",
+        "-i",
+        str(source),
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-af",
+        filters,
+        "-ar",
+        str(SAMPLE_RATE),
+        "-ac",
+        "2",
+    ]
+    if max_seconds is not None:
+        command += ["-t", str(max_seconds + 1.0)]
+    command += ["-f", "f32le", "pipe:1"]
+    returncode, output, stderr = _stream_ffmpeg(command)
+    detail = stderr.decode(errors="replace").strip()
+    if returncode:
+        raise RuntimeError(f"ffmpeg audio processing failed for {source}: {detail[-1000:]}")
+    if detail:
+        logger.warning(
+            "Decoded %s with warnings:\n%s", source, detail, extra={"track": str(source)}
         )
-        _validate_audio(final, frames)
-        os.replace(final, destination)
-        return destination
-    finally:
-        for path in temp_paths:
-            path.unlink(missing_ok=True)
+    # The bytearray is writable, so the samples use it in place with no copy.
+    audio = np.frombuffer(output, dtype="<f4").reshape(-1, 2)
+    if max_seconds is not None and len(audio) > max_seconds * SAMPLE_RATE:
+        raise TrackTooLongError(str(source), len(audio) / SAMPLE_RATE)
+    after = source.stat()
+    if (after.st_size, after.st_mtime_ns) != (measurement["size"], measurement["mtime_ns"]):
+        raise RuntimeError(f"source changed during audio decode: {source}")
+    if not len(audio) or not np.isfinite(audio).all() or not np.any(audio):
+        raise ValueError("empty, silent or invalid processed audio")
+    return audio
 
 
 def analyze_basic(source: Path, kind: str = "music") -> tuple[IndexEntry, dict[str, float | None]]:

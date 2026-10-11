@@ -34,15 +34,24 @@ def test_playback_body_accepts_saved_points_and_legacy_fields() -> None:
     assert body.replaygain_enabled is True
 
 
-@pytest.mark.parametrize("value", (0, 9, 12))
-def test_playback_body_accepts_quiet_boost_range(value: float) -> None:
-    assert PlaybackSettingsBody.model_validate({"quiet_boost_db": value}).quiet_boost_db == value
+@pytest.mark.parametrize("value", (0, 7, 12))
+def test_playback_body_accepts_agc_drive_range(value: float) -> None:
+    assert (
+        PlaybackSettingsBody.model_validate(
+            {"stereotool_agc_drive_db": value}
+        ).stereotool_agc_drive_db
+        == value
+    )
 
 
 @pytest.mark.parametrize("value", (-0.1, 12.1, float("inf"), float("nan")))
-def test_playback_body_rejects_quiet_boost_outside_finite_range(value: float) -> None:
+def test_playback_body_rejects_agc_drive_outside_finite_range(value: float) -> None:
     with pytest.raises(ValidationError):
-        PlaybackSettingsBody.model_validate({"quiet_boost_db": value})
+        PlaybackSettingsBody.model_validate({"stereotool_agc_drive_db": value})
+
+
+def test_retired_quiet_boost_is_not_an_api_setting() -> None:
+    assert "quiet_boost_db" not in PlaybackSettingsBody.model_fields
 
 
 @pytest.mark.parametrize(
