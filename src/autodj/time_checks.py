@@ -20,6 +20,7 @@ import os
 import subprocess  # nosec B404 -- operator-configured argv, never a shell
 import tempfile
 import threading
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -306,8 +307,8 @@ class TimeChecks:
         sf.write(buffer, audio, SAMPLE_RATE, format="WAV", subtype="PCM_16")
         return buffer.getvalue()
 
-    def fire(self, bridge: Any) -> None:
-        """Play now on the server mix bus, with the voice liner duck (worker thread).
+    def prepare(self, bridge: Any) -> Callable[[], None]:
+        """Prepare a time check and return its playback callable (worker thread).
 
         Raises:
             ValueError: Why nothing played.
@@ -317,10 +318,19 @@ class TimeChecks:
             raise ValueError("Time checks on the server need server audio or stream mode")
         if bridge.station is not None and bridge.station.state != "playing":
             raise ValueError("The stream must be playing to air a time check")
-        audio = self._aired(self.render())
+        audio = self.render()
         if audio is None:
             raise ValueError("No recorded clip or working TTS command for this minute")
-        worker.play_audio(audio)
+
+        def play() -> None:
+            self._aired(audio)
+            worker.play_audio(audio)
+
+        return play
+
+    def fire(self, bridge: Any) -> None:
+        """Prepare and play now on the server mix bus (worker thread)."""
+        self.prepare(bridge)()
 
 
 def install_time_checks(
@@ -329,10 +339,10 @@ def install_time_checks(
     """Register paired routes and the scheduler's fieldless Time check action."""
     checks = TimeChecks(bridge.player._cfg, timezone)
 
-    async def scheduled(_params: dict[str, str]) -> None:
+    async def scheduled(_params: dict[str, str]) -> Callable[[], None]:
         if not checks.settings.enabled:
             raise ValueError("Enable time checks in Settings first")
-        await asyncio.to_thread(checks.fire, bridge)
+        return await asyncio.to_thread(checks.prepare, bridge)
 
     scheduler.register(Action("time_check", "Time check", scheduled, interrupt="before"))
 

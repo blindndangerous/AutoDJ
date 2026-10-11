@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import soundfile as sf
 from fastapi.testclient import TestClient
 
@@ -91,8 +92,9 @@ def test_preview_uses_recorded_clip_and_server_test_uses_liner_path(
     bridge.liner_scheduler.play_audio.assert_called_once()
 
 
+@pytest.mark.parametrize("timing", ["hard", "soft"])
 def test_scheduled_action_says_why_it_did_not_play_then_plays(
-    bridge, tmp_path, monkeypatch
+    bridge, tmp_path, monkeypatch, timing
 ) -> None:
     from datetime import UTC, datetime
     from unittest.mock import MagicMock
@@ -112,6 +114,8 @@ def test_scheduled_action_says_why_it_did_not_play_then_plays(
     bridge.player._cfg.server.station_timezone = "UTC"
     client = TestClient(create_app(bridge))
 
+    bridge.skip = MagicMock()
+
     def run() -> dict[str, str]:
         created = client.post(
             "/api/schedule",
@@ -121,7 +125,7 @@ def test_scheduled_action_says_why_it_did_not_play_then_plays(
                 "params": {},
                 "repeat": "daily",
                 "time": "09:00",
-                "timing": "soft",
+                "timing": timing,
                 "enabled": True,
             },
         )
@@ -129,14 +133,18 @@ def test_scheduled_action_says_why_it_did_not_play_then_plays(
         return client.post(f"/api/schedule/{created.json()['id']}/run").json()
 
     assert run()["message"] == "Enable time checks in Settings first"
+    bridge.skip.assert_not_called()
     client.put("/api/time-checks", json={"enabled": True, "hour_format": "12", "rule": "off"})
     assert run()["message"] == "Time checks on the server need server audio or stream mode"
+    bridge.skip.assert_not_called()
     bridge.liner_scheduler = MagicMock()
     assert run()["message"] == "No recorded clip or working TTS command for this minute"
+    bridge.skip.assert_not_called()
     (tmp_path / "time_checks").mkdir()
     sf.write(tmp_path / "time_checks" / "03_05.wav", np.zeros((441, 2)), 44100)
     assert run()["result"] == "ok"
     bridge.liner_scheduler.play_audio.assert_called_once()
+    assert bridge.skip.call_count == (1 if timing == "hard" else 0)
 
 
 def test_lifespan_hands_the_hour_rule_to_the_liner_scheduler(bridge, tmp_path) -> None:
