@@ -25,6 +25,21 @@ function setup() {
   return els;
 }
 
+function setupBrowser() {
+  document.body.innerHTML = `
+    <select id="folder"><option value="all-music">All music</option><option value="all-liners">All voice liners</option><option value="folder:liner:9">Voice liner: N:/voice</option></select>
+    <input id="search"><button id="go">Browse</button><button id="previous" disabled>Previous</button><button id="next" disabled>Next</button>
+    <p id="count"></p><p id="announce"></p><ul id="results"></ul><div id="status-toast" aria-hidden="true" hidden></div>`;
+  const els = {
+    searchInput: document.querySelector("#search"), btnSearch: document.querySelector("#go"),
+    searchResults: document.querySelector("#results"), searchCount: document.querySelector("#count"),
+    queueAnnounce: document.querySelector("#announce"), folderSelect: document.querySelector("#folder"),
+    previousPage: document.querySelector("#previous"), nextPage: document.querySelector("#next"),
+  };
+  installSearch(els);
+  return els;
+}
+
 describe("search requests", () => {
   beforeEach(() => vi.restoreAllMocks());
 
@@ -48,6 +63,24 @@ describe("search requests", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(els.searchResults.textContent).not.toContain("Stale");
+    vi.unstubAllGlobals();
+  });
+
+  it("offers an accessible Track info action that opens the shared library editor", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse({
+      results: [{ path: "M:/music/song.flac", title: "Song" }],
+    }))));
+    const els = setup();
+    const onEditPoints = vi.fn();
+    document.addEventListener("autodj:edit-points", (event) => onEditPoints(event.detail), { once: true });
+    els.searchInput.value = "song";
+    els.btnSearch.click();
+    await vi.waitFor(() => expect(els.searchResults.querySelector('[data-points="true"]')).not.toBeNull());
+    const button = els.searchResults.querySelector('[data-points="true"]');
+    expect(button.getAttribute("aria-label")).toBe("Track info for Song");
+    expect(button.textContent).toContain("Track info");
+    button.click();
+    expect(onEditPoints).toHaveBeenCalledWith({ path: "M:/music/song.flac", kind: "music" });
     vi.unstubAllGlobals();
   });
 
@@ -179,6 +212,72 @@ describe("search result actions", () => {
       ["/api/play-next", { path: "a.mp3", now: false }],
       ["/api/queue/add", { path: "a.mp3" }],
     ]);
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("library browsing", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it("browses blank queries by kind, carries liner kind to Edit points, and pages by 100", async () => {
+    const fetchImpl = vi.fn((url) => {
+      const parsed = new URL(url, "http://localhost");
+      const offset = Number(parsed.searchParams.get("offset"));
+      return Promise.resolve(jsonResponse({
+        results: [{ path: offset ? "N:/voice/next.wav" : "N:/voice/liner.wav", title: offset ? "Next liner" : "Liner", kind: "liner" }],
+        total: 101, offset, limit: 100,
+      }));
+    });
+    vi.stubGlobal("fetch", fetchImpl);
+    const els = setupBrowser();
+    els.folderSelect.value = "folder:liner:9";
+    els.btnSearch.click();
+    await vi.waitFor(() => expect(els.searchResults.textContent).toContain("Liner"));
+    expect(fetchImpl.mock.calls[0][0]).toBe("/api/library/tracks?kind=liner&offset=0&limit=100&source_id=9");
+    expect(els.nextPage.disabled).toBe(false);
+    let editDetail;
+    els.searchResults.addEventListener("autodj:edit-points", (event) => { editDetail = event.detail; }, { once: true });
+    const edit = els.searchResults.querySelector('[data-points="true"]');
+    edit.click();
+    expect(editDetail).toEqual({ path: "N:/voice/liner.wav", kind: "liner" });
+    els.nextPage.focus();
+    els.nextPage.click();
+    await vi.waitFor(() => expect(els.searchResults.textContent).toContain("Next liner"));
+    expect(fetchImpl.mock.calls[1][0]).toContain("offset=100");
+    expect(document.activeElement).toBe(els.previousPage);
+    vi.unstubAllGlobals();
+  });
+
+  it("ignores stale browser replies and failures after a newer browse starts", async () => {
+    const resolvers = [];
+    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve, reject) => resolvers.push({ resolve, reject }))));
+    const els = setupBrowser();
+    els.btnSearch.click();
+    els.folderSelect.value = "all-liners";
+    els.folderSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    resolvers[1].resolve(jsonResponse({ results: [{ path: "new.wav", title: "Newest", kind: "liner" }], total: 1, offset: 0 }));
+    await vi.waitFor(() => expect(els.searchResults.textContent).toContain("Newest"));
+    resolvers[0].reject(new Error("aborted old request"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(els.searchResults.textContent).toContain("Newest");
+    expect(els.searchCount.textContent).not.toContain("Could not");
+    vi.unstubAllGlobals();
+  });
+
+  it("does not steal focus when a page request finishes after the user moved to the query", async () => {
+    let resolvePage;
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ results: [{ path: "first.wav", title: "First" }], total: 101, offset: 0 }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolvePage = resolve; })));
+    const els = setupBrowser();
+    els.btnSearch.click();
+    await vi.waitFor(() => expect(els.nextPage.disabled).toBe(false));
+    els.nextPage.focus();
+    els.nextPage.click();
+    els.searchInput.focus();
+    resolvePage(jsonResponse({ results: [{ path: "last.wav", title: "Last" }], total: 101, offset: 100 }));
+    await vi.waitFor(() => expect(els.searchResults.textContent).toContain("Last"));
+    expect(document.activeElement).toBe(els.searchInput);
     vi.unstubAllGlobals();
   });
 });

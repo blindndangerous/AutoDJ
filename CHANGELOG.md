@@ -8,12 +8,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-10-11
+
 ### Added
 
+- `autodj analyse-library` runs advanced analysis for songs added through Library folders
+  with advanced analysis enabled. The web interface normally starts this job in the background.
+- `autodj migrate-index` previews a schema-3 to schema-4 conversion; `--apply` saves a verified
+  recovery copy before converting, keeping the existing analysis. Interactive `autodj serve`
+  offers to do this and continue startup. Services print instructions without waiting for input.
+- Add multiple music and liner folders from Library tools, with separate choices for
+  subfolders and background analysis. Songs can play before advanced analysis finishes.
+  Browse by folder and see analysis progress. Confirmed file moves keep their saved data;
+  removing a folder leaves its files and cues intact.
+- **Use saved segue points** gives stream and server audio playback station-style fades.
+  Liners fit around the songs' Outro and Intro cues. **Overlap start** controls when music
+  can enter a liner or jingle, while its Segue cue keeps reverb tails from delaying the song.
+  The queue shows which handoff is already prepared.
+- **Track info** brings together metadata, analysis status, last-played time and cue editing
+  for songs and liners. Open it from Now Playing, the library, search or the queue. Preview
+  cues without changing station playback; Save or Discard protects edits when switching tracks.
+- **Least recently played** chooses songs that have waited longest. **Clockwheel** follows
+  music and liner folder slots, choosing each track as needed. Import supported PAL folder
+  rotations and restart the rotation at a song handoff near the hour or other chosen minutes.
+  Only tracks that actually start playing update their last-played time.
+- Play history survives restarts and is kept without an expiry limit. The history viewer
+  shows the latest 500 entries; each track also retains its last-played time for selection.
+- **Output processing** offers Off, ReplayGain, Smooth and Stereo Tool for stream and server
+  audio. Smooth balances source levels and compresses the continuous mix. Stereo Tool uses
+  the same source preparation with a bundled free preset and a separately installed executable.
+- **Keep playing without listeners** lets the stream run unattended.
 - `autodj index` now recognises tracks that moved, for example after `beet move`, and keeps their
-  vectors and DJ cues instead of embedding them again. The index format changed (schema 4): an
-  index from an older AutoDJ is refused. Convert one with `scripts/convert_index_v3_to_v4.py`;
-  `docs/operations.md` explains how.
+  vectors and DJ cues instead of embedding them again. The index format changed (schema 4).
+  Convert a schema-3 index with `autodj migrate-index --apply`; `docs/operations.md` explains how.
 - In stream mode and with server audio, the new **Drop mixing** setting (`drop_mix` in the
   `[djmix]` section of `config.toml`, off by default) mixes songs drop to drop. When both songs
   have a reliable drop and **Beatmatch** can lock their beats, the new song's build-up plays under
@@ -93,6 +120,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Stereo Tool defaults to `./tools/stereo-tool/stereo_tool_cmd.exe` on Windows and
+  `./tools/stereo-tool/stereo_tool_cmd` elsewhere. Custom executable paths still work.
+- Track info follows Queue & Search in the tabs and keyboard navigation.
+- Settings help uses plainer language and explains which controls apply to saved segue
+  playback. The processing selector is labelled **Output processing**.
 - `autodj serve --host ADDRESS --port PORT` now works with a network address: with no allowlists,
   access token or `--insecure-lan`, it serves there in LAN mode, with pairing and the machine's
   detected names allowed, instead of stopping with "LAN binding requires an access token". Without
@@ -132,6 +164,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Container builds refresh `perl-base` from Debian's package repositories to pick up security fixes.
+- Backups now include the station library database, preserving registered folders, cue edits,
+  last-played times and full play history. Restores check database integrity before replacing files.
+- Output processing keeps audio playing through a fallback while the processor restarts,
+  then returns to processed sound when it recovers.
+- Older version-1 web settings are migrated on upgrade, preserving the harmonic-mixing
+  preference and saving the original settings as `web_state.json.v1.bak`.
+- Listen here opens a fresh stream URL on every connection, preventing Firefox from
+  reusing an old media offset after a page refresh. Shared station links stay unchanged.
+- Adding a folder scans and counts that folder instead of the whole library. Additions queued
+  during a scan are combined for the next pass; Rescan still checks all registered folders.
+- Folder actions announce success or failure once. Import progress remains available as
+  plain text without repeating its counts and filenames through the screen reader.
+- Adding folders accepts quoted Windows paths copied from File Explorer. Failed additions
+  keep their error visible and focus the folder field so the reason can be read.
+- Neutral EQ no longer colours the server mix, and moving EQ sliders changes the sound smoothly.
+- Replacing audio at an existing path no longer leaves stale cues that can break a rescan.
+  Changed file contents reset cue and analysis caches, including when a file is retagged;
+  unchanged files and confirmed moves keep their cues.
+- Cue times round correctly across second and minute boundaries, and oversized values are
+  rejected instead of silently clearing a cue. Random walk now displays correctly in Settings.
+- Signing out clears folder, clockwheel and Track info data, including previews and unsaved
+  drafts. Responses from the old session cannot put that data back on screen.
 - In stream mode and with server audio, a beatmatched song no longer jumps back to its own tempo,
   by up to 8 %, the moment the crossfade ends.
 - In stream mode and with server audio, "beatmatched 1.04 times" now describes the song that just
@@ -1422,7 +1477,8 @@ The "make it feel like a real radio station" release.
 
 AutoDJ is built and maintained by a blind developer.  Every change to the web UI runs through an accessibility review before it ships.  If you find a screen-reader bug or a keyboard trap, please file an issue.
 
-[Unreleased]: https://github.com/blindndangerous/AutoDJ/compare/v0.19.1...HEAD
+[Unreleased]: https://github.com/blindndangerous/AutoDJ/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/blindndangerous/AutoDJ/compare/v0.19.1...v0.20.0
 [0.19.1]: https://github.com/blindndangerous/AutoDJ/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/blindndangerous/AutoDJ/compare/v0.18.2...v0.19.0
 [0.18.2]: https://github.com/blindndangerous/AutoDJ/compare/v0.18.1...v0.18.2

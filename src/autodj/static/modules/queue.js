@@ -54,7 +54,7 @@ function _restoreQueueFocus(queueList, spot) {
   const row = samePath[spot.occurrence]
     || rows[Math.min(spot.index, rows.length - 1)];
   const target = row.querySelector(`.queue-btn[data-action="${spot.action}"]:not(:disabled)`)
-    || row.querySelector(".queue-btn:not(:disabled)");
+    || row.querySelector('.queue-btn:not([data-action="info"]):not(:disabled)');
   target?.focus();
 }
 
@@ -92,6 +92,8 @@ export function renderQueue(queue, { queueList, queueCount }) {
     const isLast  = i === queue.length - 1;
     return `<li data-path="${path}" data-queue-index="${i}">
       <span class="queue-name" title="${name}">${i + 1}. ${name}</span>
+      <button type="button" class="queue-btn" data-action="info" data-path="${path}"
+              aria-label="Track info for ${name}">Track info</button>
       <button class="queue-btn" data-action="top"    data-path="${path}"
               aria-label="Move ${name} to top of queue" ${isFirst ? "disabled" : ""}>
         Top
@@ -174,10 +176,17 @@ export function installQueueButtons(els) {
   // list made NVDA call the whole list "clickable".
   queueList.ownerDocument.addEventListener("click", async (e) => {
     const btn = e.target.closest?.(".queue-btn");
-    if (!btn || !queueList.contains(btn) || btn.disabled || mutationPending) return;
-    const epoch = captureAuthenticatedRequestEpoch();
+    if (!btn || !queueList.contains(btn) || btn.disabled) return;
     const action = btn.dataset.action;
     const path   = btn.dataset.path;
+    if (action === "info") {
+      queueList.ownerDocument.dispatchEvent(new CustomEvent("autodj:edit-points", {
+        detail: { path, kind: "music" },
+      }));
+      return;
+    }
+    if (mutationPending) return;
+    const epoch = captureAuthenticatedRequestEpoch();
 
     const items = Array.from(queueList.querySelectorAll("li[data-path]"));
     const snapshot = items.map((li) => ({
@@ -300,7 +309,7 @@ export function installQueueButtons(els) {
     // place, or the pressed button again after a rollback.
     const row = queueList.querySelector(`li[data-queue-index="${focusIndex}"]`);
     const target = row?.querySelector(`.queue-btn[data-action="${focusAction}"]:not(:disabled)`)
-      || row?.querySelector(".queue-btn:not(:disabled)");
+      || row?.querySelector('.queue-btn:not([data-action="info"]):not(:disabled)');
     target?.focus();
   });
 }

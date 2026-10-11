@@ -192,6 +192,28 @@ def test_corrupt_published_index_fails(tmp_path: Path) -> None:
     assert check.repair == "rebuild-index"
 
 
+@pytest.mark.parametrize(("schema", "repair"), [(3, "migrate-index"), (2, "rebuild-index")])
+def test_unsupported_schema_recommends_safe_recovery(
+    tmp_path: Path, schema: int, repair: str
+) -> None:
+    cfg = _config(tmp_path)
+    _write_index(cfg)
+    path = cfg.index.active_dir / "index-manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["schema_version"] = schema
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    check = doctor._index_check(cfg)
+
+    assert check.status is doctor.CheckStatus.FAIL
+    assert check.repair == repair
+    if schema == 3:
+        assert "stop AutoDJ serving and indexing" in check.detail
+        assert "migrate-index --apply" in check.detail
+        assert "recovery copy" in check.detail
+        assert "without re-embedding" in check.detail
+
+
 def test_corrupt_dj_meta_fails_without_touching_file(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     cfg.index.active_dir.mkdir()

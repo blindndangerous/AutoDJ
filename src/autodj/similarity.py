@@ -189,6 +189,17 @@ class SimilarityIndex:
         with self._reload_lock:
             return self._public_entries
 
+    def replace_catalog_index(self, entries: list[IndexEntry], vectors: np.ndarray) -> None:
+        """Refresh real matching vectors without changing the legacy disk generation."""
+        from autodj.indexer import build_faiss_index
+
+        candidate = SimilarityIndex(build_faiss_index(vectors), entries)
+        with self._reload_lock:
+            self.entries = candidate.entries
+            self.faiss_index = candidate.faiss_index
+            self._path_to_idx = candidate._path_to_idx
+            self._public_entries = candidate._public_entries
+
     def entry_for_path(self, path: str) -> IndexEntry | None:
         """Return entry for *path* from one index generation, if present."""
         with self._reload_lock:

@@ -203,6 +203,14 @@ def _index_check(cfg: AutoDJConfig) -> DoctorCheck:
             "index", CheckStatus.WARN, "no index", f"{exc}; run `autodj index`", "index"
         )
     except UnsupportedIndexError as exc:
+        if exc.schema_version == 3:
+            detail = (
+                f"{exc}; stop AutoDJ serving and indexing, then run `autodj migrate-index --apply` "
+                "to save a recovery copy and carry the index forward without re-embedding."
+            )
+            return DoctorCheck(
+                "index", CheckStatus.FAIL, type(exc).__name__, detail, "migrate-index"
+            )
         return DoctorCheck("index", CheckStatus.FAIL, type(exc).__name__, str(exc), "rebuild-index")
     except IndexConsistencyError as exc:
         return DoctorCheck(

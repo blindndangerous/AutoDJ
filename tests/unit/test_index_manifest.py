@@ -104,8 +104,9 @@ def test_older_manifest_schema_names_the_rebuild(tmp_path: Path) -> None:
 def test_schema_3_manifest_points_at_the_conversion_script(tmp_path: Path) -> None:
     _write_manifest(tmp_path, _manifest_payload(schema_version=3, tracks_file="x"))
 
-    with pytest.raises(UnsupportedIndexError, match=r"older AutoDJ.*convert_index_v3_to_v4"):
+    with pytest.raises(UnsupportedIndexError, match=r"older AutoDJ.*migrate-index") as caught:
         read_manifest(tmp_path)
+    assert caught.value.schema_version == 3
 
 
 @pytest.mark.parametrize(

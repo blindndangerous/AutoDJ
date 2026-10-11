@@ -146,6 +146,10 @@ def explain_pick(
         out.append("Discovery pick — sonically distant on purpose.")
     elif mode == "pure_shuffle":
         out.append("Random walk — uniformly random, no similarity filter.")
+    elif mode == "least_recent":
+        out.append("Least recently played among the eligible songs.")
+    elif mode == "clock":
+        out.append("Selected for the next slot in the station clock.")
     elif mode == "anchored":
         out.append("Anchored to the session seed — similarity from the seed track.")
     elif mode == "fallback":

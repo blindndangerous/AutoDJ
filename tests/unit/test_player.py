@@ -1012,16 +1012,41 @@ class TestEq:
     def test_make_eq_filters_returns_dict(self) -> None:
         sos = make_eq_filters(44100)
         assert isinstance(sos, dict)
-        assert {"low", "mid_lp", "mid_hp", "high"}.issubset(sos.keys())
+        assert set(sos) == {"low", "high"}
 
     def test_apply_eq_unity_gain_passes_through(self) -> None:
         sos = make_eq_filters(44100)
-        a = _sine_audio(0.1)
+        a = np.random.default_rng(0).uniform(-0.9, 0.9, 4410).astype(np.float32)
         out = apply_eq(a, sos, 1.0, 1.0, 1.0)
-        # Unity-gain 3-band split + sum reconstructs the input fairly closely
-        # (filters are 2nd-order so there's some phase delay, accept loose match)
         assert out.dtype == np.float32
-        assert len(out) == len(a)
+        np.testing.assert_array_equal(out, a)
+
+    @pytest.mark.parametrize("band", [0, 1, 2])
+    @pytest.mark.parametrize("gain", [0.99, 1.01])
+    def test_small_gain_change_has_small_frequency_response_change(
+        self, band: int, gain: float
+    ) -> None:
+        sos = make_eq_filters(44100)
+        gains = [1.0, 1.0, 1.0]
+        gains[band] = gain
+        t = np.arange(22050) / 44100
+        for hz in (40, 80, 150, 250, 500, 1000, 2000, 4000, 6000, 10000, 16000):
+            audio = (0.1 * np.sin(2 * np.pi * hz * t)).astype(np.float32)
+            out = apply_eq(audio, sos, *gains)
+            ratio = np.linalg.norm(out[11025:]) / np.linalg.norm(audio[11025:])
+            assert abs(20 * np.log10(ratio)) < 0.1, (band, gain, hz, ratio)
+
+    @pytest.mark.parametrize("band,hz", [(0, 60), (1, 1000), (2, 12000)])
+    def test_band_can_cut_and_boost(self, band: int, hz: int) -> None:
+        sos = make_eq_filters(44100)
+        t = np.arange(22050) / 44100
+        audio = (0.1 * np.sin(2 * np.pi * hz * t)).astype(np.float32)
+        for gain, lower, upper in ((0.0, 0.0, 0.5), (2.0, 1.5, 2.01)):
+            gains = [1.0, 1.0, 1.0]
+            gains[band] = gain
+            out = apply_eq(audio, sos, *gains)
+            ratio = np.linalg.norm(out[11025:]) / np.linalg.norm(audio[11025:])
+            assert lower < ratio < upper
 
     def test_apply_eq_zero_gain_silences(self) -> None:
         sos = make_eq_filters(44100)
@@ -1029,11 +1054,11 @@ class TestEq:
         out = apply_eq(a, sos, 0.0, 0.0, 0.0)
         assert np.abs(out).max() < 1e-3
 
-    def test_apply_eq_clipped_to_one(self) -> None:
+    def test_apply_eq_leaves_boost_headroom_for_output_stage(self) -> None:
         sos = make_eq_filters(44100)
         a = _sine_audio(0.5) * 2.0  # already > 1
         out = apply_eq(a, sos, 2.0, 2.0, 2.0)  # boosted further
-        assert np.abs(out).max() <= 1.0 + 1e-6
+        np.testing.assert_array_equal(out, a * 2.0)
 
     def test_make_eq_state_returns_one_array_per_band(self) -> None:
         sos = make_eq_filters(44100)
@@ -1069,8 +1094,8 @@ class TestEq:
         reset_eq_state(state)
         assert all(np.abs(band).max() == 0 for band in state.values())
 
-    def test_re_engaging_after_bypass_matches_a_fresh_stream(self) -> None:
-        """Stale memory from before a bypass would splice a click into playback."""
+    def test_reset_state_matches_a_fresh_stream(self) -> None:
+        """A stopped stream must not carry an old filter tail into a new set."""
         sos = make_eq_filters(44100)
         audio = _sine_audio(0.1)
 
@@ -1207,6 +1232,21 @@ class TestRenderTrackFeatures:
             return_value=ReplayGain(track_gain_db=-3.0, track_peak=0.5),
         ):
             self._render(player)
+
+    @pytest.mark.parametrize("mode", ["smooth", "stereotool"])
+    @pytest.mark.parametrize(
+        "crossfade,has_next", [(2.0, True), (0.0, True), (20.0, True), (2.0, False)]
+    )
+    def test_legacy_render_keeps_master_processing_mode(self, mode, crossfade, has_next):
+        player = self._make_player_with_audio(crossfade_seconds=crossfade)
+        player._cfg.playback.loudness_processing = mode
+        audio = np.zeros((4 * 44100, 2), dtype=np.float32)
+        with patch.object(player, "_load_playout_audio", return_value=audio):
+            result = player._render_track(
+                player._sim.entries[0], player._sim.entries[1] if has_next else None, 0
+            )
+        assert result is not None
+        assert result.loudness_processing == mode
 
     def test_filter_sweep_path(self) -> None:
         self._render(self._make_player_with_audio(filter_sweep=True))

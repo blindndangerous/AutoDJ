@@ -25,6 +25,8 @@ def _make_player() -> SimpleNamespace:
         fade_in_seconds=3.0,
         crossfade_eq_duck=False,
         transition_mode="full_intro_outro",
+        pick_mode="similarity",
+        loudness_processing=None,
         post_queue_seed="last_queued",
         key_notation="camelot",
         key_prefer_flats=False,
@@ -61,7 +63,7 @@ def _make_player() -> SimpleNamespace:
         ),
         playback=playback,
         replaygain=SimpleNamespace(enabled=False, target_db=-14.0),
-        stream=SimpleNamespace(bitrate=320),
+        stream=SimpleNamespace(bitrate=320, continuous=False),
         presets={},
     )
     return SimpleNamespace(
@@ -103,6 +105,10 @@ def _warnings(caplog: pytest.LogCaptureFixture, field: str) -> int:
         ({"djmix": {"beatmatch": "true"}}, "beatmatch"),
         ({"playback": {"transition_mode": 12}}, "transition_mode"),
         ({"playback": {"transition_mode": "garbage-mode"}}, "transition_mode"),
+        ({"playback": {"pick_mode": "bad"}}, "pick_mode"),
+        ({"playback": {"loudness_processing": "bad"}}, "loudness_processing"),
+        ({"playback": {"pick_mode": "bad"}}, "pick_mode"),
+        ({"playback": {"loudness_processing": "bad"}}, "loudness_processing"),
         ({"playback": {"key_notation": "alien"}}, "key_notation"),
         ({"playback": {"liners_pick_mode": "invalid"}}, "liners_pick_mode"),
         ({"playback": {"liners_duck_db": 1.0}}, "liners_duck_db"),
@@ -169,10 +175,9 @@ def test_one_invalid_field_is_warned_and_the_rest_still_apply(
     }
 
 
-@pytest.mark.parametrize("version", [None, 0, 1, 3, "2", True])
+@pytest.mark.parametrize("version", [None, 0, 3, "2", True])
 def test_state_with_another_schema_version_is_ignored(tmp_path: Path, caplog, version) -> None:
-    """Only version 2 is read; version 1 stored "compatible" beside
-    ``harmonic_mixing: false``, so reading it would turn key filtering on."""
+    """Unsupported versions do not apply saved settings."""
     state: dict = {"transition": "echo_out", "djmix": {"harmonic_mode": "compatible"}}
     if version is not None:
         state["schema_version"] = version
@@ -184,6 +189,90 @@ def test_state_with_another_schema_version_is_ignored(tmp_path: Path, caplog, ve
     assert player._cfg.transitions.effect == "none"
     assert player._cfg.djmix.harmonic_mode == "off"
     assert "ignoring web_state.json: schema_version" in caplog.text
+
+
+def test_v1_migration_preserves_supported_settings_and_honors_disabled_harmonic_toggle(
+    tmp_path: Path,
+) -> None:
+    state = {
+        "schema_version": 1,
+        "transition": "echo_out",
+        "djmix": {"harmonic_mode": "compatible", "harmonic_mixing": False, "beatmatch": True},
+        "playback": {"crossfade_seconds": 7.0},
+    }
+    (tmp_path / "web_state.json").write_text(json.dumps(state), encoding="utf-8")
+    player = _make_player()
+
+    _load(player, tmp_path)
+
+    assert player._cfg.transitions.effect == "echo_out"
+    assert player._cfg.djmix.harmonic_mode == "off"
+    assert player._cfg.djmix.beatmatch is True
+    assert player._cfg.playback.crossfade_seconds == 7.0
+
+
+@pytest.mark.parametrize(
+    ("toggle", "mode", "expected", "warned"),
+    [
+        (True, "compatible", "compatible", False),
+        (True, None, "off", False),
+        ("false", "compatible", "off", True),
+        (1, "compatible", "off", True),
+    ],
+)
+def test_v1_migration_safely_handles_legacy_harmonic_toggle(
+    tmp_path: Path, caplog, toggle, mode, expected, warned
+) -> None:
+    djmix = {"harmonic_mixing": toggle}
+    if mode is not None:
+        djmix["harmonic_mode"] = mode
+    state = {"schema_version": 1, "djmix": djmix, "playback": {"crossfade_seconds": 8.0}}
+    (tmp_path / "web_state.json").write_text(json.dumps(state), encoding="utf-8")
+    player = _make_player()
+
+    _load(player, tmp_path)
+
+    assert player._cfg.djmix.harmonic_mode == expected
+    assert player._cfg.playback.crossfade_seconds == 8.0
+    if warned:
+        assert "invalid djmix.harmonic_mixing" in caplog.text
+
+
+def test_first_save_after_v1_keeps_original_backup(tmp_path: Path) -> None:
+    original = json.dumps(
+        {"schema_version": 1, "djmix": {"harmonic_mode": "compatible", "harmonic_mixing": False}}
+    )
+    path = tmp_path / "web_state.json"
+    path.write_text(original, encoding="utf-8")
+
+    save_from_player({"preset": "new"}, tmp_path)
+
+    backup = tmp_path / "web_state.json.v1.bak"
+    assert backup.read_bytes() == original.encode("utf-8")
+    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == STATE_VERSION
+    path.write_text('{"schema_version":1,"changed":true}', encoding="utf-8")
+    save_from_player({"preset": "newer"}, tmp_path)
+    assert backup.read_bytes() == original.encode("utf-8")
+
+
+def test_failed_v1_backup_prevents_overwrite(tmp_path: Path, monkeypatch, caplog) -> None:
+    original = (
+        b'{"schema_version":1,"djmix":{"harmonic_mode":"compatible","harmonic_mixing":false}}'
+    )
+    path = tmp_path / "web_state.json"
+    path.write_bytes(original)
+
+    def fail_backup(target: Path, _payload) -> None:
+        if target.name.endswith(".v1.bak"):
+            raise OSError("backup unavailable")
+        raise AssertionError("new state must not be written")
+
+    monkeypatch.setattr("autodj.runtime_state.atomic_write", fail_backup)
+    with caplog.at_level("WARNING"):
+        save_from_player({"preset": "new"}, tmp_path)
+
+    assert path.read_bytes() == original
+    assert "Failed to back up v1 web_state.json" in caplog.text
 
 
 def test_non_object_state_root_is_warned_and_ignored(tmp_path: Path, caplog) -> None:
@@ -318,6 +407,51 @@ class TestLoadInto:
         _load(player, tmp_path)
         assert player._cfg.stream.bitrate == 128
 
+    def test_stream_continuous_restores_and_rejects_non_boolean(self, tmp_path) -> None:
+        player = _make_player()
+        _write_state(tmp_path, {"playback": {"stream_continuous": True}})
+        _load(player, tmp_path)
+        assert player._cfg.stream.continuous is True
+        _write_state(tmp_path, {"playback": {"stream_continuous": "true"}})
+        player._cfg.stream.continuous = False
+        _load(player, tmp_path)
+        assert player._cfg.stream.continuous is False
+
+    def test_legacy_playback_flags_restore_and_new_fields_win(self, tmp_path) -> None:
+        player = _make_player()
+        _write_state(
+            tmp_path,
+            {
+                "playback": {
+                    "pure_shuffle": True,
+                    "replaygain_enabled": True,
+                    "pick_mode": "least_recent",
+                    "loudness_processing": "smooth",
+                }
+            },
+        )
+
+        _load(player, tmp_path)
+
+        settings = PlayerBridge(player, player._sim).get_settings()["playback"]
+        assert STATE_VERSION == 2
+        assert player._pure_shuffle is False
+        assert settings["pick_mode"] == "least_recent"
+        assert settings["loudness_processing"] == "smooth"
+        assert player._cfg.replaygain.enabled is False
+
+    def test_legacy_only_playback_flags_still_restore(self, tmp_path) -> None:
+        player = _make_player()
+        _write_state(tmp_path, {"playback": {"pure_shuffle": True, "replaygain_enabled": True}})
+
+        _load(player, tmp_path)
+
+        settings = PlayerBridge(player, player._sim).get_settings()["playback"]
+        assert player._pure_shuffle is True
+        assert player._cfg.replaygain.enabled is True
+        assert settings["pick_mode"] == "random"
+        assert settings["loudness_processing"] == "replaygain"
+
 
 class TestSaveFrom:
     def test_writes_file(self, tmp_path) -> None:
@@ -441,6 +575,8 @@ class TestRoundTrip:
             "pure_shuffle",
             "anchor_to_seed",
             "replaygain_enabled",
+            "pick_mode",
+            "loudness_processing",
             "transition_mode",
             "post_queue_seed",
             "key_notation",
@@ -461,6 +597,7 @@ class TestRoundTrip:
             "liners_duck_db",
             "liners_talk_up",
             "stream_bitrate",
+            "stream_continuous",
             "no_repeat_window",
             "artist_repeat_window",
             "transition_wet_mix",

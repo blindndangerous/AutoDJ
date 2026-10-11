@@ -26,6 +26,8 @@ def validate_playback_choices(values: Mapping[str, Any]) -> None:
     """
     from autodj.config import (
         _validate_key_notation,
+        _validate_loudness_processing,
+        _validate_pick_mode,
         _validate_post_queue_seed,
         _validate_skip_style,
         _validate_transition_mode,
@@ -34,6 +36,8 @@ def validate_playback_choices(values: Mapping[str, Any]) -> None:
 
     checks: tuple[tuple[str, Callable[[str], str]], ...] = (
         ("transition_mode", _validate_transition_mode),
+        ("pick_mode", _validate_pick_mode),
+        ("loudness_processing", _validate_loudness_processing),
         ("post_queue_seed", _validate_post_queue_seed),
         ("key_notation", _validate_key_notation),
         ("skip_style", _validate_skip_style),
@@ -74,11 +78,12 @@ class PresetBody(BaseModel):
 
 
 class StreamSettingsBody(BaseModel):
-    """Request body for POST /api/stream/settings."""
+    """Partial stream settings update for bitrate and continuous playback."""
 
     model_config = ConfigDict(extra="forbid")
 
-    bitrate: Literal[128, 192, 256, 320]
+    bitrate: Literal[128, 192, 256, 320] | None = None
+    continuous: bool | None = Field(default=None, strict=True)
 
 
 class TransitionBody(BaseModel):
@@ -135,6 +140,8 @@ class PlaybackSettingsBody(BaseModel):
     crossfade_seconds: FadeSeconds | None = None
     fade_in_seconds: FadeSeconds | None = None
     crossfade_eq_duck: bool | None = None
+    pick_mode: Literal["similarity", "random", "least_recent", "clock"] | None = None
+    loudness_processing: Literal["off", "replaygain", "smooth", "stereotool"] | None = None
     pure_shuffle: bool | None = None
     anchor_to_seed: bool | None = None
     replaygain_enabled: bool | None = None

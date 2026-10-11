@@ -10,3 +10,6 @@
 *.index binary
 *.pt    binary
 *.safetensors binary
+
+# Preserve the calibrated Stereo Tool preset exactly as saved.
+src/autodj/presets/*.sts binary

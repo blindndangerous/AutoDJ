@@ -574,18 +574,46 @@ the whole library moved. A track is re-pathed only when exactly one missing file
 new file match. A copy, two identical files, or a file whose bytes changed (retagged) is indexed
 the usual way. The run prints `N moved files re-pathed`.
 
-This needs index schema 4. AutoDJ refuses an index from before it, with an error naming the
-conversion script. Convert once, with `autodj serve` and `autodj index` stopped. If a move has not
-happened yet, write a JSON file of old to new paths relative to `music_dir`, such as
-`{"Old/a.flac": "New/a.flac"}`, and pass it as `--map`:
+This needs index schema 4. When started in an interactive terminal, `autodj serve` detects a
+schema-3 index and offers to save a recovery copy and convert it. Entering Yes converts the index
+and continues startup; No leaves it unchanged and stops startup. Stop any other AutoDJ serving,
+indexing or analysis process before accepting. Services and other non-interactive launches exit
+with instructions instead of waiting for input.
+
+To preview and convert manually, use the same configuration and named index as your server:
+
+```bash
+uv run autodj migrate-index
+uv run autodj migrate-index --apply
+# With another configuration or named index:
+uv run autodj --config station.toml migrate-index --name gold --apply
+```
+
+The preview writes nothing. Applying copies the original index generation, cue database, station
+library database and saved web settings into a recovery folder under
+`index/.migration-backups/default.schema3-backup-...`. The location is printed. SQLite databases
+are copied with their committed changes, including changes still in the write-ahead log.
+The copy is verified before
+live files change and is retained after conversion. This is a migration recovery folder, not an
+`autodj restore` ZIP archive; it preserves the original files for recovery after an interrupted
+conversion. It does not copy music, external liner folders or configuration files.
+
+Vectors are copied unchanged, so the expensive analysis does not run again. The converted index
+is checked before publication. Missing music files are listed and keep their existing analysis,
+but cannot be recognised as moved until they have a fingerprint. A conversion failure stops
+startup; it does not silently rebuild the index. Schema 2 still requires a rebuild.
+
+For files that moved, `--map moves.json` accepts old to new paths relative to `music_dir`, such as
+`{"Old/a.flac": "New/a.flac"}`. Paths must use forward slashes, and destinations must be unique
+and not already indexed. If the move has not happened yet, the old file is used for fingerprinting.
+The original script remains available for callers that already use it:
 
 ```bash
 uv run python scripts/convert_index_v3_to_v4.py --index-dir index --music-dir /music --map moves.json
 uv run python scripts/convert_index_v3_to_v4.py --index-dir index --music-dir /music --map moves.json --apply
 ```
 
-The first command is a dry run. The script reuses the vectors, re-keys `dj_meta.db` with the map,
-and lists files it could not read.
+The first command is a dry run. Both entry points use the same converter and recovery copy.
 
 ## More than one machine
 
@@ -650,6 +678,8 @@ index, so the next `autodj index` there starts from the copied one.
   `vectors.g<number>.index` files it names.
 - `dj_meta.db`, the intro, outro, beat grid and cue cache.
 - `web_state.json`, the settings chosen in the web page.
+- `library.db`, the station's registered folders, track data and cues, last-played times and
+  complete play history.
 - Every file in the liners folder (`[playback] liners_folder`, or `index/<name>/liners`) and in
   `index/profiles`.
 - `manifest.json`, which records the AutoDJ version that made the archive and lists its files.
@@ -660,9 +690,11 @@ the stream secret, so after a restore on a new machine you pair your browsers ag
 stream address.
 
 Backup is safe while AutoDJ is serving: it copies the index under the index's own lock and
-`dj_meta.db` through SQLite's backup, so it never picks up a half-written index. It refuses to
+both databases through SQLite's backup API, so it never picks up a half-written index. It refuses to
 overwrite an existing archive unless you pass `--force`, and it refuses an index made by an older
-AutoDJ; rebuild that with `autodj index --force` first.
+AutoDJ; convert schema 3 with `autodj migrate-index --apply` first. That conversion saves its own
+recovery copy. Older backup archives that do not contain `library.db` leave the current station
+catalog unchanged when restored.
 
 ```bash
 # Linux/WSL2 Bash
@@ -675,6 +707,11 @@ uv run autodj backup "backups\autodj-$stamp.zip"
 ```
 
 ## Restore and validate
+
+Backup archives are still restricted to the AutoDJ major and minor version that made them.
+For an archive made by 0.19, restore it with 0.19 first, then upgrade and convert the index if
+needed. Version 0.20 can open an existing schema-4 index directly; the application version bump
+does not change that index format. Make a new backup after upgrading to include the station catalog.
 
 Stop AutoDJ, and any `autodj index` or `autodj analyse` run, before you restore. Restore cannot
 tell whether AutoDJ is running, and a running AutoDJ would keep using the files it replaces.

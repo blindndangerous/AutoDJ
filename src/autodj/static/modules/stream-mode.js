@@ -152,7 +152,11 @@ export function createStreamMode({
     try {
       const info = await fetchInfo();
       if (mine !== generation) return;
-      audio.src = info.path;
+      // Firefox can reuse an old stream offset after reload, even with no-store.
+      const source = new URL(info.path, audio.ownerDocument.baseURI);
+      const connection = `${Date.now()}-${mine}-${Math.random().toString(36).slice(2)}`;
+      source.searchParams.set("connection", connection);
+      audio.src = source.href;
       beforePlay();
       await audio.play();
     } catch (err) {
@@ -371,6 +375,7 @@ export function createStreamSettings({
   fetchInfo,
   rotate,
   saveBitrate,
+  saveContinuous = async () => false,
   claimLinkChange = () => () => {},
   srStatus,
   settingsStatus,
@@ -395,6 +400,7 @@ export function createStreamSettings({
   const copy = doc.getElementById("stream-copy");
   const m3u = doc.getElementById("stream-m3u");
   const bitrate = doc.getElementById("stream-bitrate");
+  const continuous = doc.getElementById("stream-continuous");
   const rotateBtn = doc.getElementById("stream-rotate");
   const listeners = doc.getElementById("stream-listeners");
   let active = false;
@@ -438,6 +444,7 @@ export function createStreamSettings({
     if (bitrateBusy()) return;
     savedBitrate = String(info.bitrate);
     if (doc.activeElement !== bitrate) bitrate.value = savedBitrate;
+    if (doc.activeElement !== continuous) continuous.checked = Boolean(info.continuous);
   }
 
   async function refresh() {
@@ -609,6 +616,15 @@ export function createStreamSettings({
     pendingBitrate = bitrate.value;
     clearTimeout(settleTimer);
     settleTimer = setTimeout(() => void flushBitrate(), BITRATE_SETTLE_MS);
+  });
+  continuous.addEventListener("change", async () => {
+    const chosen = continuous.checked;
+    continuous.disabled = true;
+    try {
+      if (!await saveContinuous(chosen, continuous)) continuous.checked = !chosen;
+    } finally {
+      continuous.disabled = false;
+    }
   });
 
   // Claims the link_changed event this rotation causes, both for speech

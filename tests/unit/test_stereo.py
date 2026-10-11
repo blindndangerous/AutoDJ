@@ -74,6 +74,19 @@ def test_load_stereo_keeps_two_channels(tmp_path: Path) -> None:
     np.testing.assert_allclose(out[:, 1], right, atol=1e-4)
 
 
+def test_load_stereo_recovers_mp3_after_both_default_decoders_fail() -> None:
+    audio = np.ones((100, 2), dtype=np.float32)
+    with (
+        patch.object(stereo.sf, "SoundFile", side_effect=RuntimeError("bad frame")),
+        patch("librosa.load", side_effect=RuntimeError("bad frame")),
+        patch.object(stereo, "load_with_ffmpeg", return_value=(audio, 44100)) as decode,
+    ):
+        assert stereo.load_stereo("recoverable.mp3", max_seconds=60) is audio
+        decode.assert_called_once_with(
+            "recoverable.mp3", channels=2, sample_rate=44100, max_seconds=61
+        )
+
+
 def _fake_ffmpeg(decoded: np.ndarray, sr: int):
     """Patchers that make FFmpeg "decode" any file to *decoded* at *sr*."""
     return (
@@ -229,6 +242,23 @@ def test_eq_stateful_stereo_matches_mono() -> None:
         s = eq.apply_eq(st[start : start + 882], filters, 0.5, 1.0, 1.5, state=st_state)
         np.testing.assert_allclose(s[:, 0], m, atol=1e-5)
         np.testing.assert_allclose(s[:, 1], m, atol=1e-5)
+
+
+def test_eq_keeps_different_stereo_channels_independent() -> None:
+    filters = eq.make_eq_filters(44100)
+    audio = np.stack([_tone(3528, hz=80), _tone(3528, hz=6000)], axis=1)
+    expected = np.stack(
+        [eq.apply_eq(audio[:, channel], filters, 0.4, 1.0, 1.6) for channel in (0, 1)],
+        axis=1,
+    )
+    state = eq.make_eq_state(filters, channels=2)
+    actual = np.concatenate(
+        [
+            eq.apply_eq(audio[start : start + 882], filters, 0.4, 1.0, 1.6, state=state)
+            for start in range(0, len(audio), 882)
+        ]
+    )
+    np.testing.assert_allclose(actual, expected, atol=1e-6)
 
 
 def test_load_stereo_falls_back_to_librosa_on_soundfile_failure() -> None:

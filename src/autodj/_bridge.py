@@ -58,6 +58,8 @@ def _library_job_snapshot() -> dict:
 def _history_entry(entry: Any) -> dict:
     """Return a JSON-serialisable history-row dict for *entry*."""
     return {
+        "event_id": secrets.token_hex(16),
+        "path": str(getattr(entry, "path", "") or ""),
         "title": getattr(entry, "title", "") or "",
         "artist": getattr(entry, "artist", "") or "",
         "duration": float(getattr(entry, "length", 0.0) or 0.0),
@@ -73,7 +75,7 @@ class PlayerBridge:
     event loop while the Player runs in a separate thread.  Queue edits hold
     ``PlayerState.queue_lock``, recently-played edits hold
     ``PlayerState.history_lock`` (``Player._pick_lock``), browser-mode
-    advances hold ``Player._advance_lock``, the session history and event
+    advances hold ``Player._advance_lock``, the play history and event
     lists have their own locks, and the remaining ``PlayerState`` access is
     single-field reads and writes that rely on Python's GIL.
 
@@ -88,13 +90,13 @@ class PlayerBridge:
     # import them eagerly to keep the minimal-install path light.
     player: Any
     sim: Any
-    # Cap session history.  500 ≈ 25 hours at 3 min/track, far longer
-    # than any real listening session, but bounded so /api/history can
-    # never grow into a memory hazard on a long-running ``serve``.
+    library: Any = None
+    # The viewer keeps 500 rows; the catalog retains the full play log.
     _play_history: deque = field(
         default_factory=lambda: deque(maxlen=500),
         init=False,
     )
+    _history_started: bool = field(default=False, init=False)
     # Set by the server in server-mixed modes (``--server-audio`` and
     # ``--stream``); ``None`` in browser-driven mode, where the browser
     # evaluates liner triggers itself and the "Test liner" route is a no-op.
@@ -151,6 +153,7 @@ class PlayerBridge:
             scheduler: The :class:`~autodj.liner_scheduler.LinerScheduler`.
         """
         self.liner_scheduler = scheduler
+        self.player.liner_scheduler = scheduler
         self._liner_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="autodj-liner")
 
     def shutdown_liner_worker(self) -> None:
@@ -185,6 +188,7 @@ class PlayerBridge:
             "path": f"/stream/{secret}.mp3",
             "m3u_path": f"/stream/{secret}.m3u",
             "bitrate": int(self.player._cfg.stream.bitrate),
+            "continuous": bool(self.player._cfg.stream.continuous),
             "listeners": int(self.stream.listener_count),
             "state": self.station.state,
         }
@@ -226,8 +230,7 @@ class PlayerBridge:
             if self.stream_mode and self.player._state.current_track is not entry:
                 self._open_play = None
                 return
-            row = _history_entry(entry)
-            self._play_history.append(row)
+            row = self._append_history(entry)
             self._open_play = (entry, row)
         if self.stream is not None:
             self.stream.set_title(
@@ -264,12 +267,27 @@ class PlayerBridge:
             for index in range(len(self._play_history) - 1, -1, -1):
                 if self._play_history[index] is play[1]:
                     del self._play_history[index]
+                    if self.library is not None:
+                        self.library.interrupt_history(play[1]["event_id"])
                     return
 
+    def _append_history(self, entry: Any) -> dict:
+        """Record one play while holding ``_history_lock``; never trim the archive."""
+        row = _history_entry(entry)
+        self._play_history.append(row)
+        self._history_started = True
+        if self.library is not None:
+            self.library.remember_history(row)
+            self.library.remember_play(entry.path)
+        return row
+
     def history_snapshot(self) -> list[dict]:
-        """Return a copy of the session history, oldest first."""
+        """Return the latest plays across sessions, oldest first."""
         with self._history_lock:
-            return list(self._play_history)
+            return [
+                {key: row[key] for key in ("title", "artist", "duration", "played_at")}
+                for row in self._play_history
+            ]
 
     # ------------------------------------------------------------------
     # Controls
@@ -278,8 +296,8 @@ class PlayerBridge:
     def record_seed(self, entry: Any) -> None:
         """Append the seed track to history before the first advance fires."""
         with self._history_lock:
-            if entry is not None and not self._play_history:
-                self._play_history.append(_history_entry(entry))
+            if entry is not None and not self._history_started:
+                self._append_history(entry)
 
     def seek(self, seconds: float | None = None, delta: float | None = None) -> float:
         """Seek the active track and return the resulting position in seconds.
@@ -313,7 +331,10 @@ class PlayerBridge:
         if getattr(self.player, "_dry_run", False):
             self.advance_now()
         elif getattr(self.player, "bus", None) is not None:
-            self.player.bus.skip()
+            if self.library is not None:
+                self.player.skip_current()
+            else:
+                self.player.bus.skip()
         else:
             self.player._skip_event.set()
 
@@ -416,9 +437,9 @@ class PlayerBridge:
         state.current_track = nxt
         # Lazy-capture seed on first advance (seed never goes through advance_now as nxt).
         with self._history_lock:
-            if not self._play_history and cur is not None:
-                self._play_history.append(_history_entry(cur))
-            self._play_history.append(_history_entry(nxt))
+            if not self._history_started and cur is not None:
+                self._append_history(cur)
+            self._append_history(nxt)
         # Browser-driven mode never renders on the server, so without an
         # explicit call here the lyric panel would stay frozen on the previous
         # track's words.  Lyric lookup can touch slow audio/tag storage,
@@ -629,6 +650,17 @@ class PlayerBridge:
             ``intro_start_s`` (the first sound) is ``None`` for a track
             analysed before it was measured.
             """
+            if entry is not None and self.library is not None:
+                points = self.player.saved_points(entry)
+                outro = points.get("outro")
+                return (
+                    points.get("start"),
+                    points.get("intro"),
+                    outro,
+                    max(0.0, (points.get("end") or entry.length) - outro)
+                    if outro is not None
+                    else None,
+                )
             if entry is None or dj_cache is None or not entry.length:
                 return (None, None, None, None)
             try:
@@ -656,6 +688,20 @@ class PlayerBridge:
             first/outro_downbeat, user) survive intact -- they're the
             ones the cue strip + screen-reader summary care about.
             """
+            if entry is not None and self.library is not None:
+                record = self.library.catalog.record_for_path(entry.path)
+                if record is not None:
+                    return [
+                        {
+                            "time_s": value,
+                            "type": name,
+                            "label": name.title(),
+                            "source": record["point_sources"].get(name, "auto"),
+                            "color": None,
+                        }
+                        for name, value in record["points"].items()
+                        if value is not None and name != "overlap_start"
+                    ]
             if entry is None or dj_cache is None:
                 return []
             try:
@@ -807,6 +853,12 @@ class PlayerBridge:
                     active_idx = i
                     break
 
+        master = getattr(self.player, "_continuous_master", None)
+        processing = (
+            getattr(self.player, "_active_processing_mode", None)
+            or self.player._cfg.playback.loudness_processing
+        )
+        playing = getattr(self.player, "_playing_render", None)
         return {
             "current_track": _track_dict(current),
             "next_track": _track_dict(upcoming),
@@ -846,6 +898,21 @@ class PlayerBridge:
             "stream_state": self.station.state if self.stream_mode else None,
             "stream_listeners": int(self.stream.listener_count) if self.stream_mode else 0,
             "stream_event": self._current_station_event(),
+            "playout": {
+                "processing": processing
+                or ("replaygain" if self.player._cfg.replaygain.enabled else "off"),
+                "error": master.error
+                if master is not None and processing in {"smooth", "stereotool"}
+                else None,
+                "latency_seconds": master.latency_seconds
+                if master is not None and processing in {"smooth", "stereotool"}
+                else 0.0,
+                "queue_locked": bool(
+                    playing is not None
+                    and playing.full_audio is not None
+                    and playing.next_entry is not None
+                ),
+            },
         }
 
     def _next_transition_fx(self, current: Any, upcoming: Any) -> str | None:
@@ -908,8 +975,8 @@ class PlayerBridge:
             return []
 
         results = []
-        similarity = self.sim
-        for entry in similarity.entries_snapshot():
+        collection = self.library if self.library is not None else self.sim
+        for entry in collection.entries_snapshot():
             haystack = (f"{entry.title} — {entry.artist} — {entry.album}").lower()
             if all(tok in haystack for tok in tokens):
                 results.append(
@@ -926,6 +993,11 @@ class PlayerBridge:
                 if len(results) >= limit:
                     break
         return results
+
+    def entry_for_path(self, path: str) -> IndexEntry | None:
+        """Resolve only a registered playable file, including basic-ready tracks."""
+        collection = self.library if self.library is not None else self.sim
+        return collection.entry_for_path(path)
 
     # ------------------------------------------------------------------
     # Queue control
@@ -1010,8 +1082,7 @@ class PlayerBridge:
         Returns:
             ``True`` if the track was found in the index, ``False`` otherwise.
         """
-        similarity = self.sim
-        entry = similarity.entry_for_path(path)
+        entry = self.entry_for_path(path)
         if entry is None:
             return False
         if now and (self.stream_mode or self._bus_mode()):
@@ -1052,7 +1123,11 @@ class PlayerBridge:
         starting point — useful when the user doesn't like the seed the
         server picked at startup or wants to jump to an unrelated genre.
         """
-        chosen = self.sim.random_entry()
+        chosen = (
+            self.player._random_start_entry()
+            if self.library is not None
+            else self.sim.random_entry()
+        )
         if chosen is None:
             return False
         if self.stream_mode:
@@ -1071,8 +1146,7 @@ class PlayerBridge:
 
     def queue_add(self, path: str) -> bool:
         """Append a track by path to the end of the user queue."""
-        similarity = self.sim
-        entry = similarity.entry_for_path(path)
+        entry = self.entry_for_path(path)
         if entry is None:
             return False
         with self.player._state.queue_lock:
@@ -1181,10 +1255,17 @@ class PlayerBridge:
     # ------------------------------------------------------------------
 
     def load_persistent_state(self) -> None:
-        """Restore previously-saved settings from web_state.json."""
+        """Restore settings and recent history before playback starts."""
         from autodj.runtime_state import load_into_bridge
 
         load_into_bridge(self, self.player._cfg.index.active_dir)
+        if self.library is None:
+            return
+        with self._history_lock:
+            if self._history_started:
+                return
+            self._play_history.clear()
+            self._play_history.extend(self.library.catalog.recent_history())
 
     def save_persistent_state(self) -> None:
         """Write current settings to web_state.json (atomic)."""
@@ -1222,8 +1303,11 @@ class PlayerBridge:
                 "fade_in_seconds": pb.fade_in_seconds,
                 "crossfade_eq_duck": pb.crossfade_eq_duck,
                 "pure_shuffle": p._pure_shuffle,
+                "pick_mode": "random" if p._pure_shuffle else pb.pick_mode,
                 "anchor_to_seed": p._anchor_to_seed,
                 "replaygain_enabled": cfg.replaygain.enabled,
+                "loudness_processing": pb.loudness_processing
+                or ("replaygain" if cfg.replaygain.enabled else "off"),
                 "transition_mode": pb.transition_mode,
                 "post_queue_seed": pb.post_queue_seed,
                 "key_notation": pb.key_notation,
@@ -1234,7 +1318,9 @@ class PlayerBridge:
                 "artist_repeat_window": int(pb.artist_repeat_window),
                 "transition_wet_mix": float(cfg.transitions.wet_mix),
                 "replaygain_target_db": float(cfg.replaygain.target_db),
-                "library_size": int(p._sim.ntotal if p._sim else 0),
+                "library_size": len(self.library.entries_snapshot())
+                if self.library is not None
+                else int(p._sim.ntotal if p._sim else 0),
                 "key_sync_fx": bool(pb.key_sync_fx),
                 "beatmatch_on_skip": bool(pb.beatmatch_on_skip),
                 "skip_style": pb.skip_style,
@@ -1249,6 +1335,7 @@ class PlayerBridge:
                 "liners_duck_db": pb.liners_duck_db,
                 "liners_talk_up": bool(pb.liners_talk_up),
                 "stream_bitrate": int(cfg.stream.bitrate),
+                "stream_continuous": bool(cfg.stream.continuous),
                 "volume": float(p._state.volume),
                 "is_muted": bool(p._state.is_muted),
             },
@@ -1331,6 +1418,19 @@ class PlayerBridge:
             target, attribute = targets.get(key, (cfg.playback, key))
             setattr(target, attribute, value)
 
+        if "pick_mode" in values:
+            player._pure_shuffle = values["pick_mode"] == "random"
+            if values["pick_mode"] == "clock":
+                cfg.playback.transition_mode = "saved_points"
+        elif "pure_shuffle" in values:
+            cfg.playback.pick_mode = "random" if values["pure_shuffle"] else "similarity"
+        if "loudness_processing" in values:
+            cfg.replaygain.enabled = values["loudness_processing"] == "replaygain"
+        elif "replaygain_enabled" in values:
+            cfg.playback.loudness_processing = (
+                "replaygain" if values["replaygain_enabled"] else "off"
+            )
+
         # Liner triggers: 0 turns the trigger off.
         for key in (
             "liners_every_n_songs",
@@ -1394,6 +1494,11 @@ class PlayerBridge:
         if cfg is None:
             return self.sim.ntotal
         count = self.sim.reload_from_disk(cfg.index.active_dir, music_dir=cfg.library.music_dir)
+        if self.library is not None:
+            entries = list(self.sim.entries_snapshot())
+            vectors = self.sim.faiss_index.reconstruct_n(0, len(entries))
+            self.library.seed_index(entries, vectors)
+            count = self.sim.ntotal
         # The no-repeat window is clamped to the library size; a library
         # that grew from empty (or shrank) needs it worked out again, or
         # the picker keeps relaxing (or refusing) its history.

@@ -59,7 +59,11 @@ function _setStatus(els, msg, { force = false, tone = "info" } = {}) {
   announceStatus(els.lnStatus, msg, { dwellMs: tone === "error" ? 6000 : 4000, force, tone });
 }
 
-export function renderLinerFileList(fileList, files, onDelete) {
+export function renderLinerFileList(fileList, files, onDelete, onEdit = (path, kind) => {
+  fileList.ownerDocument.dispatchEvent(new CustomEvent("autodj:edit-points", {
+    detail: { path, kind },
+  }));
+}) {
   if (!fileList) return;
   if (!files || files.length === 0) {
     const empty = document.createElement("li");
@@ -68,8 +72,14 @@ export function renderLinerFileList(fileList, files, onDelete) {
     fileList.replaceChildren(empty);
     return;
   }
-  fileList.replaceChildren(...files.map((name) => listRow(document, name, "",
-    rowButton(document, "Delete", `Delete ${name}`, (button) => onDelete(name, button)))));
+  fileList.replaceChildren(...files.map((item) => {
+    const legacyName = typeof item === "string";
+    const liner = legacyName ? { id: item, name: item, path: null } : item;
+    const buttons = [rowButton(document, "Delete", `Delete ${liner.name}`, (button) =>
+      legacyName ? onDelete(liner.id, button) : onDelete(liner.id, button, liner.name))];
+    if (liner.path && liner.editable !== false) buttons.push(rowButton(document, "Track info", `Track info for ${liner.name}`, () => onEdit(liner.path, "liner")));
+    return listRow(document, liner.name, "", ...buttons);
+  }));
 }
 
 // Loads the liner folder and config into the page.  False when the
@@ -83,8 +93,8 @@ async function _loadLibrary(els, epoch) {
   }
   renderLinerFileList(
     els.lnFileList,
-    body.files,
-    (name, button) => void _deleteLiner(els, name, button),
+    body.items?.length ? body.items : body.files,
+    (id, button, label) => void _deleteLiner(els, id, button, label),
   );
   // Sync config inputs from server payload, leaving fields the user
   // is currently editing untouched.
@@ -119,13 +129,13 @@ async function _refreshLibrary(els) {
 // already updated when it closes and focus goes straight to the next
 // row's Delete, or Upload when none is left (see confirmAction).  The
 // result is said after the dialog has closed.
-async function _deleteLiner(els, name, button) {
+async function _deleteLiner(els, name, button, label = name) {
   const list = els.lnFileList;
   const index = Array.from(list.querySelectorAll("button")).indexOf(button);
   const epoch = captureAuthenticatedRequestEpoch();
   let result = null;
   const confirmed = await confirmAction(button.ownerDocument, {
-    title: `Delete liner ${name}?`,
+    title: `Delete liner ${label}?`,
     message: "The file is removed from the liners folder.",
     confirmLabel: "Delete liner",
     onConfirm: async () => {
@@ -141,10 +151,10 @@ async function _deleteLiner(els, name, button) {
         if (!(await _loadLibrary(els, epoch))) return null;
       } catch (err) {
         if (!isAuthenticatedRequestCurrent(epoch)) return null;
-        result = `Deleted ${name}, but could not load liners: ${err.message}`;
+        result = `Deleted ${label}, but could not load liners: ${err.message}`;
         return button;
       }
-      result = `Deleted ${name}`;
+      result = `Deleted ${label}`;
       return nextRowControl(list, "button", index, els.lnUploadSubmit);
     },
   });
@@ -168,14 +178,21 @@ function _postConfig(els, postSettings, control) {
 }
 
 function _pickLiner() {
-  if (!state.lib.files || state.lib.files.length === 0) return null;
+  const items = state.lib.items?.length
+    ? state.lib.items
+    : (state.lib.files || []).map((name) => ({ id: name, name }));
+  if (items.length === 0) return null;
   const mode = (state.lib.config && state.lib.config.pick_mode) || "random";
   if (mode === "sequential") {
-    const i = (state.seqCursor++) % state.lib.files.length;
-    return state.lib.files[i];
+    const i = (state.seqCursor++) % items.length;
+    return items[i].id;
   }
-  const i = Math.floor(Math.random() * state.lib.files.length);
-  return state.lib.files[i];
+  const i = Math.floor(Math.random() * items.length);
+  return items[i].id;
+}
+
+function _linerLabel(id) {
+  return state.lib.items?.find((item) => item.id === id)?.name || id;
 }
 
 function _rollRandomTarget() {
@@ -204,7 +221,7 @@ async function _playByName(els, deps, name, ready = deps.canPlay) {
     state.lastFireAt   = performance.now();
     state.trackCount   = 0;
     state.randomTarget = _rollRandomTarget();
-    _setStatus(els, `Liner playing: ${name}`);
+    _setStatus(els, `Liner playing: ${_linerLabel(name)}`);
   } catch (err) {
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     _setStatus(els, `Liner playback failed: ${err.message}`);
@@ -229,8 +246,8 @@ async function _testOnServer(els, name) {
     _setStatus(
       els,
       body && body.played
-        ? `Liner playing: ${body.played}`
-        : (body && body.message) || `Could not play ${name}.`,
+        ? `Liner playing: ${_linerLabel(body.played)}`
+        : (body && body.message) || `Could not play ${_linerLabel(name)}.`,
       { force: true },
     );
   } catch (err) {

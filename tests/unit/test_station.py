@@ -56,6 +56,28 @@ def test_starts_idle() -> None:
     rig.bus.start_set.assert_not_called()
 
 
+def test_continuous_station_starts_without_listeners_and_does_not_stop() -> None:
+    rig = _Rig()
+    rig.station._continuous = lambda: True
+    rig.listeners(0)
+    rig.player.begin_set.assert_called_once()
+    assert rig.station.state == "playing"
+    rig.now = 10_000
+    rig.station.tick()
+    rig.bus.stop_set.assert_not_called()
+
+
+def test_continuous_station_keeps_a_paused_set_without_listeners() -> None:
+    rig = _Rig()
+    rig.station._continuous = lambda: True
+    rig.listeners(1)
+    rig.player._state.is_paused = True
+    rig.listeners(0)
+    rig.now = 10_000
+    rig.station.tick()
+    rig.bus.stop_set.assert_not_called()
+
+
 def test_first_listener_starts_set_from_queue_head() -> None:
     head, second = MagicMock(name="head"), MagicMock(name="second")
     rig = _Rig(queue=[head, second])

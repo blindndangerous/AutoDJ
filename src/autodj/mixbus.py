@@ -102,6 +102,17 @@ class RenderedTrack:
     glide_in: Glide | None = None
     overlap_frames: int = 0
     next_entry_offset: int = 0
+    liner_events: tuple[tuple[int, IndexEntry, bool], ...] = ()
+    reserved_liners: tuple[IndexEntry, ...] = ()
+    next_reserved_liners: tuple[IndexEntry, ...] = ()
+    loudness_processing: str = ""
+    clock_cursor: int | None = None
+    next_clock_cursor: int | None = None
+    clock_boundary: float | None = None
+    next_clock_boundary: float | None = None
+    liner_plan_key: str = ""
+    full_audio: np.ndarray | None = None
+    source_start_offset: int = 0
 
 
 @dataclass(frozen=True)
@@ -149,6 +160,12 @@ class Output(Protocol):
 
     def close(self) -> None:
         """Release resources held by this output."""
+
+
+class MasterProcessor(Protocol):
+    """Optional continuous audio processor attached to the paced run loop."""
+
+    def process(self, block: np.ndarray, enabled: bool = True) -> np.ndarray: ...
 
 
 class Clock(Protocol):
@@ -255,6 +272,8 @@ class MixBus:
         self._clock: Clock = clock or SystemClock()
         self._lock = threading.Lock()
         self._outputs: list[Output] = []
+        self._master: MasterProcessor | None = None
+        self._master_enabled: Callable[[], bool] = lambda: False
         self._current: RenderedTrack | None = None
         self._pos = 0
         self._paused = False
@@ -274,7 +293,7 @@ class MixBus:
         self._duck_remaining = 0
         self._eq_filters = make_eq_filters(SAMPLE_RATE)
         self._eq_state = make_eq_state(self._eq_filters, channels=2)
-        self._eq_engaged = False
+        self._eq_previous_gains = (1.0, 1.0, 1.0)
 
     @property
     def playing(self) -> bool:
@@ -285,6 +304,32 @@ class MixBus:
         """Register *output* to receive every subsequently rendered block."""
         with self._lock:
             self._outputs.append(output)
+
+    def set_master(
+        self,
+        master: MasterProcessor | None,
+        enabled: Callable[[], bool] | bool = True,
+    ) -> None:
+        """Install the optional continuous processor used by :meth:`run`.
+
+        The processor is owned and closed by its creator. When enabled,
+        ``render_block`` leaves headroom/limiting to the master stage.
+        """
+        predicate = enabled if callable(enabled) else lambda: bool(enabled)
+        with self._lock:
+            self._master = master
+            self._master_enabled = predicate if master is not None else lambda: False
+
+    def _master_state(self) -> tuple[MasterProcessor | None, bool]:
+        with self._lock:
+            master, predicate = self._master, self._master_enabled
+        if master is None:
+            return None, False
+        try:
+            return master, bool(predicate())
+        except Exception:
+            logger.exception("Mix bus master enable check failed; bypassing master")
+            return master, False
 
     def remove_output(self, output: Output) -> None:
         """Stop sending blocks to *output*, if it is registered."""
@@ -429,6 +474,8 @@ class MixBus:
             self._skip_fade = 0
             self._tail = None
             self._drop_liner()
+            reset_eq_state(self._eq_state)
+            self._eq_previous_gains = (1.0, 1.0, 1.0)
 
     def _drop_liner(self) -> None:
         """Forget any liner and put the music back at full level (lock held)."""
@@ -541,24 +588,28 @@ class MixBus:
             self._duck_gain = self._duck_target  # ramp complete: eliminate float drift
         return steps.astype(np.float32)
 
-    def render_block(self) -> np.ndarray:
+    def render_block(self, master_enabled: bool | None = None) -> np.ndarray:
         """Return the next ``(882, 2)`` block without pacing.
 
         Pure with respect to wall-clock time: advances internal state by
         exactly one block. Used by :meth:`run` and directly by tests.
         """
+        if master_enabled is None:
+            _master, master_enabled = self._master_state()
         pending: list[Callable[[], None]] = []
         with self._lock:
             if self._paused or not self._playing:
                 return np.zeros((self.BLOCK, 2), np.float32)
             block = self._music(self.BLOCK, pending)
-            low, mid, high = self._eq_gains()
-            engaged = (low, mid, high) != (1.0, 1.0, 1.0)
-            if engaged and not self._eq_engaged:
-                reset_eq_state(self._eq_state)
-            self._eq_engaged = engaged
-            if engaged:
-                block = apply_eq(block, self._eq_filters, low, mid, high, state=self._eq_state)
+            gains = self._eq_gains()
+            low, mid, high = gains
+            if gains != self._eq_previous_gains:
+                # Ramp slider changes over this 20 ms block to avoid clicks.
+                ramp = np.linspace(self._eq_previous_gains, gains, self.BLOCK + 1)[1:]
+                low, mid, high = ramp.T[:, :, None]
+            # Keep filter memory current even at unity gain.
+            block = apply_eq(block, self._eq_filters, low, mid, high, state=self._eq_state)
+            self._eq_previous_gains = gains
             duck = self._duck_ramp(len(block))
             block = block * duck[:, None]
             if self._liner is not None:
@@ -568,7 +619,8 @@ class MixBus:
                 if self._liner_pos >= len(self._liner):
                     self._liner = None
                     self._start_duck_ramp(1.0)
-            np.clip(block, -1.0, 1.0, out=block)
+            if not master_enabled:
+                np.clip(block, -1.0, 1.0, out=block)
             if self._current is not None:
                 pos = self._pos
                 pending.append(lambda: self._events.on_position(pos))
@@ -594,11 +646,24 @@ class MixBus:
         period = self.BLOCK / SAMPLE_RATE
         next_due = self._clock.now()
         while not stop.is_set():
+            master, master_enabled = self._master_state()
             try:
-                block = self.render_block()
+                block = self.render_block(master_enabled=master_enabled)
             except Exception:
                 logger.exception("Mix bus render_block failed; emitting silence")
                 block = np.zeros((self.BLOCK, 2), np.float32)
+            if master is not None:
+                try:
+                    processed = np.asarray(
+                        master.process(block, enabled=master_enabled), np.float32
+                    )
+                    if processed.shape != (self.BLOCK, 2):
+                        raise ValueError("master returned an invalid block shape")
+                    block = processed
+                except Exception:
+                    logger.exception("Mix bus master failed; emitting bounded dry audio")
+                block = np.nan_to_num(block, copy=False)
+                np.clip(block, -1.0, 1.0, out=block)
             with self._lock:
                 outputs = list(self._outputs)
             for output in outputs:

@@ -56,6 +56,37 @@ describe("card headings", () => {
 });
 
 describe("tab arrow keys", () => {
+  it("places Track info after Queue & Search in both cached markup and keyboard order", async () => {
+    installIndex();
+    const info = document.getElementById("tab-track-info");
+    expect(document.getElementById("tab-queue").nextElementSibling).toBe(info);
+    info.parentElement.append(info);
+    vi.resetModules();
+    const { initViewRouter: freshRouter } = await import(
+      "../../src/autodj/static/modules/tabs.js");
+    freshRouter();
+    const queue = document.getElementById("tab-queue");
+    expect(queue.nextElementSibling).toBe(info);
+    queue.focus();
+    queue.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(document.activeElement).toBe(info);
+    window.location.hash = "";
+  });
+
+  it("routes directly to Track info and focuses its heading", async () => {
+    installIndex();
+    window.location.hash = "#now";
+    vi.resetModules();
+    const { initViewRouter: freshRouter } = await import(
+      "../../src/autodj/static/modules/tabs.js");
+    freshRouter();
+    document.querySelector("#tab-track-info").click();
+    await vi.waitFor(() => expect(document.querySelector("#panel-track-info").hidden).toBe(false));
+    expect(document.activeElement.id).toBe("track-info-heading");
+    expect(window.location.hash).toBe("#track-info");
+    window.location.hash = "";
+  });
+
   it("selects the next tab before focusing it, so it is spoken once", async () => {
     installIndex();
     window.location.hash = "#now";

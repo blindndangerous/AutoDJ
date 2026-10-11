@@ -44,6 +44,7 @@
 #   AUTODJ_LAN
 #   AUTODJ_HUGGINGFACE_TOKEN
 #   AUTODJ_STREAM_ENABLED
+#   AUTODJ_STREAM_CONTINUOUS
 #   AUTODJ_STREAM_BITRATE
 #   AUTODJ_STREAM_IDLE_GRACE_SECONDS
 #   AUTODJ_STREAM_MAX_LISTENERS
@@ -122,6 +123,10 @@ liner_upload_max_mib = 50
 [stream]
 enabled = false
 
+# Keep the station playing when nobody is connected. When false, the first
+# listener starts playback and the station stops after the idle grace period.
+continuous = false
+
 # MP3 bitrate in kbps.  One of 128, 192, 256, 320.  The quality chosen on
 # the Settings page is saved (web_state.json) and, like the other playback
 # settings saved there, overrides this value and AUTODJ_STREAM_BITRATE on
@@ -138,6 +143,11 @@ max_listeners = 8
 station_name = "AutoDJ"
 
 [playback]
+# Optional Stereo Tool command-line executable. Select its free preset under
+# Output processing in the browser after installing it separately.
+# Defaults to ./tools/stereo-tool/stereo_tool_cmd.exe on Windows or
+# ./tools/stereo-tool/stereo_tool_cmd elsewhere; set this to override it.
+# stereotool_path = "./tools/stereo-tool/stereo_tool_cmd"
 # Duration of the crossfade between tracks, in seconds, 0 to 20.  In the
 # "full_intro_outro" and "outro_fade" modes below, a track with detected
 # markers fades for 1 to 12 s instead, even at 0.  Otherwise 0 cuts from one

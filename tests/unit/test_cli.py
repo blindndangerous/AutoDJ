@@ -1376,6 +1376,25 @@ class TestCmdAnalyse:
         assert "missing packages" in result.output
 
 
+@pytest.mark.parametrize("completed", [0, 7])
+def test_analyse_library_reports_embedded_track_count(completed: int, tmp_path: Path) -> None:
+    cfg = MagicMock()
+    cfg.model = MagicMock()
+    cfg.index = MagicMock()
+    cfg.huggingface = MagicMock()
+    with (
+        patch("autodj.cli._load_cfg_or_exit", return_value=cfg),
+        patch("autodj.cli._apply_index_name"),
+        patch("autodj.model.download_model_if_needed", return_value=tmp_path / "model"),
+        patch("autodj.model.load_model", return_value=object()),
+        patch("autodj.library.analyse_library", return_value=completed),
+    ):
+        result = CliRunner().invoke(cli, ["analyse-library"])
+
+    assert result.exit_code == 0
+    assert f"Advanced analysis embedded {completed} tracks" in result.output
+
+
 def test_third_party_info_logs_are_quiet_unless_verbose() -> None:
     import logging
 

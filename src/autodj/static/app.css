@@ -476,6 +476,30 @@
     #library-stats dt { color: var(--text-dim); }
     #library-stats dd { font-variant-numeric: tabular-nums; }
 
+    #track-info-details {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr);
+      gap: 0.2rem 1.25rem;
+      overflow-wrap: anywhere;
+    }
+    #track-info-details[hidden] { display: none; }
+    #track-info-details dt { color: var(--text-dim); }
+    #track-info-details dd { min-width: 0; }
+    #points-path { width: 100%; max-width: 48rem; }
+    #points-fields { display: grid; gap: 0.5rem; margin: 0.75rem 0; }
+    .cue-point-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .cue-point-row label { min-width: 0; }
+    .cue-point-row input { max-width: 100%; }
+    @media (max-width: 700px) {
+      .cue-point-row { grid-template-columns: minmax(0, 1fr) auto; }
+      .cue-point-row label { grid-column: 1 / -1; }
+    }
+
     /* Voice-liner file list. */
     #ln-file-list { list-style: none; }
     #ln-file-list li {
@@ -667,6 +691,7 @@
        out of the accessibility tree together. */
     body:has(#dj-phrase-align:not(:checked)) [data-show-when="dj-phrase-align"],
     body:has(#pb-replaygain:not(:checked)) [data-show-when="pb-replaygain"],
+    body:not(:has(#pb-replaygain option[value="replaygain"]:checked)) [data-show-when="loudness_processing=replaygain"],
     body:has(#key-notation option[value="musical"]:not(:checked)) [data-show-when="key-notation=musical"],
     body:has(#disc-enabled:not(:checked)) [data-show-when="disc-enabled"],
     body:has(#ln-enabled:not(:checked)) [data-show-when="ln-enabled"] {
@@ -1200,7 +1225,8 @@
 
 #hotkey-help-modal,
 #confirm-dialog,
-#device-rename-dialog {
+#device-rename-dialog,
+#track-info-dialog {
   /* `*, *::before, *::after { margin: 0 }` overrides the UA
      `dialog:modal { margin: auto }`, which pinned this dialog to the
      top-left corner of the viewport.  #auth-dialog already restores it. */
@@ -1215,7 +1241,8 @@
 }
 #hotkey-help-modal::backdrop,
 #confirm-dialog::backdrop,
-#device-rename-dialog::backdrop {
+#device-rename-dialog::backdrop,
+#track-info-dialog::backdrop {
   background: rgba(0, 0, 0, 0.55);
 }
 #hotkey-help-modal kbd {
@@ -1282,8 +1309,11 @@
 }
 #device-rename-error { margin: 0.5rem 0 1rem; color: #ffaaa0; }
 #confirm-dialog .dialog-actions,
-#device-rename-dialog .dialog-actions {
+#device-rename-dialog .dialog-actions,
+#track-info-dialog .dialog-actions {
   display: flex;
   justify-content: flex-end;
   gap: 0.75rem;
 }
+#track-info-dialog h2 { margin-top: 0; }
+#track-info-error { margin: 0.5rem 0 1rem; color: #ffaaa0; }

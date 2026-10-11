@@ -78,6 +78,106 @@ def test_every_n_songs_fires_and_rotates_through_the_library(tmp_path: Path) -> 
     assert bus.play_liner.call_count == 3
 
 
+def test_registered_liner_provider_rotates_duplicate_basenames_by_id(tmp_path: Path) -> None:
+    first = tmp_path / "one" / "same.wav"
+    second = tmp_path / "two" / "same.wav"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    decoded: list[Path] = []
+    bus = MagicMock()
+    scheduler = LinerScheduler(
+        _cfg(liners_pick_mode="sequential"),
+        tmp_path / "flat",
+        bus,
+        registered_liners=lambda: [("record-one", first), ("record-two", second)],
+        path_decoder=lambda path: decoded.append(path) or np.zeros((100, 2), np.float32),
+    )
+
+    assert scheduler.fire() == "record-one"
+    assert scheduler.fire() == "record-two"
+    assert scheduler.fire("record-one") == "record-one"
+    assert decoded == [first, second, first]
+    assert bus.play_liner.call_count == 3
+
+
+def test_saved_points_plans_one_liner_until_heard_or_released(tmp_path: Path) -> None:
+    first = tmp_path / "one" / "same.wav"
+    second = tmp_path / "two" / "same.wav"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.touch()
+    second.touch()
+    bus = MagicMock()
+    provider_calls = [0]
+
+    def registered():
+        provider_calls[0] += 1
+        return [("id-one", first), ("id-two", second)]
+
+    scheduler = LinerScheduler(
+        _cfg(transition_mode="saved_points", liners_talk_up=True),
+        tmp_path / "flat",
+        bus,
+        registered_liners=registered,
+        path_decoder=lambda _path: np.zeros((8, 2), np.float32),
+        vocal_start=lambda _entry: 1.0,
+        can_fire=lambda: False,
+    )
+
+    # Legacy trigger callbacks only count in planner mode.
+    scheduler.on_track_start()
+    scheduler.tick()
+    bus.play_liner.assert_not_called()
+    assert scheduler.plan_for_handoff("handoff-1", tracks_ahead=0, seconds_ahead=0) is None
+    planned = scheduler.plan_for_handoff("handoff-1", tracks_ahead=2, seconds_ahead=0)
+    assert planned == "id-one"
+    assert scheduler.plan_for_handoff("handoff-1", tracks_ahead=2, seconds_ahead=0) == planned
+    assert scheduler.plan_for_handoff("handoff-2", tracks_ahead=2, seconds_ahead=0) is None
+    bus.play_liner.assert_not_called()
+
+    assert not scheduler.mark_planned_fired("wrong-key")
+    calls_before_commit = provider_calls[0]
+    assert scheduler.mark_planned_fired("handoff-1")
+    assert provider_calls[0] == calls_before_commit
+    assert not scheduler.mark_planned_fired("handoff-1")
+    assert scheduler.plan_for_handoff("handoff-2", tracks_ahead=2, seconds_ahead=0) == "id-two"
+
+
+def test_releasing_discarded_plan_keeps_sequential_pick(tmp_path: Path) -> None:
+    first = tmp_path / "a" / "one.wav"
+    second = tmp_path / "b" / "two.wav"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.touch()
+    second.touch()
+    scheduler = LinerScheduler(
+        _cfg(transition_mode="saved_points", liners_talk_up=True),
+        tmp_path / "flat",
+        MagicMock(),
+        registered_liners=lambda: [("one", first), ("two", second)],
+        path_decoder=lambda _path: np.zeros((8, 2), np.float32),
+        vocal_start=lambda _entry: 1.0,
+    )
+    assert scheduler.plan_for_handoff("old", 2, 0) == "one"
+    assert not scheduler.release_plan("other")
+    assert scheduler.release_plan("old")
+    assert scheduler.plan_for_handoff("new", 2, 0) == "one"
+
+
+def test_clock_mode_disables_automatic_trigger_but_keeps_manual_fire(tmp_path: Path) -> None:
+    bus = MagicMock()
+    scheduler = LinerScheduler(
+        _cfg(pick_mode="clock", liners_every_n_songs=1), _folder(tmp_path), bus
+    )
+    scheduler.on_track_start()
+    scheduler.tick()
+    bus.play_liner.assert_not_called()
+    assert scheduler.fire("a.wav") == "a.wav"
+    bus.play_liner.assert_called_once()
+
+
 def test_timed_trigger_fires_on_tick(tmp_path: Path) -> None:
     now = [0.0]
     bus = MagicMock()

@@ -78,6 +78,24 @@ def _dj_meta(cfg: AutoDJConfig) -> sqlite3.Connection:
     return conn
 
 
+def _catalog(cfg: AutoDJConfig) -> sqlite3.Connection:
+    conn = sqlite3.connect(cfg.index.active_dir / "library.db")
+    conn.executescript(
+        """
+        CREATE TABLE catalog_sources(id TEXT PRIMARY KEY, path TEXT, kind TEXT);
+        CREATE TABLE catalog_entries(id TEXT PRIMARY KEY, path TEXT, points TEXT);
+        CREATE TABLE play_history(event_id TEXT PRIMARY KEY, title TEXT);
+        """
+    )
+    conn.execute("INSERT INTO catalog_sources VALUES ('folder', '/music', 'music')")
+    conn.execute(
+        "INSERT INTO catalog_entries VALUES ('track', '/music/song.flac', '{\"start\": 1}')"
+    )
+    conn.execute("INSERT INTO play_history VALUES ('play', 'Kept')")
+    conn.commit()
+    return conn
+
+
 def _archive(path: Path, files: dict[str, bytes], version: str | None = None) -> Path:
     manifest = {"autodj_version": version or current_version(), "files": list(files)}
     with zipfile.ZipFile(path, "w") as archive:
@@ -101,9 +119,11 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
     dj_meta = _dj_meta(cfg)
     dj_meta.execute("INSERT INTO cues VALUES ('in the WAL')")
     dj_meta.commit()
+    catalog = _catalog(cfg)
     with patch("autodj.cli._load_cfg_or_exit", return_value=cfg):
         backup = CliRunner().invoke(cli, ["backup", str(tmp_path / "backup.zip")])
     dj_meta.close()
+    catalog.close()
     assert backup.exit_code == 0, backup.output
 
     _publish(cfg, "Replaced")
@@ -122,7 +142,7 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
 
     assert "pass --force" in refused.output
     assert restored.exit_code == 0, restored.output
-    assert "Restored 7 files." in restored.output
+    assert "Restored 8 files." in restored.output
     assert _indexed_title(cfg) == "Kept"
     assert sorted(path.name for path in active.glob("*.g*")) == [
         "tracks.g00000000000000000001.db",
@@ -133,7 +153,36 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
     assert (profiles / "night" / "profile.json").read_text(encoding="utf-8") == "{}"
     with closing(sqlite3.connect(active / "dj_meta.db")) as conn:
         assert conn.execute("SELECT value FROM cues").fetchall() == [("in the WAL",)]
+    with closing(sqlite3.connect(active / "library.db")) as conn:
+        assert conn.execute("SELECT path FROM catalog_sources").fetchall() == [("/music",)]
+        assert conn.execute("SELECT points FROM catalog_entries").fetchall() == [('{"start": 1}',)]
+        assert conn.execute("SELECT title FROM play_history").fetchall() == [("Kept",)]
     assert not list(active.parent.glob(".*restore-*"))
+
+
+def test_old_backup_without_catalog_preserves_current_catalog(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    archive = create_backup(cfg, tmp_path / "old.zip", force=False)
+    catalog = _catalog(cfg)
+    catalog.close()
+
+    restore_backup(cfg, archive, force=True)
+
+    with closing(sqlite3.connect(cfg.index.active_dir / "library.db")) as conn:
+        assert conn.execute("SELECT title FROM play_history").fetchall() == [("Kept",)]
+
+
+def test_restore_refuses_corrupt_catalog_before_overwrite(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    catalog = _catalog(cfg)
+    catalog.close()
+    archive = _archive(tmp_path / "corrupt.zip", {"index/library.db": b"not sqlite"})
+
+    with pytest.raises(BackupError, match="integrity_check"):
+        restore_backup(cfg, archive, force=True)
+
+    with closing(sqlite3.connect(cfg.index.active_dir / "library.db")) as conn:
+        assert conn.execute("SELECT title FROM play_history").fetchall() == [("Kept",)]
 
 
 def test_restore_says_not_to_serve_when_doctor_fails(tmp_path: Path) -> None:

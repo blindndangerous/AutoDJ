@@ -14,9 +14,11 @@ See each command's ``--help`` for full option documentation.
 from __future__ import annotations
 
 import io
+import json
 import logging
 import os
 import shutil
+import sqlite3
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -148,13 +150,28 @@ def _load_index_for_serve(
     cfg: AutoDJConfig, *, active_dir: Path | None = None
 ) -> SimilarityIndex:  # pragma: no cover
     """Load an index for web serving; a directory without one serves an empty index."""
+    from autodj.index_manifest import UnsupportedIndexError
     from autodj.similarity import SimilarityIndex as _SI
+
+    index_dir = cfg.index.active_dir if active_dir is None else active_dir
 
     try:
         return _SI.from_index_dir(
-            cfg.index.active_dir if active_dir is None else active_dir,
+            index_dir,
             music_dir=cfg.library.music_dir,
         )
+    except UnsupportedIndexError as exc:
+        if exc.schema_version != 3 or not sys.stdin.isatty():
+            raise
+        click.echo(str(exc))
+        if not click.confirm(
+            "Stop any other serving or indexing process first. Save a recovery copy "
+            "and migrate this index to schema 4 now?",
+            default=False,
+        ):
+            raise
+        _convert_index(index_dir, cfg.library.music_dir, {}, apply=True)
+        return _SI.from_index_dir(index_dir, music_dir=cfg.library.music_dir)
     except FileNotFoundError:
         console.print(
             "[yellow]Index is empty; the web UI will stay ready while you run autodj index.[/]"
@@ -182,8 +199,12 @@ def _scan_index_rows(
             continue
         try:
             manifest = read_manifest(entry)
-        except UnsupportedIndexError:
-            status = "[red]old format: rebuild with autodj index --force[/red]"
+        except UnsupportedIndexError as exc:
+            status = (
+                "[yellow]schema 3: convert with autodj migrate-index[/yellow]"
+                if exc.schema_version == 3
+                else "[red]old format: rebuild with autodj index --force[/red]"
+            )
         except IndexConsistencyError:
             status = "[red]corrupt[/red]"
         else:
@@ -699,7 +720,7 @@ def cmd_devices_pairing_code(ctx: click.Context) -> None:
 @click.option("--force", is_flag=True, help="Replace an existing archive at DESTINATION.")
 @click.pass_context
 def cmd_backup(ctx: click.Context, destination: Path, force: bool) -> None:
-    """Write the index, DJ metadata, web settings, liners and profiles to a ZIP file.
+    """Back up the index, station library, cues, history, settings, liners and profiles.
 
     Safe while AutoDJ is serving.  config.toml and config.local.toml are not
     included; copy them yourself.
@@ -1063,6 +1084,24 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
 # ---------------------------------------------------------------------------
 
 
+@cli.command("analyse-library")
+@click.option("--name", "index_name", default=None, type=str)
+@click.pass_context
+def cmd_analyse_library(ctx: click.Context, index_name: str | None) -> None:
+    """Analyse basic-ready songs from folders with advanced analysis enabled."""
+    from autodj.library import analyse_library
+    from autodj.model import download_model_if_needed, load_model
+
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    _apply_index_name(cfg, index_name)
+    try:
+        model_path = download_model_if_needed(cfg.model, cfg.index, hf_token=cfg.huggingface.token)
+        completed = analyse_library(cfg, load_model(model_path))
+        click.echo(f"[AutoDJ] Advanced analysis embedded {completed} tracks.")
+    except Exception as exc:
+        raise click.ClickException(f"Library analysis failed: {exc}") from exc
+
+
 @cli.command("analyse")
 @click.option(
     "--name",
@@ -1147,6 +1186,43 @@ def cmd_analyse(
 # ---------------------------------------------------------------------------
 # serve subcommand
 # ---------------------------------------------------------------------------
+
+
+def _convert_index(index_dir: Path, music_dir: Path, moves: dict[str, str], *, apply: bool) -> None:
+    from autodj.index_migration import convert
+
+    try:
+        convert(index_dir, music_dir, moves, apply)
+    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+        raise click.ClickException(f"Index conversion failed: {exc}") from exc
+
+
+@cli.command("migrate-index")
+@click.option("--name", "index_name", default=None, help="Named index to convert.")
+@click.option(
+    "--apply", is_flag=True, help="Save a recovery copy and convert; otherwise preview only."
+)
+@click.option(
+    "--map",
+    "move_map",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="JSON mapping of old to new paths relative to music_dir.",
+)
+@click.pass_context
+def cmd_migrate_index(
+    ctx: click.Context, index_name: str | None, apply: bool, move_map: Path | None
+) -> None:
+    """Convert a schema-3 index to schema 4 without repeating analysis.
+
+    Stop serving and indexing before --apply. The default is a read-only preview.
+    """
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    _apply_index_name(cfg, index_name)
+    try:
+        moves = json.loads(move_map.read_text(encoding="utf-8")) if move_map else {}
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(f"Cannot read the move map: {exc}") from exc
+    _convert_index(cfg.index.active_dir, cfg.library.music_dir, moves, apply=apply)
 
 
 class _ServeCommand(click.Command):

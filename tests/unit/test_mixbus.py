@@ -127,6 +127,30 @@ def test_eq_gains_are_applied() -> None:
     assert np.max(np.abs(bus.render_block())) < 0.05
 
 
+def test_eq_slider_changes_ramp_and_keep_filters_warm_at_unity() -> None:
+    gains = [1.0, 1.0, 1.0]
+    bus, _, _ = _bus([_track(0.4, 882 * 10)])
+    bus._eq_gains = lambda: tuple(gains)
+    bus.start_set()
+    bus.render_block()
+    bus.render_block()
+    previous = 1.0
+    for target in (0.5, 1.0, 0.0, 2.0, 1.0):
+        gains[0] = target
+        block = bus.render_block()
+        expected = 0.4 * np.linspace(previous, target, 883)[1:]
+        np.testing.assert_allclose(block[:, 0], expected, atol=1e-6)
+        np.testing.assert_array_equal(block[:, 0], block[:, 1])
+        previous = target
+
+
+def test_eq_boost_without_master_is_bounded() -> None:
+    bus, _, _ = _bus([_track(0.8, 882 * 4)], gains=(2.0, 2.0, 2.0))
+    bus.start_set()
+    bus.render_block()
+    np.testing.assert_array_equal(bus.render_block(), 1.0)
+
+
 def test_liner_ducks_music_and_is_mixed_in() -> None:
     bus, _, _ = _bus([_track(0.5, 50_000)])
     bus.start_set()
@@ -301,6 +325,59 @@ def test_run_skips_sleep_when_slightly_behind_schedule() -> None:
     assert len(good.blocks) == 1
     # Neither the normal-pacing sleep nor the catch-up reset should fire.
     assert clock.slept == []
+
+
+@pytest.mark.parametrize("eq_gain", [1.0, 2.0])
+def test_run_sends_unclipped_sum_to_master_once_for_all_outputs(eq_gain: float) -> None:
+    bus, _, _ = _bus([_track(0.8, 882 * 4)], gains=(eq_gain, eq_gain, eq_gain))
+    bus.start_set()
+    bus.play_liner(np.full((882 * 4, 2), 0.8, np.float32), duck_db=0.0)
+    received: list[np.ndarray] = []
+
+    class Master:
+        def process(self, block: np.ndarray, enabled: bool = True) -> np.ndarray:
+            received.append(block.copy())
+            return block
+
+    first, second = Recorder(), Recorder()
+    bus.add_output(first)
+    bus.add_output(second)
+    bus.set_master(Master(), enabled=True)
+    stop = threading.Event()
+    bus._clock.sleep = lambda _seconds: stop.set()  # type: ignore[method-assign]
+    bus.run(stop)
+
+    assert len(received) == 1
+    assert received[0][-1, 0] == pytest.approx(0.8 * eq_gain + 0.8)
+    np.testing.assert_array_equal(first.blocks[0], second.blocks[0])
+    assert np.max(first.blocks[0]) == 1.0  # bounded at the output boundary
+
+
+def test_master_receives_silence_for_idle_and_paused_clock_ticks() -> None:
+    bus, _, _ = _bus([])
+    received: list[np.ndarray] = []
+
+    class Master:
+        def process(self, block: np.ndarray, enabled: bool = True) -> np.ndarray:
+            received.append(block.copy())
+            return block
+
+    output = Recorder()
+    bus.add_output(output)
+    bus.set_master(Master(), enabled=True)
+    stop = threading.Event()
+    bus._clock.sleep = lambda _seconds: stop.set() if len(received) >= 3 else None  # type: ignore[method-assign]
+    bus.run(stop)
+
+    assert len(received) == 3
+    assert all(not np.any(block) for block in received)
+    bus.start_set()
+    bus.pause(True)
+    stop.clear()
+    bus._clock.sleep = lambda _seconds: stop.set()  # type: ignore[method-assign]
+    bus.run(stop)
+    assert len(received) == 4
+    assert not np.any(received[-1])
 
 
 def test_system_clock_now_is_monotonic_and_sleep_returns() -> None:

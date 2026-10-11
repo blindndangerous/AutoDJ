@@ -6,6 +6,8 @@
 // "Cannot reach server: els is undefined" even when the server was alive.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { applySettingsState, installSettingsControls, postSettings } from
   "../../src/autodj/static/modules/settings-panel.js";
 
@@ -44,14 +46,20 @@ function makeEls() {
     pbPureShuffle:   cb(),
     pbShowLyrics:    cb(),
     pbAnchorSeed:    cb(),
-    pbReplayGain:    cb(),
+    pbLoudness:      sel(["off", "replaygain", "smooth", "stereotool"]),
+    pbRgTarget:      num(),
+    pbFadeIn:        num(),
+    djPhraseBars:    num(),
+    txWetMix:        num(),
+    djFilterSweep:   cb(),
+    pbSavedPointsNote: document.createElement("p"),
     pbBeatSyncFx:    cb(),
     pbKeySyncFx:     cb(),
     pbBeatmatchSkip: cb(),
     pbSkipStyle:     sel(["fade", "echo_out", "backspin", "loop_roll"]),
     lnTalkUp:        cb(),
-    pbTransitionMode: sel(["full_intro_outro", "fixed"]),
-    pbPickMode:      sel(["similarity", "pure"]),
+    pbTransitionMode: sel(["full_intro_outro", "fixed", "saved_points"]),
+    pbPickMode:      sel(["similarity", "random", "least_recent", "clock"]),
     bpmLo:           num(),
     bpmHi:           num(),
     discEnabled:     cb(),
@@ -89,9 +97,11 @@ describe("applySettingsState", () => {
       playback: {
         crossfade_eq_duck: true,
         pure_shuffle: false,
+        pick_mode: "similarity",
         show_lyrics: true,
         anchor_to_seed: false,
         replaygain_enabled: false,
+        loudness_processing: "off",
         beat_sync_fx: true,
         key_sync_fx: false,
         beatmatch_on_skip: false,
@@ -124,6 +134,77 @@ describe("applySettingsState", () => {
     // The vocal guard is on unless the server says it is off.
     applySettingsState({ djmix: { harmonic_mode: "off" }, playback: {} }, els);
     expect(els.djVocalGuard.checked).toBe(true);
+  });
+
+  it("prefers explicit pick and loudness modes, while reading legacy flags", () => {
+    const els = makeEls();
+    applySettingsState({
+      playback: {
+        pick_mode: "least_recent", pure_shuffle: true,
+        loudness_processing: "smooth", replaygain_enabled: true,
+      },
+    }, els);
+    expect(els.pbPickMode.value).toBe("least_recent");
+    expect(els.pbLoudness.value).toBe("smooth");
+
+    applySettingsState({ playback: { pure_shuffle: true, replaygain_enabled: true } }, els);
+    expect(els.pbPickMode.value).toBe("random");
+    expect(els.pbLoudness.value).toBe("replaygain");
+  });
+
+  it("matches the real Random walk option and retains compatibility with cached pure markup", () => {
+    const template = document.createElement("template");
+    template.innerHTML = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
+    const actual = template.content.querySelector("#pb-pick-mode");
+    expect(actual.querySelector('option[value="random"]')).not.toBeNull();
+    const els = makeEls();
+    els.pbPickMode = actual;
+    applySettingsState({ playback: { pick_mode: "random" } }, els);
+    expect(actual.value).toBe("random");
+
+    const oldMarkup = document.createElement("select");
+    oldMarkup.innerHTML = '<option value="pure">Random walk</option>';
+    els.pbPickMode = oldMarkup;
+    applySettingsState({ playback: { pick_mode: "random" } }, els);
+    expect(oldMarkup.value).toBe("pure");
+  });
+
+  it("selects and saves Stereo Tool processing", () => {
+    const els = makeEls();
+    applySettingsState({ playback: { loudness_processing: "stereotool" } }, els);
+    expect(els.pbLoudness.value).toBe("stereotool");
+    const save = vi.fn();
+    installSettingsControls(els, save);
+    els.pbLoudness.value = "stereotool";
+    els.pbLoudness.dispatchEvent(new Event("change"));
+    expect(save).toHaveBeenCalledWith(
+      "/api/playback-settings", { loudness_processing: "stereotool" }, els.pbLoudness,
+    );
+  });
+
+  it("hides settings that do not apply to saved-point transitions", () => {
+    const els = makeEls();
+    const row = (control, descriptionId) => {
+      const parent = document.createElement("div");
+      parent.className = "settings-row";
+      parent.append(control);
+      const description = document.createElement("span");
+      description.id = descriptionId;
+      control.setAttribute("aria-describedby", descriptionId);
+      document.body.append(parent, description);
+      return { parent, description };
+    };
+    const fade = row(els.pbFadeIn, "fade-desc");
+    const effect = row(els.transitionSelect, "effect-desc");
+    document.body.append(els.pbSavedPointsNote);
+    applySettingsState({ playback: { transition_mode: "saved_points" } }, els);
+    expect(fade.parent.hidden).toBe(true);
+    expect(fade.description.hidden).toBe(true);
+    expect(effect.parent.hidden).toBe(true);
+    expect(els.pbSavedPointsNote.hidden).toBe(false);
+    applySettingsState({ playback: { transition_mode: "fixed" } }, els);
+    expect(fade.parent.hidden).toBe(false);
+    expect(els.pbSavedPointsNote.hidden).toBe(true);
   });
 
   it("keeps the discovery checkbox in step with the runtime toggle", () => {
@@ -165,12 +246,12 @@ describe("installSettingsControls", () => {
     expect(change(els.djPhraseAlign, true)).toEqual(["/api/djmix", { phrase_align: true }]);
     expect(change(els.djDropMix, true)).toEqual(["/api/djmix", { drop_mix: true }]);
     expect(change(els.djKeyShift, true)).toEqual(["/api/djmix", { key_shift: true }]);
-    expect(change(els.pbReplayGain, true))
-      .toEqual(["/api/playback-settings", { replaygain_enabled: true }]);
+    expect(change(els.pbLoudness, "smooth"))
+      .toEqual(["/api/playback-settings", { loudness_processing: "smooth" }]);
     expect(change(els.transitionSelect, "reverb_tail"))
       .toEqual(["/api/transition", { effect: "reverb_tail" }]);
-    expect(change(els.pbPickMode, "pure"))
-      .toEqual(["/api/playback-settings", { pure_shuffle: true }]);
+    expect(change(els.pbPickMode, "random"))
+      .toEqual(["/api/playback-settings", { pick_mode: "random" }]);
     expect(change(els.bpmLo, "90")).toEqual(["/api/bpm-range", { lo: 90, hi: null }]);
     expect(change(els.pbSkipStyle, "backspin"))
       .toEqual(["/api/playback-settings", { skip_style: "backspin" }]);

@@ -26,6 +26,8 @@ import {
   withDisabled,
 } from "./modules/api-client.js";
 import { installSeekController } from "./modules/seek-controller.js";
+import { installLibraryFolders } from "./modules/library-folders.js";
+import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
 import { createStreamMode, createStreamSettings } from "./modules/stream-mode.js";
 
 if (isDebug()) {
@@ -161,6 +163,8 @@ const streamSettings = createStreamSettings({
     () => requestJson("/api/stream/rotate", { method: "POST" })),
   saveBitrate: (value, control) =>
     postSettings("/api/stream/settings", { bitrate: value }, control),
+  saveContinuous: (value, control) =>
+    postSettings("/api/stream/settings", { continuous: value }, control),
   claimLinkChange: () => streamMode.claimLinkChange(),
   srStatus: document.getElementById("sr-status"),
   settingsStatus,
@@ -178,6 +182,8 @@ let _lastStreamServerAudio = false;
 
 const auth = initAuthDialog({ document });
 let authExpiryHandled = false;
+let libraryFoldersControls = null;
+let clockwheelPanelControls = null;
 let reconnectGeneration = 0;
 let reconnectTimer = null;
 
@@ -263,6 +269,24 @@ function clearProtectedSessionData() {
   settingsStatus.textContent = "";
   searchInput.value = "";
   searchInput.dispatchEvent(new Event("input"));
+  const browseInput = document.getElementById("library-browse-query");
+  if (browseInput) {
+    browseInput.value = "";
+    browseInput.dispatchEvent(new Event("input"));
+  }
+  libraryFoldersControls?.clearProtectedData();
+  clockwheelPanelControls?.clearProtectedData();
+  const browseFolder = document.getElementById("library-browse-folder");
+  if (browseFolder) {
+    const option = (value, label) => {
+      const element = document.createElement("option");
+      element.value = value;
+      element.textContent = label;
+      return element;
+    };
+    browseFolder.replaceChildren(option("all-music", "All music"), option("all-liners", "All voice liners"));
+    browseFolder.value = "all-music";
+  }
   for (const element of Object.values(_libEls)) {
     if (element && !element.matches("button, input")) element.textContent = "";
   }
@@ -601,6 +625,17 @@ function applyState(s) {
     if (s.next_track) nextText.textContent = fmtTrack(s.next_track);
     else setNoValue(nextText, "None");
   }
+  const handoffStatus = document.getElementById("handoff-status");
+  if (handoffStatus) {
+    const playout = s.playout || {};
+    let message = "";
+    if (playout.error && s.current_track && s.next_track) {
+      message = "The next handoff could not be prepared. The player will use its regular transition.";
+    } else if (!s.browser_playback && s.current_track && s.next_track && playout.queue_locked) {
+      message = `The next handoff is prepared. Queue edits apply after ${fmtTrack(s.next_track)}; Play now interrupts.`;
+    }
+    if (handoffStatus.textContent !== message) handoffStatus.textContent = message;
+  }
 
   // Discovery button — show only when discovery is configured
   if (s.discovery_available) {
@@ -674,7 +709,8 @@ const _settingsEls = () => ({
   presetSelect, transitionSelect, harmonicMode,
   djBeatmatch, djDropMix, djKeyShift, djPhraseAlign, djOutroIntro, djVocalGuard,
   pbEqDuck, pbPickMode, pbShowLyrics, pbAnchorSeed,
-  pbReplayGain,
+  pbReplayGain, pbLoudness: pbReplayGain,
+  pbSavedPointsNote: document.getElementById("pb-saved-points-note"),
   pbBeatSyncFx, pbKeySyncFx, pbBeatmatchSkip, pbSkipStyle, lnTalkUp,
   pbTransitionMode, pbPostQueueSeed,
   keyNotation, keyPreferFlats,
@@ -1194,6 +1230,8 @@ function connectWS() {
         reconnect: () => {
           if (authExpiryHandled || generation !== reconnectGeneration) return;
           authenticatedActivityActive = true;
+          libraryFoldersControls?.resume();
+          clockwheelPanelControls?.resume();
           connectWS();
         },
       });
@@ -1901,6 +1939,19 @@ installSearch({
   playNow: playNowHere,
 });
 
+const libraryBrowseFolder = document.getElementById("library-browse-folder");
+installSearch({
+  searchInput: document.getElementById("library-browse-query"),
+  btnSearch: document.getElementById("library-browse"),
+  searchResults: document.getElementById("library-browse-results"),
+  searchCount: document.getElementById("library-browse-count"),
+  queueAnnounce,
+  folderSelect: libraryBrowseFolder,
+  previousPage: document.getElementById("library-browse-previous"),
+  nextPage: document.getElementById("library-browse-next"),
+  playNow: playNowHere,
+});
+
 // ----------------------------------------------------------------
 import {
   installLibraryJobs,
@@ -1990,7 +2041,7 @@ async function fetchHistory(page, { announce = false } = {}) {
     if (!data.total) {
       table.setAttribute("hidden", "");
       pag.setAttribute("hidden", "");
-      empty.textContent = "No tracks played yet this session.";
+      empty.textContent = "No playback history yet.";
       empty.removeAttribute("hidden");
       if (announce === "refresh") {
         announceStatus(document.getElementById("sr-status"),
@@ -2115,6 +2166,34 @@ import { initViewRouter } from "./modules/tabs.js";
 
 initViewRouter();
 
+libraryFoldersControls = installLibraryFolders({
+  getCurrentTrack: () => _lastState?.current_track || null,
+  getCurrentPosition: () => _lastElapsed,
+  onFolders(folders) {
+    if (!libraryBrowseFolder) return;
+    const selected = libraryBrowseFolder.value;
+    const option = ([value, label]) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      return option;
+    };
+    const music = folders.filter((folder) => folder.kind === "music");
+    const liners = folders.filter((folder) => folder.kind === "liner");
+    const musicGroup = document.createElement("optgroup");
+    musicGroup.label = "Music folders";
+    musicGroup.append(...music.map((folder) => option([`folder:music:${folder.id}`, folder.path])));
+    const linerGroup = document.createElement("optgroup");
+    linerGroup.label = "Voice liner folders";
+    linerGroup.append(...liners.map((folder) => option([`folder:liner:${folder.id}`, folder.path])));
+    libraryBrowseFolder.replaceChildren(option(["all-music", "All music"]), option(["all-liners", "All voice liners"]), musicGroup, linerGroup);
+    libraryBrowseFolder.value = [...libraryBrowseFolder.options].some((item) => item.value === selected) ? selected : "all-music";
+    if (libraryBrowseFolder.value !== selected) libraryBrowseFolder.dispatchEvent(new Event("change"));
+  },
+});
+
+clockwheelPanelControls = installClockwheelPanel();
+
 import { installLiners, bumpLinerTrackCount } from "./modules/liners.js";
 
 const _linerEls = {
@@ -2153,6 +2232,8 @@ function startAuthenticatedApp(initialState) {
   authenticatedAppStarted = true;
   authExpiryHandled = false;
   authenticatedActivityActive = true;
+  libraryFoldersControls?.resume();
+  clockwheelPanelControls?.resume();
   installLibraryJobs(_libEls);
   // Audio dependencies are owned by the audio engine. Inject closures
   // that read its live bindings and stop liner playback after auth expiry.

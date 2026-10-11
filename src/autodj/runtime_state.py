@@ -12,8 +12,8 @@ can set.  On restore every saved field is checked on its own against the
 rule of the route that sets it (:mod:`autodj.settings_bodies`) and applied
 through the same :class:`~autodj._bridge.PlayerBridge` setter: a bad value
 is skipped with a warning and the other saved settings still apply.  The
-liner source folder remains config-owned and is never copied into
-browser-owned state.
+Library source folders are catalog-owned. The configured liner upload
+destination remains config-owned; neither is copied into browser-owned state.
 """
 
 from __future__ import annotations
@@ -42,14 +42,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Version 2 dropped ``harmonic_mixing``: ``harmonic_mode`` alone now turns
-#: harmonic mixing on, so a version 1 file (which stored "compatible" next to
-#: ``harmonic_mixing: false``) would silently switch key filtering on.
+#: Version 2 dropped the redundant ``harmonic_mixing`` toggle. Version 1
+#: migration honors that toggle so ``harmonic_mixing: false`` cannot silently
+#: enable key filtering through a stored ``harmonic_mode`` value.
 STATE_VERSION = 2
 
 #: Saved under ``playback`` but set by their own routes (``/api/volume``,
 #: ``/api/mute``, ``/api/stream/settings``).
-_OWN_ROUTE_PLAYBACK_FIELDS = frozenset({"volume", "is_muted", "stream_bitrate"})
+_OWN_ROUTE_PLAYBACK_FIELDS = frozenset(
+    {"volume", "is_muted", "stream_bitrate", "stream_continuous"}
+)
 #: Playback keys mirrored into ``web_state.json``.
 PERSISTED_PLAYBACK_FIELDS = frozenset(PlaybackSettingsBody.model_fields) | (
     _OWN_ROUTE_PLAYBACK_FIELDS
@@ -77,6 +79,53 @@ _TOP_LEVEL_FIELDS = frozenset(
 )
 _INVALID = object()
 _STRICT_BOOL = TypeAdapter(bool)
+
+
+def _migrate_v1(data: dict[str, Any]) -> dict[str, Any]:
+    """Migrate v1 state while honoring its independent harmonic switch."""
+    migrated = data.copy()
+    djmix = migrated.get("djmix")
+    if isinstance(djmix, dict):
+        djmix = djmix.copy()
+        legacy_toggle = djmix.pop("harmonic_mixing", _INVALID)
+        if legacy_toggle is not _INVALID:
+            try:
+                enabled = _STRICT_BOOL.validate_python(legacy_toggle, strict=True)
+            except ValidationError:
+                _warn("djmix.harmonic_mixing", legacy_toggle)
+                djmix["harmonic_mode"] = "off"
+            else:
+                mode = djmix.get("harmonic_mode")
+                if not enabled or mode is None:
+                    djmix["harmonic_mode"] = "off"
+                else:
+                    if _checked(DjMixBody, "harmonic_mode", mode) is _INVALID:
+                        djmix["harmonic_mode"] = "off"
+        migrated["djmix"] = djmix
+    migrated["schema_version"] = STATE_VERSION
+    return migrated
+
+
+def _backup_v1_state(path: Path) -> bool:
+    """Preserve a v1 file once before replacing it; false means do not save."""
+    backup = path.with_name(f"{path.name}.v1.bak")
+    if backup.exists():
+        return True
+    try:
+        original = path.read_bytes()
+        data = json.loads(original)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return True
+    if not isinstance(data, dict) or type(data.get("schema_version")) is not int:
+        return True
+    if data["schema_version"] != 1:
+        return True
+    try:
+        atomic_write(backup, original)
+    except OSError as exc:
+        logger.warning("Failed to back up v1 web_state.json; keeping original: %s", exc)
+        return False
+    return True
 
 
 def state_file_for(index_dir: Path | None) -> Path | None:
@@ -148,6 +197,12 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
         )
         if bitrate is not _INVALID:
             player._cfg.stream.bitrate = bitrate
+    if "stream_continuous" in playback:
+        continuous = _checked(
+            StreamSettingsBody, "continuous", playback["stream_continuous"], "stream_continuous"
+        )
+        if continuous is not _INVALID:
+            player._cfg.stream.continuous = continuous
 
     values: dict[str, Any] = {}
     for field, saved in playback.items():
@@ -166,8 +221,8 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
 def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
     """Restore previously-saved settings through *bridge*.
 
-    No-op when no state file exists, it's unreadable, or its
-    ``schema_version`` is not :data:`STATE_VERSION`.
+    Version 1 state is migrated conservatively; unsupported versions are
+    ignored. Other saved fields continue to be validated individually.
 
     Args:
         bridge: The :class:`~autodj._bridge.PlayerBridge` of a live player.
@@ -186,7 +241,9 @@ def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
         logger.warning("web_state.json root is not an object, ignoring")
         return
     version = data.get("schema_version")
-    if type(version) is not int or version != STATE_VERSION:
+    if type(version) is int and version == 1:
+        data = _migrate_v1(data)
+    elif type(version) is not int or version != STATE_VERSION:
         logger.warning(
             "ignoring web_state.json: schema_version must be %d, got %r",
             STATE_VERSION,
@@ -268,6 +325,8 @@ def save_from_player(settings: dict, index_dir: Path | None) -> None:
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and not _backup_v1_state(path):
+            return
         atomic_write(path, json.dumps(payload, indent=2, ensure_ascii=False))
     except OSError as exc:
         logger.warning("Failed to save web_state.json: %s", exc)

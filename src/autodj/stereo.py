@@ -174,7 +174,7 @@ def load_stereo(
     """Load an audio file as stereo float32 at *target_sr*.
 
     Uses FFmpeg for MP4-container audio such as ALAC, and soundfile for
-    the rest, falling back to librosa for formats soundfile cannot read.
+    the rest, falling back to librosa and then FFmpeg if decoding fails.
     All paths resample to *target_sr*.
 
     A decoded track costs about 21 MB per minute (stereo float32 at
@@ -191,8 +191,7 @@ def load_stereo(
         ``(frames, 2)`` float32 audio.
 
     Raises:
-        RuntimeError: ``soundfile.LibsndfileError`` when neither decoder can
-            read the file, or FFmpeg's error for MP4-container audio.
+        RuntimeError: If none of the available decoders can read the file.
         TrackTooLongError: If the track is longer than *max_seconds*.
     """
     if Path(path).suffix.lower() in FFMPEG_FORMATS:
@@ -216,7 +215,16 @@ def load_stereo(
         import librosa
 
         duration = None if max_seconds is None else max_seconds + 1.0
-        audio, sr = librosa.load(path, sr=None, mono=False, duration=duration)
+        try:
+            audio, sr = librosa.load(path, sr=None, mono=False, duration=duration)
+        except Exception:
+            # FFmpeg can recover MP3 frames that both soundfile paths reject.
+            decoded, rate = load_with_ffmpeg(
+                path, channels=2, sample_rate=target_sr, max_seconds=duration
+            )
+            if max_seconds is not None and len(decoded) > max_seconds * rate:
+                raise TrackTooLongError(path, len(decoded) / rate) from None
+            return to_stereo(decoded)
         if max_seconds is not None and audio.shape[-1] > max_seconds * sr:
             raise TrackTooLongError(path, audio.shape[-1] / sr) from None
         audio = audio.T if audio.ndim == 2 else audio
