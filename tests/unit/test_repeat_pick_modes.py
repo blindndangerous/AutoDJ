@@ -15,8 +15,9 @@ import pytest
 from autodj.clockwheel import ClockSlot
 from autodj.config import PlaybackConfig
 from autodj.indexer import FEATURE_DIM
-from autodj.player import Player, PlayerState, apply_repeat_windows
+from autodj.player import Player, PlayerState, _join_recent, apply_repeat_windows
 from autodj.repeat_rules import RepeatRules
+from autodj.repeat_settings import RepeatSettings
 from autodj.similarity import SimilarityIndex
 from tests.unit._fakes import make_cfg_mock, make_entry
 
@@ -45,10 +46,26 @@ def _sim(tracks: list[tuple[str, str]]) -> SimilarityIndex:
     return SimilarityIndex(faiss_index=index, entries=entries)
 
 
-def _player(pick_mode: str = "similarity", tracks=TRACKS, **playback) -> Player:
+def _player(
+    pick_mode: str = "similarity",
+    tracks=TRACKS,
+    *,
+    repeat_rules: dict | None = None,
+    active_dir: Path | None = None,
+) -> Player:
     cfg = make_cfg_mock()
-    settings = {"no_repeat_window": 1, "related_artists_starter": True, **playback}
-    cfg.playback = PlaybackConfig(pick_mode=pick_mode, **settings)
+    cfg.index.active_dir = active_dir or Path(__file__).parents[2] / "src" / "autodj" / "data"
+    defaults = {
+        "track": {"tracks": 1},
+        "artist": {"tracks": 3},
+        "album": {"tracks": 3},
+        "title": {"tracks": 3},
+        "use_related_artists": True,
+    }
+    cfg.playback = PlaybackConfig(
+        pick_mode=pick_mode,
+        repeat_rules=RepeatSettings.model_validate({**defaults, **(repeat_rules or {})}),
+    )
     player = Player(cfg, _sim(tracks), dry_run=True)
     player._pure_shuffle = pick_mode == "random"
     return player
@@ -80,7 +97,7 @@ def test_pick_modes_honour_artist_related_and_title_rules(mode: str) -> None:
         context = player._pick_context()
         picked, _how = player._choose_by_mode(current, context)
         assert picked.title == "Fine Song"
-        if mode != "similarity":  # similarity only meets its nearest neighbours
+        if mode == "random":  # Other modes stop once a candidate passes.
             assert {player.playable_entries()[i].path: r for i, r in HELD_BACK.items()} == (
                 context.repeat.held_back
             )
@@ -92,6 +109,30 @@ def test_anchored_similarity_honours_the_rules() -> None:
     player._anchor_to_seed, player._seed_path = True, current.path
     picked, how = player._choose_by_mode(current, player._pick_context())
     assert (picked.title, how) == ("Fine Song", "anchored")
+
+
+def test_similarity_with_zero_limits_excludes_current_pending_and_starting() -> None:
+    zero = {name: {"tracks": 0, "minutes": 0} for name in ("track", "artist", "album", "title")}
+    player = _player(repeat_rules={**zero, "use_related_artists": False})
+    current, pending, starting = player.playable_entries()[:3]
+    context = player._pick_context(pending=pending, starting=starting)
+    assert not context.recent
+    picked, _ = player._choose_by_mode(current, context)
+    assert picked.path not in {current.path, pending.path, starting.path}
+
+
+def test_discovery_with_zero_limits_excludes_current_pending_and_starting() -> None:
+    zero = {name: {"tracks": 0, "minutes": 0} for name in ("track", "artist", "album", "title")}
+    player = _player(repeat_rules={**zero, "use_related_artists": False})
+    current, pending, starting = player.playable_entries()[:3]
+    player._discovery_every = 1
+    player._state.discovery_enabled = True
+    player._state.track_number = 1
+    picked = player._try_discovery(
+        current, player._pick_context(pending=pending, starting=starting)
+    )
+    assert picked is not None
+    assert picked.path not in {current.path, pending.path, starting.path}
 
 
 def test_clock_pick_honours_the_rules() -> None:
@@ -138,22 +179,57 @@ def test_queue_and_fallback_ignore_the_rules() -> None:
 
 def test_rules_relax_when_nothing_else_can_play() -> None:
     tracks = [("Same Artist", f"Song {i}") for i in range(4)]
-    for mode in ("similarity", "random"):
+    for mode in ("similarity", "random", "least_recent"):
         player = _player(mode, tracks)
+        if mode == "least_recent":
+            player._library = _library(player)
         current = _played_first(player)
         picked, _how = player._choose_by_mode(current, player._pick_context())
         assert picked.path != current.path
+
+
+def test_least_recent_stops_checking_rules_after_the_oldest_eligible_track() -> None:
+    player = _player("least_recent")
+    player._library = _library(player)
+    entries = player.playable_entries()
+    now = datetime(2026, 10, 11, tzinfo=UTC)
+    history = {entry.path: now for entry in entries}
+    history[entries[2].path] = now - timedelta(days=3)
+    history[entries[4].path] = now - timedelta(days=2)
+    player._library.last_played = lambda: history
+    current = _played_first(player)
+    context = player._pick_context()
+    picked, _how = player._choose_by_mode(current, context)
+    assert picked is entries[4]
+    assert context.repeat.held_back == {entries[2].path: "same artist"}
+
+
+@pytest.mark.parametrize("mode", ["random", "least_recent"])
+def test_disabled_repeat_limits_still_protect_playing_and_prepared_tracks(mode: str) -> None:
+    player = _player(
+        mode,
+        [("One", "A"), ("Two", "B"), ("Three", "C")],
+        repeat_rules={
+            name: {"tracks": 0, "minutes": 0} for name in ("artist", "album", "title", "track")
+        },
+    )
+    player._library = _library(player)
+    current, prepared, remaining = player.playable_entries()
+    context = replace(player._pick_context(), protected=frozenset({prepared.path}))
+    for _ in range(5):
+        assert player._pick_pure_shuffle(current, context) is remaining
 
 
 def test_minute_windows_use_the_state_clock() -> None:
     now = [0.0]
     player = _player(
         "random",
-        no_repeat_window=0,
-        artist_repeat_window=0,
-        title_repeat_window=0,
-        artist_repeat_minutes=30,
-        no_repeat_minutes=60,
+        repeat_rules={
+            "track": {"tracks": 0, "minutes": 60},
+            "artist": {"tracks": 0, "minutes": 30},
+            "album": {"tracks": 0},
+            "title": {"tracks": 0},
+        },
     )
     player._state.clock = lambda: now[0]
     first = _played_first(player)
@@ -170,7 +246,7 @@ def test_minute_windows_use_the_state_clock() -> None:
 
 
 def test_track_count_window_and_minutes_combine() -> None:
-    player = _player("random", no_repeat_minutes=60)
+    player = _player("random", repeat_rules={"track": {"tracks": 1, "minutes": 60}})
     player._state.clock = lambda: 0.0
     entries = player.playable_entries()
     with player._pick_lock:
@@ -184,15 +260,25 @@ def test_track_count_window_and_minutes_combine() -> None:
 def test_the_pick_logs_which_rules_held_tracks_back(caplog) -> None:
     player = _player("random")
     current = _played_first(player)
-    with caplog.at_level(logging.INFO, logger="autodj.player"):
+    caplog.set_level(logging.INFO, logger="autodj.player")
+    with caplog.at_level(logging.DEBUG, logger="autodj.player.repeat"):
         player._choose_by_mode(current, player._pick_context())
     assert "1 same artist, 1 related artist, 1 same title" in caplog.text
+    rows = {
+        record.getMessage() for record in caplog.records if record.name == "autodj.player.repeat"
+    }
+    entries = player.playable_entries()
+    assert rows == {
+        "Candidate excluded from pool by repeat rule (rules may be relaxed): "
+        f"candidate={entries[i].path} reason={reason} selected={entries[4].path}"
+        for i, reason in HELD_BACK.items()
+    }
 
 
 def test_related_artists_file_is_read_at_start(tmp_path: Path) -> None:
-    path = tmp_path / "related.toml"
+    path = tmp_path / "related-artists.toml"
     path.write_bytes(b'[related]\n"Other Artist" = ["Allowed Artist"]\n')
-    player = _player("random", related_artists_file=str(path))
+    player = _player("random", active_dir=tmp_path)
     with player._pick_lock:
         player._state.record_played(player.playable_entries()[3])
     context = player._pick_context()
@@ -201,7 +287,7 @@ def test_related_artists_file_is_read_at_start(tmp_path: Path) -> None:
 
 def test_known_artists_split_one_word_duos() -> None:
     tracks = [("Rihanna", "One"), ("Drake", "Two"), ("Rihanna & Drake", "Three"), ("Zed", "Z")]
-    player = _player("random", tracks, related_artists_starter=False)
+    player = _player("random", tracks, repeat_rules={"use_related_artists": False})
     with player._pick_lock:
         player._state.record_played(player.playable_entries()[2])
     context = player._pick_context()
@@ -213,8 +299,8 @@ def test_known_artists_split_one_word_duos() -> None:
 def test_apply_repeat_windows_keeps_history_and_reads_new_keys() -> None:
     player = _player("random")
     _played_first(player)
-    player._cfg.playback.title_repeat_window = 7
-    player._cfg.playback.artist_repeat_minutes = 15.0
+    player._cfg.playback.repeat_rules.title.tracks = 7
+    player._cfg.playback.repeat_rules.artist.minutes = 15.0
     apply_repeat_windows(player)
     rules = player._state.rules
     assert (rules.title_window, rules.artist_minutes) == (7, 15.0)
@@ -229,11 +315,11 @@ def test_player_state_built_from_rules_sets_the_old_windows() -> None:
     state = PlayerState(repeat_rules=RepeatRules(track_window=9, artist_window=4))
     assert (state.no_repeat_window, state.artist_repeat_window) == (9, 4)
     assert state.recently_played.maxlen == 9
-    state.resize_repeat_windows(5, 2)
+    state.set_repeat_rules(RepeatRules(track_window=5, artist_window=2))
     assert (state.rules.track_window, state.rules.artist_window, state.rules.title_window) == (
         5,
         2,
-        2,
+        0,
     )
 
 
@@ -266,18 +352,17 @@ def _saved_play(entry, minutes_ago: float) -> dict:
 
 
 def test_a_minute_window_holds_across_a_restart() -> None:
-    settings = {
-        "no_repeat_window": 0,
-        "artist_repeat_window": 0,
-        "title_repeat_window": 0,
-        "artist_repeat_minutes": 60,
-        "no_repeat_minutes": 60,
+    repeat_rules = {
+        "track": {"tracks": 0, "minutes": 60},
+        "artist": {"tracks": 0, "minutes": 60},
+        "album": {"tracks": 0},
+        "title": {"tracks": 0},
     }
-    before = _player("random", **settings)
+    before = _player("random", repeat_rules=repeat_rules)
     entries = before.playable_entries()
     catalog = _Catalog([_saved_play(entries[0], minutes_ago=30)])
     # A new player is a restart: it remembers nothing until it reads the catalog.
-    after = _player("random", **settings)
+    after = _player("random", repeat_rules=repeat_rules)
     assert after._pick_context().repeat.reason(entries[2]) is None
     assert after.restore_repeat_history(catalog) == 1
     context = after._pick_context()
@@ -291,14 +376,28 @@ def test_a_minute_window_holds_across_a_restart() -> None:
 
 
 def test_an_old_play_is_outside_the_minute_window_after_a_restart() -> None:
-    player = _player("random", no_repeat_window=0, artist_repeat_window=0, artist_repeat_minutes=60)
+    player = _player(
+        "random",
+        repeat_rules={
+            "track": {"tracks": 0},
+            "artist": {"tracks": 0, "minutes": 60},
+        },
+    )
     entries = player.playable_entries()
     player.restore_repeat_history(_Catalog([_saved_play(entries[0], minutes_ago=61)]))
     assert player._pick_context().repeat.reason(entries[2]) is None
 
 
 def test_count_windows_hold_across_a_restart() -> None:
-    player = _player("random", no_repeat_window=2, artist_repeat_window=1)
+    player = _player(
+        "random",
+        repeat_rules={
+            "track": {"tracks": 2},
+            "artist": {"tracks": 1},
+            "album": {"tracks": 0},
+            "title": {"tracks": 0},
+        },
+    )
     entries = player.playable_entries()
     rows = [_saved_play(entries[i], minutes_ago=600 - i) for i in (3, 0)]
     catalog = _Catalog(rows)
@@ -312,8 +411,42 @@ def test_count_windows_hold_across_a_restart() -> None:
     assert player.restore_repeat_history(catalog) == 0
 
 
+def test_widening_repeat_windows_reloads_older_plays_without_duplicates() -> None:
+    player = _player(
+        "random",
+        repeat_rules={
+            "track": {"tracks": 1},
+            "artist": {"tracks": 0},
+            "album": {"tracks": 0},
+            "title": {"tracks": 0},
+        },
+    )
+    entries = player.playable_entries()
+    player._state.record_played(entries[3])
+    catalog = _Catalog(
+        [
+            _saved_play(entries[0], minutes_ago=10),
+            _saved_play(entries[1], minutes_ago=5),
+            _saved_play(entries[3], minutes_ago=1),
+        ]
+    )
+    player.restore_repeat_history(catalog)
+
+    player._state.set_repeat_rules(
+        RepeatRules(track_window=4, artist_window=3, album_window=0, title_window=0)
+    )
+    player.restore_repeat_history(catalog, refresh=True)
+
+    assert catalog.limits == [1, 4]
+    assert [record.path for record in player._state.play_history] == [
+        entries[0].path,
+        entries[1].path,
+        entries[3].path,
+    ]
+
+
 def test_future_and_unreadable_saved_plays_are_skipped() -> None:
-    player = _player("random", no_repeat_window=5)
+    player = _player("random", repeat_rules={"track": {"tracks": 5}})
     entries = player.playable_entries()
     rows = [
         _saved_play(entries[0], minutes_ago=-30),  # the clock was set back since
@@ -325,11 +458,62 @@ def test_future_and_unreadable_saved_plays_are_skipped() -> None:
 
 
 def test_restored_plays_come_before_this_runs_plays() -> None:
-    player = _player("random", no_repeat_window=3)
+    player = _player("random", repeat_rules={"track": {"tracks": 3}})
     entries = player.playable_entries()
     _played_first(player)
     player.restore_repeat_history(_Catalog([_saved_play(entries[3], minutes_ago=10)]))
     assert list(player._state.recently_played) == [entries[3].path, entries[0].path]
+
+
+def test_refresh_does_not_shrink_track_window_when_database_is_shorter() -> None:
+    player = _player(
+        "random",
+        repeat_rules={
+            "track": {"tracks": 4},
+            "artist": {"tracks": 0},
+            "album": {"tracks": 0},
+            "title": {"tracks": 0},
+        },
+    )
+    entries = player.playable_entries()
+    for entry in entries[:4]:
+        player._state.record_played(entry)
+    assert not player._state.play_history
+    expected = [entry.path for entry in entries[:4]]
+    player.restore_repeat_history(_Catalog([_saved_play(entries[3], minutes_ago=1)]), refresh=True)
+    assert list(player._state.recently_played) == expected
+
+
+@pytest.mark.parametrize(
+    ("saved", "recent", "joined"),
+    [
+        (["a", "b"], [], ["a", "b"]),
+        ([], ["a", "b"], ["a", "b"]),
+        (["b", "c"], ["a", "b", "c", "d"], ["a", "b", "c", "d"]),
+        (["x", "y", "a", "b"], ["a", "b", "c"], ["x", "y", "a", "b", "c"]),
+        (["x", "y"], ["a", "b"], ["x", "y", "a", "b"]),
+    ],
+    ids=["startup", "nothing saved", "saved inside", "saved overlaps", "no overlap"],
+)
+def test_saved_plays_join_the_track_window_without_shortening_it(saved, recent, joined) -> None:
+    assert _join_recent(saved, recent) == joined
+
+
+def test_refresh_includes_pending_history_writes() -> None:
+    player = _player(
+        "random",
+        repeat_rules={
+            "track": {"tracks": 4},
+            "artist": {"tracks": 0},
+            "album": {"tracks": 1},
+            "title": {"tracks": 0},
+        },
+    )
+    entry = player.playable_entries()[2]
+    player._library = SimpleNamespace(pending_history=lambda: [_saved_play(entry, minutes_ago=0)])
+    player.restore_repeat_history(_Catalog([]), refresh=True)
+    assert list(player._state.recently_played) == [entry.path]
+    assert player._state.play_history[0].album == entry.album
 
 
 # ---------------------------------------------------------------------------
@@ -339,29 +523,44 @@ def test_restored_plays_come_before_this_runs_plays() -> None:
 
 @pytest.mark.parametrize(
     "content",
-    [b"[related\n", b"related = 3\n", b'[related]\n"A" = "B"\n', None],
-    ids=["bad toml", "related not a table", "value not a list", "missing file"],
+    [b"[related\n", b"related = 3\n", b'[related]\n"A" = "B"\n'],
+    ids=["bad toml", "related not a table", "value not a list"],
 )
 def test_a_bad_related_artists_file_does_not_stop_the_player(
-    tmp_path: Path, caplog, content: bytes | None
+    tmp_path: Path, caplog, content: bytes
 ) -> None:
-    path = tmp_path / "related.toml"
-    if content is not None:
-        path.write_bytes(content)
+    path = tmp_path / "related-artists.toml"
+    path.write_bytes(content)
     with caplog.at_level(logging.WARNING, logger="autodj.player"):
-        player = _player("random", related_artists_file=str(path))
-    assert str(path) in player.related_artists_problem
+        player = _player("random", active_dir=tmp_path)
+    assert player.related_artists_problem.startswith("The related artists file is not valid")
+    assert player.related_artists_problem.endswith(
+        "Related artists are off until the file is fixed and repeat settings are saved."
+    )
+    assert str(path) not in player.related_artists_problem
     assert str(path) in caplog.text
-    assert "starter list only" in caplog.text
-    # The starter list still applies.
-    assert player._state.rules.related.related_to("bruno mars") == {"silk sonic"}
-
-
-def test_a_bad_file_without_the_starter_list_leaves_no_links(tmp_path: Path) -> None:
-    path = tmp_path / "related.toml"
-    path.write_bytes(b"[related\n")
-    player = _player("random", related_artists_file=str(path), related_artists_starter=False)
     assert player._state.rules.related.links == {}
+
+
+def test_related_artists_file_is_not_loaded_when_disabled(tmp_path: Path) -> None:
+    (tmp_path / "related-artists.toml").write_text("[related\n", encoding="utf-8")
+    player = _player("random", active_dir=tmp_path, repeat_rules={"use_related_artists": False})
+    assert player.related_artists_problem is None
+    assert player._state.rules.related.links == {}
+
+
+def test_single_acts_only_apply_while_related_artists_enabled(tmp_path: Path) -> None:
+    (tmp_path / "related-artists.toml").write_text(
+        'single_acts = ["Calvin Harris & Dua Lipa"]\n', encoding="utf-8"
+    )
+    tracks = [("Calvin Harris & Dua Lipa", "One"), ("Other Artist", "Two")]
+    off = _player(
+        "random", tracks, active_dir=tmp_path, repeat_rules={"use_related_artists": False}
+    )
+    on = _player("random", tracks, active_dir=tmp_path)
+    entry = off.playable_entries()[0]
+    assert "calvin harris" in off._track_keys().keys(entry).artists
+    assert "calvin harris" not in on._track_keys().keys(entry).artists
 
 
 # ---------------------------------------------------------------------------
@@ -422,3 +621,15 @@ def test_the_key_cache_outlives_a_library_refresh_with_the_same_artists() -> Non
     newcomer.artist = "Brand New Artist"
     snapshot["music"] = (*entries, newcomer)
     assert player._track_keys() is not first
+
+
+def test_history_refresh_keeps_separate_plays_of_the_same_track():
+    from autodj.repeat_rules import PlayRecord
+
+    state = PlayerState(
+        repeat_rules=RepeatRules(track_window=10, artist_window=10), clock=lambda: 1000
+    )
+    entry = make_entry(0)
+    state.play_history.append(PlayRecord.of(entry, 900))
+    state.restore_history([PlayRecord.of(entry, 600), PlayRecord.of(entry, 897)])
+    assert [record.started for record in state.play_history] == [600, 900]

@@ -832,25 +832,67 @@
       </span>
     </fieldset>
 
-    <fieldset>
+    <!-- The rules' shared help is the outer group's description, read once
+         when focus enters Repeats, not repeated on all eight boxes. -->
+    <fieldset aria-describedby="repeat-rules-desc">
       <legend>Repeats</legend>
-      <div class="settings-row">
-        <label for="pb-no-repeat">Tracks before a song can repeat</label>
-        <input type="number" id="pb-no-repeat" min="0" max="100000" step="1" value="500"
-               inputmode="numeric" aria-describedby="pb-no-repeat-desc">
-      </div>
-      <span class="setting-desc" id="pb-no-repeat-desc">
-        How many recently played tracks the picker avoids, a whole number from 0 to 100000.  0 lets a song come back straight away.  When the library holds fewer tracks than this, AutoDJ uses a smaller number so it always has something to pick.
-      </span>
-
-      <div class="settings-row">
-        <label for="pb-artist-repeat">Tracks before an artist can repeat</label>
-        <input type="number" id="pb-artist-repeat" min="0" max="100" step="1" value="3"
-               inputmode="numeric" aria-describedby="pb-artist-repeat-desc">
-      </div>
-      <span class="setting-desc" id="pb-artist-repeat-desc">
-        How many of the latest tracks are checked for the same artist, album or song title, a whole number from 0 to 100.  0 turns this check off.
-      </span>
+      <p class="setting-desc" id="repeat-rules-desc">Each rule has a Tracks limit and a Minutes limit; when both are set, a repeat waits for both. 0 turns a limit off. Tracks are whole numbers, up to 100000 for the same track and up to 5000 for artist, album and title. Minutes go up to 10080 (one week) and can have decimals.</p>
+      <fieldset>
+        <legend>Prevent the same artist from repeating within</legend>
+        <div class="settings-row">
+          <label for="repeat-artist-tracks">Tracks</label>
+          <input type="number" id="repeat-artist-tracks" min="0" max="5000" step="1" value="8" inputmode="numeric">
+        </div>
+        <div class="settings-row">
+          <label for="repeat-artist-minutes">Minutes</label>
+          <input type="number" id="repeat-artist-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Related artists</legend>
+        <div class="settings-check">
+          <input type="checkbox" id="repeat-use-related-artists" aria-describedby="repeat-related-desc repeat-related-status">
+          <label for="repeat-use-related-artists">Use related artists</label>
+        </div>
+        <p class="setting-desc" id="repeat-related-desc">The artist rule also holds back the artists linked in related-artists.toml in the index folder: <code id="repeat-related-default">index/&lt;name&gt;/related-artists.toml</code>. Edit that file, then save repeat settings to reload it.</p>
+        <!-- A problem found in the file at startup or on save; empty and
+             hidden while there is none. -->
+        <p class="setting-desc" id="repeat-related-status" hidden></p>
+      </fieldset>
+      <fieldset>
+        <legend>Prevent the same album from repeating within</legend>
+        <div class="settings-row">
+          <label for="repeat-album-tracks">Tracks</label>
+          <input type="number" id="repeat-album-tracks" min="0" max="5000" step="1" value="0" inputmode="numeric">
+        </div>
+        <div class="settings-row">
+          <label for="repeat-album-minutes">Minutes</label>
+          <input type="number" id="repeat-album-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Prevent the same track from repeating within</legend>
+        <div class="settings-row">
+          <label for="repeat-track-tracks">Tracks</label>
+          <input type="number" id="repeat-track-tracks" min="0" max="100000" step="1" value="50" inputmode="numeric">
+        </div>
+        <div class="settings-row">
+          <label for="repeat-track-minutes">Minutes</label>
+          <input type="number" id="repeat-track-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Prevent the same title from repeating within</legend>
+        <div class="settings-row">
+          <label for="repeat-title-tracks">Tracks</label>
+          <input type="number" id="repeat-title-tracks" min="0" max="5000" step="1" value="0" inputmode="numeric">
+        </div>
+        <div class="settings-row">
+          <label for="repeat-title-minutes">Minutes</label>
+          <input type="number" id="repeat-title-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
+        </div>
+      </fieldset>
+      <button type="button" id="repeat-save">Save repeat settings</button>
     </fieldset>
 
     <fieldset>
@@ -897,11 +939,11 @@
           <option value="off">Off</option>
           <option value="replaygain">ReplayGain</option>
           <option value="smooth">Smooth</option>
-          <option value="stereotool">Stereo Tool (free preset)</option>
+          <option value="stereotool">Stereo Tool</option>
         </select>
       </div>
       <span class="setting-desc" id="pb-rg-desc">
-        <em>Off</em> leaves levels unchanged. <em>ReplayGain</em> adjusts tracks using their loudness tags. <em>Smooth</em> balances source levels and compresses the mix. <em>Stereo Tool</em> balances sources and runs the mix through the bundled free preset; its executable must be configured on the server. For stream and server audio playback.
+        <em>Off</em> leaves levels unchanged. <em>ReplayGain</em> adjusts tracks using their loudness tags. <em>Smooth</em> balances source levels and compresses the mix. <em>Stereo Tool</em> balances sources and runs the mix through the Stereo Tool preset chosen below; its executable must be configured on the server. For stream and server audio playback.
       </span>
       <div class="settings-row" data-show-when="pb-replaygain=replaygain">
         <label for="pb-rg-target">ReplayGain target loudness (decibels)</label>
@@ -926,6 +968,41 @@
       </div>
       <span class="setting-desc" id="pb-rg-clip-desc" data-show-when="pb-replaygain=replaygain">
         ReplayGain never raises a track so far that its tagged peak goes above this level, from 0.1 to 2.  1, the default, prevents clipping; above 1 allows some.  For stream and server audio playback.
+      </span>
+      <div class="settings-row" data-show-when="pb-replaygain!=off">
+        <label for="pb-intro-lift">Quiet intro lift limit (decibels)</label>
+        <input type="number" id="pb-intro-lift" min="0" max="6" step="0.1" value="4"
+               inputmode="decimal" aria-describedby="pb-intro-lift-desc">
+      </div>
+      <span class="setting-desc" id="pb-intro-lift-desc" data-show-when="pb-replaygain!=off">
+        Raise a song's quiet opening by up to this much, from 0 to 6, so it does not sound too low after a loud song.  The lift holds for one second, then falls back to the song's own level by eight seconds, and never raises the opening's peaks above 1.8 decibels below full scale, so it cannot make them clip.  4 is the default; 0 turns it off.  A song is measured on its next library scan.  For browser, stream and server audio playback.
+      </span>
+    </fieldset>
+
+    <fieldset data-show-when="pb-replaygain=stereotool">
+      <legend>Stereo Tool</legend>
+      <div class="settings-row">
+        <label for="stereo-preset">Preset</label>
+        <select id="stereo-preset" aria-describedby="stereo-preset-desc">
+          <option value="included">Included</option>
+        </select>
+        <button type="button" id="stereo-preset-delete" disabled>Delete selected preset</button>
+      </div>
+      <span class="setting-desc" id="stereo-preset-desc">
+        Stereo Tool restarts with the chosen preset; the sound bypasses it for a moment while it does.  Included is the free preset that comes with AutoDJ and cannot be deleted.  Uploaded presets are kept with the station's data and saved in backups.
+      </span>
+      <div class="settings-row">
+        <label for="stereo-preset-file">Preset file to upload (.sts, up to 2 MB)</label>
+        <input type="file" id="stereo-preset-file" accept=".sts">
+        <button type="button" id="stereo-preset-upload">Upload preset</button>
+      </div>
+      <div class="settings-row">
+        <label for="pb-stereo-trim">Input trim (decibels)</label>
+        <input type="number" id="pb-stereo-trim" min="-12" max="6" step="0.5" value="0"
+               inputmode="decimal" aria-describedby="pb-stereo-trim-desc">
+      </div>
+      <span class="setting-desc" id="pb-stereo-trim-desc">
+        Lower or raise the mix before Stereo Tool, from minus 12 to plus 6.  Lower it when the preset sounds squashed; raise it when the preset barely acts.  The output limiter still holds the same ceiling.  0 is the default.  For stream and server audio playback.
       </span>
     </fieldset>
 
@@ -1295,6 +1372,12 @@
         </span>
         <p class="stream-detail"><a id="np-status-open" href="/status" target="_blank" rel="noopener">Open the status page (new tab)</a></p>
         <p class="stream-detail" id="np-loopback-note" hidden>These links only work on this computer. Open AutoDJ using its network address (see the start-up message) to copy links other devices can reach.</p>
+        <!-- DMCA mode ([dmca] enabled in config.toml, read at start-up).
+             Plain text, not live: it only changes on a restart.  While it
+             is on, nowplaying-settings.js shows both notes, marks the
+             show-next box aria-disabled (still focusable, so NVDA reads
+             it and why) and adds the reason to its description. -->
+        <p class="stream-detail" id="dmca-status" hidden>DMCA mode is on: song picks keep to the album, artist and box set limits, songs that would break them are queued only after you confirm, and the next song is never shown publicly.</p>
         <div class="settings-check">
           <input type="checkbox" id="np-show-next" aria-describedby="np-show-next-desc">
           <label for="np-show-next">Show the next song publicly</label>
@@ -1302,9 +1385,57 @@
         <span class="setting-desc" id="np-show-next-desc">
           Add the upcoming song to the now-playing feed. Off by default, because some webcasting licences, such as the US statutory licence, do not allow announcing songs in advance.
         </span>
+        <span class="setting-desc" id="np-show-next-dmca" hidden>Not available: DMCA mode is on, so the next song is never shown publicly. Turn DMCA mode off in config.toml to use it.</span>
         <p class="stream-detail" id="np-webhooks-intro">Track-change webhooks</p>
         <ul class="stream-detail" id="np-webhooks-list" aria-labelledby="np-webhooks-intro" hidden></ul>
         <p class="stream-detail" id="np-webhooks-empty" hidden></p>
+      </fieldset>
+      <!-- Broadcast recording ([recording] in config.toml).
+           recording-controls.js shows it once the server reports recording
+           status.  The toggle keeps one name; aria-pressed says whether it
+           records.  Split stays focusable with aria-disabled and says why
+           it did nothing.  The status and error lines are plain text, not
+           live: results and new errors go to the status regions.  The
+           folder is set only in the config files and never shown. -->
+      <fieldset id="recording-controls" hidden>
+        <legend>Broadcast recording</legend>
+        <p class="setting-desc" id="recording-desc">
+          Saves the MP3 that listeners hear, including liners and processing, as dated files in the recordings folder set in config.toml. Recording keeps the station playing without listeners.
+        </p>
+        <div class="settings-row">
+          <button type="button" id="recording-toggle" aria-pressed="false"
+                  aria-describedby="recording-status recording-error">Record broadcast</button>
+          <button type="button" id="recording-split-now" aria-disabled="true">Split recording now</button>
+        </div>
+        <p class="stream-detail" id="recording-status"></p>
+        <p class="stream-detail" id="recording-error" hidden></p>
+        <div class="settings-row">
+          <label for="recording-split">Start a new file</label>
+          <select id="recording-split" aria-describedby="recording-split-desc">
+            <option value="hour">Every clock hour</option>
+            <option value="show">For each show</option>
+          </select>
+        </div>
+        <span class="setting-desc" id="recording-split-desc">
+          For each show starts a new file when you press Split recording now, when a scheduled Start recording or Split recording event runs, or when a profile is applied.
+        </span>
+        <div class="settings-row">
+          <label for="recording-retention-days">Days to keep recordings</label>
+          <input type="number" id="recording-retention-days" min="0" step="1" required
+                 inputmode="numeric" aria-describedby="recording-retention-desc">
+        </div>
+        <span class="setting-desc" id="recording-retention-desc">
+          Older dated recordings in the recordings folder are deleted about once an hour. 0 keeps them forever.
+        </span>
+        <div class="settings-row">
+          <label for="recording-free-space-mb">Minimum free space in MB</label>
+          <input type="number" id="recording-free-space-mb" min="0" step="1" required
+                 inputmode="numeric" aria-describedby="recording-free-space-desc">
+        </div>
+        <span class="setting-desc" id="recording-free-space-desc">
+          Recording pauses when the recordings drive has less free space than this, and resumes when space returns. The stream keeps playing.
+        </span>
+        <button type="button" id="recording-save">Save recording settings</button>
       </fieldset>
       <section aria-labelledby="listener-control-title">
         <h4 id="listener-control-title" tabindex="-1">Listeners</h4>
@@ -1667,8 +1798,9 @@
 
 <!-- Shared confirmation for actions that cannot be undone (Clear queue,
      Delete profile, Delete liner, Sign out, Revoke device, Make new
-     link).  modules/confirm-dialog.js fills in the words; Cancel is
-     first and gets focus. -->
+     link), and for queueing a song over a DMCA limit (Queue anyway).
+     modules/confirm-dialog.js fills in the words; Cancel is first and
+     gets focus. -->
 <dialog id="confirm-dialog" aria-labelledby="confirm-title"
         aria-describedby="confirm-message">
   <form method="dialog">

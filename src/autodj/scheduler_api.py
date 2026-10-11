@@ -46,7 +46,11 @@ def _builtin_actions(
     clock_names: Callable[[], Sequence[str]],
     select_clock: Callable[[str], Awaitable[Any]],
 ) -> list[Action]:
-    """Actions whose backing features exist: profile, preset, picking, liner, stream, discovery."""
+    """Actions whose backing features exist.
+
+    Profile, song-picking preset, Stereo Tool preset, picking, liner, stream
+    and discovery.
+    """
     cfg = bridge.player._cfg
 
     def preset_names() -> list[str]:
@@ -102,6 +106,19 @@ def _builtin_actions(
         if playing and station.state == "idle":
             raise ValueError("The stream could not start: the library has no tracks")
 
+    def stereo_tool_presets() -> list[str]:
+        from autodj.stereotool_presets import list_presets
+
+        return [str(item["name"]) for item in list_presets(Path(cfg.index.active_dir))]
+
+    async def stereo_tool_preset(params: dict[str, str]) -> None:
+        # Stereo Tool restarts with it on the next mix block; a preset
+        # deleted since the event was saved fails the run in words.
+        bridge.set_playback_settings(
+            PlaybackSettingsBody.model_validate({"stereotool_preset": params["name"]})
+        )
+        bridge.save_persistent_state()
+
     async def discovery(params: dict[str, str]) -> None:
         enabled = params["state"] == "on"
         if enabled and bridge.player._discovery_every is None:
@@ -121,6 +138,14 @@ def _builtin_actions(
             "Switch preset",
             preset,
             (ActionField("name", "Preset", names=preset_names),),
+        ),
+        Action(
+            "stereo_tool_preset",
+            "Switch Stereo Tool preset",
+            stereo_tool_preset,
+            (ActionField("name", "Stereo Tool preset", names=stereo_tool_presets),),
+            # The processor changes at once; the song playing need not end.
+            interrupt="none",
         ),
         Action(
             "pick_mode",

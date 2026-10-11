@@ -88,6 +88,12 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   Show the next song publicly saved and its result said once, the webhook list read as plain text
   (or the config.local.toml note when there are none), and each Send test naming its host and
   saying "Sending" and then the result once, with focus staying on the button.
+- DMCA mode (`[dmca] enabled = true`): the "DMCA mode is on" line under the feed links read as
+  plain text; Show the next song publicly read as unavailable with its reason, pressing it saying
+  the reason once and leaving it unticked; and queueing a song over a limit from Search or
+  Library opening the confirm dialog with the limit in words and focus on Cancel, Queue anyway
+  (or Play anyway) saying the song was queued over the limit, Cancel saying it was not, and
+  focus back on the button pressed either way.
 - The public status page (`/status`): read with headings and the definition list, with and
   without JavaScript; the song line said once, politely, when the song changes, and nothing said
   on a poll that finds the same song; the next song shown only while it is allowed.

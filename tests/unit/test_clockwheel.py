@@ -80,6 +80,43 @@ def test_least_recent_prefers_never_played_then_randomizes_oldest_ties():
         least_recent([], {})
 
 
+def test_least_recent_checks_oldest_until_allowed():
+    now = datetime(2025, 1, 1)
+    entries = [Entry("new"), Entry("old"), Entry("middle")]
+    history = {
+        "old": now - timedelta(days=2),
+        "middle": now - timedelta(days=1),
+        "new": now,
+    }
+    checked = []
+
+    def allowed(entry):
+        checked.append(entry.path)
+        return entry.path != "old"
+
+    picked = least_recent(entries, history, Random(0), allowed=allowed)
+    assert picked.path == "middle"
+    assert checked == ["old", "middle"]
+
+
+def test_least_recent_randomizes_allowed_oldest_ties_and_returns_none_when_blocked():
+    now = datetime(2025, 1, 1)
+    tie = [Entry("a"), Entry("b")]
+    assert {
+        least_recent(tie, {"a": now, "b": now}, Random(seed), allowed=lambda _: True).path
+        for seed in range(8)
+    } == {"a", "b"}
+
+    checked = []
+
+    def blocked(entry):
+        checked.append(entry.path)
+        return False
+
+    assert least_recent(tie, {}, Random(0), allowed=blocked) is None
+    assert set(checked) == {"a", "b"}
+
+
 @dataclass
 class Track:
     path: str
@@ -124,21 +161,42 @@ def test_runtime_picker_applies_rules_and_returns_liner_with_music_cursor():
     assert not pick.skipped
 
 
-def test_runtime_picker_uses_least_recent_after_repeat_rules_filter_candidates():
+def test_runtime_picker_checks_rules_in_least_recent_order():
     now = datetime(2025, 1, 2)
     entries = [
-        Track(r"C:\music\recent.flac", "same artist"),
-        Track(r"C:\music\old.flac", "other artist"),
+        Track(r"C:\music\old.flac", "same artist"),
+        Track(r"C:\music\newer.flac", "other artist"),
     ]
     slot = ClockSlot(r"C:\music", selection="least_recent", enforce_rules=True)
+    checked = []
+
+    def allowed(entry):
+        checked.append(entry)
+        return entry.artist != "same artist"
+
     picked = pick_slot(
         [slot],
         0,
         entries,
-        {entries[0].path: now, entries[1].path: now - timedelta(days=10)},
-        lambda entry: entry.artist != "same artist",
+        {entries[0].path: now - timedelta(days=10), entries[1].path: now},
+        allowed,
     )
     assert picked.entry == entries[1]
+    assert checked == entries
+
+
+def test_runtime_picker_least_recent_no_rules_does_not_check_allowed():
+    now = datetime(2025, 1, 2)
+    entries = [Track(r"C:\music\old.flac"), Track(r"C:\music\newer.flac")]
+    slot = ClockSlot(r"C:\music", selection="least_recent", enforce_rules=False)
+    picked = pick_slot(
+        [slot],
+        0,
+        entries,
+        {entries[0].path: now - timedelta(days=1), entries[1].path: now},
+        lambda _: pytest.fail("NoRules must bypass allowed"),
+    )
+    assert picked.entry == entries[0]
 
 
 def test_runtime_picker_reports_missing_slots_and_no_clock_pool_without_writing_history():

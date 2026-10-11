@@ -7,6 +7,7 @@
 
 import { escHtml, fmtTrack } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
+import { sendWithDmcaConfirm } from "./dmca-ui.js";
 import {
   captureAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
@@ -187,42 +188,41 @@ export function installSearch({
       return;
     }
     const now  = btn.dataset.now === "true";
+    const next = btn.dataset.next === "true";
     const name = btn.closest("li").querySelector(".result-name").textContent;
+    // Play now and Play next go to the head of the queue; Add to queue
+    // appends.  In DMCA mode a song over a limit waits for "Queue anyway".
+    const url = now || next ? "/api/play-next" : "/api/queue/add";
+    const fields = now || next ? { path, now } : { path };
+    const request = (confirm) => requestJson(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(confirm ? { ...fields, confirm: true } : fields),
+    });
+    // Called synchronously in the click (and in the "Play anyway" click):
+    // a page that never pressed Play unlocks its audio inside the gesture.
+    const send = (confirm) => withDisabled(
+      btn, () => (now ? playNow(() => request(confirm)) : request(confirm)),
+    );
     try {
-      await withDisabled(btn, async () => {
-      if (now) {
-        // Called synchronously in the click: a page that never pressed
-        // Play unlocks its audio inside this gesture.
-        const started = await playNow(() => requestJson("/api/play-next", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ path, now: true }),
-        }));
-        if (!isAuthenticatedRequestCurrent(epoch) || !started) return;
-        announce(`Playing ${name} now.`);
-      } else if (btn.dataset.next === "true") {
-        // Plays straight after the current track, ahead of the queue.
-        await requestJson("/api/play-next", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ path, now: false }),
-        });
-        if (!isAuthenticatedRequestCurrent(epoch)) return;
-        announce(`${name} plays next.`);
-      } else {
-        await requestJson("/api/queue/add", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ path }),
-        });
-        if (!isAuthenticatedRequestCurrent(epoch)) return;
-        announce(`Added ${name} to queue.`);
-      }
+      const sent = await sendWithDmcaConfirm(searchResults.ownerDocument, send, {
+        now, opener: btn,
       });
+      if (!isAuthenticatedRequestCurrent(epoch)) return;
+      if (!sent) {
+        announce(`${name} was not ${now ? "played" : "queued"}.`);
+        return;
+      }
+      // Play now resolves false when it has already said why nothing plays.
+      if (now && !sent.value) return;
+      const over = sent.confirmed ? ", over the DMCA limit" : "";
+      announce(now ? `Playing ${name} now${over}.`
+        : next ? `${name} plays next${over}.`
+          : `Added ${name} to queue${over}.`);
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return;
       const failed = now ? `Could not play ${name} now.`
-        : btn.dataset.next === "true" ? `Could not play ${name} next.`
+        : next ? `Could not play ${name} next.`
           : `Could not add ${name} to the queue.`;
       announce(`${failed} ${errorValue.message}`, "error");
     }

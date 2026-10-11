@@ -62,10 +62,11 @@ from fastapi import (
     UploadFile,
     WebSocket,
 )
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, StrictBool, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, ValidationError, model_validator
 from pydantic import Field as PydanticField
 from starlette.background import BackgroundTask
 from starlette.datastructures import Headers
@@ -112,7 +113,8 @@ from autodj.playlog import (
     soundexchange_filename,
     soundexchange_report,
 )
-from autodj.scheduler import system_timezone
+from autodj.recorder import Recorder
+from autodj.scheduler import Action, system_timezone
 from autodj.scheduler_api import install_scheduler
 from autodj.secret_files import paired_devices_path
 from autodj.security import (
@@ -140,6 +142,7 @@ from autodj.settings_bodies import (
     validate_playback_choices,
 )
 from autodj.status_page import STATUS_PAGE_CSP, render_status_page
+from autodj.stereotool_presets import MAX_PRESET_BYTES
 from autodj.stream import EncoderUnavailableError, ListenerLimitError
 from autodj.tls import CertificateReloader
 from autodj.version import current_version
@@ -152,6 +155,16 @@ if TYPE_CHECKING:
     from autodj.stream import StreamOutput
 
 logger = logging.getLogger(__name__)
+
+
+class RecordingSettingsBody(BaseModel):
+    """Runtime recording settings; the archive folder stays config-only."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    split: Literal["hour", "show"]
+    retention_days: StrictInt = PydanticField(ge=0)
+    free_space_mb: StrictInt = PydanticField(ge=0)
 
 
 class ListenerBanBody(BaseModel):
@@ -363,6 +376,7 @@ async def _broadcast_state_once(
     clients_lock: asyncio.Lock,
     failures: _BroadcastFailureLog,
     listener_revision: int | None = None,
+    recording_status: Callable[[], dict[str, object]] | None = None,
 ) -> None:
     """Push the player state to every WebSocket client, if any are connected.
 
@@ -376,6 +390,8 @@ async def _broadcast_state_once(
         state = bridge.get_state()
         if listener_revision is not None:
             state["stream_listener_revision"] = listener_revision
+        if recording_status is not None:
+            state["recording"] = recording_status()
         payload = json.dumps(state)
         await _broadcast_and_prune(clients, clients_lock, payload)
     except Exception as exc:
@@ -601,6 +617,8 @@ class PlayNextBody(BaseModel):
 
     path: str
     now: bool = False  # if True, also skip the current track
+    # DMCA mode: queue it even though it breaks a limit (the operator said so).
+    confirm: StrictBool = False
 
 
 class QueueReorderBody(BaseModel):
@@ -911,6 +929,7 @@ def _start_stream_station(
     liner_folder: Path,
     loop: asyncio.AbstractEventLoop,
     first_track: IndexEntry | None = None,
+    recorder: Recorder | None = None,
 ) -> StreamOutput:
     """Build the stream output, liner scheduler and station; attach them.
 
@@ -964,7 +983,9 @@ def _start_stream_station(
         cfg.stream.idle_grace_seconds,
         on_event=bridge.announce_station_event,
         forget_track=bridge.forget_track,
-        continuous=lambda: cfg.stream.continuous or relays_active,
+        continuous=lambda: (
+            cfg.stream.continuous or relays_active or bool(recorder and recorder.wanted)
+        ),
     )
     scheduler = LinerScheduler(
         cfg.playback,
@@ -983,6 +1004,8 @@ def _start_stream_station(
         station.start_with(first_track, "seed")
     bridge.attach_stream(stream=stream_out, station=station, relays=relays)
     bridge.attach_liner_scheduler(scheduler)
+    if recorder is not None:
+        stream_out.add_sink(recorder)
     bus.add_output(stream_out)
     if relays is not None:
         for output in relays.outputs:
@@ -1159,6 +1182,7 @@ def create_app(
 
     cfg = bridge.player._cfg
     stream_cfg = cfg.stream
+    recorder: Recorder | None = None
     listener_access = (
         ListenerAccess(
             Path(cfg.index.active_dir) / "listener_bans.json",
@@ -1194,6 +1218,7 @@ def create_app(
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         """FastAPI lifespan: start/stop background tasks."""
+        nonlocal recorder
         station_schedule.start()
         loop = asyncio.get_running_loop()
 
@@ -1207,12 +1232,20 @@ def create_app(
         stream_out: StreamOutput | None = None
         stream_ticker: asyncio.Task[None] | None = None
         if stream_mode:
+            recorder = await asyncio.to_thread(
+                Recorder,
+                cfg.recording,
+                Path(cfg.index.active_dir) / "recording.json",
+                lambda: cfg.stream.station_name,
+                station_timezone,
+            )
             stream_out = await asyncio.to_thread(
                 _start_stream_station,
                 bridge,
                 _resolve_liner_folder(),
                 asyncio.get_running_loop(),
                 stream_first_track,
+                recorder,
             )
             stream_ticker = asyncio.create_task(_tick_stream_workers(bridge))
         elif server_audio:
@@ -1250,6 +1283,9 @@ def create_app(
             # the station's ticks and the liner worker, then the player.
             if stream_out is not None:
                 await _stop_stream_station(bridge, stream_out)
+            if recorder is not None:
+                await asyncio.to_thread(recorder.close)
+                recorder = None
             if stream_ticker is not None:
                 stream_ticker.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -1399,6 +1435,7 @@ def create_app(
     body_limits: dict[str, Callable[[], int]] = {
         "/api/pair": lambda: PAIRING_BODY_MAX_BYTES,
         "/api/liners/upload": lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
+        "/api/stereo-tool-presets/upload": lambda: MAX_PRESET_BYTES + _MULTIPART_OVERHEAD_BYTES,
         "/api/schedule": lambda: _SCHEDULE_BODY_MAX_BYTES,
     }
     app.add_middleware(SecurityMiddleware, policy=policy, body_limits=body_limits)
@@ -1463,7 +1500,10 @@ def create_app(
     @app.get("/api/status")
     async def api_status() -> JSONResponse:
         """Return the current player state snapshot."""
-        return JSONResponse(bridge.get_state())
+        state = bridge.get_state()
+        if recorder is not None:
+            state["recording"] = recorder.status()
+        return JSONResponse(state)
 
     @app.get("/api/auth/status")
     async def api_auth_status(request: Request) -> dict[str, object]:
@@ -1907,6 +1947,50 @@ def create_app(
         _require_stream_mode()
         return bridge.stream_info()
 
+    async def _recording_call(call: Callable[[Recorder], dict[str, object]]) -> dict[str, object]:
+        """Run *call* on the recorder off the event loop (it saves a state file).
+
+        Raises:
+            ValueError: Not in stream mode, or the call is not possible now.
+            OSError: The change was made but its state file could not be saved.
+        """
+        if recorder is None:
+            raise ValueError("Recording requires stream mode")
+        return await asyncio.to_thread(call, recorder)
+
+    async def _recording_route(call: Callable[[Recorder], dict[str, object]]) -> dict[str, object]:
+        try:
+            return await _recording_call(call)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except OSError as exc:
+            logger.error("Could not save the recording state", exc_info=True)
+            raise HTTPException(
+                status_code=503, detail="Could not save the recording state"
+            ) from exc
+
+    @app.get("/api/recording")
+    async def api_recording_status() -> dict[str, object]:
+        return await _recording_route(Recorder.status)
+
+    @app.post("/api/recording/start")
+    async def api_recording_start() -> dict[str, object]:
+        return await _recording_route(Recorder.start)
+
+    @app.post("/api/recording/stop")
+    async def api_recording_stop() -> dict[str, object]:
+        return await _recording_route(Recorder.stop)
+
+    @app.post("/api/recording/split")
+    async def api_recording_split() -> dict[str, object]:
+        return await _recording_route(Recorder.split)
+
+    @app.post("/api/recording/settings")
+    async def api_recording_settings(body: RecordingSettingsBody) -> dict[str, object]:
+        return await _recording_route(
+            lambda target: target.configure(body.split, body.retention_days, body.free_space_mb)
+        )
+
     @app.get("/api/webhooks")
     async def api_webhooks() -> list[dict[str, str | int]]:
         """Show redacted webhook destinations to a paired browser."""
@@ -1979,6 +2063,11 @@ def create_app(
     async def api_stream_settings(body: StreamSettingsBody) -> dict:
         """Change the stream bitrate (listeners reconnect), continuous play or name."""
         access = _require_stream_mode()
+        if body.show_next and bridge.player._cfg.dmca.enabled:
+            raise HTTPException(
+                status_code=409,
+                detail="DMCA mode is on, so the next song is never shown publicly.",
+            )
         if body.bitrate is not None:
             try:
                 await asyncio.to_thread(bridge.set_stream_bitrate, body.bitrate)
@@ -2098,6 +2187,8 @@ def create_app(
             bridge.set_preset(snap.preset)
             applied.append("preset")
         bridge.save_persistent_state()
+        if recorder is not None:
+            recorder.show_changed()
         return {"applied": applied, "name": name}
 
     @app.get("/api/liners")
@@ -2320,9 +2411,43 @@ def create_app(
         bridge.save_persistent_state()
         return {"muted": muted}
 
-    @app.post("/api/play-next")
-    async def api_play_next(body: PlayNextBody) -> dict[str, bool]:
+    def _dmca_refusal(body: PlayNextBody, *, append: bool) -> JSONResponse | None:
+        """A 409 naming the DMCA limits a queued song would break, unless *body* confirms it.
+
+        The song is not queued until the operator confirms; a confirmed
+        song is queued and the limits it breaks are logged.
+        """
+        if not bridge.player._cfg.dmca.enabled:
+            return None
+        entry = bridge.entry_for_path(body.path)
+        if entry is None:
+            raise HTTPException(status_code=404, detail=_TRACK_GONE_DETAIL)
+        now = body.now and not append
+        broken = bridge.dmca_queue_limits(entry, now=now, append=append)
+        if not broken:
+            return None
+        limits = "; ".join(broken)
+        if body.confirm:
+            logger.warning(
+                "DMCA mode: the operator queued %s although it breaks the limit: %s",
+                entry.display_name,
+                limits,
+            )
+            return None
+        where = "now" if now else "at the end of the queue" if append else "next"
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": f"DMCA mode: playing this song {where} would mean {limits}.",
+                "field": "confirm",
+            },
+        )
+
+    @app.post("/api/play-next", response_model=None)
+    async def api_play_next(body: PlayNextBody) -> dict[str, bool] | JSONResponse:
         """Insert a track at the head of the queue."""
+        if refusal := _dmca_refusal(body, append=False):
+            return refusal
         if not bridge.play_next(body.path, now=body.now):
             raise HTTPException(status_code=404, detail=_TRACK_GONE_DETAIL)
         nowplaying.refresh()
@@ -2338,9 +2463,11 @@ def create_app(
     # Queue manipulation
     # ------------------------------------------------------------------
 
-    @app.post("/api/queue/add")
-    async def api_queue_add(body: PlayNextBody) -> dict[str, bool]:
+    @app.post("/api/queue/add", response_model=None)
+    async def api_queue_add(body: PlayNextBody) -> dict[str, bool] | JSONResponse:
         """Append a track to the user-ordered queue."""
+        if refusal := _dmca_refusal(body, append=True):
+            return refusal
         if not bridge.queue_add(body.path):
             raise HTTPException(status_code=404, detail=_TRACK_GONE_DETAIL)
         nowplaying.refresh()
@@ -2508,9 +2635,63 @@ def create_app(
     @app.post("/api/playback-settings")
     async def api_playback_settings(body: PlaybackSettingsBody) -> dict:
         """Apply playback-flag overrides (transition mode, lyrics, ...)."""
-        bridge.set_playback_settings(body)
+        try:
+            await run_in_threadpool(bridge.set_playback_settings, body)
+        # FileNotFoundError (an OSError) is a Stereo Tool preset that is gone.
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         bridge.save_persistent_state()
         return bridge.get_settings()
+
+    @app.get("/api/stereo-tool-presets")
+    async def api_stereo_tool_presets() -> dict:
+        """List the included and uploaded processor presets."""
+        from autodj.stereotool_presets import INCLUDED, list_presets
+
+        cfg = bridge.player._cfg
+        presets = await asyncio.to_thread(list_presets, cfg.index.active_dir)
+        active = cfg.playback.stereotool_preset
+        # A preset removed outside AutoDJ is replaced by the included one when
+        # Stereo Tool starts, so report that instead of a name not listed.
+        if active not in {preset["name"] for preset in presets}:
+            active = INCLUDED
+        return {"active": active, "presets": presets}
+
+    @app.post("/api/stereo-tool-presets/upload")
+    async def api_stereo_tool_preset_upload(file: UploadFile = File(...)) -> dict:
+        """Store one size-bounded text preset under the station data folder."""
+        from autodj.stereotool_presets import store_preset
+
+        name = file.filename or ""
+        try:
+            path = await store_preset(bridge.player._cfg.index.active_dir, name, file)
+        except FileExistsError as exc:
+            raise HTTPException(
+                status_code=409, detail=f"a preset named {name} already exists"
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"name": path.name}
+
+    @app.delete("/api/stereo-tool-presets/{name}")
+    async def api_stereo_tool_preset_delete(name: str) -> dict:
+        """Delete an uploaded preset other than the one currently selected."""
+        from autodj.stereotool_presets import PresetInUseError, delete_preset
+
+        cfg = bridge.player._cfg
+        try:
+            await asyncio.to_thread(
+                delete_preset, cfg.index.active_dir, name, active=cfg.playback.stereotool_preset
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PresetInUseError as exc:
+            raise HTTPException(
+                status_code=409, detail="select another preset before deleting this one"
+            ) from exc
+        return {"deleted": name}
 
     @app.post("/api/bpm-range")
     async def api_bpm_range(body: BpmRangeBody) -> dict:
@@ -3049,6 +3230,7 @@ def create_app(
                 _ws_lock,
                 failures,
                 listener_access.revision if listener_access is not None else None,
+                recorder.status if recorder is not None else None,
             )
 
     async def _index_watcher_loop() -> None:  # pragma: no cover — long-running task
@@ -3082,6 +3264,26 @@ def create_app(
         select_clock=lambda name: _select_clock(_catalog_library(), name),
         publish=_publish_schedule,
     )
+
+    for name, description, call in (
+        ("start", "Start recording", Recorder.start),
+        ("stop", "Stop recording", Recorder.stop),
+        ("split", "Split recording", Recorder.split),
+    ):
+
+        async def run_recording(
+            _params: dict[str, str], call: Callable[[Recorder], dict[str, object]] = call
+        ) -> None:
+            try:
+                await _recording_call(call)
+            except OSError as exc:
+                # The run log reaches the browser: no index path in it.
+                logger.error("Could not save the recording state", exc_info=True)
+                raise RuntimeError("Could not save the recording state") from exc
+
+        station_schedule.register(
+            Action(f"recording_{name}", description, run_recording, interrupt="none")
+        )
     return app
 
 
@@ -3200,6 +3402,7 @@ def serve(
     player.configure_clock()
     if player.bus is not None:
         from autodj.mastering import ContinuousMaster
+        from autodj.stereotool_presets import preset_path
 
         def processing_mode() -> str:
             return (
@@ -3208,7 +3411,12 @@ def serve(
             )
 
         player._continuous_master = ContinuousMaster(
-            mode=processing_mode, stereotool_path=cfg.playback.stereotool_path
+            mode=processing_mode,
+            stereotool_path=cfg.playback.stereotool_path,
+            preset=lambda: preset_path(
+                cfg.index.active_dir, cfg.playback.stereotool_preset, require_existing=False
+            ),
+            input_trim_db=lambda: cfg.playback.stereotool_input_trim_db,
         )
         player.bus.set_master(
             player._continuous_master,

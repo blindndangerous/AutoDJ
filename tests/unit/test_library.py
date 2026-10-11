@@ -636,6 +636,37 @@ def test_play_history_and_recent_archive_are_buffered_until_tick_and_close(
         reopened.close()
 
 
+def test_pending_history_gives_unwritten_plays_with_album(manager_factory, tmp_path):
+    music = tmp_path / "Music"
+    music.mkdir()
+    song = music / "song.flac"
+    song.write_bytes(b"music")
+    manager = manager_factory(music=music)
+    manager.catalog.put_entry(make_entry(song))
+    manager.refresh()
+    row = {
+        "event_id": "play-1",
+        "path": str(song),
+        "title": "Song",
+        "artist": "Artist",
+        "played_at": "2026-01-01T00:00:00+00:00",
+    }
+    manager.remember_history(row)
+    manager.remember_history({**row, "event_id": "play-2", "path": str(music / "gone.flac")})
+    manager.remember_history({**row, "event_id": "play-3"})
+    manager.interrupt_history("play-3")
+    pending = manager.pending_history()
+    assert [(item["event_id"], item["album"]) for item in pending] == [
+        ("play-1", "Album"),
+        ("play-2", ""),
+    ]
+    pending[0]["album"] = "changed"
+    assert manager.pending_history()[0]["album"] == "Album"
+    manager.tick()
+    assert manager.pending_history() == []
+    manager.close()
+
+
 def test_history_events_queued_during_flush_are_persisted_next_tick(manager_factory, monkeypatch):
     manager = manager_factory()
     first = {
