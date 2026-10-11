@@ -14,8 +14,8 @@
 
 import { requestJson } from "./api-client.js";
 
-export const FEED_URL = "/api/nowplaying";
-export const POLL_MS = 15000;
+const FEED_URL = "/api/nowplaying";
+const POLL_MS = 15000;
 export const NOTHING_PLAYING = "Nothing is playing right now.";
 export const UPDATING_TEXT = "Updates every 15 seconds.";
 export const UNREACHABLE_TEXT = "Could not reach the station. Trying again every 15 seconds.";
