@@ -297,8 +297,13 @@ class SimilarityIndex:
         excluded_artists: set[str] | None,
         excluded_albums: set[str] | None,
         excluded_titles: set[str] | None,
+        repeat_filter: Callable[[IndexEntry], bool] | None = None,
     ) -> Callable[[IndexEntry], bool]:
-        """Compose a single ``entry -> bool`` predicate from every active filter."""
+        """Compose a single ``entry -> bool`` predicate from every active filter.
+
+        *repeat_filter* runs last, so it only sees (and counts) candidates
+        every other filter let through.
+        """
         ex_art = {a.lower() for a in (excluded_artists or set()) if a}
         ex_alb = {a.lower() for a in (excluded_albums or set()) if a}
         ex_ttl = {t.lower() for t in (excluded_titles or set()) if t}
@@ -325,7 +330,9 @@ class SimilarityIndex:
                 return False
             if ex_alb and entry.album and entry.album.lower() in ex_alb:
                 return False
-            return not (ex_ttl and entry.title and entry.title.lower() in ex_ttl)
+            if ex_ttl and entry.title and entry.title.lower() in ex_ttl:
+                return False
+            return repeat_filter is None or repeat_filter(entry)
 
         return _ok
 
@@ -395,6 +402,7 @@ class SimilarityIndex:
         excluded_titles: set[str] | None = None,
         pick_top_k: int = 1,
         pick_temperature: float = 0.0,
+        repeat_filter: Callable[[IndexEntry], bool] | None = None,
     ) -> IndexEntry:
         """Find the best next track after *current_path* that isn't in *recently_played*.
 
@@ -413,6 +421,10 @@ class SimilarityIndex:
             bpm_weight: BPM-vs-cosine blend weight.
             bpm_range: Hard ``(lo, hi)`` BPM filter.
             harmonic_only: Keep only keys compatible with the current track.
+            repeat_filter: The player's artist, album and title repeat
+                rules (:class:`~autodj.repeat_rules.RepeatFilter`): ``True``
+                lets a candidate through.  Like the exclusion sets, it is
+                dropped when nothing passes it.
 
         Returns:
             The :class:`IndexEntry` for the recommended next track.
@@ -471,13 +483,16 @@ class SimilarityIndex:
                 excluded_artists,
                 excluded_albums,
                 excluded_titles,
+                repeat_filter,
             )
             candidates = self._search_with_expansion(query, predicate, initial_k, n_candidates)
 
-            if not candidates and any((excluded_artists, excluded_albums, excluded_titles)):
+            if not candidates and (
+                any((excluded_artists, excluded_albums, excluded_titles)) or repeat_filter
+            ):
                 logger.warning(
                     "No candidates after full-index preference search; "
-                    "relaxing artist/album/title exclusions"
+                    "relaxing the artist, album and title repeat rules"
                 )
                 predicate = self._build_predicate(
                     excluded,
@@ -524,6 +539,7 @@ class SimilarityIndex:
         self,
         current_path: str,
         recently_played: deque[str],
+        allowed: Callable[[IndexEntry], bool] | None = None,
     ) -> IndexEntry:
         """Find a sonically *distant* track for discovery mode injection.
 
@@ -536,6 +552,10 @@ class SimilarityIndex:
         Args:
             current_path: Path of the currently playing track.
             recently_played: Tracks to exclude from the result.
+            allowed: Optional extra rule, such as the player's repeat
+                rules.  When any track passes it, the pick comes from the
+                least similar quarter of the tracks that do; otherwise it
+                is ignored.
 
         Returns:
             A :class:`IndexEntry` that is sonically distant from the current track.
@@ -579,6 +599,15 @@ class SimilarityIndex:
             distant_candidates = [
                 self.entries[i] for _, i in bottom_quartile if eligible(self.entries[i])
             ]
+            if allowed is not None:
+                # The most distant quarter of the tracks the rules allow.
+                ranked = [
+                    self.entries[i]
+                    for _, i in all_valid
+                    if eligible(self.entries[i]) and allowed(self.entries[i])
+                ]
+                if ranked:
+                    distant_candidates = ranked[int(len(ranked) * 0.75) :]
 
             if distant_candidates:
                 # Non-security discovery pick — random.choice is fine here.

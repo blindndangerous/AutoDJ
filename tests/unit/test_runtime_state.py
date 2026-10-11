@@ -690,4 +690,4 @@ class TestRoundTrip:
         assert restored["discovery_every"] == saved["discovery_every"]
         # The running player's history windows follow the restored values.
         assert p2._state.recently_played.maxlen == 50
-        assert p2._state.recently_played_artists.maxlen == 5
+        assert p2._state.rules.artist_window == 5

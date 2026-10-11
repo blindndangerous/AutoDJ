@@ -304,7 +304,7 @@ def test_repeat_windows_resize_the_running_history(bridge) -> None:
     bridge.set_playback_settings(PlaybackSettingsBody(no_repeat_window=2, artist_repeat_window=1))
 
     assert list(state.recently_played) == ["/m/3.mp3", "/m/4.mp3"]
-    assert list(state.recently_played_artists) == ["artist 4"]
+    assert [record.artist for record in state.play_history] == ["Artist 4"]
     settings = bridge.get_settings()["playback"]
     assert (settings["no_repeat_window"], settings["artist_repeat_window"]) == (2, 1)
 

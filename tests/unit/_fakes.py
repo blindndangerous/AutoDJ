@@ -63,6 +63,12 @@ def make_cfg_mock() -> MagicMock:
     cfg = MagicMock()
     cfg.playback.no_repeat_window = 50
     cfg.playback.artist_repeat_window = 3
+    cfg.playback.no_repeat_minutes = 0.0
+    cfg.playback.artist_repeat_minutes = 0.0
+    cfg.playback.title_repeat_window = None
+    cfg.playback.title_repeat_minutes = 0.0
+    cfg.playback.related_artists_file = None
+    cfg.playback.related_artists_starter = False
     cfg.playback.crossfade_seconds = 3.0
     cfg.playback.crossfade_eq_duck = False
     cfg.playback.crossfade_bass_cutoff_hz = 180.0
