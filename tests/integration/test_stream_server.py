@@ -1306,7 +1306,11 @@ def test_relays_start_with_the_stream_and_keep_the_station_playing(tmp_path: Pat
         assert bridge.station._continuous() is True
         state = client.get("/api/status").json()
         assert [relay["name"] for relay in state["stream_relays"]] == ["same", "low"]
-        assert client.get("/api/stream").json()["relays"] == state["stream_relays"]
+        # The relay can change connection state between these two snapshots.
+        stream_relays = client.get("/api/stream").json()["relays"]
+        assert [(relay["name"], relay["type"], relay["target"]) for relay in stream_relays] == [
+            (relay["name"], relay["type"], relay["target"]) for relay in state["stream_relays"]
+        ]
         assert password not in client.get("/api/status").text
         bridge.on_track_started(bridge.player._state.current_track)
         assert (tmp_path / "relay-status.json").exists()
