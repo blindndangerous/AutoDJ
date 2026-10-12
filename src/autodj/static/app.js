@@ -29,6 +29,7 @@ import { installSeekController } from "./modules/seek-controller.js";
 import { installLibraryFolders } from "./modules/library-folders.js";
 import { installCategoriesPanel } from "./modules/categories-panel.js";
 import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
+import { installRotationTest } from "./modules/rotation-test.js";
 import { installSchedulerPanel } from "./modules/scheduler-panel.js";
 import { installCartWall } from "./modules/cart-wall.js";
 import { createStreamMode, createStreamSettings } from "./modules/stream-mode.js";
@@ -36,6 +37,7 @@ import { createRecordingControls } from "./modules/recording-controls.js";
 import { installNowPlayingSettings } from "./modules/nowplaying-settings.js";
 import { createListenerControls } from "./modules/listener-controls.js";
 import { initSubtabs } from "./modules/subtabs.js";
+import { installThemeSetting } from "./modules/theme.js";
 
 if (isDebug()) {
   console.log("[autodj] debug logging ENABLED " +
@@ -118,6 +120,9 @@ const streamAudio     = document.getElementById("stream-audio");
 // The browser gives an AudioWorklet only to an HTTPS or localhost page;
 // without one the audio engine skips the four effects built on it.
 document.getElementById("fx-https-note").hidden = "AudioWorkletNode" in window;
+
+// Settings > Display and keys > Theme.  Kept per browser.
+installThemeSetting();
 
 // Settings > Announcements.  Kept per browser, like the shortcut switch;
 // off (the default) speaks a new track only while Now Playing shows.
@@ -211,6 +216,7 @@ let libraryFoldersControls = null;
 let clockwheelPanelControls = null;
 let categoriesPanelControls = null;
 let schedulerPanelControls = null;
+let rotationTestControls = null;
 let cartWallControls = null;
 let reconnectGeneration = 0;
 let reconnectTimer = null;
@@ -310,6 +316,7 @@ function clearProtectedSessionData() {
   clockwheelPanelControls?.clearProtectedData();
   categoriesPanelControls?.clearProtectedData();
   schedulerPanelControls?.clear();
+  rotationTestControls?.clear();
   cartWallControls?.clear();
   const browseFolder = document.getElementById("library-browse-folder");
   if (browseFolder) {
@@ -751,6 +758,7 @@ function renderMute(isMuted) {
 // Settings card — mirror of CLI flags
 // ----------------------------------------------------------------
 
+import { installPreviewOutput } from "./modules/preview-output.js";
 import {
   applySettingsState,
   installSettingsControls,
@@ -778,6 +786,16 @@ function postSettings(url, body, control, { onError } = {}) {
 }
 
 installSettingsControls(_settingsEls(), postSettings);
+
+// Preview output device: Track info's cue point player on a device of its
+// own (headphones), apart from the browser mix.  Installed before the
+// main output's devicechange listener below.
+installPreviewOutput({
+  announce: (message, options) => announceStatus(settingsStatus, message, options),
+  // A preview moved on or off a device of its own takes or drops the
+  // page's volume and mute.
+  onRoute: () => applyPageLevel(),
+});
 
 // ----------------------------------------------------------------
 // Audio output device selector (browser-only — server-side device is
@@ -1331,6 +1349,7 @@ function connectWS() {
           clockwheelPanelControls?.resume();
           categoriesPanelControls?.resume();
           void schedulerPanelControls?.refresh();
+          void rotationTestControls?.refresh();
           connectWS();
         },
       });
@@ -1836,14 +1855,28 @@ let _pageLevelSet = false;
 // Audio, where their own volume would apply the level twice.  Both a
 // GainNode's gain and a media element's volume scale the amplitude
 // linearly, so the same fader gain gives the same loudness on each.
+// A preview on a device of its own (Settings, Preview output device) is
+// a cue for headphones, not part of what the page plays: it starts at
+// full level, unmuted, and from then on only its own player's volume and
+// mute change it.  On the system default it follows the page as before.
 // Runs on every state push, slider move, mute change and reconnect,
 // and before any element starts playing.
+const _ownLevelPreviews = new WeakSet();
 function applyPageLevel() {
   setVolume(_pageGain);
   setMuted(_pageMuted);
   const deckElements = new Set(decks.map((deck) => deck.audio));
   for (const element of document.querySelectorAll("audio, video")) {
     if (deckElements.has(element)) continue;
+    if (element.hasAttribute("data-preview-output") && element.sinkId) {
+      if (!_ownLevelPreviews.has(element)) {
+        _ownLevelPreviews.add(element);
+        element.volume = 1;
+        element.muted = false;
+      }
+      continue;
+    }
+    _ownLevelPreviews.delete(element);
     if (element.volume !== _pageGain) element.volume = _pageGain;
     if (element.muted !== _pageMuted) element.muted = _pageMuted;
   }
@@ -2361,6 +2394,7 @@ clockwheelPanelControls = installClockwheelPanel();
 // A saved or deleted category reaches the clockwheel step form at once.
 categoriesPanelControls = installCategoriesPanel({ onChange: () => clockwheelPanelControls?.refresh() });
 schedulerPanelControls = installSchedulerPanel();
+rotationTestControls = installRotationTest();
 
 import { installLiners, bumpLinerTrackCount } from "./modules/liners.js";
 import { installTimeChecks } from "./modules/time-checks.js";
@@ -2464,6 +2498,7 @@ function startAuthenticatedApp(initialState) {
   clockwheelPanelControls?.resume();
   categoriesPanelControls?.resume();
   void schedulerPanelControls?.refresh();
+  void rotationTestControls?.refresh();
   installLibraryJobs(_libEls);
   // Audio dependencies are owned by the audio engine. Inject closures
   // that read its live bindings and stop liner playback after auth expiry.

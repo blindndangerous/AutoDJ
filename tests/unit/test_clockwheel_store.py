@@ -215,6 +215,9 @@ def _player(tmp_path, setting, sources):
         _library=SimpleNamespace(catalog=catalog),
     )
     player._load_clockwheel = MethodType(Player._load_clockwheel, player)
+    player.activate_clock = MethodType(Player.activate_clock, player)
+    player._now = MethodType(Player._now, player)
+    player._clock_off = MethodType(Player._clock_off, player)
     return player
 
 
@@ -245,6 +248,22 @@ def test_player_loads_the_active_clockwheel_from_its_sources(tmp_path):
     assert player._clock_slots[2].path == str(music / "one.flac")
     assert player._clock_slots[3].require_following is True
     assert player._clock_next_boundary is not None
+
+
+def test_reloading_the_clockwheel_keeps_a_place_not_yet_written(tmp_path):
+    # Saving an edit to the active clockwheel reloads it; the player's place
+    # still waiting in the ledger is newer than the saved one.
+    ClockwheelStore(tmp_path / "clockwheels").save(clock([MUSIC]))
+    player = _player(
+        tmp_path,
+        {"name": "Morning", "cursor": 1},
+        [{"id": "src1", "kind": "music", "path": str(tmp_path), "recursive": True}],
+    )
+    player._ledger = SimpleNamespace(
+        get_setting=lambda name, default: {"name": "Morning", "cursor": 3, "resync_minutes": [0]}
+    )
+    Player.configure_clock(player)
+    assert player._clock == {"name": "Morning", "cursor": 3, "resync_minutes": [0]}
 
 
 def test_a_clockwheel_that_cannot_load_leaves_the_clock_off_and_says_why(tmp_path, caplog):

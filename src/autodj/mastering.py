@@ -18,6 +18,7 @@ import numpy as np
 from autodj.config import DEFAULT_STEREOTOOL_PATH
 from autodj.kernels import nan_to_num_in_place
 from autodj.processing import MASTER_FILTER
+from autodj.station_log import station_thread
 from autodj.stereo import SAMPLE_RATE
 from autodj.stereotool_presets import INCLUDED_PATH, agc_drive_preset_data
 
@@ -169,7 +170,7 @@ class ContinuousMaster:
         self._preset_warning: str | None = None
         self._restarts = 0
         self._overflow_reported = False
-        self._worker = threading.Thread(target=self._lifecycle, name="autodj-master", daemon=True)
+        self._worker = station_thread(target=self._lifecycle, name="autodj-master", daemon=True)
         self._worker.start()
 
     @property
@@ -437,13 +438,13 @@ class ContinuousMaster:
                     continue
                 active_generation = generation
                 stop = threading.Event()
-                writer = threading.Thread(
+                writer = station_thread(
                     target=self._write_loop,
                     args=(proc, active_generation, stop),
                     name="autodj-master-writer",
                     daemon=True,
                 )
-                reader = threading.Thread(
+                reader = station_thread(
                     target=self._read_loop,
                     args=(post_proc if post_proc is not None else proc, active_generation, stop),
                     name="autodj-master-reader",

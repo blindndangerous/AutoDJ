@@ -568,6 +568,54 @@ describe("app request behavior", () => {
 
   });
 
+  it("lets a preview on its own device keep its own volume and mute", async () => {
+    vi.stubGlobal("navigator", {
+      mediaDevices: {
+        enumerateDevices: vi.fn().mockResolvedValue([
+          { deviceId: "phones", kind: "audiooutput", label: "Headphones" },
+        ]),
+        addEventListener: () => {},
+      },
+    });
+    const store = new Map([["autodj.previewSinkId", "phones"]]);
+    vi.stubGlobal("localStorage", {
+      getItem: (key) => (store.has(key) ? store.get(key) : null),
+      setItem: (key, value) => store.set(key, value),
+      removeItem: (key) => store.delete(key),
+    });
+    vi.stubGlobal("HTMLMediaElement", { prototype: { setSinkId() {} } });
+    const state = {
+      current_track: { path: "a.mp3", title: "A" },
+      volume: 0.5,
+      is_muted: true,
+    };
+    const { webSocket } = await setupApp({
+      initialState: state,
+      onRequest: () => jsonResponse({ ok: true }),
+    });
+    const preview = document.getElementById("points-preview");
+    await vi.waitFor(() => expect(preview.sinkId).toBe("phones"));
+    // On its own device it starts at full level and unmuted, and the
+    // page's volume and mute leave it alone, including a level set in its
+    // own player.
+    expect(preview.volume).toBe(1);
+    expect(preview.muted).toBe(false);
+    preview.volume = 0.3;
+    webSocket.onmessage({ data: JSON.stringify({ ...state, volume: 0.4 }) });
+    expect(preview.volume).toBe(0.3);
+    expect(preview.muted).toBe(false);
+
+    // Back on the system default, it follows the page again.
+    const select = document.querySelector("#preview-device");
+    select.value = "";
+    select.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(preview.sinkId).toBe(""));
+    expect(preview.volume).toBe(document.getElementById("stream-audio").volume);
+    expect(preview.volume).toBeLessThan(1);
+    expect(preview.muted).toBe(true);
+    expect(store.has("autodj.previewSinkId")).toBe(false);
+  });
+
   it("announces a lost link once, however many retries it takes", async () => {
     const { webSocket } = await setupApp({
       initialState: { current_track: { path: "current.mp3", title: "Current" } },

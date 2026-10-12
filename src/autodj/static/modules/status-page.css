@@ -1,8 +1,18 @@
 /* The public status page (/status).  System colours and fonts, so it
-   follows the reader's light or dark preference and forced colours. */
+   follows the reader's light or dark preference and forced colours.  A
+   browser that chose Light or Dark in the web UI's Settings, Display and
+   keys, Theme gets that here too: theme-init.js sets data-theme. */
 
 :root {
   color-scheme: light dark;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
 }
 
 body {

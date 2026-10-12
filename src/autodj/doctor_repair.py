@@ -143,8 +143,12 @@ def plan_unknown_key_repairs(config_path: str | None) -> list[ConfigRepair]:
             continue
         expected = deepcopy(parsed)
         for section, keys in keys_by_section.items():
+            # A station's section is dotted: "stations.nightowl.playback".
+            table = expected
+            for part in section.split("."):
+                table = table[part]
             for key in keys:
-                expected[section].pop(key, None)
+                table.pop(key, None)
         if after != expected:
             continue
         repairs.append(ConfigRepair(path, keys_by_section, original, replacement))

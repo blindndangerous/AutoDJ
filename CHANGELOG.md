@@ -16,6 +16,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   open in the same condition editor and keep their selection and repeat settings. Category
   hours and the list of clockwheels using each category still apply.
 
+- A rotation tester (#125): Settings > Song picking > **Test rotation**, or
+  `autodj simulate --days 7`, plays a span of time (up to 30 days) or a number of songs (up to
+  20,000) through the station's own song picker, with its clockwheel, categories and their hours,
+  schedule and date ranges, repeat rules (related artists included) and DMCA limits, and reports
+  plays per song, category and artist, songs never played, which rules had to be relaxed and how
+  often, skipped clockwheel steps and why, DMCA conflicts and any moment with nothing to play.
+  Nothing on air changes. The report comes in words (headings and short lines) or JSON
+  (`--json`); a seed repeats a run exactly. Runs stop after ten minutes of work, with what they
+  have. `autodj simulate` opens the library read-only, so it can run beside a server. In the page
+  the run works in the background with a progress bar and a Cancel button, announces its end
+  once, and shows the results as headings and lists. See
+  [Operations](docs/operations.md#testing-the-rotation).
+
+- Editing tags from Track info (#53). A Tags section has fields for title, artist, album, genre,
+  year, BPM, key and ISRC. Save tags writes only the changed fields into the file with mutagen
+  (MP3, FLAC, M4A, Ogg Vorbis, Opus, WAV and AIFF) and updates the library at once, keeping the
+  song's analysis, cue points and loudness measurement, so nothing is analysed again; a key or BPM
+  set by hand is kept when the song is analysed later. The file is tagged as a copy that is
+  flushed to disk and replaces the original only once every changed field reads back, so a failed
+  save leaves the original as it was; an MP3 keeps its ID3 version. A song playing or up next is
+  refused until it has played, and only files inside the library folders are changed. When beets
+  manages the library, the same fields can be written to the beets database too. A refused field
+  is marked invalid with its reason linked to it and focused; a save is said once and focus stays
+  on Save tags. The dialog that asks to save before switching tracks now reads its explanation when
+  it opens and has a Keep editing button, which does what Escape does.
+
+- A separate output device for previews (#54). In Settings, Sound, **Preview output device**
+  sends the cue point preview in Track info, which Queue & Search, History and the library open,
+  to a device of its own, such as headphones, while the browser mix stays on the speakers.
+  Previews never go through the station's mix, so they are never on the stream or in a
+  recording. On a device of its own the preview keeps its own volume, and the page's volume and
+  Mute leave it alone. The choice is saved in this browser. If the device is unplugged, it stays
+  in the list as "not connected", previews move to the system default output and the page says so
+  once, then they go back when it returns. Browsers that cannot choose a device, such as Chrome on
+  Android, say so on the page and keep previews on the system default output. This is the first
+  step toward headphone cueing.
 - Play dates for voice liners and carts: a **Not before** date, a **Do not play after** date, or
   both, in the station time zone. Outside them, automatic liners, clockwheel liner steps and
   scheduled liner events skip the liner, and a cart plays nothing and says why. Browse voice
@@ -39,6 +75,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   kept per station in `library.db`. Existing plays belong to the default station, so nothing
   changes for a single station. `autodj export-plays --station NAME` exports one station's plays.
 
+- `[stations.<slug>]` tables in `config.toml` describe more stations (#70), each with its own
+  `playback`, `stream`, `recording`, `dmca`, `time_checks`, `presets` and other station sections.
+  A station starts from the defaults rather than copying the default station's settings. Its
+  listener credentials, relay passwords and webhooks belong in `config.local.toml` (relay
+  passwords can also come from `AUTODJ_STATION_<SLUG>_RELAY_<NAME>_PASSWORD`). Names are checked,
+  `default` is reserved, two stations cannot share a recording folder or a relay target, and
+  errors name the station. See "Several stations" in `docs/operations.md`. A configuration
+  without these tables behaves exactly as before.
+
+- More than one station can run on one server (#70). Each `[stations.<slug>]` station has its own
+  player, mix bus, mastering, encoder, relays, recorder, schedule, carts, time checks,
+  clockwheels, liners, profiles and saved settings, under `stations/<slug>/` in the index folder.
+  It streams at `/stations/<slug>.mp3` (and `.m3u`), its controls answer under
+  `/api/stations/<slug>/`, and `GET /api/stations` lists every station. `POST
+  /api/stations/<slug>/start` and `/stop` start and stop one; `autostart = false` leaves a station
+  stopped until then. Its log lines start with `[<slug>]`. Only one station can use Stereo Tool
+  at a time (one licence), and a Stereo Tool preset any station uses cannot be deleted. The web
+  page's station switcher comes later.
+
 - Schedule events can have a date range: an optional start date and end date, both included, in
   the station time zone. Outside the range an event does not run, and Next events skips it. An
   active window that crosses midnight belongs to the day it starts, so a Friday 18:00 until 02:00
@@ -48,6 +103,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is not this one. The date fields are native, labelled date inputs, and a form error is now
   linked to the field it names. Existing schedule files load unchanged. Operations describes a
   holiday clockwheel season as an example.
+
+- A light theme. **Theme** under Settings, Display and keys offers System (the default, which
+  follows the device's light or dark setting), Light and Dark. The choice is saved in this
+  browser, applied before the page is drawn so the other theme never flashes, and used by the
+  public `/status` page too. Every text, control edge, focus ring, meter, cue tick and Camelot
+  wheel edge meets WCAG 2.2 AA contrast in both themes, and Windows High Contrast still uses the
+  system colours. Browsers too old for the CSS `light-dark()` function (before Chrome 123,
+  Firefox 120 and Safari 17.5) keep the dark theme.
+
+- The status message at the foot of the window has a **Dismiss** button that works by mouse,
+  touch and keyboard, and stays on screen while the pointer is over it or focus is on its button.
+  Escape still closes it. Only the message and the button take the pointer, so a click on the
+  rest of the strip still reaches the page underneath. What screen readers hear is unchanged: the
+  button is not part of the message, and the message never takes focus.
 
 - `autodj worker --idle-exit MINUTES` keeps asking for new songs every half minute and stops only
   once the queue has stayed empty for that long, so a worker started alongside a Rescan does not
@@ -255,6 +324,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Rotation tests now count repeat-rule violations on the opening song and after a fresh start,
+  including steps configured to ignore repeat rules. Those picks could previously repeat a song
+  while the report said no rules had been relaxed.
+
 - The web page works better for people who see it. In Windows High Contrast (forced colours) the
   selected section tab and Settings subtab now show their names; they were blank. Queue &
   Search no longer scrolls sideways when a music folder has a long path, and no view scrolls
@@ -270,6 +343,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   scrolled fully into view.
 - Voice pack exact-hour files may have a space, `_` or `-` before the `o`, as in `hrs05_o.mp3`,
   so packs named that way say "it's 5 o'clock" on the hour instead of skipping the top of the hour.
+
+- The Camelot wheel's wedge edges were faint (1.9:1). Every edge now reaches 3:1 against the
+  wedges beside it in both themes, the compatible keys' outline is heavier and drawn on top, and
+  the current key has the heaviest edge as well as its fill and its name in the middle. In
+  Windows High Contrast the wheel uses system colours. Cue ticks keep a high-contrast ring there.
 
 - Startup now loads the current library and shows its song and analysis counts, rather than
   the count from an older index. Doctor and list-indexes also use the current catalog. Existing
@@ -326,8 +404,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Moving between tabs no longer makes screen readers say "selected" twice.
 - The ReplayGain target loudness setting shows again when ReplayGain is chosen; it was always hidden.
 - A setting with two descriptions now hides both when it does not apply, not just the first.
+- A clockwheel you select stays selected. The player could save its place in the old
+  clockwheel just after the selection, so the clockwheel page and the next restart went back
+  to the old one. The new clockwheel also starts from its own place and restarts at its own
+  times: a song already lined up when you switch no longer gives it the old clockwheel's
+  place or restart time. Reselecting, renaming or editing the active clockwheel keeps the
+  place it reached most recently.
 
 ### Changed
+
+- Clockwheel picks on a large library take less work, the same songs as before: in DMCA mode a
+  pick checks each song against only the few albums and artists at a limit (and none while nothing
+  is), the songs a clock can pick from are kept between picks until the library or the hours
+  change, and least-recently-played steps compare play times without reworking every path.
 
 - The clockwheel's reset timing now measures every song from its start cue to its end cue (or its
   segue or outro, when earlier) for all clockwheels, not only for liner steps with "Only play if

@@ -87,6 +87,7 @@ def render_status_page(payload: dict[str, Any], *, stream_mode: bool) -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{station}: station status</title>
+<script src="/modules/theme-init.js"></script>
 <link rel="stylesheet" href="/modules/status-page.css">
 <script type="module" src="/modules/status-page.js"></script>
 </head>

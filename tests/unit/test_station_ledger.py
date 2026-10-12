@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -185,3 +186,92 @@ def test_a_player_records_into_its_own_station() -> None:
     own = SimpleNamespace(station="nightowl")
     player._ledger = own
     assert player._ledger is own
+
+
+def test_select_clock_drops_the_old_clockwheels_place_saved_during_and_after_it(
+    catalog, monkeypatch
+) -> None:
+    # #133: until it reloads, the player keeps saving its place in the old
+    # clockwheel; none of it may flush over the selection.
+    library, _songs = catalog
+    ledger = StationLedger(library)
+    ledger.remember_setting("clock", {"name": "Morning", "cursor": 2})
+    write = library.set_setting
+
+    def write_then_player_saves(key, value):
+        write(key, value)
+        ledger.remember_setting("clock", {"name": "Morning", "cursor": 3})
+
+    monkeypatch.setattr(library, "set_setting", write_then_player_saves)
+    assert ledger.select_clock("Night") == {"name": "Night", "cursor": 0}
+    monkeypatch.setattr(library, "set_setting", write)
+    ledger.remember_setting("clock", {"name": "Morning", "cursor": 4})
+    assert ledger.get_setting("clock") == {"name": "Night", "cursor": 0}
+    ledger.flush()
+    assert library.get_setting("clock") == {"name": "Night", "cursor": 0}
+    # Once the player has loaded Night, its places are kept.
+    ledger.remember_setting("clock", {"name": "Night", "cursor": 1})
+    ledger.flush()
+    assert library.get_setting("clock") == {"name": "Night", "cursor": 1}
+
+
+def test_a_failed_selection_keeps_the_buffered_place(catalog, monkeypatch) -> None:
+    library, _songs = catalog
+    ledger = StationLedger(library)
+    ledger.remember_setting("clock", {"name": "Morning", "cursor": 2})
+    write = library.set_setting
+
+    def locked(_key, _value):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(library, "set_setting", locked)
+    with pytest.raises(sqlite3.OperationalError):
+        ledger.select_clock("Night")
+    monkeypatch.setattr(library, "set_setting", write)
+    ledger.flush()
+    assert library.get_setting("clock") == {"name": "Morning", "cursor": 2}
+    # Morning is still the one selected, so the player's places still count.
+    ledger.remember_setting("clock", {"name": "Morning", "cursor": 3})
+    ledger.flush()
+    assert library.get_setting("clock") == {"name": "Morning", "cursor": 3}
+
+
+def test_reselecting_reads_and_writes_the_place_under_one_lock(catalog, monkeypatch) -> None:
+    library, _songs = catalog
+    library.set_setting("clock", {"name": "Morning", "cursor": 2})
+    ledger = StationLedger(library)
+    read = library.get_setting
+    flushes = []
+
+    def read_then_player_saves_and_flushes(key, default=None):
+        value = read(key, default)
+        ledger.remember_setting("clock", {"name": "Morning", "cursor": 5})
+        flush = threading.Thread(target=ledger.flush)
+        flush.start()
+        flush.join(0.2)
+        flushes.append((flush, flush.is_alive()))
+        return value
+
+    monkeypatch.setattr(library, "get_setting", read_then_player_saves_and_flushes)
+    assert ledger.select_clock("Morning") == {"name": "Morning", "cursor": 2}
+    monkeypatch.setattr(library, "get_setting", read)
+    # The flush waited for the selection rather than writing between its
+    # read and its write ...
+    [(flush, waited)] = flushes
+    flush.join(5)
+    assert waited
+    # ... and the player's newer place in the same clockwheel is kept.
+    assert library.get_setting("clock") == {"name": "Morning", "cursor": 5}
+
+
+def test_renaming_keeps_the_place_and_drops_the_old_names_later_places(catalog) -> None:
+    library, _songs = catalog
+    ledger = StationLedger(library)
+    library.set_setting("clock", {"name": "Morning", "cursor": 1})
+    ledger.remember_setting("clock", {"name": "Morning", "cursor": 4})
+    assert ledger.select_clock("Day", renamed_from="Morning") == {"name": "Day", "cursor": 4}
+    ledger.remember_setting("clock", {"name": "Morning", "cursor": 5})
+    ledger.flush()
+    assert library.get_setting("clock") == {"name": "Day", "cursor": 4}
+    # Without the old name, it is another clockwheel and starts at its top.
+    assert ledger.select_clock("Night") == {"name": "Night", "cursor": 0}

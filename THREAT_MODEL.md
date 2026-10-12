@@ -193,6 +193,20 @@ use, whatever its letter case. Selecting a preset in `/api/playback-settings` re
 existing file; a preset removed outside AutoDJ is replaced by the included one when Stereo Tool
 next starts.
 
+`POST /api/library/tags` rewrites the tags of one recording, under the same session, Host and
+Origin policy as every other `/api` route. It is the one route that changes a music file. The
+path must name a recording the catalog holds under a registered, present source folder, and its
+real path (after following links) must still lie inside a registered folder, so a link swapped in
+after a scan cannot point the write elsewhere. The body is capped at 32 KiB before the route
+reads it and may carry only the eight known tag names, each a
+string that is checked (length, no control characters, year, BPM, key and ISRC shapes) before
+anything is written; tag values go into mutagen frames, never a path, command or SQL text. The
+file is tagged as a hidden copy in its own folder, read back, and renamed over the original, so a
+failure leaves the original intact; a song playing or up next is refused. With the page's
+consent and `[library] beets_db` set, the same values update that beets item with bound
+parameters on fixed column names. The beets database is the only file outside the music folders
+the route writes.
+
 `GET /api/history/export` returns the play log for a date range: titles, artists, albums, ISRC
 and label tags, file paths inside the music folders and performance counts. Like every other `/api`
 route it needs an allowed Host, and a session whenever the server requires one. It is a GET with
@@ -347,7 +361,18 @@ What a listener can and cannot do:
   so the name typed into the player must be one this AutoDJ instance is configured to accept.
 - `/stream.` followed by anything else, and any path under `/stream/`, is not public: it needs
   a session like any other path, and then returns 404. Optional HTTP Basic credentials protect
-  only `/stream.mp3` and `/stream.m3u`; the playlist never includes them.
+  only `/stream.mp3` and `/stream.m3u` (and the `/stations/` stream paths below); the playlist
+  never includes them.
+- Each station's stream is also public at `/stations/<slug>.mp3` and `/stations/<slug>.m3u`,
+  but only for a configured slug (`[stations.<slug>]`). The default station's is
+  `/stations/default.mp3`, public with the same credentials as `/stream.mp3` even on a server
+  with one station. Any other `/stations/...` path needs a session and then returns 404. A
+  stopped station answers 503, which shows that the slug exists; this is accepted. Each
+  station's listener credentials, bans and listener limits are its own: a ban on one station
+  does not cover another, and the listener slots of all stations add up. Starting and stopping
+  a station (`POST /api/stations/<slug>/start` and `/stop`) and the station list
+  (`/api/stations`) need pairing, which is still server-wide: a paired browser controls every
+  station. Slugs are checked against a strict pattern before they name a folder.
 
 What the operator should know:
 

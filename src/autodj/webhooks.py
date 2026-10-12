@@ -17,6 +17,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from autodj.config import WebhookConfig
+from autodj.station_log import station_thread
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,7 @@ class WebhookWorker:
 
     def start(self) -> None:
         self._threads = [
-            threading.Thread(
+            station_thread(
                 target=self._run, args=(index,), name=f"autodj-webhook-{index + 1}", daemon=True
             )
             for index in range(len(self.configs))
