@@ -194,12 +194,33 @@ class SimilarityIndex:
         """Refresh real matching vectors without changing the legacy disk generation."""
         from autodj.indexer import build_faiss_index
 
-        candidate = SimilarityIndex(build_faiss_index(vectors), entries)
+        self.replace_catalog_faiss(entries, build_faiss_index(vectors))
+
+    def replace_catalog_faiss(self, entries: list[IndexEntry], index: faiss.IndexFlatIP) -> None:
+        """Serve *index*, whose rows are *entries* in order, from now on."""
+        candidate = SimilarityIndex(index, entries)
         with self._reload_lock:
             self.entries = candidate.entries
             self.faiss_index = candidate.faiss_index
             self._path_to_idx = candidate._path_to_idx
             self._public_entries = candidate._public_entries
+
+    def replace_catalog_entries(self, entries: list[IndexEntry]) -> bool:
+        """Swap in re-read metadata for the tracks already in the index, in the same order.
+
+        Returns:
+            Whether it was swapped.  ``False`` when the loaded rows are not
+            *entries*' paths in order (another generation was loaded since),
+            so the caller rebuilds the index instead.
+        """
+        with self._reload_lock:
+            if [entry.path for entry in self.entries] != [entry.path for entry in entries]:
+                return False
+            candidate = SimilarityIndex(self.faiss_index, list(entries))
+            self.entries = candidate.entries
+            self._path_to_idx = candidate._path_to_idx
+            self._public_entries = candidate._public_entries
+            return True
 
     def entry_for_path(self, path: str) -> IndexEntry | None:
         """Return entry for *path* from one index generation, if present."""

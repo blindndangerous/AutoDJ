@@ -1,12 +1,13 @@
 import os
 import threading
+from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
 
-from autodj.catalog import LibraryCatalog
+from autodj.catalog import LibraryCatalog, _path
 from autodj.config import (
     AutoDJConfig,
     HuggingFaceConfig,
@@ -44,15 +45,29 @@ class Similarity:
     def replace_catalog_index(self, entries, vectors):
         self.replaced = (entries, vectors.copy())
 
+    def replace_catalog_entries(self, entries):
+        if self.replaced is None or [e.path for e in self.replaced[0]] != [e.path for e in entries]:
+            return False
+        self.replaced = (entries, self.replaced[1])
+        return True
 
-def make_config(root: Path, *, music: Path | None = None, liners: Path | None = None):
+
+def make_config(
+    root: Path,
+    *,
+    music: Path | None = None,
+    liners: Path | None = None,
+    processing: str | None = None,
+):
     music = root / "Music" if music is None else music
     music.mkdir(parents=True, exist_ok=True)
     index = root / "index" / "default"
     return AutoDJConfig(
         library=LibraryConfig(music_dir=music, supported_formats=["flac"]),
         index=IndexConfig(index_dir=index.parent, model_dir=root / "models"),
-        playback=PlaybackConfig(liners_folder=str(liners) if liners else None),
+        playback=PlaybackConfig(
+            liners_folder=str(liners) if liners else None, loudness_processing=processing
+        ),
         model=ModelConfig(),
         huggingface=HuggingFaceConfig(),
         config_path=root / "config.toml",
@@ -91,8 +106,8 @@ def manager_factory(tmp_path):
         manager.close()
 
 
-def fake_basic(path: Path, kind: str = "music"):
-    del kind
+def fake_basic(path: Path, kind: str = "music", max_seconds: float | None = None):
+    del kind, max_seconds
     return make_entry(path), {
         "start": 0.0,
         "intro": 10.0,
@@ -187,7 +202,7 @@ def test_scan_imports_recursive_music_and_liners_and_reuses_loudness(manager_fac
     song, liner = nested / "song.flac", liner_dir / "liner.wav"
     song.write_bytes(b"music")
     liner.write_bytes(b"voice")
-    manager = manager_factory(music=music, liners=liner_dir)
+    manager = manager_factory(music=music, liners=liner_dir, processing="smooth")
     analyze = patch("autodj.library.analyze_basic", side_effect=fake_basic)
     loudness = patch("autodj.library.analyze_loudness", side_effect=fake_loudness)
     with analyze as analyzed, loudness as measured:
@@ -210,7 +225,7 @@ def test_scan_continues_after_per_file_failure(manager_factory, tmp_path):
     good.write_bytes(b"good")
     manager = manager_factory(music=music)
 
-    def analyze(path, kind="music"):
+    def analyze(path, kind="music", max_seconds=None):
         if path == bad:
             raise ValueError("decode failed")
         return fake_basic(path, kind)
@@ -305,7 +320,7 @@ def test_basic_entry_is_playable_while_loudness_runs_and_analysis_can_start(
     music.mkdir()
     song = music / "song.flac"
     song.write_bytes(b"music")
-    manager = manager_factory(music=music)
+    manager = manager_factory(music=music, processing="stereotool")
     entered = threading.Event()
     release = threading.Event()
     captured = {}
@@ -378,8 +393,8 @@ def test_replaced_track_resets_manual_cues_and_derived_cache(
 
     song.write_bytes(b"replacement audio with different bytes and length")
 
-    def short_track(path: Path, kind: str = "music"):
-        del kind
+    def short_track(path: Path, kind: str = "music", max_seconds: float | None = None):
+        del kind, max_seconds
         fresh = make_entry(path)
         fresh.length = 100.0
         return fresh, {
@@ -464,7 +479,7 @@ def test_unchanged_liner_with_unset_analysis_segue_is_backfilled(manager_factory
     ):
         manager.scan()
 
-    analyzed.assert_called_once_with(liner, kind="liner")
+    analyzed.assert_called_once_with(liner, kind="liner", max_seconds=15 * 60.0)
     points = manager.catalog.points(liner)
     assert points["segue"] == 160.0
     assert points["end"] == 180.0
@@ -501,7 +516,7 @@ def test_liner_segue_backfill_clamps_to_saved_manual_range(manager_factory, tmp_
     ):
         manager.scan()
 
-    analyzed.assert_called_once_with(liner, kind="liner")
+    analyzed.assert_called_once_with(liner, kind="liner", max_seconds=15 * 60.0)
     assert manager.catalog.points(liner) == {
         "start": 20.0,
         "intro": 30.0,
@@ -849,3 +864,461 @@ def test_scan_preserves_prepared_reference_without_creating_audio(manager_factor
     assert manager.catalog.record_for_path(song)["prepared_path"] == os.path.normcase(str(prepared))
     assert prepared.read_bytes() == b"existing prepared audio"
     assert list(cache.iterdir()) == [prepared]
+
+
+def _count_reads(manager, monkeypatch) -> list[int]:
+    """Count catalog snapshot reads (each library reload opens one)."""
+    reads = [0]
+    reader = manager.catalog.reader
+
+    def counted():
+        reads[0] += 1
+        return reader()
+
+    monkeypatch.setattr(manager.catalog, "reader", counted)
+    return reads
+
+
+def test_plays_history_settings_cues_and_loudness_do_not_reload_library(
+    manager_factory, tmp_path, monkeypatch
+):
+    music = tmp_path / "Music"
+    music.mkdir()
+    song = music / "song.flac"
+    song.write_bytes(b"music")
+    manager = manager_factory(music=music)
+    manager.catalog.put_entry(make_entry(song), points={"start": 0.0, "end": 170.0})
+    manager.catalog.set_vector(song, np.ones(FEATURE_DIM, dtype=np.float32))
+    manager.tick()
+    loaded = manager.sim.replaced
+    reads = _count_reads(manager, monkeypatch)
+
+    manager.remember_play(song, 50.0)
+    manager.remember_history(
+        {
+            "event_id": "play-1",
+            "path": str(song),
+            "title": "Song",
+            "artist": "Artist",
+            "duration": 180.0,
+            "played_at": "2026-01-01T00:00:00+00:00",
+        }
+    )
+    manager.remember_setting("clock", {"cursor": 2})
+    manager.catalog.set_loudness(song, fake_loudness(song))
+    manager.catalog.set_points(song, {"intro": 12.0})
+    manager.catalog.set_intro_lift(song, 1.5)
+    manager.tick()
+    manager.tick()
+
+    assert reads == [0]
+    assert manager.sim.replaced is loaded
+    assert manager.catalog.last_played()[os.path.normcase(str(song))] == 50.0
+
+    other = music / "other.flac"
+    other.write_bytes(b"other")
+    manager.catalog.put_entry(make_entry(other))
+    manager.tick()
+    assert reads == [1]
+    assert manager.entry_for_path(other) is not None
+    # A new track without a vector leaves the vectors as they were.
+    assert manager.sim.replaced[1] is loaded[1]
+
+
+def test_vectors_written_by_another_process_reach_the_similarity_index(manager_factory, tmp_path):
+    music = tmp_path / "Music"
+    music.mkdir()
+    song = music / "song.flac"
+    song.write_bytes(b"music")
+    manager = manager_factory(music=music)
+    manager.catalog.put_entry(make_entry(song))
+    manager.tick()
+    assert manager.sim.replaced[1].shape == (0, FEATURE_DIM)
+
+    vector = np.full(FEATURE_DIM, 0.25, dtype=np.float32)
+    with LibraryCatalog(manager.catalog.path) as worker:  # e.g. the analysis job
+        worker.set_vector(song, vector)
+    manager.tick()
+
+    entries, vectors = manager.sim.replaced
+    assert [Path(entry.path) for entry in entries] == [song]
+    np.testing.assert_array_equal(vectors[0], vector)
+    assert manager.snapshot()["tracks_indexed"] == 1
+
+
+def test_metadata_change_keeps_the_faiss_index_and_updates_its_entries(tmp_path):
+    from autodj.similarity import SimilarityIndex
+
+    music = tmp_path / "Music"
+    music.mkdir()
+    song = music / "song.flac"
+    song.write_bytes(b"music")
+    sim = SimilarityIndex.empty()
+    manager = LibraryManager(make_config(tmp_path, music=music), sim)
+    try:
+        manager.catalog.put_entry(make_entry(song, title="Old"))
+        manager.catalog.set_vector(song, np.ones(FEATURE_DIM, dtype=np.float32))
+        manager.tick()
+        index = sim.faiss_index
+        assert index.ntotal == 1
+        manager.catalog.put_entry(make_entry(song, title="New"))
+        manager.tick()
+        assert sim.faiss_index is index
+        assert sim.entries_snapshot()[0].title == "New"
+        assert manager.entry_for_path(song).title == "New"
+    finally:
+        manager.close()
+
+
+def test_reload_makes_no_file_system_call_per_track(manager_factory, tmp_path, monkeypatch):
+    music = tmp_path / "Music"
+    music.mkdir()
+    songs = [music / f"{number}.flac" for number in range(5)]
+    manager = manager_factory(music=music)
+    for song in songs:
+        song.write_bytes(song.name.encode())
+        manager.catalog.put_entry(make_entry(song))
+    calls = []
+    real_isdir = os.path.isdir
+
+    def isdir(path):
+        calls.append(path)
+        return real_isdir(path)
+
+    monkeypatch.setattr(os.path, "isdir", isdir)
+    with (
+        patch.object(Path, "is_file", side_effect=AssertionError("stat per track")),
+        patch("os.path.isfile", side_effect=AssertionError("stat per track")),
+    ):
+        manager.refresh()
+    assert len(manager.entries_snapshot()) == 5
+    assert len(calls) == len(manager.catalog.sources())  # once per source folder
+
+
+def test_scan_drops_deleted_tracks_but_not_an_unmounted_share(manager_factory, tmp_path):
+    music = tmp_path / "Music"
+    share = tmp_path / "Share"
+    music.mkdir()
+    share.mkdir()
+    kept, deleted = music / "kept.flac", music / "deleted.flac"
+    remote = share / "remote.flac"
+    for path in (kept, deleted, remote):
+        path.write_bytes(path.name.encode())
+    manager = manager_factory(music=music)
+    manager.catalog.add_source(share)
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+    ):
+        manager.scan()
+        assert len(manager.entries_snapshot()) == 3
+        deleted.unlink()
+        # The share goes away: its folder is missing, so it covers nothing,
+        # but its track is not marked gone and comes back with the share.
+        moved = tmp_path / "Share-unmounted"
+        share.rename(moved)
+        manager.scan()
+        assert [Path(entry.path).name for entry in manager.entries_snapshot()] == ["kept.flac"]
+        assert manager._missing == frozenset({os.path.normcase(str(deleted))})
+        moved.rename(share)
+        manager.catalog.update_source(manager.catalog.sources("music")[-1]["id"], True, True)
+        manager.tick()
+    assert {Path(entry.path).name for entry in manager.entries_snapshot()} == {
+        "kept.flac",
+        "remote.flac",
+    }
+
+
+@pytest.mark.parametrize("processing", [None, "off", "replaygain"])
+def test_scan_measures_loudness_only_for_smooth_and_stereo_tool(
+    manager_factory, tmp_path, processing
+):
+    music = tmp_path / "Music"
+    music.mkdir()
+    (music / "song.flac").write_bytes(b"music")
+    manager = manager_factory(music=music, processing=processing)
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic) as analyzed,
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness) as measured,
+    ):
+        manager.scan()
+    assert analyzed.call_count == 1
+    measured.assert_not_called()
+    state = manager.snapshot()["import"]
+    assert (state["phase"], state["done"], state["total"]) == ("complete", 1, 1)
+
+
+def test_publishing_scanned_tracks_does_not_scan_the_library(manager_factory, tmp_path):
+    music = tmp_path / "Music"
+    music.mkdir()
+    manager = manager_factory(music=music)
+    for number in range(3):
+        song = music / f"{number}.flac"
+        song.write_bytes(song.name.encode())
+        manager.catalog.put_entry(make_entry(song))
+    manager.refresh()
+    first = Path(manager.entries_snapshot()[0].path)
+    with patch("autodj.library._path", wraps=_path) as norm:
+        manager._publish_entry(make_entry(first, title="Retagged"), "music")
+        manager._publish_entry(make_entry(music / "new.flac"), "music")
+    assert norm.call_count == 2  # one per published track, none per library entry
+    assert [entry.title for entry in manager.entries_snapshot()] == ["Retagged", "1", "2", "new"]
+    assert manager.entry_for_path(music / "new.flac").title == "new"
+    assert manager.snapshot()["tracks_ready"] == 4
+
+
+def test_idle_analysis_check_runs_once_until_the_catalog_changes(manager_factory, tmp_path):
+    music = tmp_path / "Music"
+    music.mkdir()
+    song = music / "song.flac"
+    song.write_bytes(b"music")
+    manager = manager_factory(music=music)
+    manager.catalog.put_entry(make_entry(song))
+    manager.catalog.set_vector(song, np.ones(FEATURE_DIM, dtype=np.float32))
+    started = []
+
+    class Jobs:
+        def configure(self, **kwargs):
+            pass
+
+        def start(self, command):
+            started.append(command)
+            return True
+
+    unembedded = manager.catalog.unembedded_music
+    with (
+        patch.object(manager.catalog, "unembedded_music", wraps=unembedded) as check,
+        patch("autodj.jobs.get_manager", return_value=Jobs()),
+    ):
+        for _ in range(3):
+            assert not manager.schedule_analysis()
+        manager.remember_play(song, 1.0)
+        manager.catalog.set_loudness(song, fake_loudness(song))
+        manager.catalog.set_points(song, {"intro": 4.0})
+        manager.tick()
+        assert check.call_count == 1
+        other = music / "other.flac"
+        other.write_bytes(b"other")
+        manager.catalog.put_entry(make_entry(other))
+        assert manager.schedule_analysis()
+        assert check.call_count == 2
+    assert started == ["analyse-library"]
+    assert [Path(record["path"]) for record in manager.analysis_pending()] == [other]
+
+
+def test_browse_and_search_answer_from_memory(manager_factory, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from autodj._bridge import PlayerBridge
+
+    music = tmp_path / "Music"
+    nested = music / "nested"
+    nested.mkdir(parents=True)
+    manager = manager_factory(music=music)
+    for path, title in ((music / "b.flac", "Beta"), (nested / "a.flac", "Alpha")):
+        path.write_bytes(title.encode())
+        manager.catalog.put_entry(make_entry(path, title=title))
+    manager.refresh()
+    source = manager.catalog.sources("music")[0]
+    monkeypatch.setattr(manager.catalog, "reader", Mock(side_effect=AssertionError("read")))
+    with (
+        patch.object(Path, "is_file", side_effect=AssertionError("stat per track")),
+        patch("os.path.isfile", side_effect=AssertionError("stat per track")),
+    ):
+        page = manager.browse_tracks("music", None, "", 0, 1)
+        assert (page["total"], [row["title"] for row in page["results"]]) == (2, ["Alpha"])
+        assert manager.browse_tracks("music", source["id"], "a.flac")["total"] == 1
+        bridge = SimpleNamespace(library=manager, sim=None)
+        assert [row["title"] for row in PlayerBridge.search(bridge, "beta artist")] == ["Beta"]
+    index = manager.search_index()
+    assert manager.search_index() is index  # built once per library snapshot
+
+
+def _generation(number: int):
+    from autodj.index_manifest import IndexManifest
+
+    return IndexManifest(1, number, 2, "2026-01-01T00:00:00Z", f"t{number}", f"v{number}")
+
+
+def test_restart_does_not_import_an_imported_generation_again(tmp_path, monkeypatch):
+    import faiss
+
+    from autodj.similarity import SimilarityIndex
+
+    music = tmp_path / "Music"
+    music.mkdir()
+    songs = [music / "a.flac", music / "b.flac"]
+    for song in songs:
+        song.write_bytes(song.name.encode())
+    vectors = np.eye(2, FEATURE_DIM, dtype=np.float32)
+    cfg = make_config(tmp_path, music=music)
+
+    def legacy(number):
+        index = faiss.IndexFlatIP(FEATURE_DIM)
+        index.add(vectors)
+        sim = SimilarityIndex(index, [make_entry(song) for song in songs])
+        sim._manifest = _generation(number)
+        return sim
+
+    LibraryManager(cfg, legacy(1)).close()
+
+    def no_seeding(*_args, **_kwargs):
+        raise AssertionError("re-imported")
+
+    monkeypatch.setattr(LibraryCatalog, "seed_entries", no_seeding)
+    sim = legacy(1)
+    manager = LibraryManager(cfg, sim)
+    try:
+        # The catalog's vectors replace the loaded generation's, as before.
+        assert [Path(entry.path) for entry in sim.entries_snapshot()] == songs
+        np.testing.assert_array_equal(sim.faiss_index.reconstruct_n(0, 2), vectors)
+    finally:
+        manager.close()
+    monkeypatch.undo()
+
+    # A new generation is imported, a chunk of rows at a time.
+    sim = legacy(2)
+    reconstruct = Mock(side_effect=AssertionError("one row at a time"))
+    monkeypatch.setattr(sim.faiss_index, "reconstruct", reconstruct, raising=False)
+    LibraryManager(cfg, sim).close()
+    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+        assert catalog.get_setting("imported_index_generation")["generation"] == 2
+
+
+def test_library_database_uses_wal(tmp_path):
+    with LibraryCatalog(tmp_path / "library.db") as catalog:
+        mode = catalog._db().execute("PRAGMA journal_mode").fetchone()[0]
+    assert mode == "wal"
+
+
+def test_moved_track_is_playable_at_its_new_path_before_the_scan_reads_tracks(
+    manager_factory, tmp_path
+):
+    music = tmp_path / "Music"
+    music.mkdir()
+    old, new = music / "old.flac", music / "new.flac"
+    old.write_bytes(b"same bytes")
+    manager = manager_factory(music=music)
+    manager.catalog.put_entry(make_entry(old))
+    manager.refresh()
+    old.rename(new)
+    manager._reconcile_moves([("music", new)])
+    assert manager.entry_for_path(new) is not None
+    assert manager.entry_for_path(old) is None
+
+
+# Reload triggers from another connection: cases after jage9's #102.
+
+
+@pytest.fixture
+def other_connection(manager_factory, monkeypatch):
+    """A manager whose library has one track, and a second catalog connection."""
+    manager = manager_factory()
+    other = LibraryCatalog(manager.catalog.path)
+    song = manager.cfg.library.music_dir / "song.flac"
+    song.write_bytes(b"track")
+    other.put_entry(make_entry(song))
+    monkeypatch.setattr(manager, "schedule_analysis", lambda: False)
+    yield manager, other, song
+    other.close()
+
+
+def test_write_through_another_connection_reloads_on_the_next_tick(other_connection):
+    manager, other, song = other_connection
+    assert manager.entry_for_path(song) is None
+    manager.tick()
+    assert manager.entry_for_path(song).title == "song"
+    other.put_entry(make_entry(song, title="Retagged"))
+    manager.tick()
+    assert manager.entry_for_path(song).title == "Retagged"
+
+
+@pytest.mark.parametrize("change", ["vector_add", "vector_update", "vector_delete", "folder"])
+def test_vector_and_folder_changes_from_another_connection_reload(other_connection, change):
+    manager, other, song = other_connection
+    if change in {"vector_update", "vector_delete"}:
+        other.set_vector(song, np.zeros(FEATURE_DIM, dtype=np.float32))
+    manager.tick()
+    before = manager.sim.replaced
+    vector = np.ones(FEATURE_DIM, dtype=np.float32)
+    if change in {"vector_add", "vector_update"}:
+        other.set_vector(song, vector)
+    elif change == "vector_delete":
+        other._db().execute("DELETE FROM catalog_vectors")
+        other._db().commit()
+    else:
+        assert other.remove_source(other.sources("music")[0]["id"])
+
+    manager.tick()
+
+    assert manager.sim.replaced is not before
+    _entries, vectors = manager.sim.replaced
+    if change in {"vector_add", "vector_update"}:
+        assert manager.snapshot()["tracks_indexed"] == 1
+        np.testing.assert_array_equal(vectors[0], vector)
+    else:
+        assert manager.snapshot()["tracks_indexed"] == 0
+        assert vectors.shape == (0, FEATURE_DIM)
+    if change == "folder":
+        assert manager.snapshot()["tracks_ready"] == 0
+        assert manager.entry_for_path(song) is None
+
+
+@pytest.mark.parametrize("change", ["cue", "loudness", "setting", "play", "history"])
+def test_cue_loudness_setting_and_play_writes_from_another_connection_do_not_reload(
+    other_connection, monkeypatch, change
+):
+    manager, other, song = other_connection
+    other.set_vector(song, np.zeros(FEATURE_DIM, dtype=np.float32))
+    manager.tick()
+    before = manager.sim.replaced
+    reads = _count_reads(manager, monkeypatch)
+    if change == "cue":
+        other.set_points(song, {"intro": 12.0})
+    elif change == "loudness":
+        other.set_loudness(song, fake_loudness(song))
+    elif change == "setting":
+        other.set_setting("unrelated", True)
+    elif change == "play":
+        other.remember_play(song, 42.0)
+    else:
+        other.write_history(
+            [
+                {
+                    "event_id": "external-play",
+                    "path": str(song),
+                    "title": "Song",
+                    "artist": "Artist",
+                    "duration": 12.0,
+                    "played_at": "2026-01-01T00:00:00+00:00",
+                }
+            ]
+        )
+
+    manager.tick()
+
+    assert reads == [0]
+    assert manager.sim.replaced is before
+    if change == "cue":
+        assert manager.catalog.points(song)["intro"] == 12.0  # read live, not reloaded
+
+
+def test_a_write_during_a_refresh_is_caught_on_the_next_tick(other_connection, monkeypatch):
+    manager, other, _song = other_connection
+    reader = manager.catalog.reader
+    late = manager.cfg.library.music_dir / "during-refresh.flac"
+    late.write_bytes(b"track")
+
+    @contextmanager
+    def reader_with_a_write_mid_read():
+        with reader() as snapshot:
+            snapshot.versions()  # the read transaction starts here
+            other.put_entry(make_entry(late))  # commits after it
+            yield snapshot
+
+    monkeypatch.setattr(manager.catalog, "reader", reader_with_a_write_mid_read)
+    manager.refresh()
+    assert manager.entry_for_path(late) is None
+    monkeypatch.setattr(manager.catalog, "reader", reader)
+    manager.tick()
+    assert manager.entry_for_path(late) is not None

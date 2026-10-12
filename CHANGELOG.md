@@ -8,11 +8,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Fixed
-
-- Public now-playing history and its webhooks include only artist, title, duration and play time;
-  local file paths and internal event IDs remain available in operator history.
-
 ### Added
 
 - Themed shows such as "Remembering the 2000s" (Settings, Shows). A show's songs are those that
@@ -185,9 +180,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Public now-playing history and its webhooks include only artist, title, duration and play time;
+  local file paths and internal event IDs remain available in operator history.
+- Hard scheduled liners and time checks prepare their audio before skipping the current song.
+  Missing clips or failed speech generation leave the song playing and report the failed event.
+- The library scan no longer runs out of memory on very long files such as multi-hour mixes. A
+  track longer than `[playback] server_max_track_minutes` is refused early when its header gives
+  a reliable duration. Estimated MP3/AAC lengths use the bounded decode instead, so an estimate
+  alone does not reject a playable song. The decode still stops a second past the limit.
+- A voice liner, cart or time check being decoded no longer holds up the mix bus. Liners are now
+  decoded without the scheduler's state lock, the bus never waits for that lock when a planned
+  liner is heard, and carts and time checks play without waiting for a liner decode. A sequential
+  liner displaced by an announcement stays in rotation rather than being skipped unheard.
+- Play now and every song change start sooner on server audio and the stream. Each song is now
+  decoded once instead of twice (the render that mixes a song in keeps its audio for the render
+  that plays it), the outgoing and incoming songs decode side by side when neither is ready, and a
+  song's first loudness measurement happens in the same FFmpeg run as its decode. Saved-point
+  renders also build the track in one buffer instead of copying it again. A file or processing
+  change during decoding prevents reuse of the old audio. The audio processing is unchanged.
+- Server audio and the stream are less likely to drop out while the library scan, a track pick or
+  another busy task runs. The mix bus, its EQ and duck, and the Smooth and Stereo Tool processor feeds no
+  longer give up Python's interpreter lock in the middle of a block, and a block that comes out late
+  is made up straight away (up to eight blocks, 160 ms) instead of being lost from every listener's
+  buffer. The sound is unchanged. Startup can compile the audio helpers without caching when
+  no writable compilation-cache location is available.
+- Clock music slots with repeat rules disabled still skip silent tracks and songs already
+  playing or being prepared.
+- A clock whose slots hold only songs just played or being prepared repeats one of them, with a
+  warning, instead of leaving the station silent. The song playing never follows itself.
 - Automatically chosen first songs now follow repeat rules and protected-track checks, including
   restored play history. When the rules leave no choice, they relax without stopping playback.
-
 - Unknown or removed configuration settings now produce warnings and are ignored instead of
   blocking startup. Saved browser settings follow the same rule, preserving valid repeat limits
   alongside obsolete keys. Invalid values for supported configuration settings still fail validation.
@@ -208,6 +230,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A setting with two descriptions now hides both when it does not apply, not just the first.
 
 ### Changed
+
+- Large libraries stay responsive. Plays, the play log, settings, cue edits and loudness
+  measurements no longer make the server reload the whole library and rebuild its similarity
+  index, which took minutes per song on a 77,000-track library and held up the web page, the
+  stream and the API. The library now reloads only when tracks, vectors or folders change,
+  including changes from the analysis job or the command line. Starting the server no longer
+  re-imports an index generation it has already imported, so a restart takes seconds instead of
+  minutes. Browse library, Search, the check for tracks to analyse and the state pushed to web
+  pages are fast at that size, and the state is built off the server's main loop.
+- A file deleted while AutoDJ runs leaves the library at the next scan (every start, or Rescan)
+  rather than within seconds; if it is picked first, playback skips it as before. A library
+  folder whose share is not mounted marks none of its tracks gone, and they return with it.
+- Library scans measure loudness only when loudness processing is Smooth or Stereo Tool, the
+  modes that use it.
+- `library.db` uses SQLite's WAL journal, so it can have `-wal` and `-shm` files beside it while
+  AutoDJ runs. Backups and restores already handle them.
 
 - The included Stereo Tool preset recovers more slowly after drum hits, keeping snare tails
   less prominent while retaining the default 7 dB AGC drive for quiet passages.

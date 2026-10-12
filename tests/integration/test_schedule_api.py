@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from autodj.clockwheel_store import ClockwheelStore
+from autodj.liner_scheduler import LinerDecodeError
 from autodj.profiles import ProfileSnapshot, ProfileStore
 from autodj.server import PlayerBridge, create_app
 
@@ -249,11 +250,11 @@ def test_builtin_actions_report_failures_in_words(
     assert run("discovery", {"state": "on"})["result"] == "ok"
     assert bridge.player._state.discovery_enabled is True
     bridge.liner_scheduler = MagicMock()
-    bridge.liner_scheduler.fire.return_value = None
+    bridge.liner_scheduler.decode.side_effect = LinerDecodeError("Missing clip")
     assert run("liner", {"name": "station-id.wav"})["message"] == (
         "Liner station-id.wav could not be played"
     )
-    bridge.liner_scheduler.fire.return_value = "station-id.wav"
+    bridge.liner_scheduler.decode.side_effect = None
     assert run("liner", {"name": "station-id.wav"})["result"] == "ok"
     bridge.station = MagicMock()
     assert run("stream", {"state": "auto"})["result"] == "ok"
@@ -341,3 +342,47 @@ def test_startup_loads_the_schedule_and_disables_missed_once_events(tmp_path: Pa
         assert [item["enabled"] for item in data["events"]] == [False]
         assert data["runs"][0]["result"] == "missed"
     assert bridge.scheduler_track_changed is None
+
+
+@pytest.mark.parametrize("timing", ["hard", "soft"])
+def test_scheduled_liner_prepares_before_interrupting(rig, timing) -> None:
+    client, bridge, _active = rig
+    calls = []
+    audio = object()
+    worker = MagicMock()
+    bridge.liner_scheduler = worker
+    bridge.skip = MagicMock(side_effect=lambda: calls.append("skip"))
+
+    def decode(name):
+        assert name == "station-id.wav"
+        calls.append("decode")
+        return audio
+
+    def play(prepared):
+        assert prepared is audio
+        calls.append("play")
+
+    worker.decode.side_effect = decode
+    worker.play_audio.side_effect = play
+    created = client.post(
+        "/api/schedule",
+        json=event(
+            action="liner",
+            params={"name": "station-id.wav"},
+            timing=timing,
+        ),
+    )
+    assert created.status_code == 201
+    url = f"/api/schedule/{created.json()['id']}/run"
+    assert client.post(url).json()["result"] == "ok"
+    assert calls == (["decode", "skip", "play"] if timing == "hard" else ["decode", "play"])
+
+    calls.clear()
+    bridge.skip.reset_mock()
+    worker.play_audio.reset_mock()
+    worker.decode.side_effect = LinerDecodeError("Clip disappeared")
+    failed = client.post(url).json()
+    assert failed["result"] == "error"
+    assert failed["message"] == "Liner station-id.wav could not be played"
+    bridge.skip.assert_not_called()
+    worker.play_audio.assert_not_called()

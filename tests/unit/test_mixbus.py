@@ -2,14 +2,24 @@
 
 from __future__ import annotations
 
+import sys
 import threading
+import time
 from itertools import pairwise
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
-from autodj.mixbus import BusEvents, LinerCue, MixBus, RenderedTrack, SkipTail, SystemClock
+from autodj.mixbus import (
+    CATCH_UP_BLOCKS,
+    BusEvents,
+    LinerCue,
+    MixBus,
+    RenderedTrack,
+    SkipTail,
+    SystemClock,
+)
 from tests.unit._fakes import FakeClock
 
 
@@ -305,17 +315,22 @@ def test_run_recovers_from_render_block_exception() -> None:
     np.testing.assert_array_equal(good.blocks[0], np.full((882, 2), 0.5, np.float32))
 
 
-@pytest.mark.parametrize("stall_seconds", [0.12, 0.45, 0.95, 2.0])
-def test_run_recovers_schedule_after_output_stalls_clock(stall_seconds: float) -> None:
-    bus, _, _ = _bus([_track(0.5, 882 * 20)])
+@pytest.mark.parametrize("stall_seconds", [0.07, 0.13, 0.45, 0.95, 2.01])
+def test_run_makes_up_a_stall_in_a_bounded_burst(stall_seconds: float) -> None:
+    """A late block is made up, but never with more than CATCH_UP_BLOCKS at once.
+
+    Dropping the backlog outright (as the bus once did after a single late
+    block) loses that audio for good and shortens every listener's buffer;
+    making all of it up at once could drain a master processor's cushion.
+    """
+    bus, _, _ = _bus([_track(0.5, 882 * 200)])
     clock: FakeClock = bus._clock  # type: ignore[assignment]
     good = Recorder()
-    stalled = {"done": False}
+    burst: list[int] = []  # blocks written before each sleep
 
     def maybe_stall(block: np.ndarray) -> None:
         good.write(block)
-        if not stalled["done"]:
-            stalled["done"] = True
+        if len(good.blocks) == 1:
             clock.t += stall_seconds
 
     stalling = MagicMock()
@@ -326,16 +341,18 @@ def test_run_recovers_schedule_after_output_stalls_clock(stall_seconds: float) -
     original_sleep = clock.sleep
 
     def sleep_and_maybe_stop(seconds: float) -> None:
+        burst.append(len(good.blocks))
         original_sleep(seconds)
-        if len(good.blocks) >= 5:
+        if len(burst) >= 3:
             stop.set()
 
     clock.sleep = sleep_and_maybe_stop  # type: ignore[method-assign]
     bus.run(stop)
-    assert len(good.blocks) >= 5
-    # The schedule must reset after the stall instead of trying to "catch
-    # up": no burst of dozens of unpaced blocks before pacing resumes.
-    assert len(good.blocks) <= 8
+    # Stalls end mid-period, so the blocks due during one are unambiguous.
+    made_up = min(int(stall_seconds / 0.02), CATCH_UP_BLOCKS)
+    # The stalled block, then the backlog back to back, then one per period.
+    assert burst[0] == 1 + made_up
+    assert burst[1:] == [burst[0] + 1, burst[0] + 2]
 
 
 def test_run_skips_sleep_when_slightly_behind_schedule() -> None:
@@ -707,3 +724,75 @@ def test_a_cue_in_a_skip_effect_still_starts() -> None:
     bus.render_block()
     bus.render_block()
     assert cue.started
+
+
+class _Counter:
+    def __init__(self) -> None:
+        self.blocks = 0
+
+    def write(self, block: np.ndarray) -> None:
+        self.blocks += 1
+
+    def close(self) -> None:
+        pass
+
+
+class _PassThroughMaster:
+    def process(self, block: np.ndarray, enabled: bool = True) -> np.ndarray:
+        return block
+
+
+@pytest.mark.parametrize("setting", ["default", "eq", "eq moving", "liner"])
+def test_bus_keeps_rendering_while_another_thread_runs_python(setting: str) -> None:
+    """The bus thread must not give up the GIL while it makes a block.
+
+    Every time it does, a thread busy running Python keeps the GIL for a
+    whole switch interval before the bus gets it back.  ``sosfilt`` and
+    NumPy operations on whole blocks gave it up several times a block, so
+    with one busy thread a 20 ms block took longer than 20 ms to make and
+    listeners lost audio.  A long switch interval magnifies the effect: a
+    bus that gives up the GIL n times a block makes about 1 / (n * 0.05)
+    blocks a second (a handful before the fix), one that does not makes
+    thousands.  The pacing clock is fake, so this counts blocks rather
+    than timing them.
+    """
+    rng = np.random.default_rng(0)
+    audio = (rng.random((882 * 4000, 2), dtype=np.float32) - 0.5).astype(np.float32)
+    track = RenderedTrack(MagicMock(), audio, None, 0, "")
+    moving = iter(np.tile([[1.0, 1.0, 1.0], [1.5, 0.8, 1.2]], (100_000, 1)).tolist())
+    gains = {
+        "default": lambda: (1.0, 1.0, 1.0),
+        "eq": lambda: (1.5, 0.8, 1.2),
+        "eq moving": lambda: tuple(next(moving)),
+        "liner": lambda: (1.0, 1.0, 1.0),
+    }[setting]
+    bus = MixBus(
+        BusEvents(lambda _t: None, lambda _p: None, lambda: track),
+        eq_gains=gains,
+        clock=FakeClock(),
+    )
+    bus.set_master(_PassThroughMaster(), enabled=True)
+    counter = _Counter()
+    bus.add_output(counter)
+    bus.start_set()
+    if setting == "liner":
+        bus.play_liner(audio * 0.5, duck_db=-12.0)
+    stop = threading.Event()
+
+    def busy() -> None:
+        while not stop.is_set():
+            sum(range(1000))
+
+    previous = sys.getswitchinterval()
+    sys.setswitchinterval(0.05)
+    try:
+        threads = [threading.Thread(target=busy), threading.Thread(target=bus.run, args=(stop,))]
+        for thread in threads:
+            thread.start()
+        time.sleep(1.0)
+        stop.set()
+        for thread in threads:
+            thread.join()
+    finally:
+        sys.setswitchinterval(previous)
+    assert counter.blocks >= 200

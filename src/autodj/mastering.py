@@ -16,6 +16,7 @@ from typing import Final
 import numpy as np
 
 from autodj.config import DEFAULT_STEREOTOOL_PATH
+from autodj.kernels import nan_to_num_in_place
 from autodj.processing import MASTER_FILTER
 from autodj.stereo import SAMPLE_RATE
 from autodj.stereotool_presets import INCLUDED_PATH, agc_drive_preset_data
@@ -146,6 +147,9 @@ class ContinuousMaster:
             maxlen=_MEASURED_PIPELINE_BLOCKS + 1
         )
         self._output_cond = threading.Condition(self._lock)
+        # Wakes the pipe writer when the bus queues a block; polling instead
+        # would take the GIL every few milliseconds even with nothing to do.
+        self._input_cond = threading.Condition(self._lock)
         self._proc: subprocess.Popen[bytes] | None = None
         self._post_proc: subprocess.Popen[bytes] | None = None
         self._ready = False
@@ -192,7 +196,9 @@ class ContinuousMaster:
                     self._switch(False)
             return audio
 
-        audio = np.nan_to_num(audio, copy=False)
+        if not audio.flags.writeable:
+            audio = audio.copy()
+        nan_to_num_in_place(audio)  # NumPy's nan_to_num gives up the GIL
         mode = self._select_mode()
         preset = self._stereotool_signature() if mode == "stereotool" else None
         with self._lock:
@@ -202,15 +208,19 @@ class ContinuousMaster:
                 self._switch(True, mode)
             if mode == "stereotool":
                 audio = audio * (10 ** (self._input_trim_db() / 20))
-            audio = np.ascontiguousarray(audio)
-            self._fallback_delay.append(audio.copy())
+            # One bytes copy serves the pipe and the fallback delay line: a
+            # NumPy copy would give up the GIL on the mix bus thread.
+            data = np.ascontiguousarray(audio).tobytes()
+            audio = np.frombuffer(data, dtype=np.float32).reshape(BLOCK_FRAMES, 2)
+            self._fallback_delay.append(audio)
             if self._failed:
                 return self._delayed_fallback()
             generation = self._generation
             if len(self._input) >= _QUEUE_BLOCKS:
                 self._input.popleft()
                 self._set_error("master input queue overflow; dropped oldest block")
-            self._input.append((generation, audio.tobytes()))
+            self._input.append((generation, data))
+            self._input_cond.notify()
             if not self._ready and len(self._output) > self._output_guard_blocks:
                 self._ready = True
             if self._ready and self._output and self._output[0][0] == generation:
@@ -267,6 +277,7 @@ class ContinuousMaster:
             self._fallback_delay.clear()
         self._changed.set()
         self._output_cond.notify_all()
+        self._input_cond.notify_all()
 
     def _stereotool_signature(self) -> tuple[Path, float]:
         source = self._select_preset()
@@ -483,12 +494,18 @@ class ContinuousMaster:
         write_bytes = (1024 if self._mode == "stereotool" else BLOCK_FRAMES) * 2 * 4
         pending = bytearray()
         while not stop.is_set():
-            with self._lock:
+            with self._input_cond:
+                while (
+                    not self._input
+                    and not stop.is_set()
+                    and generation == self._generation
+                    and self._enabled
+                ):
+                    self._input_cond.wait(timeout=0.1)
                 if generation != self._generation or not self._enabled:
                     return
                 block = self._input.popleft() if self._input else None
             if block is None:
-                stop.wait(0.005)
                 continue
             if block[0] != generation:
                 continue
@@ -515,18 +532,20 @@ class ContinuousMaster:
         pending = bytearray()
         while not stop.is_set():
             try:
-                data = stdout.read(frame_bytes)
+                # Take whatever is ready, up to a few blocks: each read gives up
+                # the GIL, so a backlog is drained in one call, not one per block.
+                data = stdout.read(frame_bytes * 8)
             except (OSError, ValueError):
                 return
             if not data:
                 return
             pending.extend(data)
             while len(pending) >= frame_bytes:
-                raw = bytes(pending[:frame_bytes])
+                # A writable bytearray copy: copying with NumPy gives up the GIL.
+                raw = pending[:frame_bytes]
                 del pending[:frame_bytes]
-                audio = np.frombuffer(raw, dtype=np.float32).reshape(BLOCK_FRAMES, 2).copy()
-                if not np.isfinite(audio).all():
-                    audio = np.nan_to_num(audio)
+                audio = np.frombuffer(raw, dtype=np.float32).reshape(BLOCK_FRAMES, 2)
+                nan_to_num_in_place(audio)
                 with self._output_cond:
                     while (
                         len(self._output) >= _QUEUE_BLOCKS
