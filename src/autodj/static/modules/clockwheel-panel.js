@@ -20,21 +20,26 @@
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
+import { parsePointTime } from "./library-folders.js";
 
 const NAME = /^[A-Za-z0-9 _-]{1,64}$/;
 const RESERVED = /^(con|prn|aux|nul|com\d|lpt\d)$/i;
 const JSON_HEADERS = { "Content-Type": "application/json" };
 const copy = (value) => JSON.parse(JSON.stringify(value));
 const FOLDER_TYPES = new Set(["music", "liner"]);
+const NUMERIC_OPERATORS = [["eq", "is"], ["lt", "less than"], ["lte", "at most"], ["gt", "greater than"], ["gte", "at least"], ["between", "between"]];
+// The wildcard and MM:SS help under the conditions, for each value field.
+const CONDITION_HELP = "clock-step-conditions-help";
+const TEXT_OPERATORS = [["is", "is"], ["contains", "contains"], ["matches", "matches"]];
 // Field wrappers shown for each step type; the rest are hidden.
 const FIELDS_FOR = {
-  music: ["source", "folder", "recursive", "selection", "enforce-rules"],
-  liner: ["source", "folder", "recursive", "selection", "enforce-rules", "require-following"],
+  music: ["conditions", "selection", "enforce-rules"],
+  liner: ["conditions", "selection", "enforce-rules", "require-following"],
   track: ["source", "path"],
   settings: ["preset"],
   category: ["category", "selection", "enforce-rules"],
 };
-const ALL_FIELDS = ["source", "folder", "path", "preset", "category", "recursive", "selection", "enforce-rules", "require-following"];
+const ALL_FIELDS = ["conditions", "source", "path", "preset", "category", "selection", "enforce-rules", "require-following"];
 // Row buttons, in tab order.
 const ROW_ACTIONS = [["edit", "Edit"], ["move-up", "Move up"], ["move-down", "Move down"], ["duplicate", "Duplicate"], ["delete", "Delete"]];
 
@@ -59,6 +64,11 @@ function selectionExtras(step) {
   return extras;
 }
 
+// A Beets field as words: original_year is the first-release year.
+function beetsFieldName(name) {
+  return name === "original_year" ? "first release year" : String(name ?? "").replaceAll("_", " ");
+}
+
 // "music from Rock, at random": what one step does, for its list item.
 export function describeStep(step, sources = [], categories = []) {
   if (step.type === "category") {
@@ -67,10 +77,31 @@ export function describeStep(step, sources = [], categories = []) {
     return [`music from ${where}`, ...selectionExtras(step)].join(", ");
   }
   if (FOLDER_TYPES.has(step.type)) {
-    const source = sources.find((item) => item.id === step.source);
-    const where = step.folder || (source ? lastPart(source.path) : "a folder that is no longer registered");
+    if (!step.conditions) {
+      const source = sources.find((item) => item.id === step.source);
+      const where = step.folder || (source ? lastPart(source.path) : "a folder that is no longer registered");
+      const extras = [];
+      if (step.recursive) extras.push("with subfolders");
+      if (step.selection === "random") extras.push("at random");
+      if (step.enforce_rules === false) extras.push("ignoring repeat rules");
+      if (step.type === "liner" && step.require_following) extras.push("only if the following track fits before the next reset");
+      return [`${step.type} from ${where}`, ...extras].join(", ");
+    }
+    const conditions = step.conditions;
+    const where = conditions.map((condition) => {
+      if (condition.field === "folder") {
+        const source = sources.find((item) => item.id === condition.source);
+        const folder = condition.folder || (source ? lastPart(source.path) : "a folder that is no longer registered");
+        return `${folder}${condition.recursive ? " (with subfolders)" : ""}`;
+      }
+      const field = condition.field === "beets" ? `Beets ${beetsFieldName(condition.name)}`
+        : condition.field === "duration" ? "Duration (seconds)"
+          : condition.field === "bpm" ? "BPM"
+            : condition.field[0].toUpperCase() + condition.field.slice(1);
+      const operator = [...NUMERIC_OPERATORS, ...TEXT_OPERATORS].find(([value]) => value === condition.operator)?.[1] || condition.operator;
+      return `${field} ${operator} ${condition.value}${condition.operator === "between" ? ` and ${condition.upper}` : ""}`;
+    }).join(step.match === "any" ? " or " : " and ");
     const extras = [];
-    if (step.recursive) extras.push("with subfolders");
     if (step.selection === "random") extras.push("at random");
     if (step.enforce_rules === false) extras.push("ignoring repeat rules");
     if (step.type === "liner" && step.require_following) extras.push("only if the following track fits before the next reset");
@@ -109,6 +140,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   let timer = null;
   let generation = 0;
   let suspended = false;
+  let conditionId = 0;
 
   const current = (epoch, mine) => !suspended && generation === mine && isAuthenticatedRequestCurrent(epoch);
   const say = (message, error = false) => announceStatus(status, message, { force: true, tone: error ? "error" : "info" });
@@ -156,7 +188,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   }
 
   function renderOptions() {
-    const signature = JSON.stringify([data.sources, data.presets, data.categories, typeSelect.value]);
+    const signature = JSON.stringify([data.sources, data.presets, data.categories, data.genres, data.beets_fields, data.beets_error, typeSelect.value]);
     if (signature === optionsSignature) return;
     optionsSignature = signature;
     const fill = (select, items) => {
@@ -174,6 +206,258 @@ export function installClockwheelPanel({ document: doc = document, request = req
     fill(el("clock-step-source"), data.sources.filter((source) => source.kind === kind).map((source) => [source.id, source.path]));
     fill(el("clock-step-preset"), data.presets.map((name) => [name, name]));
     fill(el("clock-step-category"), data.categories.map((category) => [category.id, category.name]));
+    configureConditionOptions();
+  }
+
+  function conditionRow(value = {}) {
+    const row = doc.createElement("fieldset");
+    row.className = "clock-condition";
+    const legend = doc.createElement("legend");
+    legend.textContent = `Condition ${el("clock-step-conditions").children.length + 1}`;
+    row.append(legend);
+    const control = (labelText, tag = "input", options = []) => {
+      const id = `clock-condition-${++conditionId}`;
+      const label = doc.createElement("label");
+      const node = doc.createElement(tag);
+      label.htmlFor = id;
+      label.textContent = labelText;
+      node.id = id;
+      if (tag === "select") {
+        for (const [v, text] of options) {
+          const option = doc.createElement("option");
+          option.value = v;
+          option.textContent = text;
+          node.append(option);
+        }
+      }
+      row.append(label, node);
+      return node;
+    };
+    const fields = ["folder", "year", "bpm", "duration", "artist", "title", "album", "genre", "beets"];
+    const field = control("Condition type", "select", fields.map((v) => [v, v === "bpm" ? "BPM" : v[0].toUpperCase() + v.slice(1)]));
+    const sourceList = data.sources.filter((s) => s.kind === (typeSelect.value === "liner" ? "liner" : "music"));
+    const source = control("Library folder", "select", sourceList.map((s) => [s.id, s.path]));
+    const folder = control("Subfolder", "input");
+    folder.type = "text";
+    const recursive = control("Include subfolders", "input");
+    recursive.type = "checkbox";
+    const operator = control("Operator", "select");
+    const input = control("Value", "input");
+    input.type = "text";
+    input.setAttribute("aria-describedby", CONDITION_HELP);
+    const upper = control("Upper value", "input");
+    upper.type = "text";
+    upper.setAttribute("aria-describedby", CONDITION_HELP);
+    const genre = control("Genre", "select", (data.genres || []).map((v) => [v, v]));
+    const beetsOptions = (data.beets_fields || []).map((v) => [v, v]);
+    if (value.field === "beets" && value.name && !beetsOptions.some(([v]) => v === value.name)) {
+      beetsOptions.unshift([value.name, `${value.name} (unavailable)`]);
+    }
+    const name = control("Beets field", "select", beetsOptions);
+    name.setAttribute("aria-describedby", CONDITION_HELP);
+    const remove = doc.createElement("button");
+    remove.type = "button";
+    remove.dataset.removeCondition = "";
+    remove.textContent = `Remove condition ${el("clock-step-conditions").children.length + 1}`;
+    row.append(remove);
+    field.value = value.field || (source.options.length ? "folder" : "title");
+    if (value.source && !sourceList.some((item) => item.id === value.source)) {
+      const option = doc.createElement("option");
+      option.value = value.source;
+      option.textContent = `${value.source} (unavailable)`;
+      source.add(option);
+    }
+    source.value = value.source || source.options[0]?.value || "";
+    folder.value = value.folder || "";
+    recursive.checked = Boolean(value.recursive);
+    input.value = value.value ?? "";
+    upper.value = value.upper ?? "";
+    if (value.field === "genre" && value.value && !(data.genres || []).includes(value.value)) {
+      const option = doc.createElement("option");
+      option.value = value.value;
+      option.textContent = `${value.value} (unavailable)`;
+      genre.add(option);
+    }
+    genre.value = value.field === "genre" ? value.value || "" : "";
+    name.value = value.name || name.options[0]?.value || "";
+    let selectedOperator = value.operator || "";
+    const sync = () => {
+      const f = field.value;
+      const numeric = ["year", "bpm", "duration"].includes(f);
+      const isFolder = f === "folder";
+      source.hidden = folder.hidden = recursive.hidden = !isFolder;
+      source.previousElementSibling.hidden = folder.previousElementSibling.hidden = recursive.previousElementSibling.hidden = !isFolder;
+      genre.hidden = genre.previousElementSibling.hidden = f !== "genre";
+      name.hidden = name.previousElementSibling.hidden = f !== "beets";
+      let choices = TEXT_OPERATORS;
+      if (isFolder || f === "genre") choices = [["is", "is"]];
+      else if (numeric) choices = NUMERIC_OPERATORS;
+      else if (f === "beets") {
+        choices = [["is", "Is (text)"], ...TEXT_OPERATORS.slice(1), ["eq", "Equals (number)"], ...NUMERIC_OPERATORS.slice(1)];
+      }
+      const previousOperator = operator.value || selectedOperator;
+      operator.replaceChildren(...choices.map(([v, text]) => {
+        const option = doc.createElement("option");
+        option.value = v;
+        option.textContent = text;
+        return option;
+      }));
+      operator.value = choices.some(([v]) => v === previousOperator) ? previousOperator : choices[0][0];
+      selectedOperator = operator.value;
+      operator.hidden = operator.previousElementSibling.hidden = isFolder || f === "genre";
+      input.hidden = input.previousElementSibling.hidden = isFolder || f === "genre";
+      upper.hidden = upper.previousElementSibling.hidden = operator.value !== "between";
+      input.previousElementSibling.textContent = f === "duration" ? "Value (seconds or MM:SS)" : "Value";
+      upper.previousElementSibling.textContent = f === "duration" ? "Upper value (seconds or MM:SS)" : "Upper value";
+    };
+    field.addEventListener("change", () => { sync(); updateBeetsNotice(); });
+    operator.addEventListener("change", sync);
+    remove.addEventListener("click", () => {
+      const host = row.parentElement;
+      const index = [...host.children].indexOf(row);
+      row.remove();
+      const left = [...host.children];
+      left.forEach((item, at) => {
+        item.querySelector("legend").textContent = `Condition ${at + 1}`;
+        item.querySelector("button[data-remove-condition]").textContent = `Remove condition ${at + 1}`;
+      });
+      updateBeetsNotice();
+      // The condition that took its place, or the one before it when it was last.
+      (left[Math.min(index, left.length - 1)]?.querySelector("select") || el("clock-add-condition")).focus();
+      say(`Condition ${index + 1} removed, ${left.length} ${left.length === 1 ? "condition" : "conditions"} left.`);
+    });
+    sync();
+    return { row, field, source, folder, recursive, operator, input, upper, genre, name };
+  }
+
+  function renderConditions(values = [{}]) {
+    const host = el("clock-step-conditions");
+    if (!host) return;
+    host.replaceChildren();
+    for (const value of values.length ? values : [{}]) host.append(conditionRow(value).row);
+    updateBeetsNotice();
+  }
+
+  function updateBeetsNotice() {
+    const unavailable = !(data.beets_fields || []).length || Boolean(data.beets_error);
+    let hasBeets = false;
+    for (const row of el("clock-step-conditions")?.children || []) {
+      const field = row.querySelector("select");
+      const selected = field.value === "beets";
+      field.querySelector('option[value="beets"]').disabled = unavailable && !selected;
+      hasBeets ||= selected;
+    }
+    const notice = el("clock-step-beets-notice");
+    if (notice) {
+      notice.textContent = data.beets_error || "Beets fields are unavailable.";
+      notice.hidden = !unavailable || !hasBeets;
+    }
+    // A hidden notice named by aria-describedby would still be read.
+    const describedBy = notice && !notice.hidden ? `${CONDITION_HELP} clock-step-beets-notice` : CONDITION_HELP;
+    for (const row of el("clock-step-conditions")?.children || []) {
+      row.querySelectorAll("select")[4].setAttribute("aria-describedby", describedBy);
+    }
+  }
+
+  function configureConditionOptions() {
+    const kind = typeSelect.value === "liner" ? "liner" : "music";
+    const sources = data.sources.filter((source) => source.kind === kind);
+    for (const row of el("clock-step-conditions")?.children || []) {
+      const selects = row.querySelectorAll("select");
+      const [, source, , genre, name] = selects;
+      const replace = (select, items, keep) => {
+        if (select === doc.activeElement) {
+          // Rebuilding the list under the reader would move its place; try on the next refresh.
+          optionsSignature = "";
+          return;
+        }
+        const selected = select.value;
+        select.replaceChildren(...items.map(([v, label]) => {
+          const option = doc.createElement("option");
+          option.value = v;
+          option.textContent = label;
+          return option;
+        }));
+        if (keep && selected && !items.some(([v]) => v === selected)) {
+          const option = doc.createElement("option");
+          option.value = selected;
+          option.textContent = `${selected} (unavailable)`;
+          select.prepend(option);
+        }
+        if (selected) select.value = selected;
+      };
+      replace(source, sources.map((s) => [s.id, s.path]), true);
+      replace(genre, (data.genres || []).map((v) => [v, v]), true);
+      replace(name, (data.beets_fields || []).map((v) => [v, v]), true);
+    }
+    updateBeetsNotice();
+  }
+
+  function readConditions() {
+    const rows = [...el("clock-step-conditions").children];
+    if (!rows.length) {
+      el("clock-add-condition").focus();
+      throw new Error("Add at least one condition.");
+    }
+    const invalid = (input, message) => {
+      input.setAttribute("aria-invalid", "true");
+      input.focus();
+      throw new Error(message);
+    };
+    for (const row of rows) row.querySelectorAll("[aria-invalid]").forEach((input) => input.removeAttribute("aria-invalid"));
+    return rows.map((row) => {
+      const selects = [...row.querySelectorAll("select")];
+      const field = selects[0].value;
+      if (field === "folder") {
+        const source = selects[1].value;
+        const folderField = row.querySelector("input[type=text]");
+        const folder = folderField.value.trim().replaceAll("\\", "/").replace(/^[/\\]+|[/\\]+$/g, "");
+        if (!source) {
+          invalid(selects[1], "Choose a library folder for each folder condition.");
+        }
+        if (folder && (folder.split("/").some((part) => !part || part === "." || part === "..") || folder.includes(":"))) {
+          invalid(folderField, 'The subfolder must stay inside its library folder, with no "..".');
+        }
+        return { field, source, folder, recursive: row.querySelector("input[type=checkbox]").checked };
+      }
+      if (field === "genre") {
+        if (!selects[3].value) invalid(selects[3], "Choose a genre.");
+        return { field, operator: "is", value: selects[3].value };
+      }
+
+      const inputs = row.querySelectorAll("input[type=text]");
+      const operator = selects[2].value;
+      const raw = inputs[1].value.trim();
+      if (!raw) invalid(inputs[1], `Enter a value for ${field}.`);
+      const numeric = ["year", "bpm", "duration"].includes(field)
+        || (field === "beets" && ["eq", "lt", "lte", "gt", "gte", "between"].includes(operator));
+      const parse = (value, input) => {
+        let number;
+        try {
+          number = field === "duration" ? parsePointTime(value) : Number(value);
+        } catch {
+          invalid(input, "Enter the duration as seconds or minutes:seconds, for example 90 or 1:30.");
+        }
+        if (number === null || !Number.isFinite(number)) invalid(input, `Enter a number for ${field}.`);
+        return number;
+      };
+      const result = {
+        field,
+        ...(field === "beets" ? { name: selects[4].value } : {}),
+        operator,
+        value: numeric ? parse(raw, inputs[1]) : raw,
+      };
+      if (field === "beets" && !result.name) invalid(selects[4], data.beets_error || "Beets fields are unavailable.");
+      if (field === "beets" && (data.beets_error || !(data.beets_fields || []).includes(result.name))) {
+        invalid(selects[4], data.beets_error || `Beets field ${result.name} is unavailable.`);
+      }
+      if (operator === "between") {
+        const high = inputs[2].value.trim();
+        if (!high) invalid(inputs[2], "Enter the upper value for the range.");
+        result.upper = numeric ? parse(high, inputs[2]) : high;
+      }
+      return result;
+    });
   }
 
   function renderNotice() {
@@ -401,11 +685,15 @@ export function installClockwheelPanel({ document: doc = document, request = req
   function showFields() {
     const visible = new Set(FIELDS_FOR[typeSelect.value] || []);
     for (const id of ALL_FIELDS) el(`clock-step-${id}`)?.closest(".clock-step-field")?.toggleAttribute("hidden", !visible.has(id));
+    if (FOLDER_TYPES.has(typeSelect.value) && !el("clock-step-conditions").children.length) renderConditions();
     renderOptions();
   }
 
   function resetForm() {
     editing = null;
+    const match = el("clock-step-match");
+    if (match) match.value = "all";
+    renderConditions([{}]);
     const requireFollowing = el("clock-step-require-following");
     if (requireFollowing) requireFollowing.checked = false;
     if (legend) legend.textContent = "Add a step";
@@ -419,14 +707,16 @@ export function installClockwheelPanel({ document: doc = document, request = req
     typeSelect.value = step.type in FIELDS_FOR ? step.type : "music";
     showFields();
     const set = (id, value) => { const field = el(id); if (field) field.value = value; };
-    set("clock-step-source", step.source || "");
-    set("clock-step-folder", step.folder || "");
+    if (step.type === "track") set("clock-step-source", step.source || "");
     set("clock-step-path", step.path || "");
     set("clock-step-preset", step.preset || "");
     set("clock-step-category", step.category || "");
+    if (FOLDER_TYPES.has(step.type)) {
+      set("clock-step-match", step.match || "all");
+      renderConditions(step.conditions || [{ field: "folder", source: step.source, folder: step.folder || "", recursive: Boolean(step.recursive) }]);
+    }
     set("clock-step-selection", step.selection || "least_recent");
     const check = (id, value) => { const field = el(id); if (field) field.checked = value; };
-    check("clock-step-recursive", Boolean(step.recursive));
     check("clock-step-enforce-rules", step.enforce_rules !== false);
     check("clock-step-require-following", Boolean(step.require_following));
     if (legend) legend.textContent = `Edit step ${index + 1}`;
@@ -451,21 +741,24 @@ export function installClockwheelPanel({ document: doc = document, request = req
 
   function formStep() {
     const type = typeSelect.value;
-    if (FOLDER_TYPES.has(type) || type === "track") {
-      const source = el("clock-step-source")?.value || "";
-      if (!source) {
-        el("clock-step-source")?.focus();
-        throw new Error(`Add a ${type === "liner" ? "voice liner" : "music"} folder under Music folders and Voice liner folders first.`);
-      }
-      if (type === "track") return { type, source, path: relative("clock-step-path", "The track", false) };
+    if (FOLDER_TYPES.has(type)) {
       const step = {
-        type, source, folder: relative("clock-step-folder", "The subfolder", true),
-        recursive: el("clock-step-recursive").checked,
+        type,
+        match: el("clock-step-match").value,
+        conditions: readConditions(),
         selection: el("clock-step-selection").value,
         enforce_rules: el("clock-step-enforce-rules").checked,
       };
       if (type === "liner") step.require_following = el("clock-step-require-following").checked;
       return step;
+    }
+    if (type === "track") {
+      const source = el("clock-step-source")?.value || "";
+      if (!source) {
+        el("clock-step-source")?.focus();
+        throw new Error(`Add a ${type === "liner" ? "voice liner" : "music"} folder under Music folders and Voice liner folders first.`);
+      }
+      return { type, source, path: relative("clock-step-path", "The track", false) };
     }
     if (type === "category") {
       const category = el("clock-step-category")?.value || "";
@@ -487,7 +780,27 @@ export function installClockwheelPanel({ document: doc = document, request = req
     throw new Error(`The editor cannot make ${type} steps yet.`);
   }
 
-  typeSelect.addEventListener("change", showFields);
+  typeSelect.addEventListener("change", () => {
+    // Changing music to liners starts with a folder of the new kind.
+    const kind = typeSelect.value === "liner" ? "liner" : "music";
+    for (const row of el("clock-step-conditions").children) {
+      const source = row.querySelectorAll("select")[1];
+      if (!data.sources.some((item) => item.id === source.value && item.kind === kind)) source.value = "";
+    }
+    showFields();
+  });
+  el("clock-add-condition")?.addEventListener("click", () => {
+    const host = el("clock-step-conditions");
+    if (host.children.length >= 32) {
+      say("A step can have at most 32 conditions.", true);
+      return;
+    }
+    const controls = conditionRow();
+    host.append(controls.row);
+    updateBeetsNotice();
+    controls.field.focus();
+    say(`Condition ${host.children.length} added.`);
+  });
   addButton.addEventListener("click", () => {
     if (!clock) { say("Open or create a clockwheel first.", true); return; }
     let step;

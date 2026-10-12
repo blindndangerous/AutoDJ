@@ -120,6 +120,8 @@ def test_song_picking_lists_each_clockwheel_and_switches_to_it(
     music = active / "music"
     music.mkdir()
     bridge.library = MagicMock()
+    bridge.library.clock_beets.snapshot.return_value = (frozenset(), {}, None)
+    bridge.library.entries_snapshot.return_value = ()
     bridge.library.catalog.sources.return_value = [
         {"id": "src1", "kind": "music", "path": str(music), "recursive": True}
     ]

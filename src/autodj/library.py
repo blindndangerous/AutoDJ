@@ -24,6 +24,7 @@ from autodj.catalog import (
     _prefix,
 )
 from autodj.categories import CategoryIndex
+from autodj.clock_condition_data import BeetsConditions
 from autodj.indexer import (
     FEATURE_DIM,
     LIBRARY_DECODE_LOG,
@@ -133,6 +134,7 @@ class LibraryManager:
         self._tracks_indexed = 0
         # Rotation categories for clockwheel steps, worked out from these entries.
         self.categories = CategoryIndex(cfg, self.entries_snapshot)
+        self.clock_beets = BeetsConditions(cfg)
         catalog_path = cfg.index.active_dir / "library.db"
         existing_catalog = catalog_path.is_file()
         self.catalog = LibraryCatalog(catalog_path)

@@ -253,6 +253,86 @@ def test_an_unreachable_server_at_start_is_reported(server):
         Worker(api, Mock(), identity).run()
 
 
+class QueueApi:
+    """A server whose claims answer from a script: a list of songs per claim, then none."""
+
+    def __init__(self, identity, claims=(), on_claim=None):
+        self.identity = identity
+        self.claims = list(claims)
+        self.claimed = 0
+        self.on_claim = on_claim
+
+    def heartbeat(self, device=""):
+        return {"identity": self.identity, "heartbeat_seconds": 30}
+
+    def claim(self, batch, device=""):
+        self.claimed += 1
+        if self.on_claim is not None:
+            self.on_claim(self.claimed)
+        songs = self.claims.pop(0) if self.claims else []
+        return {"identity": self.identity, "songs": songs, "waiting": len(songs)}
+
+    def release(self, leases):
+        pass
+
+
+def idle_worker(api, identity, clock, **kwargs):
+    """A worker whose waits move *clock* on instead of sleeping."""
+    worker = Worker(api, Mock(), identity, idle_seconds=30, **kwargs)
+    worker._now = lambda: clock[0]
+
+    def wait(seconds):
+        clock[0] += seconds
+
+    worker._wait = wait
+    return worker
+
+
+def test_idle_exit_waits_for_the_window_then_stops(server, caplog):
+    caplog.set_level("INFO", logger="autodj.worker")
+    identity = server.identity()
+    api = QueueApi(identity)
+    clock = [100.0]
+    worker = idle_worker(api, identity, clock, idle_exit=600)
+    worker.run()
+    # Asked at once and every half minute for ten minutes.
+    assert api.claimed == 21
+    assert clock[0] == 700.0
+    assert "Queue empty; waiting up to 10 minutes for new songs." in caplog.text
+    assert "Queue empty for 10 minutes; stopping." in caplog.text
+
+
+def test_idle_exit_starts_the_wait_again_after_new_songs(server, caplog):
+    caplog.set_level("INFO", logger="autodj.worker")
+    identity = server.identity()
+    # Empty, empty, then a song turns up just as the window would close.
+    api = QueueApi(identity, [[], [], [{"lease": "a" * 32}]])
+    clock = [0.0]
+    worker = idle_worker(api, identity, clock, idle_exit=60)
+    processed = []
+    worker._process = lambda song, folder, number: processed.append((song["lease"], clock[0]))
+    worker.run()
+    assert processed == [("a" * 32, 60.0)]
+    # The full minute again from the song, not what was left of the first wait.
+    assert clock[0] == 120.0
+    assert api.claimed == 6
+    assert caplog.text.count("Queue empty; waiting up to 1 minute for new songs.") == 2
+
+
+def test_idle_exit_zero_and_once_stop_at_the_first_empty_claim(server):
+    identity = server.identity()
+    for kwargs in ({"once": True}, {"idle_exit": 0}):
+        api = QueueApi(identity)
+        clock = [0.0]
+        idle_worker(api, identity, clock, **kwargs).run()
+        assert (api.claimed, clock[0]) == (1, 0.0)
+    # --idle-exit wins over --once.
+    api = QueueApi(identity)
+    clock = [0.0]
+    idle_worker(api, identity, clock, once=True, idle_exit=60).run()
+    assert (api.claimed, clock[0]) == (3, 60.0)
+
+
 # ---------------------------------------------------------------------------
 # Hooks, devices, transport
 # ---------------------------------------------------------------------------
@@ -433,6 +513,71 @@ def test_worker_command_runs_the_after_command_on_errors(tmp_path):
         )
     assert result.exit_code == 1
     assert "token revoked" in result.output
+    assert order == ["Before-command", "release", "After-command"]
+
+
+def _run_idle_command(tmp_path, api, order, *args):
+    """Run ``autodj worker`` with a real Worker against *api*, noting hooks in *order*."""
+    clock = [0.0]
+
+    def wait(self, seconds):
+        clock[0] += seconds
+
+    with (
+        patch("autodj.worker.ServerApi", return_value=api),
+        patch.object(Worker, "check_identity"),
+        patch.object(Worker, "_now", lambda self: clock[0]),
+        patch.object(Worker, "_wait", wait),
+        patch("autodj.worker.choose_device", return_value="cuda"),
+        patch("autodj.compute.device_description", return_value="RTX (CUDA GPU)"),
+        patch("autodj.worker.run_hook", side_effect=lambda cmd, label: order.append(label)),
+        patch("autodj.worker.release_gpu", side_effect=lambda w: order.append("release")),
+        patch("autodj.model.download_model_if_needed", return_value=tmp_path),
+        patch("autodj.model.load_model", return_value=Mock()),
+    ):
+        result = CliRunner().invoke(
+            cli,
+            [
+                "worker",
+                "--server",
+                "https://nas.local:8080",
+                "--token",
+                "adj1.x",
+                *args,
+                "--before-command",
+                "podman stop qwen3-tts",
+                "--after-command",
+                "podman start qwen3-tts",
+            ],
+        )
+    return result
+
+
+def test_idle_exit_runs_each_hook_once_around_all_the_empty_polls(server, tmp_path):
+    identity = server.identity()
+    order = []
+    api = QueueApi(identity, on_claim=lambda n: order.append("claim"))
+    result = _run_idle_command(tmp_path, api, order, "--idle-exit", "2")
+    assert result.exit_code == 0, result.output
+    # Asked at once and every half minute for two minutes, the hooks only around it all.
+    assert order == ["Before-command", *["claim"] * 5, "release", "After-command"]
+
+
+def test_ctrl_c_while_waiting_for_new_songs_still_runs_the_after_command(server, tmp_path):
+    import signal
+
+    identity = server.identity()
+
+    def press_ctrl_c(count):
+        if count == 3:
+            signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+
+    api = QueueApi(identity, on_claim=press_ctrl_c)
+    order = []
+    result = _run_idle_command(tmp_path, api, order, "--idle-exit", "10", "--once")
+    assert result.exit_code == 0, result.output
+    assert "Stopping after the current song" in result.output
+    assert api.claimed == 3
     assert order == ["Before-command", "release", "After-command"]
 
 

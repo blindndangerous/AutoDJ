@@ -1241,7 +1241,22 @@ def cmd_analyse_library(ctx: click.Context, index_name: str | None) -> None:
         "AUTODJ_WORKER_TOKEN, which keeps it out of the shell history."
     ),
 )
-@click.option("--once", is_flag=True, help="Stop when the server has nothing left to analyse.")
+@click.option(
+    "--once",
+    is_flag=True,
+    help="Stop as soon as the server has nothing left to analyse (the same as --idle-exit 0).",
+)
+@click.option(
+    "--idle-exit",
+    "idle_exit",
+    type=click.IntRange(min=0),
+    default=None,
+    metavar="MINUTES",
+    help=(
+        "Keep asking every half minute and stop once nothing has been left to analyse for "
+        "MINUTES, for a server still scanning new music.  Wins over --once."
+    ),
+)
 @click.option(
     "--batch",
     default=4,
@@ -1284,6 +1299,7 @@ def cmd_worker(
     server: str,
     token: str,
     once: bool,
+    idle_exit: int | None,
     batch: int,
     device: str,
     ca_cert: Path | None,
@@ -1295,11 +1311,12 @@ def cmd_worker(
     Claims songs from the server, downloads their audio, analyses them exactly
     as `autodj index` would and sends the results back.  The server's music
     folder is never read directly.  Ctrl+C stops after the current song.
+    Without --once or --idle-exit it keeps running and waits for new songs.
 
     
     Examples:
       autodj worker --server https://nas.local:8765 --token adj1.…
-      autodj worker --server https://nas.local:8765 --once \
+      autodj worker --server https://nas.local:8765 --idle-exit 10 \
         --before-command "podman stop qwen3-tts" --after-command "podman start qwen3-tts"
     """
     import signal
@@ -1342,7 +1359,10 @@ def cmd_worker(
         assert wrapper is not None  # loaded before the worker runs
         return analyse_file(path, wrapper)
 
-    worker = Worker(api, analyse, identity, batch=batch, once=once, device=label, stop=stop)
+    idle_seconds = idle_exit * 60.0 if idle_exit is not None else (0.0 if once else None)
+    worker = Worker(
+        api, analyse, identity, batch=batch, device=label, stop=stop, idle_exit=idle_seconds
+    )
     previous = signal.signal(signal.SIGINT, interrupted)
     try:
         # The token, the model and its weights are checked before anything is
