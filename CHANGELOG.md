@@ -216,6 +216,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Voice pack exact-hour files may have a space, `_` or `-` before the `o`, as in `hrs05_o.mp3`,
+  so packs named that way say "it's 5 o'clock" on the hour instead of skipping the top of the hour.
+
 - Startup now loads the current library and shows its song and analysis counts, rather than
   the count from an older index. Doctor and list-indexes also use the current catalog. Existing
   catalogs no longer depend on the old index manifest; legacy indexes are imported on first use.

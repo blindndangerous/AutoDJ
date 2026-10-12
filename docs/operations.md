@@ -1866,8 +1866,9 @@ or `.ogg`, and compares letters without regard to case. It recognises these name
 
 - Hour file: letters, spaces, `_` or `-` that include `h` and no `m`, then a two-digit hour
   from 00 to 23. Examples: `hr_05.mp3`, `H05.wav`, `hour-17.ogg`.
-- Exact-hour file: an hour file name with `o` straight after the digits, such as
-  `hr_05o.mp3`. It plays alone at minute 00.
+- Exact-hour file: an hour file name with `o` after the digits, either straight after them or
+  after one space, `_` or `-`, such as `hr_05o.mp3` or `hrs05_o.mp3`. It plays alone at
+  minute 00.
 - Minute file: letters, spaces, `_` or `-` that include `m` and no `h`, then a two-digit minute
   from 00 to 59. Examples: `m_56.mp3`, `min 07.wav`.
 - `intro` and `outro` (such as `intro.wav`): said before and after the time, joined in the same
