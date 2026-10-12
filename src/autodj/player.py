@@ -17,7 +17,7 @@ import sqlite3
 import threading
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from collections.abc import Set as AbstractSet
 from concurrent.futures import Future, wait
 from dataclasses import dataclass, field, replace
@@ -1167,7 +1167,7 @@ class Player:
         return clock, validate_clock(slots)
 
     def _clock_pick(self, context: _PickContext, cursor: int | None) -> Any:
-        from autodj.clockwheel import ClockPick, pick_slot
+        from autodj.clockwheel import ClockPick, ConditionPaths, pick_slot
 
         if self._clock is None:
             return ClockPick(
@@ -1192,7 +1192,7 @@ class Player:
         last_played = self._library.last_played()
         liners = self._library.entries_snapshot("liner")
         categories = self._category_members()
-        beets_items = {}
+        beets_items: Mapping[str, Mapping[str, Any]] | None = None
         condition_errors = {}
         fields = {
             condition["name"]
@@ -1201,7 +1201,9 @@ class Player:
             if condition["field"] == "beets"
         }
         if fields:
-            known, beets_items, error = self._library.clock_beets.snapshot(fields)
+            known, items, error = self._library.clock_beets.snapshot(fields)
+            # The same mapping until Beets is read again, so the cache below holds.
+            beets_items = items or None
             for index, slot in enumerate(self._clock_slots):
                 for condition in slot.conditions:
                     if condition["field"] == "beets":
@@ -1218,6 +1220,10 @@ class Player:
             self._clock_condition_errors = reasons
         else:
             self._clock_condition_errors = ()
+        cache = getattr(self, "_clock_condition_cache", None)
+        if cache is None or not cache.current(self._clock_slots, entries, liners, beets_items):
+            cache = ConditionPaths(self._clock_slots, entries, liners, beets_items)
+            self._clock_condition_cache = cache
 
         def pick(
             use_rules: bool,
@@ -1247,6 +1253,7 @@ class Player:
                 categories=categories,
                 beets=beets_items,
                 condition_errors=condition_errors,
+                condition_cache=cache,
             )
 
         # Like the other pick modes, relax rather than stop the music: first

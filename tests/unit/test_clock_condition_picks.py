@@ -202,3 +202,92 @@ def test_existing_folder_slots_still_pick_entries():
     entry = Track(r"C:\music\old-folder-song.flac")
     picked = pick_slot([ClockSlot(r"C:\music")], 0, [entry], {}, lambda _: True)
     assert picked.entry == entry
+
+
+def test_condition_cache_answers_like_a_fresh_scan():
+    from autodj.clockwheel import ConditionPaths
+
+    entries = tuple(
+        Track(
+            rf"C:\music\{'rock' if i % 2 else 'pop'}\song{i}.flac",
+            artist=f"Artist {i % 3}",
+            genre="Rock; Live" if i % 4 == 0 else "Pop",
+            year=1980 + i,
+        )
+        for i in range(24)
+    )
+    beets = {
+        normalize_path(entry.path): {"mood": "happy" if i % 5 else "sad"}
+        for i, entry in enumerate(entries)
+    }
+    slots = [
+        ClockSlot(
+            conditions=(
+                {"field": "folder", "folder": r"C:\music\rock", "recursive": False},
+                meta("genre", "is", "rock"),
+                meta("year", "lt", 2000),
+            ),
+            match=match,
+        )
+        for match in ("all", "any")
+    ] + [ClockSlot(conditions=(meta("beets", "contains", "APP", name="mood"),))]
+    for index in range(len(slots)):
+        cache = ConditionPaths(slots, entries, (), beets)
+        for skip in range(3):
+            pool = tuple(entry for number, entry in enumerate(entries) if number % 3 != skip)
+            fresh = pick_slot(slots, index, pool, {}, lambda _: True, Random(skip), beets=beets)
+            cached = pick_slot(
+                slots,
+                index,
+                pool,
+                {},
+                lambda _: True,
+                Random(skip),
+                beets=beets,
+                condition_cache=cache,
+            )
+            assert (cached.entry, cached.next_cursor, cached.skipped) == (
+                fresh.entry,
+                fresh.next_cursor,
+                fresh.skipped,
+            )
+
+
+def test_a_second_pick_does_not_evaluate_conditions_again(monkeypatch):
+    from autodj import clock_conditions
+    from autodj.clockwheel import ConditionPaths
+
+    entries = (Track(r"C:\music\old.flac", year=1990), Track(r"C:\music\new.flac", year=2010))
+    slots = [ClockSlot(conditions=(meta("year", "lt", 2000), meta("artist", "is", "Artist")))]
+    built = []
+    real = clock_conditions.condition_matcher
+    monkeypatch.setattr(
+        clock_conditions,
+        "condition_matcher",
+        lambda condition: built.append(condition) or real(condition),
+    )
+    cache = ConditionPaths(slots, entries, (), None)
+    for _ in range(2):
+        picked = pick_slot(
+            slots, 0, tuple(iter(entries)), {}, lambda _: True, condition_cache=cache
+        )
+        assert picked.entry is entries[0]
+    assert len(built) == 2  # Each condition once, for the first pick only.
+    assert cache.current(slots, entries, (), None)
+    assert not cache.current(slots, entries[:1] + entries[1:], (), None)
+
+
+def test_match_all_stops_once_no_entry_can_pass(monkeypatch):
+    from autodj import clock_conditions
+
+    built = []
+    real = clock_conditions.condition_matcher
+    monkeypatch.setattr(
+        clock_conditions,
+        "condition_matcher",
+        lambda condition: built.append(condition) or real(condition),
+    )
+    slot = ClockSlot(conditions=(meta("artist", "is", "Nobody"), meta("year", "lt", 2000)))
+    picked = pick_slot([slot], 0, [Track(r"C:\music\song.flac")], {}, lambda _: True)
+    assert picked.entry is None
+    assert built == [meta("artist", "is", "Nobody")]

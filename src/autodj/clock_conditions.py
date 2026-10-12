@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from fnmatch import fnmatchcase
 from typing import Any
 
-from autodj.beets_query import Term, first_release_year, number
+from autodj.beets_query import first_release_year, number
 
 _NAME = re.compile(r"[a-z_][a-z0-9_]*\Z")
 _TEXT = {"artist", "title", "album"}
@@ -128,61 +128,76 @@ def matches_condition(
     condition: Mapping[str, Any], entry: Any, beets_item: Mapping[str, Any] | None = None
 ) -> bool:
     """Match a validated nonfolder condition against a library entry."""
+    return condition_matcher(condition)(entry, beets_item)
+
+
+def condition_matcher(
+    condition: Mapping[str, Any],
+) -> Callable[[Any, Mapping[str, Any] | None], bool]:
+    """Validate a nonfolder condition once and return a test for each entry.
+
+    The test takes a library entry and its Beets values (or ``None``), and
+    answers exactly as :func:`matches_condition` does.
+    """
     c = validate_metadata_condition(condition)
     field, op, wanted = c["field"], c["operator"], c["value"]
     name = c["name"] if field == "beets" else field
     if field == "genre":
-        return any(g.casefold() == wanted.casefold() for g in genres(_get(entry, "genre")))
-    if field == "beets":
-        raw = (
-            None
-            if beets_item is None
-            else (
-                first_release_year(beets_item)[0]
-                if name == "original_year"
-                else beets_item.get(name)
-            )
-        )
-    elif field == "duration":
-        raw = _get(entry, "length")
-    elif field in {"year", "bpm"} or field in _TEXT:
-        raw = _get(entry, field)
-    else:
-        raw = None
-    if raw is None or raw == "":
-        return False
-    if op in {"eq", "lt", "lte", "gt", "gte", "between"}:
-        found = number(raw)
-        if (
-            found is None
-            or (field != "beets" and found < 0)
-            or (
-                (
-                    field in {"year", "bpm", "duration"}
-                    or (field == "beets" and name in {"year", "bpm", "length", "original_year"})
+        folded = wanted.casefold()
+
+        def genre_matches(entry: Any, beets_item: Mapping[str, Any] | None = None) -> bool:
+            return any(g.casefold() == folded for g in genres(_get(entry, "genre")))
+
+        return genre_matches
+    numeric = op in {"eq", "lt", "lte", "gt", "gte", "between"}
+    no_zero = field in {"year", "bpm", "duration"} or (
+        field == "beets" and name in {"year", "bpm", "length", "original_year"}
+    )
+    upper: Any = c.get("upper")
+    folded = wanted.casefold() if isinstance(wanted, str) else ""
+    pattern = folded.replace("[", "[[]")
+
+    def matches(entry: Any, beets_item: Mapping[str, Any] | None = None) -> bool:
+        if field == "beets":
+            raw = (
+                None
+                if beets_item is None
+                else (
+                    first_release_year(beets_item)[0]
+                    if name == "original_year"
+                    else beets_item.get(name)
                 )
-                and found == 0
             )
-        ):
+        elif field == "duration":
+            raw = _get(entry, "length")
+        else:
+            raw = _get(entry, field)
+        if raw is None or raw == "":
             return False
-        if op == "eq":
-            return found == wanted
-        if op == "lt":
-            return found < wanted
-        if op == "lte":
-            return found <= wanted
-        if op == "gt":
-            return found > wanted
-        if op == "gte":
-            return found >= wanted
-        return Term(field, low=wanted, high=c["upper"], is_range=True).matches({field: found})
-    if field == "beets":
-        raw = _beets_text(raw)
-    if not isinstance(raw, str) or not raw.strip():
-        return False
-    if op == "is":
-        return raw.casefold() == wanted.casefold()
-    if op == "contains":
-        # A substring of the text, also for a numeric Beets column read as text.
-        return wanted.casefold() in raw.casefold()
-    return fnmatchcase(raw.casefold(), wanted.casefold().replace("[", "[[]"))
+        if numeric:
+            found = number(raw)
+            if found is None or (field != "beets" and found < 0) or (no_zero and found == 0):
+                return False
+            if op == "eq":
+                return found == wanted
+            if op == "lt":
+                return found < wanted
+            if op == "lte":
+                return found <= wanted
+            if op == "gt":
+                return found > wanted
+            if op == "gte":
+                return found >= wanted
+            return wanted <= found <= upper
+        if field == "beets":
+            raw = _beets_text(raw)
+        if not isinstance(raw, str) or not raw.strip():
+            return False
+        if op == "is":
+            return raw.casefold() == folded
+        if op == "contains":
+            # A substring of the text, also for a numeric Beets column read as text.
+            return folded in raw.casefold()
+        return fnmatchcase(raw.casefold(), pattern)
+
+    return matches

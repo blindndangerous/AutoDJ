@@ -153,3 +153,24 @@ def test_renaming_active_clock_keeps_it_selected_when_beets_is_unavailable(tmp_p
         assert catalog.get_setting("clock")["name"] == "Daytime"
         assert (tmp_path / "clockwheels" / "Daytime.json").exists()
         assert not (tmp_path / "clockwheels" / "Morning.json").exists()
+
+
+def test_genre_choices_are_listed_again_only_when_the_library_changes(tmp_path, monkeypatch):
+    from autodj import clock_conditions
+
+    with LibraryCatalog(tmp_path / "library.sqlite") as catalog:
+        bridge, routes = app_for(catalog, tmp_path)
+        music = (SimpleNamespace(genre="Rock"),)
+        liners = (SimpleNamespace(genre="Station IDs"),)
+        bridge.library.entries_snapshot = lambda kind="music": liners if kind == "liner" else music
+        read = []
+        real = clock_conditions.genres
+        monkeypatch.setattr(
+            clock_conditions, "genres", lambda value: read.append(value) or real(value)
+        )
+        assert call(routes, "GET", "/api/library/clock")["genres"] == ["Rock", "Station IDs"]
+        assert call(routes, "GET", "/api/library/clock")["genres"] == ["Rock", "Station IDs"]
+        assert len(read) == 2
+        music = (SimpleNamespace(genre="Jazz"),)
+        assert call(routes, "GET", "/api/library/clock")["genres"] == ["Jazz", "Station IDs"]
+        assert len(read) == 4

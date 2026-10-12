@@ -709,3 +709,31 @@ def test_missing_beets_step_skips_to_music_and_does_not_broaden_fallback(station
     player._fallback_pick = MagicMock(return_value=a)
     assert player._empty_category_fallback(a, player._pick_context()) is None
     player._fallback_pick.assert_not_called()
+
+
+def test_clock_conditions_are_worked_out_once_per_library_generation(station, monkeypatch):
+    from autodj import clock_conditions
+    from autodj.clockwheel import ClockSlot
+
+    player, (a, b, voice, jingle), _ = station
+    player._cfg.playback.pick_mode = "clock"
+    player._clock = {"cursor": 0, "resync_minutes": []}
+    a.year, b.year = 2005, 1995
+    music, liners = (a, b), (voice, jingle)
+    player._library.entries_snapshot = lambda kind="music": liners if kind == "liner" else music
+    player._clock_slots = [
+        ClockSlot(conditions=({"field": "year", "operator": "lt", "value": 2000},))
+    ]
+    built = []
+    real = clock_conditions.condition_matcher
+    monkeypatch.setattr(
+        clock_conditions,
+        "condition_matcher",
+        lambda condition: built.append(condition) or real(condition),
+    )
+    assert player._clock_pick(player._pick_context(), 0).entry is b
+    assert player._clock_pick(player._pick_context(), 0).entry is b
+    assert len(built) == 1
+    music = (a, b)  # The library published new entries.
+    assert player._clock_pick(player._pick_context(), 0).entry is b
+    assert len(built) == 2

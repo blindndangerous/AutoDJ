@@ -217,35 +217,87 @@ def validate_clock(slots: Sequence[ClockSlot]) -> list[ClockSlot]:
     return result
 
 
+def condition_paths(
+    slot: ClockSlot, entries: Sequence[Any], beets: Mapping[str, Mapping[str, Any]] | None = None
+) -> set[str]:
+    """The paths of *entries* that pass a conditions slot's Match all or Match any."""
+    from autodj.catalog import normalize_path
+    from autodj.clock_conditions import condition_matcher
+
+    found_paths: set[str] | None = None
+    for condition in slot.conditions:
+        if condition["field"] == "folder":
+            matched = _slot_entries(
+                ClockSlot(folder=condition["folder"], recursive=condition["recursive"]), entries
+            )
+        elif condition["field"] == "beets" and beets:
+            test = condition_matcher(condition)
+            matched = [
+                entry for entry in entries if test(entry, beets.get(normalize_path(entry.path)))
+            ]
+        else:
+            test = condition_matcher(condition)
+            matched = [entry for entry in entries if test(entry, None)]
+        paths = {entry.path for entry in matched}
+        if found_paths is None:
+            found_paths = paths
+        elif slot.match == "all":
+            found_paths &= paths
+        else:
+            found_paths |= paths
+        if slot.match == "all" and not found_paths:
+            break  # Nothing can pass every condition now.
+    return found_paths or set()
+
+
+class ConditionPaths:
+    """Each conditions step's matching paths, worked out once per library and Beets data.
+
+    Build one from the music and liner entries a pick draws its pools from
+    and the Beets values it reads; a pick then only looks each path up.  The
+    entries are compared by identity, so a new one is needed whenever the
+    library publishes new entries or Beets is read again.
+    """
+
+    def __init__(
+        self,
+        slots: Sequence[ClockSlot],
+        entries: Sequence[Any],
+        liners: Sequence[Any],
+        beets: Mapping[str, Mapping[str, Any]] | None,
+    ) -> None:
+        self._key = (slots, entries, liners, beets)
+        self._paths: dict[int, frozenset[str]] = {}
+
+    def current(
+        self,
+        slots: Sequence[ClockSlot],
+        entries: Sequence[Any],
+        liners: Sequence[Any],
+        beets: Mapping[str, Mapping[str, Any]] | None,
+    ) -> bool:
+        """Whether this was built from these very slots, entries and Beets values."""
+        return all(
+            old is new for old, new in zip(self._key, (slots, entries, liners, beets), strict=True)
+        )
+
+    def paths(self, index: int) -> frozenset[str]:
+        """The paths step *index* matches, worked out the first time it is asked for."""
+        found = self._paths.get(index)
+        if found is None:
+            slots, entries, liners, beets = self._key
+            slot = slots[index]
+            pool = liners if slot.kind == "liner" else entries
+            found = self._paths[index] = frozenset(condition_paths(slot, pool, beets))
+        return found
+
+
 def _slot_entries(
     slot: ClockSlot, entries: Sequence[Any], beets: Mapping[str, Mapping[str, Any]] | None = None
 ) -> list[Any]:
     if slot.conditions:
-        from autodj.catalog import normalize_path
-        from autodj.clock_conditions import matches_condition
-
-        condition_paths: set[str] | None = None
-        for condition in slot.conditions:
-            if condition["field"] == "folder":
-                matched = _slot_entries(
-                    ClockSlot(folder=condition["folder"], recursive=condition["recursive"]), entries
-                )
-            else:
-                matched = [
-                    entry
-                    for entry in entries
-                    if matches_condition(
-                        condition, entry, beets.get(normalize_path(entry.path)) if beets else None
-                    )
-                ]
-            found_paths = {entry.path for entry in matched}
-            if condition_paths is None:
-                condition_paths = found_paths
-            elif slot.match == "all":
-                condition_paths &= found_paths
-            else:
-                condition_paths |= found_paths
-        return [entry for entry in entries if entry.path in (condition_paths or set())]
+        found_paths = condition_paths(slot, entries, beets)
+        return [entry for entry in entries if entry.path in found_paths]
     root = _normalized(slot.folder)
     separator = "/" if root.startswith("/") and not root.startswith("//") else "\\"
     found: list[Any] = []
@@ -278,6 +330,7 @@ def pick_slot(
     categories: Mapping[str, tuple[str, AbstractSet[str]]] | None = None,
     beets: Mapping[str, Mapping[str, Any]] | None = None,
     condition_errors: Mapping[int, str] | None = None,
+    condition_cache: ConditionPaths | None = None,
 ) -> ClockPick:
     """Scan one clock cycle and select its next eligible music entry.
 
@@ -288,6 +341,8 @@ def pick_slot(
     ``categories`` maps a category ID to its name and the paths of its
     songs; a category slot picks from the entries with those paths, and
     one whose category is missing or empty is skipped like an empty folder.
+    ``condition_cache``, built from these *slots* and the entries the
+    pools were drawn from, saves working out a conditions step again.
     Nothing is written to playback history by this pure selection helper.
     """
     slots = validate_clock(slots)
@@ -383,9 +438,14 @@ def pick_slot(
                 )
             continue
         pool = liners if slot.kind == "liner" else entries
+        if slot.conditions and condition_cache is not None:
+            step_paths = condition_cache.paths(index)
+            matches = [entry for entry in pool if entry.path in step_paths]
+        else:
+            matches = _slot_entries(slot, pool, beets)
         selected, reason = choose(
             slot,
-            _slot_entries(slot, pool, beets),
+            matches,
             f"{slot.kind} step {index + 1} conditions"
             if slot.conditions
             else f"{slot.kind} slot {slot.folder}",

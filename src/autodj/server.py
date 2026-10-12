@@ -2945,13 +2945,22 @@ def create_app(
             library.clock_beets = BeetsConditions(bridge.player._cfg)
         return library.clock_beets
 
-    def _clock_snapshot(library: Any) -> dict:
+    # The genre names last listed, with the music and liner entries they came from.
+    clock_genres: list[Any] = [None, None, []]
+
+    def _clock_genres(library: Any) -> list[str]:
+        """Every genre in the library, worked out again only when its entries change."""
         from autodj.clock_conditions import genres
 
+        music, liners = library.entries_snapshot(), library.entries_snapshot("liner")
+        if clock_genres[0] is not music or clock_genres[1] is not liners:
+            names = {genre for entry in music + liners for genre in genres(entry.genre)}
+            clock_genres[:] = [music, liners, sorted(names, key=str.casefold)]
+        return list(clock_genres[2])
+
+    def _clock_snapshot(library: Any) -> dict:
         setting = _clock_setting(library)
         known, _, beets_error = _clock_beets(library).snapshot()
-        entries = library.entries_snapshot() + library.entries_snapshot("liner")
-        genre_names = {genre for entry in entries for genre in genres(entry.genre)}
         return {
             "names": _clock_store().list_names(),
             "active": _active_clock(library),
@@ -2961,7 +2970,7 @@ def create_app(
                 for s in library.catalog.sources()
             ],
             "presets": _preset_names(),
-            "genres": sorted(genre_names, key=str.casefold),
+            "genres": _clock_genres(library),
             "beets_fields": sorted(known),
             "beets_error": beets_error,
             "categories": [
