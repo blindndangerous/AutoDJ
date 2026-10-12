@@ -694,7 +694,15 @@ class Scheduler:
                 raise EventError(
                     "enabled", "This one-time event is in the past; edit its date first"
                 )
-            raise EventError("enabled", "This event's end date has passed; edit its dates first")
+            today = self._clock().astimezone(self.zone).date()
+            if event.end_date is not None and event.end_date < today:
+                raise EventError(
+                    "enabled", "This event's end date has passed; edit its dates first"
+                )
+            # A range still to come, but with none of the event's days in it.
+            raise EventError(
+                "enabled", "This event has no run left before its end date; edit its dates first"
+            )
         event.enabled = enabled
         if not enabled:
             self._forget_pending(event_id)

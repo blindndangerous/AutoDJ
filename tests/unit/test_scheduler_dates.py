@@ -265,6 +265,17 @@ def test_an_event_with_no_run_left_is_refused_or_kept_disabled(tmp_path: Path) -
     with pytest.raises(EventError, match="end date has passed") as caught:
         asyncio.run(rig.schedule.set_enabled(ended.id, True))
     assert caught.value.field == "enabled"
+    # A range still to come with none of the event's days in it has not
+    # passed; enabling says there is no run in it.
+    weekend = rig.add(
+        repeat="weekdays", start_date="2026-10-17", end_date="2026-10-18", enabled=False
+    )
+    with pytest.raises(EventError) as caught:
+        asyncio.run(rig.schedule.set_enabled(weekend.id, True))
+    assert (caught.value.field, str(caught.value)) == (
+        "enabled",
+        "This event has no run left before its end date; edit its dates first",
+    )
 
 
 def test_files_without_dates_load_unchanged_and_stay_readable(tmp_path: Path) -> None:
