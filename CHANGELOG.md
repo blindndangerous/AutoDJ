@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Undo step change in the clockwheel editor: use its button or Ctrl+Z to undo step additions,
+  edits, moves, duplicates and deletions until you save or open another clockwheel. The Delete
+  key now removes a step immediately, matching its Delete button. Text fields keep normal text undo.
+
 - Play dates for voice liners and carts: a **Not before** date, a **Do not play after** date, or
   both, in the station time zone. Outside them, automatic liners, clockwheel liner steps and
   scheduled liner events skip the liner, and a cart plays nothing and says why. Browse voice
@@ -94,8 +98,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Several named clockwheels (Library tools, Clockwheels): create, duplicate, rename, delete,
   activate one or turn the clockwheel off. Each is a versioned JSON file in `clockwheels/` in the
   active index folder, included in backups. The step editor has numbered names with Edit, Move up,
-  Move down, Duplicate and Delete buttons. Up/Down navigate names, Enter edits, and the Delete key
-  asks before it removes a step; Alt+Up/Down still move the focused step without changing the
+  Move down, Duplicate and Delete buttons. Up/Down navigate names, Enter edits, and Delete removes
+  a step; Alt+Up/Down still move the focused step without changing the
   playback shortcuts. Steps
   can play music or liners from a library folder or a folder inside it, a specific track, or
   switch preset. Profiles remember the active clockwheel, and the schedule's
