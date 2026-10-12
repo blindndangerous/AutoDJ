@@ -46,6 +46,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from autodj.categories import CategoryStore
+from autodj.clip_dates import LinerDates
 from autodj.player import Player, apply_repeat_windows
 from autodj.repeat_rules import artist_key, prune_history
 
@@ -57,6 +59,15 @@ MAX_HOURS = 30 * 24
 MAX_PICKS = 20_000
 #: The span a run covers when neither a span nor a pick count is given.
 DEFAULT_HOURS = 24.0
+#: The longest a run may work, in seconds of real time; it then stops with
+#: what it has, and the report says so.
+MAX_RUN_SECONDS = 600.0
+#: The earliest and latest start a run accepts (Unix seconds, 2000 to 2099).
+EARLIEST_START = 946_684_800.0
+LATEST_START = 4_102_444_800.0
+# The pause after each pick, so the audio and web threads get the
+# interpreter: a real sleep, which a zero-length one is not.
+_PICK_PAUSE_S = 0.002
 #: How many examples a list in the report gives.
 SAMPLE = 10
 # A pick that finds nothing is retried this much later (dead air).
@@ -128,8 +139,12 @@ class SimulationRequest:
             isinstance(self.seed, bool) or not isinstance(self.seed, int) or self.seed < 0
         ):
             raise SimulationError("The seed must be a whole number, 0 or more")
-        if self.start is not None and not math.isfinite(self.start):
-            raise SimulationError("The start time must be a real time")
+        if self.start is not None and (
+            isinstance(self.start, bool)
+            or not math.isfinite(self.start)
+            or not EARLIEST_START <= self.start < LATEST_START
+        ):
+            raise SimulationError("The start must be between 1 January 2000 and 31 December 2099")
 
 
 @dataclass
@@ -155,27 +170,161 @@ class SimulationSource:
     events: Sequence[Any] = ()
     timezone: str = "UTC"
     liner_dates: Path | None = None
+    snapshot: PlayerSnapshot | None = None
+
+
+#: The picker settings a run copies from the live player.
+_COPIED = (
+    "_preset",
+    "_bpm_range",
+    "_pure_shuffle",
+    "_anchor_to_seed",
+    "_seed_path",
+    "_discovery_every",
+)
+
+
+@dataclass(frozen=True)
+class PlayerSnapshot:
+    """The live player's settings, history and clockwheel place at one moment."""
+
+    cfg: Any
+    sim: Any
+    related_artists: Any
+    settings: Mapping[str, Any]
+    discovery_enabled: bool
+    history: tuple[Any, ...]
+    recent: tuple[str, ...]
+    clock: Mapping[str, Any] | None
+    clock_status: str | None
+    liner_filter: Any
+
+
+def snapshot_player(player: Any) -> PlayerSnapshot:
+    """Copy what a run needs from *player*, holding the locks its writers hold.
+
+    Song-picking and clockwheel changes made on a worker thread hold
+    :data:`~autodj.player.SETTINGS_LOCK`; the play history is guarded by the
+    player's pick lock.  The server takes this copy on its event loop, where
+    the other settings routes run, so none of them can change it half way.
+    """
+    from autodj.player import SETTINGS_LOCK
+
+    with SETTINGS_LOCK:
+        cfg = copy.deepcopy(player._cfg)
+        settings = {name: getattr(player, name, None) for name in _COPIED}
+        clock = getattr(player, "_clock", None)
+        snapshot_clock = dict(clock) if clock else None
+        clock_status = getattr(player, "_clock_status", None)
+        related = getattr(player, "_related_artists", None)
+        liner_filter = getattr(player, "liner_filter", None)
+        discovery = bool(player._state.discovery_enabled)
+    with player._pick_lock:
+        history = tuple(player._state.play_history)
+        recent = tuple(player._state.recently_played)
+    return PlayerSnapshot(
+        cfg=cfg,
+        sim=player._sim,
+        related_artists=related,
+        settings=settings,
+        discovery_enabled=discovery,
+        history=history,
+        recent=recent,
+        clock=snapshot_clock,
+        clock_status=clock_status,
+        liner_filter=liner_filter,
+    )
+
+
+class LibrarySnapshot:
+    """The music library read once from a read-only catalog, for ``autodj simulate``.
+
+    It offers what the picker reads from the shared library (songs,
+    liners, categories, Beets values, the station's plays) without the
+    library manager, which opens the catalog for writing.  A categories
+    file that cannot be read is skipped, never set aside.
+    """
+
+    def __init__(self, cfg: Any, catalog: Any, station: str) -> None:
+        import faiss
+
+        from autodj.catalog import normalize_path
+        from autodj.categories import CategoryIndex
+        from autodj.clock_condition_data import BeetsConditions
+        from autodj.indexer import FEATURE_DIM
+        from autodj.similarity import SimilarityIndex
+        from autodj.station_ledger import StationLedger
+
+        self.catalog = catalog
+        self._normalize = normalize_path
+        with catalog.reader() as reader:
+            coverage = reader.coverage()
+            self._music = reader.entries("music", coverage)
+            self._liners = reader.entries("liner", coverage)
+            by_path = {entry.path: entry for entry in self._music}
+            vector_paths = [path for path in reader.vector_paths() if path in by_path]
+            index = faiss.IndexFlatIP(FEATURE_DIM)
+            for chunk in reader.vectors(set(vector_paths)):
+                index.add(chunk)
+            played = reader.last_played(station)
+        self.sim = SimilarityIndex.empty()
+        self.sim.replace_catalog_faiss([by_path[path] for path in vector_paths], index)
+        self._by_path = {
+            normalize_path(entry.path): entry for entry in (*self._music, *self._liners)
+        }
+        self.categories = CategoryIndex(cfg, self.entries_snapshot)
+        self.categories.store = _ReadOnlyCategoryStore(self.categories.store.path)
+        self.clock_beets = BeetsConditions(cfg)
+        self.ledger = StationLedger(catalog, station, self.entry_for_path)
+        self.ledger.loaded(played)
+
+    def entries_snapshot(self, kind: str = "music") -> tuple[Any, ...]:
+        if kind == "music":
+            return self._music
+        return self._liners if kind == "liner" else ()
+
+    def entry_for_path(self, path: str | Path) -> Any | None:
+        return self._by_path.get(self._normalize(path))
+
+    def record_for_id(self, record_id: str) -> dict | None:
+        record = self.catalog.record_for_id(record_id)
+        return record if record and self._normalize(record["path"]) in self._by_path else None
+
+
+class _ReadOnlyCategoryStore(CategoryStore):
+    """``categories.json``, only read: a file that cannot be read is skipped, never moved."""
+
+    def _keep_bad_copy(self, reason: str) -> None:
+        logger.warning("Rotation test: categories file %s skipped: %s", self.path, reason)
+
+
+class _ReadOnlyLinerDates(LinerDates):
+    """``liner_dates.json``, only read: a file that cannot be read is skipped, never moved."""
+
+    def _keep_bad_copy(self, reason: str) -> None:
+        logger.warning("Rotation test: liner dates file %s skipped: %s", self.path, reason)
 
 
 @contextlib.contextmanager
 def open_station(cfg: Any, station: str = "default") -> Iterator[SimulationSource]:
     """*station* as saved on disk, for a run outside the server (``autodj simulate``).
 
-    Opens the library read-only in spirit: settings come from the
-    configuration and the web page's saved settings, plays and the
-    clockwheel place from the library, events from the schedule file.
-    Nothing is written.  The library closes when the block ends.
+    Settings come from the configuration and the web page's saved
+    settings, plays and the clockwheel place from the library, events from
+    the schedule file.  The catalog is opened read-only (see
+    :class:`~autodj.catalog.ReadOnlyCatalog`), so a running server keeps
+    its write lock and nothing is migrated or written.  It closes when the
+    block ends.
 
     Raises:
         SimulationError: There is no library yet, or the schedule file
             cannot be read.
     """
     from autodj._bridge import PlayerBridge
-    from autodj.library import LibraryManager
+    from autodj.catalog import ReadOnlyCatalog
     from autodj.runtime_state import load_into_bridge
     from autodj.scheduler import system_timezone
-    from autodj.similarity import SimilarityIndex
-    from autodj.stations import DEFAULT_SLUG, StationPaths
+    from autodj.stations import StationPaths
 
     active = Path(cfg.index.active_dir)
     if not (active / "library.db").is_file():
@@ -184,10 +333,11 @@ def open_station(cfg: Any, station: str = "default") -> Iterator[SimulationSourc
         )
     paths = StationPaths.default(cfg)
     events = _read_events(paths.schedule)
-    sim = SimilarityIndex.empty()
-    library = LibraryManager(cfg, sim)
+    catalog = ReadOnlyCatalog(active / "library.db")
     try:
-        ledger = library.ledger if station == DEFAULT_SLUG else library.add_ledger(station)
+        library = LibrarySnapshot(cfg, catalog, station)
+        ledger = library.ledger
+        sim = library.sim
         player = Player(cfg, sim, dry_run=True)
         player._library = library
         player._ledger = ledger
@@ -205,7 +355,7 @@ def open_station(cfg: Any, station: str = "default") -> Iterator[SimulationSourc
             liner_dates=paths.liner_dates,
         )
     finally:
-        library.close()
+        catalog.close()
 
 
 def _read_events(path: Path) -> list[Any]:
@@ -330,30 +480,28 @@ class _SimPlayer(Player):
 
 def _copy_player(
     source: SimulationSource,
+    snapshot: PlayerSnapshot,
     start: float,
     rng: random.Random,
     observer: Callable[[str, Any], None],
 ) -> _SimPlayer:
-    """A dry-run player with the station's settings, history and clockwheel place."""
-    live = source.player
-    cfg = copy.deepcopy(live._cfg)
-    player = _SimPlayer(cfg, live._sim, dry_run=True)
+    """A dry-run player with the snapshot's settings, history and clockwheel place."""
+    player = _SimPlayer(copy.deepcopy(snapshot.cfg), snapshot.sim, dry_run=True)
     player._sim_now = start
     player._state.clock = lambda: player._sim_now
-    player._related_artists = getattr(live, "_related_artists", player._related_artists)
-    for name in ("_preset", "_bpm_range", "_pure_shuffle", "_anchor_to_seed", "_seed_path"):
-        setattr(player, name, getattr(live, name, getattr(player, name)))
-    player._discovery_every = getattr(live, "_discovery_every", None)
-    player._state.discovery_enabled = bool(live._state.discovery_enabled)
+    if snapshot.related_artists is not None:
+        player._related_artists = snapshot.related_artists
+    for name, value in snapshot.settings.items():
+        setattr(player, name, value)
+    player._state.discovery_enabled = snapshot.discovery_enabled
     player._library = source.library
     player._ledger = _SimLedger(source.ledger, source.station, start)
     player._random = rng
     player.pick_observer = observer
-    player.liner_filter = _liner_filter(source, player)
+    player.liner_filter = _liner_filter(source, snapshot, player)
     apply_repeat_windows(player)
-    with live._pick_lock:
-        records = list(live._state.play_history)
-        recent = list(live._state.recently_played)
+    records = list(snapshot.history)
+    recent = list(snapshot.recent)
     if records and records[-1].started > start:
         # A run that starts before the latest play knows only the plays before it.
         records = [record for record in records if record.started <= start]
@@ -362,21 +510,25 @@ def _copy_player(
     state.play_history = deque(records)
     state.recently_played = deque(recent, maxlen=state.recently_played.maxlen)
     prune_history(state.play_history, state.rules, start, state.dmca_seconds)
-    clock = getattr(live, "_clock", None)
+    clock = snapshot.clock
     if clock and clock.get("name"):
         player.activate_clock(clock["name"], clock.get("cursor", 0))
     else:
         player._clock = None
-        player._clock_status = getattr(live, "_clock_status", None) or "No clockwheel is active"
+        player._clock_status = snapshot.clock_status or "No clockwheel is active"
     return player
 
 
-def _liner_filter(source: SimulationSource, player: _SimPlayer) -> Any:
-    """The clockwheel's liner steps judge play dates by the dry run's day."""
+def _liner_filter(source: SimulationSource, snapshot: PlayerSnapshot, player: _SimPlayer) -> Any:
+    """The clockwheel's liner steps judge play dates by the dry run's day.
+
+    The dates file is only read: one that cannot be read lets every liner
+    play, and stays where it is.
+    """
     if source.liner_dates is None:
-        return getattr(source.player, "liner_filter", None)
+        return snapshot.liner_filter
     from autodj.categories import station_wall
-    from autodj.clip_dates import LinerDates, LinerGate
+    from autodj.clip_dates import LinerGate
 
     library = source.library
 
@@ -385,7 +537,7 @@ def _liner_filter(source: SimulationSource, player: _SimPlayer) -> Any:
         return str(record["id"]) if record else Path(path).name
 
     gate = LinerGate(
-        LinerDates(source.liner_dates),
+        _ReadOnlyLinerDates(source.liner_dates),
         lambda: station_wall(player._cfg, player._sim_now).date(),
         liner_id,
     )
@@ -416,9 +568,17 @@ class _Schedule:
                 continue
             if event.action not in _PICKING_ACTIONS | _UNSIMULATED_ACTIONS:
                 continue
-            when = next_run(event, after, self.zone)
+            when = self._after(event, after)
             if when is not None:
                 heapq.heappush(self._due, (when.timestamp(), number, event))
+
+    def _after(self, event: Any, moment: datetime) -> datetime | None:
+        """*event*'s next run after *moment*; none when its rule cannot be worked out."""
+        try:
+            following: datetime | None = self._next_run(event, moment, self.zone)
+        except (ValueError, OverflowError, OSError):
+            return None
+        return following
 
     def due(self, now: float) -> list[tuple[float, Any]]:
         """Every run at or before *now*, in order; each event's next run is lined up."""
@@ -426,14 +586,25 @@ class _Schedule:
         while self._due and self._due[0][0] <= now:
             when, number, event = heapq.heappop(self._due)
             found.append((when, event))
-            following = self._next_run(event, datetime.fromtimestamp(when, UTC), self.zone)
+            following = self._after(event, datetime.fromtimestamp(when, UTC))
             if following is not None:
                 heapq.heappush(self._due, (following.timestamp(), number, event))
         return found
 
 
 def _apply_event(player: _SimPlayer, bridge: Any, event: Any) -> str | None:
-    """Make *event*'s change on the dry-run player; why not, in words, when it cannot."""
+    """Make *event*'s change on the dry-run player; why not, in words, when it cannot.
+
+    An event the player refuses (a mode or preset that no longer exists)
+    is a refusal in the report, never the end of the run.
+    """
+    try:
+        return _make_change(player, bridge, event)
+    except Exception as exc:
+        return f"it could not be applied: {exc}"
+
+
+def _make_change(player: _SimPlayer, bridge: Any, event: Any) -> str | None:
     params = event.params
     if event.action == "pick_mode":
         from autodj.settings_bodies import PlaybackSettingsBody
@@ -536,18 +707,23 @@ def simulate(
     *,
     progress: Callable[[Progress], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
+    budget: float = MAX_RUN_SECONDS,
+    on_pick: Callable[[float, Any], None] | None = None,
 ) -> dict[str, Any]:
     """Run *request* against a copy of *source*'s picker; return the report (JSON shape).
 
     See :func:`report_text` for the same report in words.  *progress* is
-    told how far the run has got about every hundred picks, and the run
-    stops early, with what it has, when *cancelled* returns ``True``.
+    told how far the run has got about every hundred picks.  The run
+    checks before every pick whether *cancelled* returns ``True`` or it
+    has worked *budget* seconds, and then stops with what it has; the
+    report says which.  *on_pick* hears each song or liner as it starts,
+    with its start time.
 
     Raises:
         SimulationError: The library has no songs.
     """
     with _quiet_logs():
-        return _simulate(source, request, progress, cancelled)
+        return _simulate(source, request, progress, cancelled, budget, on_pick)
 
 
 def _simulate(
@@ -555,13 +731,16 @@ def _simulate(
     request: SimulationRequest,
     progress: Callable[[Progress], None] | None,
     cancelled: Callable[[], bool] | None,
+    budget: float,
+    on_pick: Callable[[float, Any], None] | None,
 ) -> dict[str, Any]:
     began = time.perf_counter()
     start = request.start if request.start is not None else time.time()
     seed = request.seed if request.seed is not None else random.SystemRandom().randrange(10**9)
     rng = random.Random(seed)
     tally = _Tally()
-    player = _copy_player(source, start, rng, tally.observe)
+    snapshot = source.snapshot or snapshot_player(source.player)
+    player = _copy_player(source, snapshot, start, rng, tally.observe)
     library = source.library
     entries = tuple(entry for entry in player.playable_entries() if not entry.is_silent)
     if not entries:
@@ -630,11 +809,21 @@ def _simulate(
         player._previous_track = state.current_track
         state.current_track = entry
         player._ledger.remember_play(entry.path, now)
+        if on_pick is not None:
+            on_pick(now, entry)
 
+    def stopping() -> str | None:
+        if cancelled is not None and cancelled():
+            return "cancelled"
+        if time.perf_counter() - began > budget:
+            return "time limit"
+        return None
+
+    stopped: str | None = None
     now = start
     apply_schedule(now)
     current = start_fresh(now)
-    while current is None and now < end:
+    while current is None and now < end and not (stopped := stopping()):
         if len(tally.silences) < SAMPLE:
             tally.silences.append({"time": when(now), "reason": player._clock_status})
         tally.silent_seconds += _SILENCE_STEP_S
@@ -652,7 +841,8 @@ def _simulate(
             tally.modes["start"] += 1
     reported = 0
     while current is not None and picks < limit:
-        if cancelled is not None and cancelled():
+        stopped = stopping()
+        if stopped:
             break
         handoff = now + duration(current)
         if handoff >= end:
@@ -675,7 +865,7 @@ def _simulate(
             # The song plays out alone and the station starts afresh.
             now = handoff
             fresh = start_fresh(now)
-            while fresh is None and now < end:
+            while fresh is None and now < end and not (stopped := stopping()):
                 if len(tally.silences) < SAMPLE:
                     tally.silences.append({"time": when(now), "reason": str(exc)})
                 tally.silent_seconds += _SILENCE_STEP_S
@@ -700,6 +890,8 @@ def _simulate(
         now = handoff
         for liner, _queued in liners:
             player._ledger.remember_play(liner.path, now)
+            if on_pick is not None:
+                on_pick(now, liner)
             tally.liners += 1
             now += max(liner.length or 0.0, 0.0)
         record(entry, now)
@@ -708,12 +900,11 @@ def _simulate(
         tally.plays[entry.path] += 1
         tally.modes[mode] += 1
         # Let the audio and web threads in between picks.
-        time.sleep(0)
+        time.sleep(_PICK_PAUSE_S)
         if progress is not None and picks - reported >= 100:
             reported = picks
             share = picks / limit if request.picks is not None else (now - start) / (end - start)
             progress(Progress(picks, min(1.0, share)))
-    stopped = cancelled is not None and cancelled()
     if progress is not None:
         progress(Progress(picks, 1.0))
     return _report(
@@ -831,7 +1022,7 @@ def _report(
     initial_mode: str,
     initial_clock: str | None,
     hours: float | None,
-    stopped: bool,
+    stopped: str | None,
     elapsed: float,
 ) -> dict[str, Any]:
     plays = tally.plays
@@ -882,7 +1073,8 @@ def _report(
         "start": iso(start),
         "end": iso(finish),
         "requested": {"hours": hours} if hours is not None else {"picks": request.picks},
-        "stopped_early": stopped,
+        "stopped_early": bool(stopped),
+        "stopped_reason": stopped,
         "elapsed_seconds": round(elapsed, 2),
         "song_picking": {
             "mode": initial_mode,
@@ -978,6 +1170,13 @@ def _wall(text: str) -> str:
     return f"{moment:%A} {moment.day} {moment:%B %Y, %H:%M}"
 
 
+_STOPPED_WORDS = {
+    "cancelled": "Stopped early: the run was cancelled.",
+    "time limit": f"Stopped early: the run reached its time limit of "
+    f"{MAX_RUN_SECONDS / 60:g} minutes. The figures cover the songs picked by then.",
+}
+
+
 def report_sections(report: Mapping[str, Any]) -> list[dict[str, Any]]:
     """The report in words, as the page shows it: sections of short lines.
 
@@ -1007,7 +1206,7 @@ def report_sections(report: Mapping[str, Any]) -> list[dict[str, Any]]:
         [
             f"Simulated {span}, from {_wall(report['start'])} to {_wall(report['end'])}, "
             f"station time ({report['timezone']}).",
-            "Stopped early: the run was cancelled." if report["stopped_early"] else "",
+            _STOPPED_WORDS.get(report.get("stopped_reason") or "", ""),
             f"Picked {counted(report['picks'], 'song')} and {counted(report['liners'], 'liner')}.",
             f"Song picking at the start: {mode}.",
             f"DMCA limits: {'on' if picking['dmca'] else 'off'}.",

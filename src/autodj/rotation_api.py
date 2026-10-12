@@ -13,6 +13,7 @@ from __future__ import annotations
 import math
 import threading
 import time
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -30,6 +31,7 @@ from autodj.rotation_sim import (
     report_sections,
     report_text,
     simulate,
+    snapshot_player,
 )
 from autodj.station_routes import StationDep, StationRouter
 
@@ -68,7 +70,10 @@ class RotationTestBody(BaseModel):
             moment = self.start
             if moment.tzinfo is None:
                 moment = moment.replace(tzinfo=ZoneInfo(timezone))
-            start = moment.timestamp()
+            try:
+                start = moment.timestamp()
+            except (OverflowError, OSError, ValueError):
+                start = math.nan  # Refused below, in words.
         return SimulationRequest(hours=hours, picks=self.picks, start=start, seed=self.seed)
 
 
@@ -122,7 +127,7 @@ class RotationTestRun:
             logging.getLogger(__name__).exception("The rotation test failed")
             self._finish("failed", error=f"The rotation test failed: {exc}")
         else:
-            state = "cancelled" if report["stopped_early"] else "done"
+            state = "cancelled" if report.get("stopped_reason") == "cancelled" else "done"
             self._finish(state, report, text, sections)
 
     def _finish(
@@ -168,6 +173,11 @@ class RotationTests:
         self._runs: dict[str, RotationTestRun] = {}
 
     def start(self, run: RotationTestRun) -> None:
+        """Take the slot for *run* and start it; 409 while any station's run is going.
+
+        A run whose thread cannot start gives the slot back (the station's
+        previous result returns) and answers 503.
+        """
         with self._lock:
             busy = next((other for other in self._runs.values() if other.state == "running"), None)
             if busy is not None:
@@ -175,8 +185,30 @@ class RotationTests:
                 raise HTTPException(
                     status_code=409, detail=f"A rotation test is already running{where}"
                 )
+            previous = self._runs.get(run.station)
             self._runs[run.station] = run
-        run.start()
+        try:
+            run.start()
+        except Exception as exc:
+            with self._lock:
+                if previous is None:
+                    self._runs.pop(run.station, None)
+                else:
+                    self._runs[run.station] = previous
+            raise HTTPException(
+                status_code=503, detail="The rotation test could not start; try again"
+            ) from exc
+
+    def shutdown(self, timeout: float) -> bool:
+        """Cancel every run and wait up to *timeout* seconds in all; whether they all ended."""
+        with self._lock:
+            runs = [run for run in self._runs.values() if run.state == "running"]
+        for run in runs:
+            run.cancel()
+        deadline = time.monotonic() + timeout
+        for run in runs:
+            run.thread.join(max(0.0, deadline - time.monotonic()))
+        return not any(run.thread.is_alive() for run in runs)
 
     def get(self, station: str) -> RotationTestRun | None:
         with self._lock:
@@ -239,6 +271,9 @@ def install_rotation_test(router: StationRouter) -> None:
             wanted = body.request(source.timezone)
         except SimulationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
+        # Copied here, on the event loop where the settings routes run, and
+        # under the lock the worker-thread settings writers hold.
+        source = replace(source, snapshot=snapshot_player(source.player))
         run = RotationTestRun(station.slug, source, wanted)
         _tests(request).start(run)
         return run.view()

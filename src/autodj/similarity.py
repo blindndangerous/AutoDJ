@@ -658,12 +658,14 @@ class SimilarityIndex:
                 "is in recently_played."
             )
 
-    def random_entry(self) -> IndexEntry | None:
+    def random_entry(self, rng: random.Random | None = None) -> IndexEntry | None:
         """Return a random track that is not silent, or ``None`` when there is none.
 
         The first track of a set and the Shuffle button pick with this.
+        *rng* is a dry run's own generator; ``None`` uses the random module.
         """
         with self._reload_lock:
             audible = [e for e in self._public_entries if not e.is_silent]
+        chooser = rng if rng is not None else random
         # Non-security pick of a starting track.
-        return random.choice(audible) if audible else None  # nosec B311
+        return chooser.choice(audible) if audible else None  # nosec B311

@@ -10,6 +10,7 @@ import {
   renderSections,
   requestBody,
   seedProblem,
+  stoppedFollowingMessage,
 } from "../../src/autodj/static/modules/rotation-test.js";
 
 const byId = (id) => document.getElementById(id);
@@ -50,6 +51,7 @@ function finished(state = "done") {
 
 function harness(answers) {
   const timers = [];
+  const delays = [];
   const calls = [];
   const request = vi.fn(async (url, options = {}) => {
     const method = options.method || "GET";
@@ -61,7 +63,7 @@ function harness(answers) {
   const controls = installRotationTest({
     doc: document,
     request,
-    setTimer: (fn) => { timers.push(fn); return timers.length; },
+    setTimer: (fn, ms) => { timers.push(fn); delays.push(ms); return timers.length; },
     clearTimer: () => {},
   });
   const tick = async () => {
@@ -69,7 +71,7 @@ function harness(answers) {
     await next();
     await vi.advanceTimersByTimeAsync(10);
   };
-  return { controls, calls, timers, tick };
+  return { controls, calls, timers, delays, tick };
 }
 
 async function press(id) {
@@ -208,5 +210,41 @@ describe("the Test rotation control", () => {
     expect(byId("rotation-progress-row").hidden).toBe(true);
     expect(byId("rotation-results").hidden).toBe(true);
     expect(byId("rotation-results-body").childElementCount).toBe(0);
+  });
+
+  it("backs off when checks fail, says so once, and stops after six tries", async () => {
+    const lost = new Error("The AutoDJ server is not reachable.");
+    const { timers, delays, tick } = harness({
+      POST: [running(0, 0)],
+      GET: [lost, lost, lost, lost, lost, lost],
+    });
+    const said = [];
+    new globalThis.MutationObserver(() => {
+      const text = status();
+      if (text) said.push(text);
+    }).observe(byId("rotation-status"), { childList: true, characterData: true, subtree: true });
+    await press("rotation-run");
+    said.length = 0;
+    for (let check = 0; check < 6; check += 1) await tick();
+    expect(delays).toEqual([1000, 2000, 4000, 8000, 16000, 16000]);
+    expect(timers).toEqual([]);
+    expect(said).toEqual([
+      "Could not check the rotation test: The AutoDJ server is not reachable. Trying again.",
+      stoppedFollowingMessage(6, lost),
+    ]);
+    expect(stoppedFollowingMessage(6, lost)).toBe(
+      "Stopped checking the rotation test after 6 failed tries: The AutoDJ server is not reachable. It may still be running on the server; reload the page to see its results.",
+    );
+    expect(byId("rotation-progress-row").hidden).toBe(true);
+    // A new start is allowed again: the page no longer counts the run as its own.
+    expect(byId("rotation-run").disabled).toBe(false);
+  });
+
+  it("says when a run stopped at its time limit", () => {
+    const view = finished();
+    view.report.stopped_reason = "time limit";
+    expect(endMessage(view)).toBe(
+      "Rotation test stopped at its time limit after 1,200 songs. The results so far are under Rotation test results.",
+    );
   });
 });

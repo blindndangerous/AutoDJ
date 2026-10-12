@@ -1631,7 +1631,17 @@ class PlayerBridge:
                 setattr(cfg.djmix, k, bool(v))
 
     def set_playback_settings(self, body: PlaybackSettingsBody, *, restoring: bool = False) -> None:
-        """Apply the fields set in *body*, which pydantic has already validated."""
+        """Apply the fields set in *body*, which pydantic has already validated.
+
+        Holds :data:`~autodj.player.SETTINGS_LOCK`: the route runs this on a
+        worker thread, and a rotation test copies the settings under it.
+        """
+        from autodj.player import SETTINGS_LOCK
+
+        with SETTINGS_LOCK:
+            self._apply_playback_settings(body, restoring=restoring)
+
+    def _apply_playback_settings(self, body: PlaybackSettingsBody, *, restoring: bool) -> None:
         values = body.model_dump(exclude_none=True)
         player = self.player
         cfg = player._cfg

@@ -17,9 +17,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   plays per song, category and artist, songs never played, which rules had to be relaxed and how
   often, skipped clockwheel steps and why, DMCA conflicts and any moment with nothing to play.
   Nothing on air changes. The report comes in words (headings and short lines) or JSON
-  (`--json`); a seed repeats a run exactly. In the page the run works in the background with a
-  progress bar and a Cancel button, announces its end once, and shows the results as headings and
-  lists. See [Operations](docs/operations.md#testing-the-rotation).
+  (`--json`); a seed repeats a run exactly. Runs stop after ten minutes of work, with what they
+  have. `autodj simulate` opens the library read-only, so it can run beside a server. In the page
+  the run works in the background with a progress bar and a Cancel button, announces its end
+  once, and shows the results as headings and lists. See
+  [Operations](docs/operations.md#testing-the-rotation).
 - Play dates for voice liners and carts: a **Not before** date, a **Do not play after** date, or
   both, in the station time zone. Outside them, automatic liners, clockwheel liner steps and
   scheduled liner events skip the liner, and a cart plays nothing and says why. Browse voice

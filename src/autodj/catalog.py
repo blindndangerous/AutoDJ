@@ -1398,4 +1398,23 @@ class LibraryCatalog:
             return True
 
 
-__all__ = ["DEFAULT_STATION", "LibraryCatalog"]
+class ReadOnlyCatalog(LibraryCatalog):
+    """A catalog opened read-only, for a look beside a running server (``autodj simulate``).
+
+    The connection is SQLite's ``mode=ro``: no schema set-up, no column or
+    history migration, no journal-mode switch and no write lock.  Any write
+    method fails instead of touching the file.  A catalog that does not
+    exist yet raises :class:`sqlite3.OperationalError`.
+    """
+
+    def __init__(self, path: Path | str) -> None:
+        """Open *path* read-only."""
+        self.path = Path(path)
+        self._lock = threading.RLock()
+        self._conn = _connect(
+            readonly_uri(self.path), uri=True, check_same_thread=False, timeout=30
+        )
+        self._conn.row_factory = sqlite3.Row
+
+
+__all__ = ["DEFAULT_STATION", "LibraryCatalog", "ReadOnlyCatalog"]

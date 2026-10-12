@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from autodj import rotation_api
@@ -89,14 +90,7 @@ def test_bad_requests_are_refused(client: TestClient, body: dict, status: int, d
 
 
 def test_one_run_at_a_time_and_cancel(client: TestClient, monkeypatch) -> None:
-    real = rotation_api.simulate
-
-    def slow(source, request, *, progress=None, cancelled=None):
-        while not cancelled():
-            time.sleep(0.01)
-        return real(source, SimulationRequest(picks=2, start=NOON, seed=1), cancelled=lambda: True)
-
-    monkeypatch.setattr(rotation_api, "simulate", slow)
+    _slow(monkeypatch)
     assert client.delete("/api/rotation-test").status_code == 409
     assert client.post("/api/rotation-test", json={"hours": 1}).status_code == 202
     # The server keeps answering while the run works.
@@ -128,3 +122,84 @@ def test_unpaired_browsers_cannot_start_a_run(bridge, tmp_path) -> None:
     client = TestClient(create_app(bridge))
     assert client.get("/api/rotation-test").status_code in (401, 403)
     assert client.post("/api/rotation-test", json={"hours": 1}).status_code in (401, 403)
+
+
+def _slow(monkeypatch) -> None:
+    """Runs that work until cancelled, then report what they have."""
+    real = rotation_api.simulate
+
+    def slow(source, request, *, progress=None, cancelled=None):
+        while not cancelled():
+            time.sleep(0.01)
+        return real(source, SimulationRequest(picks=2, start=NOON, seed=1), cancelled=lambda: True)
+
+    monkeypatch.setattr(rotation_api, "simulate", slow)
+
+
+def test_a_run_whose_thread_cannot_start_gives_the_slot_back(client, monkeypatch) -> None:
+    assert client.post("/api/rotation-test", json={"picks": 3, "seed": 1}).status_code == 202
+    first = _finished(client)
+
+    def refuse(_run) -> None:
+        raise RuntimeError("can't start new thread")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(rotation_api.RotationTestRun, "start", refuse)
+        refused = client.post("/api/rotation-test", json={"picks": 3})
+    assert refused.status_code == 503
+    assert refused.json()["detail"] == "The rotation test could not start; try again"
+    # The slot is free and the earlier result is back.
+    assert client.get("/api/rotation-test").json() == first
+    assert client.post("/api/rotation-test", json={"picks": 3, "seed": 2}).status_code == 202
+    assert _finished(client)["report"]["seed"] == 2
+
+
+def test_another_stations_run_holds_the_one_slot() -> None:
+    tests = rotation_api.RotationTests()
+    busy = rotation_api.RotationTestRun("nightowl", None, SimulationRequest(picks=1))
+    busy.start = lambda: None  # The run itself is not needed.
+    tests.start(busy)
+    second = rotation_api.RotationTestRun("default", None, SimulationRequest(picks=1))
+    with pytest.raises(HTTPException) as refused:
+        tests.start(second)
+    assert refused.value.status_code == 409
+    assert refused.value.detail == "A rotation test is already running for station nightowl"
+    assert tests.get("default") is None
+
+
+def test_shutting_the_server_down_cancels_and_waits_for_a_run(
+    bridge, tmp_path, monkeypatch
+) -> None:
+    bridge.player._cfg.index.active_dir = tmp_path
+    bridge.player._cfg.index.index_dir = tmp_path
+    source = _station(tmp_path)
+    monkeypatch.setattr(rotation_api, "station_source", lambda _station: source)
+    _slow(monkeypatch)
+    app = create_app(bridge)
+    with TestClient(app) as client:
+        assert client.post("/api/rotation-test", json={"hours": 1}).status_code == 202
+        run = app.state.rotation_tests.get("default")
+        assert run.state == "running"
+    # Leaving the block ran the server's shutdown.
+    assert not run.thread.is_alive()
+    assert run.state == "cancelled"
+
+
+@pytest.mark.parametrize("path", ["/api/rotation-test", "/api/stations/default/rotation-test"])
+def test_large_bodies_are_refused_before_parsing(client: TestClient, path: str) -> None:
+    answer = client.post(
+        path,
+        content=b'{"hours": 1, "pad": "' + b"x" * 9000 + b'"}',
+        headers={"Content-Type": "application/json"},
+    )
+    assert answer.status_code == 413
+    assert client.get("/api/rotation-test").json()["state"] == "idle"
+
+
+@pytest.mark.parametrize("start", ["1900-01-01T00:00", "9999-12-31T23:59", "0001-01-01T00:00"])
+def test_a_start_out_of_range_is_refused_in_words(client: TestClient, start: str) -> None:
+    answer = client.post("/api/rotation-test", json={"hours": 1, "start": start})
+    assert answer.status_code == 400
+    assert answer.json()["detail"] == (
+        "The start must be between 1 January 2000 and 31 December 2099"
+    )

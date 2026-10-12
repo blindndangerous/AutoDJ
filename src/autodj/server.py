@@ -799,6 +799,10 @@ def create_app(
             yield
         finally:
             logger.info("Shutting down...")
+            # A rotation test reads the library: stop it before the library closes.
+            rotation_tests = getattr(app.state, "rotation_tests", None)
+            if rotation_tests is not None:
+                await asyncio.to_thread(rotation_tests.shutdown, _SHUTDOWN_TIMEOUT_S)
             writers_quiesced, cache_closed = await stations.shutdown(library, _SHUTDOWN_TIMEOUT_S)
             if writers_quiesced and cache_closed:
                 logger.info("Server stopped cleanly.")
@@ -894,6 +898,7 @@ def create_app(
         "/api/stereo-tool-presets/upload": lambda: MAX_PRESET_BYTES + _MULTIPART_OVERHEAD_BYTES,
         "/api/schedule": lambda: _SCHEDULE_BODY_MAX_BYTES,
         "/api/machine-tokens": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/rotation-test": lambda: SMALL_BODY_MAX_BYTES,
         WORKER_PREFIX + "result": lambda: RESULT_BODY_MAX_BYTES,
         **{
             WORKER_PREFIX + name: (lambda: SMALL_BODY_MAX_BYTES)

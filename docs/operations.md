@@ -1416,16 +1416,25 @@ uv run autodj simulate --picks 500 --json    # 500 songs, as JSON
 uv run autodj simulate --hours 12 --start 2026-10-16T18:00 --station nightowl
 ```
 
-`--start` is read in the station time zone (`[server] station_timezone`). Without `--seed` a run
-draws a seed and the report gives it, so any run can be repeated exactly. Runs are capped at 30
-days or 20,000 songs.
+`--start` is read in the station time zone (`[server] station_timezone`) and must fall between
+2000 and 2099. Without `--seed` a run draws a seed and the report gives it, so the same seed repeats
+a run song for song, in every pick mode. Runs are capped at 30 days or 20,000 songs, and at ten
+minutes of work: a run that reaches that limit stops with the songs picked so far, and the report
+says so.
+
+`autodj simulate` can run beside a running server. It opens `library.db` read-only (no write
+lock, no migration, nothing written), and a categories or liner dates file it cannot read is
+skipped, never moved aside.
 
 In the web page: Settings > Song picking > **Test rotation**. Choose a span or a number of songs,
 optionally a start and a seed, and press **Test rotation**. The run works in the background; a
 progress bar and a line of text show how far it has got, **Cancel test** stops it with the results
 so far, and the end is announced once. The results appear under **Rotation test results** as
-headings and lists. One run at a time per server; the run's thread works below normal priority and
-pauses between songs, so playback and the page keep their place.
+headings and lists. One run at a time per server, whichever station it tests. The run's thread
+works below normal priority and sleeps for 2 milliseconds after each song it picks, so the audio
+and the page keep their place; stopping the server cancels a run and waits for it. If the page
+cannot reach the server while a run works, it tries again less and less often, says so once, and
+after six failed tries says it has stopped checking.
 
 The report, in words or JSON, gives:
 
@@ -1455,7 +1464,7 @@ What it approximates:
 
 How long a run takes grows with the library. On a synthetic 77,000-song library with four
 categories and a seven-step clockwheel, an older four-core PC (2018) simulated a week (about 2,500
-songs) in just under two minutes, and in a little over three with the DMCA limits on.
+songs) in about two minutes, and in a little over three with the DMCA limits on.
 
 ## Backup
 

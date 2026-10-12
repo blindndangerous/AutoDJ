@@ -94,6 +94,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 repeat_logger = logging.getLogger(f"{__name__}.repeat")
 
+#: Held while song-picking settings or the clockwheel change on a worker
+#: thread, and while a rotation test copies them (autodj.rotation_sim), so
+#: the copy never sees a change half made.
+SETTINGS_LOCK = threading.RLock()
+
 # Default output sample rate; sounddevice converts if the device differs.
 _DEFAULT_SR = 44_100
 
@@ -1085,7 +1090,8 @@ class Player:
             except Exception as exc:
                 chosen = self._fallback_pick(None, context, exc)
         else:
-            chosen = self._sim.random_entry()
+            extra = {"rng": self._random} if self._random is not None else {}
+            chosen = self._sim.random_entry(**extra)
         if dmca is None or chosen is None:
             return chosen
         return self._dmca_checked(chosen, dmca)
@@ -1112,6 +1118,10 @@ class Player:
         A clockwheel that cannot load leaves the clock off, says why in the
         clock status and the log, and lets the station start anyway.
         """
+        with SETTINGS_LOCK:
+            Player._configure_clock(self)  # also for the test doubles that borrow it
+
+    def _configure_clock(self) -> None:
         self._clock = None
         self._seed_clock_following = None
         self._clock_next_boundary = None

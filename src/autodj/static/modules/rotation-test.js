@@ -16,6 +16,10 @@ import { announceStatus } from "./live-region.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 const POLL_MS = 1000;
+// A progress check that fails is tried again later each time, up to
+// MAX_POLL_FAILURES in a row; the first failure and the last are said.
+const MAX_POLL_FAILURES = 6;
+const MAX_POLL_DELAY_MS = 16000;
 const ENDPOINT = "/api/rotation-test";
 
 const number = (n) => Number(n || 0).toLocaleString("en-US");
@@ -41,6 +45,9 @@ export function seedProblem(seed) {
 // What the status region says once a run ends.
 export function endMessage(view) {
   const picks = view?.report?.picks ?? view?.progress?.picks ?? 0;
+  if (view?.state === "done" && view?.report?.stopped_reason === "time limit") {
+    return `Rotation test stopped at its time limit after ${number(picks)} songs. The results so far are under Rotation test results.`;
+  }
   if (view?.state === "done") {
     return `Rotation test finished: ${number(picks)} songs picked. The results are under Rotation test results.`;
   }
@@ -49,6 +56,11 @@ export function endMessage(view) {
   }
   if (view?.state === "failed") return `Rotation test failed: ${view.error || "no reason was given"}`;
   return "";
+}
+
+// Said once when the page gives up checking on a run.
+export function stoppedFollowingMessage(tries, error) {
+  return `Stopped checking the rotation test after ${tries} failed tries: ${error?.message || "no reason was given"} It may still be running on the server; reload the page to see its results.`;
 }
 
 // The progress line beside the bar: plain text, never announced by itself.
@@ -146,8 +158,9 @@ export function installRotationTest({
     }
   }
 
-  function follow(mine) {
+  function follow(mine, failures = 0) {
     stopPolling();
+    const delay = Math.min(POLL_MS * 2 ** failures, MAX_POLL_DELAY_MS);
     timer = setTimer(async () => {
       timer = null;
       let view;
@@ -155,15 +168,22 @@ export function installRotationTest({
         view = await request(ENDPOINT);
       } catch (error) {
         if (mine !== session) return;
-        say(`Could not follow the rotation test: ${error.message}`, "error");
-        follow(mine);
+        const failed = failures + 1;
+        if (failed >= MAX_POLL_FAILURES) {
+          running = false;
+          progressRow.hidden = true;
+          say(stoppedFollowingMessage(failed, error), "error");
+          return;
+        }
+        if (failed === 1) say(`Could not check the rotation test: ${error.message} Trying again.`, "error");
+        follow(mine, failed);
         return;
       }
       if (mine !== session) return;
       show(view);
       if (view.state === "running") follow(mine);
       else say(endMessage(view), view.state === "failed" ? "error" : "info");
-    }, POLL_MS);
+    }, delay);
   }
 
   async function run() {

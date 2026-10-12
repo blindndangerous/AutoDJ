@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from autodj.player import Player
 from autodj.rotation_sim import (
     MAX_HOURS,
     MAX_PICKS,
@@ -621,3 +622,306 @@ def test_open_station_reads_the_saved_station_without_writing(tmp_path: Path) ->
     (cfg.index.active_dir / "schedule.json").write_text("{not json", encoding="utf-8")
     with pytest.raises(SimulationError, match="schedule file"), open_station(cfg):
         pass
+
+
+# -- review fixes: read-only, reproducible, bounded ----------------------------
+
+
+def _files(folder: Path) -> dict[str, tuple[bytes, int]]:
+    """Every file under *folder*: its bytes and modification time.
+
+    SQLite's shared-memory index of the write-ahead log (``-shm``) is only
+    named: readers map it, so it is SQLite's own to touch.
+    """
+    return {
+        str(path.relative_to(folder)): (
+            (b"", 0) if path.name.endswith("-shm") else (path.read_bytes(), path.stat().st_mtime_ns)
+        )
+        for path in sorted(folder.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_simulate_beside_a_live_server_leaves_the_library_untouched(tmp_path: Path) -> None:
+    """The CLI opens the catalog read-only: no lock, no migration, no write."""
+    from dataclasses import replace
+
+    from autodj.catalog import LibraryCatalog
+    from autodj.config import load_config
+    from autodj.rotation_sim import open_station
+
+    music = tmp_path / "music"
+    music.mkdir()
+    config = tmp_path / "cli.toml"
+    config.write_text(
+        f'[index]\nindex_dir = "{(tmp_path / "index").as_posix()}"\n'
+        f'[library]\nmusic_dir = "{music.as_posix()}"\n'
+        '[server]\nstation_timezone = "UTC"\n[playback]\npick_mode = "random"\n',
+        encoding="utf-8",
+    )
+    cfg = load_config(config, environ={})
+    active = cfg.index.active_dir
+    active.mkdir(parents=True)
+    # A categories file that cannot be read stays where it is.
+    (active / "categories.json").write_text("{broken", encoding="utf-8")
+    live = LibraryCatalog(active / "library.db")
+    try:
+        live.seed_sources(music, tmp_path / "liners")
+        live.seed_entries(
+            replace(song(n, f"Artist {n}"), path=str(music / f"{n:03d}.flac")) for n in range(30)
+        )
+        # The running server holds the write lock for the whole run.
+        live._db().execute("BEGIN IMMEDIATE")
+        before = _files(active)
+        with open_station(cfg) as source:
+            report = simulate(source, SimulationRequest(picks=10, start=NOON, seed=1))
+        assert report["picks"] == 10
+        assert _files(active) == before
+        assert any(name.endswith("library.db-wal") for name in before)
+    finally:
+        live._db().rollback()
+        live.close()
+
+
+def test_a_corrupt_liner_dates_file_is_read_never_moved(tmp_path: Path) -> None:
+    music = _songs(0, 20)
+    source = make_station(
+        tmp_path,
+        music,
+        liners=[liner(n) for n in range(3)],
+        categories=[{"id": "all", "name": "All", "members": music}],
+        clockwheels=[{"name": "Main", "steps": [liner_step(), category_step("all")]}],
+        active_clock="Main",
+        playback={"pick_mode": "clock"},
+    )
+    dates = tmp_path / "liner_dates.json"
+    dates.write_text("{this is not json", encoding="utf-8")
+    source.liner_dates = dates
+    before = _files(tmp_path)
+    report = simulate(source, SimulationRequest(picks=12, start=NOON, seed=1))
+    assert report["liners"] > 0  # Every liner plays, as with no dates.
+    assert dates.read_text(encoding="utf-8") == "{this is not json"
+    assert not list(tmp_path.glob("liner_dates.json.bad-*"))
+    assert _files(tmp_path) == before
+
+
+def _sequence(source: Any, seed: int, picks: int = 30) -> list[tuple[float, str]]:
+    played: list[tuple[float, str]] = []
+    simulate(
+        source,
+        SimulationRequest(picks=picks, start=NOON, seed=seed),
+        on_pick=lambda when, entry: played.append((when, entry.path)),
+    )
+    return played
+
+
+def test_similarity_runs_repeat_song_for_song_with_their_seed(tmp_path: Path, monkeypatch) -> None:
+    import random as module
+
+    import numpy
+
+    source = make_station(
+        tmp_path,
+        _songs(0, 60),
+        playback={
+            "pick_mode": "similarity",
+            "transition_mode": "full_intro_outro",
+            "pick_top_k": 8,
+            "pick_temperature": 2.0,
+            "discovery_every": 5,
+        },
+        similarity=True,
+    )
+    source.player._state.discovery_enabled = True
+    first = _sequence(source, 21)
+
+    def shared(*_args: Any, **_kwargs: Any) -> None:
+        pytest.fail("a pick used a shared random generator")
+
+    # Nothing the run picks comes from the shared generators.
+    monkeypatch.setattr(module, "choice", shared)
+    monkeypatch.setattr(module, "shuffle", shared)
+    monkeypatch.setattr(numpy.random, "choice", shared)
+    assert _sequence(source, 21) == first
+    assert len(first) == 30
+    assert _sequence(source, 22) != first
+
+
+def test_the_start_pick_without_a_library_uses_the_run_generator() -> None:
+    import random as module
+
+    from tests.unit._fakes import make_cfg_mock, make_sim_index
+
+    player = Player(make_cfg_mock(), make_sim_index(12), dry_run=True)
+    picks = []
+    for _ in range(2):
+        player._random = module.Random(5)
+        picks.append([player._random_start_entry().path for _ in range(6)])
+    assert picks[0] == picks[1]
+    assert len(set(picks[0])) > 1
+
+
+def test_runs_do_not_depend_on_the_hash_seed(tmp_path: Path) -> None:
+    """Candidate order never follows set order: two processes, two hash seeds, one run."""
+    import json
+    import os
+    import subprocess  # nosec B404 -- the test runs its own interpreter
+    import sys
+
+    script = (
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "from datetime import UTC, datetime\n"
+        "from autodj.rotation_sim import SimulationRequest, simulate\n"
+        "from tests.unit._rotation_station import make_station, song, category_step\n"
+        "root = Path(sys.argv[1])\n"
+        "music = [song(n, f'Artist {n % 13}', album=f'Album {n % 7}') for n in range(80)]\n"
+        "source = make_station(root, music, categories=[\n"
+        "    {'id': 'a', 'name': 'A', 'members': music[:30]},\n"
+        "    {'id': 'b', 'name': 'B', 'members': music[20:]}],\n"
+        "    clockwheels=[{'name': 'Main', 'steps': [category_step('a'), category_step('b')]}],\n"
+        "    active_clock='Main', playback={'pick_mode': 'clock'}, dmca=True)\n"
+        "played = []\n"
+        "start = datetime(2026, 10, 12, 12, tzinfo=UTC).timestamp()\n"
+        "simulate(source, SimulationRequest(picks=60, start=start, seed=3),\n"
+        "         on_pick=lambda when, entry: played.append(entry.path))\n"
+        "print(json.dumps(played))\n"
+    )
+    runs = []
+    for hash_seed in ("1", "2"):
+        done = subprocess.run(  # nosec B603 -- fixed arguments
+            [sys.executable, "-c", script, str(tmp_path / hash_seed)],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONHASHSEED": hash_seed},
+            cwd=Path(__file__).resolve().parents[2],
+            check=True,
+            timeout=300,
+        )
+        runs.append(json.loads(done.stdout.strip().splitlines()[-1]))
+    assert runs[0] == runs[1]
+    assert len(runs[0]) == 60
+
+
+def test_a_run_matches_the_live_player_pick_for_pick(tmp_path: Path, monkeypatch) -> None:
+    """The dry run's player is the live one plus a clock: same seed, same picks."""
+    import random as module
+
+    from autodj import player as player_module
+    from autodj.catalog import normalize_path
+
+    music = [song(n, f"Artist {n % 9}", album=f"Album {n % 5}") for n in range(40)]
+    source = make_station(
+        tmp_path,
+        music,
+        categories=[
+            {"id": "a", "name": "A", "members": music[:12]},
+            {"id": "b", "name": "B", "members": music[8:]},
+        ],
+        clockwheels=[{"name": "Main", "steps": [category_step("a"), category_step("b")]}],
+        active_clock="Main",
+        playback={"pick_mode": "clock"},
+    )
+    simulated = [path for _, path in _sequence(source, 9, picks=25)]
+
+    # The same picks made by the live player class itself, driven by hand.
+    live = source.player
+    now = [NOON]
+    monkeypatch.setattr(player_module.time, "time", lambda: now[0])
+    live._state.clock = lambda: now[0]
+    played: dict[str, float] = {}
+
+    class Ledger:
+        def setting_key(self, name: str) -> str:
+            return name
+
+        def last_played(self) -> dict[str, float]:
+            return played
+
+        def remember_setting(self, *_args: Any) -> None:
+            pass
+
+    live._ledger = Ledger()
+    live._random = module.Random(9)
+    live.activate_clock("Main", 0)
+    current = live._random_start_entry()
+    live._pending_clock_cursor = live._seed_clock_cursor
+    by_hand = []
+    starts = NOON
+    for number in range(25):
+        if number:
+            # The next song is picked as the current one starts.
+            context = live._pick_context()
+            upcoming, _mode, _liners, cursor, _key = live._choose_station_next(current, context)
+            live._pending_clock_cursor = cursor
+            starts += current.length
+            current = upcoming
+        now[0] = starts
+        live._state.record_played(current)
+        live._state.track_number += 1
+        live._state.current_track = current
+        played[normalize_path(current.path)] = starts  # As the station ledger keys it.
+        by_hand.append(current.path)
+    assert simulated == by_hand
+
+
+def test_a_bad_schedule_event_is_a_refusal_not_a_failed_run(tmp_path: Path) -> None:
+    events = [
+        _event(
+            name="Odd mode",
+            action="pick_mode",
+            params={"mode": "sideways"},
+            repeat="daily",
+            time=time(12, 30),
+        )
+    ]
+    report = simulate(
+        _rotation(tmp_path, events=events), SimulationRequest(hours=2, start=NOON, seed=1)
+    )
+    assert report["picks"] > 0
+    [(reason, count)] = report["schedule"]["refused"].items()
+    assert reason.startswith("Odd mode: it could not be applied:")
+    assert count == 1
+
+
+@pytest.mark.parametrize("start", [_at("1999-12-31 23:59"), _at("2100-01-01 00:00"), float("nan")])
+def test_a_start_out_of_range_is_refused(start: float) -> None:
+    with pytest.raises(SimulationError, match="between 1 January 2000 and 31 December 2099"):
+        SimulationRequest(hours=1, start=start)
+
+
+def test_a_run_stops_at_its_time_budget_and_says_so(tmp_path: Path) -> None:
+    report = simulate(
+        _rotation(tmp_path), SimulationRequest(hours=24, start=NOON, seed=1), budget=0.0
+    )
+    assert report["stopped_early"] is True
+    assert report["stopped_reason"] == "time limit"
+    assert "Stopped early: the run reached its time limit of 10 minutes." in report_text(report)
+
+
+def test_runs_pause_between_picks(tmp_path: Path, monkeypatch) -> None:
+    from autodj import rotation_sim
+
+    pauses: list[float] = []
+    monkeypatch.setattr(rotation_sim.time, "sleep", pauses.append)
+    simulate(_rotation(tmp_path), SimulationRequest(picks=15, start=NOON, seed=1))
+    assert len(pauses) >= 14  # One after each pick (the test sees every sleep).
+    assert all(pause >= 0.001 for pause in pauses)
+
+
+def test_the_settings_copy_waits_for_a_settings_change_in_progress(tmp_path: Path) -> None:
+    import threading
+
+    from autodj.player import SETTINGS_LOCK
+    from autodj.rotation_sim import snapshot_player
+
+    source = _rotation(tmp_path)
+    copied = threading.Event()
+    with SETTINGS_LOCK:
+        worker = threading.Thread(
+            target=lambda: (snapshot_player(source.player), copied.set()), daemon=True
+        )
+        worker.start()
+        assert not copied.wait(0.2)
+    assert copied.wait(10)
+    worker.join(10)
