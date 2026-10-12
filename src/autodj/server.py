@@ -2792,9 +2792,7 @@ def create_app(
     ) -> dict:
         library = _catalog_library()
         try:
-            return await asyncio.to_thread(
-                library.catalog.browse_tracks, kind, source_id, q, offset, limit
-            )
+            return await asyncio.to_thread(library.browse_tracks, kind, source_id, q, offset, limit)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Folder not registered") from exc
         except ValueError as exc:

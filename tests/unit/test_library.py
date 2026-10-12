@@ -1,7 +1,7 @@
 import os
 import threading
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
@@ -1101,3 +1101,31 @@ def test_idle_analysis_check_runs_once_until_the_catalog_changes(manager_factory
         assert check.call_count == 2
     assert started == ["analyse-library"]
     assert [Path(record["path"]) for record in manager.analysis_pending()] == [other]
+
+
+def test_browse_and_search_answer_from_memory(manager_factory, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from autodj._bridge import PlayerBridge
+
+    music = tmp_path / "Music"
+    nested = music / "nested"
+    nested.mkdir(parents=True)
+    manager = manager_factory(music=music)
+    for path, title in ((music / "b.flac", "Beta"), (nested / "a.flac", "Alpha")):
+        path.write_bytes(title.encode())
+        manager.catalog.put_entry(make_entry(path, title=title))
+    manager.refresh()
+    source = manager.catalog.sources("music")[0]
+    monkeypatch.setattr(manager.catalog, "reader", Mock(side_effect=AssertionError("read")))
+    with (
+        patch.object(Path, "is_file", side_effect=AssertionError("stat per track")),
+        patch("os.path.isfile", side_effect=AssertionError("stat per track")),
+    ):
+        page = manager.browse_tracks("music", None, "", 0, 1)
+        assert (page["total"], [row["title"] for row in page["results"]]) == (2, ["Alpha"])
+        assert manager.browse_tracks("music", source["id"], "a.flac")["total"] == 1
+        bridge = SimpleNamespace(library=manager, sim=None)
+        assert [row["title"] for row in PlayerBridge.search(bridge, "beta artist")] == ["Beta"]
+    index = manager.search_index()
+    assert manager.search_index() is index  # built once per library snapshot

@@ -1059,9 +1059,15 @@ class PlayerBridge:
             return []
 
         results = []
-        collection = self.library if self.library is not None else self.sim
-        for entry in collection.entries_snapshot():
-            haystack = (f"{entry.title} — {entry.artist} — {entry.album}").lower()
+        if self.library is not None:
+            # Lowercased once per library snapshot, not once per search.
+            indexed = self.library.search_index()
+        else:
+            indexed = [
+                (entry, f"{entry.title} — {entry.artist} — {entry.album}".lower())
+                for entry in self.sim.entries_snapshot()
+            ]
+        for entry, haystack in indexed:
             if all(tok in haystack for tok in tokens):
                 results.append(
                     {

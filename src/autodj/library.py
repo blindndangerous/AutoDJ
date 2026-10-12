@@ -6,14 +6,15 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 import numpy as np
 
 from autodj.beets import Track
-from autodj.catalog import Coverage, LibraryCatalog, _path
+from autodj.catalog import Coverage, LibraryCatalog, _covered_by, _path, _prefix
 from autodj.indexer import (
     FEATURE_DIM,
     LIBRARY_DECODE_LOG,
@@ -43,6 +44,30 @@ class _ImportState(TypedDict):
     done: int
     total: int
     current: str
+
+
+_Indexed = tuple[IndexEntry, str]
+
+
+def _browse_order(entries: tuple[IndexEntry, ...]) -> list[_Indexed]:
+    """Entries sorted for browsing, each with its casefolded searchable text."""
+    indexed = [
+        (
+            entry,
+            " ".join(
+                (entry.artist, entry.title, entry.album, os.path.basename(entry.path))
+            ).casefold(),
+        )
+        for entry in entries
+    ]
+    indexed.sort(
+        key=lambda item: (
+            item[0].artist.casefold(),
+            item[0].title.casefold(),
+            item[0].path.casefold(),
+        )
+    )
+    return indexed
 
 
 class LibraryManager:
@@ -87,6 +112,10 @@ class LibraryManager:
         self._by_path: dict[str, IndexEntry] = {}
         # Normalized path -> (kind, position in that kind's entries tuple).
         self._positions: dict[str, tuple[str, int]] = {}
+        # (name, kind) -> (the entries tuple it was built from, text index).
+        self._text_indexes: dict[
+            tuple[str, str], tuple[tuple[IndexEntry, ...], list[_Indexed]]
+        ] = {}
         self._tracks_ready = 0
         self._tracks_indexed = 0
         self.catalog = LibraryCatalog(cfg.index.active_dir / "library.db")
@@ -237,6 +266,76 @@ class LibraryManager:
     def entry_for_path(self, path: str | Path) -> IndexEntry | None:
         with self._lock:
             return self._by_path.get(_path(path))
+
+    def _text_index(
+        self, name: str, kind: str, build: Callable[[tuple[IndexEntry, ...]], list[_Indexed]]
+    ) -> list[_Indexed]:
+        """*build* over one kind's entries, cached until those entries change."""
+        with self._lock:
+            entries = self._liner_entries if kind == "liner" else self._entries
+            cached = self._text_indexes.get((name, kind))
+            if cached is not None and cached[0] is entries:
+                return cached[1]
+        built = build(entries)
+        with self._lock:
+            self._text_indexes[(name, kind)] = (entries, built)
+        return built
+
+    def search_index(self) -> list[_Indexed]:
+        """Music entries in path order, each with its lowercased title, artist and album."""
+        return self._text_index(
+            "search",
+            "music",
+            lambda entries: [
+                (entry, f"{entry.title} — {entry.artist} — {entry.album}".lower())
+                for entry in entries
+            ],
+        )
+
+    def browse_tracks(
+        self,
+        kind: str = "music",
+        source_id: str | None = None,
+        q: str = "",
+        offset: int = 0,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """List playable tracks, optionally of one registered source, from memory."""
+        if kind not in {"music", "liner"}:
+            raise ValueError("kind must be 'music' or 'liner'")
+        roots = None
+        if source_id is not None:
+            source = next((row for row in self.catalog.sources() if row["id"] == source_id), None)
+            if source is None:
+                raise KeyError(source_id)
+            if source["kind"] != kind:
+                raise ValueError("source kind does not match requested kind")
+            roots = [(_prefix(source["path"]), bool(source["recursive"]))]
+        tokens = q.casefold().split()
+        matches = [
+            entry
+            for entry, text in self._text_index("browse", kind, _browse_order)
+            if (roots is None or _covered_by(entry.path, roots))
+            and all(token in text for token in tokens)
+        ]
+        return {
+            "results": [
+                {
+                    "path": entry.path,
+                    "title": entry.title,
+                    "artist": entry.artist,
+                    "album": entry.album,
+                    "bpm": entry.bpm,
+                    "length": entry.length,
+                    "display_name": entry.display_name,
+                    "kind": kind,
+                }
+                for entry in matches[offset : offset + limit]
+            ],
+            "total": len(matches),
+            "offset": offset,
+            "limit": limit,
+        }
 
     def record_for_id(self, record_id: str) -> dict | None:
         record = self.catalog.record_for_id(record_id)
@@ -411,6 +510,8 @@ class LibraryManager:
         """Publish newly readable metadata to cached lookups without a full reload."""
         with self._lock:
             key = _path(entry.path)
+            # Stored as a reload would give it: with the catalog's path.
+            entry = replace(entry, path=key)
             self._by_path[key] = entry
             attr = "_liner_entries" if kind == "liner" else "_entries"
             current: tuple[IndexEntry, ...] = getattr(self, attr)
