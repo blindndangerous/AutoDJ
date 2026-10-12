@@ -19,6 +19,7 @@ import os
 import re
 import tomllib
 from collections.abc import Callable, Iterable, Mapping
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import MISSING, dataclass, field, fields
 from functools import partial
@@ -40,6 +41,10 @@ if TYPE_CHECKING:
     from autodj.presets import Preset
 
 logger = logging.getLogger(__name__)
+
+# The table a section is read from sits under, such as "stations.nightowl."
+# while a station's own sections are read; warnings name the full table.
+_TABLE_PREFIX: ContextVar[str] = ContextVar("autodj_config_table_prefix", default="")
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +255,12 @@ def _warn_unknown_keys(section: str, data: Mapping[str, Any], known: Iterable[st
     """
     unknown = set(data) - set(known)
     if unknown:
-        logger.warning("Ignoring unknown config keys in [%s]: %s", section, sorted(unknown))
+        logger.warning(
+            "Ignoring unknown config keys in [%s%s]: %s",
+            _TABLE_PREFIX.get(),
+            section,
+            sorted(unknown),
+        )
 
 
 def _field_names(cls: Any) -> set[str]:
@@ -1509,6 +1519,8 @@ class AutoDJConfig:
         transitions: Transition effect settings.
         server: Web server, LAN and HTTPS settings.
         stream: Radio stream settings.
+        stations: The stations other than the default one, from
+            ``[stations.<slug>]`` tables; empty for a single station.
         config_sources: Where the values came from, in load order.
     """
 
@@ -1529,7 +1541,33 @@ class AutoDJConfig:
     time_checks: TimeChecksConfig = field(default_factory=TimeChecksConfig)
     dmca: DmcaConfig = field(default_factory=DmcaConfig)
     webhooks: tuple[WebhookConfig, ...] = ()
+    stations: tuple[StationSpec, ...] = ()
     config_sources: tuple[str, ...] = ("defaults",)
+
+
+@dataclass(frozen=True)
+class StationSpec:
+    """One station besides the default one (``[stations.<slug>]``).
+
+    Attributes:
+        slug: The station's name in URLs, folders and logs; matches
+            :data:`autodj.stations.SLUG_PATTERN`.
+        autostart: Start the station with the server.  ``False`` leaves it
+            stopped until it is started from the API.
+        cfg: The station's own configuration.  Its library, index, model,
+            Hugging Face and server sections are the root configuration's
+            objects; every other section was read from the station's own
+            tables, starting from the defaults, not from the root sections.
+    """
+
+    slug: str
+    autostart: bool
+    cfg: AutoDJConfig = field(repr=False)
+
+    @property
+    def name(self) -> str:
+        """The station's name, as listeners see it (``stream.station_name``)."""
+        return self.cfg.stream.station_name
 
 
 # ---------------------------------------------------------------------------
@@ -1621,6 +1659,61 @@ def _relay_password_overlay(raw: Mapping[str, Any], environ: Mapping[str, str]) 
     return {"stream": {"relays": found}} if found else {}
 
 
+def station_relay_password_variable(slug: str, name: str) -> str:
+    """Return the environment variable that overrides a station relay's password.
+
+    Args:
+        slug: The station's name (``[stations.<slug>]``).
+        name: The relay's table name.
+
+    Returns:
+        ``AUTODJ_STATION_<SLUG>_RELAY_<NAME>_PASSWORD``, upper-cased, with
+        ``-`` turned into ``_``.
+    """
+    return (
+        f"AUTODJ_STATION_{slug.upper().replace('-', '_')}"
+        f"_RELAY_{name.upper().replace('-', '_')}_PASSWORD"
+    )
+
+
+def _station_relay_password_overlay(
+    raw: Mapping[str, Any], environ: Mapping[str, str]
+) -> dict[str, Any]:
+    """Build an overlay of station relay passwords from the environment.
+
+    Only relays already named in the loaded TOML are looked up, as for the
+    default station's relays.
+
+    Raises:
+        ValueError: Two station relays would read the same variable.
+    """
+    stations = raw.get("stations")
+    if not isinstance(stations, Mapping):
+        return {}
+    owners: dict[str, str] = {}
+    overlay: dict[str, Any] = {}
+    for slug, table in stations.items():
+        stream = table.get("stream") if isinstance(table, Mapping) else None
+        relays = stream.get("relays") if isinstance(stream, Mapping) else None
+        if not isinstance(slug, str) or not isinstance(relays, Mapping):
+            continue
+        for name in relays:
+            if not isinstance(name, str):
+                continue
+            variable = station_relay_password_variable(slug, name)
+            where = f"stations.{slug}.stream.relays.{name}"
+            if variable in owners:
+                raise ValueError(
+                    f"[{where}] and [{owners[variable]}] would both read {variable}; "
+                    "rename one of them"
+                )
+            owners[variable] = where
+            if variable in environ:
+                station = overlay.setdefault(slug, {"stream": {"relays": {}}})
+                station["stream"]["relays"][name] = {"password": environ[variable]}
+    return {"stations": overlay} if overlay else {}
+
+
 _SECTION_TYPES: tuple[type[_Section], ...] = (
     LibraryConfig,
     IndexConfig,
@@ -1639,14 +1732,64 @@ _SECTION_TYPES: tuple[type[_Section], ...] = (
 )
 
 
-def unknown_config_keys(raw: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
-    """Return unknown keys in known top-level TOML sections.
+#: The sections each station has of its own; ``presets`` and ``webhooks``
+#: too.  The others (library, index, model, huggingface, server) are shared
+#: by every station and read only from the root.
+STATION_SECTION_TYPES: tuple[type[_Section], ...] = (
+    PlaybackConfig,
+    DjMixConfig,
+    TransitionsConfig,
+    ReplayGainConfig,
+    StreamConfig,
+    RecordingConfig,
+    NowPlayingConfig,
+    TimeChecksConfig,
+    DmcaConfig,
+)
+SHARED_SECTIONS: tuple[str, ...] = ("library", "index", "model", "huggingface", "server")
+#: The most stations besides the default one.
+MAX_STATIONS = 8
+_STATION_KEYS = frozenset(
+    {"autostart", "presets", "webhooks", *(t.SECTION for t in STATION_SECTION_TYPES)}
+)
 
-    This reports key names only; normal config loading remains responsible for
-    validation and still raises at the first invalid section.
+
+def unknown_config_keys(raw: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
+    """Return unknown keys in known TOML sections, by their dotted table name.
+
+    The root sections are named as written (``"playback"``); a station's
+    are ``"stations.<slug>"`` for its own keys and
+    ``"stations.<slug>.<section>"`` for its sections.  This reports key
+    names only; normal config loading remains responsible for validation
+    and still raises at the first invalid section.
     """
+    unknown = _unknown_section_keys(raw, _SECTION_TYPES, "")
+    stations = raw.get("stations")
+    if isinstance(stations, Mapping):
+        for slug, table in stations.items():
+            if not isinstance(table, Mapping):
+                continue
+            where = f"stations.{slug}"
+            # Unknown sub-tables are warned about while loading, like
+            # unknown root sections; only plain keys are listed here.
+            keys = tuple(
+                sorted(
+                    key
+                    for key, value in table.items()
+                    if key not in _STATION_KEYS and not isinstance(value, Mapping)
+                )
+            )
+            if keys:
+                unknown[where] = keys
+            unknown.update(_unknown_section_keys(table, STATION_SECTION_TYPES, where + "."))
+    return unknown
+
+
+def _unknown_section_keys(
+    raw: Mapping[str, Any], section_types: Iterable[type[_Section]], prefix: str
+) -> dict[str, tuple[str, ...]]:
     unknown: dict[str, tuple[str, ...]] = {}
-    for section_type in _SECTION_TYPES:
+    for section_type in section_types:
         section = section_type.SECTION
         table = raw.get(section)
         if not isinstance(table, Mapping):
@@ -1659,7 +1802,7 @@ def unknown_config_keys(raw: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
             known.add("liner_upload_max_mib")
         keys = tuple(sorted(set(table) - known))
         if keys:
-            unknown[section] = keys
+            unknown[prefix + section] = keys
     return unknown
 
 
@@ -1676,19 +1819,156 @@ def _build_config(
     if not isinstance(presets_raw, Mapping):
         raise TypeError("presets section must be a table")
 
-    unknown_sections = set(raw) - {t.SECTION for t in _SECTION_TYPES} - {"presets", "webhooks"}
+    unknown_sections = (
+        set(raw) - {t.SECTION for t in _SECTION_TYPES} - {"presets", "webhooks", "stations"}
+    )
     if unknown_sections:
         logger.warning("Ignoring unknown config sections: %s", sorted(unknown_sections))
     sections: dict[str, Any] = {
         t.SECTION: t.from_dict(raw.get(t.SECTION, {})) for t in _SECTION_TYPES
     }
-    return AutoDJConfig(
+    cfg = AutoDJConfig(
         **sections,
         webhooks=_load_webhooks(raw.get("webhooks", [])),
         presets=load_user_presets(presets_raw),
         config_path=config_path,
         config_sources=tuple(sources),
     )
+    if "stations" in raw:
+        cfg.stations = _build_stations(raw["stations"], cfg)
+    return cfg
+
+
+def _build_stations(raw: Any, root: AutoDJConfig) -> tuple[StationSpec, ...]:
+    """Read the ``[stations.<slug>]`` tables into station specs.
+
+    Raises:
+        TypeError: ``stations`` is not a table of tables.
+        ValueError: A name is invalid or reserved, there are too many
+            stations, or two stations would write the same recording folder
+            or push to the same relay target.
+        KeyError: A required key is missing; the message names the station.
+    """
+    from autodj.stations import DEFAULT_SLUG, SLUG_PATTERN
+
+    if not isinstance(raw, Mapping):
+        raise TypeError("stations must be named tables such as [stations.nightowl]")
+    if len(raw) > MAX_STATIONS:
+        raise ValueError(f"stations allows at most {MAX_STATIONS} stations besides the default")
+    specs = []
+    for slug, table in raw.items():
+        if slug == DEFAULT_SLUG:
+            raise ValueError(
+                "[stations.default] is reserved: the root sections are the default station"
+            )
+        if not isinstance(slug, str) or not SLUG_PATTERN.match(slug):
+            raise ValueError(
+                f"[stations.{slug}]: a station name uses lower-case letters, digits and "
+                "inner hyphens, at most 32 characters, such as nightowl"
+            )
+        if not isinstance(table, Mapping):
+            raise TypeError(f"[stations.{slug}] must be a table")
+        token = _TABLE_PREFIX.set(f"stations.{slug}.")
+        try:
+            specs.append(_build_station(slug, table, root))
+        except (TypeError, ValueError, KeyError) as exc:
+            # Re-raised as the plain kind, since subclasses (pydantic's
+            # ValidationError) cannot be built from a message.
+            kind: type[Exception]
+            if isinstance(exc, KeyError):
+                kind, message = KeyError, exc.args[0] if exc.args else str(exc)
+            else:
+                kind, message = (TypeError if isinstance(exc, TypeError) else ValueError), str(exc)
+            raise kind(f"[stations.{slug}] {message}") from exc
+        finally:
+            _TABLE_PREFIX.reset(token)
+    _check_station_conflicts(root, specs)
+    return tuple(specs)
+
+
+def _build_station(slug: str, table: Mapping[str, Any], root: AutoDJConfig) -> StationSpec:
+    """Build one station from its table: its own sections over the defaults."""
+    from autodj.presets import load_user_presets
+
+    unknown = sorted(set(table) - _STATION_KEYS)
+    if unknown:
+        logger.warning(
+            "Ignoring unknown config keys and sections in [stations.%s]: %s", slug, unknown
+        )
+    autostart = table.get("autostart", True)
+    if not isinstance(autostart, bool):
+        raise TypeError("autostart must be true or false")
+    stream_raw = table.get("stream", {})
+    if isinstance(stream_raw, Mapping):
+        stream_raw = dict(stream_raw)
+        if stream_raw.pop("enabled", None) is not None:
+            logger.warning(
+                "Ignoring stations.%s.stream.enabled: a station other than the default "
+                "always streams",
+                slug,
+            )
+        if stream_raw.pop("trusted_proxies", None) is not None:
+            logger.warning(
+                "Ignoring stations.%s.stream.trusted_proxies: it applies server-wide, "
+                "from the root [stream] section",
+                slug,
+            )
+    presets_raw = table.get("presets", {})
+    if not isinstance(presets_raw, Mapping):
+        raise TypeError("presets section must be a table")
+    sections: dict[str, Any] = {
+        t.SECTION: t.from_dict(stream_raw if t is StreamConfig else table.get(t.SECTION, {}))
+        for t in STATION_SECTION_TYPES
+    }
+    # Every other station is a server-mixed stream; the proxies that may
+    # name a listener's address are the server's.
+    sections["stream"].enabled = True
+    sections["stream"].trusted_proxies = list(root.stream.trusted_proxies)
+    cfg = AutoDJConfig(
+        **sections,
+        **{name: getattr(root, name) for name in SHARED_SECTIONS},
+        webhooks=_load_webhooks(table.get("webhooks", [])),
+        presets=load_user_presets(presets_raw),
+        config_path=root.config_path,
+        config_sources=root.config_sources,
+    )
+    return StationSpec(slug=slug, autostart=autostart, cfg=cfg)
+
+
+def _check_station_conflicts(root: AutoDJConfig, specs: Iterable[StationSpec]) -> None:
+    """Refuse two stations that share a recording folder or a relay target.
+
+    A recorder deletes old recordings from its folder, so a shared folder
+    would let one station's retention delete the other's.  Two sources on
+    one relay mount fight over it.
+
+    Raises:
+        ValueError: Naming both stations.
+    """
+    folders: dict[str, str] = {}
+    targets: dict[tuple[object, ...], str] = {}
+    for slug, cfg in (("default", root), *((spec.slug, spec.cfg) for spec in specs)):
+        folder = os.path.normcase(os.path.abspath(cfg.recording.folder))
+        if folder in folders:
+            raise ValueError(
+                f"stations {folders[folder]} and {slug} use the same recording folder "
+                f"{cfg.recording.folder}; give each station its own recording.folder"
+            )
+        folders[folder] = slug
+        for relay in cfg.stream.relays.values():
+            target = _relay_target(relay)
+            other = targets.get(target)
+            if other is not None and other != slug:
+                raise ValueError(
+                    f"stations {other} and {slug} both relay to {relay.host}:{relay.port}"
+                    f"{relay.mount or ''}; each station needs its own relay target"
+                )
+            targets[target] = slug
+
+
+def _relay_target(relay: RelayConfig) -> tuple[object, ...]:
+    """What makes two relays push to the same place: host, port and mount or stream."""
+    return (relay.host.lower().rstrip("."), relay.port, relay.mount, relay.stream_id)
 
 
 def _load_webhooks(raw: Any) -> tuple[WebhookConfig, ...]:
@@ -1705,6 +1985,29 @@ def _load_webhooks(raw: Any) -> tuple[WebhookConfig, ...]:
             )
         )
     return tuple(hooks)
+
+
+def _refuse_local_only_stations(local: Mapping[str, Any], defined: set[str]) -> None:
+    """Refuse a station that config.local.toml names but config.toml does not.
+
+    config.local.toml only adds a station's secrets.  A station named only
+    there is a typo or a station removed from config.toml: building it would
+    start a public stream with default settings, and the real station would
+    run without the credentials meant for it.
+
+    Raises:
+        ValueError: Naming the station.
+    """
+    stations = local.get("stations")
+    if not isinstance(stations, Mapping):
+        return
+    for slug in stations:
+        if slug not in defined:
+            raise ValueError(
+                f"[stations.{slug}] is in config.local.toml but not in config.toml; define "
+                "the station in config.toml (config.local.toml holds only its secrets), "
+                "or correct the name"
+            )
 
 
 def load_config(
@@ -1726,12 +2029,22 @@ def load_config(
     raw = _default_raw()
     sources = ["defaults"]
     loaded_path: Path | None = None
+    # The stations config.toml defines; config.local.toml only adds their secrets.
+    defined_stations: set[str] = set()
 
     if candidate.exists():
         with candidate.open("rb") as fh:
             shared = tomllib.load(fh)
             if "webhooks" in shared:
                 raise ValueError("webhooks belong only in config.local.toml")
+            stations = shared.get("stations")
+            if isinstance(stations, Mapping):
+                defined_stations = set(stations)
+                for slug, table in stations.items():
+                    if isinstance(table, Mapping) and "webhooks" in table:
+                        raise ValueError(
+                            f"[stations.{slug}] webhooks belong only in config.local.toml"
+                        )
             raw = _deep_merge(raw, shared)
         loaded_path = candidate
         sources.append(str(candidate))
@@ -1742,11 +2055,14 @@ def load_config(
         local_path = loaded_path.parent / "config.local.toml"
         if local_path.exists():
             with local_path.open("rb") as fh:
-                raw = _deep_merge(raw, tomllib.load(fh))
+                local = tomllib.load(fh)
+            _refuse_local_only_stations(local, defined_stations)
+            raw = _deep_merge(raw, local)
             sources.append(str(local_path))
 
     env_raw = _deep_merge(
-        _environment_overlay(environment), _relay_password_overlay(raw, environment)
+        _deep_merge(_environment_overlay(environment), _relay_password_overlay(raw, environment)),
+        _station_relay_password_overlay(raw, environment),
     )
     if env_raw:
         raw = _deep_merge(raw, env_raw)

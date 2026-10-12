@@ -4,18 +4,21 @@
 
 import { fmtTime } from "./dom-helpers.js";
 
+// Theme tokens from app.css, 3:1 or more on the card in the light and the
+// dark theme alike; the literal after the comma is the dark value, for a
+// page without the stylesheet.
 export const CUE_COLORS = {
-  drop:            "#ff5470",
-  breakdown:       "#5a7bff",
-  first_downbeat:  "#69d0ff",
-  outro_downbeat:  "#ffb454",
+  drop:            "var(--cue-drop, #ff5470)",
+  breakdown:       "var(--cue-breakdown, #5a7bff)",
+  first_downbeat:  "var(--cue-downbeat, #69d0ff)",
+  outro_downbeat:  "var(--cue-outro, #ffb454)",
   // Intro and outro markers imported from DJ software.
-  intro_start:     "#69d0ff",
-  intro_end:       "#69d0ff",
-  outro_start:     "#ffb454",
-  outro_end:       "#ffb454",
-  phrase:          "rgba(255,255,255,0.45)",
-  user:            "#a4ff7a",
+  intro_start:     "var(--cue-downbeat, #69d0ff)",
+  intro_end:       "var(--cue-downbeat, #69d0ff)",
+  outro_start:     "var(--cue-outro, #ffb454)",
+  outro_end:       "var(--cue-outro, #ffb454)",
+  phrase:          "var(--cue-phrase, rgba(255,255,255,0.45))",
+  user:            "var(--cue-user, #a4ff7a)",
 };
 
 let _lastCueKey = "";

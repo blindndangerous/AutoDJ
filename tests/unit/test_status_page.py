@@ -84,6 +84,11 @@ def test_page_has_language_title_landmarks_and_headings() -> None:
     # Works without JavaScript; the script only keeps it current.
     assert "Reload the page for the latest." in html
     assert '<script type="module" src="/modules/status-page.js"></script>' in html
+    # The web UI's Theme choice, applied before the stylesheet paints.
+    head = html[: html.index("</head>")]
+    assert head.index('<script src="/modules/theme-init.js"></script>') < head.index(
+        'href="/modules/status-page.css"'
+    )
     # Pause updates (WCAG 2.2.2) appears only once the script can use it.
     assert (
         '<button type="button" id="status-pause" aria-pressed="false" hidden>Pause updates</button>'

@@ -296,7 +296,7 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Six tabs:
   - **DJ mixing**: beatmatching with its stretch limit and glide back, drop mixing, key shift, phrase and outro alignment, keeping vocals apart, and the filter sweep with its floor.
   - **Song picking**: preset, pick mode, how widely similarity picks spread, harmonic mixing, repeat windows, BPM range and discovery.
   - **Sound**: output processing, upload and select Stereo Tool presets, Stereo Tool input trim and AGC drive boost, a peak-safe quiet intro lift for ReplayGain playback, the ReplayGain target and peak limit, the browser's audio output device, a separate preview output device, early loading of the next song and the crossfade on silence.
-  - **Display and keys**: lyrics, key notation, announcements and keyboard shortcuts.
+  - **Display and keys**: theme, lyrics, key notation, announcements and keyboard shortcuts.
   - **Voice liners**.
   - **Schedule**: timed events, the next few runs, and recent results.
   - **Stream**: only in stream mode.  It holds the station name, the address, quality and continuous play.
@@ -343,6 +343,24 @@ setting is on by default and is saved in this browser only, not on the server. W
 single-key shortcut fires; buttons, sliders, tabs and dialogs keep their normal keys, and the
 Keyboard shortcuts button still opens the list. If the browser blocks site storage, shortcuts stay
 on and the choice lasts only until the page is reloaded.
+
+### Theme and status messages
+
+The page has a light and a dark theme. **Theme** under Settings, Display and keys offers
+**System** (the default), **Light** and **Dark**. System follows the light or dark setting of the
+device and changes with it; Light and Dark keep that theme whatever the device says. The choice
+takes effect at once, is saved in this browser only, and is applied before the page is drawn, so
+a reload never flashes the other theme. The public `/status` page on the same address uses the
+same choice. If the browser blocks site storage, the page follows System. Both themes meet WCAG
+2.2 AA contrast, and Windows High Contrast (forced colours) still replaces them with the system's
+own colours. Changing the theme announces nothing beyond the radio button you chose.
+
+A short message such as "Settings saved" or an error also appears at the foot of the window for
+8 seconds. Screen readers hear it once, from the part of the page that owns it, not from the
+message box. The box stays while the mouse pointer is over it or keyboard focus is on its
+**Dismiss** button, and runs out a few seconds after both leave. **Dismiss** (by mouse, touch or
+Enter) or Escape closes it at once; when focus was on Dismiss it goes back where it was before.
+The message never takes focus when it appears.
 
 ### Browser and server audio
 

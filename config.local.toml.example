@@ -48,3 +48,15 @@ port = 8080
 # [[webhooks]]
 # url = "https://discord.com/api/webhooks/your-id/your-token"
 # format = "discord"   # or "generic" for the JSON feed object
+
+# Another station's secrets go under its own table (see "More stations on one
+# server" in config.toml.example):
+# [stations.nightowl.stream]
+# listener_user = "owl"
+# listener_password = "choose another strong password"
+#
+# [stations.nightowl.stream.relays.main]
+# password = "that station's source password"
+#
+# [[stations.nightowl.webhooks]]
+# url = "https://example.com/your-secret-endpoint"
