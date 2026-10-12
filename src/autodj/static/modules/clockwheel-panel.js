@@ -16,7 +16,7 @@
 //
 // Folders are chosen from the registered library folders by ID, with an
 // optional path inside the folder; the browser never sends a full path.
-// Category steps name a saved category (Categories, above) by its ID.
+// Category conditions name a saved category (Categories, above) by its ID.
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
@@ -37,9 +37,8 @@ const FIELDS_FOR = {
   liner: ["conditions", "selection", "enforce-rules", "require-following"],
   track: ["source", "path"],
   settings: ["preset"],
-  category: ["category", "selection", "enforce-rules"],
 };
-const ALL_FIELDS = ["conditions", "source", "path", "preset", "category", "selection", "enforce-rules", "require-following"];
+const ALL_FIELDS = ["conditions", "source", "path", "preset", "selection", "enforce-rules", "require-following"];
 // Row buttons, in tab order.
 const ROW_ACTIONS = [["edit", "Edit"], ["move-up", "Move up"], ["move-down", "Move down"], ["duplicate", "Duplicate"], ["delete", "Delete"]];
 
@@ -93,6 +92,10 @@ export function describeStep(step, sources = [], categories = []) {
         const source = sources.find((item) => item.id === condition.source);
         const folder = condition.folder || (source ? lastPart(source.path) : "a folder that is no longer registered");
         return `${folder}${condition.recursive ? " (with subfolders)" : ""}`;
+      }
+      if (condition.field === "category") {
+        const category = categories.find((item) => item.id === condition.category);
+        return category ? `category ${category.name}` : "a category that no longer exists";
       }
       const field = condition.field === "beets" ? `Beets ${beetsFieldName(condition.name)}`
         : condition.field === "duration" ? "Duration (seconds)"
@@ -205,7 +208,6 @@ export function installClockwheelPanel({ document: doc = document, request = req
     const kind = typeSelect.value === "liner" ? "liner" : "music";
     fill(el("clock-step-source"), data.sources.filter((source) => source.kind === kind).map((source) => [source.id, source.path]));
     fill(el("clock-step-preset"), data.presets.map((name) => [name, name]));
-    fill(el("clock-step-category"), data.categories.map((category) => [category.id, category.name]));
     configureConditionOptions();
   }
 
@@ -234,6 +236,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       return node;
     };
     const fields = ["folder", "year", "bpm", "duration", "artist", "title", "album", "genre", "beets"];
+    if (typeSelect.value === "music") fields.push("category");
     const field = control("Condition type", "select", fields.map((v) => [v, v === "bpm" ? "BPM" : v[0].toUpperCase() + v.slice(1)]));
     const sourceList = data.sources.filter((s) => s.kind === (typeSelect.value === "liner" ? "liner" : "music"));
     const source = control("Library folder", "select", sourceList.map((s) => [s.id, s.path]));
@@ -255,6 +258,11 @@ export function installClockwheelPanel({ document: doc = document, request = req
     }
     const name = control("Beets field", "select", beetsOptions);
     name.setAttribute("aria-describedby", CONDITION_HELP);
+    const categoryOptions = data.categories.map((item) => [item.id, item.name]);
+    if (value.field === "category" && value.category && !categoryOptions.some(([v]) => v === value.category)) {
+      categoryOptions.unshift([value.category, `${value.category} (unavailable)`]);
+    }
+    const category = control("Music category", "select", categoryOptions);
     const remove = doc.createElement("button");
     remove.type = "button";
     remove.dataset.removeCondition = "";
@@ -279,6 +287,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       genre.add(option);
     }
     genre.value = value.field === "genre" ? value.value || "" : "";
+    category.value = value.category || "";
     name.value = value.name || name.options[0]?.value || "";
     let selectedOperator = value.operator || "";
     const sync = () => {
@@ -288,9 +297,10 @@ export function installClockwheelPanel({ document: doc = document, request = req
       source.hidden = folder.hidden = recursive.hidden = !isFolder;
       source.previousElementSibling.hidden = folder.previousElementSibling.hidden = recursive.previousElementSibling.hidden = !isFolder;
       genre.hidden = genre.previousElementSibling.hidden = f !== "genre";
+      category.hidden = category.previousElementSibling.hidden = f !== "category";
       name.hidden = name.previousElementSibling.hidden = f !== "beets";
       let choices = TEXT_OPERATORS;
-      if (isFolder || f === "genre") choices = [["is", "is"]];
+      if (isFolder || f === "genre" || f === "category") choices = [["is", "is"]];
       else if (numeric) choices = NUMERIC_OPERATORS;
       else if (f === "beets") {
         choices = [["is", "Is (text)"], ...TEXT_OPERATORS.slice(1), ["eq", "Equals (number)"], ...NUMERIC_OPERATORS.slice(1)];
@@ -304,8 +314,8 @@ export function installClockwheelPanel({ document: doc = document, request = req
       }));
       operator.value = choices.some(([v]) => v === previousOperator) ? previousOperator : choices[0][0];
       selectedOperator = operator.value;
-      operator.hidden = operator.previousElementSibling.hidden = isFolder || f === "genre";
-      input.hidden = input.previousElementSibling.hidden = isFolder || f === "genre";
+      operator.hidden = operator.previousElementSibling.hidden = isFolder || f === "genre" || f === "category";
+      input.hidden = input.previousElementSibling.hidden = isFolder || f === "genre" || f === "category";
       upper.hidden = upper.previousElementSibling.hidden = operator.value !== "between";
       input.previousElementSibling.textContent = f === "duration" ? "Value (seconds or MM:SS)" : "Value";
       upper.previousElementSibling.textContent = f === "duration" ? "Upper value (seconds or MM:SS)" : "Upper value";
@@ -327,7 +337,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       say(`Condition ${index + 1} removed, ${left.length} ${left.length === 1 ? "condition" : "conditions"} left.`);
     });
     sync();
-    return { row, field, source, folder, recursive, operator, input, upper, genre, name };
+    return { row, field, source, folder, recursive, operator, input, upper, genre, category, name };
   }
 
   function renderConditions(values = [{}]) {
@@ -364,7 +374,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     const sources = data.sources.filter((source) => source.kind === kind);
     for (const row of el("clock-step-conditions")?.children || []) {
       const selects = row.querySelectorAll("select");
-      const [, source, , genre, name] = selects;
+      const [, source, , genre, name, category] = selects;
       const replace = (select, items, keep) => {
         if (select === doc.activeElement) {
           // Rebuilding the list under the reader would move its place; try on the next refresh.
@@ -389,6 +399,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       replace(source, sources.map((s) => [s.id, s.path]), true);
       replace(genre, (data.genres || []).map((v) => [v, v]), true);
       replace(name, (data.beets_fields || []).map((v) => [v, v]), true);
+      replace(category, data.categories.map((item) => [item.id, item.name]), true);
     }
     updateBeetsNotice();
   }
@@ -423,6 +434,10 @@ export function installClockwheelPanel({ document: doc = document, request = req
       if (field === "genre") {
         if (!selects[3].value) invalid(selects[3], "Choose a genre.");
         return { field, operator: "is", value: selects[3].value };
+      }
+      if (field === "category") {
+        if (!selects[5].value) invalid(selects[5], "Choose a saved music category.");
+        return { field, category: selects[5].value };
       }
 
       const inputs = row.querySelectorAll("input[type=text]");
@@ -704,16 +719,17 @@ export function installClockwheelPanel({ document: doc = document, request = req
   function startEdit(index) {
     const step = clock.steps[index];
     editing = index;
-    typeSelect.value = step.type in FIELDS_FOR ? step.type : "music";
+    typeSelect.value = step.type === "category" || !(step.type in FIELDS_FOR) ? "music" : step.type;
     showFields();
     const set = (id, value) => { const field = el(id); if (field) field.value = value; };
     if (step.type === "track") set("clock-step-source", step.source || "");
     set("clock-step-path", step.path || "");
     set("clock-step-preset", step.preset || "");
-    set("clock-step-category", step.category || "");
-    if (FOLDER_TYPES.has(step.type)) {
+    if (FOLDER_TYPES.has(typeSelect.value)) {
       set("clock-step-match", step.match || "all");
-      renderConditions(step.conditions || [{ field: "folder", source: step.source, folder: step.folder || "", recursive: Boolean(step.recursive) }]);
+      renderConditions(step.type === "category"
+        ? [{ field: "category", category: step.category }]
+        : step.conditions || [{ field: "folder", source: step.source, folder: step.folder || "", recursive: Boolean(step.recursive) }]);
     }
     set("clock-step-selection", step.selection || "least_recent");
     const check = (id, value) => { const field = el(id); if (field) field.checked = value; };
@@ -760,18 +776,6 @@ export function installClockwheelPanel({ document: doc = document, request = req
       }
       return { type, source, path: relative("clock-step-path", "The track", false) };
     }
-    if (type === "category") {
-      const category = el("clock-step-category")?.value || "";
-      if (!category) {
-        el("clock-step-category")?.focus();
-        throw new Error("Add a category under Categories first.");
-      }
-      return {
-        type, category,
-        selection: el("clock-step-selection").value,
-        enforce_rules: el("clock-step-enforce-rules").checked,
-      };
-    }
     if (type === "settings") {
       const preset = el("clock-step-preset")?.value || "";
       if (!preset) throw new Error("Choose a preset.");
@@ -784,8 +788,22 @@ export function installClockwheelPanel({ document: doc = document, request = req
     // Changing music to liners starts with a folder of the new kind.
     const kind = typeSelect.value === "liner" ? "liner" : "music";
     for (const row of el("clock-step-conditions").children) {
-      const source = row.querySelectorAll("select")[1];
+      const selects = row.querySelectorAll("select");
+      const [field, source] = selects;
       if (!data.sources.some((item) => item.id === source.value && item.kind === kind)) source.value = "";
+      const categoryOption = field.querySelector('option[value="category"]');
+      if (typeSelect.value === "liner") {
+        if (field.value === "category") {
+          field.value = "folder";
+          field.dispatchEvent(new Event("change"));
+        }
+        categoryOption?.remove();
+      } else if (!categoryOption) {
+        const option = doc.createElement("option");
+        option.value = "category";
+        option.textContent = "Category";
+        field.append(option);
+      }
     }
     showFields();
   });

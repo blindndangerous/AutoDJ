@@ -134,42 +134,76 @@ describe("clockwheel markup", () => {
 });
 
 describe("clockwheel editor", () => {
-  it("adds a step that plays music from a category and names the category", async () => {
-    expect(describeStep({ type: "category", category: "gone", selection: "least_recent" }, [], []))
-      .toBe("music from a category that no longer exists");
+  it("selects music categories as conditions and combines them with other filters", async () => {
     const server = await open(fakeServer({ categories: [{ id: "c1", name: "Rock gold" }, { id: "c2", name: "2000s" }] }));
     const type = byId("clock-step-type");
-    type.value = "category";
+    expect([...type.options].map((option) => option.value)).not.toContain("category");
+    type.value = "music";
     type.dispatchEvent(new Event("change"));
-    const field = (id) => byId(id).closest(".clock-step-field");
-    expect(field("clock-step-category").hidden).toBe(false);
-    expect(field("clock-step-selection").hidden).toBe(false);
-    expect(field("clock-step-source").hidden).toBe(true);
-    expect(field("clock-step-conditions").hidden).toBe(true);
-    expect([...byId("clock-step-category").options].map((option) => option.textContent)).toEqual(["Rock gold", "2000s"]);
-    byId("clock-step-category").value = "c2";
-    byId("clock-step-selection").value = "random";
+    const first = byId("clock-step-conditions").firstElementChild;
+    const field = first.querySelector("select");
+    field.value = "category";
+    field.dispatchEvent(new Event("change"));
+    const category = first.querySelectorAll("select")[5];
+    expect(category.previousElementSibling.textContent).toBe("Music category");
+    expect([...category.options].map((option) => option.textContent)).toEqual(["Rock gold", "2000s"]);
+    category.value = "c2";
+    byId("clock-add-condition").click();
+    const second = byId("clock-step-conditions").lastElementChild;
+    second.querySelector("select").value = "category";
+    second.querySelector("select").dispatchEvent(new Event("change"));
+    second.querySelectorAll("select")[5].value = "c1";
+    byId("clock-step-match").value = "any";
     byId("clock-add-step").click();
-    expect(rowText(3)).toBe("music from category 2000s, at random");
-    await vi.waitFor(() => expect(status()).toBe("Added Step 4 of 4, music from category 2000s, at random. Not saved yet."));
-    rowButton(3, "edit").click();
-    expect(byId("clock-step-category").value).toBe("c2");
-    expect(document.activeElement).toBe(type);
+    expect(rowText(3)).toBe("music from category 2000s or category Rock gold");
     byId("clock-save").click();
     await vi.waitFor(() => expect(server.calls.some((call) => call.method === "PUT")).toBe(true));
-    const put = server.calls.find((call) => call.method === "PUT");
-    expect(put.body.steps[3]).toEqual({ type: "category", category: "c2", selection: "random", enforce_rules: true });
+    expect(server.calls.find((call) => call.method === "PUT").body.steps[3]).toEqual({
+      type: "music", match: "any", conditions: [{ field: "category", category: "c2" }, { field: "category", category: "c1" }],
+      selection: "least_recent", enforce_rules: true,
+    });
+    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 4 steps."));
+    rowButton(3, "edit").click();
+    expect(byId("clock-add-step").textContent).toBe("Update step 4");
+    type.value = "liner";
+    type.dispatchEvent(new Event("change"));
+    expect([...byId("clock-step-conditions").firstElementChild.querySelector("select").options]
+      .map((option) => option.value)).not.toContain("category");
+    expect(byId("clock-step-conditions").firstElementChild.querySelector("select").value).toBe("folder");
+    const linerFolder = byId("clock-step-conditions").firstElementChild.querySelectorAll("select")[1];
+    expect(linerFolder.hidden).toBe(false);
+    expect(byId("clock-step-conditions").firstElementChild.querySelectorAll("select")[5].hidden).toBe(true);
+    byId("clock-add-step").click();
+    await vi.waitFor(() => expect(status()).toContain("Updated Step 4 of 4, liner from Liners or Liners"));
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 4 steps."));
+    expect(server.calls.filter((call) => call.method === "PUT").at(-1).body.steps[3]).toMatchObject({
+      type: "liner", conditions: [
+        { field: "folder", source: "ids", folder: "" }, { field: "folder", source: "ids", folder: "" },
+      ],
+    });
   });
 
-  it("asks for a category first when none is saved", async () => {
-    await open(fakeServer());
-    const type = byId("clock-step-type");
-    type.value = "category";
-    type.dispatchEvent(new Event("change"));
+  it("opens and saves a legacy category step as a music condition with its settings", async () => {
+    const server = fakeServer();
+    server.clocks.Morning.steps[0] = { type: "category", category: "old", selection: "random", enforce_rules: false };
+    await open(server);
+    rowButton(0, "edit").click();
+    expect(byId("clock-step-type").value).toBe("music");
+    expect(byId("clock-step-match").value).toBe("all");
+    expect(byId("clock-step-conditions").firstElementChild.querySelector("select").value).toBe("category");
+    const category = byId("clock-step-conditions").firstElementChild.querySelectorAll("select")[5];
+    expect(category.value).toBe("old");
+    expect(category.selectedOptions[0].textContent).toBe("old (unavailable)");
+    expect(byId("clock-step-selection").value).toBe("random");
+    expect(byId("clock-step-enforce-rules").checked).toBe(false);
     byId("clock-add-step").click();
-    expect(document.activeElement).toBe(byId("clock-step-category"));
-    await vi.waitFor(() => expect(status()).toBe("Add a category under Categories first."));
-    expect(rows()).toHaveLength(3);
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(server.calls.some((call) => call.method === "PUT")).toBe(true));
+    expect(server.calls.find((call) => call.method === "PUT").body.steps[0]).toEqual({
+      type: "music", match: "all", conditions: [{ field: "category", category: "old" }],
+      selection: "random", enforce_rules: false,
+    });
   });
 
   it("validates restart minutes and describes steps in words", () => {
@@ -857,5 +891,25 @@ describe("clockwheel step conditions, for screen readers", () => {
     await controls.refresh();
     expect([...genre.options].map((option) => option.value)).toEqual(["Rock", "Jazz", "Ambient"]);
     expect(genre.value).toBe("Jazz");
+  });
+
+  it("leaves a focused category list alone until focus leaves it", async () => {
+    const categories = [{ id: "c1", name: "Rock" }, { id: "c2", name: "Jazz" }];
+    await open(fakeServer({ categories }));
+    startMusicStep();
+    const [row] = conditions();
+    setField(row, "category");
+    const category = row.querySelectorAll("select")[5];
+    category.value = "c2";
+    category.focus();
+    const before = [...category.options];
+    categories.push({ id: "c3", name: "Ambient" });
+    await controls.refresh();
+    expect([...category.options]).toEqual(before);
+    expect(document.activeElement).toBe(category);
+    category.blur();
+    await controls.refresh();
+    expect([...category.options].map((option) => option.value)).toEqual(["c1", "c2", "c3"]);
+    expect(category.value).toBe("c2");
   });
 });

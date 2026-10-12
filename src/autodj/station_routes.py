@@ -348,7 +348,12 @@ def _validate_step_conditions(
 ) -> None:
     from autodj.clockwheel_store import resolve_conditions
 
+    categories = _category_names(library)
     for condition in resolve_conditions(step, sources, number):
+        if condition["field"] == "category" and condition["category"] not in categories:
+            raise ValueError(
+                f"Step {number}: its category is not saved; choose one in Library tools, Categories"
+            )
         if condition["field"] == "beets":
             known, _, error = _clock_beets(station, library).snapshot()
             if error:

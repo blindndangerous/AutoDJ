@@ -1257,8 +1257,10 @@ class Player:
         else:
             self._clock_condition_errors = ()
         cache = getattr(self, "_clock_condition_cache", None)
-        if cache is None or not cache.current(self._clock_slots, entries, liners, beets_items):
-            cache = ConditionPaths(self._clock_slots, entries, liners, beets_items)
+        if cache is None or not cache.current(
+            self._clock_slots, entries, liners, beets_items, categories
+        ):
+            cache = ConditionPaths(self._clock_slots, entries, liners, beets_items, categories)
             self._clock_condition_cache = cache
 
         def pick(
@@ -1387,7 +1389,7 @@ class Player:
         A category emptied by a failed playlist script or a deleted category
         must not silence a clockwheel made of category steps, so the pick
         falls back as the other pick modes do (the clock keeps its place).
-        A clock of folder and track steps only, or with conditions, is left
+        A clock of folder and track steps only, or with other conditions, is left
         as it was, unless its songs are there and only their categories'
         days and hours (dayparting) hold them back.
         """
@@ -1395,9 +1397,12 @@ class Player:
         # Dayparting alone emptied the clock: its songs exist but are outside
         # their hours, so an allowed song plays, whatever the steps are.
         if not getattr(self, "_clock_closed_only", False):
-            if any(getattr(slot, "conditions", ()) for slot in slots):
-                return None  # Explicit conditions must not fall back to unfiltered music.
-            if not any(getattr(slot, "kind", None) == "category" for slot in slots):
+            conditions = [c for slot in slots for c in getattr(slot, "conditions", ())]
+            if any(c["field"] != "category" for c in conditions):
+                return None  # Additional filters must not fall back to unfiltered music.
+            if not conditions and not any(
+                getattr(slot, "kind", None) == "category" for slot in slots
+            ):
                 return None
         reason = ValueError(f"the clockwheel has no song to play: {self._clock_status}")
         try:

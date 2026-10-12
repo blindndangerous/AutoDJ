@@ -10,6 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Clockwheel Music steps can combine categories with folder and metadata conditions. Use
+  Match any to combine categories, or Match all to narrow a category by year, BPM or other
+  fields. Songs matching more than one condition are included once. Existing category steps
+  open in the same condition editor and keep their selection and repeat settings. Category
+  hours and the list of clockwheels using each category still apply.
+
 - Play dates for voice liners and carts: a **Not before** date, a **Do not play after** date, or
   both, in the station time zone. Outside them, automatic liners, clockwheel liner steps and
   scheduled liner events skip the liner, and a cart plays nothing and says why. Browse voice

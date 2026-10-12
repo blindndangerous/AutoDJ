@@ -33,7 +33,7 @@ from autodj.categories import (
     station_now,
     summary,
 )
-from autodj.clockwheel_store import ClockwheelStore
+from autodj.clockwheel_store import ClockwheelStore, step_categories
 from autodj.stations import StationPaths
 
 
@@ -64,7 +64,7 @@ def clockwheel_uses(root: Path) -> dict[str, list[str]]:
         except ValueError:
             continue
         for category in dict.fromkeys(
-            step["category"] for step in clock["steps"] if step["type"] == "category"
+            category for step in clock["steps"] for category in step_categories(step)
         ):
             uses.setdefault(category, []).append(name)
     return uses
