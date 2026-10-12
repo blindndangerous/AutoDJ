@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Public now-playing history and its webhooks include only artist, title, duration and play time;
+  local file paths and internal event IDs remain available in operator history.
+
 ### Added
 
 - Several named clockwheels (Library tools, Clockwheels): create, duplicate, rename, delete,
@@ -34,6 +39,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   check after the hour takes the place of that song change's automatic liner. Settings choose
   12- or 24-hour speech; doctor reports missing recordings, and backups include the clips and the
   saved switches. `scripts/time_check_sapi.ps1` speaks with a chosen Windows SAPI voice.
+
+- Time checks can speak from voice packs: folders of hour and minute files, named the way
+  RadioBOSS names them (`hr_05.mp3`, `hr_05o.mp3`, `m_56.mp3`, optional intro, outro, am and
+  pm), listed in `[time_checks] voice_packs`. AutoDJ trims each piece's silence, matches their
+  loudness and joins them with a 40 ms equal-power crossfade, so the time sounds like one
+  sentence, then plays it through the voice liner path. Settings, Time checks lists the packs as
+  checkboxes with their coverage, takes turns between ticked packs or picks one at random, and
+  can test one pack. A pack that lacks the minute falls back to the next pack, the recorded
+  clips, then text to speech. Doctor reports each pack's missing hours, exact hours and minutes
+  and the files it does not use; packs kept in the `time_checks` folder are in backups.
 
 - DMCA mode (`[dmca] enabled = true`): every pick mode, the clockwheel included, keeps to the
   US statutory webcasting licence's performance complement (at most 3 songs from one album, 2 in
@@ -175,6 +190,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is made up straight away (up to eight blocks, 160 ms) instead of being lost from every listener's
   buffer. The sound is unchanged.
 
+- Clock music slots with repeat rules disabled still skip silent tracks and songs already
+  playing or being prepared.
+- A clock whose slots hold only songs just played or being prepared repeats one of them, with a
+  warning, instead of leaving the station silent. The song playing never follows itself.
+- Automatically chosen first songs now follow repeat rules and protected-track checks, including
+  restored play history. When the rules leave no choice, they relax without stopping playback.
 - Unknown or removed configuration settings now produce warnings and are ignored instead of
   blocking startup. Saved browser settings follow the same rule, preserving valid repeat limits
   alongside obsolete keys. Invalid values for supported configuration settings still fail validation.
@@ -195,6 +216,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A setting with two descriptions now hides both when it does not apply, not just the first.
 
 ### Changed
+
+- The included Stereo Tool preset recovers more slowly after drum hits, keeping snare tails
+  less prominent while retaining the default 7 dB AGC drive for quiet passages.
 
 - Browse library and the voice liner list moved to the Queue & Search tab, after Search, as
   **Browse library** and **Browse voice liners**. Tab goes from Search to Browse library to the

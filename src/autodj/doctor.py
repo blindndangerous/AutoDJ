@@ -617,20 +617,23 @@ def run_doctor(
             *_relay_checks(cfg),
             _related_artists_check(cfg),
             _time_checks_check(cfg),
+            *_voice_pack_checks(cfg),
         )
     )
 
 
 def _time_checks_check(cfg: AutoDJConfig) -> DoctorCheck:
     """Report recorded minute coverage, the clips and TTS program found, and the switches."""
-    from autodj.time_checks import clips_folder, load_settings, missing_minutes
+    from autodj.time_checks import clips_folder, load_settings, missing_minutes, pack_folders
+    from autodj.voice_packs import pieces_for, scan_pack
 
     tc = cfg.time_checks
     folder = clips_folder(cfg)
     missing = missing_minutes(folder)
     detail = {"folder": str(folder), "missing_examples": missing[:10]}
     try:
-        enabled = load_settings(cfg).enabled
+        settings = load_settings(cfg)
+        enabled = settings.enabled
     except (OSError, ValueError, KeyError, AttributeError) as exc:
         return DoctorCheck(
             "time-checks",
@@ -652,13 +655,55 @@ def _time_checks_check(cfg: AutoDJConfig) -> DoctorCheck:
     )
     if tc.tts_command and shutil.which(tc.tts_command[0]) is None:
         problems.append(f"TTS program {tc.tts_command[0]} not found")
-    if missing and not tc.tts_command:
+    folders = pack_folders(cfg)
+    problems.extend(
+        f"saved voice pack {name} is not in voice_packs"
+        for name in settings.enabled_packs
+        if name not in folders
+    )
+    packs = [scan_pack(folders[name]) for name in settings.enabled_packs if name in folders]
+    unvoiced = [
+        name
+        for name in missing
+        if not any(
+            pieces_for(pack, int(name[:2]), int(name[3:]), settings.hour_format) for pack in packs
+        )
+    ]
+    if unvoiced and not tc.tts_command:
         problems.append("no TTS fallback")
     fallback = "TTS configured" if tc.tts_command else ""
     summary = "; ".join(part for part in (coverage, fallback, *problems) if part)
     return DoctorCheck(
         "time-checks", CheckStatus.WARN if problems else CheckStatus.PASS, summary, detail
     )
+
+
+def _voice_pack_checks(cfg: AutoDJConfig) -> tuple[DoctorCheck, ...]:
+    """One check per configured voice pack: its coverage and the files it does not use."""
+    from autodj.time_checks import load_settings, pack_folders
+    from autodj.voice_packs import coverage, scan_pack
+
+    folders = pack_folders(cfg)
+    try:
+        settings = load_settings(cfg)
+        hour_format, enabled = settings.hour_format, set(settings.enabled_packs)
+    except (OSError, ValueError, KeyError, AttributeError):
+        hour_format, enabled = cfg.time_checks.hour_format, set(folders)
+    checks = []
+    for name, folder in folders.items():
+        pack = scan_pack(folder)
+        covered = coverage(pack, hour_format)
+        complete = pack.found and not pack.problems and covered.minutes_covered == 1440
+        state = "enabled" if name in enabled else "not enabled"
+        checks.append(
+            DoctorCheck(
+                f"voice-pack-{name}",
+                CheckStatus.PASS if complete else CheckStatus.WARN,
+                f"{state}; {covered.describe(pack)}",
+                str(folder),
+            )
+        )
+    return tuple(checks)
 
 
 def _dmca_check(cfg: AutoDJConfig) -> DoctorCheck:

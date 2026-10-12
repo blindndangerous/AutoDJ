@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections import deque
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -76,6 +77,7 @@ def _library(player: Player) -> SimpleNamespace:
     return SimpleNamespace(
         entries_snapshot=lambda kind="music": () if kind == "liner" else entries,
         last_played=lambda: {},
+        pending_history=lambda: [],
         remember_setting=lambda *_args: None,
     )
 
@@ -156,6 +158,82 @@ def test_clock_slot_without_rules_ignores_them() -> None:
     assert "Leave the Door Open" in titles
 
 
+@pytest.mark.parametrize("selection", ["random", "least_recent"])
+def test_clock_slot_without_rules_skips_protected_and_allows_recent(selection: str) -> None:
+    player = _clock_player([("Protected", "Playing"), ("Recent", "Still allowed")])
+    entries = tuple(player.playable_entries())
+    protected, recent = entries
+    player._clock_slots = [ClockSlot(folder="Z:/Music", selection=selection, enforce_rules=False)]
+    now = datetime.now(UTC)
+    player._library = SimpleNamespace(
+        entries_snapshot=lambda kind="music": () if kind == "liner" else entries,
+        last_played=lambda: {
+            protected.path: now - timedelta(days=10),
+            recent.path: now,
+        },
+    )
+    context = replace(
+        player._pick_context(), protected=frozenset({protected.path}), recent=deque([recent.path])
+    )
+
+    picked = player._clock_pick(context, 0)
+
+    assert picked.entry == recent
+
+
+@pytest.mark.parametrize("kind", ["music", "track"])
+@pytest.mark.parametrize("unavailable", ["protected", "silent"])
+def test_unenforced_clock_slot_skips_unavailable_music(kind: str, unavailable: str) -> None:
+    player = _clock_player([("Artist", "Unavailable")])
+    entry = player.playable_entries()[0]
+    player._clock_slots = [
+        ClockSlot(folder="Z:/Music", kind=kind, path=entry.path, enforce_rules=False)
+    ]
+    context = player._pick_context()
+    if unavailable == "protected":
+        context = replace(context, protected=frozenset({entry.path}), follows=entry.path)
+    else:
+        silent = make_entry(0)
+        silent.path = entry.path
+        silent.energy = 0.0
+        player._library.entries_snapshot = lambda kind="music": () if kind == "liner" else (silent,)
+    assert player._clock_pick(context, 0).entry is None
+
+
+def test_a_clock_slot_of_protected_songs_repeats_one_rather_than_go_silent(caplog) -> None:
+    player = _clock_player([("Artist A", "Playing"), ("Artist B", "Just played")])
+    playing, latest = player.playable_entries()
+    context = replace(
+        player._pick_context(),
+        protected=frozenset({playing.path, latest.path}),
+        follows=playing.path,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="autodj.player"):
+        first = player._clock_pick(context, 0)
+        second = player._clock_pick(context, 0)
+
+    assert first.entry == latest
+    assert second.entry == latest
+    assert caplog.text.count("rather than stopping the music") == 1
+
+
+def test_a_track_step_for_a_protected_song_plays_it_unless_it_is_playing(caplog) -> None:
+    player = _clock_player([("Artist A", "Step"), ("Artist B", "Playing")])
+    step, playing = player.playable_entries()
+    player._clock_slots = [ClockSlot(folder="Z:/Music", kind="track", path=step.path)]
+    context = replace(
+        player._pick_context(),
+        protected=frozenset({step.path, playing.path}),
+        follows=playing.path,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="autodj.player"):
+        assert player._clock_pick(context, 0).entry == step
+    assert "rather than stopping the music" in caplog.text
+    assert player._clock_pick(replace(context, follows=step.path), 0).entry is None
+
+
 def test_discovery_honours_the_rules() -> None:
     player = _player()
     current = _played_first(player)
@@ -202,6 +280,94 @@ def test_least_recent_stops_checking_rules_after_the_oldest_eligible_track() -> 
     picked, _how = player._choose_by_mode(current, context)
     assert picked is entries[4]
     assert context.repeat.held_back == {entries[2].path: "same artist"}
+
+
+@pytest.mark.parametrize("mode", ["random", "least_recent"])
+def test_automatic_start_honours_restored_repeat_history(mode: str) -> None:
+    player = _player(
+        mode,
+        [("Same Artist", "Played"), ("Same Artist", "Blocked"), ("Other Artist", "Allowed")],
+        repeat_rules={
+            "track": {"tracks": 0},
+            "artist": {"tracks": 3},
+            "album": {"tracks": 0},
+            "title": {"tracks": 0},
+        },
+    )
+    entries = player.playable_entries()
+    history = {
+        entries[1].path: datetime.now(UTC) - timedelta(days=3),
+        entries[2].path: datetime.now(UTC) - timedelta(days=2),
+        entries[0].path: datetime.now(UTC) - timedelta(days=1),
+    }
+    player._library = _library(player)
+    player._library.last_played = lambda: history
+    assert player.restore_repeat_history(_Catalog([_saved_play(entries[0], minutes_ago=1)])) == 1
+
+    for _ in range(5):
+        assert player._random_start_entry() is entries[2]
+
+
+@pytest.mark.parametrize("mode", ["random", "least_recent"])
+def test_automatic_start_honours_restored_title_minutes(mode: str) -> None:
+    player = _player(
+        mode,
+        [("Artist A", "Same Song"), ("Artist B", "Same Song (Live)"), ("Artist C", "Other")],
+        repeat_rules={
+            "track": {"tracks": 0},
+            "artist": {"tracks": 0},
+            "album": {"tracks": 0},
+            "title": {"minutes": 60},
+        },
+    )
+    entries = player.playable_entries()
+    player._library = _library(player)
+    assert player.restore_repeat_history(_Catalog([_saved_play(entries[0], minutes_ago=1)])) == 1
+    for _ in range(5):
+        assert player._random_start_entry() is entries[2]
+
+
+@pytest.mark.parametrize("mode", ["random", "least_recent"])
+def test_automatic_start_relaxes_repeat_rules_when_library_is_exhausted(mode: str) -> None:
+    player = _player(
+        mode,
+        [("Same Artist", "Played"), ("Same Artist", "Only remaining")],
+        repeat_rules={
+            "track": {"tracks": 0},
+            "artist": {"tracks": 3},
+            "album": {"tracks": 0},
+            "title": {"tracks": 0},
+        },
+    )
+    entries = player.playable_entries()
+    player._library = _library(player)
+    assert player.restore_repeat_history(_Catalog([_saved_play(entries[0], minutes_ago=1)])) == 1
+    assert player._random_start_entry() in entries
+
+
+def test_automatic_start_can_repeat_a_one_track_library_after_restored_history() -> None:
+    player = _player(
+        "random",
+        [("Only Artist", "Only Song")],
+        repeat_rules={
+            "track": {"tracks": 1},
+            "artist": {"tracks": 3},
+            "album": {"tracks": 0},
+            "title": {"tracks": 0},
+        },
+    )
+    entry = player.playable_entries()[0]
+    player._library = _library(player)
+    assert player.restore_repeat_history(_Catalog([_saved_play(entry, minutes_ago=1)])) == 1
+    assert player._random_start_entry() is entry
+
+
+def test_automatic_start_relaxes_bpm_range_when_it_excludes_every_song() -> None:
+    player = _player("random", [("Artist A", "One"), ("Artist B", "Two")])
+    entries = player.playable_entries()
+    player._library = _library(player)
+    player._bpm_range = (180.0, 190.0)
+    assert player._random_start_entry() in entries
 
 
 @pytest.mark.parametrize("mode", ["random", "least_recent"])
@@ -602,10 +768,10 @@ def test_a_clock_slot_relaxes_the_track_window_last(caplog) -> None:
     assert "relaxing the track window" in caplog.text
 
 
-def test_a_clock_slot_with_nothing_but_protected_tracks_still_finds_nothing() -> None:
+def test_a_clock_slot_with_nothing_but_the_playing_track_still_finds_nothing() -> None:
     player = _clock_player([("Artist A", "One")])
     only = player.playable_entries()[0]
-    context = replace(player._pick_context(), protected=frozenset({only.path}))
+    context = replace(player._pick_context(), protected=frozenset({only.path}), follows=only.path)
     assert player._clock_pick(context, 0).entry is None
 
 

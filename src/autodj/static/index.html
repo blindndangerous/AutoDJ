@@ -1197,12 +1197,13 @@
 
   <div class="card" role="tabpanel" id="spanel-time-checks" aria-labelledby="stab-time-checks" hidden>
     <h3>Time checks</h3>
-    <!-- time-checks.js fills this panel when it is seen.  The clip folder,
-         intro and outro clips and the text-to-speech command are set only in
-         config.toml.  Each result of a setting or the button is said once
-         through #tc-status. -->
+    <!-- time-checks.js fills this panel when it is seen.  The voice pack
+         folders, clip folder, intro and outro clips and the text-to-speech
+         command are set only in config.toml; the page sends pack names, never
+         paths.  Each result of a setting or the button is said once through
+         #tc-status; pack coverage is plain text, not a live region. -->
     <p class="card-desc">
-      Say the station time over the music, from a recorded clip for each minute or from text to speech. The clip folder, intro and outro clips and the text-to-speech command are set in config.toml.
+      Say the station time over the music, from a voice pack, a recorded clip for each minute or text to speech, in that order: when one has no recording for the minute, the next one speaks. The voice pack folders, clip folder, intro and outro clips and the text-to-speech command are set in config.toml.
     </p>
 
     <div id="tc-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
@@ -1222,7 +1223,7 @@
       </select>
     </div>
     <span class="setting-desc" id="tc-hour-format-desc">
-      How text to speech says the time: “It’s 3:05” or “It’s 15:05”, and on the hour “It’s 3 o’clock” or “It’s 15 hundred”, with “It’s midnight” and “It’s noon” in both. Recorded clips play as they are.
+      How text to speech says the time: “It’s 3:05” or “It’s 15:05”, and on the hour “It’s 3 o’clock” or “It’s 15 hundred”, with “It’s midnight” and “It’s noon” in both. Recorded clips play as they are. In 12-hour mode a voice pack without a file for hour 13 to 23 or 00 uses the file for 01 to 11 or 12, and adds its am or pm file when it has both.
     </span>
     <div class="settings-row">
       <label for="tc-rule">When to play</label>
@@ -1235,8 +1236,36 @@
       After the song playing at the top of the hour ends, say the time as the next song starts, in place of a voice liner. It uses the voice liner duck depth and, when the server mixes the music, Talk up to the vocal. For set times, add a Time check event in Schedule.
     </span>
 
+    <fieldset id="tc-packs" aria-describedby="tc-packs-desc">
+      <legend>Voice packs</legend>
+      <span class="setting-desc" id="tc-packs-desc">
+        Folders of hour and minute files, joined into one sentence like RadioBOSS does. Tick the packs to use. Each pack shows how many of the 1440 minutes it can say and which files are missing.
+      </span>
+      <p id="tc-packs-empty">No voice packs are listed in config.toml.</p>
+      <div id="tc-pack-list"></div>
+    </fieldset>
+    <div class="settings-row">
+      <label for="tc-pack-order">When several packs are ticked</label>
+      <select id="tc-pack-order" aria-describedby="tc-pack-order-desc">
+        <option value="rotate">Take turns</option>
+        <option value="random">Pick one at random</option>
+      </select>
+    </div>
+    <span class="setting-desc" id="tc-pack-order-desc">
+      Which ticked pack says each time check. When that pack has no files for the minute, the other ticked packs are tried before recorded clips.
+    </span>
+
     <h4>Recordings</h4>
     <p id="tc-clips-status"></p>
+    <div class="settings-row">
+      <label for="tc-test-voice">Voice to test</label>
+      <select id="tc-test-voice" aria-describedby="tc-test-voice-desc">
+        <option value="">The ticked packs, then clips, then text to speech</option>
+      </select>
+    </div>
+    <span class="setting-desc" id="tc-test-voice-desc">
+      Choose one voice pack to hear it even when it is not ticked. When it has no files for this minute, the next source plays; when the server plays it, the result names the source.
+    </span>
     <button type="button" id="tc-test" aria-describedby="tc-test-desc">Play a time check now</button>
     <span class="setting-desc" id="tc-test-desc">
       Plays the current time on the stream or server audio when the server mixes the music; otherwise in this browser.
