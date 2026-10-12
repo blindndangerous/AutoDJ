@@ -47,6 +47,7 @@ def _client(tmp_path, catalog):
     bridge.library = SimpleNamespace(
         catalog=catalog,
         entry_for_path=lambda _path: None,
+        entries_snapshot=lambda kind="music": songs if kind == "music" else (),
         categories=CategoryIndex(player._cfg, lambda: songs),
     )
     app = create_app(bridge)

@@ -20,7 +20,11 @@ def test_clockwheel_routes_need_pairing_and_strict_bodies(tmp_path):
     player._cfg.presets = {}
     with LibraryCatalog(tmp_path / "library.sqlite") as catalog:
         bridge = PlayerBridge(player=player, sim=_make_sim_mock())
-        bridge.library = SimpleNamespace(catalog=catalog, entry_for_path=lambda _path: None)
+        bridge.library = SimpleNamespace(
+            catalog=catalog,
+            entry_for_path=lambda _path: None,
+            entries_snapshot=lambda _kind="music": (),
+        )
         app = create_app(bridge)
         app.state.security_policy.now = lambda: 1_000
         client = TestClient(app)

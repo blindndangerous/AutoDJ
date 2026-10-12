@@ -1579,17 +1579,50 @@ Profiles remember the active clockwheel, and a schedule event can switch to one 
 
 Step types:
 
-- **Music** or **Voice liner** from a registered library folder, or from a folder inside it such
-  as `Rock/Live` (the library folder must then add subfolders). Each step can include subfolders,
-  choose the least recently played or a random track, and follow or ignore the repeat rules. A
-  liner step plays over the start of the next music step; two liner steps cannot be next to each
-  other.
+- **Music** or **Voice liner** matching the conditions in the step. Choose least recently played
+  or random, and whether to follow the repeat rules. A liner uses its saved overlap points with
+  the next music step; two liner steps cannot be next to each other.
 - **Music from a category**: a rotation category such as A, B or "Remembering the 2000s" (see
   [Rotation categories](#rotation-categories)). It chooses the least recently played or a random
   song of the category and follows or ignores the repeat rules, like a folder step.
 - **A specific track**, by its path inside a registered music folder. It follows the repeat rules;
   when they hold it back, the clockwheel moves on to the next step.
 - **Switch preset**: the next song is picked and mixed with that preset.
+
+Music and liner steps have an **Add condition** button in the same step form. Choose **Match
+all** when every condition must hold, or **Match any** when one is enough. Each folder is its
+own condition. For example, Match any with two folders selects from either folder; Match all
+with a folder and Year before 2000 selects older songs from that folder. A step can also use
+only metadata conditions, without choosing a folder. Mixed groups such as `(folder A or folder
+B) and year before 2000` are not supported yet.
+
+Available conditions:
+
+- **Folder**: a registered music or liner folder, or a subfolder such as `Rock/Live`. Include
+  subfolders applies to that condition. The registered folder must include subfolders before a
+  condition can use one of them.
+- **Genre**: choose a genre held in the library. Matching ignores case. Multiple labels stored
+  with semicolons, or as a list, are matched separately; slashes and commas remain part of a label.
+- **Year**, **BPM** and **Duration**: equal to, less than, at most, greater than, at least, or between
+  two values. Between includes both ends. Year is the release year in AutoDJ's library. Duration
+  is the full file length; enter seconds or `minutes:seconds`.
+- **Artist**, **Title** and **Album**: exact text, contains text, or a wildcard pattern. Matching
+  ignores case. In a pattern, `*` means any text and `?` means one character. Other punctuation is
+  literal; these are not regular expressions.
+- **Beets field**: a field from the configured Beets database, including custom fields. Choose a
+  text or numeric comparison. `original_year` uses the first-release year, falling back to
+  `year` when it is missing. Ordinary conditions work without Beets.
+
+A missing value does not match a condition. Unknown year, BPM or duration values are not treated
+as zero. The player reads Beets without changing it and caches the requested fields until the
+database changes. An unavailable database or field produces an error when saving or activating
+a step that needs it. If it becomes unavailable during playback, that step is skipped with a
+status message. Other valid steps can still play.
+
+Repeat rules apply after the conditions have selected their pool. Relaxing repeats never removes
+those conditions. If no step can supply a song, a clock containing conditions does not fall back
+to unfiltered music. Existing folder steps still work and open as one folder condition; editing
+one saves it in the new form. Category steps keep their saved category and selection rules.
 
 The editor lists numbered steps with their names as Edit buttons. With focus in the step list,
 Up and Down move to the previous or next step name, Enter on a name edits it, and Delete asks

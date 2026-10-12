@@ -10,6 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Clockwheel music and liner steps can combine conditions with Match all or Match any. Add
+  folders, genres, year, BPM, duration, artist, title or album in the step editor; artist, title
+  and album also accept simple wildcard patterns. Beets fields, including custom fields, are
+  available when a Beets database is configured. Folder steps open as one condition, and
+  category steps keep working. Missing metadata does not match, and repeat-rule relaxation
+  stays within the matching tracks.
+
 - Rotation categories for clockwheels (Library tools, Categories), such as A, B, C and D or
   "Remembering the 2000s". A category's songs come from a beets query or from an M3U or M3U8 file
   in the playlists folder (`[library] playlists_folder`, by default `playlists/` in the index

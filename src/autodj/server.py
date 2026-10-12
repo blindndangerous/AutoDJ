@@ -2895,6 +2895,17 @@ def create_app(
 
         return sorted(set(BUILTIN_PRESETS) | set(bridge.player._cfg.presets or {}))
 
+    def _validate_step_conditions(library: Any, step: dict, sources: dict, number: int) -> None:
+        from autodj.clockwheel_store import resolve_conditions
+
+        for condition in resolve_conditions(step, sources, number):
+            if condition["field"] == "beets":
+                known, _, error = _clock_beets(library).snapshot()
+                if error:
+                    raise ValueError(f"Step {number}: {error}")
+                if condition["name"] not in known:
+                    raise ValueError(f"Step {number}: Beets has no field named {condition['name']}")
+
     def _validate_native_clock(library: Any, value: Any) -> dict:
         """Validate *value*, then check its folders, tracks and presets exist."""
         clock = validate_clockwheel(value)
@@ -2903,13 +2914,7 @@ def create_app(
         for number, step in enumerate(clock["steps"], 1):
             kind = step["type"]
             if kind in {"music", "liner"}:
-                source = step_source(step, sources, number)
-                if step["folder"] and not source["recursive"]:
-                    raise ValueError(
-                        f"Step {number}: {source['path']} is registered without subfolders, so "
-                        f"its subfolder {step['folder']} is never scanned. Turn on Add "
-                        "subfolders for it under Music folders and Voice liner folders"
-                    )
+                _validate_step_conditions(library, step, sources, number)
             elif kind == "track":
                 source = step_source(step, sources, number)
                 target = source_folder(source["path"], step["path"])
@@ -2933,8 +2938,29 @@ def create_app(
             return {}
         return {category.id: category.name for category in index.categories()}
 
+    def _clock_beets(library: Any) -> Any:
+        from autodj.clock_condition_data import BeetsConditions
+
+        if not hasattr(library, "clock_beets"):
+            library.clock_beets = BeetsConditions(bridge.player._cfg)
+        return library.clock_beets
+
+    # The genre names last listed, with the music and liner entries they came from.
+    clock_genres: list[Any] = [None, None, []]
+
+    def _clock_genres(library: Any) -> list[str]:
+        """Every genre in the library, worked out again only when its entries change."""
+        from autodj.clock_conditions import genres
+
+        music, liners = library.entries_snapshot(), library.entries_snapshot("liner")
+        if clock_genres[0] is not music or clock_genres[1] is not liners:
+            names = {genre for entry in music + liners for genre in genres(entry.genre)}
+            clock_genres[:] = [music, liners, sorted(names, key=str.casefold)]
+        return list(clock_genres[2])
+
     def _clock_snapshot(library: Any) -> dict:
         setting = _clock_setting(library)
+        known, _, beets_error = _clock_beets(library).snapshot()
         return {
             "names": _clock_store().list_names(),
             "active": _active_clock(library),
@@ -2944,6 +2970,9 @@ def create_app(
                 for s in library.catalog.sources()
             ],
             "presets": _preset_names(),
+            "genres": _clock_genres(library),
+            "beets_fields": sorted(known),
+            "beets_error": beets_error,
             "categories": [
                 {"id": key, "name": name} for key, name in _category_names(library).items()
             ],
@@ -2952,10 +2981,18 @@ def create_app(
             "notice": OLD_CLOCK_MESSAGE if "slots" in setting else None,
         }
 
-    async def _select_clock(library: Any, name: str | None, cursor: int | None = None) -> dict:
+    async def _select_clock(
+        library: Any, name: str | None, cursor: int | None = None, *, renamed: bool = False
+    ) -> dict:
         """Make *name* active.  Reselecting the active one keeps its place."""
-        if name is not None:
-            _clock_store().load(name)
+        if name is not None and not renamed:
+            clock = _clock_store().load(name)
+            sources = {source["id"]: source for source in library.catalog.sources()}
+            for number, step in enumerate(clock["steps"], 1):
+                if "conditions" in step:
+                    await asyncio.to_thread(
+                        _validate_step_conditions, library, step, sources, number
+                    )
         setting = _clock_setting(library)
         if cursor is None:
             kept = setting.get("cursor")
@@ -2965,7 +3002,7 @@ def create_app(
         reload_clock = getattr(bridge.player, "configure_clock", None)
         if callable(reload_clock):
             await asyncio.to_thread(reload_clock)
-        return _clock_snapshot(library)
+        return await asyncio.to_thread(_clock_snapshot, library)
 
     def _existing_clock(name: str) -> dict:
         try:
@@ -2979,13 +3016,13 @@ def create_app(
 
     @app.get("/api/library/clock")
     async def api_library_clock() -> dict:
-        return _clock_snapshot(_catalog_library())
+        return await asyncio.to_thread(_clock_snapshot, _catalog_library())
 
     @app.post("/api/library/clock")
     async def api_library_create_clock(body: ClockBody) -> dict:
         library = _catalog_library()
         try:
-            clock = _validate_native_clock(library, body.model_dump())
+            clock = await asyncio.to_thread(_validate_native_clock, library, body.model_dump())
             return _clock_store().save(clock, overwrite=False)
         except (ValueError, OSError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -3005,7 +3042,7 @@ def create_app(
                 body.text, [source["path"] for source in library.catalog.sources("liner")]
             )
             clock = from_pal(body.name, slots, library.catalog.sources(), body.resync_minutes)
-            clock = _validate_native_clock(library, clock)
+            clock = await asyncio.to_thread(_validate_native_clock, library, clock)
             return _clock_store().save(clock, overwrite=False)
         except (ValueError, OSError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -3021,7 +3058,8 @@ def create_app(
         if body.name != name:
             raise HTTPException(status_code=400, detail="Use Rename to change the name")
         try:
-            clock = _clock_store().save(_validate_native_clock(library, body.model_dump()))
+            checked = await asyncio.to_thread(_validate_native_clock, library, body.model_dump())
+            clock = _clock_store().save(checked)
             if _active_clock(library) == name:
                 await asyncio.to_thread(bridge.player.configure_clock)
             return clock
@@ -3052,7 +3090,10 @@ def create_app(
                 store.delete(name)
             if _active_clock(library) == name:
                 cursor = _clock_setting(library).get("cursor")
-                await _select_clock(library, body.name, cursor if type(cursor) is int else 0)
+                # Renaming the active clock does not change its conditions.
+                await _select_clock(
+                    library, body.name, cursor if type(cursor) is int else 0, renamed=True
+                )
             return renamed
         except (ValueError, OSError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -3065,7 +3106,7 @@ def create_app(
             _clock_store().delete(name)
             if _active_clock(library) == name:
                 return await _select_clock(library, None)
-            return _clock_snapshot(library)
+            return await asyncio.to_thread(_clock_snapshot, library)
         except (ValueError, OSError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

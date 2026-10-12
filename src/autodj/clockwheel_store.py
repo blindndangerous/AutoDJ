@@ -134,40 +134,93 @@ def _selection(value: Mapping[str, Any]) -> tuple[str, bool]:
     return selection, enforce_rules
 
 
+def _condition(value: Any) -> dict[str, Any]:
+    from autodj.clock_conditions import validate_metadata_condition
+
+    if not isinstance(value, dict) or not isinstance(value.get("field"), str):
+        raise ValueError("Each condition needs a field")
+    if value["field"] != "folder":
+        return validate_metadata_condition(value)
+    if set(value) - {"field", "source", "folder", "recursive"}:
+        raise ValueError("A folder condition has unknown fields")
+    recursive = value.get("recursive", False)
+    if type(recursive) is not bool:
+        raise ValueError("A folder condition's recursive value must be true or false")
+    return {
+        "field": "folder",
+        "source": _source_id(value.get("source")),
+        "folder": relative_path(value.get("folder", ""), label="folder", allow_empty=True),
+        "recursive": recursive,
+    }
+
+
 def _folder_step(value: Mapping[str, Any]) -> dict[str, Any]:
+    common = {"type", "selection", "enforce_rules", "require_following"}
+    conditional = "conditions" in value
     _fields(
         value,
-        {
-            "type",
-            "source",
-            "folder",
-            "recursive",
-            "selection",
-            "enforce_rules",
-            "require_following",
-        },
-        {"type", "source"},
+        common | ({"conditions", "match"} if conditional else {"source", "folder", "recursive"}),
+        {"type", "conditions"} if conditional else {"type", "source"},
     )
-    recursive = value.get("recursive", False)
     selection, enforce_rules = _selection(value)
     require_following = value.get("require_following", False)
-    if type(recursive) is not bool or type(enforce_rules) is not bool:
-        raise ValueError("recursive and enforce_rules must be true or false")
     if type(require_following) is not bool:
         raise ValueError("require_following must be true or false")
     if require_following and value["type"] != "liner":
         raise ValueError("require_following is only valid for liner steps")
-    step = {
-        "type": value["type"],
-        "source": _source_id(value["source"]),
-        "folder": relative_path(value.get("folder", ""), label="folder", allow_empty=True),
-        "recursive": recursive,
-        "selection": selection,
-        "enforce_rules": enforce_rules,
-    }
+    step = {"type": value["type"], "selection": selection, "enforce_rules": enforce_rules}
+    if conditional:
+        conditions = value["conditions"]
+        if not isinstance(conditions, list) or not 1 <= len(conditions) <= 32:
+            raise ValueError("A step needs between 1 and 32 conditions")
+        match = value.get("match", "all")
+        if match not in ("all", "any"):
+            raise ValueError("Choose Match all or Match any for the step")
+        step.update(match=match, conditions=[_condition(item) for item in conditions])
+    else:
+        condition = _condition(
+            {
+                "field": "folder",
+                **{key: value[key] for key in ("source", "folder", "recursive") if key in value},
+            }
+        )
+        step.update({key: item for key, item in condition.items() if key != "field"})
     if require_following:
         step["require_following"] = True
     return step
+
+
+def step_conditions(step: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Read an old folder step as its single condition, without rewriting its file."""
+    if "conditions" in step:
+        return step["conditions"]
+    return [{"field": "folder", **{key: step[key] for key in ("source", "folder", "recursive")}}]
+
+
+def resolve_conditions(
+    step: Mapping[str, Any], sources: Mapping[str, Any], number: int
+) -> tuple[dict[str, Any], ...]:
+    """Check folder sources and resolve their paths for the player."""
+    result = []
+    for condition in step_conditions(step):
+        if condition["field"] != "folder":
+            result.append(condition)
+            continue
+        source = step_source({"type": step["type"], "source": condition["source"]}, sources, number)
+        if condition["folder"] and not source["recursive"]:
+            raise ValueError(
+                f"Step {number}: {source['path']} is registered without subfolders, so "
+                f"its subfolder {condition['folder']} is never scanned. Turn on Add "
+                "subfolders for it under Music folders and Voice liner folders"
+            )
+        result.append(
+            {
+                "field": "folder",
+                "folder": source_folder(source["path"], condition["folder"]),
+                "recursive": condition["recursive"],
+            }
+        )
+    return tuple(result)
 
 
 def _track_step(value: Mapping[str, Any]) -> dict[str, Any]:
