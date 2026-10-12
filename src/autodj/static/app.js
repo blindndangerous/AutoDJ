@@ -674,6 +674,15 @@ function applyState(s) {
     }
     if (handoffStatus.textContent !== message) handoffStatus.textContent = message;
   }
+  // Shown under the Stereo Tool preset in Settings; the preset still plays.
+  const presetWarning = document.getElementById("stereo-preset-warning");
+  if (presetWarning) {
+    const warning = (s.playout && s.playout.preset_warning) || "";
+    if (presetWarning.textContent !== warning) {
+      presetWarning.textContent = warning;
+      presetWarning.hidden = !warning;
+    }
+  }
 
   // Discovery button — show only when discovery is configured
   if (s.discovery_available) {

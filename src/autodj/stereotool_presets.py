@@ -94,6 +94,45 @@ def _check_contents(data: bytes) -> None:
         raise ValueError("the file does not look like a Stereo Tool preset")
 
 
+def agc_drive_preset_data(data: bytes, drive_db: float) -> bytes:
+    """Return a preset copy with Pre Compressor Drive raised by drive_db."""
+    import math
+
+    if not math.isfinite(drive_db) or not 0 <= drive_db <= 12:
+        raise ValueError("Stereo Tool AGC drive must be between 0 and 12 dB")
+    lines = data.decode("latin-1").splitlines(keepends=True)
+    sections = [
+        i
+        for i, line in enumerate(lines)
+        if re.fullmatch(r"\s*\[Pre Compressor\]\s*(?:\r?\n)?", line, re.IGNORECASE)
+    ]
+    if len(sections) != 1:
+        raise ValueError("preset must contain one [Pre Compressor] section")
+    end = next(
+        (i for i in range(sections[0] + 1, len(lines)) if re.match(r"\s*\[", lines[i])),
+        len(lines),
+    )
+    drives = [
+        i for i in range(sections[0] + 1, end) if re.match(r"\s*Drive\s*=", lines[i], re.IGNORECASE)
+    ]
+    if len(drives) != 1:
+        raise ValueError("[Pre Compressor] must contain one Drive value")
+    index = drives[0]
+    match = re.fullmatch(r"(\s*Drive\s*=\s*)([^\r\n]*?)(\r?\n)?", lines[index], re.IGNORECASE)
+    if match is None:
+        raise ValueError("invalid [Pre Compressor] Drive value")
+    try:
+        base = float(match.group(2).strip())
+    except ValueError as exc:
+        raise ValueError("invalid [Pre Compressor] Drive value") from exc
+    if not math.isfinite(base) or base <= 0:
+        raise ValueError("invalid [Pre Compressor] Drive value")
+    lines[index] = (
+        match.group(1) + format(base * 10 ** (drive_db / 20), ".12g") + (match.group(3) or "")
+    )
+    return "".join(lines).encode("latin-1")
+
+
 def _write_new(folder: Path, name: str, data: bytes) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / name

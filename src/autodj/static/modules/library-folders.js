@@ -339,7 +339,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       ["Duration", formatPointTime(data.length)], ["Last played", lastPlayed],
       ["BPM", data.bpm > 0 ? data.bpm : null], ["Key", data.key_label === "--" ? "Unknown" : data.key_label],
       ["Advanced analysis", analysis],
-      ["Audio preparation", data.prepared == null ? "Not available" : data.prepared ? "Ready" : "Not prepared yet"],
+      ["Loudness analysis", data.loudness_ready == null ? "Not available" : data.loudness_ready ? "Ready" : "Not measured yet"],
       ["Folder", path.slice(0, split + 1)], ["Filename", path.slice(split + 1)],
     ];
     details.replaceChildren(...rows.flatMap(([label, value]) => {

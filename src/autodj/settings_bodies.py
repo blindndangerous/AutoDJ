@@ -216,10 +216,12 @@ class PlaybackSettingsBody(BaseModel):
     pick_temperature: Annotated[float, Field(ge=0.0, le=10.0, allow_inf_nan=False)] | None = None
     prefetch_next_track: bool | None = None
     silence_trigger_crossfade: bool | None = None
-    quiet_boost_db: Annotated[float, Field(ge=0.0, le=12.0, allow_inf_nan=False)] | None = None
     intro_lift_max_db: Annotated[float, Field(ge=0.0, le=6.0, allow_inf_nan=False)] | None = None
     stereotool_input_trim_db: (
         Annotated[float, Field(ge=-12.0, le=6.0, allow_inf_nan=False)] | None
+    ) = None
+    stereotool_agc_drive_db: (
+        Annotated[float, Field(ge=0.0, le=12.0, allow_inf_nan=False)] | None
     ) = None
     stereotool_preset: str | None = None
 

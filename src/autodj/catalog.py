@@ -58,6 +58,7 @@ _SCHEMA = """
         fingerprint TEXT NOT NULL DEFAULT '', points TEXT NOT NULL DEFAULT '{}',
         point_sources TEXT NOT NULL DEFAULT '{}', prepared_path TEXT,
         intro_lift_db REAL,
+        loudness TEXT NOT NULL DEFAULT '{}',
         last_played REAL NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS catalog_settings (
@@ -117,7 +118,7 @@ class LibraryCatalog:
         """Add columns an older catalog file lacks.
 
         These are the liner ``allow_outro`` flag, the cached quiet-intro
-        ``intro_lift_db`` and the play log's ``performances`` count.  The checks and the changes share one write
+        ``intro_lift_db``, loudness metadata and the play log's ``performances`` count.  The checks and the changes share one write
         transaction, so a second process opening the same old file waits,
         then finds the columns.
         """
@@ -131,6 +132,10 @@ class LibraryCatalog:
                 )
             if "intro_lift_db" not in entries:
                 db.execute("ALTER TABLE catalog_entries ADD COLUMN intro_lift_db REAL")
+            if "loudness" not in entries:
+                db.execute(
+                    "ALTER TABLE catalog_entries ADD COLUMN loudness TEXT NOT NULL DEFAULT '{}'"
+                )
             have = {row[1] for row in db.execute("PRAGMA table_info(play_history)")}
             if "performances" not in have:
                 db.execute("ALTER TABLE play_history ADD COLUMN performances INTEGER")
@@ -480,7 +485,7 @@ class LibraryCatalog:
                 # Changed bytes, including retagging, invalidate cues and derived audio too.
                 self._db().execute("DELETE FROM catalog_vectors WHERE entry_id=?", (record_id,))
                 self._db().execute(
-                    "UPDATE catalog_entries SET prepared_path=NULL, intro_lift_db=NULL, points='{}', point_sources='{}' "
+                    "UPDATE catalog_entries SET prepared_path=NULL, intro_lift_db=NULL, loudness='{}', points='{}', point_sources='{}' "
                     "WHERE id=?",
                     (record_id,),
                 )
@@ -531,6 +536,76 @@ class LibraryCatalog:
                 (lift_db, _path(path)),
             )
             self._db().commit()
+
+    def set_loudness(self, path: str | Path, measurement: dict) -> None:
+        """Store a current loudness analysis for a catalog entry."""
+        if not isinstance(measurement, dict):
+            raise ValueError("measurement must be a dict")
+        version, kind = measurement.get("version"), measurement.get("kind")
+        size, mtime_ns = measurement.get("size"), measurement.get("mtime_ns")
+        lufs, gain_db = measurement.get("lufs"), measurement.get("gain_db")
+        if (
+            not isinstance(version, str)
+            or kind not in ("music", "liner")
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or size < 0
+            or isinstance(mtime_ns, bool)
+            or not isinstance(mtime_ns, int)
+            or mtime_ns < 0
+            or isinstance(lufs, bool)
+            or not isinstance(lufs, int | float)
+            or isinstance(gain_db, bool)
+            or not isinstance(gain_db, int | float)
+        ):
+            raise ValueError("invalid loudness measurement")
+        try:
+            lufs, gain_db = float(lufs), float(gain_db)
+        except OverflowError as exc:
+            raise ValueError("invalid loudness measurement") from exc
+        if not math.isfinite(lufs) or not math.isfinite(gain_db) or not -60 <= gain_db <= 18:
+            raise ValueError("invalid loudness measurement")
+        normalized = _path(path)
+        with self._lock:
+            db = self._db()
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    "SELECT kind,size FROM catalog_entries WHERE path=?", (normalized,)
+                ).fetchone()
+                try:
+                    stat = os.stat(normalized)
+                except OSError:
+                    stat = None
+                if (
+                    row is not None
+                    and row["kind"] == kind
+                    and row["size"] == size
+                    and stat is not None
+                    and stat.st_size == size
+                    and stat.st_mtime_ns == mtime_ns
+                ):
+                    db.execute(
+                        "UPDATE catalog_entries SET loudness=? WHERE path=?",
+                        (
+                            json.dumps(
+                                {
+                                    "version": version,
+                                    "kind": kind,
+                                    "size": size,
+                                    "mtime_ns": mtime_ns,
+                                    "lufs": lufs,
+                                    "gain_db": gain_db,
+                                },
+                                allow_nan=False,
+                            ),
+                            normalized,
+                        ),
+                    )
+                db.commit()
+            except BaseException:
+                db.rollback()
+                raise
 
     def seed_entries(self, entries: Iterable[IndexEntry]) -> int:
         """Import existing indexed records without replacing catalog metadata."""
@@ -741,6 +816,12 @@ class LibraryCatalog:
             )
             if row is None:
                 return None
+            try:
+                loudness = json.loads(row["loudness"])
+            except (TypeError, json.JSONDecodeError):
+                loudness = {}
+            if not isinstance(loudness, dict):
+                loudness = {}
             result = {
                 "id": row["id"],
                 "path": normalized,
@@ -750,6 +831,7 @@ class LibraryCatalog:
                 "point_sources": json.loads(row["point_sources"]),
                 "prepared_path": row["prepared_path"],
                 "intro_lift_db": row["intro_lift_db"],
+                "loudness": loudness,
                 "last_played": row["last_played"],
             }
             result.update({n: row[n] for n in _ENTRY_FIELDS})

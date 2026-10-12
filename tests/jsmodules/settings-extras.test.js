@@ -179,25 +179,25 @@ describe("mix settings", () => {
     expect(postSettings).not.toHaveBeenCalled();
   });
 
-  it("saves quiet boost within its server range and reads the saved value", async () => {
+  it("saves Stereo Tool AGC drive within its server range and reads the saved value", async () => {
     document.body.innerHTML = '<input type="number" id="boost" value="9">';
-    const pbQuietBoost = document.querySelector("#boost");
+    const pbStereoAgcDrive = document.querySelector("#boost");
     const postSettings = vi.fn().mockResolvedValue(true);
-    installMixSettings({ pbQuietBoost }, { postSettings });
-    applyMixSettings({ playback: { quiet_boost_db: 9 } }, { pbQuietBoost });
+    installMixSettings({ pbStereoAgcDrive }, { postSettings });
+    applyMixSettings({ playback: { stereotool_agc_drive_db: 9 } }, { pbStereoAgcDrive });
 
-    pbQuietBoost.value = "12.1";
-    pbQuietBoost.dispatchEvent(new Event("change"));
-    expect(pbQuietBoost.value).toBe("9");
+    pbStereoAgcDrive.value = "12.1";
+    pbStereoAgcDrive.dispatchEvent(new Event("change"));
+    expect(pbStereoAgcDrive.value).toBe("9");
     expect(postSettings).not.toHaveBeenCalled();
 
-    pbQuietBoost.value = "5.5";
-    pbQuietBoost.dispatchEvent(new Event("change"));
+    pbStereoAgcDrive.value = "5.5";
+    pbStereoAgcDrive.dispatchEvent(new Event("change"));
     await vi.waitFor(() => expect(postSettings).toHaveBeenCalledWith(
-      "/api/playback-settings", { quiet_boost_db: 5.5 }, pbQuietBoost,
+      "/api/playback-settings", { stereotool_agc_drive_db: 5.5 }, pbStereoAgcDrive,
     ));
-    applyMixSettings({ playback: { quiet_boost_db: 5.5 } }, { pbQuietBoost });
-    expect(pbQuietBoost.value).toBe("5.5");
+    applyMixSettings({ playback: { stereotool_agc_drive_db: 5.5 } }, { pbStereoAgcDrive });
+    expect(pbStereoAgcDrive.value).toBe("5.5");
   });
 });
 
