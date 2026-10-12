@@ -592,13 +592,15 @@ def test_first_negative_attached_liner_starts_after_music_and_keeps_tail(station
 
 
 def test_seed_liner_negative_cue_starts_it_after_incoming_music(station):
-    player, (_, b, voice, _), points = station
+    player, (_, b, voice, jingle), points = station
     points[b.path]["intro"] = 6
     points[voice.path].update(start=0.5, segue=2, end=4, overlap_start=-3)
-    result = player._render_track(voice, b, 0)
+    points[jingle.path].update(start=0, segue=1, end=1, overlap_start=0)
+    result = player._render_track(voice, b, 0, liners=((jingle, False),))
     assert result.full_audio[0, 0] == pytest.approx(0.25)
-    assert result.full_audio[round(2.9 * SR), 1] == pytest.approx(0)
-    assert result.full_audio[round(3 * SR), 1] == pytest.approx(0.5)
+    assert result.full_audio[round(1.2 * SR), 1] == pytest.approx(0)
+    assert result.full_audio[round(1.25 * SR), 1] == pytest.approx(0.5)
+    assert result.liner_events == ((round(4.75 * SR), jingle, False),)
 
 
 @pytest.fixture

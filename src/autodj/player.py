@@ -3317,8 +3317,12 @@ class Player:
         full_audio = handoff.full_audio
         audio = full_audio[start - source_start :]
         liner_start = (
-            source_start if is_liner else round((handoff.liner_s or 0.0) * SAMPLE_RATE)
-        ) - start
+            0
+            if handoff.liner_s is None
+            else round(handoff.liner_s * SAMPLE_RATE)
+            - handoff.start_offset
+            - (start - source_start)
+        )
         return RenderedTrack(
             current,
             audio,
