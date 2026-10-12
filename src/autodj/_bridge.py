@@ -140,6 +140,11 @@ class PlayerBridge:
     # Identifies this server process in ``stream_event`` so a page that
     # outlives a restart does not mistake the new seq 1 for one it announced.
     _event_nonce: str = field(default_factory=lambda: secrets.token_hex(8), init=False)
+    # get_state runs on worker threads: one at a time, sharing the track cache.
+    _state_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    # path -> (entry, DJ-meta object, (records version, settings), track dict)
+    # for the tracks the last state showed.
+    _track_dicts: dict[str, tuple[Any, Any, tuple, dict]] = field(default_factory=dict, init=False)
 
     # ------------------------------------------------------------------
     # Stream mode
@@ -670,10 +675,28 @@ class PlayerBridge:
     def get_state(self) -> dict:
         """Return a JSON-serialisable snapshot of the current player state.
 
+        Safe to call from any thread; the server calls it off the event
+        loop.  Calls run one at a time.
+
         Returns:
             Dict including ``current_track``, ``next_track``, ``is_paused``,
             ``volume``, ``is_muted``, ``elapsed`` and ``duration``.
         """
+        with self._state_lock:
+            return self._build_state()
+
+    def _records_version(self) -> int | None:
+        """The catalog's per-track data counter, or ``None`` without a catalog."""
+        change_versions = getattr(getattr(self.library, "catalog", None), "change_versions", None)
+        if not callable(change_versions):
+            return None
+        try:
+            return int(change_versions()["records"])
+        except Exception:  # pragma: no cover -- defensive: build the dicts afresh
+            logger.debug("get_state: catalog version unavailable", exc_info=True)
+            return None
+
+    def _build_state(self) -> dict:
         state = self.player._state
         # Read the shared fields once: other threads (a stream set stopping,
         # the mix bus starting a track) change them while this runs.
@@ -916,6 +939,52 @@ class PlayerBridge:
                 "key_hz": round(key_hz, 3) if key_hz is not None else None,
             }
 
+        # A track's dict depends on its entry, its catalog record (points,
+        # intro lift), its DJ-meta and a few settings: reuse it while none
+        # of those changed instead of reading the catalog every second.
+        records_version = self._records_version() if self.library is not None else 0
+        playback = self.player._cfg.playback
+        settings_key = (
+            records_version,
+            _key_notation,
+            _key_prefer_flats,
+            playback.loudness_processing,
+            self.player._cfg.replaygain.enabled,
+            playback.intro_lift_max_db,
+        )
+        previous = self._track_dicts
+        shown: dict[str, tuple[Any, Any, tuple, dict]] = {}
+
+        def _cached_track_dict(entry: IndexEntry | None) -> dict | None:
+            if entry is None:
+                return None
+            meta = None
+            if dj_cache is not None:
+                try:
+                    meta = dj_cache.get(entry.path)
+                except Exception:  # pragma: no cover -- defensive log-only path
+                    meta = None
+            hit = shown.get(entry.path) or previous.get(entry.path)
+            if (
+                records_version is not None
+                and hit is not None
+                and hit[0] is entry
+                and hit[1] is meta
+                and hit[2] == settings_key
+            ):
+                value: dict | None = hit[3]
+            else:
+                value = _track_dict(entry)
+            if value is None:  # pragma: no cover -- entry is not None here
+                return None
+            shown[entry.path] = (entry, meta, settings_key, value)
+            return dict(value)
+
+        current_dict = _cached_track_dict(current)
+        next_dict = _cached_track_dict(upcoming)
+        queue_dicts = [_cached_track_dict(e) for e in self._queue_snapshot()]
+        self._track_dicts = shown
+
         elapsed = round(pos / max(1, sr), 1)
 
         discovery_every = getattr(self.player, "_discovery_every", None)
@@ -939,9 +1008,9 @@ class PlayerBridge:
         )
         playing = getattr(self.player, "_playing_render", None)
         return {
-            "current_track": _track_dict(current),
-            "next_track": _track_dict(upcoming),
-            "queue": [_track_dict(e) for e in self._queue_snapshot()],
+            "current_track": current_dict,
+            "next_track": next_dict,
+            "queue": queue_dicts,
             "is_paused": state.is_paused,
             "volume": state.volume,
             "is_muted": state.is_muted,
@@ -1059,9 +1128,15 @@ class PlayerBridge:
             return []
 
         results = []
-        collection = self.library if self.library is not None else self.sim
-        for entry in collection.entries_snapshot():
-            haystack = (f"{entry.title} — {entry.artist} — {entry.album}").lower()
+        if self.library is not None:
+            # Lowercased once per library snapshot, not once per search.
+            indexed = self.library.search_index()
+        else:
+            indexed = [
+                (entry, f"{entry.title} — {entry.artist} — {entry.album}".lower())
+                for entry in self.sim.entries_snapshot()
+            ]
+        for entry, haystack in indexed:
             if all(tok in haystack for tok in tokens):
                 results.append(
                     {
@@ -1672,9 +1747,9 @@ class PlayerBridge:
             return self.sim.ntotal
         count = self.sim.reload_from_disk(cfg.index.active_dir, music_dir=cfg.library.music_dir)
         if self.library is not None:
-            entries = list(self.sim.entries_snapshot())
-            vectors = self.sim.faiss_index.reconstruct_n(0, len(entries))
-            self.library.seed_index(entries, vectors)
+            # Seeds only what the catalog lacks, and gives sim back the
+            # catalog's vectors, which the reload replaced.
+            self.library.import_legacy()
             count = self.sim.ntotal
         # The no-repeat window is clamped to the library size; a library
         # that grew from empty (or shrank) needs it worked out again, or

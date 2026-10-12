@@ -551,3 +551,52 @@ def test_recent_plays_for_the_repeat_rules(tmp_path: Path) -> None:
         assert catalog.recent_plays(0) == []
         with pytest.raises(ValueError, match="limit"):
             catalog.recent_plays(-1)
+
+
+def test_change_counters_track_records_vectors_and_sources_from_any_process(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "catalog.db"
+    # A catalog made before the counters existed gets them when opened.
+    with closing(sqlite3.connect(db)) as conn:
+        conn.executescript(_SCHEMA)
+    music = tmp_path / "music"
+    music.mkdir()
+    song = music / "song.flac"
+    song.write_bytes(b"audio")
+    with LibraryCatalog(db) as catalog, LibraryCatalog(db) as other:
+        start = catalog.change_versions()
+        source = catalog.add_source(music)
+        catalog.put_entry(entry(song))
+        after_put = catalog.change_versions()
+        assert after_put["sources"] == start["sources"] + 1
+        assert after_put["entries"] > start["entries"]
+        assert after_put["records"] > start["records"]
+
+        catalog.remember_play(song, 12.0)
+        catalog.set_setting("clock", {"cursor": 1})
+        catalog.write_history(
+            [
+                {
+                    "event_id": "e1",
+                    "path": str(song),
+                    "title": "T",
+                    "artist": "A",
+                    "duration": 1.0,
+                    "played_at": "2026-01-01T00:00:00+00:00",
+                }
+            ]
+        )
+        assert catalog.change_versions() == after_put
+
+        catalog.set_points(song, {"intro": 5.0})
+        catalog.set_intro_lift(song, 1.0)
+        cues = catalog.change_versions()
+        assert cues["entries"] == after_put["entries"]
+        assert cues["records"] > after_put["records"]
+
+        other.set_vector(song, np.ones(FEATURE_DIM, dtype=np.float32))
+        other.update_source(source["id"], recursive=False, advanced=True)
+        changed = catalog.change_versions()
+        assert changed["vectors"] == cues["vectors"] + 1
+        assert changed["sources"] == cues["sources"] + 1

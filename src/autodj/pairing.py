@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
+import threading
 import time
 import unicodedata
 import uuid
@@ -14,6 +16,12 @@ from pathlib import Path
 
 DEVICE_ID = re.compile(r"[0-9a-f]{32}\Z")
 _MAX_DEVICE_NAME = 64
+# How long a session check may reuse the answer for a device.  Every page
+# checks its session once a second, and each check opened the database.  A
+# revoke in this process forgets the answers at once; one from another
+# process (``autodj devices revoke``) changes the file, which does too.
+ACTIVE_CACHE_SECONDS = 10.0
+_ACTIVE_CACHE_LIMIT = 256
 
 
 @dataclass(frozen=True)
@@ -30,11 +38,36 @@ class PairedDevice:
 class DeviceRegistry:
     """Store paired browser identities in a small transactional SQLite file."""
 
-    def __init__(self, path: Path, *, now: Callable[[], float] = time.time) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        now: Callable[[], float] = time.time,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
         self.path = Path(path)
         self._now = now
+        self._monotonic = monotonic
+        # device_id -> (active, valid until (monotonic), file signature)
+        self._active: dict[str, tuple[bool, float, tuple[int, int] | None]] = {}
+        self._active_generation = 0
+        self._active_lock = threading.Lock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
+
+    def _signature(self) -> tuple[int, int] | None:
+        """The registry file's modification time and size: a write changes it."""
+        try:
+            stat = os.stat(self.path)
+        except OSError:
+            return None
+        return stat.st_mtime_ns, stat.st_size
+
+    def _forget_active(self) -> None:
+        """Drop every cached answer; call after any change to who is active."""
+        with self._active_lock:
+            self._active.clear()
+            self._active_generation += 1
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -98,6 +131,7 @@ class DeviceRegistry:
                 "INSERT INTO paired_devices VALUES (?, ?, ?, ?, NULL)",
                 (device_id, normalized, timestamp, timestamp),
             )
+        self._forget_active()
         return PairedDevice(device_id, normalized, timestamp, timestamp, None)
 
     def open_pairing(self, seconds: int) -> None:
@@ -139,6 +173,7 @@ class DeviceRegistry:
                 "INSERT INTO paired_devices VALUES (?, ?, ?, ?, NULL)",
                 (device_id, normalized, timestamp, timestamp),
             )
+        self._forget_active()
         return PairedDevice(device_id, normalized, timestamp, timestamp, None)
 
     def has_active_devices(self) -> bool:
@@ -153,12 +188,26 @@ class DeviceRegistry:
         """Return whether device exists and has not been revoked."""
         if not isinstance(device_id, str) or DEVICE_ID.fullmatch(device_id) is None:
             return False
+        signature = self._signature()
+        now = self._monotonic()
+        with self._active_lock:
+            cached = self._active.get(device_id)
+            if cached is not None and cached[1] > now and cached[2] == signature:
+                return cached[0]
+            generation = self._active_generation
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT revoked_at FROM paired_devices WHERE device_id = ?",
                 (device_id,),
             ).fetchone()
-        return row is not None and row[0] is None
+        active = row is not None and row[0] is None
+        with self._active_lock:
+            # A revoke while this read ran makes its answer unsafe to keep.
+            if generation == self._active_generation:
+                if len(self._active) >= _ACTIVE_CACHE_LIMIT:
+                    self._active.clear()
+                self._active[device_id] = (active, now + ACTIVE_CACHE_SECONDS, signature)
+        return active
 
     def touch(self, device_id: str) -> bool:
         """Record recent use for an active paired device."""
@@ -199,19 +248,25 @@ class DeviceRegistry:
         """Revoke one device and report whether active state changed."""
         if not isinstance(device_id, str) or DEVICE_ID.fullmatch(device_id) is None:
             return False
-        with self._connect() as connection:
-            changed = connection.execute(
-                "UPDATE paired_devices SET revoked_at = ? "
-                "WHERE device_id = ? AND revoked_at IS NULL",
-                (int(self._now()), device_id),
-            ).rowcount
+        try:
+            with self._connect() as connection:
+                changed = connection.execute(
+                    "UPDATE paired_devices SET revoked_at = ? "
+                    "WHERE device_id = ? AND revoked_at IS NULL",
+                    (int(self._now()), device_id),
+                ).rowcount
+        finally:
+            self._forget_active()
         return changed == 1
 
     def reset(self) -> int:
         """Revoke every active device and return number changed."""
-        with self._connect() as connection:
-            changed = connection.execute(
-                "UPDATE paired_devices SET revoked_at = ? WHERE revoked_at IS NULL",
-                (int(self._now()),),
-            ).rowcount
+        try:
+            with self._connect() as connection:
+                changed = connection.execute(
+                    "UPDATE paired_devices SET revoked_at = ? WHERE revoked_at IS NULL",
+                    (int(self._now()),),
+                ).rowcount
+        finally:
+            self._forget_active()
         return changed
