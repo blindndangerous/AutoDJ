@@ -818,8 +818,9 @@ def create_app(
             from autodj.mastering import kill_leftover_processes
 
             # A player that would not stop kept its mastering process; no
-            # Stereo Tool may outlive the server.
-            if killed := await asyncio.to_thread(kill_leftover_processes):
+            # Stereo Tool may outlive the server.  (On the loop: the server
+            # is stopping, and usually there is nothing to kill.)
+            if killed := kill_leftover_processes():
                 logger.warning("Stopped %d mastering process(es) left running", killed)
             if writers_quiesced and cache_closed:
                 logger.info("Server stopped cleanly.")

@@ -843,7 +843,7 @@ class StationRuntime:
                     "stays until the player ends",
                     self.slug,
                 )
-            else:
+            elif getattr(self.bridge.player, "_continuous_master", None) is not None:
                 await asyncio.to_thread(self.close_master)
         finally:
             # Awaited with its cancellation swallowed, so asyncio does not log
