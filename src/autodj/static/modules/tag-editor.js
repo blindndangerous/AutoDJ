@@ -13,8 +13,28 @@ const TAG_FIELDS = ["title", "artist", "album", "genre", "year", "bpm", "key", "
 const TEXT_FIELDS = new Set(["title", "artist", "album", "genre"]);
 const LABELS = { title: "Title", artist: "Artist", album: "Album", genre: "Genre" };
 const MAX_TEXT = 500;
-const CAMELOT = /^(?:1[0-2]|[1-9])[AB]$/i;
-const LETTER_KEY = /^[A-Ga-g][#b]?(?:m| ?minor| ?major)?$/;
+const NOTES = new Set(["C", "C#", "Db", "D", "D#", "Eb", "E", "Fb", "F", "E#", "F#", "Gb", "G", "G#", "Ab", "A", "A#", "Bb", "B", "Cb"]);
+
+// Whether the server's key parser (autodj.beets.parse_initial_key) takes
+// *text*: a Camelot key such as 8A, or a note with "m", "minor" or "major".
+// It follows that parser step by step, so the page and the server agree.
+export function keyAccepted(text) {
+  const raw = String(text ?? "").trim();
+  if (!raw) return false;
+  const camelot = raw.toUpperCase().replace(/ /g, "");
+  if (camelot.length >= 2 && /^[0-9]+[AB]$/.test(camelot)) {
+    const number = Number(camelot.slice(0, -1));
+    if (number >= 1 && number <= 12) return true;
+  }
+  const lower = raw.toLowerCase();
+  let note;
+  if (lower.includes("major")) note = lower.replace("major", "").trim();
+  else if (lower.includes("minor")) note = lower.replace("minor", "").trim();
+  else if (raw.endsWith("m") && raw.length >= 2) note = raw.slice(0, -1).trim();
+  else note = raw;
+  if (!note) return false;
+  return NOTES.has(note[0].toUpperCase() + note.slice(1));
+}
 
 // The error for one field's text, or "" when the server will take it.  The
 // server checks the same rules again and names the field it refuses.
@@ -34,7 +54,7 @@ export function tagFieldError(field, value) {
   if (field === "bpm" && (!/^\d{1,3}(?:\.\d{1,2})?$/.test(text) || Number(text) < 1 || Number(text) > 400)) {
     return "Enter BPM as a number from 1 to 400, such as 128 or 127.5, or leave it empty.";
   }
-  if (field === "key" && !CAMELOT.test(text) && !LETTER_KEY.test(text)) {
+  if (field === "key" && !keyAccepted(text)) {
     return "Enter a key such as Am, F#m, Db or C major, or a Camelot key such as 8A, or leave it empty.";
   }
   if (field === "isrc" && !/^[A-Z]{2}[A-Z0-9]{3}\d{7}$/.test(text.replace(/[\s-]/g, "").toUpperCase())) {
@@ -155,12 +175,15 @@ export function installTagEditor({ document: doc = document, request = requestJs
       if (beets) beets.checked = keepBeets;
       onSaved(record);
       const name = record.tags?.title || record.title || "this track";
+      // The file is saved whatever happens to beets or the library; the
+      // message says what did not follow, in the same one announcement.
       const message = {
-        updated: `Saved the tags of ${name} and updated beets.`,
-        not_found: `Saved the tags of ${name}. Beets has no entry for this file, so beets did not change.`,
-        failed: `Saved the tags of ${name}, but beets could not be updated: ${record.beets_error || "unknown error"}.`,
+        updated: `Saved the tags of ${name} in the file and in beets.`,
+        not_found: `Saved the tags of ${name} in the file. Beets has no entry for this file, so beets did not change.`,
+        failed: `Saved the tags of ${name} in the file, but beets was not updated: ${record.beets_error || "unknown error"}. Run beet update to read them into beets.`,
       }[record.beets] || `Saved the tags of ${name}.`;
-      say(message, record.beets === "failed" ? "error" : "info");
+      const problem = record.beets === "failed" || !!record.warning;
+      say(record.warning ? `${message} ${record.warning}` : message, problem ? "error" : "info");
       return true;
     } catch (error) {
       if (mine !== generation || !isAuthenticatedRequestCurrent(epoch)) return false;

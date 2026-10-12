@@ -3,10 +3,11 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { installTagEditor, tagFieldError } from "../../src/autodj/static/modules/tag-editor.js";
+import { installTagEditor, keyAccepted, tagFieldError } from "../../src/autodj/static/modules/tag-editor.js";
 
 const html = readFileSync(join(process.cwd(), "src", "autodj", "static", "index.html"), "utf8");
 const section = html.match(/<section id="tags-editor"[\s\S]*?<\/section>/)[0];
+const keyCases = JSON.parse(readFileSync(join(process.cwd(), "tests", "jsmodules", "golden", "key-cases.json"), "utf8"));
 
 const RECORD = {
   path: "c:/music/song.flac",
@@ -54,7 +55,28 @@ describe("tag field rules", () => {
   });
 });
 
+describe("key checks", () => {
+  // The same list is run against the server's parser in tests/unit/test_tag_edit.py.
+  it("takes exactly the keys the server takes", () => {
+    for (const key of keyCases.accepted) expect(keyAccepted(key), key).toBe(true);
+    for (const key of keyCases.refused) expect(keyAccepted(key), key).toBe(false);
+    expect(keyAccepted(null)).toBe(false);
+  });
+});
+
 describe("Track info tag editor", () => {
+  it("says a beets miss and a library warning in the one status", async () => {
+    const request = vi.fn(async () => ({ ...RECORD, beets: "not_found", warning: "The library did not reload." }));
+    const editor = install({ request });
+    editor.load({ ...RECORD, beets_writeback: true });
+    field("album").value = "Other";
+    await editor.save();
+    await settle();
+    expect(document.getElementById("tags-status").textContent).toBe(
+      "Saved the tags of Old Title in the file. Beets has no entry for this file, so beets did not change. The library did not reload.",
+    );
+  });
+
   it("fills the form and shows beets only when beets manages the library", () => {
     const editor = install();
     expect(document.getElementById("tags-editor").hidden).toBe(true);
@@ -110,7 +132,9 @@ describe("Track info tag editor", () => {
     expect(await editor.save()).toBe(true);
     expect(JSON.parse(request.mock.calls[0][1].body).beets).toBe(true);
     await settle();
-    expect(document.getElementById("tags-status").textContent).toMatch(/beets could not be updated: database is locked/);
+    expect(document.getElementById("tags-status").textContent).toBe(
+      "Saved the tags of Old Title in the file, but beets was not updated: database is locked. Run beet update to read them into beets.",
+    );
   });
 
   it("marks every refused field, links its error and focuses the first", async () => {
