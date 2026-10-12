@@ -83,6 +83,8 @@ def test_unsafe_names_are_refused(name):
         ([{**MUSIC, "folder": "/Rock"}], "no '..'"),
         ([{**MUSIC, "folder": "Rock\\Pop"}], "no '..'"),
         ([{**MUSIC, "recursive": "yes"}], "true or false"),
+        ([{**MUSIC, "require_following": "yes"}], "true or false"),
+        ([{**MUSIC, "require_following": True}], "only valid for liner"),
         ([{**MUSIC, "selection": "best"}], "least_recent or random"),
         ([{"type": "track", "source": "src1", "path": "C:/x.flac"}], "no '..'"),
         ([{"type": "track", "source": "src1", "path": ""}], "must not be empty"),
@@ -107,6 +109,20 @@ def test_resync_minutes_and_whole_shape_are_checked():
         validate_clockwheel({"version": 1, "name": "x", "steps": [MUSIC]})
     with pytest.raises(ValueError, match="JSON object"):
         validate_clockwheel([])
+
+
+def test_liner_require_following_is_strict_and_omitted_when_false(tmp_path):
+    base = {"type": "liner", "source": "voice"}
+    normalized = validate_clockwheel(clock([base, MUSIC]))
+    assert "require_following" not in normalized["steps"][0]
+    flagged = validate_clockwheel(clock([{**base, "require_following": True}, MUSIC]))
+    assert flagged["steps"][0]["require_following"] is True
+    store = ClockwheelStore(tmp_path / "clockwheels")
+    store.save(clock([base, MUSIC]))
+    assert b"require_following" not in (store.root / "Morning.json").read_bytes()
+    for invalid in (1, "true", None):
+        with pytest.raises(ValueError, match="true or false"):
+            validate_clockwheel(clock([{**base, "require_following": invalid}, MUSIC]))
 
 
 def test_features_register_their_own_step_types():
@@ -204,13 +220,18 @@ def _player(tmp_path, setting, sources):
 
 def test_player_loads_the_active_clockwheel_from_its_sources(tmp_path):
     music = tmp_path / "music"
-    sources = [{"id": "src1", "kind": "music", "path": str(music), "recursive": True}]
+    voice = tmp_path / "voice"
+    sources = [
+        {"id": "src1", "kind": "music", "path": str(music), "recursive": True},
+        {"id": "voice", "kind": "liner", "path": str(voice), "recursive": True},
+    ]
     ClockwheelStore(tmp_path / "clockwheels").save(
         clock(
             [
                 {**MUSIC, "folder": "Rock/Live", "recursive": True},
                 {"type": "settings", "preset": "winddown"},
                 {"type": "track", "source": "src1", "path": "one.flac"},
+                {"type": "liner", "source": "voice", "require_following": True},
             ]
         )
     )
@@ -222,6 +243,7 @@ def test_player_loads_the_active_clockwheel_from_its_sources(tmp_path):
     assert player._clock_slots[0].recursive is True
     assert player._clock_slots[1].preset == "winddown"
     assert player._clock_slots[2].path == str(music / "one.flac")
+    assert player._clock_slots[3].require_following is True
     assert player._clock_next_boundary is not None
 
 

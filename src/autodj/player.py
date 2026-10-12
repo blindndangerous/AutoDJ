@@ -726,6 +726,7 @@ class Player:
     _pending_clock_cursor: int | None = None
     _pending_clock_boundary: float | None = None
     _clock: dict[str, Any] | None = None
+    _seed_clock_following: tuple[IndexEntry, IndexEntry, int] | None = None
     liner_scheduler: Any = None
     _skip_next_intro: bool = False
     _continuous_master: Any = None
@@ -1009,6 +1010,7 @@ class Player:
 
         In DMCA mode it keeps the complement too (see :meth:`_dmca_checked`).
         """
+        self._seed_clock_following = None
         chosen: IndexEntry | None
         dmca = self._pick_context() if self._state.dmca_enabled else None
         if self._library is not None:
@@ -1020,11 +1022,24 @@ class Player:
                 picked = self._clock_pick(context, None)
                 if picked.entry is None:
                     return self._empty_category_fallback(None, context)
+                upcoming = self._dmca_checked(picked.entry, context)
                 if picked.liner is not None:
+                    if picked.liner_requires_following:
+                        if not self._clock_liner_fits(
+                            None,
+                            picked.liner,
+                            upcoming,
+                            time.time(),
+                            getattr(self, "_clock_next_boundary", None),
+                        ):
+                            self._seed_clock_cursor = picked.next_cursor
+                            return upcoming
+                        # Keep the song whose length we checked, including on a re-render.
+                        self._seed_clock_following = (picked.liner, upcoming, picked.next_cursor)
                     self._seed_clock_cursor = (picked.next_cursor - 1) % len(self._clock_slots)
                     return picked.liner
                 self._seed_clock_cursor = picked.next_cursor
-                return self._dmca_checked(picked.entry, context)
+                return upcoming
             context = dmca or self._pick_context()
             try:
                 chosen = self._pick_pure_shuffle(None, context)
@@ -1048,6 +1063,7 @@ class Player:
         clock status and the log, and lets the station start anyway.
         """
         self._clock = None
+        self._seed_clock_following = None
         self._clock_next_boundary = None
         if self._library is None:
             self._clock_status = "Clockwheel waiting for library"
@@ -1108,6 +1124,7 @@ class Player:
                         selection=step["selection"],
                         enforce_rules=step["enforce_rules"],
                         kind=kind,
+                        require_following=step.get("require_following", False),
                     )
                 )
             elif kind == "track":
@@ -1374,6 +1391,57 @@ class Player:
             liners.append(entry)
         return liners, None
 
+    def _clock_music_span(self, entry: IndexEntry) -> tuple[float, float]:
+        """The source start and next handoff, excluding silence and unused tails."""
+        points = self.saved_points(entry)
+        start = points.get("start") or 0.0
+        end = points.get("end")
+        end = entry.length if end is None else min(end, entry.length)
+        segue = next(
+            (points[key] for key in ("segue", "outro") if points.get(key) is not None), end
+        )
+        return start, max(start, min(segue, end))
+
+    def _clock_liner_fits(
+        self,
+        current: IndexEntry | None,
+        liner: IndexEntry,
+        upcoming: IndexEntry,
+        when: float,
+        boundary: float | None,
+    ) -> bool:
+        """Estimate the pair from saved cues, without decoding audio to choose a song."""
+        if boundary is None:
+            return True
+        start, segue = self._clock_music_span(upcoming)
+        cues = self.saved_points(liner)
+        liner_start = cues.get("start") or 0.0
+        liner_end = cues.get("end")
+        liner_end = liner.length if liner_end is None else min(liner_end, liner.length)
+        main_end = cues.get("segue")
+        main = max(
+            0.0, min(liner_end, main_end if main_end is not None else liner_end) - liner_start
+        )
+        overlap = cues.get("overlap_start")
+        release = main if overlap is None else min(overlap, main)
+        if overlap == 0:
+            intro = max(0.0, (self.saved_points(upcoming).get("intro") or start) - start)
+            release = max(0.0, main - intro)
+        lead = 0.0
+        record = self._library.catalog.record_for_path(liner.path) if self._library else None
+        if current is not None and record and record.get("allow_outro", False):
+            current_start, current_segue = self._clock_music_span(current)
+            outro = self.saved_points(current).get("outro")
+            if outro is not None:
+                lead = max(0.0, current_segue - max(current_start, outro))
+        if segue > start and when + max(0.0, release - lead) + segue - start <= boundary:
+            return True
+        self._clock_status = (
+            "Skipping liner: the liner and following track do not fit before the reset"
+        )
+        logger.info("%s (%s -> %s)", self._clock_status, liner.display_name, upcoming.display_name)
+        return False
+
     def _choose_station_next(
         self,
         current: IndexEntry,
@@ -1381,9 +1449,20 @@ class Player:
     ) -> tuple[IndexEntry, str, tuple[tuple[IndexEntry, bool], ...], int | None, str]:
         liners, queued = self._station_queue(context.queue_reserved, self._pending_reserved_liners)
         cursor = self._pending_clock_cursor
+        seed = self._seed_clock_following
+        if seed is not None and seed[0].path != current.path:
+            self._seed_clock_following = seed = None
         if queued is not None:
             upcoming, mode = self._dmca_checked(queued, context, queued=True), "queue"
         elif self._cfg.playback.pick_mode == "clock":
+            if seed is not None:
+                return (
+                    self._dmca_checked(seed[1], context),
+                    "clock",
+                    tuple((entry, True) for entry in liners),
+                    seed[2],
+                    "",
+                )
             picked = self._clock_pick(context, cursor)
             if picked.entry is None:
                 # Only empty or deleted categories left nothing to play.
@@ -1400,14 +1479,10 @@ class Player:
 
                     from autodj.clockwheel import next_boundary, resync_due
 
-                    points = self.saved_points(current)
-                    segue = (
-                        points.get("segue")
-                        or points.get("outro")
-                        or points.get("end")
-                        or current.length
+                    start, segue = self._clock_music_span(current)
+                    when = time.time() + max(
+                        0.0, segue - max(start, self._pending_offset / SAMPLE_RATE)
                     )
-                    when = time.time() + max(0.0, segue - self._pending_offset / SAMPLE_RATE)
                     playing = self._playing_render
                     if playing is not None and playing.next_entry is current:
                         when += max(
@@ -1415,10 +1490,8 @@ class Player:
                             (len(playing.audio) + playing.start_offset - self._playback_pos[0])
                             / SAMPLE_RATE,
                         )
-                    duration = self.saved_points(picked.entry)
-                    duration_s = (
-                        duration.get("segue") or duration.get("outro") or picked.entry.length
-                    ) - (duration.get("start") or 0)
+                    track_start, track_segue = self._clock_music_span(picked.entry)
+                    duration_s = track_segue - track_start
                     if resync_due(when, duration_s, boundary):
                         reset = self._clock_pick(context, 0)
                         if reset.entry is not None:
@@ -1428,12 +1501,24 @@ class Player:
                                 datetime.fromtimestamp(max(boundary, when)).astimezone(),
                                 (self._clock or {}).get("resync_minutes", [0]),
                             )
-                            self._pending_clock_boundary = (
-                                following.timestamp() if following else None
-                            )
+                            boundary = following.timestamp() if following else None
+                            self._pending_clock_boundary = boundary
                 upcoming = self._dmca_checked(picked.entry, context)
                 mode, cursor = "clock", picked.next_cursor
-                if picked.liner is not None and not liners:
+                if (
+                    picked.liner is not None
+                    and not liners
+                    and (
+                        not picked.liner_requires_following
+                        or self._clock_liner_fits(
+                            current,
+                            picked.liner,
+                            upcoming,
+                            when if boundary is not None else 0.0,
+                            boundary,
+                        )
+                    )
+                ):
                     return upcoming, mode, ((picked.liner, False),), cursor, ""
         else:
             try:

@@ -9,7 +9,7 @@ const byId = (id) => document.getElementById(id);
 const copy = (value) => JSON.parse(JSON.stringify(value));
 const status = () => byId("clock-status").textContent;
 const rows = () => [...byId("clock-slots").querySelectorAll("li[data-index]")];
-const rowText = (index) => rows()[index].querySelector("span").textContent;
+const rowText = (index) => rows()[index].querySelector('button[data-action="edit"]').textContent;
 const rowButton = (index, action) => rows()[index].querySelector(`button[data-action="${action}"]`);
 
 const SOURCES = [
@@ -107,7 +107,10 @@ describe("clockwheel markup", () => {
     for (const control of section.querySelectorAll("input, select")) {
       expect(section.querySelector(`label[for="${control.id}"]`), control.id).not.toBeNull();
     }
+    expect(byId("clock-step-require-following").nextElementSibling.textContent).toBe("Only play if the following track fits before the next reset");
     expect(byId("clock-slots").tagName).toBe("OL");
+    expect(byId("clock-slots").getAttribute("role")).toBe("grid");
+    expect(byId("clock-slots").querySelector('[role="row"] [role="gridcell"]')).not.toBeNull();
     expect(byId("clock-slots").getAttribute("aria-labelledby")).toBe("clock-steps-heading");
     expect(byId("clock-list").getAttribute("aria-labelledby")).toBe("clock-list-heading");
     expect(byId("clock-status").getAttribute("role")).toBe("status");
@@ -115,6 +118,7 @@ describe("clockwheel markup", () => {
     expect(byId("clock-step-legend").closest("fieldset").id).toBe("clock-step-form");
     expect(section.querySelector("[aria-controls]")).toBeNull();
     expect(byId("clock-steps-help").textContent).toContain("Alt+Up and Alt+Down");
+    expect(byId("clock-steps-help").textContent).toContain("Enter on a step name edits it");
     expect(byId("clock-steps-help").textContent).toContain("Save clockwheel");
     expect(document.querySelectorAll('[id^="clock-"]').length).toBe(new Set([...document.querySelectorAll('[id^="clock-"]')].map((node) => node.id)).size);
   });
@@ -166,6 +170,7 @@ describe("clockwheel editor", () => {
     expect(() => parseResyncMinutes("a")).toThrow("whole minutes");
     expect(describeStep(MUSIC, SOURCES)).toBe("music from Rock");
     expect(describeStep(MORNING.steps[1], SOURCES)).toBe("liner from Top, at random, ignoring repeat rules");
+    expect(describeStep({ ...MORNING.steps[1], require_following: true }, SOURCES)).toBe("liner from Top, at random, ignoring repeat rules, only if the following track fits before the next reset");
     expect(describeStep({ ...MUSIC, recursive: true, source: "gone" }, SOURCES)).toBe("music from a folder that is no longer registered, with subfolders");
     expect(describeStep({ type: "settings", preset: "night" })).toBe("switch to preset night");
     expect(describeStep({ type: "time_check" })).toBe("time check step");
@@ -173,18 +178,55 @@ describe("clockwheel editor", () => {
 
   it("opens the active clockwheel quietly and lists each step with its position", async () => {
     await open(fakeServer());
-    expect(rowText(0)).toBe("Step 1 of 3, music from Rock");
-    expect(rowText(2)).toBe("Step 3 of 3, track Album/Song.flac");
+    expect(byId("clock-slots").querySelectorAll('[role="row"] [role="rowheader"]')).toHaveLength(3);
+    expect(byId("clock-slots").querySelectorAll('[role="row"] [role="gridcell"]')).toHaveLength(15);
+    expect(rowText(0)).toBe("music from Rock");
+    expect(rowText(2)).toBe("track Album/Song.flac");
     expect(byId("clock-open-name").textContent).toBe("Morning");
     expect(byId("clock-next").textContent).toBe("Plays next: Step 2 of 3, liner from Top, at random, ignoring repeat rules.");
     expect(byId("clock-list").querySelector("button").textContent).toBe("Morning, active");
     expect(byId("clock-list").querySelector("button").getAttribute("aria-current")).toBe("true");
     const button = rowButton(1, "move-up");
     expect(button.textContent).toBe("Move up step 2");
+    expect(rowButton(0, "edit").tabIndex).toBe(0);
+    expect(rowButton(1, "edit").tabIndex).toBe(-1);
+    expect([...byId("clock-slots").querySelectorAll("button[data-action]")].filter((item) => item.tabIndex === 0)).toHaveLength(1);
     expect(button.querySelector(".visually-hidden").textContent).toBe(" step 2");
     expect(rowButton(0, "move-up").disabled).toBe(true);
     expect(rowButton(2, "move-down").disabled).toBe(true);
     expect(status()).toBe("");
+  });
+
+  it("navigates step names with arrows, edits with Enter and removes with Delete", async () => {
+    await open(fakeServer());
+    rowButton(1, "edit").focus();
+    rowButton(1, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(rowButton(2, "edit"));
+    expect(document.activeElement.textContent).toBe("track Album/Song.flac");
+    const statusKey = new KeyboardEvent("keydown", { key: "T", bubbles: true, cancelable: true });
+    rowButton(2, "edit").dispatchEvent(statusKey);
+    expect(statusKey.defaultPrevented).toBe(false);
+    const playbackKey = new KeyboardEvent("keydown", { key: "k", bubbles: true, cancelable: true });
+    rowButton(2, "edit").dispatchEvent(playbackKey);
+    expect(playbackKey.defaultPrevented).toBe(false);
+    const modifiedArrow = new KeyboardEvent("keydown", { key: "ArrowUp", shiftKey: true, bubbles: true, cancelable: true });
+    rowButton(2, "edit").dispatchEvent(modifiedArrow);
+    expect(modifiedArrow.defaultPrevented).toBe(false);
+    rowButton(1, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(rowButton(1, "move-up"));
+    rowButton(1, "move-up").dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(rowButton(1, "delete"));
+    rowButton(1, "delete").dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(rowButton(1, "edit"));
+    rowButton(2, "edit").focus();
+    rowButton(2, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    expect(byId("clock-step-legend").textContent).toBe("Edit step 3");
+    rowButton(2, "edit").focus();
+    rowButton(2, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }));
+    expect(rows()).toHaveLength(2);
+    expect(document.activeElement).toBe(rowButton(1, "edit"));
+    rowButton(1, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", repeat: true, bubbles: true, cancelable: true }));
+    expect(rows()).toHaveLength(2);
   });
 
   it("moves a step with Alt+Down, keeps focus on it and says the new position", async () => {
@@ -192,7 +234,7 @@ describe("clockwheel editor", () => {
     rowButton(0, "edit").focus();
     altKey(rowButton(0, "edit"), "ArrowDown");
     expect(document.activeElement).toBe(rowButton(1, "edit"));
-    expect(rowText(1)).toBe("Step 2 of 3, music from Rock");
+    expect(rowText(1)).toBe("music from Rock");
     await vi.waitFor(() => expect(status()).toBe("Moved. Step 2 of 3, music from Rock. Not saved yet."));
     expect(byId("clock-next").textContent).toBe("Save to play these changes.");
     altKey(document.activeElement, "ArrowUp");
@@ -211,11 +253,11 @@ describe("clockwheel editor", () => {
   it("moves with the buttons and moves focus to the other move button at an end", async () => {
     await open(fakeServer());
     rowButton(1, "move-down").click();
-    expect(rowText(2)).toBe("Step 3 of 3, liner from Top, at random, ignoring repeat rules");
+    expect(rowText(2)).toBe("liner from Top, at random, ignoring repeat rules");
     expect(document.activeElement).toBe(rowButton(2, "move-up"));
     rowButton(1, "move-up").click();
     expect(document.activeElement).toBe(rowButton(0, "move-down"));
-    expect(rowText(0)).toBe("Step 1 of 3, track Album/Song.flac");
+    expect(rowText(0)).toBe("track Album/Song.flac");
   });
 
   it("duplicates and deletes steps, keeping focus in the list", async () => {
@@ -235,7 +277,7 @@ describe("clockwheel editor", () => {
   });
 
   it("edits a step in the form and returns focus to it", async () => {
-    await open(fakeServer());
+    const server = await open(fakeServer());
     rowButton(1, "edit").click();
     expect(document.activeElement).toBe(byId("clock-step-type"));
     expect(byId("clock-step-legend").textContent).toBe("Edit step 2");
@@ -244,12 +286,31 @@ describe("clockwheel editor", () => {
     expect(byId("clock-step-source").value).toBe("ids");
     expect(byId("clock-step-folder").value).toBe("Top");
     expect(byId("clock-step-enforce-rules").checked).toBe(false);
+    expect(byId("clock-step-require-following").checked).toBe(false);
     byId("clock-step-folder").value = "Top/Hour";
     byId("clock-step-selection").value = "least_recent";
+    byId("clock-step-require-following").checked = true;
     byId("clock-add-step").click();
-    expect(rowText(1)).toBe("Step 2 of 3, liner from Top/Hour, ignoring repeat rules");
+    expect(rowText(1)).toBe("liner from Top/Hour, ignoring repeat rules, only if the following track fits before the next reset");
     expect(document.activeElement).toBe(rowButton(1, "edit"));
     expect(byId("clock-step-legend").textContent).toBe("Add a step");
+    expect(byId("clock-step-require-following").checked).toBe(false);
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 3 steps."));
+    const put = server.calls.find((call) => call.method === "PUT");
+    expect(put.body.steps[1].require_following).toBe(true);
+    expect(put.body.steps[0]).not.toHaveProperty("require_following");
+    byId("clock-step-require-following").checked = true;
+    byId("clock-add-step").click();
+    await vi.waitFor(() => expect(status()).toBe("Added Step 4 of 4, liner from Top/Hour, ignoring repeat rules, only if the following track fits before the next reset. Not saved yet."));
+    expect(byId("clock-step-require-following").checked).toBe(false);
+    byId("clock-add-step").click();
+    await vi.waitFor(() => expect(status()).toBe("Added Step 5 of 5, liner from Top/Hour, ignoring repeat rules. Not saved yet."));
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 5 steps."));
+    const savedAgain = server.calls.filter((call) => call.method === "PUT").at(-1);
+    expect(savedAgain.body.steps[3].require_following).toBe(true);
+    expect(savedAgain.body.steps[4].require_following).toBe(false);
     rowButton(2, "edit").click();
     byId("clock-cancel-edit").click();
     expect(document.activeElement).toBe(rowButton(2, "edit"));
@@ -257,7 +318,7 @@ describe("clockwheel editor", () => {
   });
 
   it("shows only the fields of the chosen step type and refuses paths that leave the folder", async () => {
-    await open(fakeServer());
+    const server = await open(fakeServer());
     const type = byId("clock-step-type");
     const shown = () => [...document.querySelectorAll(".clock-step-field")].filter((field) => !field.hidden)
       .map((field) => field.querySelector("input, select").id.replace("clock-step-", ""));
@@ -273,16 +334,23 @@ describe("clockwheel editor", () => {
     await vi.waitFor(() => expect(status()).toContain('with no ".."'));
     byId("clock-step-path").value = "Album\\Other.flac";
     byId("clock-add-step").click();
-    expect(rowText(3)).toBe("Step 4 of 4, track Album/Other.flac");
+    expect(rowText(3)).toBe("track Album/Other.flac");
     type.value = "liner";
     type.dispatchEvent(new Event("change"));
+    expect(shown()).toEqual(["source", "folder", "recursive", "selection", "enforce-rules", "require-following"]);
     expect([...byId("clock-step-source").options].map((option) => option.value)).toEqual(["ids"]);
+    expect(byId("clock-step-require-following").checked).toBe(false);
     type.value = "settings";
     type.dispatchEvent(new Event("change"));
     expect(shown()).toEqual(["preset"]);
     byId("clock-step-preset").value = "night";
     byId("clock-add-step").click();
     await vi.waitFor(() => expect(status()).toBe("Added Step 5 of 5, switch to preset night. Not saved yet."));
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 5 steps."));
+    const put = server.calls.find((call) => call.method === "PUT");
+    expect(put.body.steps[3]).not.toHaveProperty("require_following");
+    expect(put.body.steps[4]).not.toHaveProperty("require_following");
   });
 
   it("creates a clockwheel in the page and saves it with POST", async () => {

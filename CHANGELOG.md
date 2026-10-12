@@ -48,13 +48,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Several named clockwheels (Library tools, Clockwheels): create, duplicate, rename, delete,
   activate one or turn the clockwheel off. Each is a versioned JSON file in `clockwheels/` in the
-  active index folder, included in backups. A step editor lists steps as "Step 3 of 12, music from
-  Rock" with Edit, Move up, Move down, Duplicate and Delete buttons, and Alt+Up and Alt+Down move
-  the focused step. Steps can play music or liners from a library folder or a folder inside it, a
-  specific track, or switch preset. Profiles remember the active clockwheel, and the schedule's
+  active index folder, included in backups. The step editor has numbered names with Edit, Move up,
+  Move down, Duplicate and Delete buttons. Up/Down navigate names, Enter edits, and Delete removes
+  a step; Alt+Up/Down still move the focused step without changing the playback shortcuts. Steps
+  can play music or liners from a library folder or a folder inside it, a specific track, or
+  switch preset. Profiles remember the active clockwheel, and the schedule's
   "Change song picking" action can switch to a clockwheel by name. Import .PAL turns a SAM
   Broadcaster `.PAL` file into a new clockwheel, and now accepts folders inside a registered
-  library folder.
+  library folder. Liner steps have an option to play only when there is room for the following
+  song before the next reset. If the pair will not fit, the liner is skipped and the song follows
+  the usual clock rules. The check uses saved cue points and overlap, and is off by default.
 
 - A cart wall (the Carts tab) with four pages of twelve numbered carts for station IDs, jingles
   and sound effects. Assign a voice liner or an uploaded clip, then play it with its button or,
