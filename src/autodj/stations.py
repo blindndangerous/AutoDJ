@@ -550,9 +550,10 @@ class StationRuntime:
         self.paths = paths if paths is not None else StationPaths.default(bridge.player._cfg)
         self.liner_gate = _liner_gate(bridge, self.paths)
         # The clockwheel's liner steps pass over liners outside their dates
-        # and other stations' liners.  A bound method, so copying the
-        # player's settings never copies the store.
-        bridge.player.liner_filter = self._playable_liners
+        # and other stations' liners.  A plain function, not a bound
+        # method, so copying the player's settings never copies the store
+        # (a deep copy copies a bound method's station with it).
+        bridge.player.liner_filter = lambda entries: self._playable_liners(entries)
         self.nowplaying = NowPlaying(bridge, timezone=timezone)
         self.webhooks: WebhookWorker = WebhookWorker(getattr(bridge.player._cfg, "webhooks", ()))
         self.listener_access: ListenerAccess | None = (

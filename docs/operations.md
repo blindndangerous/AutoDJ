@@ -1182,9 +1182,9 @@ The settings, all optional:
 
 At the end the test prints a summary line: the blocks each bus sent against the number expected,
 the longest gap between blocks in milliseconds, the number of restarts and renders, memory at the
-start and the end, and the thread count before and after. Memory that keeps climbing from one
-restart to the next, or a thread count that grows, points to a leak; attach the report file to an
-issue.
+start and the end, and Night Owl's thread count before and after. Memory that keeps climbing from
+one restart to the next, or a thread count that grows, points to a leak; attach the report file to
+an issue.
 
 ## Windows PowerShell setup
 

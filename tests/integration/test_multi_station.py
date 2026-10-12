@@ -536,7 +536,10 @@ def test_soak_two_stations_keep_time_through_renders_and_restarts(rig: Any) -> N
         owl_clocks[-1].seconds = time.monotonic() - since
 
     samples: list[dict[str, Any]] = []
-    threads_at_start = threading.active_count()
+    # Night Owl's threads, running; the same after every restart.  (The
+    # process's whole count also has the render stand-ins and threads
+    # other tests left to finish.)
+    owl_threads_at_start = len(_station_threads("nightowl"))
     workers = [threading.Thread(target=render, daemon=True) for _ in range(2)]
     started = time.monotonic()
     cpu_then, wall_then = time.process_time(), started
@@ -597,7 +600,7 @@ def test_soak_two_stations_keep_time_through_renders_and_restarts(rig: Any) -> N
             "nightowl": round(max(clock.longest_gap for clock in owl_clocks) * 1000),
         },
         "rss_mb": [sample["rss_mb"] for sample in (samples[0], samples[-1])],
-        "threads": (threads_at_start, threading.active_count()),
+        "nightowl_threads": (owl_threads_at_start, len(_station_threads("nightowl"))),
     }
     print(f"\nsoak: {json.dumps(summary)}")
     if report_path:
@@ -608,8 +611,9 @@ def test_soak_two_stations_keep_time_through_renders_and_restarts(rig: Any) -> N
     assert restarts >= 1
     assert default_clock.blocks >= least * (elapsed / period), summary
     assert owl_blocks >= least * (owl_seconds / period), summary
-    # Restarting leaks no threads (the render stand-ins have ended).
-    assert threading.active_count() <= threads_at_start + 2, summary
+    # Restarting leaks no threads (one more is allowed: the liner worker
+    # starts with the first song).
+    assert len(_station_threads("nightowl")) <= owl_threads_at_start + 1, summary
 
 
 def test_a_socket_accepted_as_its_station_stops_is_closed(
