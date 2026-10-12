@@ -738,110 +738,137 @@ class LibraryManager:
             if value is not None
         }
 
+    def _scan_basic(self, source_ids: set[str] | None) -> list[tuple[str, Path]]:
+        self._set_state(phase="discovering", current="")
+        found = self._discover(source_ids)
+        self._set_state(phase="reading tracks", total=len(found), done=0)
+        self._reconcile_moves(found, source_ids)
+        for kind, path in found:
+            if self._stop.is_set():
+                break
+            self._set_state(current=str(path))
+            try:
+                old = self.catalog.record_for_path(path)
+                unchanged = old is not None and self._same_identity(old, path)
+                needs_liner_segue = bool(
+                    kind == "liner"
+                    and old is not None
+                    and old["points"].get("segue") is None
+                    and old["point_sources"].get("segue") not in {"user", "imported"}
+                )
+                old_points = old["points"] if old is not None else {}
+                old_start = old_points.get("start")
+                old_end = old_points.get("end")
+                valid_existing_points = bool(
+                    unchanged
+                    and old is not None
+                    and isinstance(old_start, int | float)
+                    and not isinstance(old_start, bool)
+                    and isinstance(old_end, int | float)
+                    and not isinstance(old_end, bool)
+                    and np.isfinite(old_start)
+                    and np.isfinite(old_end)
+                    and 0 <= old_start < old_end <= old["length"]
+                )
+                if valid_existing_points and needs_liner_segue and old is not None:
+                    _, liner_points = analyze_basic(
+                        path, kind="liner", max_seconds=self._max_analysis_seconds()
+                    )
+                    segue = liner_points.get("segue")
+                    if segue is not None:
+                        segue = min(max(segue, cast(float, old_start)), cast(float, old_end))
+                    self.catalog.set_points(path, {"segue": segue}, source="analysis")
+                elif not valid_existing_points:
+                    fresh, points = analyze_basic(
+                        path, kind=kind, max_seconds=self._max_analysis_seconds()
+                    )
+                    fresh = self._basic_entry(fresh, old, path)
+                    suggestions = self._legacy_point_suggestions(path)
+                    for name, value in suggestions.items():
+                        if points.get(name) is None:
+                            points[name] = value
+                    points = self._valid_basic_points(points, fresh)
+                    self.catalog.put_entry(fresh, kind, points=points, point_source="analysis")
+                    self._publish_entry(fresh, kind)
+                if kind == "music":
+                    record = self.catalog.record_for_path(path)
+                    if record is not None and record["intro_lift_db"] is None:
+                        from autodj.intro_lift import measure_source_intro
+
+                        try:
+                            lift = measure_source_intro(path, SAMPLE_RATE, record["energy"])
+                        except (OSError, RuntimeError, ValueError) as exc:
+                            logger.warning("Intro analysis unavailable for %s: %s", path, exc)
+                            lift = 0.0
+                        self.catalog.set_intro_lift(path, lift)
+            except Exception as exc:
+                logger.warning("Basic library scan failed for %s: %s", path, exc)
+                with self._lock:
+                    self._import_errors.append({"path": str(path), "error": str(exc)})
+            finally:
+                with self._lock:
+                    self._state["done"] += 1
+        self.refresh()
+        return found
+
     def _scan(self, source_ids: set[str] | None = None) -> None:
+        queued = self._scan_lock.locked()
         with self._lock:
             self._import_errors = []
         self._set_state(running=True, phase="discovering", done=0, total=0, current="")
         try:
-            found = self._discover(source_ids)
-            self._set_state(total=len(found), phase="reading tracks")
-            self._reconcile_moves(found, source_ids)
-            for kind, path in found:
-                if self._stop.is_set():
-                    break
-                self._set_state(current=str(path))
-                try:
-                    old = self.catalog.record_for_path(path)
-                    unchanged = old is not None and self._same_identity(old, path)
-                    needs_liner_segue = bool(
-                        kind == "liner"
-                        and old is not None
-                        and old["points"].get("segue") is None
-                        and old["point_sources"].get("segue") not in {"user", "imported"}
-                    )
-                    old_points = old["points"] if old is not None else {}
-                    old_start = old_points.get("start")
-                    old_end = old_points.get("end")
-                    valid_existing_points = bool(
-                        unchanged
-                        and old is not None
-                        and isinstance(old_start, int | float)
-                        and not isinstance(old_start, bool)
-                        and isinstance(old_end, int | float)
-                        and not isinstance(old_end, bool)
-                        and np.isfinite(old_start)
-                        and np.isfinite(old_end)
-                        and 0 <= old_start < old_end <= old["length"]
-                    )
-                    if valid_existing_points and needs_liner_segue and old is not None:
-                        _, liner_points = analyze_basic(
-                            path, kind="liner", max_seconds=self._max_analysis_seconds()
-                        )
-                        segue = liner_points.get("segue")
-                        if segue is not None:
-                            segue = min(max(segue, cast(float, old_start)), cast(float, old_end))
-                        self.catalog.set_points(path, {"segue": segue}, source="analysis")
-                    elif valid_existing_points:
-                        pass
-                    else:
-                        fresh, points = analyze_basic(
-                            path, kind=kind, max_seconds=self._max_analysis_seconds()
-                        )
-                        fresh = self._basic_entry(fresh, old, path)
-                        suggestions = self._legacy_point_suggestions(path)
-                        for name, value in suggestions.items():
-                            if points.get(name) is None:
-                                points[name] = value
-                        points = self._valid_basic_points(points, fresh)
-                        self.catalog.put_entry(
-                            fresh,
-                            kind,
-                            points=points,
-                            point_source="analysis",
-                        )
-                        self._publish_entry(fresh, kind)
-                    if kind == "music":
-                        record = self.catalog.record_for_path(path)
-                        if record is not None and record["intro_lift_db"] is None:
-                            from autodj.intro_lift import measure_source_intro
-
-                            try:
-                                lift = measure_source_intro(path, SAMPLE_RATE, record["energy"])
-                            except (OSError, RuntimeError, ValueError) as exc:
-                                logger.warning("Intro analysis unavailable for %s: %s", path, exc)
-                                lift = 0.0
-                            self.catalog.set_intro_lift(path, lift)
-                except Exception as exc:
-                    logger.warning("Basic library scan failed for %s: %s", path, exc)
-                    with self._lock:
-                        self._import_errors.append({"path": str(path), "error": str(exc)})
-                finally:
-                    with self._lock:
-                        self._state["done"] += 1
-            self.refresh()
+            found = self._scan_basic(source_ids)
             # Only Smooth and Stereo Tool use the stored measurement (and
             # measure a track themselves when it has none).
             measure = self.cfg.playback.loudness_processing in {"smooth", "stereotool"}
+            loudness = {_path(path): (kind, path) for kind, path in found} if measure else {}
+            done = 0
             if measure:
-                self._set_state(phase="measuring loudness", done=0, total=len(found), current="")
-            for kind, path in found if measure else ():
-                if self._stop.is_set():
+                self._set_state(phase="measuring loudness", done=0, total=len(loudness), current="")
+            while not self._stop.is_set():
+                if queued:
+                    with self._lock:
+                        pending = self._pending_sources
+                        self._pending_sources = set()
+                        if pending is None or pending:
+                            self._scan_generation += 1
+                    if pending is None or pending:
+                        added = self._scan_basic(pending)
+                        if measure:
+                            prioritized = {}
+                            for item in added:
+                                key = _path(item[1])
+                                loudness.pop(key, None)
+                                prioritized[key] = item
+                            loudness = {**prioritized, **loudness}
+                            self._set_state(
+                                running=True,
+                                phase="measuring loudness",
+                                done=done,
+                                total=done + len(loudness),
+                                current="",
+                            )
+                        continue
+                if not loudness:
                     break
+                key = next(iter(loudness))
+                kind, path = loudness.pop(key)
                 self._set_state(current=str(path))
                 try:
                     record = self.catalog.record_for_path(path)
-                    if record is None:
-                        continue
-                    if loudness_matches(record.get("loudness"), path, kind):
-                        continue
-                    self.catalog.set_loudness(path, analyze_loudness(path, kind))
+                    if record is not None and not loudness_matches(
+                        record.get("loudness"), path, kind
+                    ):
+                        self.catalog.set_loudness(path, analyze_loudness(path, kind))
                 except Exception as exc:
                     logger.warning("Loudness analysis failed for %s: %s", path, exc)
                     with self._lock:
                         self._import_errors.append({"path": str(path), "error": str(exc)})
                 finally:
+                    done += 1
                     with self._lock:
-                        self._state["done"] += 1
+                        self._state["done"] = done
+                        self._state["total"] = done + len(loudness)
             self._set_state(phase="complete")
         finally:
             self.refresh()
