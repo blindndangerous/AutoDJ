@@ -271,6 +271,46 @@ def test_clock_and_history_advance_only_when_incoming_audio_is_heard(station):
     assert player._clock_next_boundary == 3600.0
 
 
+@pytest.mark.parametrize("rendered_in, kept", [("Night", True), ("Morning", False)])
+def test_only_places_in_the_loaded_clockwheel_move_it(station, rendered_in, kept):
+    # #133: a track rendered before Night was selected carries Morning's
+    # places, which must not become Night's.
+    player, (a, b, *_), _points = station
+    player._clock = {"name": "Night", "cursor": 1}
+    current = replace(
+        player._render_track(a, b, 0), clock_cursor=3, next_clock_cursor=4, clock_name=rendered_in
+    )
+    player._start_playing(current)
+    assert player._clock["cursor"] == (3 if kept else 1)
+    player._on_position(10 * SR + 882)
+    player._on_position(10 * SR + 1764)
+    assert player._clock == {"name": "Night", "cursor": 4 if kept else 1}
+    saved = player._library.ledger.remember_setting
+    assert saved.call_count == (2 if kept else 0)
+
+
+@pytest.mark.parametrize("pending_in, cursor", [("Night", 2), ("Morning", None)])
+def test_render_cursor_from_another_clockwheel_is_not_carried(
+    station, monkeypatch, pending_in, cursor
+):
+    from autodj.clockwheel import ClockPick
+
+    player, (a, b, *_), _points = station
+    player._clock = {"name": "Night", "cursor": 0}
+    player._state.queue[:] = [b]
+    player._set_render_cursor(a, 0, "seed", clock_cursor=2, clock_name=pending_in)
+    result = player._next_rendered()
+    assert (result.clock_cursor, result.clock_name) == (cursor, "Night")
+    # Nor does the next clock pick start from the other clockwheel's place.
+    player._cfg.playback.pick_mode = "clock"
+    player._state.queue.clear()
+    player._set_render_cursor(a, 0, "clock", clock_cursor=2, clock_name=pending_in)
+    picked = MagicMock(return_value=ClockPick(b, None, 3, []))
+    monkeypatch.setattr(player, "_clock_pick", picked)
+    player._choose_station_next(a, player._pick_context(pending=a, peek_queue=True))
+    assert picked.call_args.args[1] == cursor
+
+
 def test_clock_resync_drops_unheard_pick_without_recording_it(station, monkeypatch):
     from autodj.clockwheel import ClockPick
 

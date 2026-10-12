@@ -737,6 +737,8 @@ class Player:
     _pending_glide: Glide | None = None
     _pending_reserved_liners: tuple[IndexEntry, ...] = ()
     _pending_clock_cursor: int | None = None
+    # The clockwheel _pending_clock_cursor is a place in (#133).
+    _pending_clock_name: str | None = None
     _pending_clock_boundary: float | None = None
     _clock: dict[str, Any] | None = None
     _seed_clock_following: tuple[IndexEntry, IndexEntry, int] | None = None
@@ -1079,6 +1081,20 @@ class Player:
     @_ledger.setter
     def _ledger(self, ledger: Any) -> None:
         self._station_ledger = ledger
+
+    def _clock_name(self) -> str | None:
+        """The name of the loaded clockwheel, or ``None`` without one."""
+        return (self._clock or {}).get("name")
+
+    def _render_clock_cursor(self) -> int | None:
+        """The render cursor's clock place, or ``None`` when it is another clockwheel's.
+
+        A place picked before a different clockwheel was selected means
+        nothing in the new one, which starts from its own saved place (#133).
+        """
+        if self._pending_clock_name != self._clock_name():
+            return None
+        return self._pending_clock_cursor
 
     def configure_clock(self) -> None:
         """Load the active clockwheel without marking any selected music played.
@@ -1600,7 +1616,7 @@ class Player:
         context: _PickContext,
     ) -> tuple[IndexEntry, str, tuple[tuple[IndexEntry, bool], ...], int | None, str]:
         liners, queued = self._station_queue(context.queue_reserved, self._pending_reserved_liners)
-        cursor = self._pending_clock_cursor
+        cursor = self._render_clock_cursor()
         seed = self._seed_clock_following
         if seed is not None and seed[0].path != current.path:
             self._seed_clock_following = seed = None
@@ -1874,6 +1890,7 @@ class Player:
                             0,
                             "seed",
                             clock_cursor=getattr(self, "_seed_clock_cursor", None),
+                            clock_name=self._clock_name(),
                         )
                 if current is None:
                     return None
@@ -1883,7 +1900,9 @@ class Player:
             mixed_in_fx, mixed_in_ratio = self._pending_mixed_in
             glide = self._pending_glide
             reserved_liners = self._pending_reserved_liners
-            clock_cursor = self._pending_clock_cursor
+            # The clockwheel this render's places belong to.
+            clock_name = self._clock_name()
+            clock_cursor = self._render_clock_cursor()
             clock_boundary = self._pending_clock_boundary or getattr(
                 self, "_clock_next_boundary", None
             )
@@ -1943,6 +1962,7 @@ class Player:
                 reserved_liners=rendered.next_reserved_liners if rendered else (),
                 clock_cursor=next_cursor,
                 clock_boundary=self._pending_clock_boundary or clock_boundary,
+                clock_name=clock_name,
             )
             if rendered is not None:
                 return replace(
@@ -1960,6 +1980,7 @@ class Player:
                     reserved_liners=reserved_liners,
                     clock_cursor=clock_cursor,
                     next_clock_cursor=next_cursor,
+                    clock_name=clock_name,
                     clock_boundary=clock_boundary,
                     next_clock_boundary=self._pending_clock_boundary,
                     liner_plan_key=liner_key,
@@ -1978,6 +1999,7 @@ class Player:
         reserved_liners: tuple[IndexEntry, ...] = (),
         clock_cursor: int | None = None,
         clock_boundary: float | None = None,
+        clock_name: str | None = None,
     ) -> None:
         """Point the render-ahead cursor at *entry* (worker idle or queued).
 
@@ -1986,7 +2008,8 @@ class Player:
         stretch *entry* comes in with (see ``RenderedTrack.mixed_in_fx``);
         the default is a track that starts on its own.  *glide* is how
         *entry* returns to its own tempo after a beatmatched overlap (see
-        ``RenderedTrack.next_glide``).
+        ``RenderedTrack.next_glide``).  *clock_name* is the clockwheel
+        *clock_cursor* is a place in.
         """
         self._pending_entry = entry
         self._pending_offset = offset
@@ -1997,6 +2020,7 @@ class Player:
         self._pending_glide = glide
         self._pending_reserved_liners = reserved_liners
         self._pending_clock_cursor = clock_cursor
+        self._pending_clock_name = clock_name
         self._pending_clock_boundary = clock_boundary
 
     def _rewind_render_cursor(self, track: RenderedTrack) -> None:
@@ -2018,6 +2042,7 @@ class Player:
             reserved_liners=track.reserved_liners,
             clock_cursor=track.clock_cursor,
             clock_boundary=track.clock_boundary,
+            clock_name=track.clock_name,
         )
 
     def _skip_past_render(self, track: RenderedTrack) -> None:
@@ -2037,6 +2062,7 @@ class Player:
             reserved_liners=track.next_reserved_liners,
             clock_cursor=track.next_clock_cursor,
             clock_boundary=track.next_clock_boundary,
+            clock_name=track.clock_name,
         )
 
     def reset_render_ahead(
@@ -2059,8 +2085,11 @@ class Player:
             self._skip_next_intro = False
             cursor = getattr(self, "_seed_clock_cursor", None)
             self._seed_clock_cursor = None
+            clock = self._clock_name()
             self._render_ahead.reset(
-                lambda: self._set_render_cursor(entry, offset, pick_mode, clock_cursor=cursor)
+                lambda: self._set_render_cursor(
+                    entry, offset, pick_mode, clock_cursor=cursor, clock_name=clock
+                )
             )
         if self.liner_scheduler is not None and hasattr(self.liner_scheduler, "release_plan"):
             self.liner_scheduler.release_plan()
@@ -2275,7 +2304,13 @@ class Player:
         self._heard_liner_events: set[int] = set()
         self._heard_next_entry = False
         self._active_processing_mode = rendered.loudness_processing
-        if self._clock is not None and rendered.clock_cursor is not None:
+        # A track rendered before another clockwheel was selected carries a
+        # place in the old one, which must not move the new one (#133).
+        if (
+            self._clock is not None
+            and rendered.clock_cursor is not None
+            and rendered.clock_name == self._clock.get("name")
+        ):
             self._clock = {**self._clock, "cursor": rendered.clock_cursor}
             if (ledger := self._ledger) is not None:
                 ledger.remember_setting("clock", self._clock)
@@ -2315,7 +2350,11 @@ class Player:
                 self._heard_next_entry = True
                 if (ledger := self._ledger) is not None:
                     ledger.remember_play(playing.next_entry.path)
-                    if self._clock is not None and playing.next_clock_cursor is not None:
+                    if (
+                        self._clock is not None
+                        and playing.next_clock_cursor is not None
+                        and playing.clock_name == self._clock.get("name")
+                    ):
                         self._clock = {**self._clock, "cursor": playing.next_clock_cursor}
                         ledger.remember_setting("clock", self._clock)
                         self._clock_next_boundary = playing.next_clock_boundary

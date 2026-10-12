@@ -67,7 +67,7 @@ from autodj.settings_bodies import (
     VolumeBody,
     validate_playback_choices,
 )
-from autodj.station_ledger import setting_key
+from autodj.station_ledger import StationLedger, setting_key
 from autodj.stations import DEFAULT_SLUG, StationRuntime
 from autodj.stream import EncoderUnavailableError
 
@@ -454,22 +454,9 @@ async def select_clock(
                     _validate_step_conditions, station, library, step, sources, number
                 )
     # Through the station's ledger when it has one: its buffered cursor is
-    # the latest place, and an older one must not flush over this choice.
-    ledger = station.ledger
-    if ledger is not None:
-        setting = ledger.get_setting("clock", {})
-        setting = setting if isinstance(setting, dict) else {}
-    else:
-        setting = _clock_setting(station, library)
-    if cursor is None:
-        kept = setting.get("cursor")
-        same = name is not None and setting.get("name") == name and type(kept) is int
-        cursor = kept if same else 0
-    value = {"name": name, "cursor": cursor}
-    if ledger is not None:
-        ledger.set_setting("clock", value)
-    else:
-        library.catalog.set_setting(setting_key(station.slug, "clock"), value)
+    # the latest place, and the old clockwheel's must not flush over this choice.
+    ledger = station.ledger or StationLedger(library.catalog, station.slug)
+    await asyncio.to_thread(ledger.select_clock, name, cursor)
     reload_clock = getattr(station.player, "configure_clock", None)
     if callable(reload_clock):
         await asyncio.to_thread(reload_clock)

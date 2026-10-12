@@ -176,6 +176,24 @@ def test_select_is_not_undone_by_a_buffered_cursor_update(tmp_path):
         assert catalog.get_setting("clock") == {"name": "Night", "cursor": 4}
 
 
+def test_select_is_not_undone_by_the_player_saving_before_it_reloads(tmp_path):
+    # #133: the player still holds the old clockwheel between the choice
+    # being written and configure_clock loading the new one.
+    with LibraryCatalog(tmp_path / "library.sqlite") as catalog:
+        music, _liners = add_sources(catalog, tmp_path)
+        bridge, routes = app_for(catalog, tmp_path)
+        steps = [{"type": "music", "source": music["id"]}]
+        for name in ("Morning", "Night"):
+            call(routes, "POST", "/api/library/clock", body(name, steps=steps))
+        call(routes, "POST", "/api/library/clock/active", ClockNameBody(name="Morning"))
+        ledger = bridge.library.ledger
+        old = {"name": "Morning", "cursor": 3, "resync_minutes": [0]}
+        bridge.player.configure_clock.side_effect = lambda: ledger.remember_setting("clock", old)
+        call(routes, "POST", "/api/library/clock/active", ClockNameBody(name="Night"))
+        ledger.flush()
+        assert catalog.get_setting("clock") == {"name": "Night", "cursor": 0}
+
+
 def test_create_edit_duplicate_rename_delete(tmp_path):
     with LibraryCatalog(tmp_path / "library.sqlite") as catalog:
         music, liners = add_sources(catalog, tmp_path)

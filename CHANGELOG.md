@@ -320,9 +320,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Moving between tabs no longer makes screen readers say "selected" twice.
 - The ReplayGain target loudness setting shows again when ReplayGain is chosen; it was always hidden.
 - A setting with two descriptions now hides both when it does not apply, not just the first.
-- A clockwheel you select stays selected after a restart. The player could save the old
-  clockwheel's place just after the selection, so the station came back on the old one.
-  Reselecting the active clockwheel also keeps the place it reached most recently.
+- A clockwheel you select stays selected. The player could save its place in the old
+  clockwheel just after the selection, so the clockwheel page and the next restart went back
+  to the old one. The new clockwheel also starts from its own place: a song already lined up
+  when you switch no longer gives it the old clockwheel's place. Reselecting the active
+  clockwheel keeps the place it reached most recently.
 
 ### Changed
 

@@ -27,6 +27,9 @@ if TYPE_CHECKING:
     from autodj.catalog import LibraryCatalog
     from autodj.indexer import IndexEntry
 
+# StationLedger._selected_clock before any clockwheel is selected.
+_UNSELECTED = object()
+
 
 def setting_key(station: str, name: str) -> str:
     """The ``catalog_settings`` key of setting *name* for *station*.
@@ -64,12 +67,15 @@ class StationLedger:
         self._entry_for_path = entry_for_path
         self._lock = threading.Lock()
         # Held while settings are written, so a flush in progress cannot put
-        # back a value set_setting has just replaced.
+        # back a value select_clock has just replaced.
         self._settings_lock = threading.Lock()
         self._pending_plays: dict[str, float] = {}
         self._pending_history: dict[str, dict] = {}
         self._interrupted_plays: set[str] = set()
         self._pending_settings: dict[str, Any] = {}
+        # The clockwheel last selected through select_clock, or _UNSELECTED
+        # before any selection: the player's place in another one is stale.
+        self._selected_clock: Any = _UNSELECTED
         self._last_played: dict[str, float] = {}
 
     def setting_key(self, name: str) -> str:
@@ -93,21 +99,52 @@ class StationLedger:
             self._last_played[normalized] = value
 
     def remember_setting(self, name: str, value: Any) -> None:
-        """Buffer a runtime setting update without writing SQLite on an audio thread."""
+        """Buffer a runtime setting update without writing SQLite on an audio thread.
+
+        A place in a clockwheel other than the one last selected is dropped:
+        the player can still hold the old one until it reloads (#133).
+        """
         with self._lock:
+            if name == "clock" and not self._is_selected_clock(value):
+                return
             self._pending_settings[self.setting_key(name)] = value
 
-    def set_setting(self, name: str, value: Any) -> None:
-        """Write setting *name* now, dropping any update of it still buffered.
+    def select_clock(self, name: str | None, cursor: int | None = None) -> dict:
+        """Make clockwheel *name* the station's active one and return the setting.
 
-        A choice made on a page, such as selecting a clockwheel, must not be
-        undone by an older update the player buffered before it (#133).
+        Without a *cursor*, reselecting the active clockwheel keeps its
+        latest place, including one the player has not written yet; any
+        other clockwheel starts at its first step.  The read, the write and
+        the choice the player's later updates are checked against happen
+        under one lock, so neither a flush nor the player can put the old
+        clockwheel back (#133).
         """
-        key = self.setting_key(name)
+        key = self.setting_key("clock")
         with self._settings_lock:
             with self._lock:
-                self._pending_settings.pop(key, None)
+                buffered = self._pending_settings.get(key)
+            setting = buffered if buffered is not None else self.catalog.get_setting(key, {})
+            setting = setting if isinstance(setting, dict) else {}
+            if cursor is None:
+                kept = setting.get("cursor")
+                same = name is not None and setting.get("name") == name and type(kept) is int
+                cursor = kept if same else 0
+            value = {"name": name, "cursor": cursor}
             self.catalog.set_setting(key, value)
+            with self._lock:
+                self._selected_clock = name
+                # The update read above is written now, and one the player
+                # buffered since for the old clockwheel is stale.
+                latest = self._pending_settings.get(key)
+                if latest == buffered or not self._is_selected_clock(latest):
+                    self._pending_settings.pop(key, None)
+        return value
+
+    def _is_selected_clock(self, value: Any) -> bool:
+        """Whether *value* is a place in the selected clockwheel (hold ``_lock``)."""
+        if self._selected_clock is _UNSELECTED:
+            return True
+        return isinstance(value, dict) and value.get("name") == self._selected_clock
 
     def remember_history(self, row: dict) -> None:
         """Queue a play-log entry without writing SQLite on the audio thread."""
