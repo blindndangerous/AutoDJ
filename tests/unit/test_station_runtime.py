@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -169,6 +170,9 @@ class _Runtime:
 
     def uses_stereo_tool(self) -> bool:
         return self._stereo
+
+    def player_running(self) -> bool:
+        return False
 
     def summary(self) -> dict[str, Any]:
         return {"slug": self.slug, "state": "idle"}
@@ -875,3 +879,283 @@ def test_liner_folders_given_by_a_windows_short_name_match(tmp_path: Path) -> No
     liner = str(long_folder / "owl" / "id.mp3")
     assert registry.owns_liner("nightowl", liner)
     assert not registry.owns_liner("default", liner)
+
+
+# -- the Stereo Tool licence across threads ------------------------------------
+
+
+class _SlowCheck(_Runtime):
+    """A default station whose Stereo Tool check is slow, widening every race window."""
+
+    def uses_stereo_tool(self) -> bool:
+        time.sleep(0.0005)
+        return False
+
+
+def test_a_check_from_another_thread_always_finds_the_licence_holder(tmp_path: Path) -> None:
+    """Start and stop a Stereo Tool station over and over while a worker thread checks.
+
+    From the moment its build claims Stereo Tool until it closes its
+    mastering process, a check from another thread (a station switching
+    to Stereo Tool in its settings) must always find it: starting,
+    running or stopping.
+    """
+    log: list[str] = []
+    # Set from the claim until the station closes its mastering process.
+    held = threading.Event()
+    cfg = _playback("stereotool", "Nightowl")
+
+    class _Licensed(_Runtime):
+        async def close(self) -> None:
+            held.clear()  # Stereo Tool is gone from here on
+            await super().close()
+
+    def build(registry: StationRegistry) -> _Runtime:
+        assert registry.claim_stereo_tool("nightowl", cfg) is None
+        held.set()
+        return _Licensed("nightowl", log, stereo=True)
+
+    registry = StationRegistry(
+        _SlowCheck("default", log),  # type: ignore[arg-type]
+        [_extra("nightowl", build, tmp_path, autostart=False)],
+    )
+    misses: list[int] = []
+    done = threading.Event()
+
+    def check() -> None:
+        while not done.is_set():
+            before = held.is_set()
+            found = registry.stereo_tool_user(exclude="default")
+            if before and held.is_set() and found is None:
+                misses.append(1)
+
+    checker = threading.Thread(target=check, daemon=True)
+    checker.start()
+
+    async def scenario() -> None:
+        for _ in range(150):
+            await registry.start("nightowl")
+            await asyncio.sleep(0)
+            await registry.stop("nightowl")
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        done.set()
+        checker.join(5)
+    assert misses == []
+    assert registry.stereo_tool_user(exclude="default") is None
+
+
+def test_a_station_whose_player_will_not_stop_keeps_its_master_and_licence(
+    tmp_path: Path,
+) -> None:
+    log: list[str] = []
+    release = threading.Event()
+    closed: list[str] = []
+
+    class _Stuck(_Runtime):
+        """A station whose player thread outlives the stop."""
+
+        def __init__(self) -> None:
+            super().__init__("nightowl", log, stereo=True)
+            self.player_thread = threading.Thread(target=release.wait, args=(10,), daemon=True)
+            self.player_thread.start()
+
+        async def stop(self, _timeout: float) -> bool:
+            log.append("nightowl stopped")
+            return False  # the player did not finish in time
+
+        def player_running(self) -> bool:
+            return self.player_thread.is_alive()
+
+        async def close(self) -> None:
+            # As StationRuntime.close: the master stays while the player runs.
+            log.append("nightowl closed")
+
+        def close_master(self) -> None:
+            closed.append("master")
+
+    stuck = _Stuck()
+    registry = StationRegistry(
+        _Runtime("default", log),  # type: ignore[arg-type]
+        [_extra("nightowl", lambda _r: stuck, tmp_path, autostart=False)],
+    )
+
+    async def scenario() -> None:
+        await registry.start("nightowl")
+        await registry.stop("nightowl")
+        # Its player runs on: listed as stuck, still holding Stereo Tool,
+        # refusing a start, and its mastering process left open.
+        assert registry.get("nightowl").summary()["state"] == "stuck stopping"
+        assert "has not finished stopping: its player is still running" in (
+            registry.stereo_tool_user(exclude="default") or ""
+        )
+        with pytest.raises(StationControlError, match="has not finished stopping"):
+            await registry.start("nightowl")
+        assert closed == []
+        # The player ends: the master closes and the station is free (a worker thread).
+        release.set()
+        for _ in range(200):
+            if registry.get("nightowl").summary()["state"] == "stopped":
+                break
+            await asyncio.sleep(0.01)
+        assert closed == ["master"]
+        assert registry.stereo_tool_user(exclude="default") is None
+
+    asyncio.run(scenario())
+
+
+def test_a_failed_build_with_a_stuck_player_is_held_too(tmp_path: Path) -> None:
+    from autodj.server import _abandon_player
+    from autodj.stations import AbandonedPlayer
+
+    log: list[str] = []
+    registry = StationRegistry(
+        _Runtime("default", log),  # type: ignore[arg-type]
+        [_extra("nightowl", lambda _r: _Runtime("nightowl", log), tmp_path, autostart=False)],
+    )
+    release = threading.Event()
+    closed: list[str] = []
+    player = SimpleNamespace(
+        _state=SimpleNamespace(should_stop=False),
+        _skip_event=threading.Event(),
+        _active_processing_mode="stereotool",
+        _continuous_master=SimpleNamespace(close=lambda: closed.append("master")),
+    )
+    thread = threading.Thread(target=release.wait, args=(10,), daemon=True)
+    thread.start()
+    held = AbandonedPlayer(
+        "nightowl", "Night Owl Radio", player, thread, _playback("smooth", "Night Owl Radio")
+    )
+    _abandon_player(player, thread, 0.05, on_stuck=lambda: registry.hold_until_player_ends(held))
+    assert closed == []
+    assert registry.get("nightowl").summary()["state"] == "stuck stopping"
+    assert (registry.stereo_tool_user(exclude="default") or "").startswith("Night Owl Radio")
+    release.set()
+    thread.join(5)
+    deadline = time.monotonic() + 5
+    while registry.get("nightowl").summary()["state"] != "stopped":
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert closed == ["master"]
+
+
+def test_a_start_queued_behind_another_refuses_once_a_stop_begins(tmp_path: Path) -> None:
+    log: list[str] = []
+    release = threading.Event()
+
+    def build(_registry: StationRegistry) -> _Runtime:
+        release.wait(5)
+        return _Runtime("nightowl", log)
+
+    registry = StationRegistry(
+        _Runtime("default", log),  # type: ignore[arg-type]
+        [_extra("nightowl", build, tmp_path, autostart=False)],
+    )
+
+    async def scenario() -> None:
+        first = asyncio.create_task(registry.start("nightowl"))
+        await asyncio.sleep(0.05)
+        second = asyncio.create_task(registry.start("nightowl"))  # waits for the first
+        await asyncio.sleep(0.05)
+        stopping = asyncio.create_task(registry.stop("nightowl"))
+        await asyncio.sleep(0.05)
+        release.set()
+        await first
+        with pytest.raises(StationControlError, match="still stopping"):
+            await second
+        await stopping
+        # Shutdown leaves only the default station in the running list.
+        await registry.start("nightowl")
+        await registry.shutdown(_Library(log), 1.0)  # type: ignore[arg-type]
+        assert [station.slug for station in registry.all()] == ["default"]
+
+    asyncio.run(scenario())
+
+
+def test_every_stop_step_is_tried_and_a_failed_stop_is_not_remembered() -> None:
+    from autodj.stations import StationRuntime
+
+    def broken() -> None:
+        raise OSError("this step failed")
+
+    async def broken_async() -> None:
+        raise OSError("this step failed")
+
+    stopped_liners: list[str] = []
+    player = SimpleNamespace(
+        _state=SimpleNamespace(should_stop=False), _skip_event=threading.Event()
+    )
+    runtime = StationRuntime.__new__(StationRuntime)
+    runtime.stopped = False
+    runtime.bridge = SimpleNamespace(  # type: ignore[assignment]
+        scheduler_track_changed=None,
+        player=player,
+        shutdown_liner_worker=lambda: stopped_liners.append("liners"),
+    )
+    runtime._schedule_ticker = None
+    runtime._stream_ticker = None
+    runtime.carts = SimpleNamespace(close=broken_async)  # type: ignore[assignment]
+    runtime.webhooks = SimpleNamespace(close=broken)  # type: ignore[assignment]
+    runtime.stream_out = None
+    runtime.recorder = SimpleNamespace(close=broken)  # type: ignore[assignment]
+    runtime.server_audio = True
+    runtime.player_thread = None
+    runtime._stop_task = None
+    assert asyncio.run(runtime.stop(1.0)) is True
+    # Every later step still ran: the liner worker stopped and the player was told.
+    assert stopped_liners == ["liners"]
+    assert player._state.should_stop and player._skip_event.is_set()
+
+    calls: list[int] = []
+
+    async def fails_once(_timeout: float) -> bool:
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("unexpected")
+        return True
+
+    again = StationRuntime.__new__(StationRuntime)
+    again._stop_task = None
+    again._stop = fails_once  # type: ignore[method-assign]
+
+    async def twice() -> bool:
+        with pytest.raises(RuntimeError):
+            await again.stop(1.0)
+        return await again.stop(1.0)
+
+    assert asyncio.run(twice()) is True
+    assert calls == [1, 1]
+
+
+def test_leftover_mastering_processes_are_killed_at_shutdown() -> None:
+    from autodj import mastering
+
+    class _Proc:
+        def __init__(self, running: bool) -> None:
+            self.running = running
+            self.killed = False
+
+        def poll(self) -> int | None:
+            return None if self.running else 0
+
+        def kill(self) -> None:
+            self.killed = True
+            self.running = False
+
+        def wait(self, timeout: float) -> int:
+            return 0
+
+    procs = [_Proc(True), _Proc(False)]
+    start = mastering._tracked(lambda *_args, **_kwargs: procs.pop(0))
+    alive, ended = start(), start()
+    try:
+        assert {alive, ended} <= mastering._LIVE_PROCESSES
+        assert mastering.kill_leftover_processes() == 1
+        assert alive.killed and not ended.killed
+        assert alive not in mastering._LIVE_PROCESSES
+        assert mastering.kill_leftover_processes() == 0
+    finally:
+        mastering._LIVE_PROCESSES.discard(alive)
+        mastering._LIVE_PROCESSES.discard(ended)

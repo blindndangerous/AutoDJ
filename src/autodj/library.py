@@ -482,6 +482,10 @@ class LibraryManager:
         return True
 
     def start_scan(self, source_ids: set[str] | None = None) -> bool:
+        from autodj.stations import forget_resolved_paths
+
+        # A link to a liner folder may have changed since the last scan.
+        forget_resolved_paths()
         with self._lock:
             if self._closed:
                 return False

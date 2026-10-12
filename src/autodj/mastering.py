@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import collections
 import contextlib
 import logging
@@ -21,6 +22,53 @@ from autodj.processing import MASTER_FILTER
 from autodj.station_log import station_thread
 from autodj.stereo import SAMPLE_RATE
 from autodj.stereotool_presets import INCLUDED_PATH, agc_drive_preset_data
+
+# Every mastering child process (Stereo Tool and its limiter, or the FFmpeg
+# master) started and not yet stopped, so none outlives the server: the
+# server kills what is left when it shuts down, and so does Python's exit.
+_LIVE_PROCESSES: set[subprocess.Popen[bytes]] = set()
+_LIVE_LOCK = threading.Lock()
+
+
+def _tracked(
+    factory: Callable[..., subprocess.Popen[bytes]],
+) -> Callable[..., subprocess.Popen[bytes]]:
+    """*factory*, remembering each process it starts until it is stopped."""
+
+    def start(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
+        proc = factory(*args, **kwargs)
+        with _LIVE_LOCK:
+            _LIVE_PROCESSES.add(proc)
+        return proc
+
+    return start
+
+
+def kill_leftover_processes() -> int:
+    """Kill every mastering child process still running; return how many there were.
+
+    A station whose player would not stop keeps its mastering process
+    (closing it under a running player is unsafe), so at shutdown this
+    makes sure no Stereo Tool outlives the server.  Each is killed outright
+    (on Windows, ``TerminateProcess``) and waited for briefly.
+    """
+    with _LIVE_LOCK:
+        leftovers = list(_LIVE_PROCESSES)
+        _LIVE_PROCESSES.clear()
+    killed = 0
+    for proc in leftovers:
+        try:
+            if proc.poll() is not None:
+                continue
+            proc.kill()
+            killed += 1
+            proc.wait(timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            logger.warning("A mastering process could not be stopped", exc_info=True)
+    return killed
+
+
+atexit.register(kill_leftover_processes)
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +178,7 @@ class ContinuousMaster:
         input_trim_db: Callable[[], float] = lambda: 0.0,
         agc_drive_db: Callable[[], float] = lambda: 7.0,
     ) -> None:
-        self._factory = popen_factory
+        self._factory = _tracked(popen_factory)
         self._select_mode = mode
         self._mode = mode()
         self._stereotool_path = stereotool_path
@@ -603,6 +651,9 @@ class ContinuousMaster:
                     stage.kill()
                 with contextlib.suppress(subprocess.TimeoutExpired, OSError):
                     stage.wait(timeout=0.5)
+            if stage.poll() is not None:
+                with _LIVE_LOCK:
+                    _LIVE_PROCESSES.discard(stage)
             for stream in (getattr(stage, "stdin", None), getattr(stage, "stdout", None)):
                 try:
                     if stream:

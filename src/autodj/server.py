@@ -113,6 +113,7 @@ from autodj.station_routes import (
 )
 from autodj.station_routes import audio_mime as _audio_mime
 from autodj.stations import (
+    AbandonedPlayer,
     ExtraStation,
     SharedLibrary,
     StationControlError,
@@ -814,6 +815,12 @@ def create_app(
         finally:
             logger.info("Shutting down...")
             writers_quiesced, cache_closed = await stations.shutdown(library, _SHUTDOWN_TIMEOUT_S)
+            from autodj.mastering import kill_leftover_processes
+
+            # A player that would not stop kept its mastering process; no
+            # Stereo Tool may outlive the server.
+            if killed := await asyncio.to_thread(kill_leftover_processes):
+                logger.warning("Stopped %d mastering process(es) left running", killed)
             if writers_quiesced and cache_closed:
                 logger.info("Server stopped cleanly.")
             elif not writers_quiesced:
@@ -2024,7 +2031,15 @@ def _extra_station(
                 paths=paths,
             )
         except BaseException:
-            _abandon_player(player, player_thread, registry.stop_timeout_s)
+            thread = player_thread
+            _abandon_player(
+                player,
+                thread,
+                registry.stop_timeout_s,
+                on_stuck=lambda: registry.hold_until_player_ends(
+                    AbandonedPlayer(slug, spec.name, player, thread, cfg)  # type: ignore[arg-type]
+                ),
+            )
             raise
 
     return ExtraStation(
@@ -2037,12 +2052,19 @@ def _extra_station(
     )
 
 
-def _abandon_player(player: Any, player_thread: threading.Thread | None, timeout_s: float) -> None:
+def _abandon_player(
+    player: Any,
+    player_thread: threading.Thread | None,
+    timeout_s: float,
+    on_stuck: Callable[[], None] | None = None,
+) -> None:
     """Stop a player whose station failed to build: its thread, then its master.
 
     A player still running after *timeout_s* may still write to its
-    master, so both are then left alone, and logged.  Nothing here
-    raises; the build's own error is the one reported.
+    master, so both are then left alone, logged, and handed to
+    *on_stuck* (the registry holds the station, and its Stereo Tool,
+    until the player ends).  Nothing here raises; the build's own error
+    is the one reported.
     """
     try:
         player._state.should_stop = True
@@ -2057,6 +2079,11 @@ def _abandon_player(player: Any, player_thread: threading.Thread | None, timeout
             "its player and mastering process are left running",
             timeout_s,
         )
+        if on_stuck is not None:
+            try:
+                on_stuck()
+            except Exception:
+                logger.exception("A station that failed to start: holding its player failed")
         return
     master = getattr(player, "_continuous_master", None)
     if master is not None:
