@@ -12,7 +12,8 @@ the same SQLite file is what lets the two see each other's.
 A song whose analysis failed keeps a ``failed`` lease for
 :data:`FAILED_RETRY_SECONDS`, and one whose file changed since the library
 read it a ``stale`` lease for :data:`STALE_RETRY_SECONDS`, so neither is
-handed out again and again.
+handed out again and again.  A library scan that reads the song's new bytes
+clears either hold at once.
 
 Workers report in on every request; one seen within
 :data:`WORKER_ACTIVE_SECONDS` counts as connected, and while one is, the
@@ -205,6 +206,23 @@ class AnalysisQueue:
             db.execute(
                 "DELETE FROM analysis_leases WHERE path = ? AND holder = ? AND state = 'claimed'",
                 (path, holder),
+            )
+
+    def clear_holds(self, path: str, size: int, fingerprint: str) -> bool:
+        """Free *path* from a failed or stale hold made on other bytes than these.
+
+        A library scan calls this when it reads a song again: a file that
+        changed is a new chance, so it need not wait out the hold.  A hold on
+        the same bytes stays.  Returns whether a hold was cleared.
+        """
+        with self._write() as db:
+            return (
+                db.execute(
+                    "DELETE FROM analysis_leases WHERE path = ? AND state IN ('failed', 'stale') "
+                    "AND (size != ? OR fingerprint != ?)",
+                    (path, size, fingerprint),
+                ).rowcount
+                > 0
             )
 
     def finish(self, lease: Lease, outcome: str) -> None:

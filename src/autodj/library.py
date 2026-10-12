@@ -804,6 +804,9 @@ class LibraryManager:
                     points = self._valid_basic_points(points, fresh)
                     self.catalog.put_entry(fresh, kind, points=points, point_source="analysis")
                     self._publish_entry(fresh, kind)
+                    # New bytes are a new chance for a song held back after a
+                    # failed or stale analysis.
+                    self.analysis_queue.clear_holds(_path(path), fresh.size, fresh.fingerprint)
                 if kind == "music":
                     record = self.catalog.record_for_path(path)
                     if record is not None and record["intro_lift_db"] is None:

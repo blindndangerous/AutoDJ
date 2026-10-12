@@ -578,3 +578,32 @@ def test_worker_command_checks_the_weights_before_stopping_anything(tmp_path):
     assert "Update the model" in result.output
     assert order == []
     load.assert_not_called()
+
+
+def test_a_rescan_clears_holds_on_songs_whose_file_changed(tmp_path):
+    from autodj.catalog import _path
+
+    cfg = make_config(tmp_path)
+    changed = cfg.library.music_dir / "changed.flac"
+    same = cfg.library.music_dir / "same.flac"
+    write_tone(changed, 220.0)
+    write_tone(same, 330.0)
+    manager = LibraryManager(cfg, Similarity())
+    try:
+        manager.scan()
+        queue = manager.analysis_queue
+        songs = []
+        for path in (changed, same):
+            record = manager.catalog.record_for_path(path)
+            songs.append((record["path"], record["size"], record["fingerprint"]))
+        stale, failed = queue.claim("token", songs, WORKER_LEASE_SECONDS)
+        queue.finish(stale, "stale")
+        queue.finish(failed, "failed")
+        assert queue.held_paths() == {_path(changed), _path(same)}
+        write_tone(changed, 880.0)
+        manager.scan()
+        # The changed song is a new chance; the unchanged failure still waits.
+        assert queue.held_paths() == {_path(same)}
+        assert not queue.clear_holds(_path(same), songs[1][1], songs[1][2])
+    finally:
+        manager.close()
