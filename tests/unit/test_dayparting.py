@@ -272,6 +272,37 @@ def test_a_clock_of_closed_categories_plays_an_allowed_song_from_the_library(cap
     assert "picking one at random" in caplog.text
 
 
+def test_a_clock_whose_only_songs_are_outside_their_hours_plays_an_allowed_song(
+    caplog,
+) -> None:
+    # A track step (or a folder) holding only closed songs must not stop the
+    # music: dayparting alone emptied it, so an allowed song plays instead.
+    player = _dayparted(_player("clock", dmca=False), NIGHT)
+    night = next(entry for entry in player.playable_entries() if entry.title == "Fine")
+    player._clock = {"cursor": 0}
+    player._clock_slots = [ClockSlot(kind="track", path=night.path)]
+    current = player.playable_entries()[0]
+    with caplog.at_level(logging.WARNING, logger="autodj.player"):
+        picked, mode, *_rest = player._choose_station_next(current, player._pick_context())
+        start = player._random_start_entry()
+    assert picked.title not in NIGHT
+    assert mode == "fallback"
+    assert start is not None
+    assert start.title not in NIGHT
+    assert player._clock_status.endswith("every song this clockwheel can play is outside its hours")
+
+
+def test_a_clock_with_nothing_to_play_at_any_hour_still_stops() -> None:
+    # The fallback is only for dayparting: a missing recording is left as it was.
+    player = _dayparted(_player("clock", dmca=False), NIGHT)
+    player._clock = {"cursor": 0}
+    player._clock_slots = [ClockSlot(kind="track", path="Z:/Music/missing.flac")]
+    current = player.playable_entries()[0]
+    with pytest.raises(ValueError, match="recording missing"):
+        player._choose_station_next(current, player._pick_context())
+    assert not player._clock_closed_only
+
+
 def test_a_pick_outside_its_hours_is_replaced_and_a_queued_one_plays(caplog) -> None:
     player = _dayparted(_player("random", dmca=False), NIGHT)
     context = player._pick_context()

@@ -1262,17 +1262,20 @@ class Player:
             use_recent: bool,
             use_dmca: bool = True,
             protected: frozenset[str] = context.protected,
+            hours: bool = True,
         ) -> Any:
+            shut = closed if hours else frozenset()
+
             def allowed(entry: IndexEntry) -> bool:
                 return (
                     not entry.is_silent
                     and entry.path not in protected
-                    and entry.path not in closed
+                    and entry.path not in shut
                     and not (use_recent and entry.path in recent)
                     and (not use_rules or context.repeat(entry))
                 )
 
-            if protected is context.protected:
+            if protected is context.protected and hours:
                 pool = complying if use_dmca else eligible
             else:
                 pool = tuple(entry for entry in entries if allowed(entry))
@@ -1287,7 +1290,7 @@ class Player:
                 beets=beets_items,
                 condition_errors=condition_errors,
                 condition_cache=cache,
-                closed_categories=context.closed_categories,
+                closed_categories=context.closed_categories if hours else None,
             )
 
         # Like the other pick modes, relax rather than stop the music: first
@@ -1314,12 +1317,12 @@ class Player:
                 "looking further for this pick"
             )
             picked = pick(False, False, use_dmca=False)
+        follows_only = frozenset({context.follows} if context.follows else ())
         if picked.entry is None and context.protected:
             # Last resort: a slot whose only songs are protected (a small
             # folder, or a track step for a song just played) would leave
             # the station silent, so allow them, except the one playing.
-            follows = frozenset({context.follows} if context.follows else ())
-            picked = pick(False, False, use_dmca=False, protected=follows)
+            picked = pick(False, False, use_dmca=False, protected=follows_only)
             if picked.entry is not None and not getattr(self, "_clock_protected_warned", False):
                 logger.warning(
                     "Clock: every matching track is playing or about to play; "
@@ -1329,7 +1332,20 @@ class Player:
             self._clock_protected_warned = picked.entry is not None
         elif picked.entry is not None:
             self._clock_protected_warned = False
+        # Whether only dayparting left the clock with nothing: a pick that
+        # ignored the hours would find a song.  The caller then plays an
+        # allowed song from the whole library rather than stopping the music
+        # (see _empty_category_fallback); pick_slot is pure, so this changes
+        # nothing else.
+        self._clock_closed_only = (
+            picked.entry is None
+            and bool(closed or context.closed_categories)
+            and pick(False, False, use_dmca=False, protected=follows_only, hours=False).entry
+            is not None
+        )
         self._clock_status = "; ".join(picked.skipped) or "Ready"
+        if self._clock_closed_only:
+            self._clock_status += "; every song this clockwheel can play is outside its hours"
         self._log_category_skips(picked.skipped)
         if picked.entry is not None and picked.preset:
             from autodj.presets import get_preset
@@ -1367,13 +1383,18 @@ class Player:
         A category emptied by a failed playlist script or a deleted category
         must not silence a clockwheel made of category steps, so the pick
         falls back as the other pick modes do (the clock keeps its place).
-        A clock of folder and track steps only is left as it was.
+        A clock of folder and track steps only, or with conditions, is left
+        as it was, unless its songs are there and only their categories'
+        days and hours (dayparting) hold them back.
         """
         slots = getattr(self, "_clock_slots", None) or ()
-        if any(getattr(slot, "conditions", ()) for slot in slots):
-            return None  # Explicit conditions must not fall back to unfiltered music.
-        if not any(getattr(slot, "kind", None) == "category" for slot in slots):
-            return None
+        # Dayparting alone emptied the clock: its songs exist but are outside
+        # their hours, so an allowed song plays, whatever the steps are.
+        if not getattr(self, "_clock_closed_only", False):
+            if any(getattr(slot, "conditions", ()) for slot in slots):
+                return None  # Explicit conditions must not fall back to unfiltered music.
+            if not any(getattr(slot, "kind", None) == "category" for slot in slots):
+                return None
         reason = ValueError(f"the clockwheel has no song to play: {self._clock_status}")
         try:
             chosen = self._fallback_pick(current, context, reason)
