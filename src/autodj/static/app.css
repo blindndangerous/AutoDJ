@@ -1140,6 +1140,32 @@
       border-left: 4px solid var(--danger-edge);
     }
 
+    /* ---- Test rotation (rotation-test.js) ----
+       The bar takes the accent token, so its fill keeps 3:1 against the
+       card in either theme; the percentage beside it says the same in
+       words.  The results are headings and lists: the reset at the top
+       removes list indents, so the bullets get theirs back here. */
+    #rotation-progress {
+      accent-color: var(--accent);
+      width: min(100%, 16rem);
+      height: 1.25rem;
+    }
+    #rotation-results h4 {
+      font-size: 1rem;
+      margin: 1rem 0 0.5rem;
+    }
+    #rotation-results h5 {
+      font-size: 0.95rem;
+      margin: 0.75rem 0 0.25rem;
+    }
+    #rotation-results ul {
+      margin: 0 0 0.5rem;
+      padding-left: 1.25rem;
+    }
+    #rotation-results li {
+      margin: 0.15rem 0;
+    }
+
     /* ---- Empty-list placeholder utility ---- */
     /* Used by #why-list, #queue-list, #search-results, #ln-file-list,
        #profile-list and #device-list.  list-style: none matters for #why-list, which is
