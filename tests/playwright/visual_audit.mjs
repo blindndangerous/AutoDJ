@@ -24,6 +24,49 @@ const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
 const VIEWS = ["now", "queue", "carts", "track-info", "history", "settings", "library"];
 const MAX_TAB_STOPS = 80;
 
+// Track info with a song loaded, so its Tags form is shown: the server's
+// answers are stood in for, as the empty library has no song to open.  The
+// title is long and unbroken, for the reflow checks, and beets is offered so
+// its checkbox is measured too.
+const TRACK_PATH = "/music/Example Artist/An_Exceptionally_Long_Title_Without_Any_Spaces_0001.flac";
+const TRACK_TAGS = {
+  title: "An_Exceptionally_Long_Title_Without_Any_Spaces_0001", artist: "Example Artist",
+  album: "Example Album", genre: "Ambient", year: "1999", bpm: "120", key: "Am", isrc: "",
+};
+const TRACK_RECORD = {
+  path: TRACK_PATH, kind: "music", ...TRACK_TAGS, year: 1999, bpm: 120, length: 215.4,
+  last_played: 0, key_label: "8A", analysis: "ready", loudness_ready: true, allow_outro: false,
+  points: { start: 0, intro: 8, outro: 200, segue: 210, end: 215 },
+  point_sources: { start: "analysis", intro: "analysis", outro: "analysis", segue: "analysis", end: "analysis" },
+  tags: TRACK_TAGS, tags_writable: true, beets_writeback: true,
+};
+const trackPages = new WeakSet();
+
+async function standInForTrackInfo(page) {
+  if (trackPages.has(page)) return;
+  trackPages.add(page);
+  await page.route("**/api/library/points?*", (route) => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify(TRACK_RECORD),
+  }));
+  await page.route("**/api/library/tags", (route) => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify({ ...TRACK_RECORD, beets: "updated" }),
+  }));
+}
+
+// Open the song's Track info, then show a refused save: two fields marked
+// invalid with their errors on the page and focus on the first.
+async function openTrackTags(page, visit) {
+  await page.evaluate((path) => document.dispatchEvent(new CustomEvent("autodj:edit-points",
+    { detail: { path, kind: "music", opener: document.getElementById("tab-track-info") } })), TRACK_PATH);
+  await page.locator("#tags-form").waitFor({ state: "visible" });
+  await visit("track-info/tags");
+  await page.locator("#tag-year").fill("99");
+  await page.locator("#tag-isrc").fill("123");
+  await page.locator("#tags-save").click();
+  await page.locator("#tag-year-error").waitFor({ state: "visible" });
+  await visit("track-info/tags-errors");
+}
+
 async function openEveryCard(page) {
   await page.evaluate(() => {
     for (const details of document.querySelectorAll("details")) details.open = true;
@@ -33,6 +76,7 @@ async function openEveryCard(page) {
 // Every view, and with Settings every subtab this server shows (Stream only
 // in stream mode).  `visit` runs once per target with that target shown.
 async function eachTarget(page, visit) {
+  await standInForTrackInfo(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   for (const view of VIEWS) {
     await page.locator(`#tab-${view}`).click();
@@ -43,6 +87,7 @@ async function eachTarget(page, visit) {
     if (view !== "settings") {
       await openEveryCard(page);
       await visit(view);
+      if (view === "track-info") await openTrackTags(page, visit);
       continue;
     }
     const ids = await page.$$eval("#settings-tabs [role='tab']:not([hidden])",
@@ -143,7 +188,8 @@ export async function audit(name, launcher) {
       const small = await smallChoiceControls(page);
       if (small.length) out.smallChoices[target] = small;
       const view = target.split("/")[0];
-      const sub = target.split("/")[1];
+      // Only Settings targets name a subtab; "track-info/tags" is a state.
+      const sub = view === "settings" ? target.split("/")[1] : null;
       const problems = await focusProblems(page, sub ? `#stab-${sub}` : `#tab-${view}`);
       if (problems.length) out.focus[target] = problems;
     });

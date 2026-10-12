@@ -1001,6 +1001,18 @@
       font-size: 0.9rem;
     }
 
+    /* Track info, Tags: a field's help and error each take their own line
+       under it, so neither squeezes the field at 320 px or 200 % text. */
+    .tag-field input[type="text"] {
+      flex: 1 1 12rem;
+      min-width: 0;
+    }
+    .tag-field .setting-desc,
+    .tag-field .field-error {
+      flex-basis: 100%;
+      margin-left: 0;
+    }
+
     /* A form's error in words (the schedule form), and the field it names.
        The red edge marks the field; the words say what is wrong. */
     .field-error {
