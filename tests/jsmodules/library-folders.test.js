@@ -192,6 +192,45 @@ describe("clock folder and points controls", () => {
     controls.destroy();
   });
 
+  it("loads the Browse library folder choice once each time Queue & Search is shown", async () => {
+    vi.useFakeTimers();
+    try {
+      const queue = document.createElement("section");
+      queue.dataset.view = "queue";
+      queue.id = "panel-queue";
+      queue.hidden = true;
+      queue.innerHTML = '<select id="library-browse-folder"><option value="all-music">All music</option></select>';
+      document.body.append(queue);
+      const folders = [{ id: 3, path: "M:/rock", kind: "music", recursive: true, advanced: true }];
+      const request = vi.fn(async () => ({ folders }));
+      const onFolders = vi.fn();
+      installLibraryFolders({ document, request, onFolders });
+      expect(request).not.toHaveBeenCalled();
+
+      queue.hidden = false;
+      window.dispatchEvent(new window.HashChangeEvent("hashchange"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(onFolders).toHaveBeenCalledWith(folders);
+      // No polling while the tab stays open, and no second load for a
+      // hashchange that leaves it shown.
+      window.dispatchEvent(new window.HashChangeEvent("hashchange"));
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(request).toHaveBeenCalledTimes(1);
+
+      queue.hidden = true;
+      window.dispatchEvent(new window.HashChangeEvent("hashchange"));
+      queue.hidden = false;
+      window.dispatchEvent(new window.HashChangeEvent("hashchange"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(request).toHaveBeenCalledTimes(2);
+      // Same folders: the choice is not rebuilt under the user's focus.
+      expect(onFolders).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("updates browser folders only when the registered folder signature changes", async () => {
     document.getElementById("panel-library").hidden = false;
     const folders = [{ id: 2, path: "N:/voice", kind: "liner", recursive: true, advanced: false }];

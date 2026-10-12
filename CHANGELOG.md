@@ -35,6 +35,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   12- or 24-hour speech; doctor reports missing recordings, and backups include the clips and the
   saved switches. `scripts/time_check_sapi.ps1` speaks with a chosen Windows SAPI voice.
 
+- Time checks can speak from voice packs: folders of hour and minute files, named the way
+  RadioBOSS names them (`hr_05.mp3`, `hr_05o.mp3`, `m_56.mp3`, optional intro, outro, am and
+  pm), listed in `[time_checks] voice_packs`. AutoDJ trims each piece's silence, matches their
+  loudness and joins them with a 40 ms equal-power crossfade, so the time sounds like one
+  sentence, then plays it through the voice liner path. Settings, Time checks lists the packs as
+  checkboxes with their coverage, takes turns between ticked packs or picks one at random, and
+  can test one pack. A pack that lacks the minute falls back to the next pack, the recorded
+  clips, then text to speech. Doctor reports each pack's missing hours, exact hours and minutes
+  and the files it does not use; packs kept in the `time_checks` folder are in backups.
+
 - DMCA mode (`[dmca] enabled = true`): every pick mode, the clockwheel included, keeps to the
   US statutory webcasting licence's performance complement (at most 3 songs from one album, 2 in
   a row, and 4 by one artist or from one box set, 3 in a row, in any three hours; featured
@@ -178,6 +188,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The included Stereo Tool preset recovers more slowly after drum hits, keeping snare tails
   less prominent while retaining the default 7 dB AGC drive for quiet passages.
 
+- Browse library and the voice liner list moved to the Queue & Search tab, after Search, as
+  **Browse library** and **Browse voice liners**. Tab goes from Search to Browse library to the
+  voice liners, and Track info's Return to Queue & Search puts focus back on the button that
+  opened it, even after the list is drawn again. Adding, removing and rescanning folders stays in
+  Library tools, which now says where browsing went, and uploading liners stays in Settings,
+  Voice liners. Play next and Add to queue from Browse library are now spoken, since the queue's
+  status region is on the same tab; Delete on a voice liner says its result beside the list and
+  moves focus to the next liner, or to the list when none is left.
 - Old repeat keys in `config.toml` and `web_state.json` are ignored with a warning.
   Re-enter any limits that still use those keys in Settings > Picking > Repeats.
 - Random walk, least recently played and clock picks now hold back the same album and the same

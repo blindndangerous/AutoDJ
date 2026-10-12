@@ -187,11 +187,12 @@ describe("liner file controls", () => {
   // The shared confirmation as a browser runs it: closing puts focus back
   // on the element that had it when the dialog opened.  answer() presses
   // the dialog's own button.
-  async function installWithDialog(fetchImpl) {
+  async function installWithDialog(fetchImpl, { browseStatus = false } = {}) {
     document.body.innerHTML = `
       <p id="status"></p>
       <button id="upload" type="button">Upload liner</button>
-      <ul id="files"></ul>
+      <ul id="files" tabindex="-1"></ul>
+      <p id="browse-status"></p>
       <dialog id="confirm-dialog"><h2 id="confirm-title"></h2><p id="confirm-message"></p>
         <button id="confirm-cancel"></button><button id="confirm-accept"></button></dialog>`;
     const dialog = document.querySelector("#confirm-dialog");
@@ -212,7 +213,11 @@ describe("liner file controls", () => {
     const list = document.querySelector("#files");
     const status = document.querySelector("#status");
     const upload = document.querySelector("#upload");
-    installLiners({ lnFileList: list, lnStatus: status, lnUploadSubmit: upload }, {
+    const browse = document.querySelector("#browse-status");
+    installLiners({
+      lnFileList: list, lnStatus: status, lnUploadSubmit: upload,
+      ...(browseStatus ? { lnBrowseStatus: browse } : {}),
+    }, {
       canPlay: () => false,
       playLiner: vi.fn(),
       postSettings: vi.fn(),
@@ -221,7 +226,7 @@ describe("liner file controls", () => {
       await vi.waitFor(() => expect(dialog.hasAttribute("open")).toBe(true));
       document.getElementById(value === "confirm" ? "confirm-accept" : "confirm-cancel").click();
     };
-    return { list, status, upload, answer };
+    return { list, status, browse, upload, answer };
   }
 
   it("renders hostile filenames as text with an accurate Delete name", async () => {
@@ -355,7 +360,9 @@ describe("liner file controls", () => {
     expect(document.activeElement.getAttribute("aria-label")).toBe("Delete third.mp3");
   });
 
-  it("focuses the labelled upload button after deleting the last file", async () => {
+  // The list sits in Queue & Search, and Upload in Settings, a hidden
+  // tab there: focus stays on the list, which now says it is empty.
+  it("focuses the liner list, not the hidden Upload, after deleting the last file", async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(inventory(["only.mp3"]))
       .mockResolvedValueOnce(response({ ok: true }))
@@ -368,7 +375,25 @@ describe("liner file controls", () => {
     await answer("confirm");
     await vi.waitFor(() => expect(list.querySelectorAll("button")).toHaveLength(0));
 
-    expect(document.activeElement).toBe(upload);
+    expect(document.activeElement).toBe(list);
+    expect(document.activeElement).not.toBe(upload);
+    expect(list.textContent).toBe("No liner files yet.");
+  });
+
+  it("says a Delete result once, in the status beside the list", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(inventory(["first.mp3", "second.mp3"]))
+      .mockResolvedValueOnce(response({ ok: true }))
+      .mockResolvedValueOnce(inventory(["second.mp3"]));
+    const { list, status, browse, answer } = await installWithDialog(fetchImpl, { browseStatus: true });
+    await vi.waitFor(() => expect(list.querySelectorAll("button")).toHaveLength(2));
+    list.querySelector("button").focus();
+    list.querySelector("button").click();
+    await answer("confirm");
+
+    await vi.waitFor(() => expect(browse.textContent).toBe("Deleted first.mp3"));
+    expect(status.textContent).toBe("");
+    expect(document.activeElement.getAttribute("aria-label")).toBe("Delete second.mp3");
   });
 });
 

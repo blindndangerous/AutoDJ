@@ -325,6 +325,7 @@ function clearProtectedSessionData() {
   _linerEls.lnFileList.replaceChildren();
   _linerEls.lnFolderDisplay.textContent = "";
   _linerEls.lnStatus.textContent = "";
+  _linerEls.lnBrowseStatus.textContent = "";
   updateMediaSession({ current_track: null });
   _playOptedIn = false;
   _listenOptedIn = false;
@@ -2367,6 +2368,7 @@ const _linerEls = {
   lnUploadSubmit:  document.getElementById("ln-upload-submit"),
   lnUploadReplace: document.getElementById("ln-upload-replace"),
   lnStatus:        document.getElementById("ln-status"),
+  lnBrowseStatus:  document.getElementById("ln-browse-status"),
 };
 
 let authenticatedAppStarted = false;

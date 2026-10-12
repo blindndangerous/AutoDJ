@@ -1097,7 +1097,7 @@
   <div class="card" role="tabpanel" id="spanel-liners" aria-labelledby="stab-liners" hidden>
     <h3>Voice liners</h3>
     <p class="card-desc">
-      IDs, jingles and voice tracks. Add liner folders in Library tools or upload a file below. Use Track info beside a liner to edit its Segue and Overlap start.
+      IDs, jingles and voice tracks. Add liner folders in Library tools or upload a file below. Use Track info beside a liner in Queue &amp; Search, Browse voice liners, to edit its Segue and Overlap start.
     </p>
 
     <div id="ln-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
@@ -1191,19 +1191,19 @@
       <span class="setting-desc" id="ln-upload-replace-desc">
         When a liner with the same file name is already in the folder, overwrite it.  Unticked, that upload is refused.
       </span>
-      <h4>Files</h4>
-      <ul id="ln-file-list" aria-label="Voice liner files"></ul>
+      <p>Browse, delete and open Track info for your voice liners in Queue &amp; Search, under Browse voice liners.</p>
     </fieldset>
   </div>
 
   <div class="card" role="tabpanel" id="spanel-time-checks" aria-labelledby="stab-time-checks" hidden>
     <h3>Time checks</h3>
-    <!-- time-checks.js fills this panel when it is seen.  The clip folder,
-         intro and outro clips and the text-to-speech command are set only in
-         config.toml.  Each result of a setting or the button is said once
-         through #tc-status. -->
+    <!-- time-checks.js fills this panel when it is seen.  The voice pack
+         folders, clip folder, intro and outro clips and the text-to-speech
+         command are set only in config.toml; the page sends pack names, never
+         paths.  Each result of a setting or the button is said once through
+         #tc-status; pack coverage is plain text, not a live region. -->
     <p class="card-desc">
-      Say the station time over the music, from a recorded clip for each minute or from text to speech. The clip folder, intro and outro clips and the text-to-speech command are set in config.toml.
+      Say the station time over the music, from a voice pack, a recorded clip for each minute or text to speech, in that order: when one has no recording for the minute, the next one speaks. The voice pack folders, clip folder, intro and outro clips and the text-to-speech command are set in config.toml.
     </p>
 
     <div id="tc-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
@@ -1223,7 +1223,7 @@
       </select>
     </div>
     <span class="setting-desc" id="tc-hour-format-desc">
-      How text to speech says the time: “It’s 3:05” or “It’s 15:05”, and on the hour “It’s 3 o’clock” or “It’s 15 hundred”, with “It’s midnight” and “It’s noon” in both. Recorded clips play as they are.
+      How text to speech says the time: “It’s 3:05” or “It’s 15:05”, and on the hour “It’s 3 o’clock” or “It’s 15 hundred”, with “It’s midnight” and “It’s noon” in both. Recorded clips play as they are. In 12-hour mode a voice pack without a file for hour 13 to 23 or 00 uses the file for 01 to 11 or 12, and adds its am or pm file when it has both.
     </span>
     <div class="settings-row">
       <label for="tc-rule">When to play</label>
@@ -1236,8 +1236,36 @@
       After the song playing at the top of the hour ends, say the time as the next song starts, in place of a voice liner. It uses the voice liner duck depth and, when the server mixes the music, Talk up to the vocal. For set times, add a Time check event in Schedule.
     </span>
 
+    <fieldset id="tc-packs" aria-describedby="tc-packs-desc">
+      <legend>Voice packs</legend>
+      <span class="setting-desc" id="tc-packs-desc">
+        Folders of hour and minute files, joined into one sentence like RadioBOSS does. Tick the packs to use. Each pack shows how many of the 1440 minutes it can say and which files are missing.
+      </span>
+      <p id="tc-packs-empty">No voice packs are listed in config.toml.</p>
+      <div id="tc-pack-list"></div>
+    </fieldset>
+    <div class="settings-row">
+      <label for="tc-pack-order">When several packs are ticked</label>
+      <select id="tc-pack-order" aria-describedby="tc-pack-order-desc">
+        <option value="rotate">Take turns</option>
+        <option value="random">Pick one at random</option>
+      </select>
+    </div>
+    <span class="setting-desc" id="tc-pack-order-desc">
+      Which ticked pack says each time check. When that pack has no files for the minute, the other ticked packs are tried before recorded clips.
+    </span>
+
     <h4>Recordings</h4>
     <p id="tc-clips-status"></p>
+    <div class="settings-row">
+      <label for="tc-test-voice">Voice to test</label>
+      <select id="tc-test-voice" aria-describedby="tc-test-voice-desc">
+        <option value="">The ticked packs, then clips, then text to speech</option>
+      </select>
+    </div>
+    <span class="setting-desc" id="tc-test-voice-desc">
+      Choose one voice pack to hear it even when it is not ticked. When it has no files for this minute, the next source plays; when the server plays it, the result names the source.
+    </span>
     <button type="button" id="tc-test" aria-describedby="tc-test-desc">Play a time check now</button>
     <span class="setting-desc" id="tc-test-desc">
       Plays the current time on the stream or server audio when the server mixes the music; otherwise in this browser.
@@ -1584,8 +1612,8 @@
 
   </section>
   <!-- ============================================================
-       View: Queue & Search — find tracks, manage the up-next queue,
-       review what's already played
+       View: Queue & Search — manage the up-next queue, search, browse
+       the library and the voice liners
        ============================================================ -->
   <section data-view="queue" id="panel-queue" role="tabpanel" hidden aria-labelledby="tab-queue">
 
@@ -1638,6 +1666,33 @@
     <!-- aria-atomic="false": announce count separately, not the entire list -->
     <ul id="search-results" role="list" aria-label="Search results"></ul>
   </details>
+
+  <!-- Browse library.  The folder choice lists the registered music and
+       voice liner folders; library-folders.js refreshes it each time this
+       tab is shown.  Adding and removing folders stays in Library tools. -->
+  <section class="card" aria-labelledby="browse-library-heading">
+    <h2 id="browse-library-heading">Browse library</h2>
+    <label for="library-browse-folder">Folder</label>
+    <select id="library-browse-folder"><option value="all-music">All music</option><option value="all-liners">All voice liners</option></select>
+    <label for="library-browse-query">Search text (optional)</label>
+    <input id="library-browse-query" type="search">
+    <button type="button" id="library-browse">Browse</button>
+    <p id="library-browse-count" aria-live="polite" aria-atomic="true"></p>
+    <ul id="library-browse-results" role="list" aria-label="Library tracks"></ul>
+    <button type="button" id="library-browse-previous" disabled>Previous</button>
+    <button type="button" id="library-browse-next" disabled>Next</button>
+  </section>
+
+  <!-- Browse voice liners: the liner files (liners.js).  #ln-browse-status
+       says the result of a Delete here, where it is heard: the Settings
+       status region is hidden while this tab is shown.  The list takes
+       focus (tabindex -1) when the last liner is deleted.  Uploading stays
+       in Settings, Voice liners. -->
+  <section class="card" aria-labelledby="browse-liners-heading">
+    <h2 id="browse-liners-heading">Browse voice liners</h2>
+    <div id="ln-browse-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+    <ul id="ln-file-list" role="list" aria-label="Voice liner files" tabindex="-1"></ul>
+  </section>
 
   </section>
   <!-- ============================================================
@@ -1734,24 +1789,15 @@
     </div>
   </section>
   <!-- ============================================================
-       View: Library tools — index / enrich / analyse / prune / stats
-       jobs and the index stats, run from the web UI.
+       View: Library tools — music and voice liner folders, index /
+       enrich / analyse / prune / stats jobs and the index stats, run from
+       the web UI.  Browsing is in Queue & Search.
        ============================================================ -->
   <section data-view="library" id="panel-library" role="tabpanel" hidden aria-labelledby="tab-library">
-    <section class="card" aria-labelledby="browse-library-heading">
-      <h2 id="browse-library-heading">Browse library</h2>
-      <label for="library-browse-folder">Folder</label>
-      <select id="library-browse-folder"><option value="all-music">All music</option><option value="all-liners">All voice liners</option></select>
-      <label for="library-browse-query">Search text (optional)</label>
-      <input id="library-browse-query" type="search">
-      <button type="button" id="library-browse">Browse</button>
-      <p id="library-browse-count" aria-live="polite" aria-atomic="true"></p>
-      <ul id="library-browse-results" role="list" aria-label="Library tracks"></ul>
-      <button type="button" id="library-browse-previous" disabled>Previous</button>
-      <button type="button" id="library-browse-next" disabled>Next</button>
-    </section>
     <details class="card" open>
       <summary><h2>Library tools</h2></summary>
+
+      <p>Browse your library and voice liners in Queue &amp; Search.</p>
 
       <p>
         Run library-maintenance commands without dropping to a terminal.
