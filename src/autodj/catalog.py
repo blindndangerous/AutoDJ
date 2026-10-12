@@ -1395,7 +1395,9 @@ class LibraryCatalog:
                 if not self._editing[normalized]:
                     del self._editing[normalized]
 
-    def retag(self, path: str | Path, fields: dict[str, Any], *, remember_manual: bool = True) -> bool:
+    def retag(
+        self, path: str | Path, fields: dict[str, Any], *, remember_manual: bool = True
+    ) -> bool:
         """Store a recording's edited tags and its file's new identity (#53).
 
         Only the tags changed, not the audio, so the vector, cue points,
@@ -1445,7 +1447,9 @@ class LibraryCatalog:
                 for name in _USER_TAGS:
                     if name in fields:
                         # A key is 0 to 11, -1 when cleared; a BPM 0 when cleared.
-                        if remember_manual and (fields[name] >= 0 if name == "key" else fields[name] > 0):
+                        if remember_manual and (
+                            fields[name] >= 0 if name == "key" else fields[name] > 0
+                        ):
                             manual_tags.add(name)
                         else:
                             manual_tags.discard(name)

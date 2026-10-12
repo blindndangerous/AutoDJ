@@ -246,9 +246,7 @@ def test_scan_can_override_existing_tags_without_replacing_analysis(
     with (
         patch(
             "autodj.audio_meta.read_file_tags",
-            return_value=FileTags(
-                title="Tagged title", artist="Tagged artist", bpm=embedded_bpm
-            ),
+            return_value=FileTags(title="Tagged title", artist="Tagged artist", bpm=embedded_bpm),
         ) as read_tags,
         patch("autodj.library.analyze_basic", side_effect=AssertionError("must reuse analysis")),
         patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
@@ -283,7 +281,9 @@ def test_queued_tag_override_runs_before_loudness_scan_finishes(manager_factory,
         return fake_loudness(path, kind)
 
     with (
-        patch("autodj.audio_meta.read_file_tags", return_value=FileTags(title="Tagged")) as read_tags,
+        patch(
+            "autodj.audio_meta.read_file_tags", return_value=FileTags(title="Tagged")
+        ) as read_tags,
         patch("autodj.library.analyze_basic", side_effect=fake_basic),
         patch("autodj.library.analyze_loudness", side_effect=measure),
     ):
@@ -361,11 +361,11 @@ def test_added_folders_queue_once_without_expanding_to_other_sources(
     observed = []
     original_scan = manager._scan
 
-    def scoped_scan(source_ids):
+    def scoped_scan(source_ids, override_tags=False):
         if not observed:
             entered.set()
             assert release.wait(timeout=3)
-        original_scan(source_ids)
+        original_scan(source_ids, override_tags)
         observed.append((source_ids, manager.snapshot()["import"]["total"]))
 
     manager._scan = scoped_scan
