@@ -336,6 +336,48 @@ def _liner_gate(bridge: PlayerBridge, paths: StationPaths) -> LinerGate:
     return LinerGate(LinerDates(paths.liner_dates), lambda: station_today(cfg), liner_id)
 
 
+def prune_liner_dates(station: StationRuntime) -> list[str]:
+    """Forget the play dates of *station*'s liners that are gone; the IDs forgotten.
+
+    A liner deleted outside AutoDJ would otherwise keep its dates, and a new
+    file that took its name (or its catalog place) would start with them.
+    A registered liner is gone when the latest scan found its file missing
+    from a folder that is there; one in the liner folder, when the folder is
+    there and the file is not.  A share that is not mounted forgets nothing.
+    """
+    store = station.liner_gate.store
+    dates = store.all()
+    if not dates:
+        return []
+    library = station.bridge.library
+    folder = station.paths.liners
+    folder_present = folder.is_dir()
+    gone = []
+    for liner_id in dates:
+        record = library.catalog.record_for_id(liner_id) if library is not None else None
+        if record is not None:
+            # A registered liner: gone when the scan found its file missing.
+            if (
+                record.get("kind") == "liner"
+                and library is not None
+                and library.is_gone(record["path"])
+            ):
+                gone.append(liner_id)
+        elif (
+            folder_present and Path(liner_id).name == liner_id and not (folder / liner_id).is_file()
+        ):
+            gone.append(liner_id)  # one in the liner folder, gone from it
+    forgotten = store.forget(gone)
+    if forgotten:
+        logger.info(
+            "Station %s: forgot the play dates of %d liners that are gone: %s",
+            station.slug,
+            len(forgotten),
+            ", ".join(forgotten),
+        )
+    return forgotten
+
+
 def _registered_liners(
     bridge: PlayerBridge, owns: Callable[[str], bool] | None = None
 ) -> list[tuple[str, Path]]:
@@ -1095,8 +1137,17 @@ class SharedLibrary:
     async def start(self) -> None:
         """Start the library's scan and its two-second tick."""
         if self.library is not None:
+            self.library.on_scan_done = self._scan_done
             self.library.start_scan()
             self._ticker = asyncio.create_task(self._tick())
+
+    def _scan_done(self) -> None:
+        """After a scan (on its thread): forget the play dates of liners now gone."""
+        for station in self._stations.all():
+            try:
+                prune_liner_dates(station)
+            except Exception:
+                logger.exception("Station %s: could not tidy the liner dates", station.slug)
 
     async def close(self, writers_quiesced: bool) -> bool:
         """Close the DJ-meta cache if no writer remains, then the library.

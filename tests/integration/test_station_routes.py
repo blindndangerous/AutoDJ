@@ -149,6 +149,7 @@ STATION = frozenset(
         "/time-checks",
         "/time-checks/test",
         "/time-checks/preview",
+        "/time-checks/packs/{name}/dates",
         "/ws",
     }
 )

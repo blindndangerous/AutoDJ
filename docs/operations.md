@@ -1826,6 +1826,21 @@ These steps apply to a native installation from a source checkout.
 7. Start loopback-only and check that the version in the page footer is the release you checked
    out before enabling LAN access.
 
+### Going back to an older release
+
+Restore the backup you made before the upgrade. A newer AutoDJ writes some settings that an older
+one reads differently:
+
+- An every-N-minutes schedule event that keeps to chosen days: AutoDJ 0.20.0 and older ignore its
+  days and run it every day. Edit the event, or delete it, before going back.
+- A schedule event with a date range, a category with days and hours, or a cart with play dates:
+  an older AutoDJ that does not know these fields sets the whole file (`schedule.json`,
+  `categories.json` or `carts.json`) aside as damaged and starts without it. Files saved without
+  these settings load in either version. Liner play dates are in a file of their own,
+  `liner_dates.json`, which an older AutoDJ does not read.
+- Voice pack play dates are kept beside the time check switches in `time_checks.json`; an older
+  AutoDJ ignores them and lets every ticked pack speak.
+
 ## Cart wall
 
 The **Carts** tab, after Queue & Search, holds four pages of twelve numbered carts for station
@@ -1883,12 +1898,25 @@ on any day.
   is expired after 26 December 2026", and the cart button ends with "expired" or "not playable
   yet".
 
+A page left open past midnight follows the station's day: the liner list adds or drops "Skipped
+now", and the cart buttons and the editor's cart list add or drop "expired" and "not playable
+yet", in place. Only the words change, so focus stays where it is and nothing is announced. A
+refused date in the cart editor is shown under the editor and linked to its field, whether the
+page or the server refused it.
+
 Liner dates are kept in `liner_dates.json` in the active index folder, by the ID Browse voice
 liners uses (the library ID of a registered liner, or the file name of one in the liner folder),
-and are included in backups. Deleting a liner forgets its dates. Cart dates are kept with the
-cart in `carts.json`. A liner or cart without dates is saved as before, so an older AutoDJ still
-reads both files. Time check voice packs have no dates yet: their files are the hours and
-minutes of a voice rather than clips that run out.
+and are included in backups. Deleting a liner forgets its dates. So does a library scan for a
+liner deleted outside AutoDJ: a registered liner whose file the scan found gone from a folder
+that is there, or a liner folder file that is no longer in the folder. A liner on a share that is
+not mounted keeps its dates. A liner uploaded under a name that is not in use starts without
+dates, even where an earlier file of that name left some; uploading over an existing liner with
+Replace keeps them. Cart dates are kept with the cart in `carts.json`. A liner or cart without
+dates is saved as before, so an older AutoDJ still reads both files.
+
+With **Pick in order** (sequential), a liner outside its dates is passed over and the rotation
+keeps its place: the liner after it still comes next. Talk-up liners planned ahead pass over it
+too. Time check voice packs have dates of their own; see [Voice packs](#voice-packs).
 
 ## Scheduler
 
@@ -1898,7 +1926,9 @@ have an active window, such as 22:00 until 02:00; a window may cross midnight, a
 Without a window the count starts again at local midnight. An every-N-minutes event can also keep
 to chosen days; leave every day unchecked to run every day.
 
-Any event can have a **Date range**: an optional start date, end date, or both. The event runs
+Any repeating event can have a **Date range**: an optional start date, end date, or both. A
+one-time event's date is its whole range, so the form hides **Date range** for it, unless the
+event was saved with a range: then the dates stay in view to keep or clear. The event runs
 only on dates from the start date to the end date, both included, in the station time zone, and
 the **Next events** list skips the dates outside it. An active window that crosses midnight
 belongs to the day it starts: a Friday 18:00 until 02:00 window whose end date is that Friday
@@ -2141,9 +2171,18 @@ that category is skipped with "outside its hours" in the clockwheel status and t
 song in several categories plays only while every one of them allows it. Relaxing the repeat rules
 or the DMCA limits never brings such a song back. When nothing else at all can play, the station
 plays one anyway rather than going silent, and the server log says so. A song you queue yourself
-plays at any time. The list says each category's days and hours in words and when it is outside
-them now. The hours are checked when a song is picked, which in server audio and stream modes
-can be a few minutes before it plays.
+plays at any time. The list says each category's days and hours in words, such as "Plays only on
+Friday and Saturday from 22:00 until 02:00", and when it is outside them now; with all seven days
+ticked and no times it says "Plays every day, at any hour".
+
+The hours are checked for when the song is expected to start, not when it is picked: the song
+after this one is picked while this one plays, so a pick at 01:58 with four minutes of this song
+to go checks the hours at 02:02, and a window that ends at 02:00 no longer lets its songs start
+just after it closes. The rotation tester checks them the same way. Which songs are outside their
+hours is worked out once a minute, so a pick only looks them up. Without `[server]
+station_timezone`, the system time zone is asked for once, when AutoDJ starts; a host with no
+known zone uses UTC and logs one warning. When every song is outside its hours, the warning that
+one plays anyway is logged once, and again only after the hours change.
 
 For dayparting single songs, make a category from a beets query on a field you set, such as
 `beet modify daypart=night` and the query `daypart:night`, and give it the hours. Categories that
@@ -2254,6 +2293,16 @@ pack cannot say the minute, the other ticked packs are tried before the recorded
 **Voice to test** picks one pack, ticked or not, for **Play a time check now**; when the
 server plays it, the result says which source spoke. The browser only ever sends a pack's name; the folders stay
 in `config.toml`.
+
+A pack can have play dates, such as a holiday voice from 1 to 26 December. Under **Voice pack
+play dates**, choose the pack, enter **Not before**, **Do not play after** or both, and press
+**Save play dates**. Both days are included, in the station time zone. Outside its dates a ticked
+pack is passed over and the other ticked packs speak; **Voice to test** still plays it. Each
+pack's description says its dates in words and "Skipped now" when it is outside them. A refused
+date is shown under the form and linked to its field. The dates are kept beside the switches in
+`time_checks.json` under `pack_dates`, written only when a pack has dates, and are kept for a
+pack taken out of `config.toml` until it comes back. Dates that cannot be read, and keys this
+version does not know, are logged and ignored.
 
 AutoDJ reads only the files directly in the folder, with the extension `.wav`, `.mp3`, `.flac`
 or `.ogg`, and compares letters without regard to case. It recognises these names:

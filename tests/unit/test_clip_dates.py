@@ -323,3 +323,61 @@ def test_the_talk_up_planner_passes_over_expired_liners_and_keeps_its_place(
     scheduler.play_dates = lambda _name: "expired"
     scheduler.release_plan("h2")
     assert scheduler.plan_for_handoff("h3", tracks_ahead=1, seconds_ahead=0) is None
+
+
+# -- liners deleted outside AutoDJ -------------------------------------------------
+
+
+def test_forget_removes_many_in_one_write_and_leaves_an_untouched_file(tmp_path: Path) -> None:
+    store = LinerDates(tmp_path / "liner_dates.json")
+    assert store.forget(["a.wav"]) == []
+    assert not store.path.exists()  # nothing to forget: nothing written
+    for name in ("a.wav", "b.wav", "c.wav"):
+        store.set(name, CHRISTMAS)
+    assert store.forget(["c.wav", "a.wav", "x.wav"]) == ["a.wav", "c.wav"]
+    assert set(LinerDates(store.path).all()) == {"b.wav"}
+
+
+def _station(tmp_path: Path, records: dict[str, dict], gone: set[str]) -> SimpleNamespace:
+    folder = tmp_path / "liners"
+    folder.mkdir(exist_ok=True)
+    library = SimpleNamespace(
+        catalog=SimpleNamespace(record_for_id=records.get),
+        is_gone=lambda path: str(path) in gone,
+    )
+    return SimpleNamespace(
+        slug="default",
+        liner_gate=SimpleNamespace(store=LinerDates(tmp_path / "liner_dates.json")),
+        bridge=SimpleNamespace(library=library),
+        paths=SimpleNamespace(liners=folder),
+    )
+
+
+def test_a_scan_forgets_the_dates_of_liners_that_are_gone(tmp_path: Path, caplog) -> None:
+    from autodj.stations import prune_liner_dates
+
+    records = {
+        "rec-gone": {"kind": "liner", "path": "Z:/Liners/old.wav"},
+        "rec-away": {"kind": "liner", "path": "//share/liners/away.wav"},
+        "rec-here": {"kind": "liner", "path": "Z:/Liners/here.wav"},
+    }
+    station = _station(tmp_path, records, gone={"Z:/Liners/old.wav"})
+    (station.paths.liners / "kept.wav").write_bytes(b"x")
+    store = station.liner_gate.store
+    for liner_id in ("rec-gone", "rec-away", "rec-here", "kept.wav", "deleted.wav"):
+        store.set(liner_id, CHRISTMAS)
+    with caplog.at_level("INFO", logger="autodj.stations"):
+        assert prune_liner_dates(station) == ["deleted.wav", "rec-gone"]
+    assert set(store.all()) == {"rec-away", "rec-here", "kept.wav"}
+    assert "forgot the play dates of 2 liners that are gone" in caplog.text
+    assert prune_liner_dates(station) == []
+
+
+def test_a_missing_liner_folder_forgets_nothing(tmp_path: Path) -> None:
+    from autodj.stations import prune_liner_dates
+
+    station = _station(tmp_path, {}, gone=set())
+    station.liner_gate.store.set("promo.wav", CHRISTMAS)
+    station.paths.liners.rmdir()  # an unmounted share, say
+    assert prune_liner_dates(station) == []
+    assert set(station.liner_gate.store.all()) == {"promo.wav"}

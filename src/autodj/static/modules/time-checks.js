@@ -1,6 +1,7 @@
 // Settings > Time checks: the switches a paired browser may change, which
 // configured voice packs speak (by name; the server keeps the folders), each
-// pack's and the recorded clips' coverage, and "Play a time check now".
+// pack's and the recorded clips' coverage, each pack's play dates, and
+// "Play a time check now".
 //
 // In browser playback this page also plays the time check after the song
 // that crosses the hour, through the same voice liner path (duck and
@@ -29,6 +30,11 @@ export function installTimeChecks({ doc = document, request = requestJson,
   const packsEmpty = get("packs-empty");
   const testVoice = get("test-voice");
   const panel = doc.getElementById("spanel-time-checks");
+  const dates = {
+    group: get("dates"), pack: get("dates-pack"), from: get("not-before"),
+    until: get("not-after"), error: get("dates-error"), save: get("dates-save"),
+  };
+  const hasDates = Object.values(dates).every(Boolean);
   if (!enabled || !format || !rule || !clips || !status || !test || !order || !packList
       || !packsEmpty || !testVoice) {
     return { refresh: async () => {}, noteTrack: () => {} };
@@ -88,9 +94,91 @@ export function installTimeChecks({ doc = document, request = requestJson,
     }
     packBoxes().forEach((box, index) => {
       if (doc.activeElement !== box) box.checked = packs[index].enabled;
-      get(`pack-${index}-desc`).textContent = packs[index].summary;
+      get(`pack-${index}-desc`).textContent = packWords(packs[index]);
     });
     packsEmpty.hidden = packs.length > 0;
+    showDates(packs);
+  }
+
+  // A pack's coverage, then its play dates and why it is skipped now.
+  function packWords(pack) {
+    const parts = [pack.summary];
+    if (pack.dates_text) parts.push(`${pack.dates_text}.`);
+    if (pack.playable === false) parts.push(`Skipped now: ${pack.unplayable_text}.`);
+    return parts.join(" ");
+  }
+
+  // The play dates form: one pack at a time, its options rebuilt only when
+  // the configured packs change, and the dates filled in only when a pack is
+  // chosen, so a refresh never undoes what is being typed.
+  function showDates(packs) {
+    if (!hasDates) return;
+    dates.group.hidden = packs.length === 0;
+    const names = packs.map((pack) => pack.name);
+    const listed = [...dates.pack.options].map((item) => item.value);
+    if (JSON.stringify(listed) !== JSON.stringify(names)) {
+      const chosen = dates.pack.value;
+      dates.pack.replaceChildren(...names.map((name) => {
+        const item = doc.createElement("option");
+        item.value = name;
+        item.textContent = name;
+        return item;
+      }));
+      dates.pack.value = names.includes(chosen) ? chosen : (names[0] ?? "");
+      fillDates();
+    }
+  }
+
+  function fillDates() {
+    const pack = (settings?.packs || []).find((item) => item.name === dates.pack.value);
+    dates.from.value = pack?.not_before || "";
+    dates.until.value = pack?.not_after || "";
+    clearDatesError();
+  }
+
+  function clearDatesError() {
+    for (const field of [dates.from, dates.until]) {
+      field.removeAttribute("aria-invalid");
+      field.removeAttribute("aria-describedby");
+    }
+    dates.error.textContent = "";
+    dates.error.hidden = true;
+  }
+
+  // Shown on the page, linked to the field and focused (WCAG 3.3.1), and said.
+  function datesError(field, message) {
+    dates.error.textContent = message;
+    dates.error.hidden = false;
+    field.setAttribute("aria-invalid", "true");
+    field.setAttribute("aria-describedby", dates.error.id);
+    field.focus();
+    say(message, "error");
+  }
+
+  async function saveDates() {
+    clearDatesError();
+    const name = dates.pack.value;
+    if (!name) return;
+    const from = dates.from.value || null;
+    const until = dates.until.value || null;
+    if (from && until && until < from) {
+      datesError(dates.until, "Do not play after must be on or after the Not before date.");
+      return;
+    }
+    try {
+      settings = await request(`/api/time-checks/packs/${encodeURIComponent(name)}/dates`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...(from ? { not_before: from } : {}), ...(until ? { not_after: until } : {}) }),
+      });
+      showSettings();
+      const pack = settings.packs?.find((item) => item.name === name);
+      say(pack?.dates_text ? `Saved. Voice pack ${name}: ${pack.dates_text}.` : `Saved. Voice pack ${name} plays on any day.`);
+    } catch (error) {
+      const field = { not_before: dates.from, not_after: dates.until }[error.field];
+      const message = `Could not save the play dates. ${error.message}`;
+      if (field) datesError(field, message);
+      else say(message, "error");
+    }
   }
 
   function showSettings() {
@@ -180,6 +268,16 @@ export function installTimeChecks({ doc = document, request = requestJson,
 
   for (const control of [enabled, format, rule, order]) control.addEventListener("change", save);
   test.addEventListener("click", () => withDisabled(test, testNow));
+  if (hasDates) {
+    dates.pack.addEventListener("change", fillDates);
+    dates.save.addEventListener("click", () => withDisabled(dates.save, saveDates));
+    for (const field of [dates.from, dates.until]) {
+      field.addEventListener("input", () => {
+        field.removeAttribute("aria-invalid");
+        field.removeAttribute("aria-describedby");
+      });
+    }
+  }
   panel?.addEventListener("toggle", () => {
     if (panel.open) void refresh();
   });

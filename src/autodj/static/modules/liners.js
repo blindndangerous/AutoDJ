@@ -6,7 +6,7 @@
 // of AudioContext + decks state.
 
 import { confirmAction } from "./confirm-dialog.js";
-import { dbg, listRow, nextRowControl, rowButton } from "./dom-helpers.js";
+import { dbg, listRow, nextRowControl, rowButton, stationDay } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 import { parseSettingValue, refusalText } from "./mix-settings.js";
 import {
@@ -95,8 +95,43 @@ export function renderLinerFileList(fileList, files, onDelete, onEdit = (path, k
       dates.dataset.linerDates = liner.id;
       buttons.push(dates);
     }
-    return listRow(document, legacyName ? liner.name : linerText(liner), "", ...buttons);
+    const row = listRow(document, legacyName ? liner.name : linerText(liner), "", ...buttons);
+    row.dataset.linerId = liner.id;
+    return row;
   }));
+}
+
+// The station's day changed while the page was open: read the list again
+// and change only the words of each row ("Skipped now: expired after ..."),
+// so focus stays where it is and nothing is announced.  A list whose liners
+// changed meanwhile is drawn again, as a refresh draws it.
+async function _followStationDay(els, now = new Date()) {
+  const day = stationDay(state.lib.timezone, now);
+  if (!day || !state.lib.today || day === state.lib.today || !els.lnFileList) return;
+  // Asked once per day change, even when the request fails.
+  state.lib.today = day;
+  const epoch = captureAuthenticatedRequestEpoch();
+  let body;
+  try {
+    body = await requestJson("/api/liners");
+  } catch (err) {
+    dbg("liner day refresh failed:", err);
+    return;
+  }
+  if (!isAuthenticatedRequestCurrent(epoch)) return;
+  const items = body.items || [];
+  const rows = [...els.lnFileList.querySelectorAll(":scope > li[data-liner-id]")];
+  const same = rows.length === items.length && rows.every((row, i) => row.dataset.linerId === items[i].id);
+  if (!same) {
+    await _loadLibrary(els, epoch);
+    return;
+  }
+  state.lib = body;
+  rows.forEach((row, i) => {
+    const text = linerText(items[i]);
+    const span = row.firstElementChild;
+    if (span && span.textContent !== text) span.textContent = text;
+  });
 }
 
 // Loads the liner folder and config into the page.  False when the
@@ -194,21 +229,6 @@ function _postConfig(els, postSettings, control) {
     liners_pick_mode:          els.lnPickMode ? els.lnPickMode.value : "random",
     liners_duck_db:            _floatOrNull(els.lnDuckDb),
   }, control);
-}
-
-// The station's calendar day now, as YYYY-MM-DD, or "" when the page does
-// not know the station time zone.  Worked out at each pick, so a page left
-// open past midnight does not keep the day the list was loaded on.
-function stationDay(timeZone, now = new Date()) {
-  if (!timeZone) return "";
-  try {
-    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
-      timeZone, year: "numeric", month: "2-digit", day: "2-digit",
-    }).formatToParts(now).map(({ type, value }) => [type, value]));
-    return `${parts.year}-${parts.month}-${parts.day}`;
-  } catch {
-    return "";
-  }
 }
 
 // Whether a liner may play on *day* (ISO dates compare as text); without a
@@ -511,6 +531,9 @@ export function installLiners(els, deps) {
       }
     }
   }, 1000);
+
+  // "Skipped now" follows the station's day on a page left open past midnight.
+  setInterval(() => void _followStationDay(els), 60_000);
 
   // Initial fetch + reapply hidden state on load.
   void _refreshLibrary(els);

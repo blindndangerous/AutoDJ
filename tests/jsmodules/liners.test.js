@@ -729,6 +729,35 @@ describe("liner play dates", () => {
     }
   });
 
+  it("says Skipped now when the station's day changes, in place and without a sound", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval"] });
+    try {
+      vi.setSystemTime(new Date("2026-12-27T06:50:00Z")); // 23:50 on 26 December in Denver
+      const open = { ...PROMO, playable: true, unplayable_text: "" };
+      const listed = { timezone: "America/Denver", today: "2026-12-26", items: [open, ID] };
+      const { list, fetchImpl, status } = await install(undefined, listed);
+      const row = list.querySelector('li[data-liner-id="promo.mp3"]');
+      expect(row.firstElementChild.textContent).toBe("promo.mp3. Plays until 26 December 2026");
+      const button = datesButton(list, "promo.mp3");
+      button.focus();
+      const said = status.textContent;
+      vi.advanceTimersByTime(60_000); // the same day: nothing is asked
+      expect(fetchImpl.mock.calls.filter(([url]) => url === "/api/liners")).toHaveLength(1);
+      vi.setSystemTime(new Date("2026-12-27T07:01:00Z"));
+      Object.assign(listed, { today: "2026-12-27", items: [PROMO, ID] }); // as the server says then
+      vi.advanceTimersByTime(60_000);
+      await vi.waitFor(() => expect(row.firstElementChild.textContent).toBe(
+        "promo.mp3. Plays until 26 December 2026. Skipped now: expired after 26 December 2026"));
+      expect(list.querySelector('li[data-liner-id="promo.mp3"]')).toBe(row); // not redrawn
+      expect(document.activeElement).toBe(button);
+      expect(status.textContent).toBe(said);
+      vi.advanceTimersByTime(60_000);
+      expect(fetchImpl.mock.calls.filter(([url]) => url === "/api/liners")).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("says so when Test finds every liner outside its play dates", async () => {
     const { fetchImpl } = await install(undefined, { items: [PROMO] });
     document.getElementById("ln-test").click();

@@ -625,6 +625,20 @@ _NO_DATES: dict[str, Any] = {
 }
 
 
+async def _forget_new_liner_dates(station: StationRuntime, target: Path) -> None:
+    """Forget dates left by an earlier liner at *target*: by its name and its catalog ID."""
+    library = station.bridge.library
+    ids = [target.name]
+    if library is not None:
+        record = await asyncio.to_thread(library.catalog.record_for_path, target)
+        if record is not None:
+            ids.append(str(record["id"]))
+    try:
+        await asyncio.to_thread(station.liner_gate.store.forget, ids)
+    except (OSError, ValueError):
+        logger.warning("Could not forget old play dates for %s", target.name, exc_info=True)
+
+
 async def _forget_liner_dates(station: StationRuntime, liner_id: str) -> None:
     """Drop a deleted liner's play dates, so a new file of that name starts without them."""
     from autodj.clip_dates import ClipDates
@@ -1196,6 +1210,10 @@ def install_station_routes(router: StationRouter) -> None:
             raise HTTPException(status_code=409, detail="Liner already exists") from exc
         except LinerTooLargeError as exc:
             raise HTTPException(status_code=413, detail=str(exc)) from exc
+        if not replace:
+            # A new file starts without dates, even where a liner of that name
+            # was deleted outside AutoDJ and its dates were left behind.
+            await _forget_new_liner_dates(station, target)
         return {"filename": target.name, "size": size}
 
     @router.delete("/liners/file/{name}")

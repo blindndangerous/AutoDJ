@@ -398,6 +398,57 @@ describe("cart editor", () => {
     expect(server.calls.some((call) => call.method === "PUT")).toBe(false);
   });
 
+  it("links a server refusal of the dates to its field", async () => {
+    const { server } = await install();
+    api.requestJson.mockImplementation(async (url, options = {}) => {
+      if (options.method === "PUT") {
+        const error = new Error("Do not play after must be on or after the Not before date");
+        error.field = "not_after";
+        throw error;
+      }
+      return JSON.parse(JSON.stringify(server));
+    });
+    byId("cart-edit-slot").value = "3";
+    byId("cart-edit-slot").dispatchEvent(new Event("change"));
+    byId("cart-not-after").value = "2026-12-26";
+    byId("cart-save").click();
+    const until = byId("cart-not-after");
+    const message = "Could not save cart 3. Do not play after must be on or after the Not before date";
+    await vi.waitFor(() => expect(byId("cart-edit-error").textContent).toBe(message));
+    expect(document.activeElement).toBe(until);
+    expect(until.getAttribute("aria-invalid")).toBe("true");
+    expect(until.getAttribute("aria-describedby")).toBe("cart-dates-desc cart-edit-error");
+    expect(byId("cart-status").textContent).toBe(message);
+  });
+
+  it("says a cart has expired when the station's day changes, without moving focus", async () => {
+    let now = new Date("2026-12-27T06:50:00Z"); // 23:50 on 26 December in Denver
+    const ticks = [];
+    installIndex();
+    const server = fakeServer();
+    server.today = "2026-12-26";
+    server.timezone = "America/Denver";
+    server.wall.pages[0].slots[2].not_after = "2026-12-26";
+    const controls = installCartWall(undefined, {
+      now: () => now, interval: (callback) => ticks.push(callback),
+    });
+    await controls.refresh();
+    expect(cart(3).textContent).toBe("Cart 3, Station ID, 0:07");
+    cart(3).focus();
+    const option = byId("cart-edit-slot").options[2];
+    const status = byId("cart-status").textContent;
+    ticks.forEach((tick) => tick());
+    expect(cart(3).textContent).toBe("Cart 3, Station ID, 0:07"); // still 26 December there
+    now = new Date("2026-12-27T07:01:00Z");
+    ticks.forEach((tick) => tick());
+    expect(cart(3).textContent).toBe("Cart 3, Station ID, 0:07, expired");
+    expect(byId("cart-edit-slot").options[2]).toBe(option); // relabelled, not rebuilt
+    expect(option.textContent).toBe("Cart 3, Station ID, 0:07, expired");
+    expect(document.activeElement).toBe(cart(3));
+    expect(byId("cart-status").textContent).toBe(status); // nothing announced
+    expect(server.calls.filter((call) => call.url === "/api/carts")).toHaveLength(1);
+  });
+
   it("clears a cart", async () => {
     const { server } = await install();
     byId("cart-edit-slot").value = "3";

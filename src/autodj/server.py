@@ -863,7 +863,17 @@ def create_app(
         client.  A rejected ``NaN``/``Infinity`` cannot be re-encoded, so the
         echo itself would raise and turn a validation error into a 500.  Only
         the type, location and message are returned.
+
+        A validator that names the field at fault (such as a cart's
+        backwards play dates) answers with that message and ``field``, so
+        the page can link the error to the field, as other form errors are.
         """
+        for error in exc.errors():
+            cause = (error.get("ctx") or {}).get("error")
+            named = getattr(cause, "field", None)
+            if isinstance(cause, ValueError) and isinstance(named, str) and named:
+                message = str(getattr(cause, "message", "") or cause)
+                return JSONResponse(status_code=422, content={"detail": message, "field": named})
         detail = [
             {
                 "type": str(error.get("type", "")),

@@ -1,3 +1,4 @@
+import logging
 import os
 import threading
 from contextlib import contextmanager
@@ -1171,6 +1172,9 @@ def test_scan_drops_deleted_tracks_but_not_an_unmounted_share(manager_factory, t
         manager.scan()
         assert [Path(entry.path).name for entry in manager.entries_snapshot()] == ["kept.flac"]
         assert manager._missing == frozenset({os.path.normcase(str(deleted))})
+        assert manager.is_gone(deleted)
+        assert not manager.is_gone(remote)  # its share is only away
+        assert not manager.is_gone(kept)
         moved.rename(share)
         manager.catalog.update_source(manager.catalog.sources("music")[-1]["id"], True, True)
         manager.tick()
@@ -1473,3 +1477,28 @@ def test_a_write_during_a_refresh_is_caught_on_the_next_tick(other_connection, m
     monkeypatch.setattr(manager.catalog, "reader", reader)
     manager.tick()
     assert manager.entry_for_path(late) is not None
+
+
+def test_a_finished_scan_calls_its_tidy_up_and_survives_its_failure(
+    manager_factory, tmp_path, caplog
+):
+    music = tmp_path / "Music"
+    music.mkdir()
+    (music / "one.flac").write_bytes(b"one")
+    manager = manager_factory(music=music)
+    seen = []
+
+    def tidy() -> None:
+        seen.append(len(manager.entries_snapshot()))  # after the refresh
+        raise OSError("disk gone")
+
+    manager.on_scan_done = tidy
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+        caplog.at_level(logging.ERROR, logger="autodj.library"),
+    ):
+        manager.scan()
+    assert seen == [1]
+    assert "after-scan tidy-up failed" in caplog.text
+    assert manager._state["running"] is False

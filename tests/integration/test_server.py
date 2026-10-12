@@ -607,6 +607,34 @@ class TestLiners:
         body = tc.get("/api/liners").json()
         assert "hello.mp3" in body["files"]
 
+    def test_a_new_liner_upload_does_not_inherit_left_behind_dates(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        from autodj.clip_dates import ClipDates, LinerDates
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(tmp_path / "active")
+        tc = TestClient(create_app(bridge))
+        store = LinerDates(tc.app.state.stations.default.paths.liner_dates)
+        # promo.mp3 was deleted outside AutoDJ; its dates stayed behind.
+        store.set("promo.mp3", ClipDates(not_after="2000-01-01"))
+        store.set("id.wav", ClipDates(not_after="2000-01-01"))
+        files = {"file": ("promo.mp3", b"audio-bytes", "audio/mpeg")}
+        assert tc.post("/api/liners/upload", files=files).status_code == 200
+        assert set(store.all()) == {"id.wav"}
+        listed = {entry["id"]: entry for entry in tc.get("/api/liners").json()["items"]}
+        assert listed["promo.mp3"]["playable"] is True
+        # Replacing a liner on purpose keeps its dates.
+        (folder / "id.wav").write_bytes(b"\x00")
+        replaced = tc.post(
+            "/api/liners/upload?replace=true",
+            files={"file": ("id.wav", b"new-bytes", "audio/wav")},
+        )
+        assert replaced.status_code == 200, replaced.text
+        assert set(store.all()) == {"id.wav"}
+
     def test_liner_upload_enforces_configured_limit(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 

@@ -36,7 +36,7 @@ from fastapi import File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from autodj.clip_dates import ClipDates, station_today
+from autodj.clip_dates import ClipDates, parse_dates, station_today, station_zone
 from autodj.liner_files import (
     InvalidLinerName,
     LinerConflictError,
@@ -91,7 +91,9 @@ class CartSlot(BaseModel):
     def _upload_name(self) -> CartSlot:
         if self.source == "upload":
             validate_liner_name(self.clip)
-        self.dates()  # Do not play after must not come before Not before.
+        # Do not play after must not come before Not before.  The error names
+        # its field, so the 422 can point the page at it.
+        parse_dates({"not_before": self.not_before, "not_after": self.not_after})
         return self
 
     def dates(self) -> ClipDates:
@@ -467,6 +469,8 @@ def install_carts(router: StationRouter) -> None:
             "wall": carts.store.wall.model_dump(mode="json"),
             # The station's day, so the page can say which carts are outside their dates.
             "today": station_today(station.cfg).isoformat(),
+            # So a page left open past midnight can tell when the day changes.
+            "timezone": station_zone(station.cfg),
             **choices,
         }
 

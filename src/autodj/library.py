@@ -114,6 +114,9 @@ class LibraryManager:
         # the playable library without a file-system call per track.
         self._missing: frozenset[str] = frozenset()
         self._loaded_missing: frozenset[str] = frozenset()
+        # Called on the scan thread when a scan has finished and the library
+        # is refreshed, such as to forget the play dates of liners now gone.
+        self.on_scan_done: Callable[[], None] | None = None
         # The music paths, in FAISS row order, of the vectors handed to sim.
         self._vector_paths: tuple[str, ...] | None = None
         self._entries: tuple[IndexEntry, ...] = ()
@@ -410,6 +413,15 @@ class LibraryManager:
             return None
         with self._lock:
             return record if _path(record["path"]) in self._by_path else None
+
+    def is_gone(self, path: str | Path) -> bool:
+        """Whether the latest scan found *path* gone from a folder that is there.
+
+        A file on a share that is not mounted is not gone: the scan marks a
+        file gone only when its folder is present and the file is not.
+        """
+        with self._lock:
+            return _path(path) in self._missing
 
     def add_ledger(self, station: str) -> StationLedger:
         """Keep another station's plays; :meth:`tick` writes them with the rest."""
@@ -857,6 +869,12 @@ class LibraryManager:
         finally:
             self.refresh()
             self._set_state(running=False, current="")
+            done_hook = self.on_scan_done
+            if done_hook is not None:
+                try:
+                    done_hook()
+                except Exception:
+                    logger.exception("Library: the after-scan tidy-up failed")
 
     def analysis_pending(self, force: bool = False) -> list[dict[str, Any]]:
         if not force:

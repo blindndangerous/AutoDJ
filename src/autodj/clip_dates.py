@@ -19,7 +19,7 @@ import calendar
 import logging
 import threading
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from datetime import date as Date
 from datetime import datetime
 from pathlib import Path
@@ -235,6 +235,23 @@ class LinerDates:
     def refusal(self, liner_id: str, today: Date) -> str | None:
         """Why *liner_id* may not play on *today*, or ``None`` when it may."""
         return self.get(liner_id).refusal(today)
+
+    def forget(self, liner_ids: Iterable[str]) -> list[str]:
+        """Remove the dates of *liner_ids* in one write; the IDs that had dates.
+
+        The file is left as it is when none of them had dates.
+        """
+        with self._lock:
+            current = self._load_locked()
+            gone = sorted({liner_id for liner_id in liner_ids if liner_id in current})
+            if not gone:
+                return []
+            for liner_id in gone:
+                del current[liner_id]
+            document = _LinerDatesFile(schema_version=SCHEMA_VERSION, liners=current)
+            atomic_write(self.path, document.model_dump_json(indent=2) + "\n")
+            self._stamp, self._dates = self._stat(), current
+        return gone
 
 
 class LinerGate:

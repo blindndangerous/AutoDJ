@@ -233,6 +233,17 @@ def test_voice_packs_are_chosen_by_name_and_tested_one_at_a_time(
     }
     assert client.post("/api/time-checks/test", json={"pack": "Gone"}).status_code == 404
     assert client.post("/api/time-checks/test", json={"path": "C:/"}).status_code == 422
+    dated = client.put("/api/time-checks/packs/Studio/dates", json={"not_after": "2026-10-10"})
+    assert dated.status_code == 200, dated.text
+    assert dated.json()["packs"][0]["unplayable_text"] == "expired after 10 October 2026"
+    backwards = client.put(
+        "/api/time-checks/packs/Studio/dates",
+        json={"not_before": "2026-12-26", "not_after": "2026-12-01"},
+    )
+    assert backwards.status_code == 400
+    assert backwards.json()["field"] == "not_after"
+    unknown = client.put("/api/time-checks/packs/Gone/dates", json={})
+    assert unknown.status_code == 404
     preview = client.get("/api/time-checks/preview", params={"pack": "Studio"})
     assert preview.status_code == 200 and preview.content.startswith(b"RIFF")
     assert client.get("/api/time-checks/preview", params={"pack": "../x"}).status_code == 404

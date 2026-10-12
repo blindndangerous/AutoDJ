@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -404,6 +405,13 @@ def test_status_lists_packs_by_name_with_coverage_and_no_paths(tmp_path: Path) -
     checks.save(_settings(enabled_packs=["Studio"], hour_format="24"))
     status = checks.status()
     assert status["enabled_packs"] == ["Studio"] and status["pack_order"] == "rotate"
+    no_dates = {
+        "not_before": None,
+        "not_after": None,
+        "dates_text": "",
+        "playable": True,
+        "unplayable_text": "",
+    }
     assert status["packs"] == [
         {
             "name": "Studio",
@@ -411,8 +419,15 @@ def test_status_lists_packs_by_name_with_coverage_and_no_paths(tmp_path: Path) -
             "minutes_covered": 1440,
             "summary": "1440 of 1440 minutes covered. Hour files missing: none. "
             "Exact-hour files missing: none. Minute files missing: none.",
+            **no_dates,
         },
-        {"name": "Gone", "enabled": False, "minutes_covered": 0, "summary": "Folder not found."},
+        {
+            "name": "Gone",
+            "enabled": False,
+            "minutes_covered": 0,
+            "summary": "Folder not found.",
+            **no_dates,
+        },
     ]
     assert "secret-folder" not in json.dumps(status)
 
@@ -497,3 +512,68 @@ def test_doctor_reports_each_pack_and_counts_pack_minutes_as_covered(tmp_path: P
     assert _voice_pack_checks(cfg)[0].summary.startswith("not enabled; ")
     state.write_text("{", encoding="utf-8")
     assert _voice_pack_checks(cfg)[0].summary.startswith("enabled; ")
+
+
+# -- voice pack play dates ------------------------------------------------------
+
+
+def test_a_voice_pack_outside_its_dates_is_passed_over_but_a_test_still_plays_it(
+    tmp_path: Path,
+) -> None:
+    from datetime import date
+
+    from autodj.clip_dates import ClipDates
+
+    first = _write_pack(tmp_path / "Christmas", [3], [5])
+    second = _write_pack(tmp_path / "Studio", [3], [5], freq=330.0)
+    checks = _pack_checks(tmp_path, first, second)
+    checks.save_pack_dates(
+        "Christmas", ClipDates(not_before=date(2026, 12, 1), not_after=date(2026, 12, 26))
+    )
+    october = datetime(2026, 10, 11, 3, 5, tzinfo=UTC)
+    assert [_source(checks, october) for _ in range(3)] == ["voice pack Studio"] * 3
+    assert _source(checks, october, "Christmas") == "voice pack Christmas"
+    december = datetime(2026, 12, 24, 3, 5, tzinfo=UTC)
+    assert {_source(checks, december) for _ in range(4)} == {
+        "voice pack Christmas",
+        "voice pack Studio",
+    }
+    # The dates are kept beside the switches and read again on start.
+    reloaded = _pack_checks(tmp_path, first, second)
+    assert reloaded.pack_dates == checks.pack_dates
+    christmas = reloaded.status()["packs"][0]
+    assert christmas["dates_text"] == "Plays from 1 December 2026 until 26 December 2026"
+    state = json.loads(checks.state_path.read_text(encoding="utf-8"))
+    assert state["pack_dates"] == {
+        "Christmas": {"not_before": "2026-12-01", "not_after": "2026-12-26"}
+    }
+    # Switches saved later keep the dates; empty dates remove them and the key.
+    checks.save(_settings(enabled_packs=["Studio"]))
+    assert "Christmas" in _pack_checks(tmp_path, first, second).pack_dates
+    checks.save_pack_dates("Christmas", ClipDates())
+    assert "pack_dates" not in json.loads(checks.state_path.read_text(encoding="utf-8"))
+
+
+def test_a_file_without_pack_dates_loads_unchanged_and_bad_ones_are_ignored(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    pack = _write_pack(tmp_path / "Studio", [3], [5])
+    checks = _pack_checks(tmp_path, pack)
+    checks.save(_settings(enabled_packs=["Studio"]))
+    before = checks.state_path.read_text(encoding="utf-8")
+    assert "pack_dates" not in before  # an older AutoDJ reads it as before
+    assert _pack_checks(tmp_path, pack).pack_dates == {}
+    state = json.loads(before)
+    state["pack_dates"] = {
+        "Studio": {"not_before": "2026-12-26", "not_after": "2026-12-01"},
+        "Night": {"not_after": "2026-12-26"},
+    }
+    state["future_key"] = 1
+    checks.state_path.write_text(json.dumps(state), encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="autodj.time_checks"):
+        loaded = _pack_checks(tmp_path, pack)
+    # A pack no longer configured keeps its dates for when it comes back.
+    assert set(loaded.pack_dates) == {"Night"}
+    assert loaded.settings.enabled_packs == ["Studio"]
+    assert "ignoring the dates of voice pack Studio" in caplog.text
+    assert "ignoring unknown key 'future_key'" in caplog.text

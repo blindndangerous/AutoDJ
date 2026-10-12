@@ -10,6 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Play dates for time check voice packs (#140): in Settings, Time checks, **Voice pack play
+  dates** gives a pack a **Not before** date, a **Do not play after** date, or both, such as a
+  holiday voice in December. Outside them a ticked pack is passed over and the other ticked packs
+  speak; a test of that pack still plays it. Each pack's description says its dates and when it
+  is skipped now. The dates are kept in `time_checks.json` under `pack_dates`, only when a pack
+  has some, so an older AutoDJ still reads the file.
+
 - A rotation tester (#125): Settings > Song picking > **Test rotation**, or
   `autodj simulate --days 7`, plays a span of time (up to 30 days) or a number of songs (up to
   20,000) through the station's own song picker, with its clockwheel, categories and their hours,
@@ -317,6 +324,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   "Relaying to Icecast and Shoutcast" in the operations guide.
 
 ### Fixed
+
+- Dayparting checks a category's hours for when the song is expected to start rather than when
+  it is picked (#140), so a song no longer starts a few minutes after its window has closed. The
+  rotation tester checks them the same way.
+- Picks with dayparting are cheaper (#140): which songs are outside their hours is worked out once
+  a minute rather than on every pick, and the closed songs are no longer sorted for the
+  similarity search on every pick. The answers are the same.
+- Without `[server] station_timezone`, the system time zone is looked up once rather than on
+  every pick, and a host with no known zone logs its warning once (#140).
+- When every song is outside its hours, the warning is logged once, not twice per pick, and again
+  only after the hours change (#140).
+- A category with all seven days ticked and no hours says "Plays every day, at any hour" rather
+  than "Plays only every day" (#140).
+- Sequential liner rotation keeps its place when a registered liner is outside its play dates
+  (#140): the liner after it still comes next, rather than the order shifting by one. A
+  discarded pick gives back every liner it passed over, and talk-up liners planned ahead pass over
+  liners outside their dates as well.
+- "expired" on cart buttons and "Skipped now" in the liner list follow the station's day on a page
+  left open past midnight, in place, without moving focus or announcing anything (#140).
+- A library scan forgets the play dates of liners deleted outside AutoDJ, and a liner uploaded
+  under a free name starts without dates, so a new file no longer inherits an old one's (#140).
+- A cart editor date refused by the server is shown under the editor and linked to its field, as
+  the page's own checks are (#140). The 422 answer names the field.
+- The schedule form hides **Date range** for one-time events, unless the event was saved with one
+  (#140).
+
 
 - Rotation tests now count repeat-rule violations on the opening song and after a fresh start,
   including steps configured to ignore repeat rules. Those picks could previously repeat a song
