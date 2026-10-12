@@ -1,5 +1,6 @@
 import os
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -1204,3 +1205,120 @@ def test_moved_track_is_playable_at_its_new_path_before_the_scan_reads_tracks(
     manager._reconcile_moves([("music", new)])
     assert manager.entry_for_path(new) is not None
     assert manager.entry_for_path(old) is None
+
+
+# Reload triggers from another connection: cases after jage9's #102.
+
+
+@pytest.fixture
+def other_connection(manager_factory, monkeypatch):
+    """A manager whose library has one track, and a second catalog connection."""
+    manager = manager_factory()
+    other = LibraryCatalog(manager.catalog.path)
+    song = manager.cfg.library.music_dir / "song.flac"
+    song.write_bytes(b"track")
+    other.put_entry(make_entry(song))
+    monkeypatch.setattr(manager, "schedule_analysis", lambda: False)
+    yield manager, other, song
+    other.close()
+
+
+def test_write_through_another_connection_reloads_on_the_next_tick(other_connection):
+    manager, other, song = other_connection
+    assert manager.entry_for_path(song) is None
+    manager.tick()
+    assert manager.entry_for_path(song).title == "song"
+    other.put_entry(make_entry(song, title="Retagged"))
+    manager.tick()
+    assert manager.entry_for_path(song).title == "Retagged"
+
+
+@pytest.mark.parametrize("change", ["vector_add", "vector_update", "vector_delete", "folder"])
+def test_vector_and_folder_changes_from_another_connection_reload(other_connection, change):
+    manager, other, song = other_connection
+    if change in {"vector_update", "vector_delete"}:
+        other.set_vector(song, np.zeros(FEATURE_DIM, dtype=np.float32))
+    manager.tick()
+    before = manager.sim.replaced
+    vector = np.ones(FEATURE_DIM, dtype=np.float32)
+    if change in {"vector_add", "vector_update"}:
+        other.set_vector(song, vector)
+    elif change == "vector_delete":
+        other._db().execute("DELETE FROM catalog_vectors")
+        other._db().commit()
+    else:
+        assert other.remove_source(other.sources("music")[0]["id"])
+
+    manager.tick()
+
+    assert manager.sim.replaced is not before
+    _entries, vectors = manager.sim.replaced
+    if change in {"vector_add", "vector_update"}:
+        assert manager.snapshot()["tracks_indexed"] == 1
+        np.testing.assert_array_equal(vectors[0], vector)
+    else:
+        assert manager.snapshot()["tracks_indexed"] == 0
+        assert vectors.shape == (0, FEATURE_DIM)
+    if change == "folder":
+        assert manager.snapshot()["tracks_ready"] == 0
+        assert manager.entry_for_path(song) is None
+
+
+@pytest.mark.parametrize("change", ["cue", "loudness", "setting", "play", "history"])
+def test_cue_loudness_setting_and_play_writes_from_another_connection_do_not_reload(
+    other_connection, monkeypatch, change
+):
+    manager, other, song = other_connection
+    other.set_vector(song, np.zeros(FEATURE_DIM, dtype=np.float32))
+    manager.tick()
+    before = manager.sim.replaced
+    reads = _count_reads(manager, monkeypatch)
+    if change == "cue":
+        other.set_points(song, {"intro": 12.0})
+    elif change == "loudness":
+        other.set_loudness(song, fake_loudness(song))
+    elif change == "setting":
+        other.set_setting("unrelated", True)
+    elif change == "play":
+        other.remember_play(song, 42.0)
+    else:
+        other.write_history(
+            [
+                {
+                    "event_id": "external-play",
+                    "path": str(song),
+                    "title": "Song",
+                    "artist": "Artist",
+                    "duration": 12.0,
+                    "played_at": "2026-01-01T00:00:00+00:00",
+                }
+            ]
+        )
+
+    manager.tick()
+
+    assert reads == [0]
+    assert manager.sim.replaced is before
+    if change == "cue":
+        assert manager.catalog.points(song)["intro"] == 12.0  # read live, not reloaded
+
+
+def test_a_write_during_a_refresh_is_caught_on_the_next_tick(other_connection, monkeypatch):
+    manager, other, _song = other_connection
+    reader = manager.catalog.reader
+    late = manager.cfg.library.music_dir / "during-refresh.flac"
+    late.write_bytes(b"track")
+
+    @contextmanager
+    def reader_with_a_write_mid_read():
+        with reader() as snapshot:
+            snapshot.versions()  # the read transaction starts here
+            other.put_entry(make_entry(late))  # commits after it
+            yield snapshot
+
+    monkeypatch.setattr(manager.catalog, "reader", reader_with_a_write_mid_read)
+    manager.refresh()
+    assert manager.entry_for_path(late) is None
+    monkeypatch.setattr(manager.catalog, "reader", reader)
+    manager.tick()
+    assert manager.entry_for_path(late) is not None
