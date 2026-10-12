@@ -85,6 +85,8 @@ and 0.17.0, exist only as changelog entries.
 
 - `src/autodj/cli.py` — CLI entry points (Click).
 - `src/autodj/server.py` — FastAPI + WebSocket web layer.
+- `src/autodj/stations.py` — a station's runtime (stream, recorder, schedule, start and
+  shutdown order) and `StationPaths`, the only code that knows where station state files live.
 - `src/autodj/static/` — web UI: HTML, CSS, JS, AudioWorklets.
 - `src/autodj/player.py` — track picking and the server-side mix (the browser's crossfade
   engine is `src/autodj/static/modules/audio-engine.js`).
