@@ -271,7 +271,7 @@ def test_folder_scan_counts_only_requested_sources(manager_factory, tmp_path):
 def test_added_folders_queue_once_without_expanding_to_other_sources(
     manager_factory, tmp_path, full_rescan
 ):
-    manager = manager_factory()
+    manager = manager_factory(processing="smooth")
     roots = []
     for name, count in (("First", 1), ("Second", 2), ("Third", 1)):
         folder = tmp_path / name
@@ -307,10 +307,12 @@ def test_added_folders_queue_once_without_expanding_to_other_sources(
             release.set()
         manager._thread.join(timeout=5)
         assert not manager._thread.is_alive()
-    assert observed == [
-        ({roots[0]}, 1),
-        (None, 4) if full_rescan else ({roots[1], roots[2]}, 3),
-    ]
+    assert observed == [({roots[0]}, 4)]
+    assert {source["path"] for source in manager.catalog.sources("music")} == {
+        os.path.normcase(str(manager.cfg.library.music_dir.resolve()))
+    } | {
+        os.path.normcase(str((tmp_path / name).resolve())) for name in ("First", "Second", "Third")
+    }
 
 
 def test_basic_entry_is_playable_while_loudness_runs_and_analysis_can_start(
@@ -356,6 +358,155 @@ def test_basic_entry_is_playable_while_loudness_runs_and_analysis_can_start(
         assert not manager._thread.is_alive()
     assert captured["index_dir"] == manager.cfg.index.index_dir
     assert captured["index_dir"] != manager.cfg.index.active_dir
+
+
+def test_queued_folder_is_scanned_before_remaining_loudness(manager_factory, tmp_path):
+    music = tmp_path / "Music"
+    music.mkdir()
+    old_songs = [music / f"old-{number}.flac" for number in range(3)]
+    for song in old_songs:
+        song.write_bytes(b"music")
+    manager = manager_factory(music=music, processing="smooth")
+    new_folder = tmp_path / "New"
+    new_folder.mkdir()
+    new_song = new_folder / "new.flac"
+    new_song.write_bytes(b"new music")
+    events = []
+
+    def measure(path, kind="music"):
+        events.append(path.name)
+        if path == old_songs[0]:
+            source_id = manager.catalog.add_source(new_folder)["id"]
+            assert manager.start_scan({source_id})
+        elif path == new_song:
+            second_folder = tmp_path / "Second"
+            second_folder.mkdir()
+            second_song = second_folder / "second.flac"
+            second_song.write_bytes(b"second music")
+            source_id = manager.catalog.add_source(second_folder)["id"]
+            assert manager.start_scan({source_id})
+        elif path == old_songs[1]:
+            assert manager.entry_for_path(new_song) is not None
+        return fake_loudness(path, kind)
+
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=measure),
+    ):
+        assert manager.start_scan()
+        manager._thread.join(timeout=5)
+        assert not manager._thread.is_alive()
+
+    assert events.index("new.flac") < events.index("second.flac") < events.index("old-1.flac")
+    assert set(events) == {song.name for song in old_songs} | {"new.flac", "second.flac"}
+    assert manager.catalog.record_for_path(new_song)["loudness"] is not None
+
+
+def test_queued_folder_during_basic_is_ready_before_loudness(manager_factory, tmp_path):
+    music = tmp_path / "Music"
+    music.mkdir()
+    old_song = music / "old.flac"
+    old_song.write_bytes(b"old")
+    new_folder = tmp_path / "New"
+    new_folder.mkdir()
+    new_song = new_folder / "new.flac"
+    new_song.write_bytes(b"new")
+    manager = manager_factory(music=music, processing="smooth")
+    events = []
+
+    def basic(path, kind="music", max_seconds=None):
+        events.append(("basic", path.name))
+        if path == old_song:
+            source_id = manager.catalog.add_source(new_folder)["id"]
+            assert manager.start_scan({source_id})
+        return fake_basic(path, kind, max_seconds)
+
+    def measure(path, kind="music"):
+        events.append(("loudness", path.name))
+        return fake_loudness(path, kind)
+
+    with (
+        patch("autodj.library.analyze_basic", side_effect=basic),
+        patch("autodj.library.analyze_loudness", side_effect=measure),
+    ):
+        assert manager.start_scan()
+        manager._thread.join(timeout=5)
+        assert not manager._thread.is_alive()
+
+    assert events.index(("basic", "new.flac")) < events.index(("loudness", "old.flac"))
+    assert manager.entry_for_path(new_song) is not None
+
+
+def test_queued_rescan_remeasures_file_changed_during_loudness(manager_factory, tmp_path):
+    music = tmp_path / "Music"
+    music.mkdir()
+    song = music / "song.flac"
+    song.write_bytes(b"before")
+    manager = manager_factory(music=music, processing="smooth")
+    measured = []
+
+    def measure(path, kind="music"):
+        measured.append(path.stat().st_size)
+        if len(measured) == 1:
+            path.write_bytes(b"after the first measurement")
+            source_id = manager.catalog.sources("music")[0]["id"]
+            assert manager.start_scan({source_id})
+        return fake_loudness(path, kind)
+
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=measure),
+    ):
+        assert manager.start_scan()
+        manager._thread.join(timeout=5)
+        assert not manager._thread.is_alive()
+
+    assert measured == [len(b"before"), len(b"after the first measurement")]
+    assert manager.catalog.record_for_path(song)["loudness"]["size"] == song.stat().st_size
+
+
+def test_queued_advanced_folder_schedules_after_busy_scan(manager_factory, tmp_path):
+    music = tmp_path / "Music"
+    music.mkdir()
+    old_song = music / "old.flac"
+    old_song.write_bytes(b"old")
+    manager = manager_factory(music=music, processing="smooth")
+    source = manager.catalog.sources("music")[0]
+    manager.catalog.update_source(source["id"], recursive=True, advanced=False)
+    new_folder = tmp_path / "New"
+    new_folder.mkdir()
+    new_song = new_folder / "new.flac"
+    new_song.write_bytes(b"new")
+    captured = []
+
+    class Jobs:
+        def configure(self, **kwargs):
+            captured.append(kwargs)
+
+        def start(self, command):
+            assert command == "analyse-library"
+            return True
+
+    def measure(path, kind="music"):
+        if path == old_song:
+            source_id = manager.catalog.add_source(new_folder)["id"]
+            manager.start_scan({source_id})
+        return fake_loudness(path, kind)
+
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=measure),
+    ):
+        assert manager.start_scan()
+        manager._thread.join(timeout=5)
+        assert not manager._thread.is_alive()
+
+    assert manager.entry_for_path(new_song) is not None
+    assert manager._scan_generation == 2
+    with patch("autodj.jobs.get_manager", return_value=Jobs()):
+        assert manager.schedule_analysis()
+    assert manager._analysis_started_generation == manager._scan_generation
+    assert len(captured) == 1
 
 
 def test_invalid_automatic_point_does_not_block_basic_track(manager_factory, tmp_path):
