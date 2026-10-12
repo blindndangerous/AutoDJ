@@ -12,6 +12,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Negative liner **Overlap start** values down to -15 seconds start the next song first, then place liner content within its intro when it fits. If the main content is longer than that intro, the existing liner-first timing remains in effect; the liner tail continues over the song.
 
+- Editing tags from Track info (#53). A Tags section has fields for title, artist, album, genre,
+  year, BPM, key and ISRC. Save tags writes only the changed fields into the file with mutagen
+  (MP3, FLAC, M4A, Ogg Vorbis, Opus, WAV and AIFF) and updates the library at once, keeping the
+  song's analysis, cue points and loudness measurement, so nothing is analysed again; a key or BPM
+  set by hand is kept when the song is analysed later. The file is tagged as a copy that is
+  flushed to disk and replaces the original only once every changed field reads back, so a failed
+  save leaves the original as it was; an MP3 keeps its ID3 version. A song playing or up next is
+  refused until it has played, and only files inside the library folders are changed. When beets
+  manages the library, the same fields can be written to the beets database too. A refused field
+  is marked invalid with its reason linked to it and focused; a save is said once and focus stays
+  on Save tags. The dialog that asks to save before switching tracks now reads its explanation when
+  it opens and has a Keep editing button, which does what Escape does.
+
 - A separate output device for previews (#54). In Settings, Sound, **Preview output device**
   sends the cue point preview in Track info, which Queue & Search, History and the library open,
   to a device of its own, such as headphones, while the browser mix stays on the speakers.
