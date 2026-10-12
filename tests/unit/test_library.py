@@ -1092,6 +1092,8 @@ def test_idle_analysis_check_runs_once_until_the_catalog_changes(manager_factory
         for _ in range(3):
             assert not manager.schedule_analysis()
         manager.remember_play(song, 1.0)
+        manager.catalog.set_loudness(song, fake_loudness(song))
+        manager.catalog.set_points(song, {"intro": 4.0})
         manager.tick()
         assert check.call_count == 1
         other = music / "other.flac"

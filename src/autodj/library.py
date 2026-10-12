@@ -95,7 +95,7 @@ class LibraryManager:
         self._closed = False
         self._scan_generation = 0
         self._analysis_started_generation: int | None = None
-        self._analysis_idle: tuple[int, dict[str, int]] | None = None
+        self._analysis_idle: tuple[int, int, int, int] | None = None
         self._state: _ImportState = {
             "running": False,
             "phase": "idle",
@@ -847,8 +847,10 @@ class LibraryManager:
             if self._analysis_started_generation == generation:
                 return False
         # Nothing to embed stays so until a scan or a change to the records,
-        # vectors or sources: remember that instead of checking every tick.
-        state = (generation, self.catalog.change_versions())
+        # vectors or sources (not cues or loudness): remember that instead of
+        # checking every tick.
+        versions = self.catalog.change_versions()
+        state = (generation, versions["entries"], versions["vectors"], versions["sources"])
         with self._lock:
             if self._analysis_idle == state:
                 return False
