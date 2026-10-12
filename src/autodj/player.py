@@ -601,6 +601,9 @@ class _PickContext:
             when nothing else at all can play does one play, with a warning.
         closed_categories: The ID of each such category and the reason, in
             words, for the clockwheel to skip its steps.
+        at: When the picked song is expected to start, in wall-clock
+            seconds, or ``None`` for now; the clockwheel's liner steps judge
+            the liners' play dates by that day.
     """
 
     recent: deque
@@ -613,6 +616,7 @@ class _PickContext:
     follows: str | None = None
     closed: frozenset[str] = frozenset()
     closed_categories: Mapping[str, str] = field(default_factory=dict)
+    at: float | None = None
 
     def allows(self, entry: IndexEntry) -> bool:
         """True when *entry* keeps the DMCA complement (always, with the mode off)."""
@@ -1315,7 +1319,8 @@ class Player:
         # Liner steps pass over liners outside their play dates; the step
         # conditions are still worked out from every liner, so they stay cached.
         liner_filter = getattr(self, "liner_filter", None)
-        playable_liners = liner_filter(liners) if liner_filter is not None else liners
+        # Judged by the day the liner airs, before the song being picked.
+        playable_liners = liner_filter(liners, context.at) if liner_filter is not None else liners
         categories = self._category_members()
         beets_items: Mapping[str, Mapping[str, Any]] | None = None
         condition_errors = {}
@@ -1697,6 +1702,26 @@ class Player:
             (points[key] for key in ("segue", "outro") if points.get(key) is not None), end
         )
         return start, max(start, min(segue, end))
+
+    def _browser_handoff(self, current: IndexEntry) -> float:
+        """When the track after *current* starts in browser playback, in wall-clock seconds.
+
+        Now when *current* is no longer the track playing.  Otherwise its
+        handoff less what of it has already played (the page reports a
+        start through :meth:`note_browser_start`), so a pick made half way
+        through a song, after a skip of the next track say, is not timed
+        from the song's start.
+        """
+        now = self._now()
+        if self._state.current_track is not current:
+            return now
+        started = getattr(self, "_browser_started", None)
+        elapsed = now - started[1] if started is not None and started[0] is current else 0.0
+        return max(now, self._handoff_time(current) - max(0.0, elapsed))
+
+    def note_browser_start(self, entry: IndexEntry) -> None:
+        """Remember that *entry* started playing in the browser now."""
+        self._browser_started = (entry, self._now())
 
     def _handoff_time(self, current: IndexEntry) -> float:
         """When the song after *current* is expected to start, in wall-clock seconds.
@@ -2556,6 +2581,7 @@ class Player:
         with self._advance_lock:
             if state.current_track is None:
                 state.current_track = current
+                self.note_browser_start(current)
             seed_playing = state.current_track is current
             if seed_playing:
                 if picked is not None and state.next_track is None:
@@ -2672,6 +2698,7 @@ class Player:
             follows.path if (follows := pending or playing) is not None else None,
             closed,
             closed_categories,
+            at,
         )
 
     def _station_now(self, at: float | None = None) -> datetime:
@@ -2882,7 +2909,7 @@ class Player:
             return self._seed_path, "anchored"
         return current_path, "similarity"
 
-    def _pick_next(self, current: IndexEntry) -> IndexEntry:
+    def _pick_next(self, current: IndexEntry, *, at: float | None = None) -> IndexEntry:
         """Select the next track now and show how it was picked.
 
         The browser-driven path's pick: it pops the user queue and sets
@@ -2891,11 +2918,15 @@ class Player:
 
         Args:
             current: The track currently playing.
+            at: When the picked track will start, in wall-clock seconds;
+                by default when *current* reaches its handoff (see
+                :meth:`_browser_handoff`).  Dayparting reads the hours then.
 
         Returns:
             The recommended next :class:`~autodj.indexer.IndexEntry`.
         """
-        entry, mode = self._choose_next(current, self._pick_context(at=self._handoff_time(current)))
+        when = self._browser_handoff(current) if at is None else at
+        entry, mode = self._choose_next(current, self._pick_context(at=when))
         self._last_pick_mode = mode
         self._next_pick = (entry.path, mode)
         return entry

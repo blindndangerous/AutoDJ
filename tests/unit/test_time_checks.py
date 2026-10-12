@@ -577,3 +577,61 @@ def test_a_file_without_pack_dates_loads_unchanged_and_bad_ones_are_ignored(
     assert loaded.settings.enabled_packs == ["Studio"]
     assert "ignoring the dates of voice pack Studio" in caplog.text
     assert "ignoring unknown key 'future_key'" in caplog.text
+
+
+def test_unknown_keys_and_unread_pack_dates_are_saved_back_as_written(tmp_path: Path) -> None:
+    from datetime import date
+
+    from autodj.clip_dates import ClipDates
+
+    pack = _write_pack(tmp_path / "Studio", [3], [5])
+    checks = _pack_checks(tmp_path, pack)
+    checks.save(_settings(enabled_packs=["Studio"]))
+    state = json.loads(checks.state_path.read_text(encoding="utf-8"))
+    state["future_key"] = {"kept": [1, 2]}
+    state["pack_dates"] = {"Night": {"not_after": "someday"}}
+    checks.state_path.write_text(json.dumps(state), encoding="utf-8")
+    loaded = _pack_checks(tmp_path, pack)
+    assert loaded.pack_dates == {}
+    loaded.save(_settings(enabled_packs=[]))
+    loaded.save_pack_dates("Studio", ClipDates(not_after=date(2026, 12, 26)))
+    saved = json.loads(loaded.state_path.read_text(encoding="utf-8"))
+    assert saved["future_key"] == {"kept": [1, 2]}
+    assert saved["pack_dates"] == {
+        "Night": {"not_after": "someday"},
+        "Studio": {"not_after": "2026-12-26"},
+    }
+    # New dates for that pack replace the ones that could not be read.
+    loaded.save_pack_dates("Night", ClipDates())
+    saved = json.loads(loaded.state_path.read_text(encoding="utf-8"))
+    assert saved["pack_dates"] == {"Studio": {"not_after": "2026-12-26"}}
+    assert saved["settings"]["enabled_packs"] == []
+
+
+def test_a_switch_saved_while_dates_are_saved_keeps_both(tmp_path: Path) -> None:
+    import threading
+    from datetime import date
+
+    from autodj.clip_dates import ClipDates
+
+    pack = _write_pack(tmp_path / "Studio", [3], [5])
+    checks = _pack_checks(tmp_path, pack)
+    real_write = checks._write
+    started = threading.Event()
+    other: list[threading.Thread] = []
+
+    def slow_write(*args: object) -> None:
+        if not other:
+            # A switch save arrives in the middle of this dates save.
+            thread = threading.Thread(target=checks.save, args=(_settings(hour_format="24"),))
+            other.append(thread)
+            thread.start()
+            started.wait(0.2)
+        real_write(*args)
+
+    checks._write = slow_write  # type: ignore[method-assign]
+    checks.save_pack_dates("Studio", ClipDates(not_after=date(2026, 12, 26)))
+    other[0].join(5)
+    saved = json.loads(checks.state_path.read_text(encoding="utf-8"))
+    assert saved["settings"]["hour_format"] == "24"
+    assert saved["pack_dates"] == {"Studio": {"not_after": "2026-12-26"}}

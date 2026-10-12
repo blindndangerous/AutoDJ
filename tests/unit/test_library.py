@@ -1502,3 +1502,47 @@ def test_a_finished_scan_calls_its_tidy_up_and_survives_its_failure(
     assert seen == [1]
     assert "after-scan tidy-up failed" in caplog.text
     assert manager._state["running"] is False
+
+
+def test_a_folder_the_scan_cannot_read_marks_nothing_gone_and_skips_the_tidy_up(
+    manager_factory, tmp_path, monkeypatch
+):
+    import autodj.library as library_module
+
+    music = tmp_path / "Music"
+    (music / "Sub").mkdir(parents=True)
+    kept, deleted = music / "kept.flac", music / "Sub" / "deleted.flac"
+    for path in (kept, deleted):
+        path.write_bytes(path.name.encode())
+    manager = manager_factory(music=music)
+    tidied = []
+    manager.on_scan_done = lambda: tidied.append(True)
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+    ):
+        manager.scan()
+        assert tidied == [True]
+        deleted.unlink()
+        real_walk = os.walk
+
+        def failing_walk(top, *args, onerror=None, **kwargs):
+            # The subfolder cannot be read just now: its files are not seen.
+            for current, directories, files in real_walk(top, *args, **kwargs):
+                if "Sub" in directories:
+                    directories.remove("Sub")
+                    onerror(PermissionError(13, "Permission denied", str(Path(current, "Sub"))))
+                yield current, directories, files
+
+        monkeypatch.setattr(library_module.os, "walk", failing_walk)
+        manager.scan()
+    assert not manager.is_gone(deleted)  # not seen is not gone
+    assert tidied == [True]  # no tidy-up after a scan that could not read a folder
+    monkeypatch.setattr(library_module.os, "walk", real_walk)
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+    ):
+        manager.scan()
+    assert manager.is_gone(deleted)
+    assert tidied == [True, True]

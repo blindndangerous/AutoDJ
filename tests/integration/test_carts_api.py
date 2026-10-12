@@ -381,6 +381,11 @@ def test_backwards_cart_dates_name_their_field(app_client: TestClient) -> None:
     assert other.status_code == 422
     assert isinstance(other.json()["detail"], list)
     assert "field" not in other.json()
+    # Another endpoint's 422 is the list it always was.
+    elsewhere = app_client.put("/api/time-checks", json={"enabled": "yes please"})
+    assert elsewhere.status_code == 422
+    assert isinstance(elsewhere.json()["detail"], list)
+    assert "field" not in elsewhere.json()
 
 
 def test_a_profile_shows_its_cart_page(app_client: TestClient) -> None:

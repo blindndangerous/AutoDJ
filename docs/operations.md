@@ -1909,14 +1909,19 @@ liners uses (the library ID of a registered liner, or the file name of one in th
 and are included in backups. Deleting a liner forgets its dates. So does a library scan for a
 liner deleted outside AutoDJ: a registered liner whose file the scan found gone from a folder
 that is there, or a liner folder file that is no longer in the folder. A liner on a share that is
-not mounted keeps its dates. A liner uploaded under a name that is not in use starts without
+not mounted keeps its dates, and so does every liner after a scan that could not read one of its
+folders, or when the liner folder cannot be listed: such a scan marks nothing gone and forgets
+nothing. Dates kept by a library ID that is no longer in the library are kept too. When
+`liner_dates.json` cannot be read just now, the dates last read are used, a save is refused with
+a message, and the file is never set aside; only a file that is not valid dates is set aside. A liner uploaded under a name that is not in use starts without
 dates, even where an earlier file of that name left some; uploading over an existing liner with
 Replace keeps them. Cart dates are kept with the cart in `carts.json`. A liner or cart without
 dates is saved as before, so an older AutoDJ still reads both files.
 
 With **Pick in order** (sequential), a liner outside its dates is passed over and the rotation
 keeps its place: the liner after it still comes next. Talk-up liners planned ahead pass over it
-too. Time check voice packs have dates of their own; see [Voice packs](#voice-packs).
+too, judged by the day they air, and so do clockwheel liner steps, by the day the next song
+starts. **Test** on the server refuses a liner outside its dates and says why. Time check voice packs have dates of their own; see [Voice packs](#voice-packs).
 
 ## Scheduler
 
@@ -2302,7 +2307,8 @@ pack's description says its dates in words and "Skipped now" when it is outside 
 date is shown under the form and linked to its field. The dates are kept beside the switches in
 `time_checks.json` under `pack_dates`, written only when a pack has dates, and are kept for a
 pack taken out of `config.toml` until it comes back. Dates that cannot be read, and keys this
-version does not know, are logged and ignored.
+version does not know, are logged and not used, and are written back as they were on the next
+save.
 
 AutoDJ reads only the files directly in the folder, with the extension `.wav`, `.mp3`, `.flac`
 or `.ogg`, and compares letters without regard to case. It recognises these names:

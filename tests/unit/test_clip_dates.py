@@ -381,3 +381,87 @@ def test_a_missing_liner_folder_forgets_nothing(tmp_path: Path) -> None:
     station.paths.liners.rmdir()  # an unmounted share, say
     assert prune_liner_dates(station) == []
     assert set(station.liner_gate.store.all()) == {"promo.wav"}
+
+
+def test_a_liner_folder_that_cannot_be_listed_forgets_nothing(tmp_path: Path, monkeypatch) -> None:
+    import autodj.stations as stations_module
+    from autodj.stations import prune_liner_dates
+
+    station = _station(tmp_path, {}, gone=set())
+    station.liner_gate.store.set("promo.wav", CHRISTMAS)
+
+    def away(_path: object) -> object:
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(stations_module.os, "scandir", away)
+    assert prune_liner_dates(station) == []
+    assert set(station.liner_gate.store.all()) == {"promo.wav"}
+
+
+def test_a_library_id_without_its_record_keeps_its_dates(tmp_path: Path) -> None:
+    from autodj.stations import prune_liner_dates
+
+    station = _station(tmp_path, {}, gone=set())
+    orphan = "0123456789abcdef0123456789abcdef"
+    station.liner_gate.store.set(orphan, CHRISTMAS)
+    assert prune_liner_dates(station) == []
+    assert orphan in station.liner_gate.store.all()
+
+
+def test_a_dates_file_that_cannot_be_read_is_never_set_aside_or_written_over(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    store = LinerDates(tmp_path / "liner_dates.json")
+    store.set("a.wav", CHRISTMAS)
+    other = LinerDates(store.path)
+    real_read = Path.read_bytes
+
+    def busy(path: Path) -> bytes:
+        if path == store.path:
+            raise PermissionError(13, "Permission denied")
+        return real_read(path)
+
+    store.path.write_text(store.path.read_text(encoding="utf-8") + " ", encoding="utf-8")
+    monkeypatch.setattr(Path, "read_bytes", busy)
+    with caplog.at_level("WARNING", logger="autodj.clip_dates"):
+        assert other.all() == {}  # nothing read yet: nothing to offer, nothing written
+    with pytest.raises(PermissionError):
+        other.set("b.wav", CHRISTMAS)
+    with pytest.raises(PermissionError):
+        other.forget(["a.wav"])
+    monkeypatch.setattr(Path, "read_bytes", real_read)
+    assert not list(tmp_path.glob("liner_dates.json.bad-*"))
+    assert set(LinerDates(store.path).all()) == {"a.wav"}
+
+
+def test_a_talk_up_planned_ahead_is_judged_by_the_day_it_airs(tmp_path: Path, monkeypatch) -> None:
+    import autodj.liner_scheduler as scheduler_module
+
+    scheduler = _registered(
+        tmp_path, liners_every_n_songs=1, liners_talk_up=True, transition_mode="saved_points"
+    )
+    scheduler._vocal_start = lambda _entry: 0.8
+    midnight = 1_000_000.0
+    monkeypatch.setattr(scheduler_module.time, "time", lambda: midnight - 60)
+    # "one" expires at midnight; the handoff it would be planned for is after it.
+    scheduler.play_dates = lambda _name: None
+    scheduler.play_dates_at = lambda name, at: (
+        "expired" if name == "one" and at >= midnight else None
+    )
+    assert scheduler.plan_for_handoff("h1", tracks_ahead=1, seconds_ahead=30) == "one"
+    scheduler.release_plan("h1")
+    assert scheduler.plan_for_handoff("h2", tracks_ahead=1, seconds_ahead=120) == "two"
+
+
+def test_clockwheel_liners_are_judged_by_the_day_they_air(tmp_path: Path) -> None:
+    gate = LinerGate(
+        LinerDates(tmp_path / "d.json"),
+        lambda: date(2026, 12, 26),
+        day_at=lambda at: date(2026, 12, 27) if at >= 100 else date(2026, 12, 26),
+    )
+    gate.store.set("promo.wav", CHRISTMAS)
+    entries = (SimpleNamespace(path="L/promo.wav"), SimpleNamespace(path="L/id.wav"))
+    assert gate.playable(entries) == entries
+    assert gate.playable(entries, 50.0) == entries
+    assert gate.playable(entries, 150.0) == (entries[1],)
+    assert gate.refusal("promo.wav", 150.0) == "expired after 26 December 2026"

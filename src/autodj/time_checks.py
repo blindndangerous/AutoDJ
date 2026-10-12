@@ -24,7 +24,7 @@ import subprocess  # nosec B404 -- operator-configured argv, never a shell
 import tempfile
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -177,41 +177,68 @@ def load_settings(cfg: AutoDJConfig, paths: StationPaths | None = None) -> Setti
 _STATE_KEYS = frozenset({"version", "settings", "pack_dates"})
 
 
-def load_pack_dates(cfg: AutoDJConfig, paths: StationPaths | None = None) -> dict[str, ClipDates]:
-    """Each voice pack's play dates, saved from Settings, by pack name.
+@dataclass
+class PackDatesState:
+    """What ``time_checks.json`` holds besides the switches.
+
+    Attributes:
+        dates: Each voice pack's play dates that could be read, by name.
+        unread: ``pack_dates`` entries that could not be read, as written;
+            they are saved back unchanged.
+        extra: Top-level keys this version does not know, as written; they
+            are saved back unchanged, so a newer AutoDJ's settings survive.
+    """
+
+    dates: dict[str, ClipDates] = field(default_factory=dict)
+    unread: dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
+
+
+def read_pack_dates(cfg: AutoDJConfig, paths: StationPaths | None = None) -> PackDatesState:
+    """Each voice pack's play dates, saved from Settings, and what is kept as written.
 
     They live beside the switches in ``time_checks.json`` under
     ``pack_dates``, written only when a pack has dates, so an older AutoDJ,
     which reads only the switches, still reads the file.  A pack's dates
-    that cannot be read are left out with a warning, and the pack plays
-    every day; so are keys this version does not know.  Dates of a pack no
-    longer in config.toml are kept, so they come back with it.
+    that cannot be read, and keys this version does not know, are warned
+    about and not used, but kept as written for the next save.  Dates of a
+    pack no longer in config.toml are kept, so they come back with it.
     """
     path = state_path(cfg, paths)
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return {}
+        return PackDatesState()
     except (OSError, ValueError) as exc:
         logger.warning("Time checks: could not read the voice pack dates in %s: %s", path, exc)
-        return {}
+        return PackDatesState()
     if not isinstance(state, dict):
-        return {}
-    for key in sorted(set(state) - _STATE_KEYS):
+        return PackDatesState()
+    found = PackDatesState(extra={key: state[key] for key in state if key not in _STATE_KEYS})
+    for key in sorted(found.extra):
         logger.warning("Time checks: ignoring unknown key %r in %s", key, path)
     saved = state.get("pack_dates") or {}
     if not isinstance(saved, dict):
         logger.warning("Time checks: ignoring pack_dates in %s: it is not a table", path)
-        return {}
-    dates: dict[str, ClipDates] = {}
+        found.extra["pack_dates"] = saved
+        return found
     for name, value in saved.items():
         try:
-            dates[str(name)] = parse_dates(value)
+            dates = parse_dates(value)
         except ClipDatesError as exc:
             logger.warning(
                 "Time checks: ignoring the dates of voice pack %s in %s: %s", name, path, exc
             )
-    return {name: found for name, found in dates.items() if not found.empty}
+            found.unread[str(name)] = value
+            continue
+        if not dates.empty:
+            found.dates[str(name)] = dates
+    return found
+
+
+def load_pack_dates(cfg: AutoDJConfig, paths: StationPaths | None = None) -> dict[str, ClipDates]:
+    """Each voice pack's play dates that could be read (see :func:`read_pack_dates`)."""
+    return read_pack_dates(cfg, paths).dates
 
 
 def _has_audio(path: Path) -> bool:
@@ -263,7 +290,15 @@ class TimeChecks:
         self.cache = paths.time_checks_cache
         self.state_path = state_path(cfg, paths)
         self.settings = load_settings(cfg, paths)
-        self.pack_dates = load_pack_dates(cfg, paths)
+        kept = read_pack_dates(cfg, paths)
+        self.pack_dates = kept.dates
+        # Kept as written and saved back: see PackDatesState.
+        self._unread_pack_dates = kept.unread
+        self._extra_state = kept.extra
+        # One save at a time, from the snapshot it starts with to the
+        # finished write, so a switch saved while dates are saved (or the
+        # other way round) never writes over the other.
+        self._save_lock = threading.Lock()
         self.packs = pack_folders(cfg)
         self._joined = JoinCache()
         self._rotation = 0
@@ -276,34 +311,60 @@ class TimeChecks:
 
     def save(self, settings: SettingsBody) -> None:
         """Write operator switches atomically; clips and commands remain in TOML."""
-        self._write(settings, self.pack_dates)
-        with self._lock:
-            self.settings = settings
-            if not settings.enabled or settings.rule == "off":
-                self._pending = False
+        with self._save_lock:
+            with self._lock:
+                pack_dates = dict(self.pack_dates)
+                unread = dict(self._unread_pack_dates)
+            self._write(settings, pack_dates, unread)
+            with self._lock:
+                self.settings = settings
+                if not settings.enabled or settings.rule == "off":
+                    self._pending = False
 
     def save_pack_dates(self, name: str, dates: ClipDates) -> None:
         """Save voice pack *name*'s play dates; empty dates remove them."""
-        with self._lock:
-            settings = self.settings
-            changed = dict(self.pack_dates)
-        if dates.empty:
-            changed.pop(name, None)
-        else:
-            changed[name] = dates
-        self._write(settings, changed)
-        with self._lock:
-            self.pack_dates = changed
+        with self._save_lock:
+            with self._lock:
+                settings = self.settings
+                changed = dict(self.pack_dates)
+                unread = dict(self._unread_pack_dates)
+            # New dates replace any that could not be read.
+            unread.pop(name, None)
+            if dates.empty:
+                changed.pop(name, None)
+            else:
+                changed[name] = dates
+            self._write(settings, changed, unread)
+            with self._lock:
+                self.pack_dates = changed
+                self._unread_pack_dates = unread
 
-    def _write(self, settings: SettingsBody, pack_dates: dict[str, ClipDates]) -> None:
-        """Write ``time_checks.json`` atomically: the switches, and pack dates when any."""
+    def _write(
+        self,
+        settings: SettingsBody,
+        pack_dates: dict[str, ClipDates],
+        unread: dict[str, Any],
+    ) -> None:
+        """Write ``time_checks.json`` atomically: the switches, and pack dates when any.
+
+        Keys this version does not know, and pack dates it could not read,
+        are written back as they were.  Caller holds ``_save_lock``.
+        """
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        data: dict[str, Any] = {"version": STATE_VERSION, "settings": settings.model_dump()}
-        if pack_dates:
-            data["pack_dates"] = {
+        data: dict[str, Any] = {
+            **self._extra_state,
+            "version": STATE_VERSION,
+            "settings": settings.model_dump(),
+        }
+        written = {
+            **unread,
+            **{
                 name: found.model_dump(mode="json", exclude_none=True)
-                for name, found in sorted(pack_dates.items())
-            }
+                for name, found in pack_dates.items()
+            },
+        }
+        if written:
+            data["pack_dates"] = dict(sorted(written.items()))
         with tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",

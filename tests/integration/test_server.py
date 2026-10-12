@@ -2986,7 +2986,7 @@ class TestPostQueueSeed:
         # _pick_next called for prefetch refresh after pop -> seed = nxt
         # (the just-played queued track), not pre_queue_seed (which is
         # None in last_queued mode).
-        bridge.player._pick_next.assert_called_with(last_queued)
+        assert bridge.player._pick_next.call_args.args == (last_queued,)
 
     def test_pre_queue_mode_rewinds_to_pre_queue_track(self, bridge) -> None:
         bridge.player._dry_run = True
@@ -2999,7 +2999,7 @@ class TestPostQueueSeed:
         bridge.player._pick_next.return_value = _make_entry(99)
         bridge.advance_now()
         # Queue drained -> _pick_next seed should be pre_queue, not target.
-        bridge.player._pick_next.assert_called_with(pre_queue)
+        assert bridge.player._pick_next.call_args.args == (pre_queue,)
         assert bridge.player._state.pre_queue_seed is None
 
     def test_pre_queue_seed_cleared_when_queue_manually_emptied(self, bridge) -> None:

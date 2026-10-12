@@ -188,6 +188,22 @@ describe("cart buttons", () => {
     expect(plays(server)).toHaveLength(0);
   });
 
+  it("says why an expired cart plays nothing, by mouse and by its key", async () => {
+    const { server } = await install();
+    const refusal = "Cart 3, Station ID was skipped: it is expired after 26 December 2026";
+    api.requestJson.mockImplementation(async (url) => {
+      if (url.endsWith("/play")) throw new Error(refusal);
+      return JSON.parse(JSON.stringify(server));
+    });
+    cart(3).click();
+    await vi.waitFor(() => expect(byId("cart-status").textContent).toBe(`Cart 3 did not play. ${refusal}`));
+    expect(byId("cart-status").getAttribute("role") || byId("cart-status").getAttribute("aria-live")).toBeTruthy();
+    byId("cart-status").textContent = "";
+    cart(1).focus();
+    press(cart(1), "3");
+    await vi.waitFor(() => expect(byId("cart-status").textContent).toBe(`Cart 3 did not play. ${refusal}`));
+  });
+
   it("reports a cart the server refuses", async () => {
     const { server } = await install();
     api.requestJson.mockImplementationOnce(async () => { throw new Error("Playback is paused"); });
