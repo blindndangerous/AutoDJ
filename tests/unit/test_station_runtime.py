@@ -392,3 +392,89 @@ def test_stereo_tool_in_use_elsewhere_is_refused_before_any_change(tmp_path: Pat
     # Free: allowed.
     free = _bridge(tmp_path, stereo_tool_elsewhere=lambda: None)
     free.set_playback_settings(PlaybackSettingsBody(loudness_processing="stereotool"))
+
+
+class _Library:
+    def __init__(self, log: list[str]) -> None:
+        self._log = log
+
+    async def close(self, _quiesced: bool) -> bool:
+        self._log.append("library closed")
+        return True
+
+
+def test_a_start_cut_off_at_shutdown_still_ends_stopped(tmp_path: Path) -> None:
+    log: list[str] = []
+    release = threading.Event()
+
+    def build(_registry: StationRegistry) -> _Runtime:
+        release.wait(5)
+        return _Runtime("nightowl", log)
+
+    registry = StationRegistry(
+        _Runtime("default", log),  # type: ignore[arg-type]
+        [
+            _extra("nightowl", build, tmp_path, autostart=False),
+            _extra("daybreak", lambda _r: _Runtime("daybreak", log), tmp_path, autostart=False),
+        ],
+    )
+
+    async def scenario() -> None:
+        # Uvicorn cancels a request still running when shutdown begins.
+        request = asyncio.create_task(registry.start("nightowl"))
+        await asyncio.sleep(0.05)
+        request.cancel()
+        shutdown = asyncio.create_task(registry.shutdown(_Library(log), 1.0))  # type: ignore[arg-type]
+        await asyncio.sleep(0.05)
+        assert not shutdown.done()  # it waits for the start under way
+        release.set()
+        assert await shutdown == (True, True)
+        with pytest.raises(StationControlError, match="shutting down"):
+            await registry.start("daybreak")  # nothing starts once shutdown began
+
+    asyncio.run(scenario())
+    # The station the cut-off request built was started, then stopped
+    # before the library closed, and closed with the others.
+    assert log == [
+        "nightowl started",
+        "default stopped",
+        "nightowl stopped",
+        "library closed",
+        "default closed",
+        "nightowl closed",
+    ]
+
+
+def test_a_stop_cut_off_half_way_still_finishes(tmp_path: Path) -> None:
+    log: list[str] = []
+    registry = StationRegistry(
+        _Runtime("default", log),  # type: ignore[arg-type]
+        [_extra("nightowl", lambda _r: _Runtime("nightowl", log), tmp_path, autostart=False)],
+    )
+
+    async def scenario() -> None:
+        owl = await registry.start("nightowl")
+        gate = asyncio.Event()
+        stop = owl.stop
+
+        async def slow_stop(timeout: float) -> bool:
+            await gate.wait()
+            return await stop(timeout)
+
+        owl.stop = slow_stop  # type: ignore[method-assign]
+        request = asyncio.create_task(registry.stop("nightowl"))
+        await asyncio.sleep(0.05)
+        request.cancel()
+        await asyncio.sleep(0.05)
+        gate.set()
+        await registry.shutdown(_Library(log), 1.0)  # type: ignore[arg-type]
+
+    asyncio.run(scenario())
+    assert log == [
+        "nightowl started",
+        "nightowl stopped",
+        "nightowl closed",
+        "default stopped",
+        "library closed",
+        "default closed",
+    ]

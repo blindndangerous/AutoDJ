@@ -770,6 +770,18 @@ async def _run_as[T](slug: str, coro: Coroutine[Any, Any, T]) -> T:
     return await asyncio.create_task(coro, context=context)
 
 
+def _retrieve(task: asyncio.Task[Any]) -> None:
+    if not task.cancelled():
+        task.exception()  # retrieved, so a failure nobody awaits is not logged twice
+
+
+async def _shielded[T](coro: Coroutine[Any, Any, T]) -> T:
+    """Run *coro* to its end even if the caller is cancelled, and return its result."""
+    task = asyncio.ensure_future(coro)
+    task.add_done_callback(_retrieve)
+    return await asyncio.shield(task)
+
+
 def _normalized(path: str | Path) -> str:
     return os.path.normcase(os.path.normpath(os.path.abspath(os.path.expanduser(path))))
 
@@ -812,6 +824,8 @@ class StationRegistry:
         # One start or stop at a time, so two starts cannot both find
         # Stereo Tool free.
         self._lock = asyncio.Lock()
+        # Set once shutdown begins: no station starts after that.
+        self._closing = False
         # Set by the app: wires a built station to the app (its WebSocket
         # push, schedule, carts and time checks) before it starts, and
         # closes its pages' sockets once it has stopped.
@@ -914,12 +928,21 @@ class StationRegistry:
         if slug == self._default.slug:
             return self._default
         extra = self._extras[slug]
+        # Shielded: a request cancelled at shutdown must not leave a
+        # half-built station running outside the registry.
+        return await _shielded(self._start_locked(extra))
+
+    async def _start_locked(self, extra: ExtraStation) -> StationRuntime:
+        slug = extra.slug
         async with self._lock:
             running = self._running.get(slug)
-            if running is None:
-                running = await _run_as(slug, self._start_extra(extra))
-                self._running[slug] = running
-        return running
+            if running is not None:
+                return running
+            if self._closing:
+                raise StationControlError("The server is shutting down.")
+            running = await _run_as(slug, self._start_extra(extra))
+            self._running[slug] = running
+            return running
 
     async def _start_extra(self, extra: ExtraStation) -> StationRuntime:
         try:
@@ -949,10 +972,15 @@ class StationRegistry:
         if slug == self._default.slug:
             raise StationControlError("The default station cannot be stopped.")
         extra = self._extras[slug]
+        # Shielded, like a start: a stop cut off half-way would leave its
+        # player and mastering process running outside the registry.
+        await _shielded(self._stop_locked(extra))
+
+    async def _stop_locked(self, extra: ExtraStation) -> None:
         async with self._lock:
-            runtime = self._running.pop(slug, None)
+            runtime = self._running.pop(extra.slug, None)
             if runtime is not None:
-                await _run_as(slug, self._stop_extra(runtime, extra))
+                await _run_as(extra.slug, self._stop_extra(runtime, extra))
 
     async def _stop_extra(self, runtime: StationRuntime, extra: ExtraStation) -> None:
         await self._teardown(runtime)
@@ -980,14 +1008,18 @@ class StationRegistry:
             Whether every cache writer stopped in time, and whether the
             DJ-meta cache closed.
         """
-        writers_quiesced = True
-        for station in self.all():
-            quiet = await _run_as(station.slug, station.stop(timeout_s))
-            writers_quiesced = quiet and writers_quiesced
-        cache_closed = await library.close(writers_quiesced)
-        for station in self.all():
-            await _run_as(station.slug, station.close())
-        return writers_quiesced, cache_closed
+        # After any start or stop under way, so a station starting now is
+        # stopped too and one stopping now has finished; none starts later.
+        async with self._lock:
+            self._closing = True
+            writers_quiesced = True
+            for station in self.all():
+                quiet = await _run_as(station.slug, station.stop(timeout_s))
+                writers_quiesced = quiet and writers_quiesced
+            cache_closed = await library.close(writers_quiesced)
+            for station in self.all():
+                await _run_as(station.slug, station.close())
+            return writers_quiesced, cache_closed
 
 
 class SharedLibrary:
