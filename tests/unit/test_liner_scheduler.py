@@ -303,7 +303,7 @@ def test_random_trigger_does_not_fire_before_first_liner(tmp_path: Path) -> None
 def test_concurrent_fires_are_mutually_exclusive(tmp_path: Path) -> None:
     """Two threads racing on_track_start()/fire() for one due window must
 
-    not both decode + play — the lock must serialize the whole
+    not both decode + play — the work lock serializes the whole
     check-and-fire sequence, including the decode.
     """
     bus = MagicMock()
@@ -327,7 +327,7 @@ def test_concurrent_fires_are_mutually_exclusive(tmp_path: Path) -> None:
     t2 = threading.Thread(target=sched.fire, args=("b.wav",))
     t1.start()
     t2.start()
-    # Give t1 time to enter the decoder while holding the scheduler lock;
+    # Give t1 time to enter the decoder while holding the work lock;
     # t2 must be blocked waiting for that lock, never inside the decoder
     # at the same time.
     time.sleep(0.1)
@@ -367,3 +367,89 @@ def test_carts_decode_like_fire_and_play_without_resetting_the_triggers(tmp_path
     # A cart is not a liner: the every-2-songs count carries on.
     scheduler.on_track_start()
     assert bus.play_liner.call_count == 2
+
+
+def _planner(tmp_path: Path, decoder) -> tuple[LinerScheduler, MagicMock]:
+    """A saved-points scheduler with a reservation for "handoff" and a slow folder decoder."""
+    bus = MagicMock()
+    sched = LinerScheduler(
+        _cfg(transition_mode="saved_points", liners_talk_up=True, liners_every_n_songs=1),
+        _folder(tmp_path),
+        bus,
+        decoder=decoder,
+        vocal_start=lambda _entry: 1.0,
+    )
+    assert sched.plan_for_handoff("handoff", tracks_ahead=1, seconds_ahead=0) == "a.wav"
+    return sched, bus
+
+
+def test_the_bus_thread_never_waits_for_a_liner_decode(tmp_path: Path) -> None:
+    """mark_planned_fired runs on the mix bus thread; a decode once held its lock for seconds."""
+    decoding, release = threading.Event(), threading.Event()
+
+    def slow(_root: Path, _name: str) -> np.ndarray:
+        decoding.set()
+        release.wait(timeout=10)
+        return np.zeros((4, 2), np.float32)
+
+    sched, bus = _planner(tmp_path, slow)
+    firing = threading.Thread(target=sched.fire, args=("b.wav",))
+    firing.start()
+    try:
+        assert decoding.wait(timeout=5)
+        started = time.perf_counter()
+        assert sched.mark_planned_fired("handoff")  # committed, not left for later
+        assert time.perf_counter() - started < 0.5
+        sched.play_cart(np.zeros((4, 2), np.float32), duck_db=-6.0)  # carts do not wait either
+        assert bus.play_liner.call_count == 1
+    finally:
+        release.set()
+        firing.join(timeout=5)
+    assert bus.play_liner.call_count == 2
+
+
+def test_a_reservation_heard_while_the_state_is_busy_is_committed_by_the_holder(
+    tmp_path: Path,
+) -> None:
+    now = [100.0]
+    sched, _bus = _planner(tmp_path, lambda _root, _name: np.zeros((4, 2), np.float32))
+    sched._clock = lambda: now[0]
+    result: list[bool] = []
+    with sched._state():
+        heard = threading.Thread(target=lambda: result.append(sched.mark_planned_fired("handoff")))
+        heard.start()
+        heard.join(timeout=5)
+        assert result == [False]  # did not wait
+        assert sched._planned_key == "handoff"
+        now[0] = 160.0
+    assert sched._planned_key is None
+    assert sched._last_fire == 100.0  # timed from when the bus heard it
+    assert sched._library.cursor == 1
+
+
+def test_a_liner_that_decoded_while_another_aired_is_dropped(tmp_path: Path) -> None:
+    """The trigger is checked again after the decode: a time check aired meanwhile."""
+    decoding, release = threading.Event(), threading.Event()
+
+    def slow(_root: Path, _name: str) -> np.ndarray:
+        decoding.set()
+        release.wait(timeout=10)
+        return np.zeros((4, 2), np.float32)
+
+    bus = MagicMock()
+    sched = LinerScheduler(
+        _cfg(liners_every_n_songs=None, liners_every_minutes=1),
+        _folder(tmp_path),
+        bus,
+        clock=lambda: 120.0,
+        decoder=slow,
+    )
+    sched._last_fire = 0.0
+    ticking = threading.Thread(target=sched.tick)
+    ticking.start()
+    assert decoding.wait(timeout=5)
+    sched.play_audio(np.ones((4, 2), np.float32))  # does not wait for the decode
+    release.set()
+    ticking.join(timeout=5)
+    assert bus.play_liner.call_count == 1
+    np.testing.assert_array_equal(bus.play_liner.call_args.args[0], np.ones((4, 2)))

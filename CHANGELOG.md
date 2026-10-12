@@ -154,6 +154,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A voice liner, cart or time check being decoded no longer holds up the mix bus. Liners are now
+  decoded without the scheduler's state lock, the bus never waits for that lock when a planned
+  liner is heard, and carts and time checks play without waiting for a liner decode.
+
 - Play now and every song change start sooner on server audio and the stream. Each song is now
   decoded once instead of twice (the render that mixes a song in keeps its audio for the render
   that plays it), the outgoing and incoming songs decode side by side when neither is ready, and a

@@ -23,13 +23,15 @@ next track; otherwise it plays as the track starts, as without talk-up.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import logging
 import random
 import subprocess  # nosec B404 -- ffmpeg decode fallback with fixed argv, no shell
 import threading
 import time
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -206,13 +208,20 @@ class LinerScheduler:
     reaches :meth:`~autodj.mixbus.MixBus.play_liner`, so a bad or
     unreachable clip cannot interrupt the music.
 
-    Thread-safety: :meth:`on_track_start`, :meth:`tick` and :meth:`fire`
-    all take one internal lock covering the whole due-check-and-fire
-    sequence (including the decode and the ``play_liner`` call), so
-    concurrent calls from different threads — e.g. the broadcast/tick
-    thread and a ``POST /api/liners/test`` request handler — cannot both
-    observe the same trigger as due and double-fire, and a slow decode
-    on one thread cannot interleave with another thread's fire.
+    Thread-safety: two locks.  ``_work_lock`` covers one whole
+    due-check-decode-and-fire sequence (:meth:`on_track_start`,
+    :meth:`tick`, :meth:`fire`, :meth:`decode`), so concurrent calls from
+    different threads — e.g. the broadcast/tick thread and a
+    ``POST /api/liners/test`` request handler — cannot both observe the
+    same trigger as due and double-fire, and decodes never overlap.
+    ``_lock`` guards the trigger counts, rotation and handoff reservation
+    and is never held across a decode or a catalog or folder read, so the
+    calls that must not wait — :meth:`mark_planned_fired` on the mix bus
+    thread, the cart wall — never wait for a decode.  A sequence that
+    decoded with ``_lock`` released checks the trigger again before it
+    plays: a planned liner the bus aired meanwhile restarted it.
+    :meth:`mark_planned_fired` does not even wait for ``_lock``: when it is
+    busy, the reservation is committed by the thread holding it.
     """
 
     def __init__(
@@ -263,6 +272,11 @@ class LinerScheduler:
         # liner, such as the time check after the hour (set by its owner).
         self.announcement: Callable[[], np.ndarray | None] | None = None
         self._lock = threading.Lock()
+        self._work_lock = threading.Lock()
+        # Reservations the mix bus heard while _lock was busy, with when.
+        self._heard: deque[tuple[str, float]] = deque()
+        # Liners fired so far: a decode that finds it changed is stale.
+        self._fires = 0
         self._tracks_since = 0
         self._last_fire = clock()
         self._library = LinerLibrary.from_folder(folder)
@@ -292,39 +306,81 @@ class LinerScheduler:
         Replacing ``self._library`` outright (as opposed to updating its
         ``files``) would reset :attr:`LinerLibrary.cursor`
         to 0 on every automatic pick, so ``"sequential"`` mode would
-        always replay the first file instead of rotating.
+        always replay the first file instead of rotating.  The folder is
+        read without the state lock held.
         """
         fresh = LinerLibrary.from_folder(self._folder)
-        self._library.files = fresh.files
-        if self._library.files:
-            self._library.cursor %= len(self._library.files)
-        else:
-            self._library.cursor = 0
+        with self._state():
+            self._library.files = fresh.files
+            if self._library.files:
+                self._library.cursor %= len(self._library.files)
+            else:
+                self._library.cursor = 0
 
-    def _decode_locked(self, name: str | None) -> _Prepared | None:
-        """Decode *name*, or the next pick. Caller holds ``_lock``.
+    @contextlib.contextmanager
+    def _state(self) -> Iterator[None]:
+        """Hold the state lock, applying any reservation heard while it was busy."""
+        with self._lock:
+            self._apply_heard_locked()
+            try:
+                yield
+            finally:
+                self._apply_heard_locked()
+
+    def _apply_heard_locked(self) -> None:
+        """Commit reservations :meth:`mark_planned_fired` had to leave. Caller holds ``_lock``."""
+        while self._heard:
+            key, at = self._heard.popleft()
+            self._commit_planned_locked(key, at)
+
+    def _choose(self, name: str | None) -> tuple[str, Path | None] | None:
+        """Pick what to decode: *name*, or the next pick in rotation.
+
+        Caller holds ``_work_lock`` but not ``_lock``: the catalog and the
+        folder are read without it, and only the rotation step takes it.
 
         Returns:
-            The liner, or ``None`` when the library is empty or the clip
-            cannot be decoded (logged).
+            ``(name, path)`` for a registered liner, ``(name, None)`` for
+            one in the liner folder, or ``None`` when there is none.
         """
         registered = self._registered_entries()
         if name is not None and registered:
             match = next(((key, path) for key, path in registered if key == name), None)
             if match is not None:
-                try:
-                    return _Prepared(name, self._path_decoder(match[1]))
-                except Exception:
-                    logger.warning(
-                        "Skipping registered liner %s: it could not be decoded", name, exc_info=True
-                    )
-                    return None
+                return match
         if name is None and registered:
-            if self._cfg.liners_pick_mode == "sequential":
-                key, path = registered[self._registered_cursor % len(registered)]
-                self._registered_cursor = (self._registered_cursor + 1) % len(registered)
-            else:
-                key, path = self._rng.choice(registered)
+            with self._state():
+                if self._cfg.liners_pick_mode == "sequential":
+                    key, path = registered[self._registered_cursor % len(registered)]
+                    self._registered_cursor = (self._registered_cursor + 1) % len(registered)
+                else:
+                    key, path = self._rng.choice(registered)
+            return key, path
+        if name is None:
+            self._refresh_library()
+            with self._state():
+                picked = self._library.pick(self._cfg.liners_pick_mode, rng=self._rng)
+            if picked is None:
+                return None
+            name = picked.name
+        return name, None
+
+    def _decode(self, name: str | None) -> _Prepared | None:
+        """Decode *name*, or the next pick, with ``_lock`` released.
+
+        Caller holds ``_work_lock``, so decodes never overlap, but not
+        ``_lock``: the mix bus thread's :meth:`mark_planned_fired` and the
+        cart wall never wait for a decode.
+
+        Returns:
+            The liner, or ``None`` when the library is empty or the clip
+            cannot be decoded (logged).
+        """
+        choice = self._choose(name)
+        if choice is None:
+            return None
+        key, path = choice
+        if path is not None:
             try:
                 return _Prepared(key, self._path_decoder(path))
             except Exception:
@@ -332,18 +388,12 @@ class LinerScheduler:
                     "Skipping registered liner %s: it could not be decoded", key, exc_info=True
                 )
                 return None
-        if name is None:
-            self._refresh_library()
-            picked = self._library.pick(self._cfg.liners_pick_mode, rng=self._rng)
-            if picked is None:
-                return None
-            name = picked.name
         try:
-            audio = self._decoder(self._folder, name)
+            audio = self._decoder(self._folder, key)
         except Exception:
-            logger.warning("Skipping liner %s: it could not be decoded", name, exc_info=True)
+            logger.warning("Skipping liner %s: it could not be decoded", key, exc_info=True)
             return None
-        return _Prepared(name, audio)
+        return _Prepared(key, audio)
 
     def _registered_entries(self) -> list[tuple[str, Path]]:
         """Return current active catalog liner ids and their paths."""
@@ -355,28 +405,16 @@ class LinerScheduler:
             logger.warning("Could not refresh registered liner entries", exc_info=True)
             return []
 
-    def _fired_locked(self) -> None:
+    def _fired_locked(self, at: float | None = None) -> None:
         """Restart the trigger counts after a liner played. Caller holds ``_lock``."""
         self._tracks_since = 0
-        self._last_fire = self._clock()
+        self._last_fire = self._clock() if at is None else at
         self._random_target = self._trigger().roll_random_target(rng=self._rng)
+        self._fires += 1
 
-    def _fire_locked(
-        self,
-        name: str | None,
-        track: RenderedTrack | None = None,
-        prepared: _Prepared | None = None,
-    ) -> str | None:
-        """Play *name*, *prepared* or the next pick into the bus. Caller holds ``_lock``.
-
-        With talk-ups on and the *track* that just started, the liner is
-        cued to end before its vocal when it fits; otherwise it starts now.
-        """
-        liner = prepared or self._decode_locked(name)
-        if liner is None:
-            return None
+    def _play_locked(self, liner: _Prepared, cue: LinerCue | None) -> str:
+        """Play decoded *liner* into the bus, at *cue* when given. Caller holds ``_lock``."""
         duck_db = float(self._cfg.liners_duck_db)
-        cue = self._intro_cue(track, len(liner.audio)) if track is not None else None
         if cue is None:
             self._bus.play_liner(liner.audio, duck_db=duck_db)
         else:
@@ -388,15 +426,15 @@ class LinerScheduler:
         """Whether talk-ups are on and can be timed."""
         return bool(getattr(self._cfg, "liners_talk_up", False)) and self._vocal_start is not None
 
-    def _intro_cue(self, track: RenderedTrack, length: int) -> LinerCue | None:
+    def _intro_cue(self, track: RenderedTrack | None, length: int) -> LinerCue | None:
         """Cue a *length*-frame liner to end just before *track*'s vocal.
 
-        ``None`` when talk-ups are off, the vocal start is unknown, or the
-        liner does not fit before it.  Positions after a beatmatched entry
-        are estimated at the faster of the two tempos, so the liner ends
-        early rather than late.
+        ``None`` when there is no track, talk-ups are off, the vocal start
+        is unknown, or the liner does not fit before it.  Positions after a
+        beatmatched entry are estimated at the faster of the two tempos, so
+        the liner ends early rather than late.
         """
-        if not self._talk_up():
+        if track is None or not self._talk_up():
             return None
         assert self._vocal_start is not None
         vocal = self._vocal_start(track.entry)
@@ -408,8 +446,8 @@ class LinerScheduler:
         frame = int(vocal_frame - TALK_UP_MARGIN_S * SAMPLE_RATE - length)
         return LinerCue(track, frame) if frame > 0 else None
 
-    def _maybe_arm_locked(self, track: RenderedTrack | None) -> None:
-        """Get a talk-up ready for the track after *track*. Caller holds ``_lock``.
+    def _maybe_arm(self, track: RenderedTrack | None) -> None:
+        """Get a talk-up ready for the track after *track*. Caller holds ``_work_lock``.
 
         When the trigger will be due at the next track start, the liner is
         decoded now; if it only fits before the next track's vocal when it
@@ -426,12 +464,14 @@ class LinerScheduler:
         upcoming = track.next_entry
         if upcoming is None or track.overlap_frames <= 0:
             return
-        minutes = (self._clock() - self._last_fire) / 60.0
-        if not self._trigger().should_fire(
-            track_count=self._tracks_since + 1,
-            minutes_since_last=minutes,
-            random_target_minutes=self._random_target,
-        ):
+        with self._state():
+            due = self._trigger().should_fire(
+                track_count=self._tracks_since + 1,
+                minutes_since_last=(self._clock() - self._last_fire) / 60.0,
+                random_target_minutes=self._random_target,
+            )
+            fires = self._fires
+        if not due:
             return
         assert self._vocal_start is not None
         vocal = self._vocal_start(upcoming)
@@ -447,42 +487,58 @@ class LinerScheduler:
             vocal_frame = overlap_start + into * ratio
         else:
             vocal_frame = len(track.audio) + (into - heard_in_overlap) * min(1.0, ratio)
-        liner = self._decode_locked(None)
+        liner = self._decode(None)
         if liner is None:
             return
         frame = int(vocal_frame - TALK_UP_MARGIN_S * SAMPLE_RATE - len(liner.audio))
-        if overlap_start <= frame < len(track.audio):
-            liner.cue = LinerCue(track, frame)
-            duck_db = float(self._cfg.liners_duck_db)
-            self._bus.play_liner(liner.audio, duck_db=duck_db, at=liner.cue)
-        self._prepared = liner
+        with self._state():
+            if self._fires != fires:
+                return  # a planned liner aired while this one decoded: not due now
+            if overlap_start <= frame < len(track.audio):
+                liner.cue = LinerCue(track, frame)
+                duck_db = float(self._cfg.liners_duck_db)
+                self._bus.play_liner(liner.audio, duck_db=duck_db, at=liner.cue)
+            self._prepared = liner
 
-    def _armed_cue_waiting(self) -> bool:
-        """Whether a talk-up is cued in the playing track's tail. Caller holds ``_lock``."""
-        return self._prepared is not None and self._prepared.cue is not None
+    def _auto_due_locked(self) -> bool:
+        """Whether an automatic liner is due now. Caller holds ``_lock``."""
+        if self._planner_mode() or getattr(self._cfg, "pick_mode", None) == "clock":
+            return False
+        armed = self._prepared is not None and self._prepared.cue is not None
+        if not self._can_fire() or armed:
+            return False
+        return self._trigger().should_fire(
+            track_count=self._tracks_since,
+            minutes_since_last=(self._clock() - self._last_fire) / 60.0,
+            random_target_minutes=self._random_target,
+        )
 
-    def _maybe_fire_locked(
+    def _maybe_fire(
         self, track: RenderedTrack | None = None, prepared: _Prepared | None = None
     ) -> None:
-        """Fire when the current trigger config says it is due. Caller holds ``_lock``."""
-        if self._planner_mode() or getattr(self._cfg, "pick_mode", None) == "clock":
+        """Fire when the trigger config says it is due. Caller holds ``_work_lock``.
+
+        The clip is decoded with ``_lock`` released, then the trigger is
+        checked again: a planned liner the bus aired meanwhile restarted it.
+        """
+        with self._state():
+            if not self._auto_due_locked():
+                return
+            fires = self._fires
+        liner = prepared or self._decode(None)
+        if liner is None:
             return
-        if not self._can_fire() or self._armed_cue_waiting():
-            return
-        minutes = (self._clock() - self._last_fire) / 60.0
-        if self._trigger().should_fire(
-            track_count=self._tracks_since,
-            minutes_since_last=minutes,
-            random_target_minutes=self._random_target,
-        ):
-            self._fire_locked(None, track, prepared)
+        cue = self._intro_cue(track, len(liner.audio))
+        with self._state():
+            if self._fires == fires:
+                self._play_locked(liner, cue)
 
     def on_track_start(self, track: RenderedTrack | None = None) -> None:
         """Count a track advance and fire a liner if a trigger is due.
 
         A due :attr:`announcement` takes the place of an automatic liner at
         this start, with the same duck and talk-up timing.  It is rendered
-        before the lock is taken, and is not asked for while a talk-up
+        before any lock is taken, and is not asked for while a talk-up
         liner from the crossfade is on air or automatic liners may not
         fire, so it stays due for a later start.
 
@@ -490,7 +546,7 @@ class LinerScheduler:
             track: The render that just started, which talk-ups time
                 against; ``None`` plays a due liner straight away.
         """
-        with self._lock:
+        with self._state():
             prepared = self._prepared
             on_air = prepared is not None and prepared.cue is not None and prepared.cue.started
         announcement = self.announcement
@@ -500,23 +556,32 @@ class LinerScheduler:
                 audio = announcement()
             except Exception:
                 logger.exception("Could not render the announcement due at this song")
-        with self._lock:
-            self._tracks_since += 1
-            prepared, self._prepared = self._prepared, None
+        with self._work_lock:
+            with self._state():
+                self._tracks_since += 1
+                prepared, self._prepared = self._prepared, None
+                aired = (
+                    audio is None
+                    and prepared is not None
+                    and prepared.cue is not None
+                    and prepared.cue.started
+                )
+                if aired:
+                    self._fired_locked()  # it played over the crossfade into this track
             if audio is not None:
-                self._fire_locked(None, track, _Prepared("announcement", audio))
-            elif prepared is not None and prepared.cue is not None and prepared.cue.started:
-                self._fired_locked()  # it played over the crossfade into this track
-            else:
+                cue = self._intro_cue(track, len(audio))
+                with self._state():
+                    self._play_locked(_Prepared("announcement", audio), cue)
+            elif not aired:
                 if prepared is not None and prepared.cue is not None:
                     prepared.cue = None  # its track ended first (a skip): it is due now
-                self._maybe_fire_locked(track, prepared)
-            self._maybe_arm_locked(track)
+                self._maybe_fire(track, prepared)
+            self._maybe_arm(track)
 
     def tick(self) -> None:
         """Check timed triggers; call about once a second."""
-        with self._lock:
-            self._maybe_fire_locked()
+        with self._work_lock:
+            self._maybe_fire()
 
     def fire(self, name: str | None = None) -> str | None:
         """Play liner *name*, or the next library pick, into the mix bus.
@@ -530,8 +595,12 @@ class LinerScheduler:
             The liner name played, or ``None`` when nothing played
             (empty library, or the clip could not be decoded).
         """
-        with self._lock:
-            return self._fire_locked(name)
+        with self._work_lock:
+            liner = self._decode(name)
+            if liner is None:
+                return None
+            with self._state():
+                return self._play_locked(liner, None)
 
     def decode(self, name: str) -> np.ndarray:
         """Decode liner *name*, a catalog ID or a liner-folder file name, as :meth:`fire` would.
@@ -539,26 +608,29 @@ class LinerScheduler:
         Raises:
             LinerDecodeError: There is no such liner, or it could not be decoded.
         """
-        with self._lock:
-            prepared = self._decode_locked(name)
+        with self._work_lock:
+            prepared = self._decode(name)
         if prepared is None:
             raise LinerDecodeError(f"cannot decode liner {name!r}")
         return prepared.audio
 
     def play_cart(self, audio: np.ndarray, duck_db: float) -> None:
-        """Play a cart clip now through the liner path; it does not reset the liner triggers."""
-        with self._lock:
+        """Play a cart clip now through the liner path; it does not reset the liner triggers.
+
+        Never waits for a liner decode in progress.
+        """
+        with self._state():
             self._bus.play_liner(audio, duck_db=duck_db)
 
     def stop_cart(self) -> None:
         """Fade out the clip on the liner path and bring the music back up."""
-        with self._lock:
+        with self._state():
             self._bus.stop_liner()
 
     def play_audio(self, audio: np.ndarray) -> None:
         """Play rendered *audio* now, as :meth:`fire` plays a named liner."""
-        with self._lock:
-            self._fire_locked(None, prepared=_Prepared("announcement", audio))
+        with self._state():
+            self._play_locked(_Prepared("announcement", audio), None)
 
     def _planner_mode(self) -> bool:
         """Whether saved-point talk-ups are owned by the renderer planner."""
@@ -569,7 +641,8 @@ class LinerScheduler:
 
         The planner returns a stable catalog id (or legacy filename) without
         decoding or playing it. A reservation is consumed only when the
-        corresponding handoff is heard via :meth:`mark_planned_fired`.
+        corresponding handoff is heard via :meth:`mark_planned_fired`.  The
+        catalog and liner folder are read with no lock held.
         """
         if not isinstance(key, str) or not key or tracks_ahead < 0:
             return None
@@ -579,7 +652,9 @@ class LinerScheduler:
             return None
         if not np.isfinite(seconds) or seconds < 0:
             return None
-        with self._lock:
+
+        def check_locked() -> str | None:
+            """``""`` to go on picking; otherwise the answer (``None``: no liner)."""
             if not self._planner_mode() or not self._cfg.liners_enabled:
                 return None
             if self._planned_key is not None:
@@ -591,7 +666,19 @@ class LinerScheduler:
                 random_target_minutes=self._random_target,
             ):
                 return None
-            registered = self._registered_entries()
+            return ""
+
+        with self._state():
+            answer = check_locked()
+        if answer != "":
+            return answer
+        registered = self._registered_entries()
+        if not registered:
+            self._refresh_library()
+        with self._state():
+            answer = check_locked()
+            if answer != "":
+                return answer
             if registered:
                 if self._cfg.liners_pick_mode == "sequential":
                     index = self._registered_cursor % len(registered)
@@ -599,7 +686,6 @@ class LinerScheduler:
                 else:
                     name = self._rng.choice(registered)[0]
             else:
-                self._refresh_library()
                 if not self._library.files:
                     return None
                 if self._cfg.liners_pick_mode == "sequential":
@@ -611,22 +697,50 @@ class LinerScheduler:
 
     def release_plan(self, key: str | None = None) -> bool:
         """Release a discarded render's reservation, if it owns the slot."""
-        with self._lock:
+        with self._state():
             if self._planned_key is None or (key is not None and key != self._planned_key):
                 return False
             self._planned_key = self._planned_name = None
             return True
 
     def mark_planned_fired(self, key: str) -> bool:
-        """Commit a reservation when the planned liner actually becomes audible."""
-        with self._lock:
-            if self._planned_key != key:
+        """Commit a reservation when the planned liner actually becomes audible.
+
+        Called on the mix bus thread, so it never waits: when another
+        thread holds the state lock, the reservation is left for that
+        thread to commit as it lets go (or for the next scheduler call),
+        timed from now either way.
+
+        Returns:
+            Whether the reservation was committed now; ``False`` for a key
+            that is not the reservation, or one left for later.
+        """
+        at = self._clock()
+        if not self._lock.acquire(blocking=False):
+            self._heard.append((key, at))
+            # The holder may have let go between the two steps.
+            if not self._lock.acquire(blocking=False):
                 return False
-            self._planned_key = self._planned_name = None
-            if self._registered_liners is not None and self._cfg.liners_pick_mode == "sequential":
-                # Position callbacks must not perform provider or filesystem I/O.
-                self._registered_cursor += 1
-            elif self._cfg.liners_pick_mode == "sequential":
-                self._library.cursor += 1
-            self._fired_locked()
-            return True
+            try:
+                self._apply_heard_locked()
+            finally:
+                self._lock.release()
+            return False
+        try:
+            self._apply_heard_locked()
+            return self._commit_planned_locked(key, at)
+        finally:
+            self._lock.release()
+
+    def _commit_planned_locked(self, key: str, at: float) -> bool:
+        """Consume the reservation *key*, heard at *at*. Caller holds ``_lock``."""
+        if self._planned_key != key:
+            return False
+        self._planned_key = self._planned_name = None
+        if self._registered_liners is not None and self._cfg.liners_pick_mode == "sequential":
+            # Position callbacks must not perform provider or filesystem I/O.
+            self._registered_cursor += 1
+        elif self._cfg.liners_pick_mode == "sequential":
+            self._library.cursor += 1
+        self._fired_locked(at)
+        return True
