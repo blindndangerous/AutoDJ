@@ -187,3 +187,29 @@ describe("tab arrow keys", () => {
     }
   });
 });
+
+describe("visible status mirror", () => {
+  it("clears a status left by the view a user switches away from", async () => {
+    installIndex();
+    window.location.hash = "#library";
+    vi.resetModules();
+    const { initViewRouter: freshRouter } = await import(
+      "../../src/autodj/static/modules/tabs.js");
+    const { showVisibleStatus } = await import(
+      "../../src/autodj/static/modules/live-region.js");
+    try {
+      freshRouter();
+      showVisibleStatus("Enter a name for the category.", document, { tone: "error" });
+      const toast = document.querySelector("#status-toast");
+      expect(toast.hidden).toBe(false);
+      // Choosing the tab already shown leaves the message alone.
+      document.querySelector("#tab-library").click();
+      expect(toast.hidden).toBe(false);
+      document.querySelector("#tab-settings").click();
+      expect(toast.hidden).toBe(true);
+      expect(toast.textContent).toBe("");
+    } finally {
+      window.location.hash = "";
+    }
+  });
+});
