@@ -8,6 +8,7 @@ import posixpath
 import random
 import re
 from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -22,6 +23,7 @@ class ClockSlot:
     kind: str = "music"
     path: str = ""
     preset: str = ""
+    category: str = ""
 
     def __post_init__(self) -> None:
         if self.kind in {"music", "liner"} and (
@@ -32,12 +34,14 @@ class ClockSlot:
             raise ValueError("recursive and enforce_rules must be booleans")
         if self.selection not in {"least_recent", "random"}:
             raise ValueError("selection must be 'least_recent' or 'random'")
-        if self.kind not in {"music", "liner", "track", "settings"}:
+        if self.kind not in {"music", "liner", "track", "settings", "category"}:
             raise ValueError("unknown clock slot kind")
         if self.kind == "track" and not self.path:
             raise ValueError("track step needs a path")
         if self.kind == "settings" and not self.preset:
             raise ValueError("settings step needs a preset")
+        if self.kind == "category" and not self.category:
+            raise ValueError("category step needs a category")
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -46,7 +50,16 @@ class ClockSlot:
     def from_json(cls, value: Mapping[str, Any]) -> ClockSlot:
         if not isinstance(value, Mapping):
             raise ValueError("clock slot JSON must be an object")
-        allowed = {"folder", "recursive", "selection", "enforce_rules", "kind", "path", "preset"}
+        allowed = {
+            "folder",
+            "recursive",
+            "selection",
+            "enforce_rules",
+            "kind",
+            "path",
+            "preset",
+            "category",
+        }
         unknown = set(value) - allowed
         if unknown:
             raise ValueError(f"unknown clock slot field(s): {', '.join(sorted(unknown))}")
@@ -151,11 +164,15 @@ class ClockPick:
     preset: str | None = None
 
 
+#: Slot kinds that pick the music itself (a liner only rides on one).
+MUSIC_KINDS = frozenset({"music", "track", "category"})
+
+
 def validate_clock(slots: Sequence[ClockSlot]) -> list[ClockSlot]:
     """Validate a repeating clock and return its slots as a list."""
     result = list(slots)
-    if not result or not any(slot.kind in {"music", "track"} for slot in result):
-        raise ValueError("clock must contain at least one music or track slot")
+    if not result or not any(slot.kind in MUSIC_KINDS for slot in result):
+        raise ValueError("clock must contain at least one music, category or track slot")
     for index, slot in enumerate(result):
         if slot.kind == "liner" and result[(index + 1) % len(result)].kind == "liner":
             raise ValueError("clock cannot have consecutive liner slots, including across its end")
@@ -192,6 +209,7 @@ def pick_slot(
     rng: Any = None,
     *,
     liners: Sequence[Any] = (),
+    categories: Mapping[str, tuple[str, AbstractSet[str]]] | None = None,
 ) -> ClockPick:
     """Scan one clock cycle and select its next eligible music entry.
 
@@ -199,6 +217,9 @@ def pick_slot(
     a ``path`` attribute. The clock slot kind chooses which pool to scan.
     ``allowed(entry)`` is consulted only for slots that enforce rules. A
     preceding usable liner slot is paired with the selected music item.
+    ``categories`` maps a category ID to its name and the paths of its
+    songs; a category slot picks from the entries with those paths, and
+    one whose category is missing or empty is skipped like an empty folder.
     Nothing is written to playback history by this pure selection helper.
     """
     slots = validate_clock(slots)
@@ -212,10 +233,11 @@ def pick_slot(
     pending_liner = None
     preset = None
 
-    def choose(slot: ClockSlot, pool: Sequence[Any]) -> tuple[Any | None, str | None]:
-        matches = _slot_entries(slot, pool)
+    def choose(
+        slot: ClockSlot, matches: Sequence[Any], label: str
+    ) -> tuple[Any | None, str | None]:
         if not matches:
-            return None, f"{slot.kind} slot {slot.folder}: no matching entries"
+            return None, f"{label}: no matching entries"
         if slot.selection == "least_recent":
             played_by_path = {
                 _normalized(path): played
@@ -235,7 +257,7 @@ def pick_slot(
         if selected is None:
             return (
                 None,
-                f"{slot.kind} slot {slot.folder}: all {len(matches)} matching entries blocked by rules",
+                f"{label}: all {len(matches)} matching entries blocked by rules",
             )
         return selected, None
 
@@ -256,8 +278,27 @@ def pick_slot(
                 )
             skipped.append(f"track step {slot.path}: recording missing or blocked by rules")
             continue
+        if slot.kind == "category":
+            found = (categories or {}).get(slot.category)
+            if found is None:
+                skipped.append(f"category step {slot.category}: the category no longer exists")
+                continue
+            name, members = found
+            if not members:
+                skipped.append(f"category {name}: the category has no songs")
+                continue
+            selected, reason = choose(
+                slot, [entry for entry in entries if entry.path in members], f"category {name}"
+            )
+            if reason:
+                skipped.append(reason)
+            if selected is not None:
+                return ClockPick(selected, pending_liner, (index + 1) % len(slots), skipped, preset)
+            continue
         pool = liners if slot.kind == "liner" else entries
-        selected, reason = choose(slot, pool)
+        selected, reason = choose(
+            slot, _slot_entries(slot, pool), f"{slot.kind} slot {slot.folder}"
+        )
         if reason:
             skipped.append(reason)
         if slot.kind == "liner":

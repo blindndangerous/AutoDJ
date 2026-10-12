@@ -745,6 +745,7 @@
       margin: 0.3rem 0;
     }
     .settings-check input[type="checkbox"],
+    .settings-check input[type="radio"],
     .settings-row input[type="checkbox"] {
       width: 1.1rem;
       height: 1.1rem;

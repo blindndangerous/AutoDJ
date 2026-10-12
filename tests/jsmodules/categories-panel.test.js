@@ -1,0 +1,241 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { countsText, describeCategory, installCategoriesPanel } from "../../src/autodj/static/modules/categories-panel.js";
+
+const byId = (id) => document.getElementById(id);
+const copy = (value) => JSON.parse(JSON.stringify(value));
+const status = () => byId("categories-status").textContent;
+const items = () => [...byId("categories-list").querySelectorAll("li[data-id]")];
+const rowButton = (index, action) => items()[index].querySelector(`button[data-action="${action}"]`);
+
+const DECADE = {
+  id: "c1", name: "Remembering the 2000s", source: "query", query: "original_year:2000..2009", playlist: "",
+  tracks: 1284, missing: 0, missing_examples: [], fallback: 12, error: null, used_by: ["Throwback"],
+};
+const ROTATION_A = {
+  id: "c2", name: "A", source: "m3u", query: "", playlist: "A.m3u8",
+  tracks: 300, missing: 7, missing_examples: ["one.flac", "two.flac", "three.flac", "four.flac", "five.flac", "six.flac"],
+  fallback: 0, error: null, used_by: [],
+};
+
+function installIndex() {
+  const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  template.content.querySelectorAll("script, link").forEach((node) => node.remove());
+  document.body.replaceChildren(template.content.cloneNode(true));
+  byId("panel-library").hidden = false;
+  const dialog = byId("confirm-dialog");
+  dialog.showModal = () => { dialog.open = true; };
+  dialog.close = (value = "") => {
+    dialog.returnValue = value;
+    dialog.open = false;
+    dialog.dispatchEvent(new Event("close"));
+  };
+}
+
+class FieldError extends Error {
+  constructor(message, field) { super(message); this.field = field; }
+}
+
+// A stand-in for the category routes.
+function fakeServer() {
+  const server = { categories: [copy(DECADE), copy(ROTATION_A)], calls: [], refuse: null };
+  const listing = () => ({
+    categories: copy(server.categories), playlists: ["A.m3u8", "B.m3u", "Gold/C.m3u8"],
+    playlists_folder: "D:\\Radio\\playlists", beets: true,
+  });
+  server.request = vi.fn(async (url, options = {}) => {
+    const method = options.method || "GET";
+    const body = options.body ? JSON.parse(options.body) : undefined;
+    server.calls.push({ method, url, body });
+    if (server.refuse && method !== "GET") throw server.refuse;
+    if (url === "/api/categories" && method === "GET") return listing();
+    if (url === "/api/categories/check") return { tracks: 1, missing: 0, missing_examples: [], fallback: 1, error: null };
+    if (url === "/api/categories" && method === "POST") {
+      const category = { ...body, id: "c3", tracks: 42, missing: 0, missing_examples: [], fallback: 0, error: null, used_by: [] };
+      server.categories.push(category);
+      return { category, ...listing() };
+    }
+    const id = decodeURIComponent(url.split("/").pop());
+    if (method === "PUT") {
+      const index = server.categories.findIndex((item) => item.id === id);
+      server.categories[index] = { ...server.categories[index], ...body };
+      return { category: server.categories[index], ...listing() };
+    }
+    if (method === "DELETE") {
+      server.categories = server.categories.filter((item) => item.id !== id);
+      return listing();
+    }
+    throw new Error(`Unexpected ${method} ${url}`);
+  });
+  return server;
+}
+
+let controls = null;
+
+async function open(server = fakeServer(), options = {}) {
+  controls = installCategoriesPanel({ document, request: server.request, ...options });
+  await vi.waitFor(() => expect(items()).toHaveLength(server.categories.length));
+  return server;
+}
+
+beforeEach(installIndex);
+afterEach(() => { controls?.destroy(); controls = null; });
+
+describe("categories markup", () => {
+  it("is its own card in Library tools, before Clockwheels, with labelled native controls", () => {
+    const section = byId("categories-heading").closest("section");
+    expect(section.parentElement).toBe(byId("panel-library"));
+    expect(section.classList.contains("card")).toBe(true);
+    expect(section.nextElementSibling).toBe(byId("clockwheel-heading").closest("section"));
+    expect(byId("categories-heading").tagName).toBe("H2");
+    expect(section.querySelectorAll('[role="status"], [aria-live]:not([aria-live="off"])')).toHaveLength(1);
+    expect(byId("categories-status").getAttribute("role")).toBe("status");
+    for (const control of section.querySelectorAll("input, select")) {
+      expect(section.querySelector(`label[for="${control.id}"]`), control.id).not.toBeNull();
+    }
+    // The form and the source choice are grouped with a legend each.
+    const fieldsets = [...section.querySelectorAll("fieldset")];
+    expect(fieldsets.map((set) => set.querySelector(":scope > legend")?.textContent)).toEqual(["Add category", "Songs come from"]);
+    expect([...section.querySelectorAll('input[type="radio"]')].every((radio) => radio.name === "categories-source")).toBe(true);
+    expect(byId("categories-query").getAttribute("aria-describedby")).toBe("categories-query-help");
+    expect(byId("categories-playlist").getAttribute("aria-describedby")).toBe("categories-playlist-help");
+    expect(byId("categories-check").getAttribute("aria-describedby")).toBe("categories-match");
+    expect(byId("categories-list").getAttribute("aria-labelledby")).toBe("categories-list-heading");
+    expect(byId("categories-match").getAttribute("aria-live")).toBeNull();
+    expect(section.querySelector("[aria-controls]")).toBeNull();
+    expect(byId("categories-form").hidden).toBe(true);
+    const ids = [...document.querySelectorAll('[id^="categories-"]')].map((node) => node.id);
+    expect(ids.length).toBe(new Set(ids).size);
+  });
+});
+
+describe("categories list", () => {
+  it("says the counts in words", () => {
+    expect(countsText(DECADE)).toBe("1,284 songs; 12 use the release year because the first-release year is missing");
+    expect(countsText({ tracks: 1, missing: 1, fallback: 1 })).toBe(
+      "1 song; 1 playlist line matches no library track; 1 uses the release year because the first-release year is missing");
+    expect(countsText({ error: "The playlist file A.m3u is missing" })).toBe("The playlist file A.m3u is missing");
+    expect(describeCategory(DECADE)).toBe(
+      "Remembering the 2000s: 1,284 songs; 12 use the release year because the first-release year is missing. "
+      + "From query original_year:2000..2009. Used by Throwback.");
+    expect(describeCategory(ROTATION_A)).toBe(
+      "A: 300 songs; 7 playlist lines match no library track. From playlist A.m3u8. "
+      + "Not in the library: one.flac, two.flac, three.flac, four.flac, five.flac, and 2 more. No clockwheel uses it.");
+  });
+
+  it("lists each category as plain text with named Edit and Delete buttons, and says nothing", async () => {
+    await open();
+    expect(items()[0].querySelector("span").textContent).toBe(describeCategory(DECADE));
+    expect(rowButton(1, "edit").textContent).toBe("Edit A");
+    expect(rowButton(1, "delete").querySelector(".visually-hidden").textContent).toBe(" A");
+    expect(status()).toBe("");
+    expect(byId("categories-playlist").options).toHaveLength(3);
+    expect(byId("categories-folder").textContent).toBe("D:\\Radio\\playlists");
+  });
+});
+
+describe("categories form", () => {
+  it("adds a query category: Check counts it, Save lists it and moves focus to it", async () => {
+    const changed = vi.fn();
+    const server = await open(fakeServer(), { onChange: changed });
+    byId("categories-add").click();
+    expect(byId("categories-form").hidden).toBe(false);
+    expect(byId("categories-form-legend").textContent).toBe("Add category");
+    expect(document.activeElement).toBe(byId("categories-name"));
+    expect(byId("categories-playlist-field").hidden).toBe(true);
+    byId("categories-name").value = "Rock gold";
+    byId("categories-query").value = "genre:rock original_year:..1989";
+    byId("categories-check").click();
+    await vi.waitFor(() => expect(status()).toBe(
+      "Rock gold: 1 song; 1 uses the release year because the first-release year is missing."));
+    expect(byId("categories-match").textContent).toBe("1 song; 1 uses the release year because the first-release year is missing.");
+    expect(server.calls.at(-1)).toEqual({
+      method: "POST", url: "/api/categories/check",
+      body: { name: "Rock gold", source: "query", query: "genre:rock original_year:..1989", playlist: "" },
+    });
+    byId("categories-save").click();
+    await vi.waitFor(() => expect(status()).toBe("Saved Rock gold: 42 songs."));
+    expect(byId("categories-form").hidden).toBe(true);
+    expect(items()).toHaveLength(3);
+    expect(document.activeElement).toBe(rowButton(2, "edit"));
+    expect(changed).toHaveBeenCalledTimes(1);
+  });
+
+  it("edits a playlist category with the playlist choice, and Cancel goes back to its Edit button", async () => {
+    const server = await open();
+    rowButton(1, "edit").click();
+    expect(byId("categories-form-legend").textContent).toBe("Edit category A");
+    expect(byId("categories-source-m3u").checked).toBe(true);
+    expect(byId("categories-query-field").hidden).toBe(true);
+    expect(byId("categories-playlist-field").hidden).toBe(false);
+    expect(byId("categories-playlist").value).toBe("A.m3u8");
+    expect(byId("categories-match").textContent).toBe("Saved: 300 songs; 7 playlist lines match no library track.");
+    byId("categories-cancel").click();
+    expect(document.activeElement).toBe(rowButton(1, "edit"));
+    await vi.waitFor(() => expect(status()).toBe("Cancelled. Nothing was saved."));
+
+    rowButton(1, "edit").click();
+    byId("categories-playlist").value = "Gold/C.m3u8";
+    byId("categories-save").click();
+    await vi.waitFor(() => expect(status()).toBe("Saved A: 300 songs; 7 playlist lines match no library track."));
+    const put = server.calls.find((call) => call.method === "PUT");
+    expect(put.url).toBe("/api/categories/c2");
+    expect(put.body).toEqual({ name: "A", source: "m3u", query: "", playlist: "Gold/C.m3u8" });
+    expect(document.activeElement).toBe(rowButton(1, "edit"));
+  });
+
+  it("marks, focuses and says the field at fault, in the page and from the server", async () => {
+    const server = await open();
+    byId("categories-add").click();
+    byId("categories-save").click();
+    expect(byId("categories-name").getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(byId("categories-name"));
+    expect(byId("categories-form-error").hidden).toBe(false);
+    expect(byId("categories-form-error").textContent).toBe("Enter a name for the category.");
+    await vi.waitFor(() => expect(status()).toBe("Enter a name for the category."));
+
+    byId("categories-name").value = "Moods";
+    byId("categories-query").value = "mood::sad";
+    server.refuse = new FieldError('"mood::sad": regular expressions (field::pattern) are not supported', "query");
+    byId("categories-save").click();
+    await vi.waitFor(() => expect(byId("categories-query").getAttribute("aria-invalid")).toBe("true"));
+    expect(byId("categories-name").hasAttribute("aria-invalid")).toBe(false);
+    expect(document.activeElement).toBe(byId("categories-query"));
+    expect(byId("categories-form-error").textContent).toContain("regular expressions");
+    expect(byId("categories-form").hidden).toBe(false);
+  });
+
+  it("deletes after confirming, says which clockwheels used it, and moves focus on", async () => {
+    const changed = vi.fn();
+    await open(fakeServer(), { onChange: changed });
+    rowButton(0, "delete").click();
+    expect(byId("confirm-dialog").open).toBe(true);
+    expect(byId("confirm-title").textContent).toBe("Delete category Remembering the 2000s?");
+    expect(byId("confirm-message").textContent).toBe("Throwback has a step for it. Those steps are skipped until you change them.");
+    byId("confirm-accept").click();
+    await vi.waitFor(() => expect(status()).toBe("Deleted Remembering the 2000s."));
+    expect(items()).toHaveLength(1);
+    expect(document.activeElement).toBe(rowButton(0, "edit"));
+    expect(changed).toHaveBeenCalledTimes(1);
+    rowButton(0, "delete").click();
+    byId("confirm-accept").click();
+    await vi.waitFor(() => expect(status()).toBe("Deleted A."));
+    expect(byId("categories-list").textContent).toBe("No categories yet. Press Add category to make one.");
+    expect(document.activeElement).toBe(byId("categories-add"));
+  });
+
+  it("forgets everything on sign-out", async () => {
+    await open();
+    rowButton(0, "edit").click();
+    controls.clearProtectedData();
+    expect(byId("categories-list").children).toHaveLength(0);
+    expect(byId("categories-form").hidden).toBe(true);
+    expect(byId("categories-name").value).toBe("");
+    expect(byId("categories-playlist").options).toHaveLength(0);
+  });
+});

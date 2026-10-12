@@ -7,12 +7,15 @@ A clockwheel file looks like this::
          "recursive": false, "selection": "least_recent", "enforce_rules": true},
         {"type": "liner", "source": "<source id>", "folder": "", ...},
         {"type": "track", "source": "<source id>", "path": "Album/Song.flac"},
+        {"type": "category", "category": "<category id>",
+         "selection": "least_recent", "enforce_rules": true},
         {"type": "settings", "preset": "Night"}]}
 
 Folder and track steps name a registered library source by its ID and a
 path inside it written with forward slashes, so a file never holds an
 absolute path and a browser never sends one.  ``folder`` is ``""`` for the
-source folder itself.
+source folder itself.  A category step names a rotation category by its ID
+(see :mod:`autodj.categories`), so renaming the category keeps the step.
 
 Step types live in a registry, like the scheduler's actions.  Loading a
 clockwheel with a type nobody registered fails with an error that names
@@ -33,7 +36,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from autodj.clockwheel import ClockSlot, validate_resync_minutes
+from autodj.clockwheel import MUSIC_KINDS, ClockSlot, validate_resync_minutes
 
 VERSION = 1
 MAX_STEPS = 256
@@ -120,6 +123,17 @@ def _source_id(value: Any) -> str:
     return value
 
 
+def _selection(value: Mapping[str, Any]) -> tuple[str, bool]:
+    """The step's ``selection`` and ``enforce_rules``, checked, with their defaults."""
+    enforce_rules = value.get("enforce_rules", True)
+    if type(enforce_rules) is not bool:
+        raise ValueError("enforce_rules must be true or false")
+    selection = value.get("selection", "least_recent")
+    if selection not in _SELECTIONS:
+        raise ValueError("selection must be least_recent or random")
+    return selection, enforce_rules
+
+
 def _folder_step(value: Mapping[str, Any]) -> dict[str, Any]:
     _fields(
         value,
@@ -127,12 +141,9 @@ def _folder_step(value: Mapping[str, Any]) -> dict[str, Any]:
         {"type", "source"},
     )
     recursive = value.get("recursive", False)
-    enforce_rules = value.get("enforce_rules", True)
-    if type(recursive) is not bool or type(enforce_rules) is not bool:
+    if type(recursive) is not bool:
         raise ValueError("recursive and enforce_rules must be true or false")
-    selection = value.get("selection", "least_recent")
-    if selection not in _SELECTIONS:
-        raise ValueError("selection must be least_recent or random")
+    selection, enforce_rules = _selection(value)
     return {
         "type": value["type"],
         "source": _source_id(value["source"]),
@@ -160,10 +171,25 @@ def _settings_step(value: Mapping[str, Any]) -> dict[str, Any]:
     return {"type": "settings", "preset": preset.strip()}
 
 
+def _category_step(value: Mapping[str, Any]) -> dict[str, Any]:
+    _fields(value, {"type", "category", "selection", "enforce_rules"}, {"type", "category"})
+    category = value["category"]
+    if not isinstance(category, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", category):
+        raise ValueError("A category step must name a saved category by its ID")
+    selection, enforce_rules = _selection(value)
+    return {
+        "type": "category",
+        "category": category,
+        "selection": selection,
+        "enforce_rules": enforce_rules,
+    }
+
+
 register_step_type("music", _folder_step)
 register_step_type("liner", _folder_step)
 register_step_type("track", _track_step)
 register_step_type("settings", _settings_step)
+register_step_type("category", _category_step)
 
 
 def validate_step(value: Any) -> dict[str, Any]:
@@ -205,8 +231,8 @@ def validate_clockwheel(value: Any) -> dict[str, Any]:
             steps.append(validate_step(item))
         except ValueError as exc:
             raise ValueError(f"Step {number}: {exc}") from exc
-    if not any(step["type"] in {"music", "track"} for step in steps):
-        raise ValueError("A clockwheel needs at least one music or track step")
+    if not any(step["type"] in MUSIC_KINDS for step in steps):
+        raise ValueError("A clockwheel needs at least one music, category or track step")
     for index, step in enumerate(steps):
         if step["type"] == "liner" and steps[(index + 1) % len(steps)]["type"] == "liner":
             raise ValueError(

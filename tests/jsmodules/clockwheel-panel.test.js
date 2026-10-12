@@ -44,7 +44,7 @@ function installIndex() {
 }
 
 // A stand-in for the clockwheel routes, holding files the way the server does.
-function fakeServer({ notice = null } = {}) {
+function fakeServer({ notice = null, categories = [] } = {}) {
   const server = { clocks: { Morning: copy(MORNING) }, active: "Morning", calls: [], fail: null };
   server.request = vi.fn(async (url, options = {}) => {
     const method = options.method || "GET";
@@ -53,7 +53,7 @@ function fakeServer({ notice = null } = {}) {
     if (server.fail && method !== "GET") throw server.fail;
     const names = () => Object.keys(server.clocks).sort();
     const snapshot = () => ({
-      names: names(), active: server.active, sources: SOURCES, presets: ["night", "wakeup"],
+      names: names(), active: server.active, sources: SOURCES, presets: ["night", "wakeup"], categories,
       types: ["liner", "music", "settings", "track"], cursor: 1, last_status: "Ready", notice,
     });
     if (url === "/api/library/clock" && method === "GET") return snapshot();
@@ -121,6 +121,44 @@ describe("clockwheel markup", () => {
 });
 
 describe("clockwheel editor", () => {
+  it("adds a step that plays music from a category and names the category", async () => {
+    expect(describeStep({ type: "category", category: "gone", selection: "least_recent" }, [], []))
+      .toBe("music from a category that no longer exists");
+    const server = await open(fakeServer({ categories: [{ id: "c1", name: "Rock gold" }, { id: "c2", name: "2000s" }] }));
+    const type = byId("clock-step-type");
+    type.value = "category";
+    type.dispatchEvent(new Event("change"));
+    const field = (id) => byId(id).closest(".clock-step-field");
+    expect(field("clock-step-category").hidden).toBe(false);
+    expect(field("clock-step-selection").hidden).toBe(false);
+    expect(field("clock-step-source").hidden).toBe(true);
+    expect(field("clock-step-folder").hidden).toBe(true);
+    expect([...byId("clock-step-category").options].map((option) => option.textContent)).toEqual(["Rock gold", "2000s"]);
+    byId("clock-step-category").value = "c2";
+    byId("clock-step-selection").value = "random";
+    byId("clock-add-step").click();
+    expect(rowText(3)).toBe("Step 4 of 4, music from category 2000s, at random");
+    await vi.waitFor(() => expect(status()).toBe("Added Step 4 of 4, music from category 2000s, at random. Not saved yet."));
+    rowButton(3, "edit").click();
+    expect(byId("clock-step-category").value).toBe("c2");
+    expect(document.activeElement).toBe(type);
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(server.calls.some((call) => call.method === "PUT")).toBe(true));
+    const put = server.calls.find((call) => call.method === "PUT");
+    expect(put.body.steps[3]).toEqual({ type: "category", category: "c2", selection: "random", enforce_rules: true });
+  });
+
+  it("asks for a category first when none is saved", async () => {
+    await open(fakeServer());
+    const type = byId("clock-step-type");
+    type.value = "category";
+    type.dispatchEvent(new Event("change"));
+    byId("clock-add-step").click();
+    expect(document.activeElement).toBe(byId("clock-step-category"));
+    await vi.waitFor(() => expect(status()).toBe("Add a category under Categories first."));
+    expect(rows()).toHaveLength(3);
+  });
+
   it("validates restart minutes and describes steps in words", () => {
     expect(parseResyncMinutes("30, 0, 30")).toEqual([0, 30]);
     expect(parseResyncMinutes(" ")).toEqual([]);

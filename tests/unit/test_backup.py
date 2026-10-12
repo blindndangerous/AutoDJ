@@ -387,3 +387,20 @@ def test_backup_refuses_an_old_format_index(tmp_path: Path) -> None:
         create_backup(cfg, tmp_path / "backup.zip", force=False)
 
     assert not list(tmp_path.glob("*backup.zip*"))
+
+
+def test_categories_are_backed_up_but_their_playlists_are_not(tmp_path: Path) -> None:
+    """Playlist files come from a script or a music folder, so they stay out like the music."""
+    cfg = _config(tmp_path)
+    state = cfg.index.active_dir / "categories.json"
+    state.write_text('{"schema_version": 1, "categories": []}', encoding="utf-8")
+    playlists = cfg.index.active_dir / "playlists"
+    playlists.mkdir()
+    (playlists / "A.m3u8").write_text("song.flac\n", encoding="utf-8")
+    archive = create_backup(cfg, tmp_path / "categories.zip", force=False)
+    with zipfile.ZipFile(archive) as backup:
+        assert backup.read("index/categories.json") == state.read_bytes()
+        assert not [name for name in backup.namelist() if name.endswith(".m3u8")]
+    state.unlink()
+    restore_backup(cfg, archive, force=True)
+    assert json.loads(state.read_text(encoding="utf-8"))["schema_version"] == 1

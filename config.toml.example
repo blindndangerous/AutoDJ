@@ -67,6 +67,11 @@ beets_db = "C:/Users/you/.config/beets/library.db"
 # Audio formats to scan for
 supported_formats = ["mp3", "flac", "m4a"]
 
+# Folder of M3U and M3U8 files that rotation categories (Library tools,
+# Categories) read, such as rotation playlists an update script writes.
+# Default: <index_dir>/<name>/playlists.  The files are not backed up.
+# playlists_folder = "/srv/autodj/playlists"
+
 [index]
 # Each named index directory <index_dir>/<name>/ holds index-manifest.json, the
 # index generation it names (tracks.g<number>.db and vectors.g<number>.index),

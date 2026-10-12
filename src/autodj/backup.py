@@ -7,8 +7,8 @@ that wrote it and the list of files) and these members:
   (``tracks.gN.db`` and ``vectors.gN.index``): the live index generation.
 - ``index/dj_meta.db``, ``index/library.db``, ``index/web_state.json``,
   ``index/related-artists.toml``, ``index/schedule.json``, ``index/carts.json``,
-  ``index/time_checks.json``, ``index/listener_bans.json`` and ``index/recording.json``
-  from the active index folder.
+  ``index/time_checks.json``, ``index/listener_bans.json``, ``index/recording.json``
+  and ``index/categories.json`` from the active index folder.
 - ``liners/...``, ``carts/...``, ``time_checks/...``, ``profiles/...`` and
   ``clockwheels/...``: every file in those folders and their subfolders.  Time check
   voice packs kept in subfolders of the ``time_checks`` folder come along; packs listed
@@ -51,6 +51,7 @@ INDEX_FILES = (
     "time_checks.json",
     "listener_bans.json",
     "recording.json",
+    "categories.json",
     im.MANIFEST_NAME,
 )
 _FOLDERS = ("liners", "carts", "time_checks", "profiles", "clockwheels", "stereo-tool-presets")
@@ -157,6 +158,7 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
                     "time_checks.json",
                     "listener_bans.json",
                     "recording.json",
+                    "categories.json",
                 )
             ]
             for path in [*sorted(snapshot.glob("*")), *state_files]:

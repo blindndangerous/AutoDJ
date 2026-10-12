@@ -632,7 +632,114 @@ def run_doctor(
             _related_artists_check(cfg),
             _time_checks_check(cfg),
             *_voice_pack_checks(cfg),
+            _categories_check(cfg),
         )
+    )
+
+
+@dataclass(frozen=True)
+class _CatalogSong:
+    """One music entry of the catalog, read without opening it for writing."""
+
+    path: str
+    title: str
+    artist: str
+    album: str
+    genre: str
+    year: int
+    bpm: float
+    length: float
+
+
+def _catalog_songs(cfg: AutoDJConfig) -> list[_CatalogSong]:
+    """The catalog's music entries, read-only (an empty list without a catalog)."""
+    path = cfg.index.active_dir / "library.db"
+    if not path.is_file():
+        return []
+    with closing(_connect(readonly_uri(path), uri=True)) as db:
+        rows = db.execute(
+            "SELECT path, title, artist, album, genre, year, bpm, length "
+            "FROM catalog_entries WHERE kind='music' ORDER BY path"
+        ).fetchall()
+    return [_CatalogSong(*row) for row in rows]
+
+
+def _categories_check(cfg: AutoDJConfig) -> DoctorCheck:
+    """Name the rotation categories with no songs, missing playlist tracks or errors.
+
+    The categories file is read, never set aside, and the catalog and the
+    beets database are opened read-only.  Songs placed by ``year`` because
+    beets has no first-release year are counted in the detail.
+    """
+    from autodj.categories import (
+        CategoriesFile,
+        beets_source,
+        count_text,
+        missing_text,
+        playlists_folder,
+        resolve_all,
+        store_path,
+    )
+
+    path = store_path(cfg)
+    if not path.exists():
+        return DoctorCheck("categories", CheckStatus.PASS, "no categories saved")
+    try:
+        categories = CategoriesFile.model_validate_json(path.read_bytes()).categories
+    except (OSError, ValueError) as exc:
+        return DoctorCheck(
+            "categories",
+            CheckStatus.WARN,
+            "the categories file cannot be read; AutoDJ sets it aside when it starts",
+            str(exc).splitlines()[0],
+            "Fix or remove categories.json in the index folder, then add the categories again "
+            "in Library tools, Categories.",
+        )
+    if not categories:
+        return DoctorCheck("categories", CheckStatus.PASS, "no categories saved")
+    try:
+        songs = _catalog_songs(cfg)
+    except sqlite3.Error as exc:
+        return DoctorCheck(
+            "categories", CheckStatus.WARN, "the library could not be read", str(exc)
+        )
+    results = resolve_all(
+        categories,
+        songs,
+        beets=beets_source(cfg),
+        music_dir=cfg.library.music_dir,
+        folder=playlists_folder(cfg),
+    )
+    problems: list[str] = []
+    detail: dict[str, Any] = {}
+    for category, result in zip(categories, results, strict=True):
+        detail[category.name] = {
+            "songs": result.count,
+            "missing": result.missing_count,
+            "missing_examples": list(result.missing),
+            "release_year_fallbacks": result.fallback,
+            "error": result.error,
+        }
+        if result.error:
+            problems.append(f"{category.name}: {result.error}")
+        elif not result.count:
+            problems.append(f"{category.name}: no songs match")
+        if not result.error and result.missing_count:
+            listed = "; ".join(result.missing[:5])
+            more = result.missing_count - min(5, len(result.missing))
+            listed += f"; and {more} more" if more > 0 else ""
+            problems.append(f"{category.name}: {missing_text(result.missing_count)}: {listed}")
+    total = sum(result.count for result in results if not result.error)
+    saved = f"{len(categories)} saved, {count_text(total)} in all"
+    if not problems:
+        return DoctorCheck("categories", CheckStatus.PASS, saved, detail)
+    return DoctorCheck(
+        "categories",
+        CheckStatus.WARN,
+        f"{saved}; " + "; ".join(problems),
+        detail,
+        "Fix the query or the playlist in Library tools, Categories, or the script that writes "
+        "the playlist. A clockwheel step with an empty category is skipped.",
     )
 
 

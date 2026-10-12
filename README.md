@@ -18,6 +18,9 @@ uploaded to a cloud service.
 - Several named clockwheels: repeating orders of music folders, liners, tracks and preset
   changes, edited from the keyboard, imported from SAM Broadcaster `.PAL` files and switched by
   the scheduler.
+- Rotation categories for clockwheel steps, such as A to D or "Remembering the 2000s", from a
+  beets query on any beets field (`original_year:2000..2009`) or from M3U playlists a script
+  writes. See [Rotation categories](docs/operations.md#rotation-categories).
 - A cart wall for instant jingles, station IDs and sound effects, with numbered keys and
   duck, over or replace playback modes.
 - Spoken time checks from RadioBOSS-style voice packs (hour and minute files joined into one
@@ -300,7 +303,7 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Six tabs:
   - **Profiles and access**: **Profiles** saves the current settings under a name to apply later.  **Browser access** (with `--lan`) signs this browser out, renames or revokes paired devices, and shows the pairing code for adding another.
 
   A setting that has no effect right now is hidden.  For example, the effect level is hidden while no transition effect is chosen, and the DJ-mix options are hidden with saved segue points.  Changes are saved on the server and survive a restart.  Paths, server and security options, and the model stay in `config.toml`.
-- **Library tools.**  Add and remove music and voice liner folders and rescan them, and keep clockwheels without leaving the page. Index and Enrich update the current catalog. Legacy Analyse, Prune and Stats commands remain listed separately.  Browsing the library and the voice liners is in Queue & Search.  One job runs at a time; the index stats and the full job log refresh when it finishes.
+- **Library tools.**  Add and remove music and voice liner folders and rescan them, and keep rotation categories and clockwheels without leaving the page. Index and Enrich update the current catalog. Legacy Analyse, Prune and Stats commands remain listed separately.  Browsing the library and the voice liners is in Queue & Search.  One job runs at a time; the index stats and the full job log refresh when it finishes.
 
 ### Keyboard shortcuts
 

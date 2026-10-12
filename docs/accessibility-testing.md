@@ -104,6 +104,14 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   and per page, with focus staying on Previous or Next (or moving to the other one when the page
   ends); Delete on a liner saying the result once and focus moving to the next liner or the list;
   and Track info from either list, with Return to Queue & Search putting focus back on its button.
+- Library tools, Categories: Add category and Edit landing on Name; the source radio buttons
+  showing the query or the playlist field; Check saying the count once while the count line
+  stays silent; a missing name or a refused query said once, marked invalid and focused; Save
+  saying the count once and landing on the category's Edit button; Cancel returning to the
+  button that opened the form; Delete naming the clockwheels that use the category and landing
+  on the next Edit button or Add category; and the list never spoken on its 15-second refresh.
+  In Clockwheels, "Music from a category" showing the Category choice and the step read as
+  "music from category A".
 - EQ: each band's slider, its spoken value, and resetting the bands.
 - History: the History tab's table read with table navigation, its pagination, the empty state,
   and a new song added to the top of page 1 without the reading position moving or anything said.
