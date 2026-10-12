@@ -36,6 +36,7 @@ from huggingface_hub import snapshot_download
 from huggingface_hub.errors import LocalEntryNotFoundError
 
 from autodj.config import IndexConfig, ModelConfig
+from autodj.model_files import IGNORE_PATTERNS as _IGNORE_PATTERNS
 
 if TYPE_CHECKING:
     from transformers.modeling_outputs import BaseModelOutput
@@ -49,13 +50,6 @@ EMBEDDING_DIM = 1024
 MUQ_SAMPLE_RATE = 24_000
 
 # Weight formats MuQ never loads; skipping them saves a second copy of the weights.
-_IGNORE_PATTERNS = [
-    "*.msgpack",
-    "flax_model*",
-    "tf_model*",
-    "rust_model*",
-    "pytorch_model.bin",
-]
 
 
 # ---------------------------------------------------------------------------
