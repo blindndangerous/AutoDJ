@@ -58,6 +58,19 @@ export const MICROPHONE_BUSY_TEXT =
 export const NAMES_FAILED_TEXT =
   "The browser could not show device names.  The devices are numbered instead; they still work.";
 
+export const CHOOSE_DESC_TEXT =
+  "Choose preview device opens the browser's own list of speakers and headphones.";
+export const NAMES_DESC_TEXT =
+  "Show preview device names asks for the microphone once, only to read the device names, and "
+  + "stops it straight away.";
+
+// After a browser prompt (Firefox's device picker, a microphone prompt)
+// focus comes back to the page a moment after the prompt's promise
+// settles.  A status said before then is cut off by the focus speech, so
+// it waits for the window to have focus, then a beat more.
+export const FOCUS_SETTLE_MS = 150;
+const FOCUS_WAIT_MS = 3000;
+
 const DEFAULT_LABEL = "the system default output";
 const NOTES = new Set([MISSING_TEXT, UNAVAILABLE_TEXT]);
 
@@ -145,6 +158,7 @@ export function installPreviewOutput({
   storage = defaultStorage(),
   announce = () => {},
   onRoute = () => {},
+  focusWaitMs = FOCUS_WAIT_MS,
 } = {}) {
   const select = doc.getElementById("preview-device");
   if (!select) return null;
@@ -243,21 +257,48 @@ export function installPreviewOutput({
     if (select.value !== choice.id) select.value = "";
   }
 
+  // Resolves once the page has focus again (or after focusWaitMs, if it
+  // never comes back), plus FOCUS_SETTLE_MS.
+  function afterFocus() {
+    const view = doc.defaultView;
+    const pause = () => new Promise((resolve) => setTimeout(resolve, FOCUS_SETTLE_MS));
+    if (!view || typeof doc.hasFocus !== "function" || doc.hasFocus()) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        view.removeEventListener("focus", done);
+        resolve(pause());
+      };
+      const timer = setTimeout(done, focusWaitMs);
+      view.addEventListener("focus", done);
+    });
+  }
+
+  async function say(gate, text, options) {
+    if (gate) await gate;
+    announce(text, options);
+  }
+
   function renderButton() {
     if (!button) return;
+    const desc = doc.getElementById("preview-device-choose-desc");
+    if (desc) desc.textContent = canChoose ? CHOOSE_DESC_TEXT : NAMES_DESC_TEXT;
     const choices = connected();
     const named = choices.length > 0 && choices.every((choice) => choice.named);
     button.textContent = canChoose ? "Choose preview device" : "Show preview device names";
     // Hiding a focused button would drop focus to the page.
     if (doc.activeElement !== button) button.hidden = !canChoose && named;
+    // The sentence about the button is part of the select's help too, so
+    // it goes when the button does.
+    if (desc) desc.hidden = button.hidden;
   }
 
   // The saved device could not be used: say so once, not on page load
   // (the note is enough then) and not on every devicechange.
-  function fallBack(text, choice, { force = false } = {}) {
+  function fallBack(text, choice, { force = false, quiet = false } = {}) {
     renderOptions(choice, text === MISSING_TEXT ? "not connected" : "not available");
     showNote(text);
-    if ((loaded && !fellBack) || force) announce(text, { dwellMs: 8000, force });
+    if (!quiet && ((loaded && !fellBack) || force)) announce(text, { dwellMs: 8000, force });
     fellBack = true;
   }
 
@@ -306,13 +347,14 @@ export function installPreviewOutput({
     }
   }
 
-  async function doUse(id) {
+  async function doUse(id, gate = null) {
     if (saved.id !== id) return false;
     const choice = current();
     if (id && known && !connected().some((item) => item.id === id)) {
       await route("");
       if (saved.id !== id) return false;
-      fallBack(MISSING_TEXT, choice, { force: true });
+      fallBack(MISSING_TEXT, choice, { quiet: true });
+      await say(gate, MISSING_TEXT, { dwellMs: 8000, force: true });
       return false;
     }
     const failure = await route(id);
@@ -321,12 +363,12 @@ export function installPreviewOutput({
       const label = labelFor(id);
       setSaved("");
       settle(current());
-      announce(`Could not use ${label} for previews: ${errorWords(failure)}.  `
+      await say(gate, `Could not use ${label} for previews: ${errorWords(failure)}.  `
         + `Previews play on ${DEFAULT_LABEL}.`, { dwellMs: 8000, force: true, tone: "error" });
       return false;
     }
     settle(choice);
-    announce(`Previews play on ${labelFor(id)}.`, { dwellMs: 4000, force: true });
+    await say(gate, `Previews play on ${labelFor(id)}.`, { dwellMs: 4000, force: true });
     return true;
   }
 
@@ -336,44 +378,50 @@ export function installPreviewOutput({
   }
 
   const refresh = () => serial(doRefresh);
-  const use = (id) => {
+  const use = (id, { gate = null } = {}) => {
     save(id);
-    return serial(() => doUse(id));
+    return serial(() => doUse(id, gate));
   };
 
   async function chooseInPicker() {
     let device = null;
+    let failure = null;
     try {
       device = await mediaDevices.selectAudioOutput(saved.id ? { deviceId: saved.id } : undefined);
     } catch (error) {
-      const why = error?.name === "NotAllowedError" || error?.name === "AbortError"
+      failure = error;
+    }
+    const gate = afterFocus();
+    if (failure || !device?.deviceId) {
+      const why = !failure || failure.name === "NotAllowedError" || failure.name === "AbortError"
         ? "No device was chosen."
         : "The browser could not open its device picker.";
-      announce(`${why}  Previews stay on ${labelFor(select.value)}.`,
+      await say(gate, `${why}  Previews stay on ${labelFor(select.value)}.`,
         { dwellMs: 6000, force: true });
       return;
     }
-    if (!device?.deviceId) return;
     picked.set(device.deviceId, {
       id: device.deviceId, label: device.label || "the chosen device", named: true,
     });
-    await use(device.deviceId);
+    await use(device.deviceId, { gate });
   }
 
   async function showNames() {
+    let gate = null;
     try {
       const stream = await mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((track) => track.stop());
+      gate = afterFocus();
+      for (const track of stream.getTracks()) track.stop();
     } catch (error) {
       const text = microphoneErrorText(error);
       showNote(text);
-      announce(text, { dwellMs: 15000, force: true, tone: "error" });
+      await say(afterFocus(), text, { dwellMs: 15000, force: true, tone: "error" });
       return;
     }
     if (!NOTES.has(note?.textContent)) showNote("");
     await refresh();
     const count = connected().length;
-    announce(count
+    await say(gate, count
       ? `Device names are shown.  ${count} preview ${count === 1 ? "device" : "devices"} found.`
       : "No other output devices were found.", { dwellMs: 6000, force: true });
   }
@@ -391,6 +439,8 @@ export function installPreviewOutput({
   if (!supported) {
     select.disabled = true;
     if (button) button.hidden = true;
+    const desc = doc.getElementById("preview-device-choose-desc");
+    if (desc) desc.hidden = true;
     showNote(UNSUPPORTED_TEXT);
     return { supported, refresh: async () => {}, use: async () => false, choose: async () => {} };
   }

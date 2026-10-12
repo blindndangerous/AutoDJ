@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  CHOOSE_DESC_TEXT,
   DENIED_TEXT,
+  FOCUS_SETTLE_MS,
   MICROPHONE_BUSY_TEXT,
   MISSING_TEXT,
+  NAMES_DESC_TEXT,
   NAMES_FAILED_TEXT,
   NO_MICROPHONE_TEXT,
   PREVIEW_LABEL_KEY,
@@ -40,8 +43,9 @@ function installDom() {
     <select id="preview-device" aria-describedby="preview-device-desc">
       <option value="">System default</option>
     </select>
-    <button type="button" id="preview-device-choose">Show preview device names</button>
-    <span id="preview-device-desc">Help</span>
+    <button type="button" id="preview-device-choose"
+            aria-describedby="preview-device-choose-desc">Show preview device names</button>
+    <span id="preview-device-desc">Help <span id="preview-device-choose-desc"></span></span>
     <p id="preview-device-note" hidden></p>
     <audio id="points-preview" data-preview-output></audio>
     <audio id="browser-player"></audio>`;
@@ -72,7 +76,9 @@ async function settle() {
   for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-function setup({ devices, storage = memoryStorage(), mediaDevices, proto = supportedProto } = {}) {
+function setup({
+  devices, storage = memoryStorage(), mediaDevices, proto = supportedProto, focusWaitMs,
+} = {}) {
   const dom = installDom();
   const md = mediaDevices || fakeMediaDevices(devices);
   const announce = vi.fn();
@@ -84,6 +90,7 @@ function setup({ devices, storage = memoryStorage(), mediaDevices, proto = suppo
     storage,
     announce,
     onRoute,
+    ...(focusWaitMs === undefined ? {} : { focusWaitMs }),
   });
   return {
     ...dom,
@@ -461,5 +468,103 @@ describe("installPreviewOutput", () => {
     expect(preview.setSinkId).not.toHaveBeenCalledWith("phones");
     expect(announce.mock.lastCall[0])
       .toBe("No device was chosen.  Previews stay on the system default output.");
+  });
+
+  it("describes the button by what it does in each browser", async () => {
+    const names = setup({ devices: [{ kind: "audiooutput", deviceId: "a", label: "" }] });
+    await settle();
+    const desc = () => document.getElementById("preview-device-choose-desc");
+    expect(names.button.getAttribute("aria-describedby")).toBe("preview-device-choose-desc");
+    expect(desc().textContent).toBe(NAMES_DESC_TEXT);
+    expect(desc().hidden).toBe(false);
+
+    setup({ mediaDevices: fakeMediaDevices(DEVICES, { selectAudioOutput: vi.fn() }) });
+    await settle();
+    expect(desc().textContent).toBe(CHOOSE_DESC_TEXT);
+
+    // Names all shown: the button goes, and so does its sentence.
+    setup();
+    await settle();
+    expect(document.getElementById("preview-device-choose").hidden).toBe(true);
+    expect(desc().hidden).toBe(true);
+
+    // No button, no sentence about it in the select's help.
+    setup({ proto: {} });
+    await settle();
+    expect(desc().hidden).toBe(true);
+  });
+
+  it("waits for focus to come back from the picker before saying it was cancelled", async () => {
+    const md = fakeMediaDevices(DEVICES, {
+      selectAudioOutput: vi.fn(async () => {
+        throw Object.assign(new Error("cancelled"), { name: "NotAllowedError" });
+      }),
+    });
+    const { button, announce } = setup({ mediaDevices: md });
+    await settle();
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    button.click();
+    await settle();
+    expect(announce).not.toHaveBeenCalled();
+
+    hasFocus.mockReturnValue(true);
+    window.dispatchEvent(new Event("focus"));
+    await new Promise((resolve) => setTimeout(resolve, FOCUS_SETTLE_MS + 50));
+    await settle();
+    expect(announce).toHaveBeenCalledTimes(1);
+    expect(announce.mock.lastCall[0]).toMatch(/^No device was chosen\./);
+  });
+
+  it("routes at once but waits for focus before saying a picked device is used", async () => {
+    const md = fakeMediaDevices(DEVICES, {
+      selectAudioOutput: vi.fn(async () => ({ kind: "audiooutput", deviceId: "phones", label: "Headphones" })),
+    });
+    const { button, announce, preview } = setup({ mediaDevices: md });
+    await settle();
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    button.click();
+    await settle();
+    expect(preview.sinkId).toBe("phones");
+    expect(announce).not.toHaveBeenCalled();
+
+    window.dispatchEvent(new Event("focus"));
+    await new Promise((resolve) => setTimeout(resolve, FOCUS_SETTLE_MS + 50));
+    await settle();
+    expect(announce).toHaveBeenLastCalledWith("Previews play on Headphones.", expect.anything());
+  });
+
+  it("says it anyway if focus never comes back", async () => {
+    const md = fakeMediaDevices(DEVICES, {
+      selectAudioOutput: vi.fn(async () => {
+        throw Object.assign(new Error("cancelled"), { name: "AbortError" });
+      }),
+    });
+    const { button, announce } = setup({ mediaDevices: md, focusWaitMs: 20 });
+    await settle();
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    button.click();
+    await new Promise((resolve) => setTimeout(resolve, 20 + FOCUS_SETTLE_MS + 50));
+    await settle();
+    expect(announce).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for focus after the microphone prompt too", async () => {
+    const md = fakeMediaDevices([{ kind: "audiooutput", deviceId: "a", label: "" }], {
+      getUserMedia: vi.fn(async () => {
+        throw Object.assign(new Error("denied"), { name: "NotAllowedError" });
+      }),
+    });
+    const { button, announce, note } = setup({ mediaDevices: md });
+    await settle();
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    button.click();
+    await settle();
+    // The words are on the page at once; only the spoken status waits.
+    expect(note.textContent).toBe(DENIED_TEXT);
+    expect(announce).not.toHaveBeenCalled();
+    window.dispatchEvent(new Event("focus"));
+    await new Promise((resolve) => setTimeout(resolve, FOCUS_SETTLE_MS + 50));
+    await settle();
+    expect(announce).toHaveBeenLastCalledWith(DENIED_TEXT, expect.anything());
   });
 });

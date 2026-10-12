@@ -154,11 +154,15 @@ async function previewOutputProblems(page) {
       disabled: element.disabled,
       select: box(element),
       button: box(button),
+      buttonDesc: button && !button.hidden
+        ? (document.getElementById(button.getAttribute("aria-describedby") || "")?.textContent || "").trim()
+        : null,
       noteShown: Boolean(note && !note.hidden && note.textContent.trim()),
     };
   });
   if (info.label !== "Preview output device") problems.push(`label is ${JSON.stringify(info.label)}`);
   if (!info.describedBy.split(" ").includes("preview-device-desc")) problems.push("help is not linked");
+  if (info.buttonDesc === "") problems.push("button has no description");
   for (const [what, rect] of [["select", info.select], ["button", info.button]]) {
     if (rect && (rect.width < 24 || rect.height < 24)) {
       problems.push(`${what} is ${Math.round(rect.width)}x${Math.round(rect.height)}`);

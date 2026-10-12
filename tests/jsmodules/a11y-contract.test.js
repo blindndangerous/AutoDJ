@@ -2094,6 +2094,11 @@ describe("static accessibility contracts", () => {
     // same group (2.4.6, 2.5.3).
     expect(button.textContent.trim()).toBe("Show preview device names");
     expect(button.hasAttribute("aria-label")).toBe(false);
+    // What the button does is said with it, and is part of the help text.
+    const buttonDesc = document.getElementById(button.getAttribute("aria-describedby"));
+    expect(buttonDesc.id).toBe("preview-device-choose-desc");
+    expect(buttonDesc.textContent).toMatch(/microphone once/);
+    expect(buttonDesc.closest("#preview-device-desc")).not.toBeNull();
     expect(document.getElementById("audio-device-refresh").textContent.trim())
       .not.toBe(button.textContent.trim());
     // Changes are said through the polite Settings status region.
