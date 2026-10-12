@@ -271,7 +271,7 @@ def test_folder_scan_counts_only_requested_sources(manager_factory, tmp_path):
 def test_added_folders_queue_once_without_expanding_to_other_sources(
     manager_factory, tmp_path, full_rescan
 ):
-    manager = manager_factory()
+    manager = manager_factory(processing="smooth")
     roots = []
     for name, count in (("First", 1), ("Second", 2), ("Third", 1)):
         folder = tmp_path / name
@@ -366,7 +366,7 @@ def test_queued_folder_is_scanned_before_remaining_loudness(manager_factory, tmp
     old_songs = [music / f"old-{number}.flac" for number in range(3)]
     for song in old_songs:
         song.write_bytes(b"music")
-    manager = manager_factory(music=music)
+    manager = manager_factory(music=music, processing="smooth")
     new_folder = tmp_path / "New"
     new_folder.mkdir()
     new_song = new_folder / "new.flac"
@@ -411,15 +411,15 @@ def test_queued_folder_during_basic_is_ready_before_loudness(manager_factory, tm
     new_folder.mkdir()
     new_song = new_folder / "new.flac"
     new_song.write_bytes(b"new")
-    manager = manager_factory(music=music)
+    manager = manager_factory(music=music, processing="smooth")
     events = []
 
-    def basic(path, kind="music"):
+    def basic(path, kind="music", max_seconds=None):
         events.append(("basic", path.name))
         if path == old_song:
             source_id = manager.catalog.add_source(new_folder)["id"]
             assert manager.start_scan({source_id})
-        return fake_basic(path, kind)
+        return fake_basic(path, kind, max_seconds)
 
     def measure(path, kind="music"):
         events.append(("loudness", path.name))
@@ -442,7 +442,7 @@ def test_queued_rescan_remeasures_file_changed_during_loudness(manager_factory, 
     music.mkdir()
     song = music / "song.flac"
     song.write_bytes(b"before")
-    manager = manager_factory(music=music)
+    manager = manager_factory(music=music, processing="smooth")
     measured = []
 
     def measure(path, kind="music"):
@@ -470,7 +470,7 @@ def test_queued_advanced_folder_schedules_after_busy_scan(manager_factory, tmp_p
     music.mkdir()
     old_song = music / "old.flac"
     old_song.write_bytes(b"old")
-    manager = manager_factory(music=music)
+    manager = manager_factory(music=music, processing="smooth")
     source = manager.catalog.sources("music")[0]
     manager.catalog.update_source(source["id"], recursive=True, advanced=False)
     new_folder = tmp_path / "New"
