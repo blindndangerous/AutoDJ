@@ -183,5 +183,6 @@ def matches_condition(
     if op == "is":
         return raw.casefold() == wanted.casefold()
     if op == "contains":
-        return Term(field, text=wanted.casefold()).matches({field: raw})
+        # A substring of the text, also for a numeric Beets column read as text.
+        return wanted.casefold() in raw.casefold()
     return fnmatchcase(raw.casefold(), wanted.casefold().replace("[", "[[]"))

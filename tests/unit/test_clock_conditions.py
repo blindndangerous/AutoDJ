@@ -117,3 +117,9 @@ def test_arbitrary_fields_are_rejected_and_beets_names_are_validated():
 def test_invalid_shapes_are_rejected(condition):
     with pytest.raises(ValueError):
         validate_metadata_condition(condition)
+
+
+def test_contains_finds_text_inside_a_numeric_beets_column():
+    condition = {"field": "beets", "name": "bpm", "operator": "contains", "value": "12"}
+    assert matches_condition(condition, {}, {"bpm": 120})
+    assert not matches_condition(condition, {}, {"bpm": 130})
