@@ -12,7 +12,7 @@ function jsonResponse(body, status = 200) {
 function setup() {
   document.body.innerHTML = `
     <input id="search"><button id="go">Search</button>
-    <p id="count"></p><p id="announce"></p><ul id="results"></ul>
+    <p id="count"></p><p id="announce"></p><table><tbody id="results"></tbody></table>
     <div id="status-toast" aria-hidden="true" hidden></div>`;
   const els = {
     searchInput: document.querySelector("#search"),
@@ -27,13 +27,14 @@ function setup() {
 
 function setupBrowser() {
   document.body.innerHTML = `
-    <select id="folder"><option value="all-music">All music</option><option value="all-liners">All voice liners</option><option value="folder:liner:9">Voice liner: N:/voice</option></select>
+    <select id="kind"><option value="music">Music</option><option value="liner">Voice liners</option></select>
+    <select id="folder"><option value="all">All folders</option><option value="folder:9">N:/voice</option></select>
     <input id="search"><button id="go">Browse</button><button id="previous" disabled>Previous</button><button id="next" disabled>Next</button>
-    <p id="count"></p><p id="announce"></p><ul id="results"></ul><div id="status-toast" aria-hidden="true" hidden></div>`;
+    <p id="count"></p><p id="announce"></p><table><tbody id="results"></tbody></table><div id="status-toast" aria-hidden="true" hidden></div>`;
   const els = {
     searchInput: document.querySelector("#search"), btnSearch: document.querySelector("#go"),
     searchResults: document.querySelector("#results"), searchCount: document.querySelector("#count"),
-    queueAnnounce: document.querySelector("#announce"), folderSelect: document.querySelector("#folder"),
+    queueAnnounce: document.querySelector("#announce"), folderSelect: document.querySelector("#folder"), kindSelect: document.querySelector("#kind"),
     previousPage: document.querySelector("#previous"), nextPage: document.querySelector("#next"),
   };
   installSearch(els);
@@ -151,10 +152,8 @@ describe("search feedback is visible", () => {
 
   it("shows a failed queue add in the sighted status line", async () => {
     const els = setup();
-    els.searchResults.innerHTML = `<li>
-      <span class="result-name">Gone Track</span>
-      <button class="result-btn" data-path="/m/gone.mp3" data-now="false">Next</button>
-    </li>`;
+    els.searchResults.innerHTML = `<tr><td><span class="result-name">Gone Track</span></td>
+      <td><button class="result-btn" data-path="/m/gone.mp3" data-now="false">Next</button></td></tr>`;
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(
       jsonResponse({ detail: "That track is no longer in the library." }, 404),
     )));
@@ -171,11 +170,9 @@ describe("search feedback is visible", () => {
 
   it("says a failed Play next did not play next", async () => {
     const els = setup();
-    els.searchResults.innerHTML = `<li>
-      <span class="result-name">Gone Track</span>
-      <button class="result-btn" data-path="/m/gone.mp3" data-now="false"
-              data-next="true">Play next</button>
-    </li>`;
+    els.searchResults.innerHTML = `<tr><td><span class="result-name">Gone Track</span></td>
+      <td><button class="result-btn" data-path="/m/gone.mp3" data-now="false"
+              data-next="true">Play next</button></td></tr>`;
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(
       jsonResponse({ detail: "That track is no longer in the library." }, 404),
     )));
@@ -230,7 +227,8 @@ describe("library browsing", () => {
     });
     vi.stubGlobal("fetch", fetchImpl);
     const els = setupBrowser();
-    els.folderSelect.value = "folder:liner:9";
+    els.kindSelect.value = "liner";
+    els.folderSelect.value = "folder:9";
     els.btnSearch.click();
     await vi.waitFor(() => expect(els.searchResults.textContent).toContain("Liner"));
     expect(fetchImpl.mock.calls[0][0]).toBe("/api/library/tracks?kind=liner&offset=0&limit=100&source_id=9");
@@ -253,8 +251,8 @@ describe("library browsing", () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve, reject) => resolvers.push({ resolve, reject }))));
     const els = setupBrowser();
     els.btnSearch.click();
-    els.folderSelect.value = "all-liners";
-    els.folderSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    els.kindSelect.value = "liner";
+    els.kindSelect.dispatchEvent(new Event("change", { bubbles: true }));
     resolvers[1].resolve(jsonResponse({ results: [{ path: "new.wav", title: "Newest", kind: "liner" }], total: 1, offset: 0 }));
     await vi.waitFor(() => expect(els.searchResults.textContent).toContain("Newest"));
     resolvers[0].reject(new Error("aborted old request"));

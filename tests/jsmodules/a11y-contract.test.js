@@ -1726,7 +1726,7 @@ describe("static accessibility contracts", () => {
     // source-order form layout.
     installDocument();
     for (const id of [
-      "source-folder-path", "library-browse-query", "clock-name",
+      "source-folder-path", "library-kind", "search-input", "clock-name",
       "clock-step-type", "listener-ban-address", "token-secret",
     ]) {
       expect(document.getElementById(id).closest(".flow-form"), id).not.toBeNull();

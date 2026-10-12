@@ -106,11 +106,11 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   on a poll that finds the same song; the next song shown only while it is allowed.
 - Voice liners: uploading a liner, Test now, and each rotation mode, including the spoken
   result when an upload or test fails.
-- Queue & Search, browsing: Tab moving from Search to Browse library (Folder, Search text, Browse,
-  the list, Previous and Next) and on to Browse voice liners; the track count said once per Browse
-  and per page, with focus staying on Previous or Next (or moving to the other one when the page
-  ends); Delete on a liner saying the result once and focus moving to the next liner or the list;
-  and Track info from either list, with Return to Queue & Search putting focus back on its button.
+- Queue & Search, browsing: Tab to Type, Folder, Search text and Search; one result grid with
+  arrows, Home and End, and Enter or Space activating each action; the track count said once per
+  search and page, with focus staying on Previous or Next (or moving to the other when a page ends);
+  and Track info returning focus to its result. Under Settings > Voice liners, check Delete and
+  Play dates with focus moving to the next liner or the list.
 - Library tools, Categories: Add category and Edit landing on Name; the source radio buttons
   showing the query or the playlist field; Check saying the count once while the count line
   stays silent; a missing name or a refused query said once, marked invalid and focused; Save

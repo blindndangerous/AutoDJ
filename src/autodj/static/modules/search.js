@@ -2,10 +2,12 @@
 //
 // Event delegation at document level so each result row's buttons
 // share a single handler instead of N per-row listeners.
-// Not on the results <ul>: a click listener there made NVDA call the
-// whole list "clickable".
+// Not on the results table: a click listener there made NVDA call the
+// whole table "clickable".
 
-import { escHtml, fmtTrack } from "./dom-helpers.js";
+import { fmtTrack } from "./dom-helpers.js";
+import { tableRow } from "./table-row.js";
+import { installTableNavigation } from "./table-navigation.js";
 import { announceStatus } from "./live-region.js";
 import { sendWithDmcaConfirm } from "./dmca-ui.js";
 import {
@@ -23,15 +25,16 @@ const SEARCH_RESULT_LIMIT = 100;
 // why nothing plays.
 export function installSearch({
   searchInput, btnSearch, searchResults, searchCount, queueAnnounce,
-  folderSelect, previousPage, nextPage,
+  folderSelect, kindSelect, previousPage, nextPage,
   playNow = async (request) => { await request(); return true; },
 }) {
   if (!searchInput || !searchResults) return;
-  const browsing = Boolean(folderSelect && previousPage && nextPage);
+  const browsing = Boolean(folderSelect && kindSelect && previousPage && nextPage);
   // The search in flight: a newer one, or emptying the field, aborts it.
   let searchRequest = null;
   let offset = 0;
   let total = 0;
+  const tableNavigation = installTableNavigation(searchResults);
 
   // Announced once and shown once: announceStatus writes the region and
   // copies the same string into the visible #status-toast, so a failed
@@ -71,9 +74,9 @@ export function installSearch({
     try {
       let url;
       if (browsing) {
-        const params = new URLSearchParams({ kind: folderSelect.value.startsWith("folder:liner:") || folderSelect.value === "all-liners" ? "liner" : "music", offset: String(pageOffset), limit: "100" });
+        const params = new URLSearchParams({ kind: kindSelect.value, offset: String(pageOffset), limit: "100" });
         if (q) params.set("q", q);
-        if (folderSelect.value.startsWith("folder:")) params.set("source_id", folderSelect.value.slice(folderSelect.value.lastIndexOf(":") + 1));
+        if (folderSelect.value.startsWith("folder:")) params.set("source_id", folderSelect.value.slice("folder:".length));
         url = `/api/library/tracks?${params}`;
       } else url = `/api/search?q=${encodeURIComponent(q)}`;
       data = await withDisabled(btnSearch, () => requestJson(url, { signal: request.signal }));
@@ -89,8 +92,11 @@ export function installSearch({
     const results = data.results || [];
 
     if (results.length === 0) {
-      searchResults.innerHTML =
-        `<li><span class="no-results">${browsing ? "No tracks found." : `No results for "${escHtml(q)}".`}</span></li>`;
+      const empty = document.createElement("span");
+      empty.className = "no-results";
+      empty.textContent = browsing ? "No tracks found." : `No results for "${q}".`;
+      searchResults.replaceChildren(tableRow(searchResults.ownerDocument, [empty], { colspan: [5] }));
+      tableNavigation.refresh();
       total = browsing ? Number(data.total || 0) : 0;
       offset = browsing ? Number(data.offset ?? pageOffset) : 0;
       if (browsing) {
@@ -100,31 +106,32 @@ export function installSearch({
       return;
     }
 
-    searchResults.innerHTML = results.map((t) => {
-      const name = escHtml(fmtTrack(t));
-      const path = escHtml(t.path);
-      return `<li>
-        <span class="result-name" title="${name}">${name}</span>
-        <button class="result-btn"
-                aria-label="Play ${name} now"
-                data-path="${path}"
-                data-now="true"><span aria-hidden="true">&#9654;</span> Play now</button>
-        <button class="result-btn"
-                aria-label="Play ${name} next"
-                data-path="${path}"
-                data-now="false"
-                data-next="true"><span aria-hidden="true">&#9197;</span> Play next</button>
-        <button class="result-btn"
-                aria-label="Add ${name} to queue"
-                data-path="${path}"
-                data-now="false">Add to queue</button>
-        <button class="result-btn"
-                aria-label="Track info for ${name}"
-                data-path="${path}"
-                data-kind="${escHtml(t.kind || "music") }"
-                data-points="true">Track info</button>
-      </li>`;
-    }).join("");
+    searchResults.replaceChildren(...results.map((track) => {
+      const name = fmtTrack(track);
+      const label = document.createElement("span");
+      label.className = "result-name";
+      label.title = name;
+      label.textContent = name;
+      const makeButton = (text, aria, values = {}) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "result-btn";
+        button.textContent = text;
+        button.setAttribute("aria-label", aria);
+        button.dataset.path = track.path;
+        for (const [key, value] of Object.entries(values)) button.dataset[key] = value;
+        return button;
+      };
+      const row = tableRow(searchResults.ownerDocument, [
+        label,
+        makeButton("Play now", `Play ${name} now`, { now: "true" }),
+        makeButton("Play next", `Play ${name} next`, { now: "false", next: "true" }),
+        makeButton("Add to queue", `Add ${name} to queue`, { now: "false" }),
+        makeButton("Track info", `Track info for ${name}`, { points: "true", kind: track.kind || "music" }),
+      ], { rowHeaderIndex: 0 });
+      return row;
+    }));
+    tableNavigation.refresh();
     if (browsing) {
       total = Number(data.total ?? results.length);
       offset = Number(data.offset ?? pageOffset);
@@ -170,6 +177,7 @@ export function installSearch({
   });
   if (browsing) {
     folderSelect.addEventListener("change", () => { offset = 0; void doSearch(); });
+    kindSelect.addEventListener("change", () => { offset = 0; void doSearch(); });
     previousPage.addEventListener("click", () => changePage(-1));
     nextPage.addEventListener("click", () => changePage(1));
   }
@@ -189,7 +197,7 @@ export function installSearch({
     }
     const now  = btn.dataset.now === "true";
     const next = btn.dataset.next === "true";
-    const name = btn.closest("li").querySelector(".result-name").textContent;
+    const name = (btn.closest("tr") || btn.closest("li")).querySelector(".result-name").textContent;
     // Play now and Play next go to the head of the queue; Add to queue
     // appends.  In DMCA mode a song over a limit waits for "Queue anyway".
     const url = now || next ? "/api/play-next" : "/api/queue/add";

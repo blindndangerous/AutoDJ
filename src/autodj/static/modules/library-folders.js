@@ -1,6 +1,8 @@
 // Music and liner source folders plus the saved song-points editor.
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { fmtTrack } from "./dom-helpers.js";
+import { tableRow } from "./table-row.js";
+import { installTableNavigation } from "./table-navigation.js";
 import { lastSeenWords } from "./devices.js";
 import { formatPlayedAt } from "./history-format.js";
 import { announceStatus } from "./live-region.js";
@@ -38,12 +40,10 @@ const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&":
 
 export function installLibraryFolders({ document: doc = document, request = requestJson, getCurrentTrack = () => null, getCurrentPosition = () => null, onFolders }) {
   const panel = doc.getElementById("panel-library");
-  // Browse library sits in Queue & Search, and its folder choice comes from
-  // this list: one load each time that tab is shown keeps it current
-  // without polling there.
-  const browsePanel = doc.getElementById("library-browse-folder")?.closest("section[data-view]") || null;
-  let browseShown = false;
+  const searchPanel = doc.getElementById("library-kind")?.closest("section[data-view]") || null;
+  let searchShown = false;
   const list = doc.getElementById("source-folders");
+  const tableNavigation = installTableNavigation(list);
   const status = doc.getElementById("source-folders-status");
   status.textContent = "";
   status.setAttribute("role", "status");
@@ -108,7 +108,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       announceStatus(doc.getElementById("sr-status"), {
         "queue-list": "That track is no longer in the queue.",
         "search-results": "That track is no longer in the search results.",
-        "library-browse-results": "That track is no longer in the library list.",
+        "library-results-table": "That track is no longer in the library list.",
         "history-table": "That play is no longer in History.",
         "ln-file-list": "That liner is no longer in the list.",
       }[returnContainer?.id] || "That track is no longer in this list.",
@@ -172,21 +172,31 @@ export function installLibraryFolders({ document: doc = document, request = requ
     const signature = JSON.stringify(folders.map(({ id, path, kind, recursive, advanced }) => ({ id, path, kind, recursive, advanced })));
     if (signature !== folderSignature) {
       const focused = list.contains(doc.activeElement) ? {
-        id: doc.activeElement.closest("li")?.dataset.id,
+        id: doc.activeElement.closest("tr")?.dataset.id,
         field: doc.activeElement.dataset.field,
         action: doc.activeElement.dataset.action,
       } : null;
-      list.innerHTML = folders.map((folder) => `<li data-id="${esc(folder.id)}">
-        <strong>${folder.kind === "liner" ? "Voice liner" : "Music"}:</strong> ${esc(folder.path)}
-        <label><input type="checkbox" data-field="recursive" ${folder.recursive ? "checked" : ""}> Add subfolders</label>
-        ${folder.kind === "music" ? `<label><input type="checkbox" data-field="advanced" ${folder.advanced ? "checked" : ""}> Perform advanced analysis</label>` : ""}
-        <button type="button" data-action="remove">Remove folder</button>
-      </li>`).join("") || "<li>No folders added yet.</li>";
+      list.replaceChildren(...(folders.length ? folders.map((folder) => {
+        const recursive = doc.createElement("input");
+        recursive.type = "checkbox"; recursive.dataset.field = "recursive"; recursive.checked = !!folder.recursive;
+        const recursiveLabel = doc.createElement("label"); recursiveLabel.append(recursive, " Add subfolders");
+        let advancedLabel = "";
+        if (folder.kind === "music") {
+          const advanced = doc.createElement("input");
+          advanced.type = "checkbox"; advanced.dataset.field = "advanced"; advanced.checked = !!folder.advanced;
+          advancedLabel = doc.createElement("label"); advancedLabel.append(advanced, " Perform advanced analysis");
+        }
+        const remove = doc.createElement("button"); remove.type = "button"; remove.dataset.action = "remove"; remove.textContent = "Remove folder";
+        const row = tableRow(doc, [folder.kind === "liner" ? "Voice liner" : "Music", folder.path, recursiveLabel, advancedLabel, remove], { rowHeaderIndex: 1 });
+        row.dataset.id = folder.id;
+        return row;
+      }) : [tableRow(doc, ["No folders added yet."], { colspan: [5] })]));
       folderSignature = signature;
+      tableNavigation.refresh();
       onFolders?.(folders);
       if (focused) {
         const selector = focused.field ? `input[data-field="${focused.field}"]` : `button[data-action="${focused.action}"]`;
-        const replacement = [...list.querySelectorAll("li")].find((row) => row.dataset.id === focused.id)?.querySelector(selector);
+        const replacement = [...list.querySelectorAll("tr")].find((row) => row.dataset.id === focused.id)?.querySelector(selector);
         (replacement || doc.getElementById("source-folder-add")).focus();
       }
     }
@@ -200,7 +210,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     }
   }
   async function refresh() {
-    if (suspended || ((!panel || panel.hidden) && (!browsePanel || browsePanel.hidden))) return;
+    if (suspended || ((!panel || panel.closest("[hidden]")) && (!searchPanel || searchPanel.closest("[hidden]")))) return;
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
     try {
@@ -210,11 +220,11 @@ export function installLibraryFolders({ document: doc = document, request = requ
       if (requestCurrent(epoch, generation)) progress.textContent = `Could not load folders: ${error.message}`;
     }
   }
-  function visible() { return !suspended && !panel.hidden && !doc.hidden; }
+  function visible() { return !suspended && !!panel && !panel.closest("[hidden]") && !doc.hidden; }
   function updatePolling() {
-    const browsing = !suspended && !!browsePanel && !browsePanel.hidden && !doc.hidden;
-    if (browsing && !browseShown && !visible()) void refresh();
-    browseShown = browsing;
+    const searching = !suspended && !!searchPanel && !searchPanel.closest("[hidden]") && !doc.hidden;
+    if (searching && !searchShown && !visible()) void refresh();
+    searchShown = searching;
     if (visible() && timer == null) {
       void refresh();
       timer = setInterval(refresh, 3000);
@@ -255,7 +265,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     if (suspended) return;
     const input = event.target.closest("input[data-field]");
     if (!input) return;
-    const row = input.closest("li");
+    const row = input.closest("tr");
     const body = { [input.dataset.field]: input.checked };
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
@@ -273,7 +283,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     if (suspended) return;
     const button = event.target.closest('button[data-action="remove"]');
     if (!button) return;
-    const row = button.closest("li");
+    const row = button.closest("tr");
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
     button.disabled = true;
@@ -550,7 +560,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     actionAnnouncement += 1;
     if (timer != null) clearInterval(timer);
     timer = null;
-    browseShown = false;
+    searchShown = false;
     opening = saving = false;
     const dialog = doc.getElementById("track-info-dialog");
     if (dialog?.open) dialog.close();

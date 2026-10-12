@@ -305,17 +305,14 @@ function clearProtectedSessionData() {
   settingsStatus.textContent = "";
   searchInput.value = "";
   searchInput.dispatchEvent(new Event("input"));
-  const browseInput = document.getElementById("library-browse-query");
-  if (browseInput) {
-    browseInput.value = "";
-    browseInput.dispatchEvent(new Event("input"));
-  }
+  registeredLibraryFolders = [];
+  libraryKind.value = "music";
   libraryFoldersControls?.clearProtectedData();
   clockwheelPanelControls?.clearProtectedData();
   categoriesPanelControls?.clearProtectedData();
   schedulerPanelControls?.clear();
   cartWallControls?.clear();
-  const browseFolder = document.getElementById("library-browse-folder");
+  const browseFolder = document.getElementById("library-folder");
   if (browseFolder) {
     const option = (value, label) => {
       const element = document.createElement("option");
@@ -323,8 +320,8 @@ function clearProtectedSessionData() {
       element.textContent = label;
       return element;
     };
-    browseFolder.replaceChildren(option("all-music", "All music"), option("all-liners", "All voice liners"));
-    browseFolder.value = "all-music";
+    browseFolder.replaceChildren(option("all", "All folders"));
+    browseFolder.value = "all";
   }
   for (const element of Object.values(_libEls)) {
     if (element && !element.matches("button, input")) element.textContent = "";
@@ -2058,23 +2055,35 @@ async function playNowHere(request) {
   }
 }
 
+const libraryBrowseFolder = document.getElementById("library-folder");
+const libraryKind = document.getElementById("library-kind");
+let registeredLibraryFolders = [];
+function updateLibraryFolderOptions() {
+  if (!libraryBrowseFolder) return;
+  const selected = libraryBrowseFolder.value;
+  const option = (value, label) => {
+    const element = document.createElement("option");
+    element.value = value;
+    element.textContent = label;
+    return element;
+  };
+  const available = registeredLibraryFolders.filter((folder) => folder.kind === libraryKind.value);
+  libraryBrowseFolder.replaceChildren(option("all", "All folders"), ...available.map((folder) => option(`folder:${folder.id}`, folder.path)));
+  libraryBrowseFolder.value = [...libraryBrowseFolder.options].some((item) => item.value === selected) ? selected : "all";
+  if (libraryBrowseFolder.value !== selected) libraryBrowseFolder.dispatchEvent(new Event("change"));
+}
+libraryKind.addEventListener("change", () => {
+  libraryBrowseFolder.value = "all";
+  updateLibraryFolderOptions();
+});
 installSearch({
   searchInput,
   btnSearch,
   searchResults,
   searchCount,
   queueAnnounce,
-  playNow: playNowHere,
-});
-
-const libraryBrowseFolder = document.getElementById("library-browse-folder");
-installSearch({
-  searchInput: document.getElementById("library-browse-query"),
-  btnSearch: document.getElementById("library-browse"),
-  searchResults: document.getElementById("library-browse-results"),
-  searchCount: document.getElementById("library-browse-count"),
-  queueAnnounce,
   folderSelect: libraryBrowseFolder,
+  kindSelect: libraryKind,
   previousPage: document.getElementById("library-browse-previous"),
   nextPage: document.getElementById("library-browse-next"),
   playNow: playNowHere,
@@ -2364,25 +2373,8 @@ libraryFoldersControls = installLibraryFolders({
   getCurrentTrack: () => _lastState?.current_track || null,
   getCurrentPosition: () => _lastElapsed,
   onFolders(folders) {
-    if (!libraryBrowseFolder) return;
-    const selected = libraryBrowseFolder.value;
-    const option = ([value, label]) => {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = label;
-      return option;
-    };
-    const music = folders.filter((folder) => folder.kind === "music");
-    const liners = folders.filter((folder) => folder.kind === "liner");
-    const musicGroup = document.createElement("optgroup");
-    musicGroup.label = "Music folders";
-    musicGroup.append(...music.map((folder) => option([`folder:music:${folder.id}`, folder.path])));
-    const linerGroup = document.createElement("optgroup");
-    linerGroup.label = "Voice liner folders";
-    linerGroup.append(...liners.map((folder) => option([`folder:liner:${folder.id}`, folder.path])));
-    libraryBrowseFolder.replaceChildren(option(["all-music", "All music"]), option(["all-liners", "All voice liners"]), musicGroup, linerGroup);
-    libraryBrowseFolder.value = [...libraryBrowseFolder.options].some((item) => item.value === selected) ? selected : "all-music";
-    if (libraryBrowseFolder.value !== selected) libraryBrowseFolder.dispatchEvent(new Event("change"));
+    registeredLibraryFolders = folders;
+    updateLibraryFolderOptions();
   },
 });
 

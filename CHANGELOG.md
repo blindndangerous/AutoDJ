@@ -1,5 +1,7 @@
 # Changelog
 
+- Queue & Search now uses one paginated library table with Music or Voice liners, folder filtering and text search. Folder management is shown as a table in Library tools; liner file maintenance is back in Settings > Voice liners.
+
 What changed and when, written for the people who use AutoDJ.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
