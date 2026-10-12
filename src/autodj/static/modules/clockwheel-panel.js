@@ -28,6 +28,8 @@ const JSON_HEADERS = { "Content-Type": "application/json" };
 const copy = (value) => JSON.parse(JSON.stringify(value));
 const FOLDER_TYPES = new Set(["music", "liner"]);
 const NUMERIC_OPERATORS = [["eq", "is"], ["lt", "less than"], ["lte", "at most"], ["gt", "greater than"], ["gte", "at least"], ["between", "between"]];
+// The wildcard and MM:SS help under the conditions, for each value field.
+const CONDITION_HELP = "clock-step-conditions-help";
 const TEXT_OPERATORS = [["is", "is"], ["contains", "contains"], ["matches", "matches"]];
 // Field wrappers shown for each step type; the rest are hidden.
 const FIELDS_FOR = {
@@ -62,6 +64,11 @@ function selectionExtras(step) {
   return extras;
 }
 
+// A Beets field as words: original_year is the first-release year.
+function beetsFieldName(name) {
+  return name === "original_year" ? "first release year" : String(name ?? "").replaceAll("_", " ");
+}
+
 // "music from Rock, at random": what one step does, for its list item.
 export function describeStep(step, sources = [], categories = []) {
   if (step.type === "category") {
@@ -87,12 +94,13 @@ export function describeStep(step, sources = [], categories = []) {
         const folder = condition.folder || (source ? lastPart(source.path) : "a folder that is no longer registered");
         return `${folder}${condition.recursive ? " (with subfolders)" : ""}`;
       }
-      const field = condition.field === "beets" ? `Beets ${condition.name}`
+      const field = condition.field === "beets" ? `Beets ${beetsFieldName(condition.name)}`
         : condition.field === "duration" ? "Duration (seconds)"
-          : condition.field[0].toUpperCase() + condition.field.slice(1);
+          : condition.field === "bpm" ? "BPM"
+            : condition.field[0].toUpperCase() + condition.field.slice(1);
       const operator = [...NUMERIC_OPERATORS, ...TEXT_OPERATORS].find(([value]) => value === condition.operator)?.[1] || condition.operator;
       return `${field} ${operator} ${condition.value}${condition.operator === "between" ? ` and ${condition.upper}` : ""}`;
-    }).join(step.match === "any" ? " OR " : " AND ");
+    }).join(step.match === "any" ? " or " : " and ");
     const extras = [];
     if (step.selection === "random") extras.push("at random");
     if (step.enforce_rules === false) extras.push("ignoring repeat rules");
@@ -236,17 +244,21 @@ export function installClockwheelPanel({ document: doc = document, request = req
     const operator = control("Operator", "select");
     const input = control("Value", "input");
     input.type = "text";
+    input.setAttribute("aria-describedby", CONDITION_HELP);
     const upper = control("Upper value", "input");
     upper.type = "text";
+    upper.setAttribute("aria-describedby", CONDITION_HELP);
     const genre = control("Genre", "select", (data.genres || []).map((v) => [v, v]));
     const beetsOptions = (data.beets_fields || []).map((v) => [v, v]);
     if (value.field === "beets" && value.name && !beetsOptions.some(([v]) => v === value.name)) {
       beetsOptions.unshift([value.name, `${value.name} (unavailable)`]);
     }
     const name = control("Beets field", "select", beetsOptions);
+    name.setAttribute("aria-describedby", CONDITION_HELP);
     const remove = doc.createElement("button");
     remove.type = "button";
-    remove.textContent = "Remove condition";
+    remove.dataset.removeCondition = "";
+    remove.textContent = `Remove condition ${el("clock-step-conditions").children.length + 1}`;
     row.append(remove);
     field.value = value.field || (source.options.length ? "folder" : "title");
     if (value.source && !sourceList.some((item) => item.id === value.source)) {
@@ -302,10 +314,17 @@ export function installClockwheelPanel({ document: doc = document, request = req
     operator.addEventListener("change", sync);
     remove.addEventListener("click", () => {
       const host = row.parentElement;
+      const index = [...host.children].indexOf(row);
       row.remove();
-      [...host.children].forEach((item, index) => { item.querySelector("legend").textContent = `Condition ${index + 1}`; });
+      const left = [...host.children];
+      left.forEach((item, at) => {
+        item.querySelector("legend").textContent = `Condition ${at + 1}`;
+        item.querySelector("button[data-remove-condition]").textContent = `Remove condition ${at + 1}`;
+      });
       updateBeetsNotice();
-      (host?.lastElementChild?.querySelector("input,select") || el("clock-add-condition")).focus();
+      // The condition that took its place, or the one before it when it was last.
+      (left[Math.min(index, left.length - 1)]?.querySelector("select") || el("clock-add-condition")).focus();
+      say(`Condition ${index + 1} removed, ${left.length} ${left.length === 1 ? "condition" : "conditions"} left.`);
     });
     sync();
     return { row, field, source, folder, recursive, operator, input, upper, genre, name };
@@ -333,6 +352,11 @@ export function installClockwheelPanel({ document: doc = document, request = req
       notice.textContent = data.beets_error || "Beets fields are unavailable.";
       notice.hidden = !unavailable || !hasBeets;
     }
+    // A hidden notice named by aria-describedby would still be read.
+    const describedBy = notice && !notice.hidden ? `${CONDITION_HELP} clock-step-beets-notice` : CONDITION_HELP;
+    for (const row of el("clock-step-conditions")?.children || []) {
+      row.querySelectorAll("select")[4].setAttribute("aria-describedby", describedBy);
+    }
   }
 
   function configureConditionOptions() {
@@ -342,6 +366,11 @@ export function installClockwheelPanel({ document: doc = document, request = req
       const selects = row.querySelectorAll("select");
       const [, source, , genre, name] = selects;
       const replace = (select, items, keep) => {
+        if (select === doc.activeElement) {
+          // Rebuilding the list under the reader would move its place; try on the next refresh.
+          optionsSignature = "";
+          return;
+        }
         const selected = select.value;
         select.replaceChildren(...items.map(([v, label]) => {
           const option = doc.createElement("option");
@@ -375,8 +404,8 @@ export function installClockwheelPanel({ document: doc = document, request = req
       input.focus();
       throw new Error(message);
     };
+    for (const row of rows) row.querySelectorAll("[aria-invalid]").forEach((input) => input.removeAttribute("aria-invalid"));
     return rows.map((row) => {
-      row.querySelectorAll('[aria-invalid]').forEach((input) => input.removeAttribute("aria-invalid"));
       const selects = [...row.querySelectorAll("select")];
       const field = selects[0].value;
       if (field === "folder") {
@@ -403,7 +432,12 @@ export function installClockwheelPanel({ document: doc = document, request = req
       const numeric = ["year", "bpm", "duration"].includes(field)
         || (field === "beets" && ["eq", "lt", "lte", "gt", "gte", "between"].includes(operator));
       const parse = (value, input) => {
-        const number = field === "duration" ? parsePointTime(value) : Number(value);
+        let number;
+        try {
+          number = field === "duration" ? parsePointTime(value) : Number(value);
+        } catch {
+          invalid(input, "Enter the duration as seconds or minutes:seconds, for example 90 or 1:30.");
+        }
         if (number === null || !Number.isFinite(number)) invalid(input, `Enter a number for ${field}.`);
         return number;
       };
@@ -765,6 +799,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     host.append(controls.row);
     updateBeetsNotice();
     controls.field.focus();
+    say(`Condition ${host.children.length} added.`);
   });
   addButton.addEventListener("click", () => {
     if (!clock) { say("Open or create a clockwheel first.", true); return; }

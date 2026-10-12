@@ -112,10 +112,13 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   on the next Edit button or Add category; and the list never spoken on its 15-second refresh.
   In Clockwheels, "Music from a category" showing the Category choice and the step read as
   "music from category A".
-- Library tools, Clockwheels: each condition announced with its numbered legend; Add condition
-  focusing the new condition; Remove condition keeping focus in the editor, including when the
-  last condition is removed; Match all/Match any and every condition read in the step summary;
-  and saved values and keyboard focus preserved when folder, genre or Beets choices refresh.
+- Library tools, Clockwheels: the conditions read as a group named Conditions, each with its
+  numbered legend; Value and Upper value reading the wildcard and MM:SS help; Add condition
+  focusing the new condition and saying "Condition 2 added"; Remove condition 2 focusing the
+  condition that took its place (or the one before it), saying how many are left, and Add
+  condition once none are left; an invalid value or duration marked invalid and focused; Match
+  all/Match any and every condition read in the step summary; and saved values and keyboard focus
+  preserved when folder, genre or Beets choices refresh, with an open genre list left alone.
 - Library tools, Clockwheels, the step list: Tab into the list turning on NVDA's focus mode on
   the first step name (a grid cell, not a button); Up and Down moving between names and Left,
   Right, Home and End along a row without leaving focus mode; Enter and Space pressing the focused

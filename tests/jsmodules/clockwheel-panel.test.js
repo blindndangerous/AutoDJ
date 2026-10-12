@@ -231,7 +231,7 @@ describe("clockwheel editor", () => {
       selection: "least_recent",
       enforce_rules: true,
     });
-    expect(rowText(3)).toContain("Live OR Year between 1990 and 2000 OR Duration (seconds) between 65 and 90");
+    expect(rowText(3)).toContain("Live or Year between 1990 and 2000 or Duration (seconds) between 65 and 90");
     await vi.waitFor(() => expect(status()).toBe("Saved Morning, 4 steps."));
     rowButton(3, "edit").click();
     const reopenedRange = byId("clock-step-conditions").children[1];
@@ -702,5 +702,160 @@ describe("clockwheel editor", () => {
     expect(server.calls.some((call) => call.url.endsWith("/import"))).toBe(false);
     expect(byId("clock-list").children).toHaveLength(0);
     expect(byId("clock-name").value).toBe("");
+  });
+});
+
+describe("clockwheel step conditions, for screen readers", () => {
+  const conditions = () => [...byId("clock-step-conditions").children];
+  const startMusicStep = () => {
+    const type = byId("clock-step-type");
+    type.value = "music";
+    type.dispatchEvent(new Event("change"));
+  };
+  const setField = (row, value) => {
+    const field = row.querySelector("select");
+    field.value = value;
+    field.dispatchEvent(new Event("change"));
+  };
+  const setOperator = (row, value) => {
+    const operator = row.querySelectorAll("select")[2];
+    operator.value = value;
+    operator.dispatchEvent(new Event("change"));
+  };
+
+  it("names the conditions as a group and links the help to every value", async () => {
+    await open(fakeServer({ beets_fields: [], beets_error: "Beets database unavailable." }));
+    startMusicStep();
+    const host = byId("clock-step-conditions");
+    expect(host.getAttribute("role")).toBe("group");
+    expect(host.hasAttribute("aria-label")).toBe(false);
+    expect(byId(host.getAttribute("aria-labelledby")).textContent).toBe("Conditions");
+    const help = byId("clock-step-conditions-help");
+    expect(help.textContent).toContain("MM:SS");
+    expect(help.textContent).toContain("*");
+    const [row] = conditions();
+    const [, value, upper] = row.querySelectorAll("input[type=text]");
+    const beetsField = row.querySelectorAll("select")[4];
+    expect(value.getAttribute("aria-describedby")).toBe("clock-step-conditions-help");
+    expect(upper.getAttribute("aria-describedby")).toBe("clock-step-conditions-help");
+    // The Beets notice is linked only while it shows, since a hidden one would still be read.
+    expect(beetsField.getAttribute("aria-describedby")).toBe("clock-step-conditions-help");
+    row.querySelector('option[value="beets"]').disabled = false;
+    setField(row, "beets");
+    expect(byId("clock-step-beets-notice").hidden).toBe(false);
+    expect(beetsField.getAttribute("aria-describedby")).toBe("clock-step-conditions-help clock-step-beets-notice");
+    setField(row, "year");
+    expect(byId("clock-step-beets-notice").hidden).toBe(true);
+    expect(beetsField.getAttribute("aria-describedby")).toBe("clock-step-conditions-help");
+  });
+
+  it("says each condition added or removed, numbers Remove buttons and keeps focus in place", async () => {
+    await open(fakeServer());
+    startMusicStep();
+    byId("clock-add-condition").click();
+    await vi.waitFor(() => expect(status()).toBe("Condition 2 added."));
+    byId("clock-add-condition").click();
+    await vi.waitFor(() => expect(status()).toBe("Condition 3 added."));
+    expect(document.activeElement).toBe(conditions()[2].querySelector("select"));
+    const removeButtons = () => conditions().map((row) => row.querySelector("button").textContent);
+    expect(removeButtons()).toEqual(["Remove condition 1", "Remove condition 2", "Remove condition 3"]);
+    const third = conditions()[2];
+    conditions()[1].querySelector("button").click();
+    await vi.waitFor(() => expect(status()).toBe("Condition 2 removed, 2 conditions left."));
+    // The condition that took its place has focus, renumbered.
+    expect(document.activeElement).toBe(third.querySelector("select"));
+    expect(third.querySelector("legend").textContent).toBe("Condition 2");
+    expect(removeButtons()).toEqual(["Remove condition 1", "Remove condition 2"]);
+    const first = conditions()[0];
+    third.querySelector("button").click();
+    await vi.waitFor(() => expect(status()).toBe("Condition 2 removed, 1 condition left."));
+    // The last one gone, the one before it has focus.
+    expect(document.activeElement).toBe(first.querySelector("select"));
+    first.querySelector("button").click();
+    await vi.waitFor(() => expect(status()).toBe("Condition 1 removed, 0 conditions left."));
+    expect(document.activeElement).toBe(byId("clock-add-condition"));
+  });
+
+  it("marks and focuses a duration that is not seconds or MM:SS, and clears every mark once fixed", async () => {
+    const server = await open(fakeServer());
+    startMusicStep();
+    const [first] = conditions();
+    setField(first, "artist");
+    first.querySelectorAll("input[type=text]")[1].value = "";
+    byId("clock-add-condition").click();
+    const second = conditions()[1];
+    setField(second, "duration");
+    setOperator(second, "between");
+    const [, low, high] = second.querySelectorAll("input[type=text]");
+    low.value = "1:05";
+    high.value = "ninety";
+    // The empty artist is marked first.
+    byId("clock-add-step").click();
+    await vi.waitFor(() => expect(status()).toBe("Enter a value for artist."));
+    expect(first.querySelectorAll("input[type=text]")[1].getAttribute("aria-invalid")).toBe("true");
+    first.querySelectorAll("input[type=text]")[1].value = "Björk";
+    byId("clock-add-step").click();
+    await vi.waitFor(() => expect(status()).toBe("Enter the duration as seconds or minutes:seconds, for example 90 or 1:30."));
+    expect(high.getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(high);
+    expect(first.querySelector("[aria-invalid]")).toBeNull();
+    high.value = "1:30";
+    byId("clock-add-step").click();
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(server.calls.some((call) => call.method === "PUT")).toBe(true));
+    expect(server.calls.find((call) => call.method === "PUT").body.steps.at(-1).conditions).toEqual([
+      { field: "artist", operator: "is", value: "Björk" },
+      { field: "duration", operator: "between", value: 65, upper: 90 },
+    ]);
+  });
+
+  it("clears marks on rows after the one that fails", async () => {
+    await open(fakeServer());
+    startMusicStep();
+    const [first] = conditions();
+    setField(first, "artist");
+    first.querySelectorAll("input[type=text]")[1].value = "";
+    byId("clock-add-condition").click();
+    const second = conditions()[1];
+    setField(second, "title");
+    const secondValue = second.querySelectorAll("input[type=text]")[1];
+    secondValue.value = "Live";
+    secondValue.setAttribute("aria-invalid", "true");
+    byId("clock-add-step").click();
+    await vi.waitFor(() => expect(status()).toBe("Enter a value for artist."));
+    expect(secondValue.hasAttribute("aria-invalid")).toBe(false);
+  });
+
+  it("reads step summaries with lowercase and/or and readable Beets names", () => {
+    const step = (match, conditions) => ({ type: "music", match, conditions, selection: "least_recent", enforce_rules: true });
+    expect(describeStep(step("all", [
+      { field: "genre", operator: "is", value: "Rock" },
+      { field: "beets", name: "original_year", operator: "lt", value: 1990 },
+      { field: "bpm", operator: "gt", value: 120 },
+    ]))).toBe("music from Genre is Rock and Beets first release year less than 1990 and BPM greater than 120");
+    expect(describeStep(step("any", [
+      { field: "beets", name: "rg_track_gain", operator: "lt", value: -3 },
+      { field: "artist", operator: "is", value: "Björk" },
+    ]))).toBe("music from Beets rg track gain less than -3 or Artist is Björk");
+  });
+
+  it("leaves a focused genre list alone until focus leaves it", async () => {
+    const genres = ["Rock", "Jazz"];
+    await open(fakeServer({ genres }));
+    startMusicStep();
+    const [row] = conditions();
+    setField(row, "genre");
+    const genre = row.querySelectorAll("select")[3];
+    genre.value = "Jazz";
+    genre.focus();
+    const before = [...genre.options];
+    genres.push("Ambient");
+    await controls.refresh();
+    expect([...genre.options]).toEqual(before);
+    expect(document.activeElement).toBe(genre);
+    genre.blur();
+    await controls.refresh();
+    expect([...genre.options].map((option) => option.value)).toEqual(["Rock", "Jazz", "Ambient"]);
+    expect(genre.value).toBe("Jazz");
   });
 });

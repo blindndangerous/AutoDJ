@@ -2037,9 +2037,10 @@
         <div class="clock-step-field" id="clock-step-conditions-field">
           <label for="clock-step-match">Match conditions</label>
           <select id="clock-step-match"><option value="all">Match all</option><option value="any">Match any</option></select>
-          <div id="clock-step-conditions" aria-label="Step conditions"></div>
+          <p id="clock-step-conditions-label">Conditions</p>
+          <div id="clock-step-conditions" role="group" aria-labelledby="clock-step-conditions-label"></div>
           <button type="button" id="clock-add-condition">Add condition</button>
-          <p class="setting-desc">Choose Matches to use * for any text or ? for one character. Duration accepts seconds or MM:SS. Beets fields require a configured Beets library.</p>
+          <p class="setting-desc" id="clock-step-conditions-help">Choose Matches to use * for any text or ? for one character. Duration accepts seconds or MM:SS. Beets fields require a configured Beets library.</p>
           <p class="setting-desc" id="clock-step-beets-notice" hidden></p>
         </div>
         <div class="clock-step-field" id="clock-step-source-field">
