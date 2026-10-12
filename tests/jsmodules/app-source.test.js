@@ -1914,7 +1914,7 @@ describe("app request behavior", () => {
       });
       const tbody = document.querySelector("#history-tbody");
       await vi.waitFor(() => expect(tbody.children).toHaveLength(50));
-      const focused = tbody.querySelectorAll(".history-info")[49];
+      const focused = tbody.querySelectorAll("tr")[49].cells[2];
       focused.focus();
       items = [fresh, ...old.slice(0, 49)];
       webSocket.onmessage({ data: JSON.stringify({ current_track: { path: "M:/new.flac" },
@@ -1922,7 +1922,7 @@ describe("app request behavior", () => {
         is_muted: false, is_paused: false, next_track: null, queue: [], settings: null, volume: 1 }) });
       await vi.waitFor(() => expect(tbody.querySelector("[data-history-id='new']")).not.toBeNull());
       expect(focused.isConnected).toBe(false);
-      expect(document.activeElement).toBe(tbody.querySelectorAll(".history-info")[49]);
+      expect(document.activeElement).toBe(tbody.querySelectorAll("tr")[49].cells[2]);
       expect(document.querySelector("#sr-status").textContent).toContain("no longer in the displayed History rows");
     } finally {
       window.location.hash = "";
@@ -1984,11 +1984,16 @@ describe("app request behavior", () => {
         ? jsonResponse({ total: items.length, page: 1, pages: 1, items }) : jsonResponse({ ok: true }) });
       const tbody = document.querySelector("#history-tbody");
       await vi.waitFor(() => expect(tbody.querySelectorAll(".history-info")).toHaveLength(3));
-      tbody.querySelectorAll(".history-info")[1].focus();
+      const focusedCell = tbody.querySelectorAll("tr")[1].cells[2];
+      focusedCell.focus();
+      document.querySelector("#hist-refresh").click();
+      await vi.waitFor(() => expect(tbody.querySelectorAll("tr")).toHaveLength(3));
+      expect(document.activeElement).toBe(tbody.querySelectorAll("tr")[1].cells[2]);
       items = [items[0], items[2]];
       document.querySelector("#hist-refresh").click();
       await vi.waitFor(() => expect(tbody.querySelectorAll(".history-info")).toHaveLength(2));
-      expect(document.activeElement.dataset.historyId).toBe("three");
+      expect(document.activeElement).toBe(tbody.querySelectorAll("tr")[1].cells[2]);
+      expect(document.activeElement.closest("tr").querySelector(".history-info").dataset.historyId).toBe("three");
       expect(document.querySelector("#sr-status").textContent).toContain("no longer on this History page");
     } finally {
       window.location.hash = "";

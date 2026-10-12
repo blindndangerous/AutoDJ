@@ -2175,12 +2175,16 @@ function _fmtDuration(sec) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-function focusRemainingHistoryRow(tbody, index, message) {
+function focusRemainingHistoryRow(tbody, index, message, column = null) {
   const buttons = [...tbody.querySelectorAll(".history-info")];
-  const target = buttons[Math.min(index, buttons.length - 1)]
+  const rows = [...tbody.querySelectorAll("tr")];
+  const row = rows[Math.min(index, rows.length - 1)];
+  const target = column === null ? buttons[Math.min(index, buttons.length - 1)]
+    : row?.querySelectorAll("td[role=gridcell], td[role=rowheader]")[column];
+  const fallback = target
     || document.querySelector("#panel-history > h2");
-  if (target?.tagName !== "BUTTON") target?.setAttribute("tabindex", "-1");
-  target?.focus();
+  if (fallback?.tagName !== "BUTTON") fallback?.setAttribute("tabindex", "-1");
+  fallback?.focus();
   announceStatus(document.getElementById("sr-status"), message,
     { dwellMs: 6000, force: true, mirror: false });
 }
@@ -2201,10 +2205,14 @@ async function fetchHistory(page, { announce = false } = {}) {
     const empty = document.getElementById("history-empty");
     const pag   = document.getElementById("history-pagination");
     _histNewestAt = null;
-    const focusedButton = tbody.contains(document.activeElement)
-      ? document.activeElement.closest(".history-info") : null;
-    const focusedIndex = focusedButton
-      ? [...tbody.querySelectorAll(".history-info")].indexOf(focusedButton) : -1;
+    const active = tbody.contains(document.activeElement) ? document.activeElement : null;
+    const focusedCell = active?.matches("td[role=gridcell], td[role=rowheader]") ? active : null;
+    const focusedButton = active?.closest(".history-info") || null;
+    const focusedRow = focusedCell?.closest("tr") || focusedButton?.closest("tr") || null;
+    const focusedIndex = focusedRow ? [...tbody.querySelectorAll("tr")].indexOf(focusedRow) : -1;
+    const focusedColumn = focusedCell
+      ? [...focusedCell.parentElement.children].indexOf(focusedCell) : null;
+    const focusedId = focusedRow?.querySelector(".history-info")?.dataset.historyId;
     let focusLost = false;
     if (!data.total) {
       tbody.replaceChildren();
@@ -2214,7 +2222,8 @@ async function fetchHistory(page, { announce = false } = {}) {
       empty.textContent = "No playback history yet.";
       empty.removeAttribute("hidden");
       if (focusedIndex >= 0) {
-        focusRemainingHistoryRow(tbody, focusedIndex, "That play is no longer on this History page.");
+        focusRemainingHistoryRow(tbody, focusedIndex,
+          "That play is no longer on this History page.", focusedColumn);
         focusLost = true;
       }
       if (announce === "refresh" && !focusLost) {
@@ -2226,15 +2235,19 @@ async function fetchHistory(page, { announce = false } = {}) {
     empty.setAttribute("hidden", "");
     table.removeAttribute("hidden");
     const withDate = historyNeedsDates(data.items);
-    const focusedId = focusedButton?.dataset.historyId;
     tbody.replaceChildren(...data.items.map((it) => historyRowHtml(it, withDate)));
     historyNavigation.refresh();
     if (focusedId) {
       const replacement = [...tbody.querySelectorAll(".history-info")]
         .find((button) => button.dataset.historyId === focusedId);
-      if (replacement) replacement.focus();
+      if (replacement) {
+        if (focusedCell) replacement.closest("tr")
+          .querySelectorAll("td[role=gridcell], td[role=rowheader]")[focusedColumn]?.focus();
+        else replacement.focus();
+      }
       else {
-        focusRemainingHistoryRow(tbody, focusedIndex, "That play is no longer on this History page.");
+        focusRemainingHistoryRow(tbody, focusedIndex,
+          "That play is no longer on this History page.", focusedColumn);
         focusLost = true;
       }
     }
@@ -2309,15 +2322,19 @@ async function addNewHistoryRows() {
     return;
   }
   const tbody = document.getElementById("history-tbody");
-  const focusedButton = tbody.contains(document.activeElement)
-    ? document.activeElement.closest(".history-info") : null;
-  const focusedIndex = focusedButton
-    ? [...tbody.querySelectorAll(".history-info")].indexOf(focusedButton) : -1;
+  const active = tbody.contains(document.activeElement) ? document.activeElement : null;
+  const focusedCell = active?.matches("td[role=gridcell], td[role=rowheader]") ? active : null;
+  const focusedButton = active?.closest(".history-info") || null;
+  const focusedRow = focusedCell?.closest("tr") || focusedButton?.closest("tr") || null;
+  const focusedIndex = focusedRow ? [...tbody.querySelectorAll("tr")].indexOf(focusedRow) : -1;
+  const focusedColumn = focusedCell
+    ? [...focusedCell.parentElement.children].indexOf(focusedCell) : null;
+  const focusedElement = focusedCell || focusedButton;
   tbody.prepend(...fresh.map((it) => historyRowHtml(it, _histWithDate)));
   while (tbody.children.length > 50) tbody.lastElementChild.remove();
   historyNavigation.refresh();
-  if (focusedButton && !focusedButton.isConnected) focusRemainingHistoryRow(tbody, focusedIndex,
-    "That play is no longer in the displayed History rows.");
+  if (focusedElement && !focusedElement.isConnected) focusRemainingHistoryRow(tbody, focusedIndex,
+    "That play is no longer in the displayed History rows.", focusedColumn);
   _histNewestAt = data.items[0].played_at;
   showHistoryPaging(data);
 }
