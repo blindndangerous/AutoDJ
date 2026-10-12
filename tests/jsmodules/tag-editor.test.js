@@ -65,6 +65,16 @@ describe("key checks", () => {
 });
 
 describe("Track info tag editor", () => {
+  it("says when beets keeps none of the changed tags", async () => {
+    const editor = install({ request: vi.fn(async () => ({ ...RECORD, beets: "unchanged" })) });
+    editor.load({ ...RECORD, beets_writeback: true });
+    field("isrc").value = "AB1CD2600001";
+    await editor.save();
+    await settle();
+    expect(document.getElementById("tags-status").textContent).toBe(
+      "Saved the tags of Old Title in the file. Beets keeps none of the tags you changed, so beets did not change.",
+    );
+  });
   it("says a beets miss and a library warning in the one status", async () => {
     const request = vi.fn(async () => ({ ...RECORD, beets: "not_found", warning: "The library did not reload." }));
     const editor = install({ request });

@@ -180,6 +180,7 @@ export function installTagEditor({ document: doc = document, request = requestJs
       const message = {
         updated: `Saved the tags of ${name} in the file and in beets.`,
         not_found: `Saved the tags of ${name} in the file. Beets has no entry for this file, so beets did not change.`,
+        unchanged: `Saved the tags of ${name} in the file. Beets keeps none of the tags you changed, so beets did not change.`,
         failed: `Saved the tags of ${name} in the file, but beets was not updated: ${record.beets_error || "unknown error"}. Run beet update to read them into beets.`,
       }[record.beets] || `Saved the tags of ${name}.`;
       const problem = record.beets === "failed" || !!record.warning;

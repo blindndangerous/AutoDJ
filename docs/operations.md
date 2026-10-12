@@ -1018,11 +1018,14 @@ first one. When the save works, the page says so once and focus stays on Save ta
 
 AutoDJ writes MP3, FLAC, M4A, Ogg Vorbis, Opus, WAV and AIFF tags. For any other kind of file,
 or one it cannot read, the Tags section says it cannot edit them. The write is safe to
-interrupt: AutoDJ copies the file to a hidden `.<name>.autodj-tags.tmp` beside it, tags the
-copy, flushes it to disk, reads every changed field back, and only then puts it in place of the
-original in one step, then flushes the folder. If anything fails, the original file is left
-exactly as it was and the page says why. A copy left behind by a crash or power cut is removed
-the next time that file's tags are saved; it is safe to delete by hand.
+interrupt: AutoDJ copies the file to a hidden `.<name>.<random>.autodj-tags.tmp` beside it,
+tags the copy, flushes it to disk, reads every changed field back, and only then puts it in
+place of the original in one step. On Linux and macOS it then flushes the folder too; Windows
+has no folder flush, so there the step is as durable as the file system makes it. If anything
+before that step fails, the original file is left exactly as it was and the page says why. A
+copy left behind by a crash or power cut is removed the next time that file's tags are saved,
+once it is an hour old (a younger one may be another AutoDJ's save in progress); it is safe to
+delete by hand.
 
 Because the file is replaced by a new one:
 
@@ -1052,8 +1055,9 @@ song's beets entry (ISRC only when your beets database has an `isrc` field) and 
 modification time, so `beet update` has nothing new to read. The file is always written first.
 If beets has no entry for the file, or its database cannot be written (for example while beets
 itself holds it), the file and AutoDJ's library keep the new tags, beets keeps the old ones,
-and the page says so; run `beet update` to read the new tags into beets. Beets is never changed
-when the file could not be saved.
+and the page says so; run `beet update` to read the new tags into beets. When beets has no field
+for any tag you changed (an ISRC, in most beets libraries), beets is left exactly as it was, so
+`beet update` still reads the new file. Beets is never changed when the file could not be saved.
 
 If the file is saved but AutoDJ's own library cannot be updated, the page says the tags were
 saved in the file and what went wrong. A rescan then reads the new tags, and the song is
