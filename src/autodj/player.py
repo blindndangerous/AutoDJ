@@ -1000,12 +1000,9 @@ class Player:
 
         In DMCA mode it keeps the complement too (see :meth:`_dmca_checked`).
         """
+        chosen: IndexEntry | None
         dmca = self._pick_context() if self._state.dmca_enabled else None
         if self._library is not None:
-            import random
-
-            from autodj.clockwheel import least_recent
-
             entries = [e for e in self.playable_entries() if not e.is_silent]
             if not entries:
                 return None
@@ -1019,12 +1016,11 @@ class Player:
                     return picked.liner
                 self._seed_clock_cursor = picked.next_cursor
                 return self._dmca_checked(picked.entry, context)
-            if dmca is not None:
-                entries = [e for e in entries if dmca.allows(e)] or entries
-            if self._cfg.playback.pick_mode == "least_recent":
-                chosen = least_recent(entries, self._library.last_played())
-            else:
-                chosen = random.choice(entries)  # nosec B311 -- music selection
+            context = dmca or self._pick_context()
+            try:
+                chosen = self._pick_pure_shuffle(None, context)
+            except Exception as exc:
+                chosen = self._fallback_pick(None, context, exc)
         else:
             chosen = self._sim.random_entry()
         if dmca is None or chosen is None:
@@ -2214,19 +2210,18 @@ class Player:
             logger.info("Repeat rules: %d plays from before the restart count", len(records))
         return len(records)
 
-    def _pick_pure_shuffle(self, current: IndexEntry, context: _PickContext) -> IndexEntry:
+    def _pick_pure_shuffle(self, current: IndexEntry | None, context: _PickContext) -> IndexEntry:
         """Random pick from tracks not in *context*'s history, honouring the BPM range.
 
         Silent tracks are never picked.  When every eligible track was
-        played recently, the history is relaxed to *current* and the
-        protected tracks (the one starting and the one playing), so the
-        pick never returns to any of them.
+        played recently, the history is relaxed to *current* and the protected
+        tracks. Startup passes no *current*, so no arbitrary entry is excluded.
         """
         import random as _rnd
 
         from autodj.similarity import SimilarityError
 
-        protected = context.protected | {current.path}
+        protected = context.protected | ({current.path} if current is not None else set())
         excluded = set(context.recent) | protected
 
         def eligible(entry: IndexEntry) -> bool:
@@ -2428,7 +2423,7 @@ class Player:
             return relaxed, mode
 
     def _fallback_pick(
-        self, current: IndexEntry, context: _PickContext, reason: Exception
+        self, current: IndexEntry | None, context: _PickContext, reason: Exception
     ) -> IndexEntry:
         """Pick a random track after the normal pick failed with *reason*.
 
@@ -2436,8 +2431,9 @@ class Player:
         but avoids repeats as far as the library allows: first a track
         outside the recent history, then one that is not protected (see
         :class:`_PickContext`), then anything but *current*, then *current*
-        itself (a one-track library).  Every step is tried first among the
-        tracks inside the hard BPM range, the same rule pure shuffle uses;
+        itself (a one-track library). At startup there is no *current*, so
+        the fallback can use any audible track. Every step is tried first
+        among tracks inside the hard BPM range, the same rule pure shuffle uses;
         only when no track at all is inside the range are the steps tried
         again without it.  Silent tracks are never picked.
 
@@ -2458,11 +2454,12 @@ class Player:
         if bpm_range is not None:
             lo, hi = bpm_range
             in_range = [entry for entry in audible if entry.bpm > 0 and lo <= entry.bpm <= hi]
-        recent = set(context.recent) | {current.path}
+        current_paths = {current.path} if current is not None else set()
+        recent = set(context.recent) | current_paths
         tiers: tuple[AbstractSet[str], ...] = (
             recent,
-            context.protected | {current.path},
-            {current.path},
+            context.protected | current_paths,
+            current_paths,
             set(),
         )
         chosen: IndexEntry | None = None
@@ -2486,7 +2483,7 @@ class Player:
             logger.warning(
                 "Could not pick a track to follow %s (%s: %s); picking one at random "
                 "instead until the normal pick works again.%s",
-                current.display_name,
+                current.display_name if current is not None else "the automatic start",
                 type(reason).__name__,
                 reason,
                 ignored_note,
