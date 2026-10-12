@@ -4,9 +4,9 @@
 // opens one into a working copy, edits its steps in the page, and sends it
 // back only when Save clockwheel is pressed; nothing is saved on its own.
 //
-// Steps are an <ol>.  Each item says its position ("Step 3 of 12, music
-// from Rock") and has native buttons: Edit, Move up, Move down, Duplicate
-// and Delete.  Alt+Up and Alt+Down move the step that holds focus.  After
+// The <ol> is a layout grid with a row header and a cell for each native
+// button. The step name is the Edit button; Up/Down moves between names,
+// Left/Right moves among row actions, and Alt+Up/Down moves the focused step. After
 // every change focus stays with the step that moved, or the nearest one,
 // and the result is said once through #clock-status.
 //
@@ -184,26 +184,46 @@ export function installClockwheelPanel({ document: doc = document, request = req
   function renderSteps(focusIndex = null, action = "edit") {
     if (!clock || !clock.steps.length) {
       const none = doc.createElement("li");
-      none.textContent = clock ? "No steps yet. Add one with the form below." : "Open or create a clockwheel to see its steps.";
+      none.setAttribute("role", "row");
+      const cell = doc.createElement("div");
+      cell.setAttribute("role", "gridcell");
+      cell.textContent = clock ? "No steps yet. Add one with the form below." : "Open or create a clockwheel to see its steps.";
+      none.append(cell);
       steps.replaceChildren(none);
     } else {
       steps.replaceChildren(...clock.steps.map((step, index) => {
         const item = doc.createElement("li");
         item.dataset.index = String(index);
-        const text = doc.createElement("span");
-        text.textContent = position(index);
-        item.append(text);
+        item.setAttribute("role", "row");
+        const number = doc.createElement("span");
+        number.setAttribute("role", "rowheader");
+        number.textContent = String(index + 1);
+        item.append(number);
         for (const [key, title] of ROW_ACTIONS) {
+          const cell = doc.createElement("span");
+          cell.setAttribute("role", "gridcell");
+          if (key === "edit") {
+            const button = doc.createElement("button");
+            button.type = "button";
+            button.dataset.action = key;
+            button.tabIndex = index === 0 ? 0 : -1;
+            button.textContent = describeStep(step, data.sources);
+            cell.append(button);
+            item.append(cell);
+            continue;
+          }
           const button = doc.createElement("button");
           button.type = "button";
           button.dataset.action = key;
+          button.tabIndex = -1;
           // The visible words start the name; the hidden number says which step.
           const hidden = doc.createElement("span");
           hidden.className = "visually-hidden";
           hidden.textContent = ` step ${index + 1}`;
           button.append(title, hidden);
           button.disabled = (key === "move-up" && index === 0) || (key === "move-down" && index === clock.steps.length - 1);
-          item.append(" ", button);
+          cell.append(button);
+          item.append(" ", cell);
         }
         return item;
       }));
@@ -220,6 +240,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     const other = { "move-up": "move-down", "move-down": "move-up" }[action] || "edit";
     const target = wanted && !wanted.disabled ? wanted : row.querySelector(`button[data-action="${other}"]:not([disabled])`)
       || row.querySelector('button[data-action="edit"]');
+    steps.querySelectorAll("button[data-action]").forEach((button) => { button.tabIndex = button === target ? 0 : -1; });
     target?.focus();
   }
 
@@ -270,15 +291,45 @@ export function installClockwheelPanel({ document: doc = document, request = req
   steps.addEventListener("click", (event) => {
     const button = event.target.closest?.("button[data-action]");
     const row = button?.closest("li[data-index]");
-    if (row) rowAction(button.dataset.action, Number(row.dataset.index));
+    if (row) {
+      steps.querySelectorAll("button[data-action]").forEach((item) => { item.tabIndex = item === button ? 0 : -1; });
+      rowAction(button.dataset.action, Number(row.dataset.index));
+    }
   });
   steps.addEventListener("keydown", (event) => {
-    if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
     const row = event.target.closest?.("li[data-index]");
     if (!row || !clock) return;
-    event.preventDefault();
-    move(Number(row.dataset.index), event.key === "ArrowUp" ? -1 : 1, event.target.dataset?.action || "edit");
+    if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+        && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+      event.preventDefault();
+      move(Number(row.dataset.index), event.key === "ArrowUp" ? -1 : 1, event.target.dataset?.action || "edit");
+    } else if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+        && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+      const next = Number(row.dataset.index) + (event.key === "ArrowUp" ? -1 : 1);
+      event.preventDefault();
+      if (next >= 0 && next < clock.steps.length) {
+        focusRow(next, "edit");
+      }
+    } else if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+        && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+      const buttons = [...row.querySelectorAll('button[data-action]:not([disabled])')];
+      const at = buttons.indexOf(event.target.closest?.("button[data-action]"));
+      const next = at + (event.key === "ArrowLeft" ? -1 : 1);
+      event.preventDefault();
+      if (next >= 0 && next < buttons.length) focusRow(Number(row.dataset.index), buttons[next].dataset.action);
+    } else if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+        && (event.key === "Home" || event.key === "End")) {
+      const buttons = [...row.querySelectorAll('button[data-action]:not([disabled])')];
+      event.preventDefault();
+      focusRow(Number(row.dataset.index), buttons[event.key === "Home" ? 0 : buttons.length - 1].dataset.action);
+    } else if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key === "Delete") {
+      event.preventDefault();
+      if (!event.repeat) rowAction("delete", Number(row.dataset.index));
+    } else if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+        && event.key === "Enter" && event.target.dataset?.action === "edit") {
+      event.preventDefault();
+      rowAction("edit", Number(row.dataset.index));
+    }
   });
 
   // ---- Step form ------------------------------------------------------

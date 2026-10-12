@@ -1450,9 +1450,12 @@ Step types:
   when they hold it back, the clockwheel moves on to the next step.
 - **Switch preset**: the next song is picked and mixed with that preset.
 
-The editor lists the steps in order, each read as "Step 3 of 12, music from Rock", with Edit,
-Move up, Move down, Duplicate and Delete buttons. Alt+Up and Alt+Down move the step whose button
-has focus, and focus moves with it. Nothing is saved until you press **Save clockwheel**; opening
+The editor lists numbered steps with their names as Edit buttons. With focus in the step list,
+Up and Down move to the previous or next step name, Enter on a name edits it, and Delete removes
+that step. Left and Right move between the actions in a row; Home and End go to its first or
+last available action. Tab leaves the step list. Alt+Up and Alt+Down still reorder the focused
+step, and focus moves with it. Move up, Move down, Duplicate and Delete buttons remain available.
+These list keys do not replace the playback or spoken-status shortcuts. Nothing is saved until you press **Save clockwheel**; opening
 another clockwheel with unsaved changes asks first. **Restart at these minutes past each hour**
 sends the clockwheel back to step 1 at the song change nearest each minute.
 
