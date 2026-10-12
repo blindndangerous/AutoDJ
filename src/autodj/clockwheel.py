@@ -25,10 +25,33 @@ class ClockSlot:
     preset: str = ""
     category: str = ""
     require_following: bool = False
+    conditions: tuple[dict[str, Any], ...] = ()
+    match: str = "all"
 
     def __post_init__(self) -> None:
-        if self.kind in {"music", "liner"} and (
-            not isinstance(self.folder, str) or not self.folder.strip()
+        if not isinstance(self.conditions, (list, tuple)) or len(self.conditions) > 32:
+            raise ValueError("A slot allows a list of at most 32 conditions")
+        if self.conditions:
+            from autodj.clock_conditions import validate_metadata_condition
+
+            if self.kind not in {"music", "liner"} or self.folder:
+                raise ValueError("Only music or liner slots can use conditions instead of a folder")
+            for condition in self.conditions:
+                if not isinstance(condition, dict):
+                    raise ValueError("Each condition must be an object")
+                if condition.get("field") == "folder":
+                    if set(condition) != {"field", "folder", "recursive"}:
+                        raise ValueError("Invalid resolved folder condition")
+                    ClockSlot(folder=condition["folder"], recursive=condition["recursive"])
+                else:
+                    validate_metadata_condition(condition)
+            object.__setattr__(self, "conditions", tuple(self.conditions))
+        if self.match not in ("all", "any"):
+            raise ValueError("Choose Match all or Match any for the slot")
+        if (
+            not self.conditions
+            and self.kind in {"music", "liner"}
+            and (not isinstance(self.folder, str) or not self.folder.strip())
         ):
             raise ValueError("folder must be a non-empty string")
         if type(self.recursive) is not bool or type(self.enforce_rules) is not bool:
@@ -52,6 +75,9 @@ class ClockSlot:
         value = asdict(self)
         if not self.require_following:
             value.pop("require_following")
+        if not self.conditions:
+            value.pop("conditions")
+            value.pop("match")
         return value
 
     @classmethod
@@ -68,6 +94,8 @@ class ClockSlot:
             "preset",
             "category",
             "require_following",
+            "conditions",
+            "match",
         }
         unknown = set(value) - allowed
         if unknown:
@@ -189,7 +217,35 @@ def validate_clock(slots: Sequence[ClockSlot]) -> list[ClockSlot]:
     return result
 
 
-def _slot_entries(slot: ClockSlot, entries: Sequence[Any]) -> list[Any]:
+def _slot_entries(
+    slot: ClockSlot, entries: Sequence[Any], beets: Mapping[str, Mapping[str, Any]] | None = None
+) -> list[Any]:
+    if slot.conditions:
+        from autodj.catalog import normalize_path
+        from autodj.clock_conditions import matches_condition
+
+        condition_paths: set[str] | None = None
+        for condition in slot.conditions:
+            if condition["field"] == "folder":
+                matched = _slot_entries(
+                    ClockSlot(folder=condition["folder"], recursive=condition["recursive"]), entries
+                )
+            else:
+                matched = [
+                    entry
+                    for entry in entries
+                    if matches_condition(
+                        condition, entry, beets.get(normalize_path(entry.path)) if beets else None
+                    )
+                ]
+            found_paths = {entry.path for entry in matched}
+            if condition_paths is None:
+                condition_paths = found_paths
+            elif slot.match == "all":
+                condition_paths &= found_paths
+            else:
+                condition_paths |= found_paths
+        return [entry for entry in entries if entry.path in (condition_paths or set())]
     root = _normalized(slot.folder)
     separator = "/" if root.startswith("/") and not root.startswith("//") else "\\"
     found: list[Any] = []
@@ -220,6 +276,8 @@ def pick_slot(
     *,
     liners: Sequence[Any] = (),
     categories: Mapping[str, tuple[str, AbstractSet[str]]] | None = None,
+    beets: Mapping[str, Mapping[str, Any]] | None = None,
+    condition_errors: Mapping[int, str] | None = None,
 ) -> ClockPick:
     """Scan one clock cycle and select its next eligible music entry.
 
@@ -275,6 +333,12 @@ def pick_slot(
     for step in range(len(slots)):
         index = (start + step) % len(slots)
         slot = slots[index]
+        if condition_errors and index in condition_errors:
+            skipped.append(f"Step {index + 1}: {condition_errors[index]}")
+            if slot.kind == "liner":
+                pending_liner = None
+                pending_liner_requires_following = False
+            continue
         if slot.kind == "settings":
             preset = slot.preset
             continue
@@ -309,11 +373,22 @@ def pick_slot(
             if reason:
                 skipped.append(reason)
             if selected is not None:
-                return ClockPick(selected, pending_liner, (index + 1) % len(slots), skipped, preset)
+                return ClockPick(
+                    selected,
+                    pending_liner,
+                    (index + 1) % len(slots),
+                    skipped,
+                    preset,
+                    pending_liner_requires_following if pending_liner is not None else False,
+                )
             continue
         pool = liners if slot.kind == "liner" else entries
         selected, reason = choose(
-            slot, _slot_entries(slot, pool), f"{slot.kind} slot {slot.folder}"
+            slot,
+            _slot_entries(slot, pool, beets),
+            f"{slot.kind} step {index + 1} conditions"
+            if slot.conditions
+            else f"{slot.kind} slot {slot.folder}",
         )
         if reason:
             skipped.append(reason)

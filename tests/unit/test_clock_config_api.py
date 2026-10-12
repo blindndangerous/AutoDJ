@@ -31,7 +31,11 @@ def app_for(catalog, root):
     )
     player = SimpleNamespace(_cfg=cfg, _clock_status="Idle", _clock=None)
     player.configure_clock = Mock()
-    library = SimpleNamespace(catalog=catalog, entry_for_path=lambda _path: None)
+    library = SimpleNamespace(
+        catalog=catalog,
+        entry_for_path=lambda _path: None,
+        entries_snapshot=lambda _kind="music": (),
+    )
     bridge = SimpleNamespace(player=player, library=library)
     app = create_app(bridge)
     routes = {

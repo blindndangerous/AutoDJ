@@ -1104,7 +1104,12 @@ class Player:
     def _load_clockwheel(self, name: str) -> tuple[dict[str, Any], list[Any]]:
         """Read clockwheel *name* and turn its steps into playable slots."""
         from autodj.clockwheel import ClockSlot, validate_clock
-        from autodj.clockwheel_store import ClockwheelStore, source_folder, step_source
+        from autodj.clockwheel_store import (
+            ClockwheelStore,
+            resolve_conditions,
+            source_folder,
+            step_source,
+        )
         from autodj.presets import get_preset
 
         library = self._library
@@ -1116,17 +1121,30 @@ class Player:
         for number, step in enumerate(clock["steps"], 1):
             kind = step["type"]
             if kind in {"music", "liner"}:
-                root = step_source(step, sources, number)["path"]
-                slots.append(
-                    ClockSlot(
-                        folder=source_folder(root, step["folder"]),
-                        recursive=step["recursive"],
-                        selection=step["selection"],
-                        enforce_rules=step["enforce_rules"],
-                        kind=kind,
-                        require_following=step.get("require_following", False),
+                if "conditions" in step:
+                    conditions = resolve_conditions(step, sources, number)
+                    slots.append(
+                        ClockSlot(
+                            kind=kind,
+                            conditions=conditions,
+                            match=step["match"],
+                            selection=step["selection"],
+                            enforce_rules=step["enforce_rules"],
+                            require_following=step.get("require_following", False),
+                        )
                     )
-                )
+                else:
+                    root = step_source(step, sources, number)["path"]
+                    slots.append(
+                        ClockSlot(
+                            folder=source_folder(root, step["folder"]),
+                            recursive=step["recursive"],
+                            selection=step["selection"],
+                            enforce_rules=step["enforce_rules"],
+                            kind=kind,
+                            require_following=step.get("require_following", False),
+                        )
+                    )
             elif kind == "track":
                 root = step_source(step, sources, number)["path"]
                 slots.append(ClockSlot(kind="track", path=source_folder(root, step["path"])))
@@ -1174,6 +1192,32 @@ class Player:
         last_played = self._library.last_played()
         liners = self._library.entries_snapshot("liner")
         categories = self._category_members()
+        beets_items = {}
+        condition_errors = {}
+        fields = {
+            condition["name"]
+            for slot in self._clock_slots
+            for condition in slot.conditions
+            if condition["field"] == "beets"
+        }
+        if fields:
+            known, beets_items, error = self._library.clock_beets.snapshot(fields)
+            for index, slot in enumerate(self._clock_slots):
+                for condition in slot.conditions:
+                    if condition["field"] == "beets":
+                        if error:
+                            condition_errors[index] = error
+                        elif condition["name"] not in known:
+                            condition_errors[index] = (
+                                f"Beets has no field named {condition['name']}"
+                            )
+        if condition_errors:
+            reasons = tuple(sorted(condition_errors.items()))
+            if reasons != getattr(self, "_clock_condition_errors", ()):
+                logger.warning("Clock conditions: %s", "; ".join(condition_errors.values()))
+            self._clock_condition_errors = reasons
+        else:
+            self._clock_condition_errors = ()
 
         def pick(
             use_rules: bool,
@@ -1201,6 +1245,8 @@ class Player:
                 allowed,
                 liners=liners,
                 categories=categories,
+                beets=beets_items,
+                condition_errors=condition_errors,
             )
 
         # Like the other pick modes, relax rather than stop the music: first
@@ -1283,6 +1329,8 @@ class Player:
         A clock of folder and track steps only is left as it was.
         """
         slots = getattr(self, "_clock_slots", None) or ()
+        if any(getattr(slot, "conditions", ()) for slot in slots):
+            return None  # Explicit conditions must not fall back to unfiltered music.
         if not any(getattr(slot, "kind", None) == "category" for slot in slots):
             return None
         reason = ValueError(f"the clockwheel has no song to play: {self._clock_status}")
