@@ -34,6 +34,8 @@
 //
 // Set AUTODJ_URL=http://host:port before running, e.g.:
 //   AUTODJ_URL=http://localhost:8080 node tests/playwright/visual_audit.mjs
+// Set AUTODJ_CPU_THROTTLE=<rate>, e.g. 6, to slow Chromium's CPU that many
+// times, as on a loaded CI runner (Firefox has no such control).
 // Set AUTODJ_SCREENSHOTS=<folder> to also save a full-page screenshot of
 // every target in every theme mode, for review by eye.
 
@@ -45,6 +47,7 @@ import { runAudit } from "./audit_helpers.mjs";
 
 const BASE = process.env.AUTODJ_URL || "http://localhost:8080";
 const SHOTS = process.env.AUTODJ_SCREENSHOTS || "";
+const CPU_THROTTLE = Number(process.env.AUTODJ_CPU_THROTTLE || 0);
 const AXE = fileURLToPath(import.meta.resolve("axe-core/axe.min.js"));
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
 const VIEWS = ["now", "queue", "carts", "track-info", "history", "settings", "library"];
@@ -68,6 +71,30 @@ async function openEveryCard(page) {
   });
 }
 
+// Under reduced motion app.css gives every property a 0.01 ms transition,
+// so a change of focus, view or class shows its old colour, outline and
+// width until the next frame.  On a loaded CI runner that frame can come
+// well after a fixed wait: a focus ring was measured in the button's own
+// white text colour (1.00:1).  Every measurement waits for the running
+// transitions to end, so it reads the colours a person sees.
+function settle(page) {
+  return page.evaluate(() => {
+    const running = document.getAnimations()
+      .filter((animation) => animation instanceof window.CSSTransition);
+    const ended = Promise.all(running.map((animation) => animation.finished.catch(() => null)));
+    return Promise.race([ended, new Promise((resolve) => setTimeout(resolve, 2000))]);
+  });
+}
+
+async function newPage(context) {
+  const page = await context.newPage();
+  if (CPU_THROTTLE > 1 && context.browser()?.browserType().name() === "chromium") {
+    const session = await context.newCDPSession(page);
+    await session.send("Emulation.setCPUThrottlingRate", { rate: CPU_THROTTLE });
+  }
+  return page;
+}
+
 // Every view, and with Settings every subtab this server shows (Stream only
 // in stream mode).  `visit` runs once per target with that target shown.
 async function eachTarget(page, visit) {
@@ -80,6 +107,7 @@ async function eachTarget(page, visit) {
     await page.waitForTimeout(100);
     if (view !== "settings") {
       await openEveryCard(page);
+      await settle(page);
       await visit(view);
       continue;
     }
@@ -89,6 +117,7 @@ async function eachTarget(page, visit) {
       await page.locator(`#${id}`).click();
       await page.waitForTimeout(150);
       await openEveryCard(page);
+      await settle(page);
       await visit(`settings/${id.replace(/^stab-/, "")}`);
     }
   }
@@ -285,6 +314,7 @@ async function toastProblems(page) {
   const problems = [];
   for (const tone of ["info", "error"]) {
     await showToast(page, tone === "error" ? "Could not save: the server refused." : "Settings saved.", tone);
+    await settle(page);
     const found = await page.evaluate(() => {
       const { parse, over, ratio, behind } = window.__contrast;
       const box = document.getElementById("status-toast-box");
@@ -321,6 +351,7 @@ async function focusProblems(page, startSelector, { maxStops = MAX_TAB_STOPS, me
   for (let stop = 0; stop < maxStops; stop += 1) {
     await page.keyboard.press("Tab");
     await page.waitForTimeout(30);
+    await settle(page);
     const info = await page.evaluate((colour) => {
       const element = document.activeElement;
       if (!element || element === document.body) return null;
@@ -387,7 +418,7 @@ async function themeContext(browser, mode) {
 // One theme mode: colours only.
 async function auditTheme(browser, mode, out) {
   const context = await themeContext(browser, mode);
-  const page = await context.newPage();
+  const page = await newPage(context);
   page.on("pageerror", (error) => out.pageerrors.push(`${mode.name}: ${error.message}`));
   const record = (key, target, problems) => {
     if (!problems.length) return;
@@ -426,6 +457,7 @@ async function auditTheme(browser, mode, out) {
         await showToast(page, "");
       }
     });
+    await settle(page);
     const state = await page.evaluate(() => ({
       before: window.__beforeModules,
       theme: document.documentElement.getAttribute("data-theme"),
@@ -460,7 +492,7 @@ async function themeSettingProblems(page) {
   )].map((node) => node.textContent.trim()).join("|"));
   const before = await regions();
   await page.locator("#theme-dark").click();
-  await page.waitForTimeout(100);
+  await settle(page);
   const after = await page.evaluate(() => ({
     theme: document.documentElement.getAttribute("data-theme"),
     background: window.getComputedStyle(document.body).backgroundColor,
@@ -531,6 +563,7 @@ async function toastBehaviourProblems(page) {
   const before = await focused();
   await page.keyboard.press("Tab");
   if (await focused() !== "status-toast-dismiss") problems.push(`Tab reached ${await focused()}, not Dismiss`);
+  await settle(page);
   const ring = await page.evaluate(() => {
     const style = window.getComputedStyle(document.activeElement);
     return style.outlineStyle !== "none" && parseFloat(style.outlineWidth) >= 2;
@@ -554,7 +587,7 @@ export async function audit(name, launcher) {
 
     const wide = await browser.newContext({ viewport: { width: 1280, height: 800 },
       reducedMotion: "reduce", colorScheme: "light", bypassCSP: true });
-    const page = await wide.newPage();
+    const page = await newPage(wide);
     page.on("pageerror", (error) => out.pageerrors.push(error.message));
     await eachTarget(page, async (target) => {
       const small = await smallChoiceControls(page);
@@ -580,7 +613,7 @@ export async function audit(name, launcher) {
 
     const narrow = await browser.newContext({ viewport: { width: 320, height: 640 },
       reducedMotion: "reduce", colorScheme: "light" });
-    const phone = await narrow.newPage();
+    const phone = await newPage(narrow);
     phone.on("pageerror", (error) => out.pageerrors.push(error.message));
     await eachTarget(phone, async (target) => {
       const overflow = await horizontalOverflow(phone);
