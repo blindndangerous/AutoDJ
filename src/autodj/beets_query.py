@@ -264,7 +264,7 @@ def _term(token: str) -> Term:
         token = token[1:]
     if _SORT.fullmatch(token) and ":" not in token:
         raise QueryError(
-            f'"{written}": sorting is not supported; a show picks songs in its own order'
+            f'"{written}": sorting is not supported; the clockwheel step chooses the order'
         )
     name, colon, value = token.partition(":")
     if not colon:
@@ -337,7 +337,7 @@ def parse_query(text: str) -> Query:
         if token.endswith(","):
             raise QueryError(
                 "Alternatives separated by a comma are not supported; every term must match. "
-                "Use a separate show, or a genre list in the form, for alternatives"
+                "Make a category for each alternative and give each its own clockwheel step"
             )
         if token:
             terms.append(_term(token))

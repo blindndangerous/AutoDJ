@@ -91,6 +91,8 @@ class LibraryConfig(_Section):
             database are resolved against ``music_dir``.
         beets_db: Optional path to the beets SQLite library database.
         supported_formats: List of audio file extensions to index (without dots).
+        playlists_folder: Folder holding the M3U and M3U8 files that rotation
+            categories read; ``None`` means ``<index_dir>/<name>/playlists``.
     """
 
     SECTION: ClassVar[str] = "library"
@@ -98,11 +100,15 @@ class LibraryConfig(_Section):
     music_dir: Path
     beets_db: Path | None = None
     supported_formats: list[str] = field(default_factory=lambda: ["mp3", "flac", "m4a"])
+    playlists_folder: Path | None = None
 
     def __post_init__(self) -> None:
-        """Expand ``~`` in the paths; an empty ``beets_db`` means none."""
+        """Expand ``~`` in the paths; an empty ``beets_db`` or ``playlists_folder`` means none."""
         self.music_dir = Path(self.music_dir).expanduser()
         self.beets_db = Path(self.beets_db).expanduser() if self.beets_db else None
+        self.playlists_folder = (
+            Path(self.playlists_folder).expanduser() if self.playlists_folder else None
+        )
 
 
 @dataclass

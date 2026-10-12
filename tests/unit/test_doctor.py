@@ -535,6 +535,7 @@ def test_run_doctor_check_order(tmp_path: Path) -> None:
         "stream",
         "related-artists",
         "time-checks",
+        "categories",
     ]
 
 
@@ -1078,3 +1079,62 @@ def test_related_artists_check_warns_about_a_bad_file(tmp_path: Path, content) -
     if content is not None:
         assert str(path) in check.detail
     assert check.repair is None
+
+
+def test_doctor_names_empty_categories_and_missing_playlist_tracks(tmp_path: Path) -> None:
+    from autodj.catalog import LibraryCatalog
+    from autodj.categories import Category, CategoryStore
+
+    cfg = _config(tmp_path)
+    check = {c.name: c for c in run_doctor(cfg).checks}["categories"]
+    assert (check.status, check.summary) == (CheckStatus.PASS, "no categories saved")
+
+    active = cfg.index.active_dir
+    active.mkdir(parents=True, exist_ok=True)
+    music = cfg.library.music_dir
+    with LibraryCatalog(active / "library.db") as catalog:
+        for name, year in (("one", 2004), ("two", 1990)):
+            entry = IndexEntry(
+                str(music / f"{name}.flac"),
+                name,
+                "A",
+                "B",
+                "Rock",
+                120,
+                year,
+                180.0,
+                0.2,
+                -1,
+                -1,
+                0.0,
+            )
+            catalog.put_entry(entry, points={"start": 0, "end": 180})
+    playlists = active / "playlists"
+    playlists.mkdir()
+    (playlists / "A.m3u").write_text(f"{music / 'one.flac'}\nlost.flac\n", encoding="utf-8")
+    store = CategoryStore(active / "categories.json")
+    store.save(
+        [
+            Category(id="a", name="2000s", source="query", query="original_year:2000..2009"),
+            Category(id="b", name="A", source="m3u", playlist="A.m3u"),
+        ]
+    )
+    check = {c.name: c for c in run_doctor(cfg).checks}["categories"]
+    assert check.status is CheckStatus.WARN
+    assert check.summary == (
+        "2 saved, 2 songs in all; A: 1 playlist line matches no library track: lost.flac"
+    )
+    assert check.detail["2000s"]["release_year_fallbacks"] == 1
+
+    store.save([Category(id="c", name="Jazz", source="query", query="genre:jazz")])
+    check = {c.name: c for c in run_doctor(cfg).checks}["categories"]
+    assert check.summary == "1 saved, 0 songs in all; Jazz: no songs match"
+
+    store.save([Category(id="c", name="Jazz", source="query", query="genre:rock")])
+    check = {c.name: c for c in run_doctor(cfg).checks}["categories"]
+    assert (check.status, check.summary) == (CheckStatus.PASS, "1 saved, 2 songs in all")
+
+    (active / "categories.json").write_text("{", encoding="utf-8")
+    check = {c.name: c for c in run_doctor(cfg).checks}["categories"]
+    assert check.status is CheckStatus.WARN and "cannot be read" in check.summary
+    assert (active / "categories.json").exists()  # doctor never sets the file aside
