@@ -99,9 +99,22 @@ def test_time_checks_settings_and_recordings_survive_restore(tmp_path: Path) -> 
     clips = cfg.index.active_dir / "time_checks"
     clips.mkdir()
     (clips / "03_05.wav").write_bytes(b"clip")
+    # A voice pack kept in the time_checks folder is backed up; one elsewhere is not.
+    (clips / "Studio").mkdir()
+    (clips / "Studio" / "hr_03.wav").write_bytes(b"hour")
+    elsewhere = tmp_path / "voices" / "Night"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "hr_03.wav").write_bytes(b"hour")
+    cfg.time_checks.voice_packs = [str(clips / "Studio"), str(elsewhere)]
     archive = create_backup(cfg, tmp_path / "time-checks.zip", force=False)
     with zipfile.ZipFile(archive) as backup:
-        assert {"index/time_checks.json", "time_checks/03_05.wav"} <= set(backup.namelist())
+        names = set(backup.namelist())
+        assert {
+            "index/time_checks.json",
+            "time_checks/03_05.wav",
+            "time_checks/Studio/hr_03.wav",
+        } <= names
+        assert not any("Night" in name for name in names)
     state.unlink()
     (clips / "03_05.wav").unlink()
     restore_backup(cfg, archive, force=True)

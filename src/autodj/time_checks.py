@@ -3,10 +3,12 @@
 A time check is the optional intro clip, the time and the optional outro
 clip, decoded into one stereo clip and played through the voice liner
 scheduler, so it gets the liner duck depth and, after a song change, the
-liner talk-up timing.  The time comes from a recorded clip named for the
-station-local minute (``HH_MM``) or from an operator-configured text to
-speech command.  Paths and the command come only from the config files;
-a paired browser can change the three switches in :class:`SettingsBody`.
+liner talk-up timing.  The time comes from the first source that has it: an
+enabled voice pack (hour and minute files joined by :mod:`autodj.voice_packs`),
+a recorded clip named for the station-local minute (``HH_MM``), or an
+operator-configured text to speech command.  Paths and the command come only
+from the config files; a paired browser can change the switches in
+:class:`SettingsBody` and name a configured pack, never a path.
 """
 
 from __future__ import annotations
@@ -17,9 +19,11 @@ import io
 import json
 import logging
 import os
+import secrets
 import subprocess  # nosec B404 -- operator-configured argv, never a shell
 import tempfile
 import threading
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -34,6 +38,7 @@ from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr, field_validat
 from autodj.liner_scheduler import LinerDecodeError, decode_liner_path
 from autodj.scheduler import Action, Scheduler
 from autodj.stereo import SAMPLE_RATE
+from autodj.voice_packs import JoinCache, coverage, join_voice, pieces_for, scan_pack, signature
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
@@ -78,13 +83,24 @@ def missing_minutes(folder: Path) -> list[str]:
     ]
 
 
+def pack_folders(cfg: AutoDJConfig) -> dict[str, Path]:
+    """Configured voice packs by name (the folder name), in config order."""
+    return {Path(path).name: Path(path) for path in cfg.time_checks.voice_packs}
+
+
 class SettingsBody(BaseModel):
-    """Only non-secret switches are writable from a paired browser."""
+    """Only non-secret switches are writable from a paired browser.
+
+    ``enabled_packs`` holds pack names; a name that is not configured is
+    refused by the route and ignored when it comes from a saved file.
+    """
 
     model_config = ConfigDict(extra="forbid")
     enabled: StrictBool
     hour_format: StrictStr
     rule: StrictStr
+    enabled_packs: list[StrictStr]
+    pack_order: StrictStr
 
     @field_validator("hour_format")
     @classmethod
@@ -100,6 +116,27 @@ class SettingsBody(BaseModel):
             raise ValueError("rule must be off or after_hour_song")
         return value
 
+    @field_validator("enabled_packs")
+    @classmethod
+    def check_packs(cls, value: list[str]) -> list[str]:
+        if len(value) > 100 or len(set(value)) != len(value):
+            raise ValueError("enabled_packs must name each pack once, at most 100")
+        return value
+
+    @field_validator("pack_order")
+    @classmethod
+    def check_order(cls, value: str) -> str:
+        if value not in ("rotate", "random"):
+            raise ValueError("pack_order must be rotate or random")
+        return value
+
+
+class PlayNowBody(BaseModel):
+    """Optionally test one configured pack by name."""
+
+    model_config = ConfigDict(extra="forbid")
+    pack: StrictStr | None = None
+
 
 def state_path(cfg: AutoDJConfig) -> Path:
     """Where the switches saved from Settings live."""
@@ -107,19 +144,29 @@ def state_path(cfg: AutoDJConfig) -> Path:
 
 
 def load_settings(cfg: AutoDJConfig) -> SettingsBody:
-    """The switches saved from Settings, or the config file's when none were saved.
+    """The switches saved from Settings over the config file's.
+
+    A key the saved file lacks takes the config value; with no saved
+    ``enabled_packs``, every configured pack is enabled.
 
     Raises:
         ValueError: The saved file has another version or bad values.
     """
+    tc = cfg.time_checks
+    defaults = {
+        "enabled": tc.enabled,
+        "hour_format": tc.hour_format,
+        "rule": tc.rule,
+        "enabled_packs": list(pack_folders(cfg)),
+        "pack_order": tc.pack_order,
+    }
     path = state_path(cfg)
     if not path.is_file():
-        tc = cfg.time_checks
-        return SettingsBody(enabled=tc.enabled, hour_format=tc.hour_format, rule=tc.rule)
+        return SettingsBody.model_validate(defaults)
     state = json.loads(path.read_text(encoding="utf-8"))
     if state.get("version") != STATE_VERSION:
         raise ValueError(f"Unsupported time checks state version in {path}")
-    return SettingsBody.model_validate(state["settings"])
+    return SettingsBody.model_validate({**defaults, **state["settings"]})
 
 
 def _has_audio(path: Path) -> bool:
@@ -131,6 +178,14 @@ def _has_audio(path: Path) -> bool:
 
 
 HourKey = tuple[int, int, int, int, int]
+
+
+@dataclass(frozen=True)
+class Rendered:
+    """A time check ready to play, and where its voice came from."""
+
+    audio: np.ndarray
+    source: str
 
 
 def _hour_key(now: datetime) -> HourKey:
@@ -161,6 +216,9 @@ class TimeChecks:
         self.cache = Path(cfg.index.active_dir) / "time_checks_cache"
         self.state_path = state_path(cfg)
         self.settings = load_settings(cfg)
+        self.packs = pack_folders(cfg)
+        self._joined = JoinCache()
+        self._rotation = 0
         self._lock = threading.Lock()
         self._tts_lock = threading.Lock()
         self._hour = _hour_key(datetime.now(self.zone))
@@ -191,11 +249,28 @@ class TimeChecks:
             if not settings.enabled or settings.rule == "off":
                 self._pending = False
 
+    def pack_status(self) -> list[dict[str, Any]]:
+        """Each configured pack's name, switch and coverage in text, without its path."""
+        result = []
+        for name, folder in self.packs.items():
+            pack = scan_pack(folder)
+            covered = coverage(pack, self.settings.hour_format)
+            result.append(
+                {
+                    "name": name,
+                    "enabled": name in self.settings.enabled_packs,
+                    "minutes_covered": covered.minutes_covered,
+                    "summary": covered.describe(pack),
+                }
+            )
+        return result
+
     def status(self) -> dict[str, Any]:
         """Expose useful clip coverage without exposing paths or command arguments."""
         missing = missing_minutes(self.folder)
         return {
             **self.settings.model_dump(),
+            "packs": self.pack_status(),
             "missing_minutes": len(missing),
             "missing_examples": missing[:10],
             "tts_available": bool(self.config.tts_command),
@@ -224,14 +299,77 @@ class TimeChecks:
             pending, self._pending = self._pending, False
             if not pending or self._aired_hour == _hour_key(datetime.now(self.zone)):
                 return None
-        return self._aired(self.render())
+        rendered = self._aired(self.render())
+        return None if rendered is None else rendered.audio
 
-    def _aired(self, audio: np.ndarray | None) -> np.ndarray | None:
+    def _aired(self, rendered: Rendered | None) -> Rendered | None:
         """Remember the hour of a check that is about to play."""
-        if audio is not None:
+        if rendered is not None:
             with self._lock:
                 self._aired_hour = _hour_key(datetime.now(self.zone))
+        return rendered
+
+    def _candidates(self, pack: str | None) -> list[str]:
+        """Packs to try, first choice first: *pack* alone, or the enabled ones.
+
+        Without *pack*, each call moves the rotation on one pack, or picks the
+        first at random; the other enabled packs follow as fallbacks.
+        """
+        if pack is not None:
+            return [pack]
+        with self._lock:
+            enabled = [name for name in self.packs if name in self.settings.enabled_packs]
+            if not enabled:
+                return []
+            if self.settings.pack_order == "random":
+                start = secrets.randbelow(len(enabled))
+            else:
+                start = self._rotation % len(enabled)
+                self._rotation += 1
+        return enabled[start:] + enabled[:start]
+
+    def _pack_voice(self, name: str, local: datetime) -> np.ndarray | None:
+        """Join *name*'s files for this minute, from the cache when unchanged.
+
+        ``None`` when the pack lacks a piece or a piece cannot be decoded, so
+        the next source speaks instead.
+        """
+        hour_format = self.settings.hour_format
+        paths = pieces_for(scan_pack(self.packs[name]), local.hour, local.minute, hour_format)
+        if paths is None:
+            return None
+        key = (name, local.hour, local.minute, hour_format)
+        try:
+            current = signature(paths)
+            cached = self._joined.get(key, current)
+            if cached is not None:
+                return cached
+            audio = join_voice([decode_liner_path(path) for path in paths])
+        except (OSError, subprocess.TimeoutExpired, LinerDecodeError, ValueError) as exc:
+            logger.warning(
+                "Voice pack %s skipped at %02d:%02d: %s", name, local.hour, local.minute, exc
+            )
+            return None
+        self._joined.put(key, current, audio)
         return audio
+
+    def _voice(self, local: datetime, pack: str | None) -> tuple[np.ndarray, str] | None:
+        """The spoken time from the first source that has it, and that source.
+
+        Raises:
+            OSError: A recorded or synthesized clip could not be read.
+            subprocess.TimeoutExpired: Decoding it took too long.
+            LinerDecodeError: It could not be decoded.
+        """
+        for name in self._candidates(pack):
+            audio = self._pack_voice(name, local)
+            if audio is not None:
+                return audio, f"voice pack {name}"
+        clip = clip_path(self.folder, local)
+        if clip is not None:
+            return decode_liner_path(clip), "recorded clip"
+        spoken = self._synthesize(spoken_text(local, self.settings.hour_format))
+        return None if spoken is None else (decode_liner_path(spoken), "text to speech")
 
     def _synthesize(self, text: str) -> Path | None:
         """Render *text* with the configured command, cached per command and text."""
@@ -276,38 +414,46 @@ class TimeChecks:
             finally:
                 temp.unlink(missing_ok=True)
 
-    def render(self, now: datetime | None = None) -> np.ndarray | None:
-        """Decode intro, local time and outro into one stereo 44.1 kHz clip."""
+    def render(self, now: datetime | None = None, pack: str | None = None) -> Rendered | None:
+        """Decode intro, local time and outro into one stereo 44.1 kHz clip.
+
+        The time comes from *pack* when given (a test), else from the enabled
+        packs in turn; then from the recorded clip, then from text to speech.
+        """
         local = (now or datetime.now(self.zone)).astimezone(self.zone)
-        source = clip_path(self.folder, local) or self._synthesize(
-            spoken_text(local, self.settings.hour_format)
-        )
-        if source is None:
-            if not self._warned_unavailable:
-                logger.warning("Skipping time checks: no recorded clip or working TTS command")
-                self._warned_unavailable = True
-            return None
-        self._warned_unavailable = False
-        paths = [
-            Path(path) for path in (self.config.intro_clip, source, self.config.outro_clip) if path
-        ]
         try:
-            return np.concatenate([decode_liner_path(path) for path in paths], axis=0)
+            voice = self._voice(local, pack)
+            if voice is None:
+                if not self._warned_unavailable:
+                    logger.warning(
+                        "Skipping time checks: no voice pack, recorded clip or working TTS command"
+                    )
+                    self._warned_unavailable = True
+                return None
+            self._warned_unavailable = False
+            intro, outro = (
+                [decode_liner_path(Path(path))] if path else []
+                for path in (self.config.intro_clip, self.config.outro_clip)
+            )
+            return Rendered(np.concatenate([*intro, voice[0], *outro], axis=0), voice[1])
         except (OSError, subprocess.TimeoutExpired, LinerDecodeError) as exc:
             logger.warning("Skipping time check: audio could not be decoded: %s", exc)
             return None
 
-    def wav(self) -> bytes | None:
+    def wav(self, pack: str | None = None) -> bytes | None:
         """Render a browser preview through the same decoder and clip order."""
-        audio = self.render()
-        if audio is None:
+        rendered = self.render(pack=pack)
+        if rendered is None:
             return None
         buffer = io.BytesIO()
-        sf.write(buffer, audio, SAMPLE_RATE, format="WAV", subtype="PCM_16")
+        sf.write(buffer, rendered.audio, SAMPLE_RATE, format="WAV", subtype="PCM_16")
         return buffer.getvalue()
 
-    def fire(self, bridge: Any) -> None:
+    def fire(self, bridge: Any, pack: str | None = None) -> str:
         """Play now on the server mix bus, with the voice liner duck (worker thread).
+
+        Returns:
+            Where the voice came from, such as ``voice pack Studio``.
 
         Raises:
             ValueError: Why nothing played.
@@ -317,10 +463,11 @@ class TimeChecks:
             raise ValueError("Time checks on the server need server audio or stream mode")
         if bridge.station is not None and bridge.station.state != "playing":
             raise ValueError("The stream must be playing to air a time check")
-        audio = self._aired(self.render())
-        if audio is None:
-            raise ValueError("No recorded clip or working TTS command for this minute")
-        worker.play_audio(audio)
+        rendered = self._aired(self.render(pack=pack))
+        if rendered is None:
+            raise ValueError("No voice pack, recorded clip or working TTS command for this minute")
+        worker.play_audio(rendered.audio)
+        return rendered.source
 
 
 def install_time_checks(
@@ -340,22 +487,32 @@ def install_time_checks(
     async def get_settings() -> dict[str, Any]:
         return await asyncio.to_thread(checks.status)
 
+    def known_pack(pack: str | None) -> str | None:
+        if pack is not None and pack not in checks.packs:
+            raise HTTPException(status_code=404, detail=f"No voice pack named {pack}")
+        return pack
+
     @app.put("/api/time-checks")
     async def put_settings(body: SettingsBody) -> dict[str, Any]:
+        for name in body.enabled_packs:
+            known_pack(name)
         await asyncio.to_thread(checks.save, body)
         return await asyncio.to_thread(checks.status)
 
     @app.post("/api/time-checks/test")
-    async def test_now() -> dict[str, str]:
+    async def test_now(body: PlayNowBody | None = None) -> dict[str, str]:
+        pack = known_pack(body.pack if body else None)
         try:
-            await asyncio.to_thread(checks.fire, bridge)
+            source = await asyncio.to_thread(checks.fire, bridge, pack)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from None
-        return {"message": "Time check played"}
+        if pack is not None and source != f"voice pack {pack}":
+            return {"message": f"Voice pack {pack} cannot say this minute; played the {source}"}
+        return {"message": f"Time check played from the {source}"}
 
     @app.get("/api/time-checks/preview")
-    async def preview() -> Response:
-        rendered = await asyncio.to_thread(checks.wav)
+    async def preview(pack: str | None = None) -> Response:
+        rendered = await asyncio.to_thread(checks.wav, known_pack(pack))
         if rendered is None:
             raise HTTPException(status_code=409, detail="No time check audio is available")
         return Response(rendered, media_type="audio/wav")

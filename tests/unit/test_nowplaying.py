@@ -40,12 +40,16 @@ def test_snapshot_exposes_metadata_without_paths() -> None:
                 "title": "Earlier",
                 "duration": 90,
                 "played_at": "2026-01-01T00:00:00+00:00",
+                "path": "C:/Music/private.flac",
+                "event_id": "private-event-1",
             },
             {
                 "artist": "Artist",
                 "title": "Song",
                 "duration": 180,
                 "played_at": "2026-01-01T01:00:00+00:00",
+                "path": "C:/Music/current.flac",
+                "event_id": "private-event-2",
             },
         ]
     )
@@ -66,9 +70,20 @@ def test_snapshot_exposes_metadata_without_paths() -> None:
     assert payload["next_track"] is None
     assert payload["listener_count"] == 3
     assert payload["history"][0]["title"] == "Earlier"
+    assert payload["history"] == [
+        {
+            "artist": "Old",
+            "title": "Earlier",
+            "duration": 90,
+            "played_at": "2026-01-01T00:00:00+00:00",
+        }
+    ]
     assert payload["current_track"]["album"] == "Album"
     assert feed.snapshot()["current_track"]["elapsed"] == 5
     assert "secret" not in str(payload) and "private" not in str(payload)
+    generic_webhook = webhook_body(WebhookConfig("https://example.com/token"), payload)
+    assert generic_webhook["history"] == payload["history"]
+    assert "private-event-1" not in str(generic_webhook)
     feed.snapshot()
     history_snapshot.assert_called_once()
 
