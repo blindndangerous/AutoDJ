@@ -11,7 +11,8 @@ analysis, report a failure, and keep its claims alive; nothing else.
 routes behind pairing, for Settings, Analysis workers.
 
 A result is stored only when it was made with this server's model, model
-revision and :data:`~autodj.indexer.ANALYSIS_VERSION`, has exactly
+weights (the model's snapshot commit, never the branch name) and
+:data:`~autodj.indexer.ANALYSIS_VERSION`, has exactly
 :data:`~autodj.indexer.FEATURE_DIM` finite values of unit length, and the
 song's record and file still have the size and fingerprint it was claimed
 with.  It goes into the live catalog, whose change counters make the
@@ -45,6 +46,7 @@ from autodj.machine_tokens import (
     MachineToken,
     MachineTokenStore,
 )
+from autodj.worker import identity_mismatch
 
 if TYPE_CHECKING:
     from autodj.library import LibraryManager
@@ -108,7 +110,7 @@ class ResultBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     lease: LeaseId
     model: str = Field(max_length=200)
-    revision: str = Field(max_length=200)
+    model_commit: str = Field(max_length=80)
     analysis_version: str = Field(max_length=100)
     dimension: StrictInt
     size: StrictInt = Field(ge=1)
@@ -207,6 +209,19 @@ def install_worker_api(
     """
     limiter = _RateLimiter(rate_limit, 60.0)
 
+    def server_identity() -> dict[str, object]:
+        """This server's identity, or 409 when it cannot check results at all."""
+        found = identity()
+        if not found.get("model_commit"):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This server has no downloaded copy of the analysis model, so it cannot "
+                    "check results.  Run `autodj index` on the server once to download it."
+                ),
+            )
+        return found
+
     def worker_context(request: Request) -> tuple[MachineToken, LibraryManager]:
         token: MachineToken | None = getattr(request.state, "machine_token", None)
         if token is None:  # pragma: no cover -- the middleware always sets it
@@ -231,6 +246,7 @@ def install_worker_api(
     async def worker_claim(body: ClaimBody, request: Request) -> JSONResponse:
         """Lease up to *batch* songs to this worker and describe them."""
         token, manager = worker_context(request)
+        expected = await asyncio.to_thread(server_identity)
 
         def claim() -> dict[str, Any]:
             queue = manager.analysis_queue
@@ -257,7 +273,7 @@ def install_worker_api(
                     }
                 )
             return {
-                "identity": identity(),
+                "identity": expected,
                 "lease_seconds": WORKER_LEASE_SECONDS,
                 "heartbeat_seconds": HEARTBEAT_SECONDS,
                 "waiting": len(manager.catalog.unembedded_paths()),
@@ -291,22 +307,15 @@ def install_worker_api(
     async def worker_result(body: ResultBody, request: Request) -> dict[str, bool]:
         """Store one song's analysis, or refuse it as stale or wrong."""
         token, manager = worker_context(request)
-        expected = identity()
+        expected = await asyncio.to_thread(server_identity)
         got = {
             "model": body.model,
-            "revision": body.revision,
+            "model_commit": body.model_commit,
             "analysis_version": body.analysis_version,
             "dimension": body.dimension,
         }
         if got != expected:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "This result was made with a different model or analysis version "
-                    f"than the server uses ({expected['model']} at {expected['revision']}, "
-                    f"{expected['analysis_version']})"
-                ),
-            )
+            raise HTTPException(status_code=409, detail=identity_mismatch(expected, got))
         try:
             vector = decode_vector(body.vector)
         except ValueError as exc:
@@ -375,12 +384,13 @@ def install_worker_api(
             queue.seen(token.token_id, token.name, body.device or None)
             return queue.renew(token.token_id, WORKER_LEASE_SECONDS)
 
+        expected = await asyncio.to_thread(server_identity)
         renewed = await asyncio.to_thread(beat)
         return {
             "renewed": renewed,
             "lease_seconds": WORKER_LEASE_SECONDS,
             "heartbeat_seconds": HEARTBEAT_SECONDS,
-            "identity": identity(),
+            "identity": expected,
         }
 
     @app.post(WORKER_PREFIX + "release")

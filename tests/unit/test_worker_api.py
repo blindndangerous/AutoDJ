@@ -21,6 +21,18 @@ from autodj.worker_api import _RateLimiter, decode_vector
 from tests.unit.test_library import Similarity, make_config, make_entry
 
 HTTPS = "https://127.0.0.1:8080"
+COMMIT = "c" * 40
+
+
+def fake_model_cache(cfg, commit=COMMIT):
+    """A HuggingFace cache holding the configured model at *commit*, as a download leaves it."""
+    repo = cfg.index.model_dir / f"models--{cfg.model.name.replace('/', '--')}"
+    (repo / "refs").mkdir(parents=True, exist_ok=True)
+    (repo / "refs" / cfg.model.revision).write_text(commit)
+    snapshot = repo / "snapshots" / commit
+    snapshot.mkdir(parents=True, exist_ok=True)
+    (snapshot / "config.json").write_text("{}")
+    return snapshot
 
 
 class Clock:
@@ -32,8 +44,10 @@ class Clock:
 
 
 class Server:
-    def __init__(self, tmp_path, *, songs=3, access_token=None, library=True):
+    def __init__(self, tmp_path, *, songs=3, access_token=None, library=True, model=True):
         self.cfg = make_config(tmp_path)
+        if model:
+            fake_model_cache(self.cfg)
         if access_token:
             self.cfg.server = ServerConfig(access_token=access_token)
         self.manager = LibraryManager(self.cfg, Similarity()) if library else None
@@ -60,7 +74,7 @@ class Server:
         return self.client.request(method, path, headers=headers, **kwargs)
 
     def identity(self):
-        return analysis_identity(self.cfg.model.name, self.cfg.model.revision)
+        return analysis_identity(self.cfg.model.name, COMMIT)
 
     def result(self, song, lease, **overrides):
         vector = np.random.default_rng(1).normal(size=FEATURE_DIM).astype(np.float32)
@@ -226,22 +240,48 @@ def test_a_valid_result_goes_into_the_live_catalog(server):
 
 
 @pytest.mark.parametrize(
-    "field,value",
+    "field,value,advice",
     [
-        ("model", "OpenMuQ/other"),
-        ("revision", "v2"),
-        ("analysis_version", "old"),
-        ("dimension", 1024),
+        ("model", "OpenMuQ/other", "Set [model] name"),
+        ("model_commit", "d" * 40, f'revision = "{COMMIT}"'),
+        ("model_commit", "sha256:" + "e" * 64, "Update the model on the worker"),
+        ("analysis_version", "old", ANALYSIS_VERSION),
+        ("dimension", 1024, "Update AutoDJ on both machines"),
     ],
 )
-def test_results_from_another_model_or_version_are_refused(server, field, value):
+def test_results_from_other_weights_or_versions_are_refused(server, field, value, advice):
     _token, secret = server.token()
     song = claim(server, secret)["songs"][0]
     body, _ = server.result(song, song["lease"], **{field: value})
     reply = server.call("POST", "/api/worker/result", secret, json=body)
     assert reply.status_code == 409
-    assert ANALYSIS_VERSION in reply.json()["detail"]
+    assert advice in reply.json()["detail"]
     assert not server.manager.catalog.has_vector(server.songs[0])
+
+
+def test_a_server_without_the_model_cannot_check_results(tmp_path):
+    made = Server(tmp_path, model=False)
+    try:
+        _token, secret = made.token()
+        for path, body in (
+            ("/api/worker/claim", {}),
+            ("/api/worker/heartbeat", {}),
+        ):
+            reply = made.call("POST", path, secret, json=body)
+            assert reply.status_code == 409
+            assert "no downloaded copy" in reply.json()["detail"]
+    finally:
+        made.close()
+
+
+def test_the_server_names_its_weights_by_snapshot_commit_not_branch(tmp_path):
+    made = Server(tmp_path)
+    try:
+        _token, secret = made.token()
+        assert claim(made, secret)["identity"]["model_commit"] == COMMIT
+        assert "revision" not in claim(made, secret)["identity"]
+    finally:
+        made.close()
 
 
 def _vector_text(values):

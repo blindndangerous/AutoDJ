@@ -1216,7 +1216,7 @@ def cmd_worker(
     import threading
 
     from autodj.indexer import TrackAnalysis, analyse_file, analysis_identity
-    from autodj.model import MuqWrapper
+    from autodj.model import ModelLoadError, MuqWrapper
     from autodj.worker import (
         HttpTransport,
         ServerApi,
@@ -1245,7 +1245,7 @@ def cmd_worker(
     from autodj.compute import device_description
 
     label = device_description(chosen)
-    identity = analysis_identity(cfg.model.name, cfg.model.revision)
+    identity = analysis_identity(cfg.model.name, None)
     wrapper: MuqWrapper | None = None
 
     def analyse(path: Path) -> TrackAnalysis:
@@ -1255,15 +1255,17 @@ def cmd_worker(
     worker = Worker(api, analyse, identity, batch=batch, once=once, device=label, stop=stop)
     previous = signal.signal(signal.SIGINT, interrupted)
     try:
-        # Token and model are checked before anything is stopped or loaded.
-        worker.connect()
+        # The token, the model and its weights are checked before anything is
+        # stopped or loaded.
+        server_identity = worker.connect()
+        from autodj.model import download_model_if_needed, load_model
+        from autodj.model_identity import folder_commit
+
+        model_path = download_model_if_needed(cfg.model, cfg.index, hf_token=cfg.huggingface.token)
+        worker.identity = analysis_identity(cfg.model.name, folder_commit(model_path))
+        worker.check_identity(server_identity)
         run_hook(before_command, "Before-command")
         try:
-            from autodj.model import download_model_if_needed, load_model
-
-            model_path = download_model_if_needed(
-                cfg.model, cfg.index, hf_token=cfg.huggingface.token
-            )
             console.print(f"Analysing on {escape(label)}.")
             wrapper = load_model(model_path, device=chosen)
             worker.run()
@@ -1272,7 +1274,7 @@ def cmd_worker(
                 release_gpu(wrapper)
                 wrapper = None
             run_hook(after_command, "After-command")
-    except WorkerError as exc:
+    except (WorkerError, ModelLoadError) as exc:
         raise click.ClickException(str(exc)) from exc
     except KeyboardInterrupt:
         console.print("[yellow]Worker stopped.[/]")

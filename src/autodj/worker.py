@@ -230,6 +230,29 @@ class ServerApi:
         self._call("POST", "/api/worker/release", {"leases": leases})
 
 
+def identity_mismatch(server: dict[str, object], worker: dict[str, object]) -> str:
+    """Why a worker's analysis cannot be used here, and what its owner should do."""
+    if server.get("model") != worker.get("model"):
+        return (
+            f"The server analyses with the model {server.get('model')}, the worker with "
+            f"{worker.get('model')}.  Set [model] name in the worker's config.toml to the "
+            "server's."
+        )
+    if server.get("model_commit") != worker.get("model_commit"):
+        wanted = server.get("model_commit")
+        advice = f'set [model] revision = "{wanted}" in its config.toml'
+        return (  # nosec B608 -- a message for the operator, not SQL
+            f"The worker's copy of {server.get('model')} ({worker.get('model_commit')}) is not "
+            f"the server's ({wanted}).  Update the model on the worker: {advice}, which "
+            "downloads exactly the server's weights, and start it again."
+        )
+    return (
+        f"The server uses analysis version {server.get('analysis_version')} with "
+        f"{server.get('dimension')} values, the worker {worker.get('analysis_version')} with "
+        f"{worker.get('dimension')}.  Update AutoDJ on both machines to the same release."
+    )
+
+
 def encode_vector(vector: np.ndarray) -> str:
     """A vector as the base64 little-endian float32 text the server reads."""
     return base64.b64encode(np.asarray(vector, dtype="<f4").tobytes()).decode("ascii")
@@ -325,6 +348,7 @@ class Worker:
         self.stats = WorkerStats()
         self._backoff = 0.0
         self._heartbeat_every = 30.0
+        self.server_identity: dict[str, object] | None = None
 
     # -- helpers --------------------------------------------------------
 
@@ -369,26 +393,32 @@ class Worker:
             self._backoff = 0.0
             return result
 
-    def check_identity(self, server: dict[str, object]) -> None:
-        """Refuse to work for a server that uses another model or analysis version."""
-        if server != self.identity:
-            raise WorkerError(
-                "The server analyses with "
-                f"{server.get('model')} at {server.get('revision')} "
-                f"({server.get('analysis_version')}), but this worker uses "
-                f"{self.identity.get('model')} at {self.identity.get('revision')} "
-                f"({self.identity.get('analysis_version')}).  Set [model] name and revision "
-                "in this machine's config.toml to the server's, or update AutoDJ on both."
-            )
+    def check_identity(
+        self, server: dict[str, object], fields: tuple[str, ...] | None = None
+    ) -> None:
+        """Refuse to work for a server that uses other weights or another analysis version.
 
-    def connect(self) -> None:
-        """Check the token and the model with one heartbeat, before any work."""
+        *fields* limits the check, for before this worker knows its own weights.
+        """
+        names = tuple(server) if fields is None else fields
+        mine = {name: self.identity.get(name) for name in names}
+        if {name: server.get(name) for name in names} != mine:
+            raise WorkerError(identity_mismatch(server, {**server, **mine}))
+
+    def connect(self) -> dict[str, object]:
+        """Check the token, the model name and the analysis version with one heartbeat.
+
+        Returns the server's identity; the model's weights are compared once
+        this worker has its copy of the model (:meth:`check_identity`).
+        """
         try:
             reply = self._call(lambda: self.api.heartbeat(self.device))
         except (ApiError, NetworkError) as exc:
             raise WorkerError(f"Could not start work with the server: {exc}") from exc
-        self.check_identity(reply.get("identity", {}))
+        self.server_identity = dict(reply.get("identity", {}))
+        self.check_identity(self.server_identity, ("model", "analysis_version", "dimension"))
         self._heartbeat_every = float(reply.get("heartbeat_seconds", 30))
+        return self.server_identity
 
     # -- heartbeat ------------------------------------------------------
 
@@ -434,7 +464,7 @@ class Worker:
         result = {
             "lease": lease,
             "model": self.identity["model"],
-            "revision": self.identity["revision"],
+            "model_commit": self.identity["model_commit"],
             "analysis_version": self.identity["analysis_version"],
             "dimension": self.identity["dimension"],
             "size": size,
@@ -481,7 +511,9 @@ class Worker:
         Raises:
             WorkerError: The token was refused or the model does not match.
         """
-        self.connect()
+        if self.server_identity is None:
+            self.connect()
+        self.check_identity(self.server_identity or {})
         finished = threading.Event()
         beat = threading.Thread(target=self._beat, args=(finished,), daemon=True)
         beat.start()

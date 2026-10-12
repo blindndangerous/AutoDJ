@@ -181,9 +181,10 @@ def test_a_song_that_changed_on_the_server_is_skipped(server):
 
 def test_a_model_mismatch_stops_the_worker_before_any_download(server):
     worker, transport, _ = make_worker(server, once=True)
-    worker.identity = {**worker.identity, "revision": "other"}
-    with pytest.raises(WorkerError, match=r"config\.toml"):
+    worker.identity = {**worker.identity, "model_commit": "f" * 40}
+    with pytest.raises(WorkerError, match=r"Update the model on the worker") as refused:
         worker.run()
+    assert 'revision = "' in str(refused.value)
     assert transport.paths == ["/api/worker/heartbeat"]
 
 
@@ -557,3 +558,23 @@ def _norm(path):
     from autodj.catalog import _path
 
     return _path(path)
+
+
+def test_worker_command_checks_the_weights_before_stopping_anything(tmp_path):
+    order = []
+    fake_worker = MagicMock()
+    fake_worker.check_identity.side_effect = WorkerError("Update the model on the worker")
+    with (
+        patch("autodj.worker.Worker", return_value=fake_worker),
+        patch("autodj.worker.choose_device", return_value="cpu"),
+        patch("autodj.worker.run_hook", side_effect=lambda cmd, label: order.append(label)),
+        patch("autodj.model.download_model_if_needed", return_value=tmp_path),
+        patch("autodj.model.load_model") as load,
+    ):
+        result = CliRunner().invoke(
+            cli, ["worker", "--server", "https://nas:1", "--token", "adj1.x"]
+        )
+    assert result.exit_code == 1
+    assert "Update the model" in result.output
+    assert order == []
+    load.assert_not_called()

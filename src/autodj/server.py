@@ -104,6 +104,7 @@ from autodj.listener_access import (
     proxy_allowlist,
 )
 from autodj.machine_tokens import MachineTokenStore
+from autodj.model_identity import CachedModelCommit
 from autodj.nowplaying import NowPlaying
 from autodj.pairing import DeviceRegistry
 from autodj.playlog import (
@@ -1474,13 +1475,12 @@ def create_app(
         machine_scopes=MACHINE_SCOPES,
         machine_auth=lambda token, scope: machine_tokens().authenticate(token, scope),
     )
+    model_commit = CachedModelCommit(lambda: (bridge.player._cfg.model, bridge.player._cfg.index))
     install_worker_api(
         app,
         tokens=machine_tokens,
         library=lambda: getattr(bridge, "library", None),
-        identity=lambda: analysis_identity(
-            bridge.player._cfg.model.name, bridge.player._cfg.model.revision
-        ),
+        identity=lambda: analysis_identity(bridge.player._cfg.model.name, model_commit()),
     )
     # Compresses the page, scripts and JSON; audio, cover art and Range
     # replies pass through as is.

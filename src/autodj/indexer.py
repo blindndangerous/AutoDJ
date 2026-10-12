@@ -642,19 +642,22 @@ def _extract_librosa_features(
 ANALYSIS_VERSION = "muq-mean-30s-24k+librosa16/1"
 
 
-def analysis_identity(model_name: str, model_revision: str) -> dict[str, object]:
+def analysis_identity(model_name: str, model_commit: str | None) -> dict[str, object]:
     """What a remote analysis result must have been made with to be accepted here.
 
     Args:
         model_name: ``[model] name``, the HuggingFace model id.
-        model_revision: ``[model] revision``.
+        model_commit: The weights in use, from
+            :func:`autodj.model_identity.local_model_commit`: the snapshot
+            commit, or a digest of the files.  ``None`` when this machine has
+            no copy of the model.
 
     Returns:
-        The model, its revision, :data:`ANALYSIS_VERSION` and the vector size.
+        The model, its weights, :data:`ANALYSIS_VERSION` and the vector size.
     """
     return {
         "model": model_name,
-        "revision": model_revision,
+        "model_commit": model_commit,
         "analysis_version": ANALYSIS_VERSION,
         "dimension": FEATURE_DIM,
     }
