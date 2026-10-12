@@ -1,0 +1,5 @@
+{
+  "_comment": "Keys the Track info tag form must judge exactly as autodj.beets.parse_initial_key does. Read by tests/jsmodules/tag-editor.test.js and tests/unit/test_tag_edit.py.",
+  "accepted": ["Am", "F#m", "f#m", "Db", "C major", "c#major", "Bb minor", "bb", "Bbm", "E#", "Cb major", "8A", "12b", "1 B", "A minor", "G"],
+  "refused": ["H", "BB", "Bm major", "13A", "0B", "m", "major", "Cmaj", "8C", "A##", "Am7", "F# min", "  "]
+}
