@@ -16,7 +16,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from autodj.carts import CartError, StationCarts, install_carts
+from autodj.carts import CartError, CartSlot, StationCarts, install_carts
 from autodj.scheduler import Action
 from autodj.server import PlayerBridge, create_app
 from autodj.station_routes import StationRouter, current_station
@@ -387,3 +387,21 @@ def test_the_app_caps_cart_uploads_and_registers_the_action(app_client: TestClie
     assert response.status_code == 413
     actions = {item["name"] for item in app_client.get("/api/schedule").json()["actions"]}
     assert "play_cart" in actions
+
+
+def test_browser_playback_fetches_from_the_carts_own_station(tmp_path: Path) -> None:
+    async def publish(_message: dict[str, Any]) -> None:
+        return None
+
+    def carts(*root: str) -> StationCarts:
+        return StationCarts(SimpleNamespace(), publish, lambda: tmp_path, tmp_path, *root)
+
+    upload = CartSlot(name="ID", source="upload", clip="id.wav")
+    liner = CartSlot(name="Sweep", source="liner", clip="rec 1")
+    assert carts().clip_url(upload) == "/api/carts/uploads/id.wav"
+    named = carts("/api/stations/nightowl")
+    assert named.clip_url(upload) == "/api/stations/nightowl/carts/uploads/id.wav"
+    assert named.clip_url(liner) == "/api/stations/nightowl/liners/file/rec%201"
+    # The default station's wall keeps the addresses the page always used.
+    bridge = PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock())
+    assert create_app(bridge).state.stations.default.carts.api_root == "/api"

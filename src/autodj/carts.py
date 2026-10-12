@@ -241,11 +241,18 @@ class StationCarts:
         publish: Callable[[dict[str, Any]], Awaitable[None]],
         liner_folder: Callable[[], Path],
         state_dir: Path,
+        api_root: str = "/api",
     ) -> None:
-        """Load the wall from *state_dir*; *publish* tells the station's pages of changes."""
+        """Load the wall from *state_dir*; *publish* tells the station's pages of changes.
+
+        *api_root* is where the station's routes answer (``/api`` for the
+        default station, ``/api/stations/<slug>`` for another), so a clip
+        URL fetches from this station's carts and liners.
+        """
         self.bridge = bridge
         self.publish = publish
         self.liner_folder = liner_folder
+        self.api_root = api_root
         self.store = CartStore(state_dir)
         # The cart that is playing, as (page, slot, spoken label), and its end timer.
         self._cart: tuple[int, int, str] | None = None
@@ -299,11 +306,10 @@ class StationCarts:
             return scheduler.decode(assigned.clip)
         return decode_liner_path(self.liner_file(assigned.clip))
 
-    @staticmethod
-    def clip_url(assigned: CartSlot) -> str:
-        """Where browser playback fetches the clip."""
-        base = "/api/carts/uploads/" if assigned.source == "upload" else "/api/liners/file/"
-        return base + quote(assigned.clip, safe="")
+    def clip_url(self, assigned: CartSlot) -> str:
+        """Where browser playback fetches the clip, from this station's routes."""
+        base = "/carts/uploads/" if assigned.source == "upload" else "/liners/file/"
+        return self.api_root + base + quote(assigned.clip, safe="")
 
     def duck_db(self, mode: str) -> float:
         """The music level under a cart played in *mode*."""

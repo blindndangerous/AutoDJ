@@ -663,8 +663,9 @@ def equip_station(
     from autodj.time_checks import TimeChecks, time_check_action
 
     bridge = station.bridge
+    api_root = "/api" if station.slug == DEFAULT_SLUG else f"/api/stations/{station.slug}"
     station.carts = StationCarts(
-        bridge, publish, lambda: station.paths.liners, station.paths.state_dir
+        bridge, publish, lambda: station.paths.liners, station.paths.state_dir, api_root
     )
 
     async def profile(name: str) -> dict:
