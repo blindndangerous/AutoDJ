@@ -1987,6 +1987,29 @@ def _load_webhooks(raw: Any) -> tuple[WebhookConfig, ...]:
     return tuple(hooks)
 
 
+def _refuse_local_only_stations(local: Mapping[str, Any], defined: set[str]) -> None:
+    """Refuse a station that config.local.toml names but config.toml does not.
+
+    config.local.toml only adds a station's secrets.  A station named only
+    there is a typo or a station removed from config.toml: building it would
+    start a public stream with default settings, and the real station would
+    run without the credentials meant for it.
+
+    Raises:
+        ValueError: Naming the station.
+    """
+    stations = local.get("stations")
+    if not isinstance(stations, Mapping):
+        return
+    for slug in stations:
+        if slug not in defined:
+            raise ValueError(
+                f"[stations.{slug}] is in config.local.toml but not in config.toml; define "
+                "the station in config.toml (config.local.toml holds only its secrets), "
+                "or correct the name"
+            )
+
+
 def load_config(
     path: str | Path | None = None, *, environ: Mapping[str, str] | None = None
 ) -> AutoDJConfig:
@@ -2006,6 +2029,8 @@ def load_config(
     raw = _default_raw()
     sources = ["defaults"]
     loaded_path: Path | None = None
+    # The stations config.toml defines; config.local.toml only adds their secrets.
+    defined_stations: set[str] = set()
 
     if candidate.exists():
         with candidate.open("rb") as fh:
@@ -2014,6 +2039,7 @@ def load_config(
                 raise ValueError("webhooks belong only in config.local.toml")
             stations = shared.get("stations")
             if isinstance(stations, Mapping):
+                defined_stations = set(stations)
                 for slug, table in stations.items():
                     if isinstance(table, Mapping) and "webhooks" in table:
                         raise ValueError(
@@ -2029,7 +2055,9 @@ def load_config(
         local_path = loaded_path.parent / "config.local.toml"
         if local_path.exists():
             with local_path.open("rb") as fh:
-                raw = _deep_merge(raw, tomllib.load(fh))
+                local = tomllib.load(fh)
+            _refuse_local_only_stations(local, defined_stations)
+            raw = _deep_merge(raw, local)
             sources.append(str(local_path))
 
     env_raw = _deep_merge(

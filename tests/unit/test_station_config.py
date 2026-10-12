@@ -144,6 +144,16 @@ url = "https://hooks.example.net/nightowl"
     assert cfg.webhooks == ()
 
 
+def test_a_station_named_only_in_the_local_file_is_refused(tmp_path: Path) -> None:
+    # A typo there would start a public station of its own and leave the
+    # real one without the password meant for it.
+    local = '[stations.nigthowl.stream]\nlistener_user = "owl"\nlistener_password = "hoot"\n'
+    with pytest.raises(ValueError, match=r"\[stations.nigthowl\] is in config.local.toml"):
+        _load(tmp_path, BASE + NIGHTOWL, local)
+    with pytest.raises(ValueError, match=r"\[stations.nigthowl\]"):
+        _load(tmp_path, BASE, local)
+
+
 def test_config_toml_refuses_station_webhooks(tmp_path: Path) -> None:
     text = BASE + NIGHTOWL + '\n[[stations.nightowl.webhooks]]\nurl = "https://example.net/x"\n'
     with pytest.raises(ValueError, match=r"\[stations.nightowl\] webhooks belong only"):
