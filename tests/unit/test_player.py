@@ -2064,6 +2064,7 @@ def test_next_rendered_carries_offset_between_tracks(monkeypatch):
     p._state = player_mod.PlayerState()
     p._set_generation = 0
     p._pending_pick_mode = "seed"
+    p._pending_clock_step = None
     p._pending_from_queue = False
     p._cfg = MagicMock()
     first, second, third = MagicMock(), MagicMock(), MagicMock()
@@ -2095,6 +2096,7 @@ def test_next_rendered_skips_unrenderable_tracks_and_stops_without_a_cursor() ->
     p._state = PlayerState()
     p._set_generation = 0
     p._pending_pick_mode = "seed"
+    p._pending_clock_step = None
     p._pending_from_queue = False
     p._cfg = MagicMock()
     bad, good, after = MagicMock(), MagicMock(), MagicMock()
@@ -2127,6 +2129,7 @@ def test_next_rendered_gives_up_after_five_failed_renders() -> None:
     p._state = PlayerState()
     p._set_generation = 0
     p._pending_pick_mode = "seed"
+    p._pending_clock_step = None
     p._pending_from_queue = False
     p._cfg = MagicMock()
     p._choose_next = lambda _current, _context: (MagicMock(), "similarity")

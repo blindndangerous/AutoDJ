@@ -48,7 +48,12 @@ def _attach_cache(bridge, cache) -> None:
 
 class TestStateHelpers:
     def test_state_includes_the_current_clockwheel_step(self, bridge) -> None:
-        step = {"number": 2, "step": {"type": "track", "path": "Song.flac"}, "sources": [], "categories": []}
+        step = {
+            "number": 2,
+            "step": {"type": "track", "path": "Song.flac"},
+            "sources": [],
+            "categories": [],
+        }
         bridge.player._last_clock_step = step
         bridge.player._last_pick_mode = "clock"
         state = bridge.get_state()
