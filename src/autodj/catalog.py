@@ -94,7 +94,7 @@ _RECORD_COLUMNS = (
 
 def _bump(*kinds: str) -> str:
     names = ",".join(f"'{kind}'" for kind in kinds)
-    return f"UPDATE catalog_changes SET version=version+1 WHERE name IN ({names});"
+    return f"UPDATE catalog_changes SET version=version+1 WHERE name IN ({names});"  # nosec B608 -- constant change kinds
 
 
 _CHANGE_TRACKING = f"""
