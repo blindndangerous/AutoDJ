@@ -154,6 +154,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Server audio and the stream no longer drop out while the library scan, a track pick or another
+  busy task runs. The mix bus, its EQ and duck, and the Smooth and Stereo Tool processor feeds no
+  longer give up Python's interpreter lock in the middle of a block, and a block that comes out late
+  is made up straight away (up to eight blocks, 160 ms) instead of being lost from every listener's
+  buffer. The sound is unchanged.
+
 - Unknown or removed configuration settings now produce warnings and are ignored instead of
   blocking startup. Saved browser settings follow the same rule, preserving valid repeat limits
   alongside obsolete keys. Invalid values for supported configuration settings still fail validation.

@@ -6,10 +6,12 @@ without importing the player.
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
-from scipy.signal import butter, sosfilt
+from scipy.signal import butter
+
+from autodj.kernels import compile_kernel
 
 # Band boundaries: low / mid at 250 Hz, mid / high at 4 kHz.
 _LOW_CROSSOVER_HZ = 250.0
@@ -111,14 +113,152 @@ def apply_eq(
         ±1.0; the mix bus's output stage handles limiting or clipping.
     """
 
-    def _filter(band: str, signal: np.ndarray) -> np.ndarray:
-        if state is None or band not in state:
-            return cast(np.ndarray, sosfilt(sos_filters[band], signal, axis=0))
-        filtered, state[band] = sosfilt(sos_filters[band], signal, axis=0, zi=state[band])
-        return cast(np.ndarray, filtered)
-
-    low = _filter("low", chunk)
-    high = _filter("high", chunk)
-    return (chunk * mid_gain + low * (low_gain - mid_gain) + high * (high_gain - mid_gain)).astype(
-        np.float32
+    return _run_kernel(
+        chunk, sos_filters, state, *_gain_rows(len(chunk), low_gain, mid_gain, high_gain)
     )
+
+
+def ramp_eq(
+    chunk: np.ndarray,
+    sos_filters: dict[str, Any],
+    start: tuple[float, float, float],
+    end: tuple[float, float, float],
+    state: dict[str, np.ndarray] | None = None,
+) -> np.ndarray:
+    """Apply the EQ while moving the gains linearly from *start* to *end*.
+
+    The same as :func:`apply_eq` with per-frame gains
+    ``np.linspace(start, end, len(chunk) + 1)[1:]`` (the chunk ends on
+    *end*), worked out in compiled code instead: building the ramp with
+    NumPy would give up the GIL on the mix bus thread.
+
+    Args:
+        chunk: Mono ``(n,)`` or stereo ``(n, 2)`` float32 audio chunk.
+        sos_filters: Dict from :func:`make_eq_filters`.
+        start: ``(low, mid, high)`` gains just before the chunk.
+        end: ``(low, mid, high)`` gains at its last frame.
+        state: Per-band filter memory, as for :func:`apply_eq`.
+
+    Returns:
+        EQ-processed float32 chunk, with the same shape.
+    """
+    rows = np.array([start, end], dtype=np.float64)
+    return _run_kernel(chunk, sos_filters, state, rows, _RAMP)
+
+
+# How _eq_kernel reads its gain rows.
+_CONSTANT, _PER_FRAME, _RAMP = 0, 1, 2
+
+
+def _run_kernel(
+    chunk: np.ndarray,
+    sos_filters: dict[str, Any],
+    state: dict[str, np.ndarray] | None,
+    gains: np.ndarray,
+    mode: int,
+) -> np.ndarray:
+    audio = np.asarray(chunk, dtype=np.float32)
+    frames = audio.reshape(len(audio), -1)
+    channels = frames.shape[1]
+    if state is None:
+        state = make_eq_state(sos_filters, channels=channels)
+    out = np.empty_like(frames)
+    _eq_kernel(
+        frames,
+        out,
+        np.asarray(sos_filters["low"], dtype=np.float64),
+        state["low"].reshape(-1, 2, channels),
+        np.asarray(sos_filters["high"], dtype=np.float64),
+        state["high"].reshape(-1, 2, channels),
+        gains,
+        mode,
+    )
+    return out.reshape(audio.shape)
+
+
+def _gain_rows(
+    frames: int,
+    low: float | np.ndarray,
+    mid: float | np.ndarray,
+    high: float | np.ndarray,
+) -> tuple[np.ndarray, int]:
+    """Return the gains as ``(1, 3)`` constant or ``(frames, 3)`` per-frame rows."""
+    if all(np.ndim(gain) == 0 for gain in (low, mid, high)):
+        return np.array([[low, mid, high]], dtype=np.float64), _CONSTANT
+    columns = [
+        np.broadcast_to(np.asarray(g, np.float64).reshape(-1), (frames,)) for g in (low, mid, high)
+    ]
+    return np.ascontiguousarray(np.stack(columns, axis=1)), _PER_FRAME
+
+
+@compile_kernel(
+    "void(float32[:, :], float32[:, :], float64[:, :], float64[:, :, :],"
+    " float64[:, :], float64[:, :, :], float64[:, :], int64)"
+)
+def _eq_kernel(  # pragma: no cover - compiled; covered through apply_eq
+    chunk: np.ndarray,
+    out: np.ndarray,
+    low_sos: np.ndarray,
+    low_state: np.ndarray,
+    high_sos: np.ndarray,
+    high_state: np.ndarray,
+    gains: np.ndarray,
+    mode: int,
+) -> None:
+    """Split, scale and sum one chunk in compiled code, updating the filter state.
+
+    Each band runs the same transposed direct-form II second-order
+    sections as ``scipy.signal.sosfilt``, in float64, so the result and
+    the carried state match it.  Running compiled with the GIL held means
+    a block costs microseconds and never waits to take the GIL back from
+    another busy Python thread (``sosfilt`` gives it up on every call).
+
+    *mode* says how to read *gains*: ``_CONSTANT`` uses row 0 throughout,
+    ``_PER_FRAME`` has one row per frame, and ``_RAMP`` steps from row 0
+    to row 1 exactly as ``np.linspace(row0, row1, n + 1)[1:]`` does.
+    """
+    n = chunk.shape[0]
+    current = np.empty(3)
+    step = np.empty(3)
+    delta = np.empty(3)
+    flat = False
+    if mode == _RAMP:
+        for band in range(3):
+            delta[band] = gains[1, band] - gains[0, band]
+            step[band] = delta[band] / n
+            flat = flat or step[band] == 0
+    for channel in range(chunk.shape[1]):
+        for i in range(chunk.shape[0]):
+            x = np.float64(chunk[i, channel])
+            low = x
+            for s in range(low_sos.shape[0]):
+                y = low_sos[s, 0] * low + low_state[s, 0, channel]
+                low_state[s, 0, channel] = (
+                    low_sos[s, 1] * low - low_sos[s, 4] * y + low_state[s, 1, channel]
+                )
+                low_state[s, 1, channel] = low_sos[s, 2] * low - low_sos[s, 5] * y
+                low = y
+            high = x
+            for s in range(high_sos.shape[0]):
+                y = high_sos[s, 0] * high + high_state[s, 0, channel]
+                high_state[s, 0, channel] = (
+                    high_sos[s, 1] * high - high_sos[s, 4] * y + high_state[s, 1, channel]
+                )
+                high_state[s, 1, channel] = high_sos[s, 2] * high - high_sos[s, 5] * y
+                high = y
+            if mode == _RAMP:
+                for band in range(3):
+                    if i == n - 1:
+                        current[band] = gains[1, band]
+                    elif flat:  # NumPy's form when any band's step is zero
+                        current[band] = (i + 1) / n * delta[band] + gains[0, band]
+                    else:
+                        current[band] = (i + 1) * step[band] + gains[0, band]
+            else:
+                row = i if mode == _PER_FRAME else 0
+                for band in range(3):
+                    current[band] = gains[row, band]
+            low_gain, mid_gain, high_gain = current[0], current[1], current[2]
+            out[i, channel] = np.float32(
+                x * mid_gain + low * (low_gain - mid_gain) + high * (high_gain - mid_gain)
+            )
