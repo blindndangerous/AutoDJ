@@ -849,13 +849,11 @@ class TestRenderTrackLoading:
         player = self._make_player()
         current, nxt = player._sim.entries[0], player._sim.entries[1]
         good_audio = np.ones((3 * 44100, 2), dtype=np.float32)
-        loads = iter([good_audio])
 
-        def fake_load(*_args):
-            try:
-                return next(loads)
-            except StopIteration:
-                raise OSError("next track missing") from None
+        def fake_load(path, *_args):
+            if path == current.path:
+                return good_audio
+            raise OSError("next track missing")
 
         with patch("autodj.player.load_stereo", side_effect=fake_load):
             rendered = player._render_track(current, nxt, 0)
@@ -2819,7 +2817,7 @@ def test_loudness_measurement_failure_reaches_render_error_handler() -> None:
     player._library = None
     entry = player._sim.entries[0]
     with (
-        patch("autodj.processing.analyze_loudness", side_effect=OSError("unreadable source")),
+        patch("autodj.processing.load_and_measure_audio", side_effect=OSError("unreadable source")),
         pytest.raises(OSError, match="unreadable source"),
     ):
         player._load_playout_audio(entry)

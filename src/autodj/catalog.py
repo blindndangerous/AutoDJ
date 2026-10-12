@@ -8,8 +8,8 @@ import os
 import sqlite3
 import threading
 import uuid
-from collections.abc import Iterable, Sequence
-from contextlib import closing
+from collections.abc import Collection, Iterable, Iterator, Sequence
+from contextlib import closing, contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -78,6 +78,60 @@ _SCHEMA = """
     );
 """
 
+# What the playable library is built from, each with a counter that SQLite
+# triggers raise on every change, whichever process makes it.  A play, a
+# play-log row, a setting or a loudness measurement changes none of the
+# first three, so it never makes the server reload the library.
+_CHANGE_KINDS = ("entries", "vectors", "sources", "records")
+_RECORD_COLUMNS = (
+    "allow_outro",
+    "points",
+    "point_sources",
+    "prepared_path",
+    "intro_lift_db",
+    "loudness",
+)
+
+
+def _bump(*kinds: str) -> str:
+    names = ",".join(f"'{kind}'" for kind in kinds)
+    return f"UPDATE catalog_changes SET version=version+1 WHERE name IN ({names});"  # nosec B608 -- constant change kinds
+
+
+_CHANGE_TRACKING = f"""
+    CREATE TABLE IF NOT EXISTS catalog_changes (
+        name TEXT PRIMARY KEY, version INTEGER NOT NULL
+    );
+    INSERT OR IGNORE INTO catalog_changes VALUES
+        ('entries', 0), ('vectors', 0), ('sources', 0), ('records', 0);
+    CREATE TRIGGER IF NOT EXISTS catalog_entries_added AFTER INSERT ON catalog_entries
+        BEGIN {_bump("entries", "records")} END;
+    CREATE TRIGGER IF NOT EXISTS catalog_entries_removed AFTER DELETE ON catalog_entries
+        BEGIN {_bump("entries", "records")} END;
+    CREATE TRIGGER IF NOT EXISTS catalog_entries_changed
+        AFTER UPDATE OF path, kind, {", ".join(_ENTRY_FIELDS)} ON catalog_entries
+        BEGIN {_bump("entries", "records")} END;
+    CREATE TRIGGER IF NOT EXISTS catalog_records_changed
+        AFTER UPDATE OF {", ".join(_RECORD_COLUMNS)} ON catalog_entries
+        BEGIN {_bump("records")} END;
+    CREATE TRIGGER IF NOT EXISTS catalog_vectors_added AFTER INSERT ON catalog_vectors
+        BEGIN {_bump("vectors")} END;
+    CREATE TRIGGER IF NOT EXISTS catalog_vectors_removed AFTER DELETE ON catalog_vectors
+        BEGIN {_bump("vectors")} END;
+    CREATE TRIGGER IF NOT EXISTS catalog_vectors_changed AFTER UPDATE ON catalog_vectors
+        BEGIN {_bump("vectors")} END;
+    CREATE TRIGGER IF NOT EXISTS catalog_sources_added AFTER INSERT ON catalog_sources
+        BEGIN {_bump("sources")} END;
+    CREATE TRIGGER IF NOT EXISTS catalog_sources_removed AFTER DELETE ON catalog_sources
+        BEGIN {_bump("sources")} END;
+    CREATE TRIGGER IF NOT EXISTS catalog_sources_changed AFTER UPDATE ON catalog_sources
+        BEGIN {_bump("sources")} END;
+"""
+
+# Rows of vectors read and handed on at a time, so a reload never holds every
+# vector twice (as SQLite blobs and as one matrix) next to the FAISS copy.
+VECTOR_CHUNK = 4096
+
 
 def _path(path: str | Path) -> str:
     value = os.path.abspath(os.path.expanduser(os.fspath(path)))
@@ -107,6 +161,137 @@ def catalog_counts(path: Path) -> tuple[int, int]:
         return ready, analyzed
 
 
+def _prefix(root: str) -> str:
+    return root if root.endswith(os.sep) else root + os.sep
+
+
+def _covered_by(path: str, roots: Iterable[tuple[str, bool]]) -> bool:
+    """:func:`_under` for normalized paths against ``(prefix, recursive)`` roots."""
+    for prefix, recursive in roots:
+        if path.startswith(prefix):
+            rest = path[len(prefix) :]
+            if rest and (recursive or os.sep not in rest):
+                return True
+    return False
+
+
+class Coverage:
+    """The registered sources, read once, deciding which records are playable.
+
+    The same rules as :meth:`LibraryCatalog._active` without a file-system
+    call per record: paths and roots are both stored normalized, so "under
+    a root" is a prefix test.  A source whose folder is missing (an
+    unmounted share) covers nothing, as every file under it would fail
+    ``is_file``.  A registered liner root owns the files under it even
+    when its folder is missing, as before.
+    """
+
+    def __init__(self, sources: Iterable[Sequence[Any]]) -> None:
+        """Take ``(path, kind, recursive)`` rows."""
+        self.music: list[tuple[str, bool]] = []
+        self.liner: list[tuple[str, bool]] = []
+        self.liner_owned: list[tuple[str, bool]] = []
+        for root, kind, recursive in sources:
+            item = (_prefix(root), bool(recursive))
+            if kind == "liner":
+                self.liner_owned.append(item)
+            if not os.path.isdir(root):
+                continue
+            (self.liner if kind == "liner" else self.music).append(item)
+
+    def covered(self, path: str, kind: str | None = None) -> bool:
+        """Whether a present source folder (of *kind*, or of either) holds *path*."""
+        if kind is None:
+            return _covered_by(path, self.music) or _covered_by(path, self.liner)
+        return _covered_by(path, self.liner if kind == "liner" else self.music)
+
+    def active(self, path: str, kind: str) -> bool:
+        if kind == "liner":
+            return _covered_by(path, self.liner)
+        return _covered_by(path, self.music) and not _covered_by(path, self.liner_owned)
+
+
+class CatalogReader:
+    """One consistent read of the catalog, on a read-only connection of its own.
+
+    Everything read through one reader comes from the same transaction, so
+    the change counters match the rows.  The catalog's own connection (and
+    lock) stays free for the play log while a large reload runs.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def versions(self) -> dict[str, int]:
+        return _versions(self._conn)
+
+    def coverage(self) -> Coverage:
+        return Coverage(self._conn.execute("SELECT path, kind, recursive FROM catalog_sources"))
+
+    def entries(
+        self, kind: str, coverage: Coverage, exclude: Collection[str] = ()
+    ) -> tuple[IndexEntry, ...]:
+        """Playable records of *kind* in path order, without *exclude* (normalized paths)."""
+        rows = self._conn.execute(
+            f"SELECT path,{','.join(_ENTRY_FIELDS)} FROM catalog_entries "  # nosec B608 -- constant field names
+            "WHERE kind=? ORDER BY path",
+            (kind,),
+        )
+        return tuple(
+            IndexEntry(*row)
+            for row in rows
+            if row[0] not in exclude and coverage.active(row[0], kind)
+        )
+
+    def vector_paths(self) -> list[str]:
+        """Paths of the music records that have a vector, in path order."""
+        return [
+            row[0]
+            for row in self._conn.execute(
+                "SELECT e.path FROM catalog_entries e JOIN catalog_vectors v "
+                "ON v.entry_id=e.id WHERE e.kind='music' ORDER BY e.path"
+            )
+        ]
+
+    def vectors(self, paths: Collection[str], chunk: int = VECTOR_CHUNK) -> Iterator[np.ndarray]:
+        """Yield the vectors of *paths*, in path order, *chunk* rows at a time."""
+        from autodj.indexer import FEATURE_DIM
+
+        block = np.empty((chunk, FEATURE_DIM), dtype=np.float32)
+        filled = 0
+        for path, blob in self._conn.execute(
+            "SELECT e.path, v.vector FROM catalog_entries e JOIN catalog_vectors v "
+            "ON v.entry_id=e.id WHERE e.kind='music' ORDER BY e.path"
+        ):
+            if path not in paths:
+                continue
+            block[filled] = np.frombuffer(blob, dtype=np.float32)
+            filled += 1
+            if filled == chunk:
+                yield block
+                block = np.empty((chunk, FEATURE_DIM), dtype=np.float32)
+                filled = 0
+        if filled:
+            yield block[:filled]
+
+    def last_played(self) -> dict[str, float]:
+        return {
+            path: float(value)
+            for path, value in self._conn.execute("SELECT path,last_played FROM catalog_entries")
+        }
+
+
+def _versions(conn: sqlite3.Connection) -> dict[str, int]:
+    found = dict(conn.execute("SELECT name, version FROM catalog_changes").fetchall())
+    return {kind: int(found.get(kind, 0)) for kind in _CHANGE_KINDS}
+
+
+def _tune(conn: sqlite3.Connection) -> None:
+    """Make bulk reads cheaper: map the file and keep a larger page cache."""
+    conn.execute("PRAGMA mmap_size=268435456")
+    conn.execute("PRAGMA cache_size=-16384")
+
+
 class LibraryCatalog:
     """SQLite source registry and playable track catalog for one library."""
 
@@ -114,11 +299,24 @@ class LibraryCatalog:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self._conn: sqlite3.Connection | None = _connect(self.path, check_same_thread=False)
+        # Writers wait for each other instead of failing while a reload or
+        # another process (the analysis worker) holds the file.
+        self._conn: sqlite3.Connection | None = _connect(
+            self.path, check_same_thread=False, timeout=30
+        )
         self._conn.row_factory = sqlite3.Row
         try:
+            # WAL: a reload's long read never blocks the play log's writes,
+            # and other processes (the analysis job) read alongside.  Only
+            # this machine uses library.db: an index copied from another
+            # machine brings the generation files and dj_meta.db, never it,
+            # and a backup restore removes stale -wal and -shm files.
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.executescript(_SCHEMA)
             self._add_missing_columns()
+            self._conn.executescript(_CHANGE_TRACKING)
+            _tune(self._conn)
             self._migrate_legacy_history()
         except BaseException:
             # Not a catalog (or unreadable): do not leave the file open.
@@ -362,6 +560,29 @@ class LibraryCatalog:
                 .fetchall()
             )
             return [dict(row) for row in rows]
+
+    def change_versions(self) -> dict[str, int]:
+        """Counters of changes to records, vectors, sources and cue data.
+
+        ``entries`` counts changes to the playable records themselves (new,
+        removed, moved or re-read tracks); ``records`` also counts cue
+        points, loudness and the other per-track data.  Plays, the play log
+        and settings change none of them.  SQLite triggers keep them, so
+        writes from other processes count too.
+        """
+        with self._lock:
+            return _versions(self._db())
+
+    @contextmanager
+    def reader(self) -> Iterator[CatalogReader]:
+        """Read one consistent snapshot on a separate read-only connection."""
+        conn = _connect(readonly_uri(self.path), uri=True, timeout=30, check_same_thread=False)
+        try:
+            _tune(conn)
+            conn.execute("BEGIN")
+            yield CatalogReader(conn)
+        finally:
+            conn.close()
 
     def _db(self) -> sqlite3.Connection:
         if self._conn is None:
@@ -622,19 +843,26 @@ class LibraryCatalog:
     def seed_entries(self, entries: Iterable[IndexEntry]) -> int:
         """Import existing indexed records without replacing catalog metadata."""
         with self._lock:
+            existing = {row[0] for row in self._db().execute("SELECT path FROM catalog_entries")}
             count = 0
             for entry in entries:
                 path = _path(entry.path)
-                exists = (
-                    self._db()
-                    .execute("SELECT 1 FROM catalog_entries WHERE path=?", (path,))
-                    .fetchone()
-                )
-                if not exists:
+                if path not in existing:
                     self._put(entry, "music", None, "auto", None)
+                    existing.add(path)
                     count += 1
             self._db().commit()
             return count
+
+    def paths_with_vectors(self) -> set[str]:
+        """Paths of every record that has a vector."""
+        with self._lock:
+            return {
+                row[0]
+                for row in self._db().execute(
+                    "SELECT e.path FROM catalog_entries e JOIN catalog_vectors v ON v.entry_id=e.id"
+                )
+            }
 
     def set_vector(self, path: str | Path, vector: np.ndarray) -> None:
         from autodj.indexer import FEATURE_DIM
@@ -665,41 +893,30 @@ class LibraryCatalog:
             raise ValueError(f"vectors must be finite with shape ({len(entries)}, {FEATURE_DIM})")
         with self._lock:
             db, count = self._db(), 0
+            ids = dict(db.execute("SELECT path, id FROM catalog_entries").fetchall())
+            have = {row[0] for row in db.execute("SELECT entry_id FROM catalog_vectors")}
             for entry, vector in zip(entries, matrix, strict=True):
-                row = db.execute(
-                    "SELECT id FROM catalog_entries WHERE path=?", (_path(entry.path),)
-                ).fetchone()
-                if row is None:
+                record_id = ids.get(_path(entry.path))
+                if record_id is None or record_id in have:
                     continue
-                exists = db.execute(
-                    "SELECT 1 FROM catalog_vectors WHERE entry_id=?", (row["id"],)
-                ).fetchone()
-                if not exists:
-                    db.execute(
-                        "INSERT INTO catalog_vectors VALUES (?,?)", (row["id"], vector.tobytes())
-                    )
-                    count += 1
+                db.execute(
+                    "INSERT INTO catalog_vectors VALUES (?,?)", (record_id, vector.tobytes())
+                )
+                have.add(record_id)
+                count += 1
             db.commit()
             return count
 
     def vectors_snapshot(self) -> tuple[list[IndexEntry], np.ndarray]:
         from autodj.indexer import FEATURE_DIM
 
-        with self._lock:
-            rows = (
-                self._db()
-                .execute(
-                    "SELECT e.*, v.vector FROM catalog_entries e "
-                    "JOIN catalog_vectors v ON v.entry_id=e.id WHERE e.kind='music' ORDER BY e.path"
-                )
-                .fetchall()
-            )
-            rows = [row for row in rows if self._active(row["path"], "music")]
-            entries = [self._entry(row) for row in rows]
-            vectors = np.empty((len(rows), FEATURE_DIM), dtype=np.float32)
-            for i, row in enumerate(rows):
-                vectors[i] = np.frombuffer(row["vector"], dtype=np.float32)
-            return entries, vectors
+        with self.reader() as reader:
+            coverage = reader.coverage()
+            by_path = {entry.path: entry for entry in reader.entries("music", coverage)}
+            paths = [path for path in reader.vector_paths() if path in by_path]
+            chunks = list(reader.vectors(set(paths)))
+        vectors = np.concatenate(chunks) if chunks else np.empty((0, FEATURE_DIM), np.float32)
+        return [by_path[path] for path in paths], vectors
 
     def _coverage(self, path: str, kind: str) -> bool:
         return any(
@@ -718,89 +935,9 @@ class LibraryCatalog:
         return not self._coverage(path, "liner")
 
     def entries_snapshot(self, kind: str = "music") -> tuple[IndexEntry, ...]:
-        with self._lock:
-            rows = (
-                self._db()
-                .execute("SELECT * FROM catalog_entries WHERE kind=? ORDER BY path", (kind,))
-                .fetchall()
-            )
-            return tuple(self._entry(row) for row in rows if self._active(row["path"], kind))
-
-    def browse_tracks(
-        self,
-        kind: str = "music",
-        source_id: str | None = None,
-        q: str = "",
-        offset: int = 0,
-        limit: int = 100,
-    ) -> dict[str, Any]:
-        """List active playable entries, optionally limited to one registered source."""
-        if kind not in {"music", "liner"}:
-            raise ValueError("kind must be 'music' or 'liner'")
-        with self._lock:
-            db = self._db()
-            sources = db.execute("SELECT id, path, kind, recursive FROM catalog_sources").fetchall()
-            source = None
-            if source_id is not None:
-                source = next((row for row in sources if row["id"] == source_id), None)
-                if source is None:
-                    raise KeyError(source_id)
-                if source["kind"] != kind:
-                    raise ValueError("source kind does not match requested kind")
-            rows = db.execute("SELECT * FROM catalog_entries WHERE kind=?", (kind,)).fetchall()
-
-            tokens = q.casefold().split()
-            matches = []
-            for row in rows:
-                path = row["path"]
-                if not Path(path).is_file():
-                    continue
-                if source is not None:
-                    covered = _under(path, source["path"], bool(source["recursive"]))
-                else:
-                    covered = any(
-                        item["kind"] == kind and _under(path, item["path"], bool(item["recursive"]))
-                        for item in sources
-                    )
-                if not covered:
-                    continue
-                if kind == "music" and any(
-                    item["kind"] == "liner" and _under(path, item["path"], bool(item["recursive"]))
-                    for item in sources
-                ):
-                    continue
-                entry = self._entry(row)
-                searchable = " ".join(
-                    (entry.artist, entry.title, entry.album, Path(path).name)
-                ).casefold()
-                if all(token in searchable for token in tokens):
-                    matches.append(entry)
-
-        matches.sort(
-            key=lambda entry: (
-                entry.artist.casefold(),
-                entry.title.casefold(),
-                entry.path.casefold(),
-            )
-        )
-        return {
-            "results": [
-                {
-                    "path": entry.path,
-                    "title": entry.title,
-                    "artist": entry.artist,
-                    "album": entry.album,
-                    "bpm": entry.bpm,
-                    "length": entry.length,
-                    "display_name": entry.display_name,
-                    "kind": kind,
-                }
-                for entry in matches[offset : offset + limit]
-            ],
-            "total": len(matches),
-            "offset": offset,
-            "limit": limit,
-        }
+        """Records of *kind* that registered, present sources cover, in path order."""
+        with self.reader() as reader:
+            return reader.entries(kind, reader.coverage())
 
     @staticmethod
     def _entry(row: sqlite3.Row) -> IndexEntry:
@@ -899,6 +1036,49 @@ class LibraryCatalog:
             for source in self.sources(kind)
             if _under(normalized, source["path"], source["recursive"])
         ]
+
+    def stored_entries(self) -> list[tuple[str, IndexEntry]]:
+        """Every stored record as ``(kind, entry)``, missing files included, in one query."""
+        with self._lock:
+            rows = self._db().execute(
+                f"SELECT kind,path,{','.join(_ENTRY_FIELDS)} FROM catalog_entries"  # nosec B608 -- constant field names
+            )
+            return [(row[0], IndexEntry(*tuple(row)[1:])) for row in rows]
+
+    def unembedded_music(self) -> list[dict]:
+        """Records the analysis job should embed, in path order.
+
+        Music records with no vector, under an advanced music source and
+        not owned by a liner source, whose file exists.  One query, and a
+        file check only for those.
+        """
+        with self._lock:
+            db = self._db()
+            sources = db.execute("SELECT path,kind,recursive,advanced FROM catalog_sources")
+            advanced, liner = [], []
+            for root, kind, recursive, is_advanced in sources:
+                if kind == "liner":
+                    liner.append((_prefix(root), bool(recursive)))
+                elif is_advanced:
+                    advanced.append((_prefix(root), bool(recursive)))
+            if not advanced:
+                return []
+            paths = [
+                row[0]
+                for row in db.execute(
+                    "SELECT e.path FROM catalog_entries e LEFT JOIN catalog_vectors v "
+                    "ON v.entry_id=e.id WHERE e.kind='music' AND v.entry_id IS NULL "
+                    "ORDER BY e.path"
+                )
+            ]
+            return [
+                record
+                for path in paths
+                if _covered_by(path, advanced)
+                and not _covered_by(path, liner)
+                and Path(path).is_file()
+                and (record := self.record_for_path(path)) is not None
+            ]
 
     def all_entries(self, kind: str | None = None) -> tuple[dict, ...]:
         """Return every stored record, including currently uncovered/missing files."""

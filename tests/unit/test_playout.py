@@ -192,3 +192,18 @@ def test_enabled_outro_can_start_voice_early_with_blank_incoming_overlap():
     )
     assert handoff.liner_s == 4
     assert handoff.incoming_s == 8
+
+
+def test_chunk_and_overlay_are_views_of_one_buffer() -> None:
+    handoff = render_handoff(
+        audio(10, 0.5),
+        {"start": 0, "outro": 7, "segue": 8, "end": 10},
+        {"start": 0, "intro": 1},
+        fade_seconds=1.5,
+    )
+    assert len(handoff.audio) and len(handoff.next_overlay)
+    assert np.shares_memory(handoff.audio, handoff.full_audio)
+    assert np.shares_memory(handoff.next_overlay, handoff.full_audio)
+    np.testing.assert_array_equal(
+        handoff.full_audio, np.concatenate((handoff.audio, handoff.next_overlay))
+    )

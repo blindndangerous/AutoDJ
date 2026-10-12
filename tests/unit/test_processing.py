@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -311,3 +312,113 @@ def test_source_replacement_during_processing_is_rejected(
             processing.analyze_loudness(source)
         else:
             processing.load_processed_audio(source, measurement)
+
+
+@pytest.mark.parametrize("kind", ["music", "liner"])
+@pytest.mark.parametrize("maker", [_source, _mono_48k_source])
+def test_one_pass_decode_and_measure_matches_the_two_passes(tmp_path: Path, kind, maker) -> None:
+    """A loudness cache miss decodes once and gives the same samples and measurement."""
+    source = maker(tmp_path / "song.wav")
+    measurement = processing.analyze_loudness(source, kind)
+    expected = processing.load_processed_audio(source, measurement, kind)
+
+    audio, measured = processing.load_and_measure_audio(source, kind)
+
+    assert measured == measurement
+    np.testing.assert_array_equal(audio, expected)
+    assert audio.flags.writeable
+
+
+def test_one_pass_decode_runs_ffmpeg_once(tmp_path: Path, monkeypatch) -> None:
+    source = _source(tmp_path / "song.wav")
+    real = processing.subprocess.Popen
+    started: list[list[str]] = []
+
+    def counting(command, *args, **kwargs):
+        started.append(command)
+        return real(command, *args, **kwargs)
+
+    monkeypatch.setattr(processing.subprocess, "Popen", counting)
+    monkeypatch.setattr(processing.subprocess, "run", MagicMock(side_effect=AssertionError))
+    processing.load_and_measure_audio(source)
+    assert len(started) == 1
+
+
+def test_one_pass_decode_rejects_silence_long_tracks_and_reports_errors(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    with pytest.raises(ValueError, match="silent"):
+        processing.load_and_measure_audio(_source(tmp_path / "silence.wav", silence=True))
+    source = _source(tmp_path / "song.wav")
+    with pytest.raises(processing.TrackTooLongError):
+        processing.load_and_measure_audio(source, max_seconds=1.0)
+    log = b"[mp3 @ 0x1] [error] damaged frame recovered\n[info] I: -20.0 LUFS\n"
+    monkeypatch.setattr(
+        processing.subprocess,
+        "Popen",
+        lambda *args, **kwargs: _FinishedDecode(np.full((20, 2), 0.1, "<f4").tobytes(), log),
+    )
+    audio, measurement = processing.load_and_measure_audio(source)
+    assert measurement["lufs"] == -20.0
+    np.testing.assert_allclose(audio, 0.1 * 10 ** ((-28.0 + 20.0) / 20), rtol=1e-6)
+    assert "damaged frame recovered" in caplog.text
+    assert "LUFS" not in caplog.text
+
+
+def test_scan_refuses_a_track_over_the_limit_before_decoding(tmp_path: Path, monkeypatch) -> None:
+    """A three-hour mix once needed about 10 GB to analyse; its header says it is too long."""
+    source = _source(tmp_path / "mix.wav")  # 3 s
+    monkeypatch.setattr(processing, "load_stereo", MagicMock(side_effect=AssertionError("decoded")))
+    with pytest.raises(processing.TrackTooLongError) as refused:
+        processing.analyze_basic(source, max_seconds=1.0)
+    assert refused.value.seconds == pytest.approx(3.0)
+
+
+def test_scan_passes_the_limit_to_the_decode(tmp_path: Path, monkeypatch) -> None:
+    """A header that understates the length is caught by the decode, a second past the limit."""
+    source = _source(tmp_path / "song.wav")
+    monkeypatch.setattr(processing, "probe_seconds", lambda _source: None)
+    with pytest.raises(processing.TrackTooLongError):
+        processing.analyze_basic(source, max_seconds=1.0)
+    entry, _points = processing.analyze_basic(source, max_seconds=10.0)
+    assert entry.length == pytest.approx(3.0)
+
+
+def test_probe_seconds_reads_headers_then_ffprobe(tmp_path: Path, monkeypatch) -> None:
+    source = _source(tmp_path / "song.wav")
+    assert processing.probe_seconds(source) == pytest.approx(3.0)
+    monkeypatch.setattr("autodj.audio_meta._open_mutagen", MagicMock(return_value=None))
+    if shutil.which("ffprobe"):
+        assert processing.probe_seconds(source) == pytest.approx(3.0, abs=0.05)
+    assert processing.probe_seconds(tmp_path / "missing.wav") is None
+
+
+@pytest.mark.parametrize(
+    "sketchy,mode,expected", [(False, 0, None), (True, 2, None), (False, 2, 1000.0)]
+)
+def test_only_reliable_mpeg_duration_is_used_for_refusal(
+    tmp_path, monkeypatch, sketchy, mode, expected
+):
+    from types import SimpleNamespace
+
+    from mutagen.mp3 import MPEGInfo
+
+    info = object.__new__(MPEGInfo)
+    info.length, info.sketchy, info.bitrate_mode = 1000.0, sketchy, mode
+    monkeypatch.setattr(
+        "autodj.audio_meta._open_mutagen", lambda _source: SimpleNamespace(info=info)
+    )
+    monkeypatch.setattr(
+        processing.subprocess, "run", MagicMock(side_effect=AssertionError("estimated fallback"))
+    )
+    assert processing.probe_seconds(tmp_path / "song.mp3") == expected
+
+
+def test_unknown_raw_aac_duration_is_not_used_for_refusal(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "autodj.audio_meta._open_mutagen",
+        lambda _source: SimpleNamespace(info=SimpleNamespace(length=1000.0)),
+    )
+    assert processing.probe_seconds(tmp_path / "song.aac") is None

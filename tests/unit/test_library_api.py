@@ -170,6 +170,7 @@ def test_track_browse_empty_query_paginates_stably(library_api):
         path = manager.cfg.library.music_dir / f"{name}.flac"
         path.touch()
         manager.catalog.put_entry(make_entry(path))
+    manager.refresh()  # as the server's library tick does
 
     page = call("GET", "/api/library/tracks", offset=1, limit=1)
     assert page["total"] == 3
@@ -193,6 +194,7 @@ def test_track_browse_source_respects_recursive_and_kind(library_api, tmp_path):
     child.touch()
     manager.catalog.put_entry(make_entry(direct))
     manager.catalog.put_entry(make_entry(child))
+    manager.refresh()
 
     listed = call("GET", "/api/library/tracks", source_id=source["id"])
     assert [track["path"] for track in listed["results"]] == [os.path.normcase(str(direct))]
@@ -209,6 +211,7 @@ def test_track_browse_finds_filename_and_lists_liners(library_api, tmp_path):
     liner = root / "PromoCode.flac"
     liner.touch()
     manager.catalog.put_entry(make_entry(liner, title="Promo"), kind="liner")
+    manager.refresh()
 
     assert call("GET", "/api/library/tracks", q="code", kind="music")["total"] == 0
     results = call("GET", "/api/library/tracks", q="code", kind="liner", source_id=source["id"])

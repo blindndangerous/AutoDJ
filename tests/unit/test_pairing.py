@@ -284,3 +284,37 @@ def test_has_active_devices_ignores_revoked_ones(tmp_path) -> None:
 
     registry.revoke(device.device_id)
     assert registry.has_active_devices() is False
+
+
+def test_device_checks_reuse_the_answer_until_revoked_or_stale(tmp_path, monkeypatch) -> None:
+    import autodj.pairing as pairing
+
+    clock = [100.0]
+    path = tmp_path / "devices.sqlite3"
+    registry = DeviceRegistry(path, monotonic=lambda: clock[0])
+    device = registry.pair("Phone")
+    other = registry.pair("Tablet")
+    opened = []
+    connect = pairing.sqlite3.connect
+
+    def counting_connect(*args, **kwargs):
+        opened.append(args[0])
+        return connect(*args, **kwargs)
+
+    monkeypatch.setattr(pairing.sqlite3, "connect", counting_connect)
+    policy = _policy(registry)
+    session = policy.issue_device_session(device.device_id)
+    for _ in range(20):
+        assert policy.verify_session(session)
+    assert len(opened) == 1  # issuing read it; the checks reused that
+
+    # A revoke in this process takes effect at once.
+    assert registry.revoke(device.device_id)
+    assert not policy.verify_session(session)
+
+    # One from another process (the CLI) changes the file, or else the
+    # answer ages out after ACTIVE_CACHE_SECONDS.
+    assert registry.is_active(other.device_id)
+    assert DeviceRegistry(path).revoke(other.device_id)
+    clock[0] += pairing.ACTIVE_CACHE_SECONDS + 1
+    assert not registry.is_active(other.device_id)
