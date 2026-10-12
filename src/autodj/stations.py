@@ -626,6 +626,12 @@ class StationRuntime:
 
     async def start(self) -> None:
         """Start the schedule, the stream or liners, the WebSocket push and webhooks."""
+        desk = getattr(self, "breaks", None)
+        if desk is not None:
+            try:
+                await asyncio.to_thread(desk.maintain)
+            except Exception:
+                logger.exception("Break upkeep failed")
         self.stopped = False
         bridge = self.bridge
         cfg = self.cfg
