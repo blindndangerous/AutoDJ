@@ -623,6 +623,7 @@ def test_options_has_no_cors_bypass() -> None:
         ("post", "/api/discovery/toggle"),
         ("post", "/api/eq"),
         ("post", "/api/library/stop"),
+        ("post", "/api/library/tags"),
     ],
 )
 def test_every_mutation_route_requires_session_before_body_validation(

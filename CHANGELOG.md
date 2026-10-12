@@ -10,6 +10,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A rotation tester (#125): Settings > Song picking > **Test rotation**, or
+  `autodj simulate --days 7`, plays a span of time (up to 30 days) or a number of songs (up to
+  20,000) through the station's own song picker, with its clockwheel, categories and their hours,
+  schedule and date ranges, repeat rules (related artists included) and DMCA limits, and reports
+  plays per song, category and artist, songs never played, which rules had to be relaxed and how
+  often, skipped clockwheel steps and why, DMCA conflicts and any moment with nothing to play.
+  Nothing on air changes. The report comes in words (headings and short lines) or JSON
+  (`--json`); a seed repeats a run exactly. Runs stop after ten minutes of work, with what they
+  have. `autodj simulate` opens the library read-only, so it can run beside a server. In the page
+  the run works in the background with a progress bar and a Cancel button, announces its end
+  once, and shows the results as headings and lists. See
+  [Operations](docs/operations.md#testing-the-rotation).
+
+- Editing tags from Track info (#53). A Tags section has fields for title, artist, album, genre,
+  year, BPM, key and ISRC. Save tags writes only the changed fields into the file with mutagen
+  (MP3, FLAC, M4A, Ogg Vorbis, Opus, WAV and AIFF) and updates the library at once, keeping the
+  song's analysis, cue points and loudness measurement, so nothing is analysed again; a key or BPM
+  set by hand is kept when the song is analysed later. The file is tagged as a copy that is
+  flushed to disk and replaces the original only once every changed field reads back, so a failed
+  save leaves the original as it was; an MP3 keeps its ID3 version. A song playing or up next is
+  refused until it has played, and only files inside the library folders are changed. When beets
+  manages the library, the same fields can be written to the beets database too. A refused field
+  is marked invalid with its reason linked to it and focused; a save is said once and focus stays
+  on Save tags. The dialog that asks to save before switching tracks now reads its explanation when
+  it opens and has a Keep editing button, which does what Escape does.
+
 - A separate output device for previews (#54). In Settings, Sound, **Preview output device**
   sends the cue point preview in Track info, which Queue & Search, History and the library open,
   to a device of its own, such as headphones, while the browser mix stays on the speakers.
@@ -325,9 +351,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     after the station has stopped.
   - The multi-station soak test now runs for a few seconds in every test run, stops and starts
     the second station while both render, and checks that nothing is left behind (the bus timing
-    is judged only in a long run). It can run for
-    hours and write memory and processor samples to a file. See "Soak test" in
+    is judged only in a long run). It can run for hours and write memory and processor samples to
+    a file. See "Soak test" in
     `docs/operations.md`.
+- Rotation tests now count repeat-rule violations on the opening song and after a fresh start,
+  including steps configured to ignore repeat rules. Those picks could previously repeat a song
+  while the report said no rules had been relaxed.
 
 - The web page works better for people who see it. In Windows High Contrast (forced colours) the
   selected section tab and Settings subtab now show their names; they were blank. Queue &
@@ -413,6 +442,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   place it reached most recently.
 
 ### Changed
+
+- Clockwheel picks on a large library take less work, the same songs as before: in DMCA mode a
+  pick checks each song against only the few albums and artists at a limit (and none while nothing
+  is), the songs a clock can pick from are kept between picks until the library or the hours
+  change, and least-recently-played steps compare play times without reworking every path.
 
 - The clockwheel's reset timing now measures every song from its start cue to its end cue (or its
   segue or outro, when earlier) for all clockwheels, not only for liner steps with "Only play if

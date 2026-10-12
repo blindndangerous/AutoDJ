@@ -421,14 +421,14 @@ def test_two_stations_switching_to_stereo_tool_at_once_cannot_both_get_it(
     # The first station has passed its check and is half-way through
     # applying when the second asks.
     entered, go = threading.Event(), threading.Event()
-    apply = first._apply_playback_settings
+    apply = first._set_playback_settings
 
     def slow_apply(body: Any, *, restoring: bool) -> None:
         entered.set()
         go.wait(5)
         apply(body, restoring=restoring)
 
-    first._apply_playback_settings = slow_apply  # type: ignore[method-assign]
+    first._set_playback_settings = slow_apply  # type: ignore[method-assign]
     body = PlaybackSettingsBody(loudness_processing="stereotool")
     errors: list[Exception] = []
 

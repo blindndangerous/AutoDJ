@@ -39,6 +39,27 @@ _ENTRY_FIELDS = (
 )
 _POINTS = ("start", "intro", "outro", "segue", "end", "overlap_start")
 _POINT_SOURCES = {"auto", "lyrics", "analysis", "user", "imported"}
+# The columns a tag edit from Track info may change (LibraryCatalog.retag).
+_RETAG_FIELDS = frozenset({"title", "artist", "album", "genre", "year", "bpm", "key", "mode"})
+# Fields set by hand in Track info that analysis keeps (catalog_entries.user_tags).
+_USER_TAGS = ("bpm", "key")
+
+
+def _user_tags(value: Any, fingerprint: str) -> list[str]:
+    """The hand-set fields that still apply to the file with *fingerprint*.
+
+    ``user_tags`` maps each field to the fingerprint of the file it was set
+    on.  A flag for other bytes is ignored, so a file changed by any program,
+    including an older AutoDJ that does not know the column, loses it.
+    Anything unreadable counts as none.
+    """
+    try:
+        tags = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(tags, dict) or not fingerprint:
+        return []
+    return sorted(name for name in _USER_TAGS if tags.get(name) == fingerprint)
 
 
 _SCHEMA = """
@@ -61,6 +82,7 @@ _SCHEMA = """
         point_sources TEXT NOT NULL DEFAULT '{}', prepared_path TEXT,
         intro_lift_db REAL,
         loudness TEXT NOT NULL DEFAULT '{}',
+        user_tags TEXT NOT NULL DEFAULT '{}',
         last_played REAL NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS catalog_settings (
@@ -322,6 +344,9 @@ class LibraryCatalog:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        # Paths whose tags are being rewritten now, with how many edits hold
+        # each (see editing()).
+        self._editing: dict[str, int] = {}
         # Writers wait for each other instead of failing while a reload or
         # another process (the analysis worker) holds the file.
         self._conn: sqlite3.Connection | None = _connect(
@@ -370,6 +395,10 @@ class LibraryCatalog:
             if "loudness" not in entries:
                 db.execute(
                     "ALTER TABLE catalog_entries ADD COLUMN loudness TEXT NOT NULL DEFAULT '{}'"
+                )
+            if "user_tags" not in entries:
+                db.execute(
+                    "ALTER TABLE catalog_entries ADD COLUMN user_tags TEXT NOT NULL DEFAULT '{}'"
                 )
             have = {row[1] for row in db.execute("PRAGMA table_info(play_history)")}
             if "performances" not in have:
@@ -755,6 +784,10 @@ class LibraryCatalog:
             raise ValueError("invalid point source")
         path = _path(entry.path)
         row = self._db().execute("SELECT * FROM catalog_entries WHERE path=?", (path,)).fetchone()
+        if row and path in self._editing:
+            # Its tags are being rewritten (retag): the new bytes would look
+            # like a new recording and clear its analysis.  retag stores them.
+            return str(row["id"])
         record_id = row["id"] if row else uuid.uuid4().hex
         values = [getattr(entry, name) for name in _ENTRY_FIELDS]
         if not entry.size or not entry.fingerprint:
@@ -771,10 +804,16 @@ class LibraryCatalog:
                 # Changed bytes, including retagging, invalidate cues and derived audio too.
                 self._db().execute("DELETE FROM catalog_vectors WHERE entry_id=?", (record_id,))
                 self._db().execute(
-                    "UPDATE catalog_entries SET prepared_path=NULL, intro_lift_db=NULL, loudness='{}', points='{}', point_sources='{}' "
+                    "UPDATE catalog_entries SET prepared_path=NULL, intro_lift_db=NULL, loudness='{}', points='{}', point_sources='{}', user_tags='{}' "
                     "WHERE id=?",
                     (record_id,),
                 )
+            else:
+                # Same file: a key or BPM set by hand in Track info outlives
+                # an analysis that measured its own.
+                for name in _user_tags(row["user_tags"], row["fingerprint"]):
+                    for column in ("key", "mode") if name == "key" else (name,):
+                        values[_ENTRY_FIELDS.index(column)] = row[column]
         cols = ",".join(_ENTRY_FIELDS)
         placeholders = ",".join("?" for _ in _ENTRY_FIELDS)
         if row:
@@ -1035,6 +1074,7 @@ class LibraryCatalog:
                 "intro_lift_db": row["intro_lift_db"],
                 "loudness": loudness,
                 "last_played": row["last_played"],
+                "user_tags": _user_tags(row["user_tags"], row["fingerprint"]),
             }
             result.update({n: row[n] for n in _ENTRY_FIELDS})
             return result
@@ -1200,7 +1240,9 @@ class LibraryCatalog:
                     db.rollback()
                     return False
                 entry = self._entry(row)
-                _apply_analysis_metadata(entry, analysis)
+                _apply_analysis_metadata(
+                    entry, analysis, keep=_user_tags(row["user_tags"], row["fingerprint"])
+                )
                 db.execute(
                     "UPDATE catalog_entries SET energy=?, key=?, mode=?, bpm=?, "
                     "tempo_confidence=?, embedded_at=? WHERE id=?",
@@ -1333,6 +1375,99 @@ class LibraryCatalog:
                 self._db().rollback()
                 raise
 
+    @contextmanager
+    def editing(self, path: str | Path) -> Iterator[None]:
+        """Mark *path* as having its tags rewritten until the block ends.
+
+        While marked, :meth:`put_entry` leaves its record alone, so a scan
+        that reads the rewritten file before :meth:`retag` stores it cannot
+        take it for a new recording and clear its analysis.  The mark is
+        this process's only.
+        """
+        normalized = _path(path)
+        with self._lock:
+            self._editing[normalized] = self._editing.get(normalized, 0) + 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._editing[normalized] -= 1
+                if not self._editing[normalized]:
+                    del self._editing[normalized]
+
+    def retag(self, path: str | Path, fields: dict[str, Any]) -> bool:
+        """Store a recording's edited tags and its file's new identity (#53).
+
+        Only the tags changed, not the audio, so the vector, cue points,
+        prepared audio and intro lift stay.  The file's size, fingerprint,
+        stale-check stamp and the loudness measurement's file stamp move to
+        the rewritten file, so neither a scan nor ``autodj index`` takes it
+        for a new recording and analyses it again.  A key or BPM set here is
+        remembered in ``user_tags`` so a later analysis keeps it; clearing
+        it hands it back to the analysis.
+
+        Args:
+            path: The recording, already rewritten on disk.
+            fields: New values for any of ``title``, ``artist``, ``album``,
+                ``genre``, ``year``, ``bpm``, ``key`` and ``mode``.
+
+        Returns:
+            ``False`` when the catalog has no record for *path*.
+
+        Raises:
+            OSError: The file cannot be read; nothing is stored, so the
+                record never takes an unknown identity.
+        """
+        if set(fields) - _RETAG_FIELDS:
+            raise ValueError("only tag fields can be retagged")
+        normalized = _path(path)
+        # File reads stay outside the lock; the caller holds the file still.
+        size, fingerprint = file_fingerprint(normalized)
+        if not size or not fingerprint:
+            raise OSError(f"cannot read {normalized}")
+        stat = os.stat(normalized)
+        with self._lock:
+            db = self._db()
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    "SELECT id,size,fingerprint,embedded_at,loudness,user_tags FROM catalog_entries "
+                    "WHERE path=?",
+                    (normalized,),
+                ).fetchone()
+                if row is None:
+                    db.rollback()
+                    return False
+                values: dict[str, Any] = {**fields, "size": size, "fingerprint": fingerprint}
+                manual = set(_user_tags(row["user_tags"], row["fingerprint"]))
+                for name in _USER_TAGS:
+                    if name in fields:
+                        # A key is 0 to 11, -1 when cleared; a BPM 0 when cleared.
+                        if fields[name] >= 0 if name == "key" else fields[name] > 0:
+                            manual.add(name)
+                        else:
+                            manual.discard(name)
+                values["user_tags"] = json.dumps(dict.fromkeys(sorted(manual), fingerprint))
+                if row["embedded_at"]:
+                    values["embedded_at"] = stat.st_mtime
+                try:
+                    loudness = json.loads(row["loudness"])
+                except (TypeError, json.JSONDecodeError):
+                    loudness = None
+                if isinstance(loudness, dict) and loudness.get("size") == row["size"]:
+                    loudness.update(size=stat.st_size, mtime_ns=stat.st_mtime_ns)
+                    values["loudness"] = json.dumps(loudness, allow_nan=False)
+                assignments = ",".join(f"{name}=?" for name in values)
+                db.execute(
+                    f"UPDATE catalog_entries SET {assignments} WHERE id=?",  # nosec B608 -- names checked against fixed columns above
+                    (*values.values(), row["id"]),
+                )
+                db.commit()
+            except BaseException:
+                db.rollback()
+                raise
+        return True
+
     def remember_play(
         self, path: str | Path, timestamp: float | None = None, station: str = DEFAULT_STATION
     ) -> None:
@@ -1410,4 +1545,25 @@ class LibraryCatalog:
             return True
 
 
-__all__ = ["DEFAULT_STATION", "LibraryCatalog"]
+class ReadOnlyCatalog(LibraryCatalog):
+    """A catalog opened read-only, for a look beside a running server (``autodj simulate``).
+
+    The connection is SQLite's ``mode=ro``: no schema set-up, no column or
+    history migration, no journal-mode switch and no write lock, and any
+    write method fails.  The database file itself is never written, though
+    SQLite may create or touch the ``-wal`` and ``-shm`` files beside a
+    write-ahead-log database, as every reader does.  A file that is not a
+    catalog raises :class:`sqlite3.Error` on its first read.
+    """
+
+    def __init__(self, path: Path | str) -> None:
+        """Open *path* read-only."""
+        self.path = Path(path)
+        self._lock = threading.RLock()
+        self._conn = _connect(
+            readonly_uri(self.path), uri=True, check_same_thread=False, timeout=30
+        )
+        self._conn.row_factory = sqlite3.Row
+
+
+__all__ = ["DEFAULT_STATION", "LibraryCatalog", "ReadOnlyCatalog"]
