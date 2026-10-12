@@ -240,6 +240,16 @@ export function installVisibleStatusBehaviour(doc = globalThis.document) {
     _hovered = false;
     resumeVisibleStatus(doc);
   });
+  // A press of Dismiss with the mouse leaves focus where it is.  WebKit
+  // (Safari) does not focus a button on a click: it takes focus off the
+  // control that had it and leaves it on the page body, so the keyboard
+  // user's place was lost (WCAG 2.4.3).  Holding back the press's default
+  // keeps focus on that control in every browser; focus that is already on
+  // Dismiss is put back by restoreFocusFrom when the toast hides.
+  doc.addEventListener("mousedown", (event) => {
+    if (event.button !== 0 || !event.target?.closest?.("#status-toast-dismiss")) return;
+    event.preventDefault();
+  });
   doc.addEventListener("click", (event) => {
     if (!event.target?.closest?.("#status-toast-dismiss")) return;
     showVisibleStatus("", doc);
