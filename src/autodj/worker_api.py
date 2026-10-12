@@ -276,7 +276,7 @@ def install_worker_api(
                 "identity": expected,
                 "lease_seconds": WORKER_LEASE_SECONDS,
                 "heartbeat_seconds": HEARTBEAT_SECONDS,
-                "waiting": len(manager.catalog.unembedded_paths()),
+                "waiting": manager.catalog.unembedded_count(),
                 "songs": songs,
             }
 
@@ -463,7 +463,7 @@ def install_worker_api(
             return {
                 "available": True,
                 "workers": workers,
-                "waiting": len(manager.catalog.unembedded_paths()),
+                "waiting": manager.catalog.unembedded_count(),
                 "analysing": queue.leased_count(),
                 "server_paused": any(worker["connected"] for worker in workers),
             }

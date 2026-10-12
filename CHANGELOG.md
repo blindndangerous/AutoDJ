@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Performance
+
+- Count the pending analysis queue without sorting and materializing its paths (#166).
+
 ### Added
 
 - A rotation tester (#125): Settings > Song picking > **Test rotation**, or

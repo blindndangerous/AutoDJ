@@ -1165,6 +1165,27 @@ class LibraryCatalog:
                 if _covered_by(row[0], advanced) and not _covered_by(row[0], liner)
             ]
 
+    def unembedded_count(self) -> int:
+        """Count pending music without sorting or materializing its paths."""
+        with self._lock:
+            db = self._db()
+            sources = db.execute("SELECT path,kind,recursive,advanced FROM catalog_sources")
+            advanced, liner = [], []
+            for root, kind, recursive, is_advanced in sources:
+                if kind == "liner":
+                    liner.append((_prefix(root), bool(recursive)))
+                elif is_advanced:
+                    advanced.append((_prefix(root), bool(recursive)))
+            if not advanced:
+                return 0
+            return sum(
+                _covered_by(path, advanced) and not _covered_by(path, liner)
+                for (path,) in db.execute(
+                    "SELECT e.path FROM catalog_entries e LEFT JOIN catalog_vectors v "
+                    "ON v.entry_id=e.id WHERE e.kind='music' AND v.entry_id IS NULL"
+                )
+            )
+
     def unembedded_music(
         self, *, limit: int | None = None, exclude: Collection[str] = ()
     ) -> list[dict]:
