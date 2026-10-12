@@ -8,11 +8,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Fixed
-
-- Public now-playing history and its webhooks include only artist, title, duration and play time;
-  local file paths and internal event IDs remain available in operator history.
-
 ### Added
 
 - Several named clockwheels (Library tools, Clockwheels): create, duplicate, rename, delete,
@@ -169,6 +164,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Public now-playing history and its webhooks include only artist, title, duration and play time;
+  local file paths and internal event IDs remain available in operator history.
 - Hard scheduled liners and time checks prepare their audio before skipping the current song.
   Missing clips or failed speech generation leave the song playing and report the failed event.
 - Clock music slots with repeat rules disabled still skip silent tracks and songs already
@@ -197,6 +194,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A setting with two descriptions now hides both when it does not apply, not just the first.
 
 ### Changed
+
+- Large libraries stay responsive. Plays, the play log, settings, cue edits and loudness
+  measurements no longer make the server reload the whole library and rebuild its similarity
+  index, which took minutes per song on a 77,000-track library and held up the web page, the
+  stream and the API. The library now reloads only when tracks, vectors or folders change,
+  including changes from the analysis job or the command line. Starting the server no longer
+  re-imports an index generation it has already imported, so a restart takes seconds instead of
+  minutes. Browse library, Search, the check for tracks to analyse and the state pushed to web
+  pages are fast at that size, and the state is built off the server's main loop.
+- A file deleted while AutoDJ runs leaves the library at the next scan (every start, or Rescan)
+  rather than within seconds; if it is picked first, playback skips it as before. A library
+  folder whose share is not mounted marks none of its tracks gone, and they return with it.
+- Library scans measure loudness only when loudness processing is Smooth or Stereo Tool, the
+  modes that use it.
+- `library.db` uses SQLite's WAL journal, so it can have `-wal` and `-shm` files beside it while
+  AutoDJ runs. Backups and restores already handle them.
 
 - The included Stereo Tool preset recovers more slowly after drum hits, keeping snare tails
   less prominent while retaining the default 7 dB AGC drive for quiet passages.
