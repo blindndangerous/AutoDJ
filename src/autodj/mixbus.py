@@ -115,6 +115,8 @@ class RenderedTrack:
     loudness_processing: str = ""
     clock_cursor: int | None = None
     next_clock_cursor: int | None = None
+    # The clockwheel both clock cursors are places in (#133).
+    clock_name: str | None = None
     clock_boundary: float | None = None
     next_clock_boundary: float | None = None
     liner_plan_key: str = ""

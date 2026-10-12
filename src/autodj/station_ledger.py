@@ -27,6 +27,9 @@ if TYPE_CHECKING:
     from autodj.catalog import LibraryCatalog
     from autodj.indexer import IndexEntry
 
+# StationLedger._selected_clock before any clockwheel is selected.
+_UNSELECTED = object()
+
 
 def setting_key(station: str, name: str) -> str:
     """The ``catalog_settings`` key of setting *name* for *station*.
@@ -63,10 +66,16 @@ class StationLedger:
         self.station = station
         self._entry_for_path = entry_for_path
         self._lock = threading.Lock()
+        # Held while settings are written, so a flush in progress cannot put
+        # back a value select_clock has just replaced.
+        self._settings_lock = threading.Lock()
         self._pending_plays: dict[str, float] = {}
         self._pending_history: dict[str, dict] = {}
         self._interrupted_plays: set[str] = set()
         self._pending_settings: dict[str, Any] = {}
+        # The clockwheel last selected through select_clock, or _UNSELECTED
+        # before any selection: the player's place in another one is stale.
+        self._selected_clock: Any = _UNSELECTED
         self._last_played: dict[str, float] = {}
 
     def setting_key(self, name: str) -> str:
@@ -90,9 +99,55 @@ class StationLedger:
             self._last_played[normalized] = value
 
     def remember_setting(self, name: str, value: Any) -> None:
-        """Buffer a runtime setting update without writing SQLite on an audio thread."""
+        """Buffer a runtime setting update without writing SQLite on an audio thread.
+
+        A place in a clockwheel other than the one last selected is dropped:
+        the player can still hold the old one until it reloads (#133).
+        """
         with self._lock:
+            if name == "clock" and not self._is_selected_clock(value):
+                return
             self._pending_settings[self.setting_key(name)] = value
+
+    def select_clock(
+        self, name: str | None, cursor: int | None = None, renamed_from: str | None = None
+    ) -> dict:
+        """Make clockwheel *name* the station's active one and return the setting.
+
+        Without a *cursor*, reselecting the active clockwheel keeps its
+        latest place, including one the player has not written yet; so does
+        renaming it, from *renamed_from*.  Any other clockwheel starts at its
+        first step.  The read, the write and the choice the player's later
+        updates are checked against happen under one lock, so neither a
+        flush nor the player can put the old clockwheel back (#133).
+        """
+        key = self.setting_key("clock")
+        with self._settings_lock:
+            with self._lock:
+                buffered = self._pending_settings.get(key)
+            setting = buffered if buffered is not None else self.catalog.get_setting(key, {})
+            setting = setting if isinstance(setting, dict) else {}
+            if cursor is None:
+                kept = setting.get("cursor")
+                was = setting.get("name")
+                same = was is not None and was in (name, renamed_from)
+                cursor = kept if same and type(kept) is int else 0
+            value = {"name": name, "cursor": cursor}
+            self.catalog.set_setting(key, value)
+            with self._lock:
+                self._selected_clock = name
+                # The update read above is written now, and one the player
+                # buffered since for the old clockwheel is stale.
+                latest = self._pending_settings.get(key)
+                if latest == buffered or not self._is_selected_clock(latest):
+                    self._pending_settings.pop(key, None)
+        return value
+
+    def _is_selected_clock(self, value: Any) -> bool:
+        """Whether *value* is a place in the selected clockwheel (hold ``_lock``)."""
+        if self._selected_clock is _UNSELECTED:
+            return True
+        return isinstance(value, dict) and value.get("name") == self._selected_clock
 
     def remember_history(self, row: dict) -> None:
         """Queue a play-log entry without writing SQLite on the audio thread."""
@@ -132,8 +187,12 @@ class StationLedger:
         return rows
 
     def get_setting(self, name: str, default: Any = None) -> Any:
-        """The station's saved setting *name*, as last written."""
-        return self.catalog.get_setting(self.setting_key(name), default)
+        """The station's setting *name*, including an update not yet written."""
+        key = self.setting_key(name)
+        with self._lock:
+            if key in self._pending_settings:
+                return self._pending_settings[key]
+        return self.catalog.get_setting(key, default)
 
     def recent_history(self, limit: int = 500) -> list[dict]:
         """The station's latest *limit* completed plays, oldest first."""
@@ -180,13 +239,14 @@ class StationLedger:
                     self._pending_plays.pop(path, None)
 
     def _flush_settings(self) -> None:
-        with self._lock:
-            pending = dict(self._pending_settings)
-        for key, value in pending.items():
-            self.catalog.set_setting(key, value)
+        with self._settings_lock:
             with self._lock:
-                if self._pending_settings.get(key) == value:
-                    self._pending_settings.pop(key, None)
+                pending = dict(self._pending_settings)
+            for key, value in pending.items():
+                self.catalog.set_setting(key, value)
+                with self._lock:
+                    if self._pending_settings.get(key) == value:
+                        self._pending_settings.pop(key, None)
 
     def _flush_history(self) -> None:
         with self._lock:

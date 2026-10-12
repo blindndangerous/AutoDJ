@@ -67,7 +67,7 @@ from autodj.settings_bodies import (
     VolumeBody,
     validate_playback_choices,
 )
-from autodj.station_ledger import setting_key
+from autodj.station_ledger import StationLedger, setting_key
 from autodj.stations import DEFAULT_SLUG, StationRuntime
 from autodj.stream import EncoderUnavailableError
 
@@ -442,10 +442,14 @@ async def select_clock(
     name: str | None,
     cursor: int | None = None,
     *,
-    renamed: bool = False,
+    renamed_from: str | None = None,
 ) -> dict:
-    """Make *name* the station's active clockwheel.  Reselecting it keeps its place."""
-    if name is not None and not renamed:
+    """Make *name* the station's active clockwheel.
+
+    Reselecting it keeps its place, as does renaming it (*renamed_from*
+    is its old name; a rename does not change its conditions).
+    """
+    if name is not None and renamed_from is None:
         clock = _clock_store(station).load(name)
         sources = {source["id"]: source for source in library.catalog.sources()}
         for number, step in enumerate(clock["steps"], 1):
@@ -453,14 +457,10 @@ async def select_clock(
                 await asyncio.to_thread(
                     _validate_step_conditions, station, library, step, sources, number
                 )
-    setting = _clock_setting(station, library)
-    if cursor is None:
-        kept = setting.get("cursor")
-        same = name is not None and setting.get("name") == name and type(kept) is int
-        cursor = kept if same else 0
-    library.catalog.set_setting(
-        setting_key(station.slug, "clock"), {"name": name, "cursor": cursor}
-    )
+    # Through the station's ledger when it has one: its buffered cursor is
+    # the latest place, and the old clockwheel's must not flush over this choice.
+    ledger = station.ledger or StationLedger(library.catalog, station.slug)
+    await asyncio.to_thread(ledger.select_clock, name, cursor, renamed_from)
     reload_clock = getattr(station.player, "configure_clock", None)
     if callable(reload_clock):
         await asyncio.to_thread(reload_clock)
@@ -1588,11 +1588,7 @@ def install_station_routes(router: StationRouter) -> None:
                 store.save(renamed, overwrite=False)
                 store.delete(name)
             if _active_clock(station, library) == name:
-                cursor = _clock_setting(station, library).get("cursor")
-                # Renaming the active clock does not change its conditions.
-                await select_clock(
-                    station, library, body.name, cursor if type(cursor) is int else 0, renamed=True
-                )
+                await select_clock(station, library, body.name, renamed_from=name)
             return renamed
         except (ValueError, OSError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

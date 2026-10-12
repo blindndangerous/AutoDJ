@@ -4,6 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AutoDJ</title>
+  <!-- Before the stylesheet and blocking on purpose: it sets the stored
+       theme on <html> before anything is painted. -->
+  <script src="/modules/theme-init.js"></script>
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
@@ -1103,6 +1106,28 @@
 
   <div class="card" role="tabpanel" id="spanel-display" aria-labelledby="stab-display" hidden>
     <h3>Display and keys</h3>
+    <!-- Kept in this browser only (modules/theme.js); applied before first
+         paint by modules/theme-init.js.  No status message on change: the
+         checked radio button is the whole report. -->
+    <fieldset id="theme-choice" aria-describedby="theme-choice-desc">
+      <legend>Theme</legend>
+      <div class="settings-check">
+        <input type="radio" name="theme" id="theme-system" value="system" checked>
+        <label for="theme-system">System</label>
+      </div>
+      <div class="settings-check">
+        <input type="radio" name="theme" id="theme-light" value="light">
+        <label for="theme-light">Light</label>
+      </div>
+      <div class="settings-check">
+        <input type="radio" name="theme" id="theme-dark" value="dark">
+        <label for="theme-dark">Dark</label>
+      </div>
+      <span class="setting-desc" id="theme-choice-desc">
+        System follows the light or dark setting of this device.  Saved in this browser only.
+      </span>
+    </fieldset>
+
     <fieldset>
       <legend>Display</legend>
       <div class="settings-check">
@@ -2353,9 +2378,14 @@
      from any tab; app.js decides whether it does (Settings, Announcements). -->
 <div id="track-announce" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
 <!-- Sighted mirror of whatever the live regions above just announced.
-     Deliberately aria-hidden with no role and no aria-live: the region
-     that owns the message does the speaking, this only makes the same
-     text visible.  See modules/live-region.js announceStatus(). -->
-<div id="status-toast" aria-hidden="true" hidden></div>
+     #status-toast is deliberately aria-hidden with no role and no
+     aria-live: the region that owns the message does the speaking, this
+     only makes the same text visible.  The Dismiss button is its sibling,
+     outside every live region, so it adds nothing to what is spoken, and
+     the toast never takes focus.  See modules/live-region.js. -->
+<div id="status-toast-box" hidden>
+  <div id="status-toast" aria-hidden="true" hidden></div>
+  <button type="button" id="status-toast-dismiss">Dismiss<span class="visually-hidden"> message</span></button>
+</div>
 </body>
 </html>

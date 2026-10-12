@@ -32,7 +32,7 @@ releases.
 
 CI includes selected static accessibility contracts and JavaScript behavior checks. These checks cover live-region markup, durable descriptions, keyboard interactions, color boundaries, reduced-motion styles, and forced-colors styles. Passing CI does not establish WCAG conformance and does not prove what a screen reader will speak.
 
-The visual audit (`npm run audit:visual`, part of `audit:ci`) loads every view and every Settings subtab the server shows, with every card opened, in Chromium and Firefox. It runs axe-core's WCAG 2.2 A and AA rules at 1280 px (text contrast, target size, label in name and the rest), fails if the page scrolls sideways at 320 px wide or with 200 % text at 1280 px, requires every checkbox and radio button to be at least 24 by 24 px, and tabs through each view requiring a solid focus outline at least 2 px wide on a control scrolled fully into the window. It runs on the empty-library server, so lists that only fill with music, listeners or saved items are not covered, and Stream is covered only when the server runs in stream mode. It does not check forced colours, which the static contracts cover.
+The visual audit (`npm run audit:visual`, part of `audit:ci`) loads every view and every Settings subtab the server shows, with every card opened, in Chromium and Firefox. It does so in four theme modes: Light and Dark chosen in Settings (each against the opposite system preference, so the choice has to win) and System under a light and under a dark system preference. In each mode it checks that the stored theme is on the page before any module script runs, runs axe-core's WCAG 2.2 A and AA rules at 1280 px (text contrast, target size, label in name and the rest), and measures non-text contrast (1.4.11) itself: every enabled control's border or fill against what is behind it, the focus rings (every stop in the Dark mode, the first stops in the others), the progress fill against its rail, a tick of every cue kind against the bar, and the Camelot wheel lit for 8A (each wedge edge, the compatible outline and the current wedge 3:1 against their neighbours, the numbers 4.5:1, and the edges heavier from idle to compatible to current). The status message is shown, as a confirmation and as an error, and axe-core runs again with it and its Dismiss button on screen. Once per engine it also fails if the page scrolls sideways at 320 px wide or with 200 % text at 1280 px, requires every checkbox and radio button to be at least 24 by 24 px, tabs through each view requiring a solid focus outline at least 2 px wide, 3:1 against what is behind it, on a control scrolled fully into the window (so every focus ring is measured in both themes), switches the Theme setting to Dark and back (at once, with no live-region text, kept over a reload), and checks the status message stays while the pointer is over it, goes after the pointer leaves, passes a click on its frame (outside the message and the button) through to a control underneath, and is closed by Dismiss with the mouse and with Enter reached by Tab from the stop before it, focus going back to that stop. Every measurement waits for running CSS transitions to end, because under reduced motion each change still takes one 0.01 ms transition, and on a busy runner a focus ring was otherwise read mid-change in the control's text colour. `AUTODJ_CPU_THROTTLE=<rate>` slows Chromium's CPU to imitate a loaded runner. `AUTODJ_SCREENSHOTS=<folder>` also saves a full-page screenshot of every view and subtab in every mode for review by eye. It runs on the empty-library server, so lists that only fill with music, listeners or saved items are not covered, and Stream is covered only when the server runs in stream mode. Card, fieldset and divider edges (`--border`) are decoration, not control boundaries, and are not held to 3:1. It does not check forced colours, which the static contracts cover; `tests/jsmodules/a11y-contract.test.js` also checks every theme token pair in both themes.
 
 Checkboxes and radio buttons are a deliberate exception to the authored control-boundary rule. In the default color mode they keep the browser and operating system's native appearance; AutoDJ does not replace that appearance or draw a custom border. The forced-colors rules may apply system colors such as `CanvasText` and `Highlight`, but they do not disable the native appearance. Test both checked and unchecked states during release sampling when a sampled flow contains these controls.
 
@@ -54,7 +54,9 @@ interface repeating itself.
 - One message has exactly one announcement path. Where a message also needs to be visible, the
   visible copy carries `aria-hidden="true"` and no role, so it shows without speaking. The
   page-level `#status-toast` is that mirror; `#cue-legend` and the stale-playback note follow the
-  same rule.
+  same rule. The mirror's Dismiss button sits beside it in `#status-toast-box`, outside the
+  mirror and every live region, so it adds nothing to the one announcement, and showing the
+  message never moves focus to it.
 
 When adding a status message, write it through `announceStatus()` rather than assigning
 `textContent`, and check the region it lands in is not also inside another live region.
@@ -77,7 +79,10 @@ Before every release, each flow below must be sampled with either NVDA and Firef
 - Playback controls, seeking, volume, and the spoken hotkeys.
 - Search, queue additions, reordering, removal, and empty states.
 - Now-playing changes, persistent metadata, cue descriptions, and timed lyrics.
-- Settings changes and their status or error feedback.
+- Settings changes and their status or error feedback.  Settings, Display and keys, Theme: the
+  radio group read with its name and description, a choice said as the checked radio button and
+  nothing more, and the visible status message's Dismiss button reachable without it being
+  announced along with the message.
 - Settings, Profiles and access: renaming a device (focus back on its Rename, the new name said
   once), and Show pairing code (the code said once, the countdown silent, a device that pairs
   meanwhile said once, and the used code hidden with focus on Show pairing code).

@@ -637,8 +637,10 @@ plain text, so it works without JavaScript; with JavaScript, `/modules/status-pa
 text. Only the now-playing line is a live region: screen readers hear it, politely, when the
 song changes, and nothing else on a poll. A **Pause updates** toggle stops the polling until
 pressed again. In stream mode the page also links to the stream and
-its playlist file. It sends a Content-Security-Policy that allows only its own script,
-stylesheet and feed requests.
+its playlist file. It sends a Content-Security-Policy that allows only its own scripts,
+stylesheet and feed requests. It uses the system's light or dark colours, or the Light or Dark
+theme chosen under Settings, Display and keys, Theme in a browser that opened the web page at the
+same address (`/modules/theme-init.js` reads that choice before the page is drawn).
 
 ### Settings
 
@@ -973,6 +975,95 @@ client for a running server.
 - **A player gets a 503 "stream encoder failed"** — ffmpeg crashed repeatedly (five times within
   a minute) and the encoder is cooling down for 60 seconds before it tries again. Check that
   ffmpeg is present and working (`ffmpeg -version`), then try the address again after a minute.
+
+## Several stations
+
+One AutoDJ server can play more than one station from the same music library. The root sections
+of `config.toml` (`[playback]`, `[stream]` and the rest) are the default station, exactly as
+before: a server with one station needs no change. Each other station is a `[stations.<slug>]`
+table.
+
+AutoDJ reads and checks these tables now; running the extra stations comes in a later change.
+
+### Configuration
+
+The slug names the station in addresses, folders and log lines. It uses lower-case letters,
+digits and inner hyphens, at most 32 characters, such as `nightowl`. `default` is reserved for the
+root sections. A server can have at most 8 stations besides the default one.
+
+This example adds a station called Night Owl Radio. In `config.toml`:
+
+```toml
+[stations.nightowl]
+autostart = true
+
+[stations.nightowl.stream]
+station_name = "Night Owl Radio"
+bitrate = 192
+continuous = true
+max_listeners = 20
+
+[stations.nightowl.playback]
+loudness_processing = "smooth"
+
+[stations.nightowl.recording]
+folder = "recordings/nightowl"
+```
+
+In `config.local.toml`, beside the default station's secrets:
+
+```toml
+[stations.nightowl.stream]
+listener_user = "owl"
+listener_password = "choose another strong password"
+
+[stations.nightowl.stream.relays.main]
+password = "that station's source password"
+
+[[stations.nightowl.webhooks]]
+url = "https://example.com/your-secret-endpoint"
+```
+
+The rules:
+
+- **A station starts from the defaults, not from the root sections.** Nothing is copied from the
+  default station. Copying would quietly give the new station the default station's relays,
+  webhooks, listener password and recording folder. Set everything the station needs in its own
+  tables, including machine settings such as `playback.stereotool_path`.
+- **A station's own sections** are `playback`, `djmix`, `transitions`, `replaygain`, `stream`,
+  `recording`, `nowplaying`, `time_checks`, `dmca` and `presets.<name>`, plus `webhooks` in
+  `config.local.toml`. They take the same keys as the root sections.
+- **Shared sections:** `library`, `index`, `model`, `huggingface` and `server` belong to the whole
+  server and are read only from the root. So are `stream.trusted_proxies` (from the root
+  `[stream]`) and `server.station_timezone`.
+- **Another station always streams.** It mixes on the server and never opens the sound card, so
+  its `stream.enabled` is ignored with a warning, and so is its `stream.trusted_proxies`.
+- **`autostart`** (default `true`) starts the station with the server. With `false` it is
+  configured but stays stopped until it is started.
+- **Secrets stay out of `config.toml`.** Listener credentials, relay passwords and webhooks go in
+  `config.local.toml` under the same table names; the two files are merged key by key.
+  `config.toml` refuses a station's `webhooks`, as it does the root ones, and a station named
+  in `config.local.toml` but not in `config.toml` is refused, so a misspelled name cannot start
+  a station of its own. A relay password can
+  also come from `AUTODJ_STATION_<SLUG>_RELAY_<NAME>_PASSWORD`, upper-cased, with `-` written as
+  `_`: for the example above, `AUTODJ_STATION_NIGHTOWL_RELAY_MAIN_PASSWORD`. Only relays named in
+  the TOML are looked up. The other `AUTODJ_STREAM_*` variables apply to the default station only.
+- **Each station needs its own recording folder.** A recorder deletes old recordings from its
+  folder, so two stations sharing one could delete each other's. Leaving `recording.folder`
+  unset in a station uses the default `recordings`, which the default station already uses, so
+  set it.
+- **Each relay target belongs to one station.** Two stations pushing to the same host, port and
+  mount (or Shoutcast stream) are refused.
+- **Unknown keys are warned about and ignored**, as in the root sections; the warning names the
+  station's table. `autodj doctor` offers to remove an unknown key from a station section.
+- **Errors name the station**, for example
+  `[stations.nightowl] playback.crossfade_seconds must be between 0 and 20, got 99.0`.
+
+A station keeps its state in `<index_dir>/<name>/stations/<slug>/`, with the same file names as
+the default station: `web_state.json`, `schedule.json`, `carts.json` and `carts/`,
+`time_checks.json`, `listener_bans.json`, `recording.json`, `relay-status.json`, `clockwheels/`,
+`liners/` (unless `playback.liners_folder` is set) and `profiles/`. Its plays are kept in the
+shared `library.db`. The default station's files stay where they always were.
 
 ## Windows PowerShell setup
 

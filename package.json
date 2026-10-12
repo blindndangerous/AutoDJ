@@ -28,6 +28,7 @@
       "commitlint.config.cjs",
       "src/autodj/static/app.js",
       "src/autodj/static/*-worklet.js",
+      "src/autodj/static/modules/theme-init.js",
       "tests/jsmodules/**/*.test.js",
       "tests/playwright/*.mjs"
     ]
