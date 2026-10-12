@@ -53,6 +53,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `default` is reserved, two stations cannot share a recording folder or a relay target, and
   errors name the station. See "Several stations" in `docs/operations.md`. A configuration
   without these tables behaves exactly as before.
+
+- More than one station can run on one server (#70). Each `[stations.<slug>]` station has its own
+  player, mix bus, mastering, encoder, relays, recorder, schedule, carts, time checks,
+  clockwheels, liners, profiles and saved settings, under `stations/<slug>/` in the index folder.
+  It streams at `/stations/<slug>.mp3` (and `.m3u`), its controls answer under
+  `/api/stations/<slug>/`, and `GET /api/stations` lists every station. `POST
+  /api/stations/<slug>/start` and `/stop` start and stop one; `autostart = false` leaves a station
+  stopped until then. Its log lines start with `[<slug>]`. Only one station can use Stereo Tool
+  at a time (one licence), and a Stereo Tool preset any station uses cannot be deleted. The web
+  page's station switcher comes later.
+
 - Schedule events can have a date range: an optional start date and end date, both included, in
   the station time zone. Outside the range an event does not run, and Next events skips it. An
   active window that crosses midnight belongs to the day it starts, so a Friday 18:00 until 02:00

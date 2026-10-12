@@ -68,6 +68,7 @@ from autodj.settings_bodies import (
     validate_playback_choices,
 )
 from autodj.station_ledger import StationLedger, setting_key
+from autodj.station_log import CURRENT_STATION
 from autodj.stations import DEFAULT_SLUG, StationRuntime
 from autodj.stream import EncoderUnavailableError
 
@@ -131,9 +132,16 @@ def resolve_station(connection: HTTPConnection) -> StationRuntime:
     return station
 
 
-def current_station(request: Request) -> StationRuntime:
-    """The station this request's URL names: the FastAPI dependency."""
-    return resolve_station(request)
+async def current_station(request: Request) -> StationRuntime:
+    """The station this request's URL names: the FastAPI dependency.
+
+    The rest of the request then runs as that station, so its log lines
+    and the threads it starts carry the station's name.  (Async, so it
+    runs in the request's own task rather than a worker thread.)
+    """
+    station = resolve_station(request)
+    CURRENT_STATION.set(station.slug)
+    return station
 
 
 StationDep = Annotated[StationRuntime, Depends(current_station)]
@@ -549,7 +557,12 @@ async def apply_profile(station: StationRuntime, name: str) -> dict:
                 status_code=400,
                 detail=f"Profile {name} uses cart page {snap.cart_page!r}, which does not exist",
             )
-    await asyncio.to_thread(bridge.set_playback_settings, playback)
+    try:
+        await asyncio.to_thread(bridge.set_playback_settings, playback)
+    except ValueError as exc:
+        # Refused before anything changed, such as Stereo Tool already
+        # processing another station.
+        raise HTTPException(status_code=400, detail=f"Profile {name}: {exc}") from exc
     if snap.clockwheel is not None:
         await select_clock(station, _catalog_library(station), snap.clockwheel)
         applied.append("clockwheel")
@@ -1095,6 +1108,8 @@ def install_station_routes(router: StationRouter) -> None:
         library = station.bridge.library
         if library is not None:
             for entry in await asyncio.to_thread(library.entries_snapshot, "liner"):
+                if not station.owns_liner(entry.path):
+                    continue  # another station's liner folder
                 record = await asyncio.to_thread(library.catalog.record_for_path, entry.path)
                 if not record or record.get("kind") != "liner":
                     continue

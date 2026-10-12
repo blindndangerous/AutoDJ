@@ -7,6 +7,7 @@ import ntpath
 import os
 import re
 import secrets
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Protocol
 
@@ -163,13 +164,27 @@ async def store_preset(active_index: Path, name: str, reader: AsyncReader) -> Pa
     return await asyncio.to_thread(_write_new, preset_folder(active_index), name, data)
 
 
-def delete_preset(active_index: Path, name: str, *, active: str = INCLUDED) -> None:
-    """Remove one upload unless it is the active preset (whatever its letter case)."""
+def delete_preset(active_index: Path, name: str, *, active: str | Iterable[str] = INCLUDED) -> None:
+    """Remove one upload unless a station uses it (whatever its letter case).
+
+    Args:
+        active_index: The active index folder, which holds the presets.
+        name: The preset to delete.
+        active: The preset each station is set to use.
+
+    Raises:
+        PresetInUseError: A station uses it; its argument is the name that station gives.
+    """
     if name == INCLUDED:
         raise ValueError("the included preset is read-only")
     path = preset_path(active_index, name)
-    if active != INCLUDED:
-        current = preset_path(active_index, active, require_existing=False)
+    for selected in [active] if isinstance(active, str) else active:
+        if selected == INCLUDED:
+            continue
+        try:
+            current = preset_path(active_index, selected, require_existing=False)
+        except ValueError:
+            continue  # a name no preset can have: it cannot be this one
         if current.is_file() and os.path.samefile(path, current):
-            raise PresetInUseError(name)
+            raise PresetInUseError(selected)
     path.unlink()

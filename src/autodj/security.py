@@ -482,9 +482,10 @@ def station_relative(path: str, slugs: AbstractSet[str] | None) -> str | None:
 def _is_public_path(path: str, slugs: AbstractSet[str] = frozenset()) -> bool:
     """Return whether a request path is accessible without authentication.
 
-    Listening (``/stream.mp3`` and ``/stream.m3u``) does not require
-    pairing; control APIs require a session.  A configured station's
-    public now-playing feed is public under its station path too.
+    Listening (``/stream.mp3`` and ``/stream.m3u``, and
+    ``/stations/<slug>.mp3`` and ``.m3u`` for a configured station) does
+    not require pairing; control APIs require a session.  A configured
+    station's public now-playing feed is public under its station path too.
     """
     relative = station_relative(path, slugs)
     if relative is not None:
@@ -492,8 +493,18 @@ def _is_public_path(path: str, slugs: AbstractSet[str] = frozenset()) -> bool:
     return (
         path in _PUBLIC_FILES
         or path in {"/stream.mp3", "/stream.m3u"}
+        or _is_station_stream(path, slugs)
         or _safe_public_prefix(path, "/modules/")
     )
+
+
+def _is_station_stream(path: str, slugs: AbstractSet[str]) -> bool:
+    """Whether *path* is ``/stations/<slug>.mp3`` or ``.m3u`` for a configured *slug*."""
+    name = path.removeprefix("/stations/")
+    if name == path:
+        return False
+    slug, dot, ext = name.rpartition(".")
+    return bool(dot) and ext in {"mp3", "m3u"} and slug in slugs
 
 
 def _route_template(scope: Scope) -> str:

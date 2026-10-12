@@ -613,8 +613,11 @@ def test_open_station_reads_the_saved_station_without_writing(tmp_path: Path) ->
     cfg = load_config(config, environ={})
     cfg.index.active_dir.mkdir(parents=True)
     LibraryCatalog(cfg.index.active_dir / "library.db").close()
-    with open_station(cfg, "nightowl") as source:
-        assert source.station == "nightowl"
+    unknown = pytest.raises(SimulationError, match="No station named nightowl is configured")
+    with unknown, open_station(cfg, "nightowl"):
+        pass
+    with open_station(cfg) as source:
+        assert source.station == "default"
         assert source.events == []
         assert source.player._clock is None
         with pytest.raises(SimulationError, match="no songs"):

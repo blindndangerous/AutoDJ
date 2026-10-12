@@ -90,6 +90,8 @@ class NowPlaying:
             if started_at:
                 history = history[:-1]
         limit = cfg.nowplaying.history_limit
+        # The station's own stream address (a test double may not have one).
+        stream_path = getattr(self.bridge, "stream_path", None)
         payload: dict[str, Any] = {
             "schema": SCHEMA_VERSION,
             "station_name": cfg.stream.station_name,
@@ -107,7 +109,7 @@ class NowPlaying:
             if limit
             else [],
             "listener_count": self.bridge.stream.listener_count if self.bridge.stream else 0,
-            "stream_path": "/stream.mp3",
+            "stream_path": stream_path if isinstance(stream_path, str) else "/stream.mp3",
         }
         with self._lock:
             self._payload = payload

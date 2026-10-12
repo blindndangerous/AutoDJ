@@ -981,9 +981,12 @@ client for a running server.
 One AutoDJ server can play more than one station from the same music library. The root sections
 of `config.toml` (`[playback]`, `[stream]` and the rest) are the default station, exactly as
 before: a server with one station needs no change. Each other station is a `[stations.<slug>]`
-table.
+table. Each station has its own player, mix bus, mastering process, encoder, relays, recorder,
+schedule, carts, time checks, clockwheels, liners, profiles and saved settings; the library, the
+similarity index, pairing and the web server are shared.
 
-AutoDJ reads and checks these tables now; running the extra stations comes in a later change.
+The station switcher in the web page is still to come. Until then, a station other than the
+default one is controlled through its API addresses, described below.
 
 ### Configuration
 
@@ -1064,6 +1067,80 @@ the default station: `web_state.json`, `schedule.json`, `carts.json` and `carts/
 `time_checks.json`, `listener_bans.json`, `recording.json`, `relay-status.json`, `clockwheels/`,
 `liners/` (unless `playback.liners_folder` is set) and `profiles/`. Its plays are kept in the
 shared `library.db`. The default station's files stay where they always were.
+
+### Running
+
+`autodj serve` starts the default station as before, then every other station with
+`autostart = true`. Each other station mixes on the server and streams at
+`/stations/<slug>.mp3`, with a one-line playlist at `/stations/<slug>.m3u`; the startup log lists
+the addresses. These are public like `/stream.mp3`, and the station's own `listener_user` and
+`listener_password` protect them. The default station keeps `/stream.mp3`, `/stream.m3u` and
+`/status`, and also answers at `/stations/default.mp3`. A station's stream needs ffmpeg, even when
+the default station is browser-driven.
+
+Every control route of a station answers under `/api/stations/<slug>/`, for example
+`/api/stations/nightowl/status`, `/api/stations/nightowl/skip` or
+`/api/stations/nightowl/queue/add`; the default station keeps its `/api/...` addresses. These
+need a paired browser, like the default station's.
+
+- `GET /api/stations` lists every configured station: its slug, name, state (`stopped`, `idle`,
+  `playing` or `paused`), listener count, current song and stream address.
+- `POST /api/stations/<slug>/start` builds and starts a stopped station. Starting a running
+  station changes nothing.
+- `POST /api/stations/<slug>/stop` stops a station completely: its listeners are disconnected,
+  its encoder, relays, recorder and mastering process are closed and its player ends, so it uses
+  no memory or processor time. Its routes then answer 409 and its stream answers 503, "off air".
+  The default station cannot be stopped.
+
+A station that cannot start, with the server or when asked, says why: in the log at startup, and
+in the reply to a start request. The default station and the other stations keep running.
+
+Each station starts with its saved settings (its `web_state.json`), its active clockwheel and its
+own play history. The first time a station runs, its liner folder is added to Library folders as
+a liner source. A station plays only the liners in its own folder; the default station plays every
+other registered liner, as before.
+
+### Stereo Tool: one station at a time
+
+One Stereo Tool licence covers one running copy, so AutoDJ lets only one station use Stereo Tool
+at a time. A second station set to `loudness_processing = "stereotool"` does not start while
+another station uses it, and choosing Stereo Tool in a station's settings, or applying a profile
+that does, is refused with a message naming the station that has it. A station that has just
+left Stereo Tool still counts until its current song ends. Use `"smooth"` for the other
+stations; with a second licence, a later version can lift this limit.
+
+Stereo Tool presets are shared by every station, and each station chooses its own. A preset that
+any station uses, running or stopped, cannot be deleted; the message names the station.
+
+### Logs
+
+A log line from a station other than the default one starts with its slug, such as
+`[nightowl] Stream station tick failed`, and that station's threads carry the slug in their
+names (`autodj-player-nightowl`, `autodj-stream-writer-nightowl`). The default station's lines
+and thread names are unchanged.
+
+### Cost of each running station
+
+Each running station is a complete playout chain in the same process:
+
+- **Threads, about 10 or more:** the player, the render-ahead worker (decoding, time-stretching
+  and effects, in heavy bursts at each song change), the mix bus, the mastering process's reader
+  and writer, the encoder's reader and writer, the recorder, the liner worker, one per webhook
+  and two per relay.
+- **Subprocesses, 2 to 4:** the ffmpeg MP3 encoder (plus one per relay bitrate that differs) and
+  either the ffmpeg master filter (`smooth`) or Stereo Tool with an ffmpeg limiter.
+- **Memory:** about 21 MB per minute of decoded audio, so roughly 150 to 250 MB per station for
+  the playing song, the next render and the overlap. The similarity index is shared, so another
+  station adds no index memory.
+- **An idle station still runs** its mix bus, mastering and encoder on silence. Stopping a
+  station is the real saving.
+- **One process, one interpreter lock.** A heavy render on one station could make another
+  station's mix bus late. To measure it on your own machine, run the soak test with a duration in
+  seconds; it reports the blocks each station's bus emitted while both render at once:
+
+  ```bash
+  AUTODJ_SOAK_SECONDS=60 uv run pytest tests/integration/test_multi_station.py -k soak -s
+  ```
 
 ## Windows PowerShell setup
 
@@ -1507,7 +1584,9 @@ uv run autodj simulate --picks 500 --json    # 500 songs, as JSON
 uv run autodj simulate --hours 12 --start 2026-10-16T18:00 --station nightowl
 ```
 
-`--start` is read in the station time zone (`[server] station_timezone`) and must fall between
+`--station` names the default station or one configured under `[stations.<name>]`; the run uses
+that station's settings, clockwheels, schedule and plays. `--start` is read in the station time
+zone (`[server] station_timezone`) and must fall between
 2000 and 2099. Without `--seed` a run draws a seed and the report gives it, so the same seed repeats
 a run song for song, in every pick mode. Runs are capped at 30 days or 20,000 songs, and at ten
 minutes of work: a run that reaches that limit stops with the songs picked so far, and the report

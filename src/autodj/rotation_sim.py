@@ -199,6 +199,7 @@ class PlayerSnapshot:
     clock: Mapping[str, Any] | None
     clock_status: str | None
     liner_filter: Any
+    station_paths: Any = None
 
 
 def snapshot_player(player: Any) -> PlayerSnapshot:
@@ -220,6 +221,7 @@ def snapshot_player(player: Any) -> PlayerSnapshot:
         clock_status = getattr(player, "_clock_status", None)
         related = getattr(player, "_related_artists", None)
         liner_filter = getattr(player, "liner_filter", None)
+        station_paths = getattr(player, "station_paths", None)
         discovery = bool(player._state.discovery_enabled)
     with player._pick_lock:
         history = tuple(player._state.play_history)
@@ -235,6 +237,7 @@ def snapshot_player(player: Any) -> PlayerSnapshot:
         clock=snapshot_clock,
         clock_status=clock_status,
         liner_filter=liner_filter,
+        station_paths=station_paths,
     )
 
 
@@ -328,14 +331,27 @@ def open_station(cfg: Any, station: str = "default") -> Iterator[SimulationSourc
     from autodj.catalog import ReadOnlyCatalog
     from autodj.runtime_state import load_into_bridge
     from autodj.scheduler import system_timezone
-    from autodj.stations import StationPaths
+    from autodj.stations import DEFAULT_SLUG, StationPaths
 
-    active = Path(cfg.index.active_dir)
+    root = cfg
+    if station == DEFAULT_SLUG:
+        paths = StationPaths.default(cfg)
+    else:
+        from autodj.config import station_config
+
+        spec = next((item for item in cfg.stations if item.slug == station), None)
+        if spec is None:
+            configured = ", ".join(item.slug for item in cfg.stations) or "none besides default"
+            raise SimulationError(
+                f"No station named {station} is configured. Stations: {configured}."
+            )
+        cfg = station_config(spec.cfg, root)
+        paths = StationPaths.for_station(cfg, station)
+    active = Path(root.index.active_dir)
     if not (active / "library.db").is_file():
         raise SimulationError(
             f"No music library in {active}. Start autodj serve or run autodj index first."
         )
-    paths = StationPaths.default(cfg)
     events = _read_events(paths.schedule)
     database = active / "library.db"
     try:
@@ -352,8 +368,9 @@ def open_station(cfg: Any, station: str = "default") -> Iterator[SimulationSourc
         player = Player(cfg, sim, dry_run=True)
         player._library = library
         player._ledger = ledger
-        bridge = PlayerBridge(player=player, sim=sim, library=library, ledger=ledger)
-        load_into_bridge(bridge, active)
+        player.station_paths = paths
+        bridge = PlayerBridge(player=player, sim=sim, library=library, ledger=ledger, paths=paths)
+        load_into_bridge(bridge, paths.state_dir)
         player.restore_repeat_history(ledger)
         player.configure_clock()
         yield SimulationSource(
@@ -514,6 +531,8 @@ def _copy_player(
     # Its own settings lock: nothing the dry run changes waits on, or holds,
     # the live stations' lock.
     player.settings_lock = threading.RLock()
+    # The station's own folders: another station keeps its own clockwheels.
+    player.station_paths = snapshot.station_paths
     player._sim_now = start
     player._state.clock = lambda: player._sim_now
     if snapshot.related_artists is not None:

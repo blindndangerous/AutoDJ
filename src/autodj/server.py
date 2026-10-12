@@ -50,7 +50,7 @@ import ssl
 import stat
 import threading
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, BinaryIO, Literal
@@ -84,7 +84,6 @@ from autodj.lan import PAIRING_ON_REQUEST_HINT, format_lan_banner, lan_urls, run
 from autodj.listener_access import (
     AddressLimitError,
     BannedAddressError,
-    ListenerAccess,
     ListenerAuthLimiter,
     normalize_address,
     proxy_allowlist,
@@ -104,6 +103,7 @@ from autodj.security import (
     new_request_id,
     peer_address,
 )
+from autodj.station_log import CURRENT_STATION, install_log_prefix, station_thread
 from autodj.station_routes import (
     STATION_PREFIX,
     StationRouter,
@@ -113,7 +113,10 @@ from autodj.station_routes import (
 )
 from autodj.station_routes import audio_mime as _audio_mime
 from autodj.stations import (
+    ExtraStation,
     SharedLibrary,
+    StationControlError,
+    StationPaths,
     StationRegistry,
     StationRuntime,
     quiesce_cache_writers,
@@ -133,7 +136,7 @@ from autodj.worker_api import (
 )
 
 if TYPE_CHECKING:
-    from autodj.config import AutoDJConfig
+    from autodj.config import AutoDJConfig, StationSpec
     from autodj.indexer import IndexEntry
     from autodj.library import LibraryManager
     from autodj.similarity import SimilarityIndex
@@ -440,10 +443,18 @@ class _GZipExceptStream(GZipMiddleware):
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Pass stream requests straight through; gzip the rest."""
-        if scope["type"] == "http" and scope["path"] in {"/stream.mp3", "/stream.m3u"}:
+        if scope["type"] == "http" and _is_stream_path(scope["path"]):
             await self.app(scope, receive, send)
             return
         await super().__call__(scope, receive, send)
+
+
+def _is_stream_path(path: str) -> bool:
+    """Whether *path* is a station's stream or playlist: ``/stream.mp3``, ``/stations/x.m3u``."""
+    if path in {"/stream.mp3", "/stream.m3u"}:
+        return True
+    name = path.removeprefix("/stations/")
+    return name != path and "/" not in name and name.endswith((".mp3", ".m3u"))
 
 
 @functools.cache
@@ -730,6 +741,7 @@ def create_app(
     stream_mode: bool = False,
     stream_first_track: IndexEntry | None = None,
     server_audio: bool = False,
+    extra_stations: Sequence[ExtraStation] = (),
 ) -> FastAPI:
     """Create and return the FastAPI application.
 
@@ -743,6 +755,8 @@ def create_app(
             starts with (``--seed``).
         server_audio: Plain ``--server-audio`` (no stream): voice liners
             fire into the player's mix bus, which must already exist.
+        extra_stations: The stations besides the default one; those with
+            ``autostart`` start with the app, the others when asked.
 
     Returns:
         A configured :class:`fastapi.FastAPI` instance.
@@ -750,7 +764,9 @@ def create_app(
     _lyrics_read_gate = asyncio.Semaphore(1)
     # The station time zone: scheduled events and the feed's daily peak.
     station_timezone = bridge.player._cfg.server.station_timezone or system_timezone()
-    # The one station this server plays; its state lives in StationPaths.default.
+    # Station log lines say which station they are from.
+    install_log_prefix()
+    # The default station; its state lives in StationPaths.default.
     runtime = StationRuntime(
         bridge,
         timezone=station_timezone,
@@ -759,10 +775,9 @@ def create_app(
         server_audio=server_audio,
         first_track=stream_first_track,
     )
-    stations = StationRegistry(runtime)
-    nowplaying = runtime.nowplaying
+    stations = StationRegistry(runtime, extra_stations)
+    stations.stop_timeout_s = _SHUTDOWN_TIMEOUT_S
     listener_access = runtime.listener_access
-    stream_cfg = bridge.player._cfg.stream
     listener_auth_limiter = ListenerAuthLimiter()
 
     async def _read_lyrics_owned(path: str) -> list[dict[str, object]]:
@@ -791,8 +806,7 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         """FastAPI lifespan: start and stop the station and the shared library."""
         library = SharedLibrary(bridge.library, stations)
-        for station in stations.all():
-            await station.start()
+        await stations.start_all()
         await library.start()
         STARTUP_COMPLETE.set()
         try:
@@ -873,6 +887,7 @@ def create_app(
     )
     bridge.public_state_changed = runtime.public_state_changed
     bridge.track_started_callback = runtime.track_started
+    _share_station(stations, runtime)
     # Read-only handles for serve()'s startup banner and for tests; the
     # routes and the middleware use these same objects directly.
     app.state.security_policy = policy
@@ -1215,7 +1230,7 @@ def create_app(
     async def get_status_page() -> HTMLResponse:
         """Serve the public station status page, built from the same feed."""
         return HTMLResponse(
-            render_status_page(nowplaying.snapshot(), stream_mode=bridge.stream_mode),
+            render_status_page(runtime.nowplaying.snapshot(), stream_mode=bridge.stream_mode),
             headers={
                 "Cache-Control": "no-cache",
                 "Content-Security-Policy": STATUS_PAGE_CSP,
@@ -1228,23 +1243,19 @@ def create_app(
     # Radio stream (stream mode only; 404 otherwise)
     # ------------------------------------------------------------------
 
-    def _require_stream_mode() -> ListenerAccess:
-        """404 unless the server is in stream mode."""
-        if not bridge.stream_mode or listener_access is None:
-            raise HTTPException(status_code=404, detail="Not Found")
-        return listener_access
+    async def _serve_listener(station: StationRuntime, ext: str, request: Request) -> Response:
+        """Serve *station*'s stream (``mp3``) or its one-line playlist (``m3u``).
 
-    @app.api_route("/stream.{ext}", methods=["GET", "HEAD"])
-    async def api_stream_audio(ext: str, request: Request) -> Response:
-        """Serve ``/stream.mp3``, or ``/stream.m3u``, a one-line playlist pointing at it.
-
-        Any other ``/stream.*`` name is not found.  ``HEAD`` answers with
-        the same checks and headers but no body and without becoming a
-        listener.
+        ``HEAD`` answers with the same checks and headers but no body and
+        without becoming a listener.  404 unless the station streams.
         """
-        access = _require_stream_mode()
+        sbridge = station.bridge
+        access = station.listener_access
+        if not sbridge.stream_mode or access is None:
+            raise HTTPException(status_code=404, detail="Not Found")
         if ext not in {"mp3", "m3u"}:
             raise HTTPException(status_code=404, detail="Not Found")
+        stream_cfg = station.cfg.stream
         try:
             address = normalize_address(request.client.host if request.client else "")
         except ValueError as exc:
@@ -1286,7 +1297,7 @@ def create_app(
         if ext == "m3u":
             scheme = request.url.scheme
             host = request.headers.get("host", "")
-            body = f"{scheme}://{host}/stream.mp3\n".encode()
+            body = f"{scheme}://{host}{sbridge.stream_path}\n".encode()
             if head:
                 headers["Content-Length"] = str(len(body))
                 body = b""
@@ -1304,7 +1315,7 @@ def create_app(
             response = Response(media_type="audio/mpeg", headers=headers)
             del response.headers["content-length"]  # a live stream has no length
             return response
-        stream = bridge.stream
+        stream = sbridge.stream
         try:
             # Off the loop: a dead encoder is replaced here (spawns ffmpeg).
             ident, listener = await asyncio.to_thread(
@@ -1321,15 +1332,16 @@ def create_app(
             address,
             request.headers.get("user-agent", ""),
         )
+        feed = station.nowplaying
 
         def release() -> None:
             access.remove(ident)
-            bridge.listener_disconnected(client)
-            nowplaying.refresh()
+            sbridge.listener_disconnected(client)
+            feed.refresh()
 
         try:
-            bridge.listener_connected(client)
-            nowplaying.refresh()
+            sbridge.listener_connected(client)
+            feed.refresh()
             return _ListenerResponse(
                 listener.chunks(),
                 on_close=release,
@@ -1339,6 +1351,66 @@ def create_app(
         except BaseException:
             release()  # never leak a listener slot
             raise
+
+    @app.api_route("/stream.{ext}", methods=["GET", "HEAD"])
+    async def api_stream_audio(ext: str, request: Request) -> Response:
+        """Serve the default station's ``/stream.mp3``, or ``/stream.m3u`` pointing at it.
+
+        Any other ``/stream.*`` name is not found.
+        """
+        return await _serve_listener(stations.default, ext, request)
+
+    @app.api_route("/stations/{station_file}", methods=["GET", "HEAD"])
+    async def api_station_stream(station_file: str, request: Request) -> Response:
+        """Serve ``/stations/<slug>.mp3`` or ``.m3u``: any station's stream by name.
+
+        404 for a name that is no station or another extension; 503 "off
+        air" while the station is stopped.
+        """
+        slug, dot, ext = station_file.rpartition(".")
+        if not dot or ext not in {"mp3", "m3u"}:
+            raise HTTPException(status_code=404, detail="Not Found")
+        try:
+            station = stations.get(slug)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Not Found") from None
+        if station.stopped:
+            raise HTTPException(status_code=503, detail="That station is off air")
+        assert isinstance(station, StationRuntime)
+        CURRENT_STATION.set(station.slug)
+        return await _serve_listener(station, ext, request)
+
+    # ------------------------------------------------------------------
+    # Stations: the list, and starting and stopping a station other than
+    # the default one
+    # ------------------------------------------------------------------
+
+    @app.get("/api/stations")
+    async def api_stations() -> dict[str, list[dict[str, Any]]]:
+        """List every configured station: name, state, listeners, song and stream address."""
+        return {"stations": stations.summaries()}
+
+    @app.post("/api/stations/{slug}/start")
+    async def api_station_start(slug: str) -> dict[str, Any]:
+        """Build and start a stopped station; a running one is left as it is."""
+        try:
+            station = await stations.start(slug)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="No station has that name") from None
+        except StationControlError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return station.summary()
+
+    @app.post("/api/stations/{slug}/stop")
+    async def api_station_stop(slug: str) -> dict[str, Any]:
+        """Stop a station other than the default: listeners, encoders, relays and player."""
+        try:
+            await stations.stop(slug)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="No station has that name") from None
+        except StationControlError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return stations.get(slug).summary()
 
     @app.get("/api/search")
     async def api_search(q: str = "", limit: int = 100) -> dict[str, list]:
@@ -1433,17 +1505,25 @@ def create_app(
         from autodj.stereotool_presets import PresetInUseError, delete_preset
 
         cfg = bridge.player._cfg
+        # Every station's preset: the running ones' and the stopped ones' saved
+        # choice, read off the event loop (web_state.json may be on a NAS).
+        in_use = await asyncio.to_thread(stations.stereo_tool_presets)
         try:
             await asyncio.to_thread(
-                delete_preset, cfg.index.active_dir, name, active=cfg.playback.stereotool_preset
+                delete_preset,
+                cfg.index.active_dir,
+                name,
+                active=[preset for _station, preset in in_use],
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except PresetInUseError as exc:
+            users = [station for station, preset in in_use if preset == exc.args[0]]
+            where = f" on {', '.join(users)}" if len(stations.slugs()) > 1 and users else ""
             raise HTTPException(
-                status_code=409, detail="select another preset before deleting this one"
+                status_code=409, detail=f"select another preset{where} before deleting this one"
             ) from exc
         return {"deleted": name}
 
@@ -1726,8 +1806,15 @@ def create_app(
         )
         client_host = getattr(getattr(websocket, "client", None), "host", "unknown")
         async with station.ws_lock:
-            station.ws_clients.add(client)
+            # A station that began stopping after it was looked up may have
+            # closed its pages' sockets already; this one would never close.
+            stopped = station.stopped
+            if not stopped:
+                station.ws_clients.add(client)
             client_count = len(station.ws_clients)
+        if stopped:
+            await reject(409, 4409)
+            return
         logger.info(
             "WebSocket connected: %s (%d active client%s)",
             client_host,
@@ -1778,10 +1865,39 @@ def create_app(
 
     for station in stations.all():
         _equip_station(station)
+
+    def prepare(station: StationRuntime) -> None:
+        """Wire a station that is about to start to this app."""
+        station.bridge.public_state_changed = station.public_state_changed
+        station.bridge.track_started_callback = station.track_started
+        _share_station(stations, station)
+        _equip_station(station)
+
+    async def disconnect(station: StationRuntime) -> None:
+        """Close the sockets of a stopped station's pages: 4409, the station is stopped."""
+        async with station.ws_lock:
+            clients = list(station.ws_clients)
+        for client in clients:
+            await _close_and_cancel_websocket(client, 1.0, 4409, "station stopped")
+
+    stations.prepare = prepare
+    stations.disconnect = disconnect
     install_categories(
-        app, bridge, clock_roots=lambda: [station.paths.clockwheels for station in stations.all()]
+        app, bridge, clock_roots=lambda: [paths.clockwheels for paths in stations.paths()]
     )
     return app
+
+
+def _share_station(stations: StationRegistry, station: StationRuntime) -> None:
+    """Give *station* what it shares with the other stations.
+
+    One Stereo Tool at a time across stations, and each station's own
+    liners out of the shared library.
+    """
+    slug = station.slug
+    station.bridge.stereo_tool_elsewhere = lambda: stations.stereo_tool_user(exclude=slug)
+    station.bridge.stereo_tool_lock = stations.stereo_tool_lock
+    station.owns_liner = functools.partial(stations.owns_liner, slug)
 
 
 def _station_broadcast(station: StationRuntime) -> Callable[[], Coroutine[Any, Any, None]]:
@@ -1824,6 +1940,104 @@ def _equip_station(station: StationRuntime) -> None:
 # ---------------------------------------------------------------------------
 # serve() — wires everything together
 # ---------------------------------------------------------------------------
+
+
+def _attach_master(player: Any, cfg: AutoDJConfig) -> None:
+    """Put the mastering process (Smooth or Stereo Tool) on *player*'s mix bus."""
+    from autodj.mastering import ContinuousMaster
+    from autodj.stereotool_presets import preset_path
+
+    def processing_mode() -> str:
+        return getattr(player, "_active_processing_mode", cfg.playback.loudness_processing) or "off"
+
+    player._continuous_master = ContinuousMaster(
+        mode=processing_mode,
+        stereotool_path=cfg.playback.stereotool_path,
+        preset=lambda: preset_path(
+            cfg.index.active_dir, cfg.playback.stereotool_preset, require_existing=False
+        ),
+        input_trim_db=lambda: cfg.playback.stereotool_input_trim_db,
+        agc_drive_db=lambda: cfg.playback.stereotool_agc_drive_db,
+    )
+    player.bus.set_master(
+        player._continuous_master,
+        enabled=lambda: processing_mode() in {"smooth", "stereotool"},
+    )
+
+
+def _extra_station(
+    root: AutoDJConfig,
+    spec: StationSpec,
+    sim: SimilarityIndex,
+    library: LibraryManager,
+    timezone: str,
+) -> ExtraStation:
+    """How to build station *spec*: its own player, mix bus, master and stream.
+
+    Each start builds everything afresh from the spec and the station's
+    saved settings, so a stopped station holds nothing in memory.
+    """
+    slug = spec.slug
+
+    def build(registry: StationRegistry) -> StationRuntime:
+        from autodj.config import station_config
+        from autodj.player import Player
+
+        cfg = station_config(spec.cfg, root)
+        paths = StationPaths.for_station(cfg, slug)
+        paths.state_dir.mkdir(parents=True, exist_ok=True)
+        # Its liner folder joins the library's liner sources the first time.
+        library.seed_station_liners(slug, paths.liners)
+        # Another station always streams, mixing on the server; it never
+        # opens the sound card.
+        player = Player(cfg, sim, stream_mode=True, server_audio_too=False)
+        player._library = library
+        ledger = library.station_ledger(slug)
+        player._ledger = ledger
+        player.station_paths = paths
+        bridge = PlayerBridge(
+            player=player,
+            sim=sim,
+            library=library,
+            ledger=ledger,
+            paths=paths,
+            stream_path=f"/stations/{slug}.mp3",
+        )
+        player.on_track_started = bridge.on_track_started
+        bridge.load_persistent_state()
+        player.configure_clock()
+        # Checked and marked as one step, so a station switching to Stereo
+        # Tool while this one starts sees it.
+        if (other := registry.claim_stereo_tool(slug, cfg)) is not None:
+            raise StationControlError(
+                f"{spec.name} is set to use Stereo Tool, which is already processing {other}. "
+                "AutoDJ runs one Stereo Tool at a time (one licence): set this station's "
+                "loudness processing to Smooth."
+            )
+        _attach_master(player, cfg)
+        if cfg.playback.import_external_cues:
+            station_thread(target=player.load_library_cues, name="autodj-library-cues").start()
+        player_thread = station_thread(
+            target=player.run, kwargs={"seed_entry": None}, name="autodj-player"
+        )
+        player_thread.start()
+        return StationRuntime(
+            bridge,
+            timezone=timezone,
+            player_thread=player_thread,
+            stream_mode=True,
+            slug=slug,
+            paths=paths,
+        )
+
+    return ExtraStation(
+        slug=slug,
+        name=spec.name,
+        autostart=spec.autostart,
+        paths=StationPaths.for_station(spec.cfg, slug),
+        preset=spec.cfg.playback.stereotool_preset,
+        build=build,
+    )
 
 
 def _missing_audio_modules() -> list[str]:
@@ -1944,47 +2158,24 @@ def serve(
     bridge.load_persistent_state()
     player.configure_clock()
     if player.bus is not None:
-        from autodj.mastering import ContinuousMaster
-        from autodj.stereotool_presets import preset_path
-
-        def processing_mode() -> str:
-            return (
-                getattr(player, "_active_processing_mode", cfg.playback.loudness_processing)
-                or "off"
-            )
-
-        player._continuous_master = ContinuousMaster(
-            mode=processing_mode,
-            stereotool_path=cfg.playback.stereotool_path,
-            preset=lambda: preset_path(
-                cfg.index.active_dir, cfg.playback.stereotool_preset, require_existing=False
-            ),
-            input_trim_db=lambda: cfg.playback.stereotool_input_trim_db,
-            agc_drive_db=lambda: cfg.playback.stereotool_agc_drive_db,
-        )
-        player.bus.set_master(
-            player._continuous_master,
-            enabled=lambda: processing_mode() in {"smooth", "stereotool"},
-        )
+        _attach_master(player, cfg)
 
     if cfg.playback.import_external_cues:
         # Read the DJ-software libraries once, off the playback thread.
-        threading.Thread(
-            target=player.load_library_cues, name="autodj-library-cues", daemon=True
-        ).start()
+        station_thread(target=player.load_library_cues, name="autodj-library-cues").start()
 
     # Start Player in a daemon thread — it blocks internally on playback
-    player_thread = threading.Thread(
-        target=player.run,
-        kwargs={"seed_entry": seed_entry},
-        name="autodj-player",
-        daemon=True,
+    player_thread = station_thread(
+        target=player.run, kwargs={"seed_entry": seed_entry}, name="autodj-player"
     )
     player_thread.start()
     if no_playback and not stream:
         # Browser mode; with a mix bus the seed is recorded as it starts.
         bridge.record_seed(seed_entry)
 
+    # The other stations ([stations.<slug>]) share the library and the time zone.
+    timezone = cfg.server.station_timezone or system_timezone()
+    extra_stations = [_extra_station(cfg, spec, sim, library, timezone) for spec in cfg.stations]
     app = create_app(
         bridge,
         player_thread=player_thread,
@@ -1992,6 +2183,7 @@ def serve(
         stream_mode=stream,
         stream_first_track=seed_entry if stream else None,
         server_audio=not no_playback and not stream,
+        extra_stations=extra_stations,
     )
 
     startup_policy: SecurityPolicy = app.state.security_policy
@@ -2034,6 +2226,15 @@ def serve(
         logger.info("Stream mode: copy the stream link from Settings, Stream.")
     else:
         audio_mode = "server-audio" if not no_playback else "browser-driven"
+    for extra in extra_stations:
+        logger.info(
+            "Station %s (%s): %s/stations/%s.mp3%s",
+            extra.slug,
+            extra.name,
+            advertised_origin,
+            extra.slug,
+            "" if extra.autostart else " (stopped until started)",
+        )
     logger.info(
         "AutoDJ server ready: %s  (%s, %d indexed tracks, seed=%s)",
         advertised_origin,
@@ -2056,7 +2257,7 @@ def serve(
         "port": port,
         "log_level": "warning",
     }
-    if stream:
+    if stream or extra_stations:
         # HTTP/1.0 radio players need close-delimited audio, not chunked framing.
         uvicorn_kwargs["http"] = "h11"
         # Uvicorn rewrites request.client and scheme only for configured proxy peers.
