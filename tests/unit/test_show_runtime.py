@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -482,7 +483,8 @@ def test_the_show_liner_folder_replaces_the_automatic_liners(manager, station) -
 
 
 def test_inside_compares_whole_folder_names() -> None:
-    assert _inside("C:\\liners\\shows\\a.mp3", "C:\\liners\\shows")
+    native = os.sep.join(["", "liners", "shows"])
+    assert _inside(native + os.sep + "a.mp3", native)
     assert _inside("/liners/shows/a.mp3", "/liners/shows/")
     assert _inside("/liners/shows", "/liners/shows")
     assert not _inside("/liners/showsx/a.mp3", "/liners/shows")
