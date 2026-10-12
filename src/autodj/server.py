@@ -1878,6 +1878,7 @@ def _share_station(stations: StationRegistry, station: StationRuntime) -> None:
     """
     slug = station.slug
     station.bridge.stereo_tool_elsewhere = lambda: stations.stereo_tool_user(exclude=slug)
+    station.bridge.stereo_tool_lock = stations.stereo_tool_lock
     station.owns_liner = functools.partial(stations.owns_liner, slug)
 
 
@@ -1987,9 +1988,9 @@ def _extra_station(
         player.on_track_started = bridge.on_track_started
         bridge.load_persistent_state()
         player.configure_clock()
-        if cfg.playback.loudness_processing == "stereotool" and (
-            other := registry.stereo_tool_user(exclude=slug)
-        ):
+        # Checked and marked as one step, so a station switching to Stereo
+        # Tool while this one starts sees it.
+        if (other := registry.claim_stereo_tool(slug, cfg)) is not None:
             raise StationControlError(
                 f"{spec.name} is set to use Stereo Tool, which is already processing {other}. "
                 "AutoDJ runs one Stereo Tool at a time (one licence): set this station's "

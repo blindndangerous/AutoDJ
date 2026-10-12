@@ -12,6 +12,7 @@ server stack.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import secrets
 import threading
@@ -112,6 +113,8 @@ class PlayerBridge:
     # Names another running station whose mix Stereo Tool processes, or
     # returns None.  AutoDJ runs one Stereo Tool at a time (one licence).
     stereo_tool_elsewhere: Callable[[], str | None] | None = None
+    # Held across that check and the change it allows (the registry's).
+    stereo_tool_lock: Any = None
     # The viewer keeps 500 rows; the catalog retains the full play log.
     _play_history: deque = field(
         default_factory=lambda: deque(maxlen=500),
@@ -1658,23 +1661,34 @@ class PlayerBridge:
                 setattr(cfg.djmix, k, bool(v))
 
     def set_playback_settings(self, body: PlaybackSettingsBody, *, restoring: bool = False) -> None:
-        """Apply the fields set in *body*, which pydantic has already validated."""
+        """Apply the fields set in *body*, which pydantic has already validated.
+
+        Choosing Stereo Tool while another station uses it is refused
+        before any setting changes.  The check and the change hold
+        :attr:`stereo_tool_lock`, so two stations switching to it at once
+        cannot both find it free.  A restored setting is checked when the
+        station starts instead.
+        """
+        if (
+            body.loudness_processing == "stereotool"
+            and not restoring
+            and self.stereo_tool_elsewhere is not None
+        ):
+            with self.stereo_tool_lock or contextlib.nullcontext():
+                if (other := self.stereo_tool_elsewhere()) is not None:
+                    raise ValueError(
+                        f"Stereo Tool is already processing {other}, and AutoDJ runs one "
+                        "Stereo Tool at a time. Choose Smooth for this station, or move the "
+                        "other station off Stereo Tool first."
+                    )
+                self._apply_playback_settings(body, restoring=restoring)
+            return
+        self._apply_playback_settings(body, restoring=restoring)
+
+    def _apply_playback_settings(self, body: PlaybackSettingsBody, *, restoring: bool) -> None:
         values = body.model_dump(exclude_none=True)
         player = self.player
         cfg = player._cfg
-        if (
-            values.get("loudness_processing") == "stereotool"
-            and not restoring
-            and self.stereo_tool_elsewhere is not None
-            and (other := self.stereo_tool_elsewhere()) is not None
-        ):
-            # Refused before any setting changes.  A restored setting is
-            # checked when the station starts instead.
-            raise ValueError(
-                f"Stereo Tool is already processing {other}, and AutoDJ runs one Stereo Tool "
-                "at a time. Choose Smooth for this station, or move the other station off "
-                "Stereo Tool first."
-            )
         if "stereotool_preset" in values:
             from autodj.stereotool_presets import preset_path
 

@@ -394,6 +394,86 @@ def test_stereo_tool_in_use_elsewhere_is_refused_before_any_change(tmp_path: Pat
     free.set_playback_settings(PlaybackSettingsBody(loudness_processing="stereotool"))
 
 
+def test_two_stations_switching_to_stereo_tool_at_once_cannot_both_get_it(
+    tmp_path: Path,
+) -> None:
+    lock = threading.RLock()
+    first = _bridge(tmp_path, stereo_tool_lock=lock)
+    second = _bridge(tmp_path, stereo_tool_lock=lock)
+    for bridge in (first, second):
+        bridge.player._cfg.playback.loudness_processing = "smooth"
+
+    def user(bridge: PlayerBridge, name: str) -> str | None:
+        return name if bridge.player._cfg.playback.loudness_processing == "stereotool" else None
+
+    first.stereo_tool_elsewhere = lambda: user(second, "Second")
+    second.stereo_tool_elsewhere = lambda: user(first, "First")
+    # The first station has passed its check and is half-way through
+    # applying when the second asks.
+    entered, go = threading.Event(), threading.Event()
+    apply = first._apply_playback_settings
+
+    def slow_apply(body: Any, *, restoring: bool) -> None:
+        entered.set()
+        go.wait(5)
+        apply(body, restoring=restoring)
+
+    first._apply_playback_settings = slow_apply  # type: ignore[method-assign]
+    body = PlaybackSettingsBody(loudness_processing="stereotool")
+    errors: list[Exception] = []
+
+    def switch(bridge: PlayerBridge) -> None:
+        try:
+            bridge.set_playback_settings(body)
+        except ValueError as exc:
+            errors.append(exc)
+
+    one = threading.Thread(target=switch, args=(first,))
+    one.start()
+    assert entered.wait(5)
+    two = threading.Thread(target=switch, args=(second,))
+    two.start()
+    two.join(0.2)  # without the lock, the second would finish here, unchecked
+    go.set()
+    one.join(5)
+    two.join(5)
+    assert first.player._cfg.playback.loudness_processing == "stereotool"
+    assert second.player._cfg.playback.loudness_processing == "smooth"
+    assert [str(exc) for exc in errors] == [
+        "Stereo Tool is already processing First, and AutoDJ runs one Stereo Tool at a time. "
+        "Choose Smooth for this station, or move the other station off Stereo Tool first."
+    ]
+
+
+def _playback(processing: str, name: str) -> Any:
+    return SimpleNamespace(
+        playback=SimpleNamespace(loudness_processing=processing),
+        stream=SimpleNamespace(station_name=name),
+    )
+
+
+def test_a_station_being_started_holds_stereo_tool(tmp_path: Path) -> None:
+    log: list[str] = []
+    claims: list[str | None] = []
+
+    def build(registry: StationRegistry) -> _Runtime:
+        claims.append(registry.claim_stereo_tool("nightowl", _playback("stereotool", "Owl")))
+        # While it starts, nobody else may take Stereo Tool.
+        assert registry.stereo_tool_user(exclude="default") == "Owl"
+        claims.append(registry.claim_stereo_tool("daybreak", _playback("stereotool", "Day")))
+        return _Runtime("nightowl", log, stereo=True)
+
+    registry = StationRegistry(
+        _Runtime("default", log),  # type: ignore[arg-type]
+        [_extra("nightowl", build, tmp_path, autostart=False)],
+    )
+    asyncio.run(registry.start("nightowl"))
+    assert claims == [None, "Owl"]
+    # Running now: it counts as a running station, no longer as a starting one.
+    assert registry._starting == {}
+    assert registry.stereo_tool_user(exclude="default") == "Nightowl"
+
+
 class _Library:
     def __init__(self, log: list[str]) -> None:
         self._log = log

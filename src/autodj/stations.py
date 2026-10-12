@@ -826,6 +826,13 @@ class StationRegistry:
         self._lock = asyncio.Lock()
         # Set once shutdown begins: no station starts after that.
         self._closing = False
+        # Held while a station checks that Stereo Tool is free and takes
+        # it: a station being built (in a worker thread) or one switching
+        # to it in its settings (also in a worker thread).
+        self.stereo_tool_lock = threading.RLock()
+        # The config of each station being built, which may already have
+        # taken Stereo Tool, until it runs or has failed to start.
+        self._starting: dict[str, AutoDJConfig] = {}
         # Set by the app: wires a built station to the app (its WebSocket
         # push, schedule, carts and time checks) before it starts, and
         # closes its pages' sockets once it has stopped.
@@ -883,11 +890,36 @@ class StationRegistry:
         return not any(_inside(where, root) for root in roots.values() if root != own)
 
     def stereo_tool_user(self, exclude: str) -> str | None:
-        """The name of a running station other than *exclude* that uses Stereo Tool."""
+        """The name of a station other than *exclude* that uses Stereo Tool.
+
+        A running station, or one being started whose settings choose it.
+        """
         for station in self.all():
             if station.slug != exclude and station.uses_stereo_tool():
                 return station.name
+        for slug, cfg in list(self._starting.items()):
+            if slug != exclude and cfg.playback.loudness_processing == "stereotool":
+                return str(cfg.stream.station_name)
         return None
+
+    def claim_stereo_tool(self, slug: str, cfg: AutoDJConfig) -> str | None:
+        """Mark station *slug*, about to start with *cfg*, as starting.
+
+        Checking and marking happen under :attr:`stereo_tool_lock`, so a
+        station switching to Stereo Tool at the same moment sees this one.
+
+        Returns:
+            ``None``, or the name of another station that already uses
+            Stereo Tool when *cfg* chooses it too; the station is then not
+            marked and must not start.
+        """
+        with self.stereo_tool_lock:
+            if cfg.playback.loudness_processing == "stereotool":
+                other = self.stereo_tool_user(exclude=slug)
+                if other is not None:
+                    return other
+            self._starting[slug] = cfg
+            return None
 
     def stereo_tool_presets(self) -> list[tuple[str, str]]:
         """(station name, Stereo Tool preset) for every configured station.
@@ -940,8 +972,11 @@ class StationRegistry:
                 return running
             if self._closing:
                 raise StationControlError("The server is shutting down.")
-            running = await _run_as(slug, self._start_extra(extra))
-            self._running[slug] = running
+            try:
+                running = await _run_as(slug, self._start_extra(extra))
+                self._running[slug] = running
+            finally:
+                self._starting.pop(slug, None)
             return running
 
     async def _start_extra(self, extra: ExtraStation) -> StationRuntime:
