@@ -205,7 +205,11 @@ def test_scan_imports_recursive_music_and_liners_and_reuses_loudness(manager_fac
     manager = manager_factory(music=music, liners=liner_dir, processing="smooth")
     analyze = patch("autodj.library.analyze_basic", side_effect=fake_basic)
     loudness = patch("autodj.library.analyze_loudness", side_effect=fake_loudness)
-    with analyze as analyzed, loudness as measured:
+    with (
+        analyze as analyzed,
+        loudness as measured,
+        patch("autodj.audio_meta.read_file_tags") as read_tags,
+    ):
         manager.scan()
         assert manager.entry_for_path(song).title == "song"
         assert len(manager.entries_snapshot("liner")) == 1
@@ -215,6 +219,80 @@ def test_scan_imports_recursive_music_and_liners_and_reuses_loudness(manager_fac
         manager.scan()
         assert analyzed.call_count == measured.call_count == 2
         assert manager.snapshot()["import"]["errors"] == []
+        read_tags.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("embedded_bpm", "expected_bpm", "expected_tags"),
+    [(0, 125, ["bpm", "key"]), (130, 130, ["key"])],
+)
+def test_scan_can_override_existing_tags_without_replacing_analysis(
+    manager_factory, tmp_path, embedded_bpm, expected_bpm, expected_tags
+):
+    from autodj.audio_meta import FileTags
+
+    music = tmp_path / "Music"
+    music.mkdir()
+    song = music / "song.flac"
+    song.write_bytes(b"music")
+    manager = manager_factory(music=music)
+    manager.catalog.put_entry(
+        make_entry(song, title="Old title", energy=0.42),
+        points={"start": 0, "end": 180, "intro": 9},
+    )
+    manager.catalog.retag(song, {"bpm": 125, "key": 4})
+    manager.refresh()
+
+    with (
+        patch(
+            "autodj.audio_meta.read_file_tags",
+            return_value=FileTags(
+                title="Tagged title", artist="Tagged artist", bpm=embedded_bpm
+            ),
+        ) as read_tags,
+        patch("autodj.library.analyze_basic", side_effect=AssertionError("must reuse analysis")),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+    ):
+        manager.scan(override_tags=True)
+
+    entry = manager.entry_for_path(song)
+    record = manager.catalog.record_for_path(song)
+    assert entry.title == "Tagged title" and entry.artist == "Tagged artist"
+    assert entry.bpm == expected_bpm and entry.key == 4  # missing embedded values keep saved tags
+    assert entry.energy == 0.42
+    assert record["points"]["intro"] == 9
+    assert record["user_tags"] == expected_tags
+    read_tags.assert_called_once_with(song)
+
+
+def test_queued_tag_override_runs_before_loudness_scan_finishes(manager_factory, tmp_path):
+    from autodj.audio_meta import FileTags
+
+    music = tmp_path / "Music"
+    music.mkdir()
+    song = music / "song.flac"
+    song.write_bytes(b"music")
+    manager = manager_factory(music=music, processing="smooth")
+    requested = False
+
+    def measure(path, kind="music"):
+        nonlocal requested
+        if not requested:
+            requested = True
+            assert manager.start_scan(override_tags=True)
+        return fake_loudness(path, kind)
+
+    with (
+        patch("autodj.audio_meta.read_file_tags", return_value=FileTags(title="Tagged")) as read_tags,
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=measure),
+    ):
+        assert manager.start_scan()
+        manager._thread.join(timeout=5)
+        assert not manager._thread.is_alive()
+
+    assert manager.entry_for_path(song).title == "Tagged"
+    read_tags.assert_called_once_with(song)
 
 
 def test_scan_continues_after_per_file_failure(manager_factory, tmp_path):
@@ -908,8 +986,9 @@ def test_start_scan_reruns_with_new_sources_when_requested_during_scan(manager_f
     second_root.mkdir()
     observed = []
 
-    def pass_scan(source_ids):
+    def pass_scan(source_ids, override_tags=False):
         assert source_ids is None
+        assert not override_tags
         observed.append({source["path"] for source in manager.catalog.sources("music")})
         if len(observed) == 1:
             entered.set()

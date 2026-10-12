@@ -22,7 +22,7 @@ function mount() {
     <section id="panel-library" hidden>
       <input id="source-folder-path"><select id="source-folder-kind"><option value="music">Music</option><option value="liner">Liner</option></select>
       <input id="source-folder-recursive" type="checkbox" checked><input id="source-folder-advanced" type="checkbox" checked>
-      <button id="source-folder-add"></button><button id="source-folder-rescan"></button>
+      <input id="source-folder-override-tags" type="checkbox"><button id="source-folder-add"></button><button id="source-folder-rescan"></button>
       <p id="source-folders-status"></p><ul id="source-folders"></ul>
     </section>
     <button id="edit-current-points"></button><section id="points-editor" hidden>
@@ -53,6 +53,22 @@ document.addEventListener("click", (event) => {
 });
 
 describe("clock folder and points controls", () => {
+  it("sends the embedded-tag override only when checked", async () => {
+    const request = vi.fn(async () => ({}));
+    installLibraryFolders({ document, request });
+    const rescan = document.getElementById("source-folder-rescan");
+
+    expect(document.getElementById("source-folder-override-tags").checked).toBe(false);
+    rescan.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(JSON.parse(request.mock.calls[0][1].body)).toEqual({ override_tags: false });
+
+    document.getElementById("source-folder-override-tags").checked = true;
+    rescan.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(JSON.parse(request.mock.calls[1][1].body)).toEqual({ override_tags: true });
+  });
+
   it("parses seconds and MM:SS while preserving empty points", () => {
     expect(parsePointTime("5.3")).toBe(5.3);
     expect(parsePointTime("1:05.5")).toBe(65.5);

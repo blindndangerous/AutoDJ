@@ -18,6 +18,7 @@ from autodj.processing import PREPARATION_VERSION, TARGET_LUFS
 from autodj.server import (
     LibraryFolderBody,
     LibraryFolderUpdateBody,
+    LibraryRescanBody,
     SongPointsBody,
     create_app,
 )
@@ -78,7 +79,19 @@ def test_folder_choices_persist_and_removing_a_source_keeps_files(library_api, t
     assert manager.start_scan.call_args_list == [
         mock_call({source["id"]}),
         mock_call({source["id"]}),
-        mock_call(),
+        mock_call(override_tags=False),
+    ]
+
+
+def test_rescan_passes_explicit_tag_override_option(library_api):
+    manager, call, _app = library_api
+
+    call("POST", "/api/library/rescan")
+    call("POST", "/api/library/rescan", LibraryRescanBody(override_tags=True))
+
+    assert manager.start_scan.call_args_list == [
+        mock_call(override_tags=False),
+        mock_call(override_tags=True),
     ]
 
 

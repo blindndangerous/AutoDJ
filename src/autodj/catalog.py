@@ -1395,7 +1395,7 @@ class LibraryCatalog:
                 if not self._editing[normalized]:
                     del self._editing[normalized]
 
-    def retag(self, path: str | Path, fields: dict[str, Any]) -> bool:
+    def retag(self, path: str | Path, fields: dict[str, Any], *, remember_manual: bool = True) -> bool:
         """Store a recording's edited tags and its file's new identity (#53).
 
         Only the tags changed, not the audio, so the vector, cue points,
@@ -1404,7 +1404,9 @@ class LibraryCatalog:
         the rewritten file, so neither a scan nor ``autodj index`` takes it
         for a new recording and analyses it again.  A key or BPM set here is
         remembered in ``user_tags`` so a later analysis keeps it; clearing
-        it hands it back to the analysis.
+        it hands it back to the analysis.  ``remember_manual=False`` is for
+        imported embedded tags: only fields supplied here lose their manual
+        override, while omitted fields and their overrides stay untouched.
 
         Args:
             path: The recording, already rewritten on disk.
@@ -1439,15 +1441,15 @@ class LibraryCatalog:
                     db.rollback()
                     return False
                 values: dict[str, Any] = {**fields, "size": size, "fingerprint": fingerprint}
-                manual = set(_user_tags(row["user_tags"], row["fingerprint"]))
+                manual_tags = set(_user_tags(row["user_tags"], row["fingerprint"]))
                 for name in _USER_TAGS:
                     if name in fields:
                         # A key is 0 to 11, -1 when cleared; a BPM 0 when cleared.
-                        if fields[name] >= 0 if name == "key" else fields[name] > 0:
-                            manual.add(name)
+                        if remember_manual and (fields[name] >= 0 if name == "key" else fields[name] > 0):
+                            manual_tags.add(name)
                         else:
-                            manual.discard(name)
-                values["user_tags"] = json.dumps(dict.fromkeys(sorted(manual), fingerprint))
+                            manual_tags.discard(name)
+                values["user_tags"] = json.dumps(dict.fromkeys(sorted(manual_tags), fingerprint))
                 if row["embedded_at"]:
                     values["embedded_at"] = stat.st_mtime
                 try:

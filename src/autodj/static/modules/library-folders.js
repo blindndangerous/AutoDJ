@@ -301,7 +301,8 @@ export function installLibraryFolders({ document: doc = document, request = requ
     if (suspended) return;
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
-    try { await request("/api/library/rescan", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); if (requestCurrent(epoch, generation)) { announceAction("Rescan started."); await refresh(); } }
+    const overrideTags = doc.getElementById("source-folder-override-tags").checked;
+    try { await request("/api/library/rescan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ override_tags: overrideTags }) }); if (requestCurrent(epoch, generation)) { announceAction("Rescan started."); await refresh(); } }
     catch (error) { if (requestCurrent(epoch, generation)) announceAction(`Could not start rescan: ${error.message}`, true); }
   });
 
