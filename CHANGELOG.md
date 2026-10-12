@@ -292,6 +292,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Several stations on one server (#70, #141):
+  - Stopping a station takes effect at once. While its player finishes, the station is listed
+    as "stopping", its controls answer 409 straight away, and starting it again is refused at
+    once instead of waiting up to 30 seconds.
+  - A station that fails part of the way through starting now stops everything it had started:
+    its encoders, relays, liner worker, mastering process and player.
+  - A station with no `stream.station_name` is called by its slug, such as `nightowl`, instead of
+    "AutoDJ", so it no longer shares the default station's name in stream metadata. Two stations
+    given the same name are warned about at startup.
+  - When one station's liner folder is inside another's, each station keeps to its own liners.
+    The outer station no longer plays the inner station's liners in clockwheel liner steps or
+    offers them as cart clips.
+  - Stopping a station cancels a cart's end timer, so a cart can no longer announce its end
+    after the station has stopped.
+  - The multi-station soak test now runs for a few seconds in every test run, stops and starts
+    the second station while both render, and checks that nothing is left behind. It can run for
+    hours and write memory and processor samples to a file. See "Soak test" in
+    `docs/operations.md`.
+
 - The web page works better for people who see it. In Windows High Contrast (forced colours) the
   selected section tab and Settings subtab now show their names; they were blank. Queue &
   Search no longer scrolls sideways when a music folder has a long path, and no view scrolls

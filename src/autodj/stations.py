@@ -210,6 +210,10 @@ def start_stream_station(
     enabled the station plays as if it always had a listener, because the
     relay's own listeners are invisible to AutoDJ.
 
+    If any step fails, what was already made (encoders, relays, the liner
+    worker) is closed before the error is raised, so a failed start leaves
+    no ffmpeg process behind.
+
     Args:
         bridge: The bridge whose player was built in stream mode.
         liner_folder: Where liners are read from.
@@ -230,62 +234,95 @@ def start_stream_station(
     player = bridge.player
     cfg = player._cfg
     bus = player.bus
-    stream_out = stream_module.StreamOutput(
-        cfg.stream.bitrate,
-        cfg.stream.max_listeners,
-        encoder_factory=stream_module.FfmpegEncoder,
-        loop=loop,
-    )
-    relays = None
-    if cfg.stream.relays:
-        from autodj.relay import RelayManager, relay_status_path
+    # Every encoder made, the station's own first: each starts ffmpeg.
+    made: list[StreamOutput] = []
 
-        relays = RelayManager(
-            cfg.stream.relays.values(),
-            stream_out,
-            make_output=lambda bitrate: stream_module.StreamOutput(
-                bitrate, 0, encoder_factory=stream_module.FfmpegEncoder, loop=loop
-            ),
-            station_name=lambda: cfg.stream.station_name,
-            status_path=relay_status_path(cfg, paths),
+    def make_output(bitrate: int, max_listeners: int = 0) -> StreamOutput:
+        output = stream_module.StreamOutput(
+            bitrate, max_listeners, encoder_factory=stream_module.FfmpegEncoder, loop=loop
         )
-    relays_active = relays is not None and relays.active
-    station = Station(
-        bus,
-        stream_out,
-        player,
-        cfg.stream.idle_grace_seconds,
-        on_event=bridge.announce_station_event,
-        forget_track=bridge.forget_track,
-        continuous=lambda: (
-            cfg.stream.continuous or relays_active or bool(recorder and recorder.wanted)
-        ),
-    )
-    scheduler = LinerScheduler(
-        cfg.playback,
-        liner_folder,
-        bus,
-        can_fire=lambda: station.state == "playing",
-        vocal_start=player.vocal_start_s,
-        registered_liners=functools.partial(_registered_liners, bridge, owns_liner)
-        if bridge.library is not None
-        else None,
-        path_decoder=functools.partial(_processed_liner, bridge)
-        if bridge.library is not None
-        else None,
-    )
-    if first_track is not None:
-        station.start_with(first_track, "seed")
-    bridge.attach_stream(stream=stream_out, station=station, relays=relays)
-    bridge.attach_liner_scheduler(scheduler)
-    if recorder is not None:
-        stream_out.add_sink(recorder)
-    bus.add_output(stream_out)
-    if relays is not None:
-        for output in relays.outputs:
-            bus.add_output(output)
-        relays.start()
+        made.append(output)
+        return output
+
+    relays = None
+    try:
+        stream_out = make_output(cfg.stream.bitrate, cfg.stream.max_listeners)
+        if cfg.stream.relays:
+            from autodj.relay import RelayManager, relay_status_path
+
+            relays = RelayManager(
+                cfg.stream.relays.values(),
+                stream_out,
+                make_output=make_output,
+                station_name=lambda: cfg.stream.station_name,
+                status_path=relay_status_path(cfg, paths),
+            )
+        relays_active = relays is not None and relays.active
+        station = Station(
+            bus,
+            stream_out,
+            player,
+            cfg.stream.idle_grace_seconds,
+            on_event=bridge.announce_station_event,
+            forget_track=bridge.forget_track,
+            continuous=lambda: (
+                cfg.stream.continuous or relays_active or bool(recorder and recorder.wanted)
+            ),
+        )
+        scheduler = LinerScheduler(
+            cfg.playback,
+            liner_folder,
+            bus,
+            can_fire=lambda: station.state == "playing",
+            vocal_start=player.vocal_start_s,
+            registered_liners=functools.partial(_registered_liners, bridge, owns_liner)
+            if bridge.library is not None
+            else None,
+            path_decoder=functools.partial(_processed_liner, bridge)
+            if bridge.library is not None
+            else None,
+        )
+        if first_track is not None:
+            station.start_with(first_track, "seed")
+        bridge.attach_stream(stream=stream_out, station=station, relays=relays)
+        bridge.attach_liner_scheduler(scheduler)
+        if recorder is not None:
+            stream_out.add_sink(recorder)
+        bus.add_output(stream_out)
+        if relays is not None:
+            for output in relays.outputs:
+                bus.add_output(output)
+            relays.start()
+    except BaseException:
+        _undo_stream_start(bridge, made, relays)
+        raise
     return stream_out
+
+
+def _undo_stream_start(
+    bridge: PlayerBridge, made: Sequence[StreamOutput], relays: Any | None
+) -> None:
+    """Close what a failed :func:`start_stream_station` made: relays, encoders, liner worker.
+
+    Each step is attempted even if an earlier one fails; the start's own
+    error is the one raised.
+    """
+    bus = bridge.player.bus
+    steps: list[tuple[str, Callable[[], None]]] = []
+    # The relays close their own encoders.
+    theirs = {id(output) for output in relays.outputs} if relays is not None else set()
+    for output in made:
+        steps.append(("detaching", functools.partial(bus.remove_output, output)))
+    if relays is not None:
+        steps.append(("stopping the relays", relays.close))
+    steps += [("closing", output.close) for output in made if id(output) not in theirs]
+    steps.append(("stopping the liner worker for", bridge.shutdown_liner_worker))
+    for what, step in steps:
+        try:
+            step()
+        except Exception:
+            logger.exception("A stream that failed to start: %s it failed too", what)
+    bridge.attach_stream(stream=None, station=None, relays=None)
 
 
 def start_server_audio_liners(
@@ -512,10 +549,10 @@ class StationRuntime:
         self.first_track = first_track
         self.paths = paths if paths is not None else StationPaths.default(bridge.player._cfg)
         self.liner_gate = _liner_gate(bridge, self.paths)
-        # The clockwheel's liner steps pass over liners outside their dates.
-        # A plain function, so copying the player's settings never copies the store.
-        gate = self.liner_gate
-        bridge.player.liner_filter = lambda entries: gate.playable(entries)
+        # The clockwheel's liner steps pass over liners outside their dates
+        # and other stations' liners.  A bound method, so copying the
+        # player's settings never copies the store.
+        bridge.player.liner_filter = self._playable_liners
         self.nowplaying = NowPlaying(bridge, timezone=timezone)
         self.webhooks: WebhookWorker = WebhookWorker(getattr(bridge.player._cfg, "webhooks", ()))
         self.listener_access: ListenerAccess | None = (
@@ -538,6 +575,12 @@ class StationRuntime:
         # Whether a liner registered in the shared library is this station's
         # (set by the registry); with one station, every liner is.
         self.owns_liner: Callable[[str], bool] = _every_liner
+
+    def _playable_liners(self, entries: Sequence[Any]) -> Sequence[Any]:
+        """This station's liners among *entries* that may play today."""
+        owns = self.owns_liner
+        owned = [entry for entry in entries if owns(entry.path)]
+        return self.liner_gate.playable(entries if len(owned) == len(entries) else owned)
 
     @property
     def name(self) -> str:
@@ -684,6 +727,13 @@ class StationRuntime:
         bridge = self.bridge
         bridge.scheduler_track_changed = None
         await _cancel(self._schedule_ticker)
+        # A cart's end timer must not fire after the station has stopped.
+        carts = getattr(self, "carts", None)
+        if carts is not None:
+            try:
+                await carts.close()
+            except Exception:
+                logger.exception("Stopping the station: closing its carts failed")
         self.webhooks.close()
         if self.stream_out is not None:
             await stop_stream_station(bridge, self.stream_out)
@@ -774,16 +824,18 @@ class StoppedStation:
 
     stopped = True
 
-    def __init__(self, extra: ExtraStation) -> None:
+    def __init__(self, extra: ExtraStation, *, stopping: bool = False) -> None:
         self.slug = extra.slug
         self.name = extra.name
+        # Still closing down: its routes already answer 409.
+        self.stopping = stopping
 
     def summary(self) -> dict[str, Any]:
         """The station's entry in ``/api/stations``."""
         return {
             "slug": self.slug,
             "name": self.name,
-            "state": "stopped",
+            "state": "stopping" if self.stopping else "stopped",
             "listeners": 0,
             "title": None,
             "stream_path": f"/stations/{self.slug}.mp3",
@@ -853,6 +905,11 @@ class StationRegistry:
         self._lock = asyncio.Lock()
         # Set once shutdown begins: no station starts after that.
         self._closing = False
+        # Stations being stopped.  From the moment a stop is asked for,
+        # their routes answer 409 at once and a start is refused at once,
+        # instead of waiting while the player finishes (up to
+        # stop_timeout_s).
+        self._stopping: set[str] = set()
         # Held while a station checks that Stereo Tool is free and takes
         # it: a station being built (in a worker thread) or one switching
         # to it in its settings (also in a worker thread).
@@ -880,9 +937,9 @@ class StationRegistry:
             KeyError: No station has that name.
         """
         running = self._running.get(slug)
-        if running is not None:
+        if running is not None and slug not in self._stopping:
             return running
-        return StoppedStation(self._extras[slug])
+        return StoppedStation(self._extras[slug], stopping=slug in self._stopping)
 
     def all(self) -> tuple[StationRuntime, ...]:
         """Every running station, the default first."""
@@ -903,18 +960,24 @@ class StationRegistry:
     def owns_liner(self, slug: str, path: str) -> bool:
         """Whether the registered liner at *path* is station *slug*'s.
 
-        Another station's liners are those in its liner folder.  The
-        default station's are every other liner, as before there were
-        several stations, except those in another station's folder.
+        A liner belongs to the station whose liner folder holds it most
+        closely: when one station's folder sits inside another's, the
+        inner folder's liners are the inner station's only.  The default
+        station also has every liner that is in no station's folder, as
+        before there were several stations.  Stations given the same
+        folder share its liners.
         """
         if not self._extras:
             return True
         where = _normalized(path)
-        roots = {other: _normalized(extra.paths.liners) for other, extra in self._extras.items()}
-        if slug in roots:
-            return _inside(where, roots[slug])
-        own = _normalized(self._default.paths.liners)
-        return not any(_inside(where, root) for root in roots.values() if root != own)
+        roots = {
+            self._default.slug: _normalized(self._default.paths.liners),
+            **{other: _normalized(extra.paths.liners) for other, extra in self._extras.items()},
+        }
+        holding = [root for root in roots.values() if _inside(where, root)]
+        if not holding:
+            return slug == self._default.slug
+        return roots.get(slug) == max(holding, key=len)
 
     def stereo_tool_user(self, exclude: str) -> str | None:
         """The name of a station other than *exclude* that uses Stereo Tool.
@@ -987,6 +1050,10 @@ class StationRegistry:
         if slug == self._default.slug:
             return self._default
         extra = self._extras[slug]
+        if slug in self._stopping:
+            raise StationControlError(
+                f"{extra.name} is still stopping. Start it again once it has stopped."
+            )
         # Shielded: a request cancelled at shutdown must not leave a
         # half-built station running outside the registry.
         return await _shielded(self._start_locked(extra))
@@ -1034,15 +1101,21 @@ class StationRegistry:
         if slug == self._default.slug:
             raise StationControlError("The default station cannot be stopped.")
         extra = self._extras[slug]
+        if slug in self._stopping:
+            return  # already stopping; its summary says so
+        self._stopping.add(slug)
         # Shielded, like a start: a stop cut off half-way would leave its
         # player and mastering process running outside the registry.
         await _shielded(self._stop_locked(extra))
 
     async def _stop_locked(self, extra: ExtraStation) -> None:
-        async with self._lock:
-            runtime = self._running.pop(extra.slug, None)
-            if runtime is not None:
-                await _run_as(extra.slug, self._stop_extra(runtime, extra))
+        try:
+            async with self._lock:
+                runtime = self._running.pop(extra.slug, None)
+                if runtime is not None:
+                    await _run_as(extra.slug, self._stop_extra(runtime, extra))
+        finally:
+            self._stopping.discard(extra.slug)
 
     async def _stop_extra(self, runtime: StationRuntime, extra: ExtraStation) -> None:
         await self._teardown(runtime)

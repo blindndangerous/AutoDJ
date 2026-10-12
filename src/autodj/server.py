@@ -2004,21 +2004,28 @@ def _extra_station(
                 "AutoDJ runs one Stereo Tool at a time (one licence): set this station's "
                 "loudness processing to Smooth."
             )
-        _attach_master(player, cfg)
-        if cfg.playback.import_external_cues:
-            station_thread(target=player.load_library_cues, name="autodj-library-cues").start()
-        player_thread = station_thread(
-            target=player.run, kwargs={"seed_entry": None}, name="autodj-player"
-        )
-        player_thread.start()
-        return StationRuntime(
-            bridge,
-            timezone=timezone,
-            player_thread=player_thread,
-            stream_mode=True,
-            slug=slug,
-            paths=paths,
-        )
+        # The mastering process and the player thread start from here; a
+        # failure after that stops them again before it is raised.
+        player_thread: threading.Thread | None = None
+        try:
+            _attach_master(player, cfg)
+            if cfg.playback.import_external_cues:
+                station_thread(target=player.load_library_cues, name="autodj-library-cues").start()
+            player_thread = station_thread(
+                target=player.run, kwargs={"seed_entry": None}, name="autodj-player"
+            )
+            player_thread.start()
+            return StationRuntime(
+                bridge,
+                timezone=timezone,
+                player_thread=player_thread,
+                stream_mode=True,
+                slug=slug,
+                paths=paths,
+            )
+        except BaseException:
+            _abandon_player(player, player_thread, registry.stop_timeout_s)
+            raise
 
     return ExtraStation(
         slug=slug,
@@ -2028,6 +2035,26 @@ def _extra_station(
         preset=spec.cfg.playback.stereotool_preset,
         build=build,
     )
+
+
+def _abandon_player(player: Any, player_thread: threading.Thread | None, timeout_s: float) -> None:
+    """Stop a player whose station failed to build: its thread, then its master.
+
+    Nothing here raises; the build's own error is the one reported.
+    """
+    try:
+        player._state.should_stop = True
+        player._skip_event.set()
+        if player_thread is not None and player_thread.is_alive():
+            player_thread.join(timeout_s)
+    except Exception:
+        logger.exception("A station that failed to start: stopping its player failed")
+    master = getattr(player, "_continuous_master", None)
+    if master is not None:
+        try:
+            master.close()
+        except Exception:
+            logger.exception("A station that failed to start: closing its master failed")
 
 
 def _missing_audio_modules() -> list[str]:

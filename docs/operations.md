@@ -1057,6 +1057,9 @@ The rules:
   set it.
 - **Each relay target belongs to one station.** Two stations pushing to the same host, port and
   mount (or Shoutcast stream) are refused.
+- **A station without a `stream.station_name` is called by its slug**, for example `nightowl`, in
+  stream metadata and on its pages, so it never takes the default station's "AutoDJ". Two
+  stations given the same name are warned about at startup: listeners could not tell them apart.
 - **Unknown keys are warned about and ignored**, as in the root sections; the warning names the
   station's table. `autodj doctor` offers to remove an unknown key from a station section.
 - **Errors name the station**, for example
@@ -1083,22 +1086,29 @@ Every control route of a station answers under `/api/stations/<slug>/`, for exam
 `/api/stations/nightowl/queue/add`; the default station keeps its `/api/...` addresses. These
 need a paired browser, like the default station's.
 
-- `GET /api/stations` lists every configured station: its slug, name, state (`stopped`, `idle`,
-  `playing` or `paused`), listener count, current song and stream address.
+- `GET /api/stations` lists every configured station: its slug, name, state (`stopped`,
+  `stopping`, `idle`, `playing` or `paused`), listener count, current song and stream address.
 - `POST /api/stations/<slug>/start` builds and starts a stopped station. Starting a running
   station changes nothing.
 - `POST /api/stations/<slug>/stop` stops a station completely: its listeners are disconnected,
   its encoder, relays, recorder and mastering process are closed and its player ends, so it uses
   no memory or processor time. Its routes then answer 409 and its stream answers 503, "off air".
-  The default station cannot be stopped.
+  This starts as soon as the stop is asked for: while the player finishes its work, which can
+  take several seconds, the station is listed as `stopping`, its routes already answer 409, a
+  start request is refused at once with 409, and a second stop request returns at once. The
+  default station cannot be stopped.
 
 A station that cannot start, with the server or when asked, says why: in the log at startup, and
-in the reply to a start request. The default station and the other stations keep running.
+in the reply to a start request. Whatever it had already started (its player, mastering process,
+encoders and relays) is stopped again. The default station and the other stations keep running.
 
 Each station starts with its saved settings (its `web_state.json`), its active clockwheel and its
 own play history. The first time a station runs, its liner folder is added to Library folders as
 a liner source. A station plays only the liners in its own folder; the default station plays every
-other registered liner, as before.
+other registered liner, as before. When one station's liner folder sits inside another's (for
+example `liners/nightowl` inside the default station's `liners`), the inner folder's liners belong
+to the inner station only. This holds for automatic liners, clockwheel liner steps, the Liners
+list and the clips a cart can use.
 
 ### Stereo Tool: one station at a time
 
@@ -1135,12 +1145,46 @@ Each running station is a complete playout chain in the same process:
 - **An idle station still runs** its mix bus, mastering and encoder on silence. Stopping a
   station is the real saving.
 - **One process, one interpreter lock.** A heavy render on one station could make another
-  station's mix bus late. To measure it on your own machine, run the soak test with a duration in
-  seconds; it reports the blocks each station's bus emitted while both render at once:
+  station's mix bus late. The soak test below measures it.
 
-  ```bash
-  AUTODJ_SOAK_SECONDS=60 uv run pytest tests/integration/test_multi_station.py -k soak -s
-  ```
+### Soak test
+
+`tests/integration/test_multi_station.py` has a soak test with two stations, the default one and
+Night Owl Radio. Both mix buses run while two threads do song-sized time-stretches back to back,
+standing in for each station's render-ahead work, and Night Owl is stopped and started again
+every cycle. The test counts the 20 ms blocks each bus sends out. It fails if either bus falls
+short (an underrun), or if a stop leaves any of the station's threads, encoders or mastering
+process behind. ffmpeg and Stereo Tool are replaced by stand-ins, so it measures AutoDJ's own
+work.
+
+Every test run, including CI, runs it for 4 seconds with one restart. To run it for longer, on the
+machine that will host the stations, set `AUTODJ_SOAK_SECONDS`. This runs it for four hours,
+restarts Night Owl every 10 minutes, and samples memory and processor use every 30 seconds:
+
+```bash
+AUTODJ_SOAK_SECONDS=14400 AUTODJ_SOAK_REPORT=soak.jsonl \
+  uv run pytest tests/integration/test_multi_station.py -k soak -s -p no:cacheprovider
+```
+
+The settings, all optional:
+
+- `AUTODJ_SOAK_SECONDS`: how long to run. A long run uses four-minute songs for the render
+  stand-ins and expects at least 99% of the blocks; the short default run uses 20-second songs and
+  expects 90%.
+- `AUTODJ_SOAK_CYCLE_SECONDS`: how often Night Owl is stopped and started (default 600 in a long
+  run).
+- `AUTODJ_SOAK_SAMPLE_SECONDS`: how often memory and processor use are sampled (default 30 in a
+  long run).
+- `AUTODJ_SOAK_REPORT`: a file the samples are added to, one JSON object per line. Each has the
+  seconds since the start, `rss_mb` (resident memory, on Linux only), `cpu_percent` (processor
+  time as a percentage of one core since the last sample), `threads` and `restarts`. The last
+  line is the summary.
+
+At the end the test prints a summary line: the blocks each bus sent against the number expected,
+the longest gap between blocks in milliseconds, the number of restarts and renders, memory at the
+start and the end, and the thread count before and after. Memory that keeps climbing from one
+restart to the next, or a thread count that grows, points to a leak; attach the report file to an
+issue.
 
 ## Windows PowerShell setup
 

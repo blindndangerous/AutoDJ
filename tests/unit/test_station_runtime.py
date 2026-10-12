@@ -558,3 +558,83 @@ def test_a_stop_cut_off_half_way_still_finishes(tmp_path: Path) -> None:
         "library closed",
         "default closed",
     ]
+
+
+def test_a_station_folder_inside_another_keeps_its_liners_to_itself(tmp_path: Path) -> None:
+    log: list[str] = []
+    default = _Runtime("default", log)
+    default.paths = SimpleNamespace(liners=tmp_path / "liners")
+    owl = _extra("nightowl", lambda _r: _Runtime("nightowl", log), tmp_path)
+    day = _extra("daybreak", lambda _r: _Runtime("daybreak", log), tmp_path)
+    # Night Owl's folder is inside the default station's, and Daybreak's inside Night Owl's.
+    object.__setattr__(owl, "paths", SimpleNamespace(liners=tmp_path / "liners" / "owl"))
+    object.__setattr__(day, "paths", SimpleNamespace(liners=tmp_path / "liners" / "owl" / "day"))
+    registry = StationRegistry(default, [owl, day])  # type: ignore[arg-type]
+    where = {
+        "default": str(tmp_path / "liners" / "id.mp3"),
+        "nightowl": str(tmp_path / "liners" / "owl" / "id.mp3"),
+        "daybreak": str(tmp_path / "liners" / "owl" / "day" / "id.mp3"),
+        "elsewhere": str(tmp_path / "added" / "id.mp3"),
+    }
+    owners = {
+        place: {slug for slug in registry.slugs() if registry.owns_liner(slug, path)}
+        for place, path in where.items()
+    }
+    assert owners == {
+        "default": {"default"},
+        "nightowl": {"nightowl"},
+        "daybreak": {"daybreak"},
+        "elsewhere": {"default"},
+    }
+
+
+def test_a_stations_clockwheel_picks_only_its_own_liners(tmp_path: Path) -> None:
+    from autodj.stations import StationRuntime
+
+    owned = SimpleNamespace(path="mine.mp3")
+    other = SimpleNamespace(path="theirs.mp3")
+    runtime = StationRuntime.__new__(StationRuntime)
+    runtime.liner_gate = SimpleNamespace(playable=lambda entries: entries)  # type: ignore[assignment]
+    runtime.owns_liner = lambda path: path == "mine.mp3"
+    assert runtime._playable_liners([owned, other]) == [owned]
+    everything = [owned, other]
+    runtime.owns_liner = lambda _path: True
+    assert runtime._playable_liners(everything) is everything  # unchanged with one station
+
+
+def test_a_stopping_station_answers_at_once(tmp_path: Path) -> None:
+    log: list[str] = []
+    registry = StationRegistry(
+        _Runtime("default", log),  # type: ignore[arg-type]
+        [_extra("nightowl", lambda _r: _Runtime("nightowl", log), tmp_path, autostart=False)],
+    )
+
+    async def scenario() -> None:
+        owl = await registry.start("nightowl")
+        gate = asyncio.Event()
+        stop = owl.stop
+
+        async def slow_stop(timeout: float) -> bool:
+            # The player taking its time to finish (up to stop_timeout_s).
+            await gate.wait()
+            return await stop(timeout)
+
+        owl.stop = slow_stop  # type: ignore[method-assign]
+        stopping = asyncio.create_task(registry.stop("nightowl"))
+        await asyncio.sleep(0.05)
+        # Its routes see a stopped station, its listing says "stopping", and
+        # neither a start nor a second stop waits for the player.
+        stand_in = registry.get("nightowl")
+        assert stand_in.stopped
+        assert stand_in.summary()["state"] == "stopping"
+        with pytest.raises(StationControlError, match="Nightowl is still stopping"):
+            await asyncio.wait_for(registry.start("nightowl"), 0.5)
+        await asyncio.wait_for(registry.stop("nightowl"), 0.5)
+        assert not stopping.done()
+        gate.set()
+        await stopping
+        assert registry.get("nightowl").summary()["state"] == "stopped"
+        assert (await registry.start("nightowl")).slug == "nightowl"
+
+    asyncio.run(scenario())
+    assert log == ["nightowl started", "nightowl stopped", "nightowl closed", "nightowl started"]

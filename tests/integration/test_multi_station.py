@@ -9,6 +9,7 @@ nothing outside the test process runs.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -434,37 +435,79 @@ def test_a_preset_any_station_uses_cannot_be_deleted(rig: Any) -> None:
     assert client.delete("/api/stereo-tool-presets/Owl.sts").status_code == 409
 
 
-SOAK_SECONDS = float(os.environ.get("AUTODJ_SOAK_SECONDS", "0"))
+# How long the soak runs: a few seconds in every test run, or as long as
+# AUTODJ_SOAK_SECONDS says (hours on the machine that will run the stations).
+SOAK_SECONDS = float(os.environ.get("AUTODJ_SOAK_SECONDS", "0") or 0)
+_BRIEF_SOAK_SECONDS = 4.0
 
 
-@pytest.mark.skipif(
-    not SOAK_SECONDS, reason="Set AUTODJ_SOAK_SECONDS to measure two stations rendering at once"
-)
-@pytest.mark.timeout(SOAK_SECONDS + 120)
-def test_soak_two_stations_rendering_at_once_keep_their_buses_on_time(rig: Any) -> None:
-    """Both mix buses keep time while both stations render, sharing one GIL.
+def _soak_setting(name: str, brief: float, long: float) -> float:
+    value = os.environ.get(name, "")
+    return float(value) if value else (long if SOAK_SECONDS else brief)
+
+
+def _rss_mb() -> float | None:
+    """The test process's resident memory in MB; Linux only, else ``None``."""
+    try:
+        with open("/proc/self/statm", encoding="ascii") as statm:
+            pages = int(statm.read().split()[1])
+        return round(pages * os.sysconf("SC_PAGE_SIZE") / 2**20, 1)
+    except (OSError, ValueError, AttributeError, IndexError):
+        return None
+
+
+class _BusClock:
+    """A mix-bus output that counts the 20 ms blocks it is sent and the longest gap."""
+
+    def __init__(self) -> None:
+        self.blocks = 0
+        self.longest_gap = 0.0
+        self._last: float | None = None
+        self.seconds = 0.0  # how long it was attached, once detached
+
+    def write(self, _block: np.ndarray) -> None:
+        now = time.monotonic()
+        if self._last is not None:
+            self.longest_gap = max(self.longest_gap, now - self._last)
+        self._last = now
+        self.blocks += 1
+
+    def close(self) -> None:
+        pass
+
+
+@pytest.mark.timeout(max(SOAK_SECONDS, _BRIEF_SOAK_SECONDS) * 2 + 120)
+def test_soak_two_stations_keep_time_through_renders_and_restarts(rig: Any) -> None:
+    """Both mix buses keep time while both stations render and one restarts.
 
     Each station's render-ahead work is stood in for by a decode-sized
-    buffer time-stretched with scipy, back to back, for the whole run.
-    Every 20 ms block each bus emits is counted; the bus drops blocks only
-    after falling more than 8 behind, so a shortfall means an underrun.
+    buffer time-stretched with scipy, back to back, for the whole run,
+    while Night Owl is stopped and started again every cycle.  Every 20 ms
+    block each bus emits is counted; the bus drops blocks only after
+    falling more than 8 behind, so a shortfall means an underrun.  Each
+    stop must leave none of the station's threads or encoders behind.
+
+    It runs for a few seconds in every test run.  For the long run on the
+    machine that hosts the stations, see "Several stations" in
+    docs/operations.md: ``AUTODJ_SOAK_SECONDS`` sets the length,
+    ``AUTODJ_SOAK_CYCLE_SECONDS`` how often Night Owl restarts,
+    ``AUTODJ_SOAK_SAMPLE_SECONDS`` how often memory and CPU are sampled,
+    and ``AUTODJ_SOAK_REPORT`` a file the samples are written to, one JSON
+    object per line.
     """
     from scipy.signal import resample_poly
 
     client, *_ = rig
-    stations = client.app.state.stations.all()
+    registry = client.app.state.stations
+    seconds = SOAK_SECONDS or _BRIEF_SOAK_SECONDS
+    cycle = _soak_setting("AUTODJ_SOAK_CYCLE_SECONDS", seconds / 2, 600.0)
+    sample_every = _soak_setting("AUTODJ_SOAK_SAMPLE_SECONDS", 0.5, 30.0)
+    # A four-minute song in the long run; shorter in the brief one, to spare CI.
+    track_frames = 44100 * (240 if SOAK_SECONDS else 20)
+    # The brief run is a few seconds on a shared CI machine: allow it more slack.
+    least = 0.99 if SOAK_SECONDS else 0.9
+    report_path = os.environ.get("AUTODJ_SOAK_REPORT")
     period = 882 / 44100
-    stamps: dict[str, list[float]] = {station.slug: [] for station in stations}
-
-    class Clock:
-        def __init__(self, slug: str) -> None:
-            self.slug = slug
-
-        def write(self, _block: np.ndarray) -> None:
-            stamps[self.slug].append(time.monotonic())
-
-        def close(self) -> None:
-            pass
 
     stop = threading.Event()
     renders = [0]
@@ -472,33 +515,101 @@ def test_soak_two_stations_rendering_at_once_keep_their_buses_on_time(rig: Any) 
     def render() -> None:
         rng = np.random.default_rng(0)
         while not stop.is_set():
-            track = rng.standard_normal((44100 * 240, 2), dtype=np.float32)
+            track = rng.standard_normal((track_frames, 2), dtype=np.float32)
             stretched = resample_poly(track, 51, 50, axis=0)
             fade = np.linspace(0.0, 1.0, len(stretched), dtype=np.float32)
             stretched *= fade[:, None]
             renders[0] += 1
 
-    outputs = {station.slug: Clock(station.slug) for station in stations}
-    for station in stations:
-        station.player.bus.add_output(outputs[station.slug])
-    workers = [threading.Thread(target=render, daemon=True) for _ in stations]
+    default_clock = _BusClock()
+    registry.default.player.bus.add_output(default_clock)
+    owl_clocks: list[_BusClock] = []
+
+    def attach_owl() -> tuple[Any, float]:
+        owl = registry.get("nightowl")
+        owl_clocks.append(_BusClock())
+        owl.player.bus.add_output(owl_clocks[-1])
+        return owl, time.monotonic()
+
+    def detach_owl(owl: Any, since: float) -> None:
+        owl.player.bus.remove_output(owl_clocks[-1])
+        owl_clocks[-1].seconds = time.monotonic() - since
+
+    samples: list[dict[str, Any]] = []
+    threads_at_start = threading.active_count()
+    workers = [threading.Thread(target=render, daemon=True) for _ in range(2)]
     started = time.monotonic()
+    cpu_then, wall_then = time.process_time(), started
+    owl, owl_since = attach_owl()
+    next_cycle, next_sample = started + cycle, started
+    restarts = 0
     for worker in workers:
         worker.start()
-    time.sleep(SOAK_SECONDS)
-    stop.set()
+    try:
+        while (now := time.monotonic()) < started + seconds:
+            if now >= next_sample:
+                cpu_now = time.process_time()
+                samples.append(
+                    {
+                        "seconds": round(now - started, 1),
+                        "rss_mb": _rss_mb(),
+                        "cpu_percent": round(
+                            100 * (cpu_now - cpu_then) / max(now - wall_then, 1e-6)
+                        ),
+                        "threads": threading.active_count(),
+                        "restarts": restarts,
+                    }
+                )
+                cpu_then, wall_then = cpu_now, now
+                next_sample = now + sample_every
+            if now >= next_cycle:
+                detach_owl(owl, owl_since)
+                old = owl
+                assert client.post(f"{OWL}/stop").json()["state"] == "stopped"
+                # Nothing of the stopped station is left running.
+                _wait_for(lambda: not _station_threads("nightowl"), "Night Owl's threads to end")
+                assert not old.bridge.stream._encoder.alive
+                assert old.player._continuous_master.closed
+                assert client.post(f"{OWL}/start").status_code == 200
+                owl, owl_since = attach_owl()
+                restarts += 1
+                next_cycle = time.monotonic() + cycle
+            time.sleep(0.05)
+    finally:
+        stop.set()
+        for worker in workers:
+            worker.join(60)
+    detach_owl(owl, owl_since)
     elapsed = time.monotonic() - started
-    for worker in workers:
-        worker.join(60)
-    for station in stations:
-        station.player.bus.remove_output(outputs[station.slug])
-    report = {}
-    for slug, times in stamps.items():
-        gaps = np.diff(times) if len(times) > 1 else np.array([0.0])
-        report[slug] = (len(times), round(float(gaps.max()) * 1000), renders[0])
-    print(f"\nsoak {elapsed:.0f} s, expected {elapsed / period:.0f} blocks each: {report}")
-    for slug, times in stamps.items():
-        assert len(times) >= 0.99 * (elapsed / period), (slug, report)
+    registry.default.player.bus.remove_output(default_clock)
+    default_clock.seconds = elapsed
+
+    owl_blocks = sum(clock.blocks for clock in owl_clocks)
+    owl_seconds = sum(clock.seconds for clock in owl_clocks)
+    summary = {
+        "seconds": round(elapsed),
+        "restarts": restarts,
+        "renders": renders[0],
+        "default": (default_clock.blocks, round(elapsed / period)),
+        "nightowl": (owl_blocks, round(owl_seconds / period)),
+        "longest_gap_ms": {
+            "default": round(default_clock.longest_gap * 1000),
+            "nightowl": round(max(clock.longest_gap for clock in owl_clocks) * 1000),
+        },
+        "rss_mb": [sample["rss_mb"] for sample in (samples[0], samples[-1])],
+        "threads": (threads_at_start, threading.active_count()),
+    }
+    print(f"\nsoak: {json.dumps(summary)}")
+    if report_path:
+        with open(report_path, "a", encoding="utf-8") as report:
+            for sample in samples:
+                report.write(json.dumps(sample) + "\n")
+            report.write(json.dumps({"summary": summary}) + "\n")
+    assert restarts >= 1
+    assert default_clock.blocks >= least * (elapsed / period), summary
+    assert owl_blocks >= least * (owl_seconds / period), summary
+    # Restarting leaks no threads (the render stand-ins have ended).
+    assert threading.active_count() <= threads_at_start + 2, summary
 
 
 def test_a_socket_accepted_as_its_station_stops_is_closed(
@@ -528,3 +639,76 @@ def test_a_socket_accepted_as_its_station_stops_is_closed(
         assert owl.ws_clients == set()
     finally:
         owl.stopped = False
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_a_start_that_fails_after_the_encoder_started_closes_it(
+    rig: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, *_ = rig
+    encoders: list[FakeEncoder] = []
+
+    class CountedEncoder(FakeEncoder):
+        def __init__(self, bitrate: int) -> None:
+            super().__init__(bitrate)
+            encoders.append(self)
+
+    def broken_liners(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("the liner folder could not be read")
+
+    import autodj.liner_scheduler
+
+    monkeypatch.setattr("autodj.stream.FfmpegEncoder", CountedEncoder)
+    working = autodj.liner_scheduler.LinerScheduler
+    # The stream's encoder is running by the time the liners are set up.
+    monkeypatch.setattr(autodj.liner_scheduler, "LinerScheduler", broken_liners)
+    refused = client.post(f"{OWL}/start")
+    assert refused.status_code == 409
+    assert "the liner folder could not be read" in refused.json()["detail"]
+    assert len(encoders) == 1
+    assert not encoders[0].alive
+    assert FakeMaster.instances[-1].closed
+    _wait_for(lambda: not _station_threads("nightowl"), "the station's threads to end")
+    monkeypatch.setattr(autodj.liner_scheduler, "LinerScheduler", working)
+    assert client.post(f"{OWL}/start").status_code == 200
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_a_station_that_fails_to_build_stops_its_player_and_master(
+    rig: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, *_ = rig
+
+    def broken_runtime(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("the listener bans could not be read")
+
+    # The mastering process and the player thread are running by then.
+    monkeypatch.setattr(server, "StationRuntime", broken_runtime)
+    refused = client.post(f"{OWL}/start")
+    assert refused.status_code == 409
+    assert "the listener bans could not be read" in refused.json()["detail"]
+    assert FakeMaster.instances[-1].closed
+    assert _station_threads("nightowl") == []
+    assert _stations(client)["nightowl"]["state"] == "stopped"
+
+
+def test_stopping_a_station_cancels_its_cart_timer(rig: Any) -> None:
+    client, *_ = rig
+    owl = client.app.state.stations.get("nightowl")
+    carts = owl.carts
+    fired: list[str] = []
+
+    async def arm() -> None:
+        async def ends() -> None:
+            await asyncio.sleep(0.2)
+            fired.append("end")
+
+        carts._cart = (1, 1, "Cart 1, Station ID")
+        carts._timer = asyncio.create_task(ends())
+
+    client.portal.call(arm)
+    timer = carts._timer
+    assert client.post(f"{OWL}/stop").status_code == 200
+    assert timer.cancelled()
+    time.sleep(0.3)
+    assert fired == []
