@@ -10,7 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- Negative liner **Overlap start** values down to -15 seconds start the next song first, then place liner content within its intro when it fits. If the main content is longer than that intro, the existing liner-first timing remains in effect; the liner tail continues over the song.
+- Negative liner **Overlap start** values down to -15 seconds start the next song first, then place
+  liner content within its intro when it fits. For example, if a -3 second request has one second
+  available before vocals, the liner starts one second after the song. If the main content is longer
+  than the intro, existing liner-first timing remains; the liner tail continues over the song.
 
 - Editing tags from Track info (#53). A Tags section has fields for title, artist, album, genre,
   year, BPM, key and ISRC. Save tags writes only the changed fields into the file with mutagen
