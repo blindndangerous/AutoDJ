@@ -126,10 +126,6 @@
              "Set stopped" station event is the one spoken report. -->
         <p id="stream-idle-note" class="stream-idle-note" hidden></p>
         <div id="now-playing-meta"></div>
-        <!-- The themed show on air (shows-panel.js).  Plain text, not a
-             live region: its start and end are said once through
-             #sr-status, so a page loaded during a show says nothing. -->
-        <p id="now-playing-show" hidden></p>
         <!-- Visual-only badge row: BPM / Camelot key / energy / beatmatch ratio.
              aria-hidden because the track-change announcement already
              speaks BPM, key and beatmatch. -->
@@ -460,7 +456,6 @@
     <button type="button" role="tab" id="stab-liners" data-subview="liners" data-panel="spanel-liners" aria-selected="false" tabindex="-1">Voice liners</button>
     <button type="button" role="tab" id="stab-time-checks" data-subview="time-checks" data-panel="spanel-time-checks" aria-selected="false" tabindex="-1">Time checks</button>
     <button type="button" role="tab" id="stab-schedule" data-subview="schedule" data-panel="spanel-schedule" aria-selected="false" tabindex="-1">Schedule</button>
-    <button type="button" role="tab" id="stab-shows" data-subview="shows" data-panel="spanel-shows" aria-selected="false" tabindex="-1">Shows</button>
     <button type="button" role="tab" id="stab-stream" data-subview="stream" data-panel="spanel-stream" aria-selected="false" tabindex="-1" hidden>Stream</button>
     <button type="button" role="tab" id="stab-access" data-subview="access" data-panel="spanel-access" aria-selected="false" tabindex="-1">Profiles and access</button>
   </div>
@@ -1363,10 +1358,6 @@
         <span class="setting-desc" id="schedule-timing-desc">
           Soft waits for the current song to end.  Hard runs on time and, except for stream events, fades the current song out.
         </span>
-        <!-- Shown instead of Timing for an action with its own timing. -->
-        <p id="schedule-own-timing" class="setting-desc" hidden>
-          A show starts on time; its own Start setting decides whether the song playing finishes first.
-        </p>
         <div class="settings-check">
           <input type="checkbox" id="schedule-enabled">
           <label for="schedule-enabled">Enabled</label>
@@ -1377,147 +1368,6 @@
     </form>
     <h4 id="schedule-runs-heading">Recent runs</h4>
     <ul id="schedule-runs" aria-labelledby="schedule-runs-heading"></ul>
-  </div>
-
-  <div class="card" role="tabpanel" id="spanel-shows" aria-labelledby="stab-shows" hidden>
-    <h3>Shows</h3>
-    <!-- shows-panel.js fills this panel when it is seen, and again when the
-         server says the shows changed.  The list, the show on air and the
-         match count are plain text, not live regions: each result of a
-         button (Check and Save included) is said once through
-         #shows-status. -->
-    <p class="card-desc">
-      A themed show, such as Remembering the 2000s, plays only the songs that match it, picked the way the station picks now. Start one now for its length, or add a Start show event in Schedule with an end time.
-    </p>
-    <div id="shows-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
-    <p id="shows-on-air">No show is on air.</p>
-    <h4 id="shows-list-heading">Saved shows</h4>
-    <ul id="shows-list" aria-labelledby="shows-list-heading"></ul>
-    <button type="button" id="shows-add">Add show</button>
-    <!-- Add and Edit share this form.  It checks its own fields: an error
-         is said, the field gets aria-invalid and focus, and the words stay
-         in #shows-form-error. -->
-    <form id="shows-form" novalidate hidden>
-      <fieldset>
-        <legend id="shows-form-legend">Add show</legend>
-        <p id="shows-form-error" class="field-error" hidden></p>
-        <div class="settings-row">
-          <label for="shows-name">Name</label>
-          <input type="text" id="shows-name" maxlength="100" autocomplete="off" required>
-        </div>
-
-        <fieldset aria-describedby="shows-songs-desc">
-          <legend>Songs</legend>
-          <span class="setting-desc" id="shows-songs-desc">
-            A song plays in the show when it matches every part you fill in. Leave a part empty to skip it.
-          </span>
-          <div class="settings-row">
-            <label for="shows-year-from">First released from year</label>
-            <input type="number" id="shows-year-from" min="1" max="9999" step="1" inputmode="numeric" aria-describedby="shows-year-desc">
-          </div>
-          <div class="settings-row">
-            <label for="shows-year-to">First released to year</label>
-            <input type="number" id="shows-year-to" min="1" max="9999" step="1" inputmode="numeric" aria-describedby="shows-year-desc">
-          </div>
-          <span class="setting-desc" id="shows-year-desc">
-            Both years count, so 2000 to 2009 is the 2000s. The year is the song's first release from beets (original_year). A song without one uses the year of its release, and a song with neither is left out.
-          </span>
-          <datalist id="shows-genre-options"></datalist>
-          <fieldset id="shows-include" aria-describedby="shows-include-desc">
-            <legend>Genres to include</legend>
-            <span class="setting-desc" id="shows-include-desc">A song with any of these genres plays. With none listed, every genre does.</span>
-            <div class="settings-row">
-              <label for="shows-include-input">Genre to include</label>
-              <input type="text" id="shows-include-input" list="shows-genre-options" maxlength="100" autocomplete="off">
-              <button type="button" id="shows-include-add">Add genre to include</button>
-            </div>
-            <ul id="shows-include-list" aria-label="Genres to include"></ul>
-          </fieldset>
-          <fieldset id="shows-exclude" aria-describedby="shows-exclude-desc">
-            <legend>Genres to leave out</legend>
-            <span class="setting-desc" id="shows-exclude-desc">A song with any of these genres never plays in the show.</span>
-            <div class="settings-row">
-              <label for="shows-exclude-input">Genre to leave out</label>
-              <input type="text" id="shows-exclude-input" list="shows-genre-options" maxlength="100" autocomplete="off">
-              <button type="button" id="shows-exclude-add">Add genre to leave out</button>
-            </div>
-            <ul id="shows-exclude-list" aria-label="Genres to leave out"></ul>
-          </fieldset>
-          <div class="settings-row">
-            <label for="shows-query">Beets query, optional</label>
-            <input type="text" id="shows-query" maxlength="500" autocomplete="off" spellcheck="false" aria-describedby="shows-query-desc">
-          </div>
-          <span class="setting-desc" id="shows-query-desc">
-            For anything the form does not cover, using any beets field, including ones plugins add. For example genre:rock original_year:1990..1999 ^artist:"bon jovi". field:value matches part of the text, a..b is a range, ^ leaves out what follows it, and quotes keep words together. Regular expressions and plugin queries are not supported.
-          </span>
-          <button type="button" id="shows-check" aria-describedby="shows-match">Check</button>
-          <!-- The last Check or Save result.  Plain text: Check and Save say it once. -->
-          <p id="shows-match">Not checked yet.</p>
-        </fieldset>
-
-        <fieldset>
-          <legend>Music, liners and length</legend>
-          <div class="settings-row">
-            <label for="shows-clockwheel">Clockwheel</label>
-            <select id="shows-clockwheel" aria-describedby="shows-clockwheel-desc"></select>
-          </div>
-          <span class="setting-desc" id="shows-clockwheel-desc">
-            Optional. The station switches to this clockwheel for the show and back afterwards; its music steps play only the show's songs.
-          </span>
-          <div class="settings-row">
-            <label for="shows-intro">Intro liner</label>
-            <select id="shows-intro" aria-describedby="shows-intro-desc"></select>
-          </div>
-          <span class="setting-desc" id="shows-intro-desc">
-            Plays over the show's first song, where a voice liner would. Liners play when the server mixes the music.
-          </span>
-          <div class="settings-row">
-            <label for="shows-outro">Outro liner</label>
-            <select id="shows-outro" aria-describedby="shows-outro-desc"></select>
-          </div>
-          <span class="setting-desc" id="shows-outro-desc">
-            Plays over the first song after the show. A show that takes over from another skips the other show's outro.
-          </span>
-          <div class="settings-row">
-            <label for="shows-liner-source">Show liner folder</label>
-            <select id="shows-liner-source" aria-describedby="shows-liner-desc"></select>
-          </div>
-          <div class="settings-row">
-            <label for="shows-liner-folder">Folder inside it, optional</label>
-            <input type="text" id="shows-liner-folder" maxlength="1024" autocomplete="off" spellcheck="false" aria-describedby="shows-liner-desc">
-          </div>
-          <span class="setting-desc" id="shows-liner-desc">
-            Optional. During the show, the automatic voice liners come from this folder instead, at the same rate and with the same talk-up timing. Outside the show they never play. Choose a registered voice liner folder, and a folder inside it with forward slashes, such as shows/2000s.
-          </span>
-          <div class="settings-row">
-            <label for="shows-start">Start</label>
-            <select id="shows-start" aria-describedby="shows-timing-desc">
-              <option value="soft">Soft, after the song playing</option>
-              <option value="hard">Hard, fade the song playing</option>
-            </select>
-          </div>
-          <div class="settings-row">
-            <label for="shows-end">End</label>
-            <select id="shows-end" aria-describedby="shows-timing-desc">
-              <option value="soft">Soft, the song playing finishes</option>
-              <option value="hard">Hard, fade at the end time</option>
-            </select>
-          </div>
-          <span class="setting-desc" id="shows-timing-desc">
-            Soft never cuts a song: the show starts with the next song, and after the end time no new show song is picked. Hard fades the song playing at the minute.
-          </span>
-          <div class="settings-row">
-            <label for="shows-minutes">Length when started now, in minutes</label>
-            <input type="number" id="shows-minutes" min="1" max="1440" step="1" inputmode="numeric" required aria-describedby="shows-minutes-desc">
-          </div>
-          <span class="setting-desc" id="shows-minutes-desc">
-            Start now runs the show this long, and Save checks that enough songs match for it under the station's repeat rules. A scheduled show ends at the time its Schedule event says.
-          </span>
-        </fieldset>
-        <button type="submit" id="shows-save">Save show</button>
-        <button type="button" id="shows-cancel">Cancel</button>
-      </fieldset>
-    </form>
   </div>
 
   <div class="card" role="tabpanel" id="spanel-stream" aria-labelledby="stab-stream" hidden>

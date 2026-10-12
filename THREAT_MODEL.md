@@ -233,19 +233,6 @@ configured hosts, because container addresses are not reachable from the network
 allowed. The Compose service uses the host network and sets `AUTODJ_HOST_NETWORK=1`, so it prints
 the detected addresses as a bare-metal server does.
 
-## Themed shows
-
-Shows (`/api/shows` and its sub-routes) are paired-only like the rest of the control API, and
-their request bodies are strict: an unknown field is refused, and `POST /api/shows` and
-`POST /api/shows/check` are capped like schedule bodies. A show names its intro and outro by
-voice liner library ID and its liner folder by a registered voice liner folder ID plus a path
-inside it that is checked like a clockwheel folder (no `..`, drive letters or backslashes), so
-the browser never sends a server path. The beets query is parsed by AutoDJ itself
-(`autodj.beets_query`), never by a shell or SQL: field names select columns only from the beets
-table's own column list, values are SQL parameters or compared in Python, and the beets database
-is opened read-only. Regular expressions are refused, so a query cannot cost more than one pass
-over the library. `shows.json` is written atomically and a damaged one is set aside, not run.
-
 ## Radio stream listening
 
 `GET /api/nowplaying` and `HEAD /api/nowplaying` are public and exempt from pairing, and so is the
@@ -257,8 +244,7 @@ state. The response is cached on track and listener changes, and only this route
 the wildcard CORS header. The next song is left out unless the operator turns on `show_next`.
 The feed adds today's peak listener count and the server uptime; both reveal roughly when
 AutoDJ restarted and how popular the station is, which the operator accepts by running a public
-station. The `show` field names the themed show on air and its end time, which the operator
-chose to announce; it carries no show ID, filter, query, liner or folder. The status page HTML-escapes every value (station names and song tags are
+station. The status page HTML-escapes every value (station names and song tags are
 operator- or file-controlled text), sends `Content-Security-Policy: default-src 'none';
 script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'`,
 `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`, and loads only
@@ -266,7 +252,7 @@ script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-a
 rest of `/modules/`. It has no forms or controls, so framing it elsewhere gains nothing.
 
 Configured webhooks make outbound HTTP requests to operator-chosen URLs after track
-changes and when a themed show starts. Their URLs can contain tokens and are accepted only from `config.local.toml`;
+changes. Their URLs can contain tokens and are accepted only from `config.local.toml`;
 the paired status API exposes the host and last result, never the URL or response body.
 The send-test route requires pairing. Operators should choose destinations they trust,
 since each receives the public now-playing metadata.

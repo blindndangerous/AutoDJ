@@ -5,8 +5,8 @@
 //   - Only the now-playing line is a live region (polite, atomic), and it
 //     is rewritten only when the song changes, so a poll that finds the
 //     same song says nothing.
-//   - Listener counts, the peak, the uptime, the next song, the show on
-//     air and the update note are plain text: they change without speaking.
+//   - Listener counts, the peak, the uptime, the next song and the update
+//     note are plain text: they change without speaking.
 //   - The wording matches status_page.py, so the page reads the same with
 //     and without JavaScript.
 //   - Pause updates (WCAG 2.2.2) keeps a fixed name; only aria-pressed
@@ -35,17 +35,6 @@ export function trackText(track, empty) {
   const album = String(track.album || "").trim();
   if (album) text += `, from the album ${album}`;
   return `${text}.`;
-}
-
-// "On air: Remembering the 2000s, until 21:00."  The end time is read
-// from the station-zone ISO time as written, as status_page.py does.
-export function showText(show) {
-  if (!show) return "";
-  const name = String(show.name || "").trim();
-  if (!name) return "";
-  const ends = String(show.ends_at || "");
-  const until = ends.length >= 16 && ends[13] === ":" ? `, until ${ends.slice(11, 16)}` : "";
-  return `On air: ${name}${until}.`;
 }
 
 export function listenersText(value) {
@@ -85,7 +74,6 @@ export function startStatusPage({
   const els = {
     station: doc.getElementById("status-station"),
     now: doc.getElementById("status-now"),
-    show: doc.getElementById("status-show"),
     nextSection: doc.getElementById("status-next-section"),
     next: doc.getElementById("status-next"),
     listeners: doc.getElementById("status-listeners"),
@@ -116,11 +104,6 @@ export function startStatusPage({
       lastKey = key;
       // A live region speaks only when its text changes.
       setText(els.now, trackText(feed.current_track, NOTHING_PLAYING));
-    }
-    const show = showText(feed.show);
-    if (els.show) {
-      setText(els.show, show);
-      if (els.show.hidden === Boolean(show)) els.show.hidden = !show;
     }
     const next = feed.next_track;
     if (els.nextSection && els.nextSection.hidden === Boolean(next)) els.nextSection.hidden = !next;

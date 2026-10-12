@@ -65,22 +65,6 @@ def uptime_text(seconds: Any) -> str:
 NOTHING_PLAYING = "Nothing is playing right now."
 
 
-def show_text(show: dict[str, Any] | None) -> str:
-    """Say the show on air: "On air: Remembering the 2000s, until 21:00.".
-
-    The end time is read from the station-zone ISO time as it is written,
-    so the page script can say the same words without a time zone table.
-    """
-    if not show:
-        return ""
-    name = str(show.get("name") or "").strip()
-    if not name:
-        return ""
-    ends = str(show.get("ends_at") or "")
-    until = f", until {ends[11:16]}" if len(ends) >= 16 and ends[13] == ":" else ""
-    return f"On air: {name}{until}."
-
-
 def render_status_page(payload: dict[str, Any], *, stream_mode: bool) -> str:
     """Return the whole status page for one now-playing *payload*."""
     station = escape(str(payload.get("station_name") or "AutoDJ"))
@@ -90,8 +74,6 @@ def render_status_page(payload: dict[str, Any], *, stream_mode: bool) -> str:
     next_track = payload.get("next_track")
     next_text = escape(track_text(next_track, empty=""))
     next_hidden = "" if next_track else " hidden"
-    show = show_text(payload.get("show"))
-    show_hidden = "" if show else " hidden"
     listen = (
         '<p><a href="/stream.mp3">Listen to the stream</a>, or '
         '<a href="/stream.m3u" download="autodj.m3u">download the playlist file (.m3u)</a>'
@@ -116,7 +98,6 @@ def render_status_page(payload: dict[str, Any], *, stream_mode: bool) -> str:
 <main>
 <section>
 <h2>Now playing</h2>
-<p id="status-show"{show_hidden}>{escape(show)}</p>
 <p id="status-now" aria-live="polite" aria-atomic="true">{now}</p>
 </section>
 <section id="status-next-section"{next_hidden}>

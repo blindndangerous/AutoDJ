@@ -17,10 +17,8 @@ Example:
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from autodj.sqlite_utils import readonly_uri
 
@@ -303,87 +301,6 @@ def get_all_tracks(db_path: str | Path) -> list[Track]:
         sql = f"SELECT {_select_clause(cols)} FROM items"  # nosec B608
         rows = conn.execute(sql).fetchall()
         return [_row_to_track(r) for r in rows]
-    finally:
-        conn.close()
-
-
-def _has_table(conn: sqlite3.Connection, name: str) -> bool:
-    """Whether the database has a table called *name*."""
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
-    ).fetchone()
-    return row is not None
-
-
-def item_fields(db_path: str | Path) -> frozenset[str]:
-    """Every field name beets keeps for items: its columns and its flexible attributes.
-
-    Flexible attributes are the fields plugins and ``beet modify`` add
-    (``mood``, ``rating`` and so on); beets keeps them in the
-    ``item_attributes`` table, one row per item and field.
-
-    Raises:
-        BeetsNotFoundError: If the database file does not exist.
-        sqlite3.DatabaseError: If the file is not a beets database.
-    """
-    conn = _open_db(Path(db_path))
-    try:
-        names = set(_items_columns(conn))
-        if _has_table(conn, "item_attributes"):
-            names.update(row[0] for row in conn.execute("SELECT DISTINCT key FROM item_attributes"))
-        return frozenset(str(name) for name in names if name)
-    finally:
-        conn.close()
-
-
-def _quoted(name: str) -> str:
-    """Quote a column name for SQL (it comes from the table's own PRAGMA)."""
-    return '"' + name.replace('"', '""') + '"'
-
-
-def read_items(db_path: str | Path, fields: Iterable[str]) -> list[tuple[Path, dict[str, Any]]]:
-    """Return each item's path and the values of *fields* that it has.
-
-    Only the asked-for fields are read, so a query on two fields does not
-    load every column (lyrics included) of a large library.  A field may
-    be a column of the ``items`` table (``original_year``, ``genre``) or a
-    flexible attribute; an item without a flexible attribute leaves it
-    out of its dict.  The database is opened read-only, never written.
-
-    Args:
-        db_path: Path to the beets ``library.db`` SQLite file.
-        fields: Field names to read; unknown names are ignored.
-
-    Returns:
-        ``(path, values)`` for every item, in database order.  The path is
-        as beets stores it: absolute, or relative to its music directory.
-
-    Raises:
-        BeetsNotFoundError: If the database file does not exist.
-        sqlite3.DatabaseError: If the file is not a beets database.
-    """
-    wanted = {str(name) for name in fields} - {"path", "id"}
-    conn = _open_db(Path(db_path))
-    try:
-        columns = _items_columns(conn)
-        picked = sorted(wanted & columns)
-        flexible = sorted(wanted - columns)
-        select = ", ".join(["id", "path", *(_quoted(name) for name in picked)])
-        # Every name in *picked* is a column the table's own PRAGMA listed.
-        rows = conn.execute(f"SELECT {select} FROM items").fetchall()  # nosec B608
-        items: dict[int, tuple[Path, dict[str, Any]]] = {}
-        for row in rows:
-            values = {name: row[name] for name in picked}
-            items[int(row["id"])] = (_decode_path(row["path"]), values)
-        if flexible and _has_table(conn, "item_attributes"):
-            marks = ", ".join("?" for _ in flexible)
-            # Only placeholders are joined in; the keys are parameters.
-            sql = f"SELECT entity_id, key, value FROM item_attributes WHERE key IN ({marks})"  # nosec B608
-            for entity, key, value in conn.execute(sql, flexible):
-                item = items.get(int(entity))
-                if item is not None:
-                    item[1][str(key)] = value
-        return list(items.values())
     finally:
         conn.close()
 
