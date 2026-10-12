@@ -1563,10 +1563,11 @@ from the same machine (`127.0.0.1` or `::1`) and only when no proxy carried the 
 HTTP request with a `Forwarded`, `X-Forwarded-*` or `X-Real-IP` header is refused (403) even from
 loopback, because a reverse proxy on the same machine may have brought it in from the network in
 the clear. From anywhere else, or through a reverse proxy, it needs HTTPS. A reverse proxy must
-terminate TLS itself and send `X-Forwarded-Proto: https`, and AutoDJ must trust that proxy
-(`[stream] trusted_proxies` on a streaming server; a server that does not stream trusts a proxy on
-its own machine). A request with an `Origin` header, as every browser sends, is refused: these
-routes are for programs only.
+terminate TLS itself and send `X-Forwarded-Proto: https`, and AutoDJ must trust that proxy: the
+addresses in `[stream] trusted_proxies` when that list is set, otherwise a proxy on the same
+machine (`127.0.0.1` or `::1`), so a TLS proxy on the station's own host needs no setting. A
+request with no proxy headers is treated as before. A request with an `Origin` header, as every
+browser sends, is refused: these routes are for programs only.
 
 ### API reference
 
@@ -1670,7 +1671,8 @@ Refusals:
   one longer than `max_seconds`, one with less than half a second of sound, a missing file, an
   unknown field or a field out of range.
 - `503` with `Retry-After` while other breaks are being decoded; `507` when the waiting files
-  would pass `quota_mb`.
+  would pass `quota_mb`; `408` when the body takes longer than 60 seconds plus one second per
+  256 KiB of its declared length to arrive.
 - `401` for a missing, wrong or revoked token, `403` for a token for another station, a request
   from another machine over plain HTTP, or a request with an `Origin` header.
 

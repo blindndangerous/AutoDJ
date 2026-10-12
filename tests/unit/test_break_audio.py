@@ -236,3 +236,45 @@ def test_processing_and_liner_decodes_are_whitelisted(tmp_path, monkeypatch):
     with pytest.raises(liner_scheduler.LinerDecodeError):
         liner_scheduler.decode_liner(tmp_path / "liners", "bad.mp3", runner=runner)
     assert "-protocol_whitelist" in runner.call_args.args[0]
+
+
+class _LyingFile:
+    """A SoundFile whose header says one second but whose data never ends."""
+
+    channels = 2
+    samplerate = SAMPLE_RATE
+
+    def __init__(self, *_args, **_kwargs) -> None:
+        self.blocks = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        return None
+
+    def read(self, frames, dtype="float32", always_2d=True):
+        self.blocks += 1
+        return np.full((frames, 2), 0.1, dtype=np.float32)
+
+
+def test_a_header_that_understates_the_length_cannot_outgrow_the_budget(tmp_path):
+    path = write(tmp_path / "liar.mp3")  # contents read through the mocks below
+    info = SimpleNamespace(format="MP3", samplerate=SAMPLE_RATE, channels=2, frames=SAMPLE_RATE)
+    lying = _LyingFile()
+    with (
+        patch.object(break_audio.sf, "info", return_value=info),
+        patch.object(break_audio.sf, "SoundFile", return_value=lying),
+        pytest.raises(TrackTooLongError),
+    ):
+        decode_break(path, 2.0)
+    # It stopped one block past the 3-second budget, not at the end of the data.
+    assert lying.blocks <= 3 * SAMPLE_RATE // break_audio._BLOCK_FRAMES + 2
+
+
+def test_soundfile_blocks_land_in_one_buffer_without_a_copy(tmp_path):
+    audio = decode_break(write(tmp_path / "b.wav", seconds=2.0), 5.0)
+    assert audio.shape == (2 * SAMPLE_RATE, 2)
+    assert not audio.flags.owndata  # a view of the read buffer
+    with pytest.raises(TrackTooLongError):
+        decode_break(write(tmp_path / "long.flac", seconds=3.0), 2.5)

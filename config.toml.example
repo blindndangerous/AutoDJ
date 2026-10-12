@@ -150,6 +150,7 @@ max_listeners = 8
 # Limit simultaneous connections from one resolved address; 0 disables this limit.
 max_listeners_per_address = 0
 # Only these direct proxy peers may supply X-Forwarded-For and X-Forwarded-Proto.
+# Empty trusts a proxy on this machine (127.0.0.1 and ::1), as when not streaming.
 trusted_proxies = []
 # Optional listener_user and listener_password belong in config.local.toml only.
 
@@ -409,8 +410,9 @@ dj_placement = "auto"          # "auto": talk up the next song's intro when it
 min_intro_seconds = 2.0
 # duck_db = -6.0               # music level under the voice; unset uses
                                # [playback] liners_duck_db
-max_upload_mb = 40             # largest break file
-max_seconds = 300.0            # longest break
+max_upload_mb = 40             # largest break file (at most 200)
+max_seconds = 300.0            # longest break (at most 900); decoding takes
+                               # about 0.35 MB of memory per second of it
 max_queued = 6                 # breaks waiting to air at once
 max_per_slot = 2               # breaks one song change can take
 default_expires_seconds = 1800 # a break not on the air by then is dropped

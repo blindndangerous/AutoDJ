@@ -416,3 +416,89 @@ def test_a_busy_decoder_answers_503(tmp_path, monkeypatch):
 
     refused = asyncio.run(scenario())
     assert refused.status_code == 503 and refused.headers == {"Retry-After": "5"}
+
+
+def test_a_decode_cancelled_before_it_starts_gives_the_gate_back(tmp_path):
+    import asyncio
+    import threading
+
+    from autodj import breaks_api
+
+    hold, holding = threading.Event(), threading.Event()
+
+    def occupy(_path, _seconds):
+        holding.set()
+        assert hold.wait(5)
+        return "first"
+
+    def never(_path, _seconds):
+        raise AssertionError("a cancelled decode ran")
+
+    async def scenario() -> int:
+        gate = asyncio.Semaphore(2)
+        first = asyncio.create_task(breaks_api._gated_decode(gate, tmp_path / "a", 1.0, occupy))
+        await asyncio.to_thread(holding.wait, 5)
+        second = asyncio.create_task(breaks_api._gated_decode(gate, tmp_path / "b", 1.0, never))
+        await asyncio.sleep(0.05)  # it holds the gate, queued behind the first decode
+        second.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await second
+        hold.set()
+        assert await first == "first"
+        for _ in range(100):
+            if gate._value == 2:
+                break
+            await asyncio.sleep(0.01)
+        return gate._value
+
+    assert asyncio.run(scenario()) == 2
+
+
+def test_an_upload_that_arrives_too_slowly_is_refused_and_gives_its_room_back(
+    tmp_path, monkeypatch
+):
+    from autodj import breaks_api
+
+    station = Station(tmp_path, max_queued=1)
+    monkeypatch.setattr(breaks_api, "BODY_DEADLINE_SECONDS", -1.0)
+    monkeypatch.setattr(breaks_api, "MIN_BODY_BYTES_PER_SECOND", 10**15)
+    slow = station.upload()
+    assert slow.status_code == 408
+    assert files(station.desk) == []
+    monkeypatch.setattr(breaks_api, "BODY_DEADLINE_SECONDS", 60.0)
+    assert station.upload().status_code == 201  # the only place was given back
+
+
+def test_a_part_with_too_many_or_too_long_headers_is_refused(station):
+    slot = station.context()["slot"]
+    boundary = "brk"
+
+    def body(extra_headers: list[str]) -> bytes:
+        fields = {
+            "kind": "dj",
+            "slot_id": slot["slot_id"],
+            "ending_id": slot["ending"]["id"],
+            "upcoming_id": slot["upcoming"]["id"],
+        }
+        chunks = [
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n'
+            for key, value in fields.items()
+        ]
+        head = "".join(f"{line}\r\n" for line in extra_headers)
+        chunks.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="b.wav"\r\n'
+            f"{head}Content-Type: audio/wav\r\n\r\n"
+        )
+        return "".join(chunks).encode() + wav() + f"\r\n--{boundary}--\r\n".encode()
+
+    headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+    many = body([f"X-Extra-{n}: x" for n in range(10)])
+    long = body(["X-Long: " + "x" * 8000])
+    for sent in (many, long):
+        reply = station.call("POST", "/api/announcer/breaks", content=sent, headers=headers)
+        assert reply.status_code in {400, 422}, reply.text
+    assert files(station.desk) == []
+    assert (
+        station.call("POST", "/api/announcer/breaks", content=body([]), headers=headers).status_code
+        == 201
+    )

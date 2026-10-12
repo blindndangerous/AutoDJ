@@ -2279,7 +2279,14 @@ class Player:
             self.break_desk.drop_slot(plan.slot_id, reason)
 
     def _discard_render(self, track: RenderedTrack) -> None:
-        """A render was thrown away unplayed: the breaks mixed into it will not air."""
+        """A render was thrown away unplayed: the breaks mixed into it will not air.
+
+        Only a reset, a jump or a stop throws away a render that carries
+        breaks, and those end the slot too.  Such a render is never judged
+        stale by a queue edit (:meth:`_queue_pick_is_stale`), so it never
+        becomes a fallback replaced by a re-render that could take the
+        breaks again.
+        """
         desk = self.break_desk
         if desk is not None:
             for _at, break_id, _end in track.break_events:

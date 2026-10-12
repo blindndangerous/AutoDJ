@@ -556,8 +556,10 @@ def machine_transport_allowed(scope: Scope) -> bool:
     reverse proxy on this machine may have carried it in from the network
     in the clear.  Through a proxy, a machine token needs TLS up to the
     proxy, and the server must trust the proxy's ``X-Forwarded-Proto:
-    https`` (``[stream] trusted_proxies``; without streaming, the server
-    trusts a proxy on this machine), so the request counts as HTTPS here.
+    https`` (``[stream] trusted_proxies``, or a proxy on this machine when
+    that list is empty; see
+    :func:`~autodj.listener_access.forwarded_allow_ips`), so the request
+    counts as HTTPS here.
     """
     if scope.get("scheme") in {"https", "wss"}:
         return True

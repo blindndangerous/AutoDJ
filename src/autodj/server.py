@@ -88,8 +88,8 @@ from autodj.listener_access import (
     AddressLimitError,
     BannedAddressError,
     ListenerAuthLimiter,
+    forwarded_allow_ips,
     normalize_address,
-    proxy_allowlist,
 )
 from autodj.machine_tokens import MachineTokenStore
 from autodj.model_identity import CachedModelCommit
@@ -2305,7 +2305,8 @@ def serve(
         uvicorn_kwargs["http"] = "h11"
         # Uvicorn rewrites request.client and scheme only for configured proxy peers.
         uvicorn_kwargs["proxy_headers"] = True
-        uvicorn_kwargs["forwarded_allow_ips"] = proxy_allowlist(cfg.stream.trusted_proxies)
+        # Empty means a proxy on this machine, as Uvicorn trusts by default.
+        uvicorn_kwargs["forwarded_allow_ips"] = forwarded_allow_ips(cfg.stream.trusted_proxies)
         uvicorn_kwargs["timeout_graceful_shutdown"] = _STREAM_SHUTDOWN_GRACE_SECONDS
     reloaders: list[CertificateReloader] = []
     if ssl_certfile is not None and ssl_keyfile is not None:

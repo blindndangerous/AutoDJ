@@ -335,10 +335,13 @@ Loopback is trusted only when no proxy carried the request. A reverse proxy on t
 (nginx, Caddy, a tunnel) connects from `127.0.0.1` too, so on plain HTTP any machine-token request
 (worker or announcer) that carries `Forwarded`, `X-Forwarded-*` or `X-Real-IP` is refused with
 403, even from loopback. A proxy must terminate TLS and send `X-Forwarded-Proto: https`; the
-server takes that header only from a proxy it trusts (`[stream] trusted_proxies` when streaming,
-the server's own machine otherwise, as Uvicorn does by default), and only then is the request
-HTTPS. A proxy that strips every forwarding header and speaks plain HTTP to AutoDJ defeats this
-check; do not run one in front of machine routes. The token and its secret are never
+server takes that header only from a proxy it trusts: the addresses in `[stream]
+trusted_proxies` when that list is set, and otherwise a proxy on this machine (`127.0.0.1` and
+`::1`, Uvicorn's own default, now also when the server streams), so a TLS reverse proxy on the
+same host keeps working with no configuration. Only then is the request HTTPS. A request with no
+proxy headers is judged as before: loopback on plain HTTP, anything else over HTTPS. A proxy that
+strips every forwarding header and speaks plain HTTP to AutoDJ defeats this check; do not run one
+in front of machine routes. The token and its secret are never
 logged or returned after creation; log lines name a break by the first eight characters of its
 own random id and the token by its name.
 
@@ -352,13 +355,21 @@ What an announcer can do with a valid token:
   and stops writing at that limit (413). Before the body is read, the route also holds room for
   the upload in the station's caps (`max_queued`, and `quota_mb` by the declared length) under the
   desk's lock, and moves it to the slot the form names (`max_per_slot`) before the file is
-  stored, so parallel uploads cannot pass the caps together; refused or failed uploads give the
-  room back. The form is parsed with at most one file and 16 short fields. The file name is the
+  stored, so parallel uploads cannot pass the caps together. Whatever ends the request (a
+  refusal, a failure, a timeout, the client hanging up) gives the room back before the handler
+  awaits anything else. The body must arrive within 60 seconds plus one second per 256 KiB it
+  declares (408 past that), so a client that trickles its body cannot hold the room. The form is
+  read by Starlette's `request.form` with `max_files=1`, `max_fields=16` and `max_part_size=4096`;
+  that size limit covers the text fields only, and the file's size is held by the middleware's cap
+  and the station's limit as it is written. python-multipart (pinned at 0.0.32 or later) refuses
+  a part with more than 8 headers or a header over about 4 KiB. The file name is the
   server's own (`brk-<random id>.<extension>`), written to the station's `announcements` folder
   through a hidden part file, so the request's file name chooses only the extension, from the
   liner audio types (415 for any other).
-- Have it decoded, in a worker thread, one upload at a time across the server; the gate opens when
-  the decode thread ends, so a client that hangs up cannot start a second decode beside it. The
+- Have it decoded on one dedicated thread, one upload at a time across the server. The gate
+  opens when that decode is over (finished, failed, or cancelled before it started), never when
+  the request gives up while it runs, so a client that hangs up cannot start a second decode
+  beside it and a cancelled one cannot keep the gate shut. The
   header is read first (libsndfile, or `ffprobe` for MP4 and AAC): a file over 192 kHz, with more
   than two channels, longer than `max_seconds`, or whose contents are not the type its extension
   names is refused (422) before any sample is decoded, so a small file that claims hours of
@@ -367,7 +378,11 @@ What an announcer can do with a valid token:
   the extension (nothing is probed, so a text body named `.mp3` is never read as an HLS or concat
   playlist), `-protocol_whitelist file,pipe`, stereo 44.1 kHz output, `-t` at the length limit,
   and its output read in chunks against a byte budget (the process is killed past it, or after two
-  minutes). The same checks run again when the break is mixed in. FFmpeg's demuxers still parse
+  minutes). libsndfile is read in blocks against the same budget, counting the frames it actually
+  returns, because an MP3 or Ogg header can understate the length. The samples then use the read
+  buffer in place, and finding the speech works ten seconds at a time, so one break takes about
+  0.35 MB per second of `max_seconds` (which may be at most 900; `max_upload_mb` at most 200). The
+  same checks run again when the break is mixed in. FFmpeg's demuxers still parse
   the upload, so a malformed file reaches them; the scope only lets a program the operator trusts
   do this.
 - Look up and cancel its station's breaks, by their random ids.
@@ -379,8 +394,11 @@ breaks, `max_per_slot` per song change and `quota_mb` of waiting files (429, 409
 those), each token may make `requests_per_minute` requests (429 with `Retry-After`), and a break
 waits at most `max_expires_seconds`. A break mixed into a render that is thrown away unplayed is
 dropped at once, and a rendered break that has not started ten minutes after its expected air time
-expires, so neither can hold the station's caps. Expired, dropped and aired breaks are deleted by
-the station's once-a-second upkeep, off the event loop (a file still held open is tried again);
+expires, so neither can hold the station's caps. Only a reset, a jump or a stop throws away a
+render that carries breaks: such a render is never judged stale by a queue edit, so it never
+becomes a fallback that a re-render replaces. Expired, dropped and aired breaks are deleted by
+the station's once-a-second upkeep, off the event loop (a file still held open is tried every
+half minute until it goes);
 files a previous run left are deleted when the station starts, except an upload still arriving
 (its name is held, and part files younger than ten minutes are left).
 
@@ -390,12 +408,14 @@ on the air through a short lock; the desk writes its log lines after releasing t
 that cannot be decoded at render time is dropped and the music renders without it. The song
 change after the next song is picked early only on stations with `[breaks] enabled = true`.
 
-Every FFmpeg and `ffprobe` command that reads a file or a pipe now passes
+Every FFmpeg and `ffprobe` command that decodes a file or an upload now passes
 `-protocol_whitelist file,pipe`: library decoding (`load_with_ffmpeg`), loudness measurement and
 processed decoding, the intro lift, the duration probe, liner and cart decoding from uploads, and
 the ALAC transcoder for browser playback. A library file or a liner that probes as a playlist can
-therefore reach no network address. Only break uploads also force the demuxer, because liners,
-carts and library files may legitimately be any type FFmpeg reads.
+therefore reach no network address. The encoders that read raw samples AutoDJ writes to their
+pipe (the stream encoder and the mastering chain, `-f f32le -i pipe:0`) probe nothing and need no
+whitelist. Only break uploads also force the demuxer, because liners, carts and library files may
+legitimately be any type FFmpeg reads.
 
 ## Radio stream listening
 

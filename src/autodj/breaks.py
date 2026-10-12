@@ -75,6 +75,8 @@ TAIL_SECONDS = 0.4
 SILENCE_DB = -45.0
 #: The shortest speech a break may hold.
 MIN_SPEECH_SECONDS = 0.5
+#: 20 ms frames measured at once by :func:`speech_cues` (about 10 s).
+_LEVEL_BLOCK_FRAMES = 500
 
 _ID = re.compile(r"[0-9a-f]{32}\Z")
 _FILE = re.compile(r"brk-([0-9a-f]{32})\.[a-z0-9]{2,4}\Z")
@@ -141,13 +143,23 @@ def speech_cues(audio: np.ndarray, sample_rate: int = SAMPLE_RATE) -> BreakCues:
         ValueError: The audio is empty, silent, not finite, or holds less
             than :data:`MIN_SPEECH_SECONDS` of sound.
     """
-    if audio.ndim != 2 or not len(audio) or not np.isfinite(audio).all():
+    if audio.ndim != 2 or not len(audio):
         raise ValueError("the audio is empty or not finite")
     frame = max(1, round(sample_rate * 0.02))
     count = -(-len(audio) // frame)
-    padded = np.zeros((count * frame, audio.shape[1]), dtype=np.float64)
-    padded[: len(audio)] = audio
-    levels = np.sqrt(np.mean(padded.reshape(count, frame, audio.shape[1]) ** 2, axis=1)).max(axis=1)
+    levels = np.empty(count, dtype=np.float64)
+    # A few seconds at a time, so the work takes little more memory than
+    # the audio itself even for the longest break allowed.
+    step = _LEVEL_BLOCK_FRAMES
+    for first_frame in range(0, count, step):
+        block = audio[first_frame * frame : (first_frame + step) * frame]
+        if not np.isfinite(block).all():
+            raise ValueError("the audio is empty or not finite")
+        frames = -(-len(block) // frame)
+        padded = np.zeros((frames * frame, audio.shape[1]), dtype=np.float32)
+        padded[: len(block)] = block
+        squares = np.square(padded.reshape(frames, frame, audio.shape[1]), dtype=np.float64)
+        levels[first_frame : first_frame + frames] = np.sqrt(squares.mean(axis=1)).max(axis=1)
     peak = float(levels.max())
     if peak < 1e-4:
         raise ValueError("the audio is silent")
@@ -315,8 +327,10 @@ RENDERED_GRACE_SECONDS = 600.0
 #: A part file younger than this may still be arriving; the start-up sweep
 #: leaves it.
 PART_GRACE_SECONDS = 600.0
-#: Attempts to delete a file before the desk gives up on it.
-DELETE_ATTEMPTS = 10
+#: How long the desk waits before trying again to delete a file it could
+#: not (still open in a decode, or held by another program).  It never
+#: gives up: the station's tick keeps trying.
+DELETE_RETRY_SECONDS = 30.0
 
 
 class BreakDesk:
@@ -350,8 +364,8 @@ class BreakDesk:
         self._breaks: OrderedDict[str, Break] = OrderedDict()
         self._reserved: dict[str, _Reservation] = {}
         # Files of finished breaks and abandoned uploads, deleted by maintain(),
-        # with how many times each has failed to go.
-        self._doomed: dict[Path, int] = {}
+        # with when to try each next (0: now, and it has not failed yet).
+        self._doomed: dict[Path, float] = {}
         # Log lines decided under the lock and written after it.
         self._logs: list[tuple[int, str, tuple[Any, ...]]] = []
         self._swept = False
@@ -474,7 +488,7 @@ class BreakDesk:
         with self._lock:
             self._reserved.pop(break_id, None)
             if path is not None:
-                self._doomed.setdefault(path, 0)
+                self._doomed.setdefault(path, 0.0)
 
     def add(self, item: Break) -> None:
         """Keep a booked break.  Call with the player's slot lock held.
@@ -654,7 +668,7 @@ class BreakDesk:
         item.state = state
         item.reason = reason
         item.updated_at = self._clock()
-        self._doomed.setdefault(item.path, 0)
+        self._doomed.setdefault(item.path, 0.0)
         if state == AIRED:
             self._log(logging.INFO, "Break %s aired", item.break_id[:8])
         else:
@@ -670,7 +684,7 @@ class BreakDesk:
         with self._lock:
             return (
                 not self._swept
-                or bool(self._doomed)
+                or any(due <= now for due in self._doomed.values())
                 or len(self._breaks) > HISTORY
                 or any(self._late_locked(item, now) for item in self._breaks.values())
             )
@@ -707,7 +721,7 @@ class BreakDesk:
                     if item.state == QUEUED:
                         emptied.add(item.slot_id)
                     self._finish_locked(item, EXPIRED, reason)
-            doomed = dict(self._doomed)
+            doomed = {path: due for path, due in self._doomed.items() if due <= now}
             finished = [key for key, item in self._breaks.items() if item.state in TERMINAL]
             for key in finished[: max(0, len(self._breaks) - HISTORY)]:
                 del self._breaks[key]
@@ -715,15 +729,16 @@ class BreakDesk:
             keep.update(held.name for held in self._reserved.values())
             sweep = not self._swept
             self._swept = True
-        failed: dict[Path, int] = {}
-        for path, attempts in doomed.items():
+        failed: dict[Path, float] = {}
+        for path, due in doomed.items():
             try:
                 path.unlink(missing_ok=True)
             except OSError:
-                if attempts + 1 < DELETE_ATTEMPTS:
-                    failed[path] = attempts + 1
-                else:
-                    logger.warning("Could not delete the break file %s", path.name, exc_info=True)
+                failed[path] = now + DELETE_RETRY_SECONDS
+                if due == 0.0:  # said once; tried again every half minute
+                    logger.warning(
+                        "Could not delete the break file %s; trying again", path.name, exc_info=True
+                    )
         with self._lock:
             for path in doomed:
                 self._doomed.pop(path, None)

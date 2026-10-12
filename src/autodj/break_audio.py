@@ -10,9 +10,11 @@ limits a library file does not need:
   :data:`MAX_CHANNELS` channels, or longer than allowed, is refused before
   any sample is decoded.  A small file can claim hours of eight-channel
   audio at a huge rate; reading it whole would take gigabytes.
-* What is decoded is stereo at :data:`~autodj.stereo.SAMPLE_RATE`, and the
-  FFmpeg output is read in chunks against a byte budget, so memory stays
-  bounded whatever the file says.
+* What is decoded is stereo at :data:`~autodj.stereo.SAMPLE_RATE`, read in
+  blocks (libsndfile) or chunks (FFmpeg) against a byte budget of
+  ``(max_seconds + 1) * 44100 * 8`` bytes, whatever the header says, into
+  one buffer the samples then use in place.  Peak memory for one break is
+  about 0.35 MB per second of the limit (106 MB at the default 300 s).
 """
 
 from __future__ import annotations
@@ -153,6 +155,40 @@ def check_break_audio(
     return "ffmpeg"
 
 
+#: Frames libsndfile reads at a time.
+_BLOCK_FRAMES = 65_536
+
+
+def _read_soundfile(path: Path, max_seconds: float) -> np.ndarray:
+    """Read a playout-rate file in blocks, against the same budget as FFmpeg's output.
+
+    A header can understate a file's length (an MP3's Xing frame count, an
+    Ogg page), so the frames actually read are counted, not the header's.
+    """
+    budget = int((max_seconds + 1.0) * SAMPLE_RATE) * _FRAME_BYTES
+    output = bytearray()
+    try:
+        with sf.SoundFile(str(path)) as source:
+            channels = source.channels
+            while True:
+                block = source.read(_BLOCK_FRAMES, dtype="float32", always_2d=True)
+                if not len(block):
+                    break
+                output += to_stereo(block).astype("<f4", copy=False).tobytes()
+                if len(output) > budget:
+                    raise TrackTooLongError(str(path), len(output) / _FRAME_BYTES / SAMPLE_RATE)
+    except TrackTooLongError:
+        raise
+    except (RuntimeError, OSError, sf.LibsndfileError) as exc:
+        raise BreakAudioError("it is not audio AutoDJ can play") from exc
+    if not output or channels > MAX_CHANNELS:
+        raise BreakAudioError("it is not audio AutoDJ can play")
+    audio = np.frombuffer(output, dtype="<f4").reshape(-1, 2)
+    if len(audio) > max_seconds * SAMPLE_RATE:
+        raise TrackTooLongError(str(path), len(audio) / SAMPLE_RATE)
+    return audio
+
+
 def decode_break(
     path: Path,
     max_seconds: float,
@@ -170,11 +206,7 @@ def decode_break(
     path = Path(path)
     how = check_break_audio(path, max_seconds, runner=runner)
     if how == "soundfile":
-        try:
-            audio, _rate = sf.read(str(path), dtype="float32", always_2d=True)
-        except (RuntimeError, OSError) as exc:
-            raise BreakAudioError("it is not audio AutoDJ can play") from exc
-        return to_stereo(audio)
+        return _read_soundfile(path, max_seconds)
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
         raise BreakAudioError("decoding this break needs FFmpeg")
@@ -231,7 +263,8 @@ def decode_break(
         process.stdout.close()
     if code != 0 or not output or len(output) % _FRAME_BYTES:
         raise BreakAudioError("it is not audio AutoDJ can play")
-    audio = np.frombuffer(bytes(output), dtype="<f4").reshape(-1, 2).copy()
+    # The bytearray is writable, so the samples use it in place: no second copy.
+    audio = np.frombuffer(output, dtype="<f4").reshape(-1, 2)
     if len(audio) > max_seconds * SAMPLE_RATE:
         raise TrackTooLongError(str(path), len(audio) / SAMPLE_RATE)
     return audio

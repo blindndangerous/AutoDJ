@@ -26,11 +26,14 @@ deleted once the break airs, is dropped or expires.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import contextlib
 import hashlib
 import logging
+import threading
 import time
 import weakref
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -63,6 +66,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
 #: Path prefix of the announcer routes (and the token scope they need).
 ANNOUNCER_PREFIX = "/api/announcer/"
 ANNOUNCER_SCOPES = {ANNOUNCER_PREFIX: SCOPE_ANNOUNCER}
@@ -74,6 +78,11 @@ MULTIPART_OVERHEAD_BYTES = 64 * 1024
 CONTEXT_ROWS = 10
 #: How long an upload waits for the decoder before the server says it is busy.
 DECODE_WAIT_SECONDS = 20.0
+#: An upload must arrive within this many seconds, plus one second for every
+#: :data:`MIN_BODY_BYTES_PER_SECOND` bytes it declares (408 past that).  A
+#: client that trickles its body cannot hold the station's room for long.
+BODY_DEADLINE_SECONDS = 60.0
+MIN_BODY_BYTES_PER_SECOND = 256 * 1024
 _NO_STORE = {"Cache-Control": "no-store"}
 
 
@@ -288,8 +297,10 @@ def install_breaks(router: StationRouter) -> None:
             return refused(exc.status, exc.detail, exc.reason, None)
         path: Path | None = None
         booked = False
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + BODY_DEADLINE_SECONDS + size / MIN_BODY_BYTES_PER_SECOND
         try:
-            fields, upload = await _read_form(request)
+            fields, upload = await _within(deadline, _read_form(request))
             try:
                 suffix = Path(upload.filename or "").suffix.lower()
                 if suffix not in EXTENSIONS:
@@ -321,8 +332,9 @@ def install_breaks(router: StationRouter) -> None:
                 except BreakError as exc:
                     return refused(exc.status, exc.detail, exc.reason, slot)
                 try:
-                    path, stored = await store_liner_upload(
-                        desk.folder, name, upload, max_bytes=cap, replace=False
+                    path, stored = await _within(
+                        deadline,
+                        store_liner_upload(desk.folder, name, upload, max_bytes=cap, replace=False),
                     )
                 except LinerTooLargeError as exc:
                     raise HTTPException(
@@ -330,6 +342,7 @@ def install_breaks(router: StationRouter) -> None:
                     ) from exc
             finally:
                 await upload.close()
+            assert path is not None  # stored, or the request has already answered
             cues = await decode_one(path, config.max_seconds)
             now = time.time()
             item = Break(
@@ -356,10 +369,13 @@ def install_breaks(router: StationRouter) -> None:
             booked = True
         finally:
             if not booked:
-                # The file goes now if it can; if a decode still holds it, the
-                # station's upkeep deletes it once the decode lets go.
-                gone = path is None or await asyncio.shield(asyncio.to_thread(_quiet_unlink, path))
-                desk.release(break_id, None if gone else path)
+                # The room goes back first, with no await before it, so even a
+                # cancelled request gives it back.  The file goes now if it can;
+                # otherwise the station's upkeep deletes it once a decode still
+                # holding it lets go.
+                desk.release(break_id, path)
+                if path is not None:
+                    await asyncio.shield(asyncio.to_thread(_quiet_unlink, path))
         slot = await asyncio.to_thread(_current_slot, station)
         view = item.view()
         view["airs_in_s"] = (
@@ -394,7 +410,8 @@ def install_breaks(router: StationRouter) -> None:
         if not valid_id(break_id):
             raise HTTPException(status_code=404, detail="No break has that id")
         try:
-            item = desk.cancel(break_id)
+            # Off the event loop: cancelling may unpin the player's slot.
+            item = await asyncio.to_thread(desk.cancel, break_id)
         except BreakError as exc:
             return refused(exc.status, exc.detail, exc.reason, None)
         return JSONResponse(item.view(), headers=_NO_STORE)
@@ -454,23 +471,48 @@ async def _gated_decode(
             headers={"Retry-After": "5"},
         ) from exc
     loop = asyncio.get_running_loop()
-
-    def work() -> BreakCues:
-        try:
-            return run(path, max_seconds)
-        finally:
-            loop.call_soon_threadsafe(gate.release)
-
-    return await asyncio.to_thread(work)
-
-
-def _quiet_unlink(path: Path) -> bool:
-    """Delete *path*; whether it is gone."""
     try:
+        future = _decode_pool().submit(run, path, max_seconds)
+    except BaseException:
+        gate.release()
+        raise
+    # The gate opens when the decode is over: finished, failed, or cancelled
+    # before it started.  Never when the request gives up while it runs.
+    future.add_done_callback(lambda _done: loop.call_soon_threadsafe(gate.release))
+    return await asyncio.wrap_future(future)
+
+
+def _quiet_unlink(path: Path) -> None:
+    """Delete *path* if nothing holds it open."""
+    with contextlib.suppress(OSError):
         path.unlink(missing_ok=True)
-    except OSError:
-        return False
-    return True
+
+
+_DECODE_POOL: list[concurrent.futures.ThreadPoolExecutor] = []
+_DECODE_POOL_LOCK = threading.Lock()
+
+
+def _decode_pool() -> concurrent.futures.ThreadPoolExecutor:
+    """The one thread that decodes uploads (made on first use)."""
+    with _DECODE_POOL_LOCK:
+        if not _DECODE_POOL:
+            _DECODE_POOL.append(
+                concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="autodj-break-decode"
+                )
+            )
+        return _DECODE_POOL[0]
+
+
+async def _within[T](deadline: float, work: Awaitable[T]) -> T:
+    """*work*, or 408 once the loop's clock passes *deadline*."""
+    remaining = deadline - asyncio.get_running_loop().time()
+    try:
+        return await asyncio.wait_for(work, max(0.0, remaining))
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=408, detail="The upload arrived too slowly; send it again"
+        ) from exc
 
 
 class _UploadFields(BaseModel):

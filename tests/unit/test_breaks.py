@@ -12,6 +12,7 @@ import pytest
 
 from autodj.breaks import (
     AIRED,
+    DELETE_RETRY_SECONDS,
     DROPPED,
     EXPIRED,
     ON_AIR,
@@ -317,6 +318,8 @@ def test_breaks_settings_defaults_and_conversions():
         ({"min_intro_seconds": "2"}, TypeError),
         ({"min_intro_seconds": 61}, ValueError),
         ({"max_seconds": float("nan")}, ValueError),
+        ({"max_seconds": 901}, ValueError),
+        ({"max_upload_mb": 201}, ValueError),
         ({"duck_db": 3}, ValueError),
         ({"duck_db": True}, TypeError),
         ({"max_queued": 0}, ValueError),
@@ -427,7 +430,8 @@ def test_log_lines_are_written_after_the_lock_is_released(desk, caplog):
 
 
 def test_a_file_that_cannot_be_deleted_yet_is_tried_again(desk, monkeypatch):
-    desk, _clock, _config = desk
+    desk, clock, _config = desk
+    desk.maintain()  # the start-up sweep is done
     item = make_break(desk, new_id())
     desk.add(item)
     desk.cancel(item.break_id)
@@ -442,8 +446,14 @@ def test_a_file_that_cannot_be_deleted_yet_is_tried_again(desk, monkeypatch):
 
     monkeypatch.setattr(Path, "unlink", busy)
     desk.maintain()
-    assert item.path.exists() and desk.needs_maintenance()
+    assert item.path.exists()
+    # Not tried again at once, but never given up on.
+    assert not desk.needs_maintenance()
+    clock.now += DELETE_RETRY_SECONDS
+    assert desk.needs_maintenance()
     desk.maintain()
+    assert item.path.exists()
+    clock.now += DELETE_RETRY_SECONDS
     desk.maintain()
     assert not item.path.exists()
     abandoned = desk.folder / f"brk-{new_id()}.wav"

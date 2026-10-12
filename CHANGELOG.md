@@ -535,7 +535,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   request carries a `Forwarded`, `X-Forwarded-*` or `X-Real-IP` header, even from the same
   machine: a reverse proxy there may have carried it in from the network unencrypted. Through a
   proxy, machine tokens need TLS at the proxy and `X-Forwarded-Proto: https` from a proxy the
-  server trusts.
+  server trusts. With `[stream] trusted_proxies` empty, a streaming server now trusts a proxy on
+  its own machine (`127.0.0.1`, `::1`), as a server that does not stream always has, so a TLS
+  reverse proxy on the same host keeps working; a list you set is used as it is.
+- AutoDJ now needs python-multipart 0.0.32 or later, which refuses a form part with more than
+  eight headers or a header over about 4 KiB.
 
 ## [0.20.0] - 2026-10-11
 

@@ -1433,8 +1433,10 @@ class BreaksConfig(_Section):
         min_intro_seconds: The shortest intro ``"auto"`` talks up.
         duck_db: How far the music drops under a break's voice, in dB
             (-30 to 0).  Unset uses ``[playback] liners_duck_db``.
-        max_upload_mb: The largest break file, in megabytes.
-        max_seconds: The longest break, in seconds.
+        max_upload_mb: The largest break file, in megabytes (at most 200).
+        max_seconds: The longest break, in seconds (at most 900).  A break
+            is decoded whole into memory, about 0.35 MB per second of this
+            limit, so the default 300 s takes about 106 MB at most.
         max_queued: Breaks waiting to air at once, on this station.
         max_per_slot: Breaks one song change can take.
         default_expires_seconds: How long a break may wait when its request
@@ -1466,7 +1468,7 @@ class BreaksConfig(_Section):
             raise ValueError("breaks.dj_placement must be one of: " + ", ".join(BREAK_PLACEMENTS))
         for name, low, high in (
             ("min_intro_seconds", 0.0, 60.0),
-            ("max_seconds", 5.0, 3600.0),
+            ("max_seconds", 5.0, 900.0),
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -1481,7 +1483,7 @@ class BreaksConfig(_Section):
                 raise ValueError("breaks.duck_db must be between -30 and 0 dB")
             self.duck_db = float(self.duck_db)
         for name, low, high in (
-            ("max_upload_mb", 1, 500),
+            ("max_upload_mb", 1, 200),
             ("max_queued", 1, 50),
             ("max_per_slot", 1, 5),
             ("default_expires_seconds", 60, 86400),
