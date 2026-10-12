@@ -99,6 +99,11 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   on a poll that finds the same song; the next song shown only while it is allowed.
 - Voice liners: uploading a liner, Test now, and each rotation mode, including the spoken
   result when an upload or test fails.
+- Queue & Search, browsing: Tab moving from Search to Browse library (Folder, Search text, Browse,
+  the list, Previous and Next) and on to Browse voice liners; the track count said once per Browse
+  and per page, with focus staying on Previous or Next (or moving to the other one when the page
+  ends); Delete on a liner saying the result once and focus moving to the next liner or the list;
+  and Track info from either list, with Return to Queue & Search putting focus back on its button.
 - EQ: each band's slider, its spoken value, and resetting the bands.
 - History: the History tab's table read with table navigation, its pagination, the empty state,
   and a new song added to the top of page 1 without the reading position moving or anything said.

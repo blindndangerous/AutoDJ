@@ -14,7 +14,25 @@ import soundfile as sf
 
 from autodj.config import TimeChecksConfig, load_config
 from autodj.doctor import CheckStatus, _time_checks_check
-from autodj.time_checks import SettingsBody, TimeChecks, clip_path, missing_minutes, spoken_text
+from autodj.time_checks import (
+    Rendered,
+    SettingsBody,
+    TimeChecks,
+    clip_path,
+    missing_minutes,
+    spoken_text,
+)
+
+
+def _settings(**changes: object) -> SettingsBody:
+    values: dict[str, object] = {
+        "enabled": False,
+        "hour_format": "12",
+        "rule": "off",
+        "enabled_packs": [],
+        "pack_order": "rotate",
+    }
+    return SettingsBody.model_validate({**values, **changes})
 
 
 def _checks(tmp_path: Path) -> TimeChecks:
@@ -49,8 +67,9 @@ def test_recording_wraps_intro_and_outro_as_one_clip(tmp_path: Path) -> None:
         sf.write(checks.folder / filename, np.zeros((441, 2)), 44100)
     checks.config.intro_clip = str(checks.folder / "intro.wav")
     checks.config.outro_clip = str(checks.folder / "outro.wav")
-    audio = checks.render(local)
-    assert audio is not None and audio.shape == (1323, 2)
+    rendered = checks.render(local)
+    assert rendered is not None and rendered.audio.shape == (1323, 2)
+    assert rendered.source == "recorded clip"
 
 
 _TTS_SCRIPT = (
@@ -67,7 +86,8 @@ def test_tts_fallback_writes_wav_once_and_caches_per_command_and_text(tmp_path: 
     checks.config.tts_command = [sys.executable, "-c", _TTS_SCRIPT, "{out}", str(log)]
     at = datetime(2026, 10, 11, 3, 5, tzinfo=checks.zone)
     first = checks.render(at)
-    assert first is not None and first.shape == (100, 2)
+    assert first is not None and first.audio.shape == (100, 2)
+    assert first.source == "text to speech"
     assert checks.render(at) is not None
     assert log.read_text(encoding="utf-8") == "It's 3:05\n"
     # Another voice is another cache entry.
@@ -99,7 +119,7 @@ def test_failing_or_slow_tts_skips_with_one_warning(
     at = datetime(2026, 10, 11, 3, 5, tzinfo=checks.zone)
     assert checks.render(at) is None
     assert checks.render(at) is None
-    assert caplog.text.count("no recorded clip or working TTS command") == 1
+    assert caplog.text.count("no voice pack, recorded clip or working TTS command") == 1
     checks.config.tts_command = [sys.executable, "-c", "import sys; sys.exit(3)", "{out}"]
     assert checks.render(at) is None
     assert "TTS command failed (exit 3)" in caplog.text
@@ -150,10 +170,10 @@ def test_hour_rule_plays_once_after_the_song_that_crosses_the_hour(
     clock = _Clock(monkeypatch, datetime(2026, 10, 11, 9, 59, tzinfo=UTC))
     checks = _checks(tmp_path)
     audio = np.zeros((10, 2), np.float32)
-    monkeypatch.setattr(checks, "render", lambda: audio)
+    monkeypatch.setattr(checks, "render", lambda pack=None: Rendered(audio, "recorded clip"))
     checks.tick(clock.at, True)
     assert checks.due_audio() is None  # the rule is off
-    checks.save(SettingsBody(enabled=True, hour_format="24", rule="after_hour_song"))
+    checks.save(_settings(enabled=True, hour_format="24", rule="after_hour_song"))
     clock.at = datetime(2026, 10, 11, 10, 0, tzinfo=UTC)
     checks.tick(clock.at, True)
     checks.tick(clock.at, True)
@@ -166,7 +186,7 @@ def test_hour_rule_plays_once_after_the_song_that_crosses_the_hour(
     # Turning the rule off drops a pending check.
     clock.at = datetime(2026, 10, 11, 12, 0, tzinfo=UTC)
     checks.tick(clock.at, True)
-    checks.save(SettingsBody(enabled=True, hour_format="24", rule="off"))
+    checks.save(_settings(enabled=True, hour_format="24", rule="off"))
     assert checks.due_audio() is None
 
 
@@ -178,9 +198,9 @@ def test_scheduled_check_in_the_hour_replaces_the_hour_rule(
 
     clock = _Clock(monkeypatch, datetime(2026, 10, 11, 9, 59, tzinfo=UTC))
     checks = _checks(tmp_path)
-    checks.save(SettingsBody(enabled=True, hour_format="12", rule="after_hour_song"))
+    checks.save(_settings(enabled=True, hour_format="12", rule="after_hour_song"))
     audio = np.zeros((10, 2), np.float32)
-    monkeypatch.setattr(checks, "render", lambda: audio)
+    monkeypatch.setattr(checks, "render", lambda pack=None: Rendered(audio, "recorded clip"))
     clock.at = datetime(2026, 10, 11, 10, 0, tzinfo=UTC)
     checks.tick(clock.at, True)
     bridge = SimpleNamespace(liner_scheduler=MagicMock(), station=None)
@@ -200,14 +220,14 @@ def test_fire_says_why_nothing_played(tmp_path: Path, monkeypatch: pytest.Monkey
     idle = SimpleNamespace(liner_scheduler=MagicMock(), station=SimpleNamespace(state="idle"))
     with pytest.raises(ValueError, match="stream must be playing"):
         checks.fire(idle)
-    monkeypatch.setattr(checks, "render", lambda: None)
-    with pytest.raises(ValueError, match="No recorded clip"):
+    monkeypatch.setattr(checks, "render", lambda pack=None: None)
+    with pytest.raises(ValueError, match="No voice pack, recorded clip"):
         checks.fire(SimpleNamespace(liner_scheduler=MagicMock(), station=None))
 
 
 def test_saved_switches_reload_and_a_wrong_version_stops_startup(tmp_path: Path) -> None:
     checks = _checks(tmp_path)
-    checks.save(SettingsBody(enabled=True, hour_format="24", rule="after_hour_song"))
+    checks.save(_settings(enabled=True, hour_format="24", rule="after_hour_song"))
     reloaded = _checks(tmp_path)
     assert reloaded.settings.hour_format == "24"
     assert reloaded.status()["timezone"] == "America/Denver"
@@ -262,3 +282,218 @@ def test_doctor_reads_the_switches_saved_from_settings(tmp_path: Path) -> None:
     check = _time_checks_check(cfg)
     assert check.status is CheckStatus.FAIL
     assert check.repair is not None
+
+
+# -- voice packs ------------------------------------------------------------
+
+
+def _word(freq: float, amplitude: float = 0.3) -> np.ndarray:
+    t = np.arange(4410) / 44100
+    tone = amplitude * np.sin(2 * np.pi * freq * t) * np.hanning(4410)
+    silence = np.zeros(2205)
+    return np.concatenate([silence, tone, silence])
+
+
+def _write_pack(
+    folder: Path, hours: range | list[int], minutes: range | list[int], freq: float = 220.0
+) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    for hour in hours:
+        sf.write(folder / f"hr_{hour:02d}.wav", _word(freq), 44100)
+        sf.write(folder / f"hr_{hour:02d}o.wav", _word(freq), 44100)
+    for minute in minutes:
+        sf.write(folder / f"m_{minute:02d}.wav", _word(freq * 1.5), 44100)
+    return folder
+
+
+def _pack_checks(tmp_path: Path, *folders: Path) -> TimeChecks:
+    cfg = load_config(environ={})
+    cfg.index.index_dir = tmp_path
+    cfg.time_checks = TimeChecksConfig(voice_packs=[str(folder) for folder in folders])
+    return TimeChecks(cfg, "UTC")
+
+
+def _source(checks: TimeChecks, at: datetime, pack: str | None = None) -> str | None:
+    rendered = checks.render(at, pack=pack)
+    return None if rendered is None else rendered.source
+
+
+def test_voice_pack_speaks_first_and_falls_back_to_clips_then_tts(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    pack = _write_pack(tmp_path / "packs" / "Studio", range(24), range(1, 30))
+    checks = _pack_checks(tmp_path, pack)
+    assert checks.settings.enabled_packs == ["Studio"]
+    at = datetime(2026, 10, 11, 3, 5, tzinfo=UTC)
+    rendered = checks.render(at)
+    assert rendered is not None and rendered.source == "voice pack Studio"
+    # Two 100 ms words, each with its 40 ms of margins, overlapped by 40 ms.
+    assert 0.2 < len(rendered.audio) / 44100 < 0.25
+    assert _source(checks, at.replace(minute=0)) == "voice pack Studio"
+    # Minute 45 has no file: the recorded clip speaks, then text to speech.
+    checks.folder.mkdir(parents=True)
+    sf.write(checks.folder / "03_45.wav", np.zeros((441, 2)), 44100)
+    assert _source(checks, at.replace(minute=45)) == "recorded clip"
+    log = tmp_path / "spoken.txt"
+    checks.config.tts_command = [sys.executable, "-c", _TTS_SCRIPT, "{out}", str(log)]
+    assert _source(checks, at.replace(minute=46)) == "text to speech"
+    # An undecodable piece is skipped with a warning, and the next source speaks.
+    (pack / "m_05.wav").write_bytes(b"not audio")
+    assert _source(checks, at) == "text to speech"
+    assert "Voice pack Studio skipped at 03:05" in caplog.text
+
+
+def test_voice_pack_join_is_cached_until_a_file_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import time_checks
+
+    pack = _write_pack(tmp_path / "Studio", [3], [5])
+    checks = _pack_checks(tmp_path, pack)
+    joins: list[int] = []
+    real = time_checks.join_voice
+
+    def counting(pieces: list[np.ndarray]) -> np.ndarray:
+        joins.append(len(pieces))
+        return real(pieces)
+
+    monkeypatch.setattr(time_checks, "join_voice", counting)
+    at = datetime(2026, 10, 11, 3, 5, tzinfo=UTC)
+    first = checks.render(at)
+    assert first is not None and checks.render(at) is not None
+    assert joins == [2]
+    sf.write(pack / "m_05.wav", np.concatenate([_word(330.0), _word(330.0)]), 44100)
+    second = checks.render(at)
+    assert joins == [2, 2]
+    assert second is not None and len(second.audio) > len(first.audio)
+
+
+def test_several_packs_take_turns_or_pick_at_random(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import time_checks
+
+    first = _write_pack(tmp_path / "A", [3], [5])
+    second = _write_pack(tmp_path / "B", [3], [5, 6], freq=330.0)
+    checks = _pack_checks(tmp_path, first, second)
+    at = datetime(2026, 10, 11, 3, 5, tzinfo=UTC)
+    assert [_source(checks, at) for _ in range(3)] == [
+        "voice pack A",
+        "voice pack B",
+        "voice pack A",
+    ]
+    # It is the turn of A, which cannot say 03:06: B speaks instead of a clip.
+    assert _source(checks, at.replace(minute=6)) == "voice pack B"
+    # A test of one pack does not move the rotation.
+    assert _source(checks, at, "B") == "voice pack B"
+    assert _source(checks, at) == "voice pack A"
+    # A tested pack that cannot say the minute falls back like any other source.
+    assert _source(checks, at.replace(minute=6), "A") is None
+    checks.save(_settings(enabled_packs=["B"]))
+    assert _source(checks, at) == "voice pack B"
+    checks.save(_settings(enabled_packs=[]))
+    assert _source(checks, at) is None
+    checks.save(_settings(enabled_packs=["A", "B"], pack_order="random"))
+    monkeypatch.setattr(time_checks.secrets, "randbelow", lambda count: count - 1)
+    assert _source(checks, at) == "voice pack B"
+
+
+def test_status_lists_packs_by_name_with_coverage_and_no_paths(tmp_path: Path) -> None:
+    pack = _write_pack(tmp_path / "secret-folder" / "Studio", range(24), range(1, 60))
+    checks = _pack_checks(tmp_path, pack, tmp_path / "Gone")
+    checks.save(_settings(enabled_packs=["Studio"], hour_format="24"))
+    status = checks.status()
+    assert status["enabled_packs"] == ["Studio"] and status["pack_order"] == "rotate"
+    assert status["packs"] == [
+        {
+            "name": "Studio",
+            "enabled": True,
+            "minutes_covered": 1440,
+            "summary": "1440 of 1440 minutes covered. Hour files missing: none. "
+            "Exact-hour files missing: none. Minute files missing: none.",
+        },
+        {"name": "Gone", "enabled": False, "minutes_covered": 0, "summary": "Folder not found."},
+    ]
+    assert "secret-folder" not in json.dumps(status)
+
+
+def test_saved_settings_fill_new_keys_from_config(tmp_path: Path) -> None:
+    pack = _write_pack(tmp_path / "Studio", [3], [5])
+    checks = _pack_checks(tmp_path, pack)
+    checks.state_path.parent.mkdir(parents=True, exist_ok=True)
+    checks.state_path.write_text(
+        '{"version":1,"settings":{"enabled":true,"hour_format":"24","rule":"off"}}',
+        encoding="utf-8",
+    )
+    reloaded = _pack_checks(tmp_path, pack)
+    assert reloaded.settings.enabled_packs == ["Studio"]
+    assert reloaded.settings.hour_format == "24"
+
+
+def test_settings_and_config_refuse_bad_pack_values(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="each pack once"):
+        _settings(enabled_packs=["A", "A"])
+    with pytest.raises(ValueError, match="rotate or random"):
+        _settings(pack_order="shuffle")
+    with pytest.raises(ValueError, match="pack_order"):
+        TimeChecksConfig(pack_order="shuffle")
+    with pytest.raises(TypeError, match="voice_packs"):
+        TimeChecksConfig(voice_packs=[""])
+    with pytest.raises(TypeError, match="voice_packs"):
+        TimeChecksConfig(voice_packs="folder")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="distinct names"):
+        TimeChecksConfig(voice_packs=[str(tmp_path / "a" / "Studio"), str(tmp_path / "studio")])
+    assert TimeChecksConfig(voice_packs=["~/Studio"]).voice_packs == [
+        str(Path("~/Studio").expanduser())
+    ]
+
+
+def test_unknown_config_keys_are_warned_and_ignored(caplog: pytest.LogCaptureFixture) -> None:
+    section = TimeChecksConfig.from_dict({"voice_packs": [], "pack_folders": ["x"]})
+    assert section.voice_packs == []
+    assert "Ignoring unknown config keys in [time_checks]: ['pack_folders']" in caplog.text
+
+
+def test_doctor_reports_each_pack_and_counts_pack_minutes_as_covered(tmp_path: Path) -> None:
+    from autodj.doctor import _voice_pack_checks
+
+    full = _write_pack(tmp_path / "Full", range(24), range(1, 60))
+    partial = _write_pack(tmp_path / "Partial", range(23), range(1, 59))
+    (partial / "hm_07.wav").write_bytes(b"x")
+    cfg = load_config(environ={})
+    cfg.index.index_dir = tmp_path
+    cfg.time_checks = TimeChecksConfig(
+        enabled=True, voice_packs=[str(full), str(partial), str(tmp_path / "Gone")]
+    )
+    checks = _voice_pack_checks(cfg)
+    assert [check.name for check in checks] == [
+        "voice-pack-Full",
+        "voice-pack-Partial",
+        "voice-pack-Gone",
+    ]
+    assert checks[0].status is CheckStatus.PASS
+    assert checks[0].summary.startswith("enabled; 1440 of 1440 minutes covered.")
+    assert checks[0].detail == str(full)
+    assert checks[1].status is CheckStatus.WARN
+    # 12-hour mode (the default): hour 23 uses hr_11, so only minute 59 is missing.
+    assert "1416 of 1440 minutes covered. Hour files missing: none." in checks[1].summary
+    assert "Minute files missing: 59." in checks[1].summary
+    assert "hm_07.wav: needs h (hour) or m (minute)" in checks[1].summary
+    assert checks[2].status is CheckStatus.WARN
+    assert checks[2].summary == "enabled; Folder not found."
+    # The full pack says every minute, so no TTS fallback is needed.
+    assert _time_checks_check(cfg).status is CheckStatus.PASS
+    state = Path(cfg.index.active_dir) / "time_checks.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(
+        '{"version":1,"settings":{"enabled":true,"hour_format":"12","rule":"off",'
+        '"enabled_packs":["Partial","Old"],"pack_order":"rotate"}}',
+        encoding="utf-8",
+    )
+    check = _time_checks_check(cfg)
+    assert check.status is CheckStatus.WARN
+    assert "saved voice pack Old is not in voice_packs" in check.summary
+    assert "no TTS fallback" in check.summary
+    assert _voice_pack_checks(cfg)[0].summary.startswith("not enabled; ")
+    state.write_text("{", encoding="utf-8")
+    assert _voice_pack_checks(cfg)[0].summary.startswith("enabled; ")

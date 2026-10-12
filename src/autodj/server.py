@@ -1000,7 +1000,7 @@ def _start_stream_station(
         registered_liners=functools.partial(_registered_liners, bridge)
         if bridge.library is not None
         else None,
-        path_decoder=functools.partial(_prepared_liner, bridge)
+        path_decoder=functools.partial(_processed_liner, bridge)
         if bridge.library is not None
         else None,
     )
@@ -1042,7 +1042,7 @@ def _start_server_audio_liners(bridge: PlayerBridge, liner_folder: Path) -> None
         registered_liners=functools.partial(_registered_liners, bridge)
         if bridge.library is not None
         else None,
-        path_decoder=functools.partial(_prepared_liner, bridge)
+        path_decoder=functools.partial(_processed_liner, bridge)
         if bridge.library is not None
         else None,
     )
@@ -1057,7 +1057,7 @@ def _registered_liners(bridge: PlayerBridge) -> list[tuple[str, Path]]:
     ]
 
 
-def _prepared_liner(bridge: PlayerBridge, path: Path) -> Any:
+def _processed_liner(bridge: PlayerBridge, path: Path) -> Any:
     from autodj.stereo import SAMPLE_RATE
 
     entry = bridge.library.entry_for_path(path)
@@ -3037,9 +3037,10 @@ def create_app(
         if record is None:
             raise HTTPException(status_code=404, detail="Recording not in library")
         record["playable"] = True
-        prepared_path = record["prepared_path"]
-        record["prepared"] = bool(
-            prepared_path and await asyncio.to_thread(Path(prepared_path).is_file)
+        from autodj.processing import loudness_matches
+
+        record["loudness_ready"] = await asyncio.to_thread(
+            loudness_matches, record.get("loudness"), Path(path), record["kind"]
         )
         advanced = record["kind"] == "music" and any(
             source["advanced"]
@@ -3474,6 +3475,7 @@ def serve(
                 cfg.index.active_dir, cfg.playback.stereotool_preset, require_existing=False
             ),
             input_trim_db=lambda: cfg.playback.stereotool_input_trim_db,
+            agc_drive_db=lambda: cfg.playback.stereotool_agc_drive_db,
         )
         player.bus.set_master(
             player._continuous_master,

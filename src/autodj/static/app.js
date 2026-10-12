@@ -325,6 +325,7 @@ function clearProtectedSessionData() {
   _linerEls.lnFileList.replaceChildren();
   _linerEls.lnFolderDisplay.textContent = "";
   _linerEls.lnStatus.textContent = "";
+  _linerEls.lnBrowseStatus.textContent = "";
   updateMediaSession({ current_track: null });
   _playOptedIn = false;
   _listenOptedIn = false;
@@ -672,6 +673,15 @@ function applyState(s) {
       message = `The next handoff is prepared. Queue edits apply after ${fmtTrack(s.next_track)}; Play now interrupts.`;
     }
     if (handoffStatus.textContent !== message) handoffStatus.textContent = message;
+  }
+  // Shown under the Stereo Tool preset in Settings; the preset still plays.
+  const presetWarning = document.getElementById("stereo-preset-warning");
+  if (presetWarning) {
+    const warning = (s.playout && s.playout.preset_warning) || "";
+    if (presetWarning.textContent !== warning) {
+      presetWarning.textContent = warning;
+      presetWarning.hidden = !warning;
+    }
   }
 
   // Discovery button — show only when discovery is configured
@@ -2358,6 +2368,7 @@ const _linerEls = {
   lnUploadSubmit:  document.getElementById("ln-upload-submit"),
   lnUploadReplace: document.getElementById("ln-upload-replace"),
   lnStatus:        document.getElementById("ln-status"),
+  lnBrowseStatus:  document.getElementById("ln-browse-status"),
 };
 
 let authenticatedAppStarted = false;

@@ -102,8 +102,14 @@ describe("Stereo Tool preset markup", () => {
     expect(css).toContain(
       'body:not(:has(#pb-replaygain option[value="stereotool"]:checked)) '
       + '[data-show-when="pb-replaygain=stereotool"]');
-    expect(css).toContain(
-      'body:has(#pb-replaygain option[value="off"]:checked) [data-show-when="pb-replaygain!=off"]');
+
+  });
+
+  it("shows the separate intro lift only for ReplayGain", () => {
+    expect(page.getElementById("pb-intro-lift").closest("[data-show-when]").dataset.showWhen)
+      .toBe("pb-replaygain=replaygain");
+    expect(page.getElementById("pb-intro-lift-desc").dataset.showWhen)
+      .toBe("pb-replaygain=replaygain");
   });
 
   it("labels every control and lists Included first", () => {

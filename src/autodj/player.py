@@ -802,10 +802,6 @@ class Player:
         self._bg_analysis_inflight: set[str] = set()
         self._bg_analysis_threads: set[threading.Thread] = set()
         self._bg_analysis_lock = threading.Lock()
-        # Prepared-audio refreshes after a preparation setting changes run
-        # here, off the render thread; keyed by source path.
-        self._prepare_inflight: set[str] = set()
-        self._prepare_lock = threading.Lock()
         # Cues from DJ-software libraries: None until load_library_cues has
         # read them; tracks analysed before then are listed for a late merge.
         self._library_cues: dict[str, list[Cue]] | None = None
@@ -1004,12 +1000,9 @@ class Player:
 
         In DMCA mode it keeps the complement too (see :meth:`_dmca_checked`).
         """
+        chosen: IndexEntry | None
         dmca = self._pick_context() if self._state.dmca_enabled else None
         if self._library is not None:
-            import random
-
-            from autodj.clockwheel import least_recent
-
             entries = [e for e in self.playable_entries() if not e.is_silent]
             if not entries:
                 return None
@@ -1023,12 +1016,11 @@ class Player:
                     return picked.liner
                 self._seed_clock_cursor = picked.next_cursor
                 return self._dmca_checked(picked.entry, context)
-            if dmca is not None:
-                entries = [e for e in entries if dmca.allows(e)] or entries
-            if self._cfg.playback.pick_mode == "least_recent":
-                chosen = least_recent(entries, self._library.last_played())
-            else:
-                chosen = random.choice(entries)  # nosec B311 -- music selection
+            context = dmca or self._pick_context()
+            try:
+                chosen = self._pick_pure_shuffle(None, context)
+            except Exception as exc:
+                chosen = self._fallback_pick(None, context, exc)
         else:
             chosen = self._sim.random_entry()
         if dmca is None or chosen is None:
@@ -2223,19 +2215,18 @@ class Player:
             logger.info("Repeat rules: %d plays from before the restart count", len(records))
         return len(records)
 
-    def _pick_pure_shuffle(self, current: IndexEntry, context: _PickContext) -> IndexEntry:
+    def _pick_pure_shuffle(self, current: IndexEntry | None, context: _PickContext) -> IndexEntry:
         """Random pick from tracks not in *context*'s history, honouring the BPM range.
 
         Silent tracks are never picked.  When every eligible track was
-        played recently, the history is relaxed to *current* and the
-        protected tracks (the one starting and the one playing), so the
-        pick never returns to any of them.
+        played recently, the history is relaxed to *current* and the protected
+        tracks. Startup passes no *current*, so no arbitrary entry is excluded.
         """
         import random as _rnd
 
         from autodj.similarity import SimilarityError
 
-        protected = context.protected | {current.path}
+        protected = context.protected | ({current.path} if current is not None else set())
         excluded = set(context.recent) | protected
 
         def eligible(entry: IndexEntry) -> bool:
@@ -2437,7 +2428,7 @@ class Player:
             return relaxed, mode
 
     def _fallback_pick(
-        self, current: IndexEntry, context: _PickContext, reason: Exception
+        self, current: IndexEntry | None, context: _PickContext, reason: Exception
     ) -> IndexEntry:
         """Pick a random track after the normal pick failed with *reason*.
 
@@ -2445,8 +2436,9 @@ class Player:
         but avoids repeats as far as the library allows: first a track
         outside the recent history, then one that is not protected (see
         :class:`_PickContext`), then anything but *current*, then *current*
-        itself (a one-track library).  Every step is tried first among the
-        tracks inside the hard BPM range, the same rule pure shuffle uses;
+        itself (a one-track library). At startup there is no *current*, so
+        the fallback can use any audible track. Every step is tried first
+        among tracks inside the hard BPM range, the same rule pure shuffle uses;
         only when no track at all is inside the range are the steps tried
         again without it.  Silent tracks are never picked.
 
@@ -2467,11 +2459,12 @@ class Player:
         if bpm_range is not None:
             lo, hi = bpm_range
             in_range = [entry for entry in audible if entry.bpm > 0 and lo <= entry.bpm <= hi]
-        recent = set(context.recent) | {current.path}
+        current_paths = {current.path} if current is not None else set()
+        recent = set(context.recent) | current_paths
         tiers: tuple[AbstractSet[str], ...] = (
             recent,
-            context.protected | {current.path},
-            {current.path},
+            context.protected | current_paths,
+            current_paths,
             set(),
         )
         chosen: IndexEntry | None = None
@@ -2495,7 +2488,7 @@ class Player:
             logger.warning(
                 "Could not pick a track to follow %s (%s: %s); picking one at random "
                 "instead until the normal pick works again.%s",
-                current.display_name,
+                current.display_name if current is not None else "the automatic start",
                 type(reason).__name__,
                 reason,
                 ignored_note,
@@ -2530,41 +2523,22 @@ class Player:
         return (audio * gain).astype(np.float32)
 
     def _load_playout_audio(self, entry: IndexEntry) -> np.ndarray:
-        """Use prepared sources with a master processor, keeping source positions."""
+        """Decode originals on the render worker, preserving source cue positions."""
         if self._cfg.playback.loudness_processing not in {"smooth", "stereotool"}:
             audio = load_stereo(entry.path, SAMPLE_RATE, self._max_render_seconds())
             return self._lift_intro(self._apply_replaygain(audio, entry.path), entry)
-        from autodj.processing import (
-            PREPARED_LINER_GAIN,
-            prepare_source,
-            prepared_source_matches,
-        )
+        from autodj.processing import analyze_loudness, load_processed_audio, loudness_matches
 
         record = self._library.catalog.record_for_path(entry.path) if self._library else None
-        prepared = record.get("prepared_path") if record else None
         kind = record["kind"] if record else "music"
-        quiet_boost_db = self._cfg.playback.quiet_boost_db
-        if prepared and Path(prepared).is_file():
-            if not prepared_source_matches(prepared, kind, quiet_boost_db):
-                # Settings changed: keep playing the existing preparation and
-                # switch to the new one on a later load once it is ready.
-                self._prepare_in_background(entry, kind, quiet_boost_db)
-        else:
-            prepared = str(
-                prepare_source(
-                    Path(entry.path),
-                    self._cfg.index.active_dir / "prepared",
-                    kind=kind,
-                    quiet_boost_db=quiet_boost_db,
-                )
-            )
+        source = Path(entry.path)
+        measurement = record.get("loudness", {}) if record else {}
+        if not loudness_matches(measurement, source, kind):
+            measurement = analyze_loudness(source, kind)
             if record:
-                self._library.catalog.put_entry(entry, kind=kind, prepared_path=prepared)
-        audio = load_stereo(prepared, SAMPLE_RATE, self._max_render_seconds())
-        if record and record["kind"] == "liner":
-            # Keep existing prepared liner caches while reducing their former +4.5 dB lift to +3 dB.
-            return (audio * PREPARED_LINER_GAIN).astype(np.float32)
-        return self._lift_intro(audio, entry)
+                self._library.catalog.set_loudness(source, measurement)
+        # The continuous master handles quiet passages; don't stack an intro-only lift.
+        return load_processed_audio(source, measurement, kind, self._max_render_seconds())
 
     def _lift_intro(self, audio: np.ndarray, entry: IndexEntry) -> np.ndarray:
         mode = self._cfg.playback.loudness_processing or (
@@ -2582,35 +2556,6 @@ class Player:
 
         lift = record.get("intro_lift_db") if record else None
         return apply_intro_lift(audio, SAMPLE_RATE, min(max_db, lift or 0.0))
-
-    def _prepare_in_background(self, entry: IndexEntry, kind: str, quiet_boost_db: float) -> None:
-        """Refresh one prepared source on a worker thread, once per path at a time."""
-        lock = self._prepare_lock
-        with lock:
-            if entry.path in self._prepare_inflight:
-                return
-            self._prepare_inflight.add(entry.path)
-
-        def work() -> None:
-            from autodj.processing import prepare_source
-
-            try:
-                prepared = prepare_source(
-                    Path(entry.path),
-                    self._cfg.index.active_dir / "prepared",
-                    kind=kind,
-                    quiet_boost_db=quiet_boost_db,
-                )
-                library = self._library
-                if library is not None and library.catalog.record_for_path(entry.path):
-                    library.catalog.put_entry(entry, kind=kind, prepared_path=str(prepared))
-            except Exception as exc:
-                logger.warning("Background audio preparation failed for %s: %s", entry.path, exc)
-            finally:
-                with lock:
-                    self._prepare_inflight.discard(entry.path)
-
-        threading.Thread(target=work, name="autodj-prepare", daemon=True).start()
 
     def saved_points(self, entry: IndexEntry) -> dict[str, Any]:
         """Source-file cue times, with no assumed safe talk-over space."""
