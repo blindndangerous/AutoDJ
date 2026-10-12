@@ -802,10 +802,6 @@ class Player:
         self._bg_analysis_inflight: set[str] = set()
         self._bg_analysis_threads: set[threading.Thread] = set()
         self._bg_analysis_lock = threading.Lock()
-        # Prepared-audio refreshes after a preparation setting changes run
-        # here, off the render thread; keyed by source path.
-        self._prepare_inflight: set[str] = set()
-        self._prepare_lock = threading.Lock()
         # Cues from DJ-software libraries: None until load_library_cues has
         # read them; tracks analysed before then are listed for a late merge.
         self._library_cues: dict[str, list[Cue]] | None = None
@@ -1041,34 +1037,91 @@ class Player:
         return collection.entries_snapshot()
 
     def configure_clock(self) -> None:
-        """Load a saved clock without marking any selected music played."""
-        from autodj.clockwheel import ClockSlot, validate_clock, validate_resync_minutes
+        """Load the active clockwheel without marking any selected music played.
 
-        setting = self._library.catalog.get_setting("clock") if self._library else None
-        if not setting or not setting.get("slots"):
-            self._clock = None
-            self._clock_status = "No clock has been imported"
-            self._clock_next_boundary = None
+        A clockwheel that cannot load leaves the clock off, says why in the
+        clock status and the log, and lets the station start anyway.
+        """
+        self._clock = None
+        self._clock_next_boundary = None
+        if self._library is None:
+            self._clock_status = "Clockwheel waiting for library"
             return
-        slots = [ClockSlot.from_json(slot) for slot in setting["slots"]]
-        validate_clock(slots)
-        validate_resync_minutes(setting.get("resync_minutes", [0]))
-        self._clock = dict(setting)
+        setting = self._library.catalog.get_setting("clock", {})
+        if not isinstance(setting, dict):
+            setting = {}
+        if "slots" in setting:
+            from autodj.clockwheel_store import OLD_CLOCK_MESSAGE
+
+            self._clock_status = OLD_CLOCK_MESSAGE
+            logger.error(OLD_CLOCK_MESSAGE)
+            return
+        name = setting.get("name")
+        if not name:
+            self._clock_status = "No clockwheel is active"
+            return
+        try:
+            clock, slots = self._load_clockwheel(name)
+        except (ValueError, OSError) as exc:
+            self._clock_status = f"Clockwheel {name} is off: {exc}"
+            logger.error("%s", self._clock_status)
+            return
+        self._clock = {
+            "name": name,
+            "cursor": setting.get("cursor", 0),
+            "resync_minutes": clock["resync_minutes"],
+        }
         self._clock_slots = slots
         self._clock_status = "Ready"
         from datetime import datetime
 
         from autodj.clockwheel import next_boundary
 
-        boundary = next_boundary(datetime.now().astimezone(), setting.get("resync_minutes", [0]))
+        boundary = next_boundary(datetime.now().astimezone(), clock["resync_minutes"])
         self._clock_next_boundary = boundary.timestamp() if boundary else None
+
+    def _load_clockwheel(self, name: str) -> tuple[dict[str, Any], list[Any]]:
+        """Read clockwheel *name* and turn its steps into playable slots."""
+        from autodj.clockwheel import ClockSlot, validate_clock
+        from autodj.clockwheel_store import ClockwheelStore, source_folder, step_source
+        from autodj.presets import get_preset
+
+        library = self._library
+        if library is None:
+            raise ValueError("the library is not attached")
+        clock = ClockwheelStore(Path(self._cfg.index.active_dir) / "clockwheels").load(name)
+        sources = {source["id"]: source for source in library.catalog.sources()}
+        slots = []
+        for number, step in enumerate(clock["steps"], 1):
+            kind = step["type"]
+            if kind in {"music", "liner"}:
+                root = step_source(step, sources, number)["path"]
+                slots.append(
+                    ClockSlot(
+                        folder=source_folder(root, step["folder"]),
+                        recursive=step["recursive"],
+                        selection=step["selection"],
+                        enforce_rules=step["enforce_rules"],
+                        kind=kind,
+                    )
+                )
+            elif kind == "track":
+                root = step_source(step, sources, number)["path"]
+                slots.append(ClockSlot(kind="track", path=source_folder(root, step["path"])))
+            elif kind == "settings":
+                get_preset(step["preset"], self._cfg.presets)
+                slots.append(ClockSlot(kind="settings", preset=step["preset"]))
+            else:
+                raise ValueError(f"Step {number} has type {kind!r}, which the player cannot play")
+        return clock, validate_clock(slots)
 
     def _clock_pick(self, context: _PickContext, cursor: int | None) -> Any:
         from autodj.clockwheel import ClockPick, pick_slot
 
         if self._clock is None:
-            self._clock_status = "No clock has been imported"
-            return ClockPick(None, None, 0, [self._clock_status])
+            return ClockPick(
+                None, None, 0, [getattr(self, "_clock_status", None) or "No clockwheel is active"]
+            )
         position = self._clock.get("cursor", 0) if cursor is None else cursor
 
         recent = set(context.recent)
@@ -1120,6 +1173,13 @@ class Player:
             )
             picked = pick(False, False, use_dmca=False)
         self._clock_status = "; ".join(picked.skipped) or "Ready"
+        if picked.entry is not None and picked.preset:
+            from autodj.presets import get_preset
+
+            try:
+                self._preset = get_preset(picked.preset, self._cfg.presets)
+            except ValueError as exc:
+                self._clock_status = f"Settings step skipped: {exc}"
         if picked.entry is not None:
             _log_repeat_blocks(context.repeat, picked.entry)
         return picked
@@ -2461,41 +2521,22 @@ class Player:
         return (audio * gain).astype(np.float32)
 
     def _load_playout_audio(self, entry: IndexEntry) -> np.ndarray:
-        """Use prepared sources with a master processor, keeping source positions."""
+        """Decode originals on the render worker, preserving source cue positions."""
         if self._cfg.playback.loudness_processing not in {"smooth", "stereotool"}:
             audio = load_stereo(entry.path, SAMPLE_RATE, self._max_render_seconds())
             return self._lift_intro(self._apply_replaygain(audio, entry.path), entry)
-        from autodj.processing import (
-            PREPARED_LINER_GAIN,
-            prepare_source,
-            prepared_source_matches,
-        )
+        from autodj.processing import analyze_loudness, load_processed_audio, loudness_matches
 
         record = self._library.catalog.record_for_path(entry.path) if self._library else None
-        prepared = record.get("prepared_path") if record else None
         kind = record["kind"] if record else "music"
-        quiet_boost_db = self._cfg.playback.quiet_boost_db
-        if prepared and Path(prepared).is_file():
-            if not prepared_source_matches(prepared, kind, quiet_boost_db):
-                # Settings changed: keep playing the existing preparation and
-                # switch to the new one on a later load once it is ready.
-                self._prepare_in_background(entry, kind, quiet_boost_db)
-        else:
-            prepared = str(
-                prepare_source(
-                    Path(entry.path),
-                    self._cfg.index.active_dir / "prepared",
-                    kind=kind,
-                    quiet_boost_db=quiet_boost_db,
-                )
-            )
+        source = Path(entry.path)
+        measurement = record.get("loudness", {}) if record else {}
+        if not loudness_matches(measurement, source, kind):
+            measurement = analyze_loudness(source, kind)
             if record:
-                self._library.catalog.put_entry(entry, kind=kind, prepared_path=prepared)
-        audio = load_stereo(prepared, SAMPLE_RATE, self._max_render_seconds())
-        if record and record["kind"] == "liner":
-            # Keep existing prepared liner caches while reducing their former +4.5 dB lift to +3 dB.
-            return (audio * PREPARED_LINER_GAIN).astype(np.float32)
-        return self._lift_intro(audio, entry)
+                self._library.catalog.set_loudness(source, measurement)
+        # The continuous master handles quiet passages; don't stack an intro-only lift.
+        return load_processed_audio(source, measurement, kind, self._max_render_seconds())
 
     def _lift_intro(self, audio: np.ndarray, entry: IndexEntry) -> np.ndarray:
         mode = self._cfg.playback.loudness_processing or (
@@ -2513,35 +2554,6 @@ class Player:
 
         lift = record.get("intro_lift_db") if record else None
         return apply_intro_lift(audio, SAMPLE_RATE, min(max_db, lift or 0.0))
-
-    def _prepare_in_background(self, entry: IndexEntry, kind: str, quiet_boost_db: float) -> None:
-        """Refresh one prepared source on a worker thread, once per path at a time."""
-        lock = self._prepare_lock
-        with lock:
-            if entry.path in self._prepare_inflight:
-                return
-            self._prepare_inflight.add(entry.path)
-
-        def work() -> None:
-            from autodj.processing import prepare_source
-
-            try:
-                prepared = prepare_source(
-                    Path(entry.path),
-                    self._cfg.index.active_dir / "prepared",
-                    kind=kind,
-                    quiet_boost_db=quiet_boost_db,
-                )
-                library = self._library
-                if library is not None and library.catalog.record_for_path(entry.path):
-                    library.catalog.put_entry(entry, kind=kind, prepared_path=str(prepared))
-            except Exception as exc:
-                logger.warning("Background audio preparation failed for %s: %s", entry.path, exc)
-            finally:
-                with lock:
-                    self._prepare_inflight.discard(entry.path)
-
-        threading.Thread(target=work, name="autodj-prepare", daemon=True).start()
 
     def saved_points(self, entry: IndexEntry) -> dict[str, Any]:
         """Source-file cue times, with no assumed safe talk-over space."""

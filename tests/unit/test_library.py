@@ -102,17 +102,19 @@ def fake_basic(path: Path, kind: str = "music"):
     }
 
 
-def fake_prepare(
-    path: Path, cache_dir: Path, kind: str = "music", quiet_boost_db: float = 9.0
-) -> Path:
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    result = cache_dir / (
-        f"type-b-v1-music-{quiet_boost_db:g}-{path.stem}.wav"
-        if kind == "music"
-        else f"{kind}-{path.stem}.wav"
-    )
-    result.write_bytes(b"prepared")
-    return result
+def fake_loudness(path: Path, kind: str = "music") -> dict:
+    from autodj.processing import PREPARATION_VERSION, TARGET_LUFS
+
+    stat = path.stat()
+    lufs = TARGET_LUFS[kind] - 2.0
+    return {
+        "version": PREPARATION_VERSION,
+        "kind": kind,
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "lufs": lufs,
+        "gain_db": 2.0,
+    }
 
 
 def test_seeds_missing_legacy_roots_and_does_not_rewrite_index(tmp_path: Path) -> None:
@@ -176,7 +178,7 @@ def test_constructor_closes_catalog_when_legacy_vectors_are_invalid(tmp_path, mo
     assert opened[0]._conn is None
 
 
-def test_scan_imports_recursive_music_and_liners_and_reuses_preparation(manager_factory, tmp_path):
+def test_scan_imports_recursive_music_and_liners_and_reuses_loudness(manager_factory, tmp_path):
     music = tmp_path / "Music"
     nested = music / "nested"
     liner_dir = music / "voice"
@@ -187,16 +189,16 @@ def test_scan_imports_recursive_music_and_liners_and_reuses_preparation(manager_
     liner.write_bytes(b"voice")
     manager = manager_factory(music=music, liners=liner_dir)
     analyze = patch("autodj.library.analyze_basic", side_effect=fake_basic)
-    prepare = patch("autodj.library.prepare_source", side_effect=fake_prepare)
-    with analyze as analyzed, prepare as prepared:
+    loudness = patch("autodj.library.analyze_loudness", side_effect=fake_loudness)
+    with analyze as analyzed, loudness as measured:
         manager.scan()
         assert manager.entry_for_path(song).title == "song"
         assert len(manager.entries_snapshot("liner")) == 1
         assert manager.entry_for_path(liner).title == "liner"
         assert manager.catalog.entry_for_path(liner).title == "liner"
-        assert analyzed.call_count == prepared.call_count == 2
+        assert analyzed.call_count == measured.call_count == 2
         manager.scan()
-        assert analyzed.call_count == prepared.call_count == 2
+        assert analyzed.call_count == measured.call_count == 2
         assert manager.snapshot()["import"]["errors"] == []
 
 
@@ -215,7 +217,7 @@ def test_scan_continues_after_per_file_failure(manager_factory, tmp_path):
 
     with (
         patch("autodj.library.analyze_basic", side_effect=analyze),
-        patch("autodj.library.prepare_source", side_effect=fake_prepare),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
     ):
         manager.scan()
     assert manager.entry_for_path(good) is not None
@@ -236,7 +238,7 @@ def test_folder_scan_counts_only_requested_sources(manager_factory, tmp_path):
     source = manager.catalog.add_source(holiday, recursive=False)
     with (
         patch("autodj.library.analyze_basic", side_effect=fake_basic) as analyzed,
-        patch("autodj.library.prepare_source", side_effect=fake_prepare),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
     ):
         manager.scan({source["id"]})
         assert {item.args[0].name for item in analyzed.call_args_list} == {
@@ -276,7 +278,7 @@ def test_added_folders_queue_once_without_expanding_to_other_sources(
     manager._scan = scoped_scan
     with (
         patch("autodj.library.analyze_basic", side_effect=fake_basic),
-        patch("autodj.library.prepare_source", side_effect=fake_prepare),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
     ):
         assert manager.start_scan({roots[0]})
         try:
@@ -296,7 +298,7 @@ def test_added_folders_queue_once_without_expanding_to_other_sources(
     ]
 
 
-def test_basic_entry_is_playable_while_audio_preparation_runs_and_analysis_can_start(
+def test_basic_entry_is_playable_while_loudness_runs_and_analysis_can_start(
     manager_factory, tmp_path
 ):
     music = tmp_path / "Music"
@@ -308,11 +310,11 @@ def test_basic_entry_is_playable_while_audio_preparation_runs_and_analysis_can_s
     release = threading.Event()
     captured = {}
 
-    def slow_prepare(path, cache_dir, kind="music", quiet_boost_db=9.0):
-        del path, cache_dir, kind, quiet_boost_db
+    def slow_loudness(path, kind="music"):
+        del kind
         entered.set()
         release.wait(timeout=3)
-        return tmp_path / "prepared.wav"
+        return fake_loudness(path)
 
     class Jobs:
         def configure(self, **kwargs):
@@ -324,14 +326,14 @@ def test_basic_entry_is_playable_while_audio_preparation_runs_and_analysis_can_s
 
     with (
         patch("autodj.library.analyze_basic", side_effect=fake_basic),
-        patch("autodj.library.prepare_source", side_effect=slow_prepare),
+        patch("autodj.library.analyze_loudness", side_effect=slow_loudness),
         patch("autodj.jobs.get_manager", return_value=Jobs()),
     ):
         assert manager.start_scan()
         assert entered.wait(timeout=3)
         assert manager.entry_for_path(song) is not None
         assert manager.catalog.points(song)["end"] == 179.0
-        assert manager.snapshot()["import"]["phase"] == "preparing audio"
+        assert manager.snapshot()["import"]["phase"] == "measuring loudness"
         assert len(manager.analysis_pending()) == 1
         assert manager.schedule_analysis()
         release.set()
@@ -350,7 +352,7 @@ def test_invalid_automatic_point_does_not_block_basic_track(manager_factory, tmp
     invalid_points = {"start": 0.0, "intro": 40.0, "outro": None, "segue": None, "end": 20.0}
     with (
         patch("autodj.library.analyze_basic", return_value=(make_entry(song), invalid_points)),
-        patch("autodj.library.prepare_source", side_effect=fake_prepare),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
     ):
         manager.scan()
     assert manager.entry_for_path(song) is not None
@@ -390,7 +392,7 @@ def test_replaced_track_resets_manual_cues_and_derived_cache(
 
     with (
         patch("autodj.library.analyze_basic", side_effect=short_track),
-        patch("autodj.library.prepare_source", side_effect=fake_prepare),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
     ):
         manager.scan()
 
@@ -398,12 +400,13 @@ def test_replaced_track_resets_manual_cues_and_derived_cache(
     assert record["length"] == 100.0
     assert record["points"]["outro"] == 90.0
     assert record["point_sources"]["outro"] == "analysis"
-    assert record["prepared_path"] != os.path.normcase(str(old_prepared))
+    assert record["prepared_path"] is None
+    assert old_prepared.exists()
     assert not manager.catalog.has_vector(song)
     assert not any("song.flac" in error for error in manager.snapshot()["import"]["errors"])
 
 
-def test_confirmed_move_preserves_points_prepared_audio_vector_and_play_history(
+def test_confirmed_move_preserves_points_loudness_vector_and_play_history(
     manager_factory, tmp_path
 ):
     music = tmp_path / "Music"
@@ -417,6 +420,7 @@ def test_confirmed_move_preserves_points_prepared_audio_vector_and_play_history(
     manager.catalog.put_entry(
         original, points={"start": 0, "segue": 150, "end": 170}, prepared_path=str(prepared)
     )
+    manager.catalog.set_loudness(old, fake_loudness(old))
     vector = np.ones(FEATURE_DIM, dtype=np.float32)
     manager.catalog.set_vector(old, vector)
     manager.remember_play(old, 42.0)
@@ -424,14 +428,19 @@ def test_confirmed_move_preserves_points_prepared_audio_vector_and_play_history(
     record_id = manager.catalog.record_for_path(old)["id"]
     new.parent.mkdir()
     old.rename(new)
-    with patch("autodj.library.analyze_basic", side_effect=fake_basic) as analyze:
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic) as analyze,
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness) as measure,
+    ):
         manager.scan()
     record = manager.catalog.record_for_path(new)
     assert record["id"] == record_id
     assert record["points"]["segue"] == 150
     assert record["prepared_path"] == os.path.normcase(str(prepared))
+    assert record["loudness"] == fake_loudness(new)
     assert manager.last_played()[os.path.normcase(str(new))] == 42.0
     assert analyze.call_count == 0
+    measure.assert_not_called()
     np.testing.assert_array_equal(manager.catalog.vectors_snapshot()[1][0], vector)
 
 
@@ -451,7 +460,7 @@ def test_unchanged_liner_with_unset_analysis_segue_is_backfilled(manager_factory
 
     with (
         patch("autodj.library.analyze_basic", side_effect=fake_basic) as analyzed,
-        patch("autodj.library.prepare_source", side_effect=fake_prepare),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
     ):
         manager.scan()
 
@@ -488,7 +497,7 @@ def test_liner_segue_backfill_clamps_to_saved_manual_range(manager_factory, tmp_
 
     with (
         patch("autodj.library.analyze_basic", side_effect=fake_basic) as analyzed,
-        patch("autodj.library.prepare_source", side_effect=fake_prepare),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
     ):
         manager.scan()
 
@@ -521,7 +530,7 @@ def test_unchanged_liner_preserves_manually_cleared_segue(manager_factory, tmp_p
 
     with (
         patch("autodj.library.analyze_basic", side_effect=fake_basic) as analyzed,
-        patch("autodj.library.prepare_source", side_effect=fake_prepare),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
     ):
         manager.scan()
 
@@ -537,7 +546,7 @@ def test_advanced_analysis_obeys_source_choice_and_uses_vector_presence(manager_
     manager = manager_factory(music=music)
     with (
         patch("autodj.library.analyze_basic", side_effect=fake_basic),
-        patch("autodj.library.prepare_source", side_effect=fake_prepare),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
     ):
         manager.scan()
     assert len(manager.analysis_pending()) == 1
@@ -572,7 +581,7 @@ def test_basic_suggestions_include_legacy_intro_outro_without_overwriting_manual
             "autodj.library.analyze_basic",
             return_value=(make_entry(song), {"start": 0, "intro": None, "outro": None, "end": 179}),
         ),
-        patch("autodj.library.prepare_source", side_effect=fake_prepare),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
     ):
         manager.scan()
     assert manager.catalog.points(song)["intro"] == 8.0
@@ -820,50 +829,7 @@ def test_advanced_worker_adds_vector_without_publishing_legacy_index(tmp_path: P
         check.close()
 
 
-def _age(path: Path, seconds: float = 3600.0) -> Path:
-    old = path.stat().st_mtime - seconds
-    os.utime(path, (old, old))
-    return path
-
-
-def test_remove_stale_prepared_only_deletes_unused_autodj_cache_files(tmp_path):
-    from autodj.processing import remove_stale_prepared
-
-    cache = tmp_path / "prepared"
-    cache.mkdir()
-    key = "a" * 64
-
-    def made(name: str, data: bytes = b"wav") -> Path:
-        path = cache / name
-        path.write_bytes(data)
-        return _age(path)
-
-    old_music = made(f"{key}.wav", b"12345")
-    old_boost = made(f"type-b-v1-music-6-{'b' * 64}.wav", b"123")
-    current = made(f"type-b-v1-music-9-{'c' * 64}.wav")
-    in_use = made(f"{'d' * 64}.wav")
-    source_named_like_cache = made(f"{'e' * 64}.wav")
-    user_file = made("song.wav")
-    notes = made("notes.txt")
-    fresh = cache / f"{'f' * 64}.wav"
-    fresh.write_bytes(b"new")
-    nested = cache / "sub"
-    nested.mkdir()
-    deeper = made(f"sub/{'0' * 64}.wav")
-
-    removed, freed = remove_stale_prepared(
-        cache, [in_use, str(source_named_like_cache)], quiet_boost_db=9
-    )
-
-    assert (removed, freed) == (2, 8)
-    assert not old_music.exists()
-    assert not old_boost.exists()
-    for kept in (current, in_use, source_named_like_cache, user_file, notes, fresh, deeper):
-        assert kept.exists()
-    assert remove_stale_prepared(tmp_path / "missing", []) == (0, 0)
-
-
-def test_scan_removes_prepared_audio_left_by_older_settings(manager_factory, tmp_path, caplog):
+def test_scan_preserves_prepared_reference_without_creating_audio(manager_factory, tmp_path):
     music = tmp_path / "Music"
     song = music / "song.flac"
     music.mkdir()
@@ -871,17 +837,15 @@ def test_scan_removes_prepared_audio_left_by_older_settings(manager_factory, tmp
     manager = manager_factory(music=music)
     cache = manager.cfg.index.active_dir / "prepared"
     cache.mkdir(parents=True)
-    stale = cache / f"{'a' * 64}.wav"
-    stale.write_bytes(b"x" * 2_000_000)
-    _age(stale)
+    prepared = cache / "legacy.wav"
+    prepared.write_bytes(b"existing prepared audio")
+    manager.catalog.put_entry(make_entry(song), prepared_path=str(prepared))
     with (
         patch("autodj.library.analyze_basic", side_effect=fake_basic),
-        patch("autodj.library.prepare_source", side_effect=fake_prepare),
-        caplog.at_level("INFO", logger="autodj.library"),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
     ):
         manager.scan()
 
-    assert not stale.exists()
-    assert song.exists()
-    assert manager.catalog.record_for_path(song)["prepared_path"]
-    assert "freeing 2.0 MB" in caplog.text
+    assert manager.catalog.record_for_path(song)["prepared_path"] == os.path.normcase(str(prepared))
+    assert prepared.read_bytes() == b"existing prepared audio"
+    assert list(cache.iterdir()) == [prepared]

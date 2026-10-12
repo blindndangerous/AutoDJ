@@ -754,14 +754,29 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
   read-only. Uploads (up to 2 MB) live in `index/stereo-tool-presets` beside the active index
   folder and survive restarts. Deleting the active upload in Settings switches to Included
   first; a preset file removed by hand is replaced by Included when Stereo Tool next starts. Stereo Tool's
-  command-line integration exposes a preset file, but no individual processor parameters.
+  settings use preset files; AutoDJ applies the drive boost to a temporary copy, leaving your saved preset unchanged.
+  An uploaded preset without a single `Drive` line under `[Pre Compressor]` plays unchanged,
+  without the boost; Settings, Sound shows "Preset ... has no pre-compressor Drive setting;
+  AGC drive not applied" under the preset, and `/api/status` reports it as
+  `playout.preset_warning`.
   `[playback] stereotool_input_trim_db` adjusts the input from -12 to +6 dB before the fixed
-  output limiter. `[playback] quiet_boost_db` (0 to 12) controls offline quiet-section balancing.
+  output limiter. `[playback] stereotool_agc_drive_db` (0 to 12, default 7) raises the selected
+  preset's `[Pre Compressor] Drive` after the tracks are blended; 0 keeps its base value and does
+  not disable AGC. Smooth uses its continuous mix compressor and does not level each song's quiet
+  passages. Music and liners stay as original files: AutoDJ caches loudness measurements in the
+  catalog and applies the measured gain when it decodes a track. Liners also pass through voice
+  compression, and server-mixed playback holds decoded track audio in memory while it is mixed.
+  Earlier versions wrote processed copies to a `prepared` folder inside the active index
+  folder. It is no longer read or written and is safe to delete: its 32-bit float WAVs take
+  about 21 MB per minute of audio, often tens of gigabytes for a large library. After
+  upgrading, a library scan measures loudness in the background; a song played before it is
+  measured is measured as it loads, so that first start takes longer.
   `[playback] intro_lift_max_db` (0 to 6, default 4) caps an extra lift for a quiet opening;
   it fades back to normal by eight seconds. Zero disables it. Analysis caches the source's
   peak-safe opening lift in `library.db`; already cataloged songs get it on their next library scan.
-  Browser playback, server audio and streams use the same cached lift, with decoded server audio
-  checked against its peak again. Off processing leaves the source unchanged.
+  ReplayGain browser, server audio and stream playback use the cached lift, with decoded server
+  audio checked against its peak again. Smooth and Stereo Tool use their continuous processors instead of this intro-only lift.
+  Off leaves the source unchanged.
 - **Page volume and mute** affect only the page's own "Listen here" playback in the browser.
   Each speaker keeps its own volume, set on the speaker or in its own app.
 - **With `--server-audio` as well**, the page's volume and Mute also set the volume and mute of
@@ -1379,7 +1394,8 @@ Actions:
 - Switch the Stereo Tool preset, to Included or an uploaded one. It takes effect when Output
   processing is Stereo Tool, restarts the processor at once and never skips the song playing. A
   preset deleted after the event was saved makes its runs fail in words.
-- Change song picking, for example to the clockwheel imported in Library tools.
+- Change song picking. Besides similar songs, random and least recently played, the choices are
+  the active clockwheel and each saved clockwheel by name; a named one also becomes the active one.
 - Play a voice liner or station ID. This needs server audio or stream mode.
 - Play a cart by page and cart number, with its saved duck, over or replace mode. This needs
   server audio or stream mode.
@@ -1405,6 +1421,67 @@ out, so the server still starts. Events are not replayed after downtime: a one-t
 time passed while AutoDJ was stopped is disabled and recorded as missed, and an event more than
 two minutes late (the computer slept) is recorded as missed instead of running. The schedule
 holds at most 100 events.
+
+## Clockwheels
+
+A clockwheel is a repeating order of steps that song picking follows when **Pick mode** (Settings, Picking) is set
+to **Clockwheel**. Keep as many as you like in the **Library tools** tab, **Clockwheels**: create,
+duplicate, rename, delete, activate one, or turn the clockwheel off. Only the active one plays.
+Profiles remember the active clockwheel, and a schedule event can switch to one by name.
+
+Step types:
+
+- **Music** or **Voice liner** from a registered library folder, or from a folder inside it such
+  as `Rock/Live` (the library folder must then add subfolders). Each step can include subfolders,
+  choose the least recently played or a random track, and follow or ignore the repeat rules. A
+  liner step plays over the start of the next music step; two liner steps cannot be next to each
+  other.
+- **A specific track**, by its path inside a registered music folder. It follows the repeat rules;
+  when they hold it back, the clockwheel moves on to the next step.
+- **Switch preset**: the next song is picked and mixed with that preset.
+
+The editor lists the steps in order, each read as "Step 3 of 12, music from Rock", with Edit,
+Move up, Move down, Duplicate and Delete buttons. Alt+Up and Alt+Down move the step whose button
+has focus, and focus moves with it. Nothing is saved until you press **Save clockwheel**; opening
+another clockwheel with unsaved changes asks first. **Restart at these minutes past each hour**
+sends the clockwheel back to step 1 at the song change nearest each minute.
+
+Each clockwheel is one JSON file in `clockwheels/` in the active index folder, named after the
+clockwheel and included in `autodj backup`. Names allow letters, digits, spaces, dashes and
+underscores, up to 64. The format is versioned and checked strictly; an unknown field, step type
+or version stops that clockwheel from loading, says why in the editor and the server log, and
+leaves the clock off while the station keeps playing:
+
+```json
+{
+  "version": 1,
+  "name": "Morning",
+  "steps": [
+    {"type": "music", "source": "<library folder ID>", "folder": "Rock",
+     "recursive": false, "selection": "least_recent", "enforce_rules": true},
+    {"type": "liner", "source": "<library folder ID>", "folder": "",
+     "recursive": false, "selection": "random", "enforce_rules": false},
+    {"type": "track", "source": "<library folder ID>", "path": "Album/Song.flac"},
+    {"type": "settings", "preset": "winddown"}
+  ],
+  "resync_minutes": [0]
+}
+```
+
+`source` is the ID of a registered library folder, so the file never holds a full path; removing
+that folder from the library stops the clockwheel until you edit its steps. Later features (carts,
+time checks, ad breaks) add their own step types through `autodj.clockwheel_store.register_step_type`.
+
+**Import .PAL** turns a SAM Broadcaster `.PAL` file into a new clockwheel, once; the `.PAL` file
+is not used after that. Only `Dir[...]` and `SubDir[...]` lines with `QueueBottom` are read, and
+nothing in the file runs. Each folder must be a registered music or voice liner folder, or a folder
+inside one that adds subfolders; the innermost registered folder is used. A folder above every
+registered folder (for example `SubDir['C:\Station']` when only `C:\Station\Rock` is registered)
+is refused: register the parent folder, or edit that step after the import.
+
+Upgrading from the single clockwheel: the clock saved by earlier versions is not read. The
+Clockwheels section and the server log say so. Import the `.PAL` file again under a name, then
+press **Activate**.
 
 ## Spoken time checks
 

@@ -10,6 +10,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Several named clockwheels (Library tools, Clockwheels): create, duplicate, rename, delete,
+  activate one or turn the clockwheel off. Each is a versioned JSON file in `clockwheels/` in the
+  active index folder, included in backups. A step editor lists steps as "Step 3 of 12, music from
+  Rock" with Edit, Move up, Move down, Duplicate and Delete buttons, and Alt+Up and Alt+Down move
+  the focused step. Steps can play music or liners from a library folder or a folder inside it, a
+  specific track, or switch preset. Profiles remember the active clockwheel, and the schedule's
+  "Change song picking" action can switch to a clockwheel by name. Import .PAL turns a SAM
+  Broadcaster `.PAL` file into a new clockwheel, and now accepts folders inside a registered
+  library folder.
+
 - A cart wall (the Carts tab) with four pages of twelve numbered carts for station IDs, jingles
   and sound effects. Assign a voice liner or an uploaded clip, then play it with its button or,
   with focus on the wall, keys 1 to 9, 0, minus and equals; Page Up and Page Down change the
@@ -48,7 +58,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   A scheduled event can switch the Stereo Tool preset (Settings, Schedule).
 - Stereo Tool input trim is adjustable from -12 to +6 dB. Quiet song openings can receive up
   to 4 dB of peak-safe lift by default, returning to normal within eight seconds. The limit
-  is adjustable from 0 to 6 dB, with 0 disabling the lift.
+  is adjustable from 0 to 6 dB, with 0 disabling the lift. This intro-only lift applies to
+  ReplayGain playback; Smooth and Stereo Tool use their continuous output processors.
 
 - Broadcast recording saves the encoded stream, including liners and processing, as dated MP3
   files. Settings, Stream and scheduled actions control recording and splits. A free-space floor
@@ -184,14 +195,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A blank liner Overlap start uses its Segue, or End if Segue is blank. Set it to 0 to let
   the next song's intro overlap the liner when timing allows. Overlap start cannot be later
   than the liner's segue.
-- Smooth and Stereo Tool offer "Boost quiet sections", defaulting to 9 dB. It applies throughout
-  music tracks. After a change, each track is prepared again in the background when it is
-  next loaded, or during a scan; it keeps its previous preparation until the new one is ready.
-  The next library scan deletes prepared audio files that nothing uses any more.
+- Smooth and Stereo Tool play original music and liner files. AutoDJ saves small loudness
+  measurements in the library and processes audio in memory, instead of writing a second
+  audio library. The old `prepared` folder inside the active index folder is no longer
+  used and is safe to delete. It holds uncompressed 32-bit float WAV copies, about 21 MB
+  per minute of audio (roughly 85 MB for a four-minute song), so on a large library it
+  can free tens of gigabytes. After upgrading, a library scan measures loudness in the
+  background; a song played before it is measured is measured as it loads, so its first
+  start takes longer. Later plays reuse the saved measurement.
+- Stereo Tool's **AGC drive boost** replaces **Boost quiet sections**. It starts at 7 dB
+  and adjusts how strongly the processor lifts quiet passages throughout a song.
+  Smooth keeps its built-in compressor and limiter, without the old quiet-section lift.
+  Neither mode adds the separate intro-only lift. An uploaded preset without a single
+  `Drive` line under `[Pre Compressor]` plays unchanged, and Settings and the status API
+  say the AGC drive was not applied.
 - Stereo Tool output gains 5.8 dB through a final peak limiter, with a -1.8 dB ceiling,
-  5 ms attack and 100 ms release. Its existing compression preset is unchanged.
+  5 ms attack and 100 ms release. The included preset remains the starting point for the AGC drive boost.
 - Liners play 1.5 dB lower with Smooth or Stereo Tool processing, reducing their intended
-  lift above music from 4.5 dB to 3 dB. Existing prepared audio and cue points are retained.
+  lift above music from 4.5 dB to 3 dB. Cue points are retained.
 - Radio listening uses `/stream.mp3`, with `/stream.m3u` for players that need a playlist.
   Anyone who can reach the server can listen without a key; browser controls still require
   pairing when LAN authentication is enabled.
@@ -210,6 +231,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Removed
 
+- **Breaking:** the single clockwheel saved by earlier versions is no longer read. Library tools
+  and the server log say so. Import the `.PAL` file again in Library tools, Clockwheels, under a
+  name, then press Activate.
 - **Breaking:** the old keyed stream addresses, `/stream/<secret>.mp3` and `/stream/<secret>.m3u`,
   and the `POST /api/stream/rotate` route that made a new one. A speaker or player saved with a
   keyed address must be set to `/stream.mp3` or `/stream.m3u` instead. AutoDJ no longer creates

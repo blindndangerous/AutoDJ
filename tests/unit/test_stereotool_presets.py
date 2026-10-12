@@ -1,5 +1,6 @@
 """Uploaded Stereo Tool presets stay inside the station's data folder."""
 
+import threading
 import time
 from pathlib import Path
 
@@ -102,7 +103,7 @@ def test_master_starts_with_the_selected_preset_and_falls_back_when_it_is_missin
     tmp_path: Path,
 ) -> None:
     chosen = tmp_path / "Night.sts"
-    chosen.write_text("[A]\nB=1\n")
+    chosen.write_text("[Pre Compressor]\nDrive=4\n")
     selected = [chosen]
     commands: list[list[str]] = []
 
@@ -111,7 +112,10 @@ def test_master_starts_with_the_selected_preset_and_falls_back_when_it_is_missin
         raise OSError("stop here")
 
     master = ContinuousMaster(
-        popen_factory=factory, mode=lambda: "stereotool", preset=lambda: selected[0]
+        popen_factory=factory,
+        mode=lambda: "stereotool",
+        preset=lambda: selected[0],
+        agc_drive_db=lambda: 0,
     )
     try:
         deadline = time.monotonic() + 2
@@ -124,5 +128,155 @@ def test_master_starts_with_the_selected_preset_and_falls_back_when_it_is_missin
         while len(commands) < 2 and time.monotonic() < deadline:
             time.sleep(0.01)
         assert commands[-1][commands[-1].index("-s") + 1] == str(INCLUDED_PATH)
+    finally:
+        master.close()
+
+
+def _pre_compressor_drive(data: bytes) -> float:
+    text = data.decode("latin-1")
+    section = text.split("[Pre Compressor]", 1)[1].split("\n[", 1)[0]
+    return float(
+        next(
+            line.split("=", 1)[1]
+            for line in section.splitlines()
+            if line.lower().startswith("drive=")
+        )
+    )
+
+
+def test_agc_drive_updates_only_selected_preset_copy_and_cleans_temporary_files(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "Night.sts"
+    original = b"[Pre Compressor]\r\nDrive=4\r\n[Other]\r\nDrive=1\r\n"
+    source.write_bytes(original)
+    drive = [7.0]
+    master = ContinuousMaster(preset=lambda: source, agc_drive_db=lambda: drive[0])
+    try:
+        boosted = master._runtime_stereotool_preset(master._stereotool_signature())
+        assert _pre_compressor_drive(boosted.read_bytes()) == pytest.approx(4 * 10 ** (7 / 20))
+        assert source.read_bytes() == original
+        drive[0] = 0.0
+        assert master._runtime_stereotool_preset(master._stereotool_signature()) == source
+        assert source.read_bytes() == original
+    finally:
+        temp_path = Path(master._preset_temp.name)
+        master.close()
+    assert not temp_path.exists()
+
+
+def test_custom_preset_without_drive_plays_unmodified_and_reports_it(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    invalid = tmp_path / "Bad.sts"
+    original = b"[Pre Compressor]\nGain=4\n"
+    invalid.write_bytes(original)
+    good = tmp_path / "Good.sts"
+    good.write_text("[Pre Compressor]\nDrive=4\n")
+    selected = [invalid]
+    master = ContinuousMaster(preset=lambda: selected[0], agc_drive_db=lambda: 7.0)
+    message = "Preset Bad.sts has no pre-compressor Drive setting; AGC drive not applied"
+    try:
+        with caplog.at_level("WARNING", logger="autodj.mastering"):
+            for _ in range(3):  # a processor restart must not log it again
+                chosen = master._runtime_stereotool_preset(master._stereotool_signature())
+                assert chosen == invalid
+        assert invalid.read_bytes() == original
+        assert master.preset_warning == message
+        assert [r.getMessage() for r in caplog.records if message in r.getMessage()] == [
+            f"{message} ([Pre Compressor] must contain one Drive value)"
+        ]
+        selected[0] = good
+        master._runtime_stereotool_preset(master._stereotool_signature())
+        assert master.preset_warning is None
+    finally:
+        master.close()
+
+
+def test_status_reports_a_preset_that_cannot_take_the_agc_drive(tmp_path: Path) -> None:
+    source = tmp_path / "Bad.sts"
+    source.write_text("[Stereo Tool]\nVersion=1105\n")
+    commands: list[list[str]] = []
+
+    def factory(command, **_kwargs):
+        commands.append(command)
+        raise OSError("stop here")
+
+    master = ContinuousMaster(
+        popen_factory=factory,
+        mode=lambda: "stereotool",
+        preset=lambda: source,
+        agc_drive_db=lambda: 7.0,
+    )
+    try:
+        deadline = time.monotonic() + 2
+        while not commands and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert commands[0][commands[0].index("-s") + 1] == str(source)
+        assert master.preset_warning == (
+            "Preset Bad.sts has no pre-compressor Drive setting; AGC drive not applied"
+        )
+    finally:
+        master.close()
+
+
+def test_agc_preset_io_runs_on_master_lifecycle_thread(tmp_path: Path) -> None:
+    source = tmp_path / "Night.sts"
+    source.write_text("[Pre Compressor]\nDrive=4\n")
+    caller = threading.get_ident()
+    started: list[int] = []
+
+    def factory(command, **_kwargs):
+        started.append(threading.get_ident())
+        raise OSError("test stop")
+
+    mode = ["off"]
+    master = ContinuousMaster(
+        popen_factory=factory,
+        mode=lambda: mode[0],
+        preset=lambda: source,
+        agc_drive_db=lambda: 7,
+    )
+    try:
+        mode[0] = "stereotool"
+        master.process(np.zeros((BLOCK_FRAMES, 2), dtype=np.float32))
+        deadline = time.monotonic() + 2
+        while not started and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert started and started[0] != caller
+    finally:
+        master.close()
+
+
+def test_runtime_preset_failure_keeps_master_worker_in_fallback(
+    monkeypatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "Night.sts"
+    source.write_text("[Pre Compressor]\nDrive=4\n")
+    mode = ["off"]
+    master = ContinuousMaster(mode=lambda: mode[0], preset=lambda: source)
+
+    def fail(_signature):
+        raise OSError("temp directory unavailable")
+
+    monkeypatch.setattr(master, "_runtime_stereotool_preset", fail)
+    try:
+        mode[0] = "stereotool"
+        master.process(np.zeros((BLOCK_FRAMES, 2), dtype=np.float32))
+        deadline = time.monotonic() + 2
+        while master.error is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert master.error and "temp directory unavailable" in master.error
+        assert master._worker.is_alive()
+    finally:
+        master.close()
+
+
+def test_zero_drive_does_not_require_a_pre_compressor_section(tmp_path: Path) -> None:
+    source = tmp_path / "custom.sts"
+    source.write_bytes(b"[Stereo Tool]\nVersion=1105\n")
+    master = ContinuousMaster(preset=lambda: source, agc_drive_db=lambda: 0)
+    try:
+        assert master._runtime_stereotool_preset(master._stereotool_signature()) == source
     finally:
         master.close()

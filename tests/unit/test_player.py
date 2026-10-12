@@ -7,7 +7,6 @@ Audio crossfade math is tested with real numpy arrays.
 import os
 import subprocess
 import sys
-import threading
 from collections import deque
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -2814,62 +2813,13 @@ def test_play_now_without_a_bus_only_moves_the_cursor() -> None:
     assert player._state.next_track is x
 
 
-def test_settings_change_prepares_in_background_and_keeps_existing_audio(tmp_path) -> None:
+def test_loudness_measurement_failure_reaches_render_error_handler() -> None:
     player = Player(_make_cfg_mock(), _make_sim_index(2))
     player._cfg.playback.loudness_processing = "smooth"
-    player._cfg.playback.quiet_boost_db = 6.0
-    player._cfg.index.active_dir = tmp_path
-    entry = player._sim.entries[0]
-    old = tmp_path / f"type-b-v1-music-9-{'a' * 64}.wav"
-    old.write_bytes(b"wav")
-    new = tmp_path / "prepared" / f"type-b-v1-music-6-{'b' * 64}.wav"
-    library = MagicMock()
-    library.catalog.record_for_path.return_value = {"prepared_path": str(old), "kind": "music"}
-    player._library = library
-    started, release, done = threading.Event(), threading.Event(), threading.Event()
-
-    def slow_prepare(source, cache_dir, kind="music", quiet_boost_db=9.0):
-        started.set()
-        assert release.wait(5)
-        return new
-
-    def finished(*args, **kwargs):
-        done.set()
-
-    library.catalog.put_entry.side_effect = finished
-    audio = np.full((10, 2), 0.25, dtype=np.float32)
-    with (
-        patch("autodj.processing.prepare_source", side_effect=slow_prepare) as prepare,
-        patch("autodj.player.load_stereo", return_value=audio) as load,
-    ):
-        loaded = player._load_playout_audio(entry)
-        # Rendering returned the existing preparation while the new one is still running.
-        assert started.wait(5)
-        assert not release.is_set()
-        assert load.call_args.args[0] == str(old)
-        np.testing.assert_array_equal(loaded, audio)
-        player._load_playout_audio(entry)  # in flight: no second preparation
-        release.set()
-        assert done.wait(5)
-    assert prepare.call_count == 1
-    assert prepare.call_args.kwargs["quiet_boost_db"] == 6.0
-    library.catalog.put_entry.assert_called_once_with(entry, kind="music", prepared_path=str(new))
-    for _ in range(100):
-        if not player._prepare_inflight:
-            break
-        threading.Event().wait(0.01)
-    assert player._prepare_inflight == set()
-
-
-def test_background_preparation_failure_is_logged(tmp_path, caplog) -> None:
-    player = Player(_make_cfg_mock(), _make_sim_index(2))
-    player._cfg.index.active_dir = tmp_path
     player._library = None
     entry = player._sim.entries[0]
-    with patch("autodj.processing.prepare_source", side_effect=OSError("disk full")):
-        player._prepare_in_background(entry, "music", 6.0)
-        for _ in range(200):
-            if not player._prepare_inflight:
-                break
-            threading.Event().wait(0.01)
-    assert "Background audio preparation failed" in caplog.text
+    with (
+        patch("autodj.processing.analyze_loudness", side_effect=OSError("unreadable source")),
+        pytest.raises(OSError, match="unreadable source"),
+    ):
+        player._load_playout_audio(entry)

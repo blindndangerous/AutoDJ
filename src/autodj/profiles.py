@@ -99,6 +99,7 @@ class ProfileSnapshot:
     fade_in_seconds: float | None = None
     pure_shuffle: bool | None = None
     pick_mode: str | None = None
+    clockwheel: str | None = None
     loudness_processing: str | None = None
     anchor_to_seed: bool | None = None
     liners_enabled: bool | None = None

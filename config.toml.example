@@ -192,12 +192,13 @@ retention_days = 0      # 0 keeps files forever
 free_space_mb = 100     # pause below this free-space floor
 
 [playback]
-# Maximum gain for quiet sections with Smooth or Stereo Tool, in dB (0 to 12).
-quiet_boost_db = 9.0
-# Extra lift for a quiet opening, returning to normal within 8 seconds (0 to 6; 0 disables).
+# ReplayGain-only opening lift, returning to normal within 8 seconds (0 to 6; 0 disables).
 intro_lift_max_db = 4.0
 # Stereo Tool input gain before its output limiter, from -12 to +6 dB.
 stereotool_input_trim_db = 0.0
+# Stereo Tool Pre Compressor drive above the selected preset's base (0 to 12 dB).
+# 0 keeps the preset's base drive; it does not turn AGC off.
+stereotool_agc_drive_db = 7.0
 # "included" or a .sts filename uploaded in Settings > Sound.
 stereotool_preset = "included"
 # Optional Stereo Tool command-line executable. Select a preset under

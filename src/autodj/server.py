@@ -81,7 +81,17 @@ from autodj._bridge import (
 )
 
 # PlayerBridge lives in autodj._bridge; it is re-exported here.
-from autodj.clockwheel import ClockSlot, parse_pal, validate_clock, validate_resync_minutes
+from autodj.clockwheel import parse_pal
+from autodj.clockwheel_store import (
+    OLD_CLOCK_MESSAGE,
+    ClockwheelStore,
+    from_pal,
+    source_folder,
+    step_source,
+    step_types,
+    validate_clockwheel,
+    validate_name,
+)
 from autodj.icy import METAINT
 from autodj.index_manifest import IndexConsistencyError, read_manifest
 from autodj.lan import PAIRING_ON_REQUEST_HINT, format_lan_banner, lan_urls, running_in_container
@@ -674,35 +684,36 @@ class SongPointsBody(BaseModel):
 
 
 class ClockBody(BaseModel):
-    """Validated repeating clock configuration."""
+    """A native clockwheel from the editor; clockwheel_store validates the rest."""
 
     model_config = ConfigDict(extra="forbid")
-    name: str = PydanticField(default="Clock", min_length=1, max_length=120)
-    slots: list[dict[str, Any]] = PydanticField(max_length=256)
-    resync_minutes: list[Any] = PydanticField(default_factory=lambda: [0], max_length=60)
-
-    @model_validator(mode="after")
-    def validate_name(self) -> ClockBody:
-        if not self.name.strip():
-            raise ValueError("clock name must not be empty")
-        return self
+    version: int
+    name: str = PydanticField(max_length=64)
+    steps: list[Any] = PydanticField(max_length=256)
+    resync_minutes: list[Any] = PydanticField(max_length=60)
 
 
 class PalImportBody(BaseModel):
     """PAL text is parsed as a small declarative subset, never executed."""
 
     model_config = ConfigDict(extra="forbid")
-    text: str
-    name: str = PydanticField(default="Clock", min_length=1, max_length=120)
-    resync_minutes: list[Any] | None = PydanticField(default=None, max_length=60)
+    text: str = PydanticField(max_length=256 * 1024)
+    name: str = PydanticField(max_length=64)
+    resync_minutes: list[Any] = PydanticField(max_length=60)
 
-    @model_validator(mode="after")
-    def validate_import(self) -> PalImportBody:
-        if len(self.text.encode("utf-8")) > 256 * 1024:
-            raise ValueError("PAL text must be 256 KB or smaller")
-        if not self.name.strip():
-            raise ValueError("clock name must not be empty")
-        return self
+
+class ClockNameBody(BaseModel):
+    """The clockwheel to make active, or null for none."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str | None
+
+
+class NewClockNameBody(BaseModel):
+    """The name for a copied or renamed clockwheel."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str = PydanticField(max_length=64)
 
 
 class PairBody(BaseModel):
@@ -989,7 +1000,7 @@ def _start_stream_station(
         registered_liners=functools.partial(_registered_liners, bridge)
         if bridge.library is not None
         else None,
-        path_decoder=functools.partial(_prepared_liner, bridge)
+        path_decoder=functools.partial(_processed_liner, bridge)
         if bridge.library is not None
         else None,
     )
@@ -1031,7 +1042,7 @@ def _start_server_audio_liners(bridge: PlayerBridge, liner_folder: Path) -> None
         registered_liners=functools.partial(_registered_liners, bridge)
         if bridge.library is not None
         else None,
-        path_decoder=functools.partial(_prepared_liner, bridge)
+        path_decoder=functools.partial(_processed_liner, bridge)
         if bridge.library is not None
         else None,
     )
@@ -1046,7 +1057,7 @@ def _registered_liners(bridge: PlayerBridge) -> list[tuple[str, Path]]:
     ]
 
 
-def _prepared_liner(bridge: PlayerBridge, path: Path) -> Any:
+def _processed_liner(bridge: PlayerBridge, path: Path) -> Any:
     from autodj.stereo import SAMPLE_RATE
 
     entry = bridge.library.entry_for_path(path)
@@ -2115,6 +2126,8 @@ def create_app(
         # The cart page shown now is part of the profile.
         values["cart_page"] = cart_store.page(cart_store.wall.active_page).name
         snap = ProfileSnapshot(**values)
+        # The active clockwheel goes with the picking settings.
+        snap.clockwheel = _active_clock(bridge.library) if bridge.library is not None else None
         with _profile_http_errors():
             target = await asyncio.to_thread(_profile_store().save, snap)
         return {"saved": snap.name, "path": str(target)}
@@ -2149,12 +2162,25 @@ def create_app(
                     status_code=400,
                     detail=f"Profile {name} uses preset {snap.preset!r}, which does not exist",
                 ) from exc
+        if snap.clockwheel is not None:
+            try:
+                _clock_store().load(snap.clockwheel)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         applied: list[str] = []
         # Playback flags: every snapshot field not applied on its own below.
         kw: dict = {}
         for fld in fields(ProfileSnapshot):
-            if fld.name in {"name", "preset", "bpm_lo", "bpm_hi", "harmonic_mode", "cart_page"}:
+            if fld.name in {
+                "name",
+                "preset",
+                "bpm_lo",
+                "bpm_hi",
+                "harmonic_mode",
+                "cart_page",
+                "clockwheel",
+            }:
                 continue
             v = getattr(snap, fld.name)
             if v is not None:
@@ -2188,6 +2214,9 @@ def create_app(
                     detail=f"Profile {name} uses cart page {snap.cart_page!r}, which does not exist",
                 )
         bridge.set_playback_settings(playback)
+        if snap.clockwheel is not None:
+            await _select_clock(_catalog_library(), snap.clockwheel)
+            applied.append("clockwheel")
         # BPM range
         if bpm.lo is not None and bpm.hi is not None:
             bridge.set_bpm_range(bpm.lo, bpm.hi)
@@ -2822,99 +2851,109 @@ def create_app(
         library.start_scan()
         return library.snapshot()
 
-    def _clock_slot_covered(library: Any, slot: ClockSlot) -> bool:
-        target = os.path.normcase(os.path.abspath(os.path.expanduser(slot.folder)))
-        for source in library.catalog.sources(slot.kind):
-            root = os.path.normcase(os.path.abspath(os.path.expanduser(source["path"])))
-            try:
-                common = os.path.commonpath((root, target))
-            except ValueError:
-                continue
-            if slot.recursive and common == target:
-                return True
-            if common != root:
-                continue
-            relative = os.path.relpath(target, root)
-            if relative == os.curdir or source["recursive"]:
-                return True
-        return False
+    def _clock_store() -> ClockwheelStore:
+        return ClockwheelStore(Path(bridge.player._cfg.index.active_dir) / "clockwheels")
 
-    def _validate_clock_config(
-        library: Any, name: str, slot_json: list[dict], minutes: Any
-    ) -> dict:
-        if len(slot_json) > 256:
-            raise ValueError("clock may contain at most 256 slots")
-        slots = validate_clock([ClockSlot.from_json(item) for item in slot_json])
-        for slot in slots:
-            if not _clock_slot_covered(library, slot):
-                raise ValueError(
-                    f"{slot.kind} folder is not covered by a registered source: {slot.folder}"
-                )
-        return {
-            "name": name.strip(),
-            "slots": [slot.to_json() for slot in slots],
-            "resync_minutes": validate_resync_minutes(minutes),
-        }
+    def _clock_setting(library: Any) -> dict:
+        setting = library.catalog.get_setting("clock", {})
+        return setting if isinstance(setting, dict) else {}
+
+    def _active_clock(library: Any) -> str | None:
+        setting = _clock_setting(library)
+        name = setting.get("name")
+        # Old single-clock data has a name too, but no file behind it.
+        return name if isinstance(name, str) and "slots" not in setting else None
+
+    def _preset_names() -> list[str]:
+        from autodj.presets import BUILTIN_PRESETS
+
+        return sorted(set(BUILTIN_PRESETS) | set(bridge.player._cfg.presets or {}))
+
+    def _validate_native_clock(library: Any, value: Any) -> dict:
+        """Validate *value*, then check its folders, tracks and presets exist."""
+        clock = validate_clockwheel(value)
+        sources = {source["id"]: source for source in library.catalog.sources()}
+        for number, step in enumerate(clock["steps"], 1):
+            kind = step["type"]
+            if kind in {"music", "liner"}:
+                source = step_source(step, sources, number)
+                if step["folder"] and not source["recursive"]:
+                    raise ValueError(
+                        f"Step {number}: {source['path']} is registered without subfolders, so "
+                        f"its subfolder {step['folder']} is never scanned. Turn on Add "
+                        "subfolders for it under Music folders and Voice liner folders"
+                    )
+            elif kind == "track":
+                source = step_source(step, sources, number)
+                target = source_folder(source["path"], step["path"])
+                if library.entry_for_path(target) is None:
+                    raise ValueError(
+                        f"Step {number}: {step['path']} is not a track in {source['path']}"
+                    )
+            elif kind == "settings" and step["preset"] not in _preset_names():
+                raise ValueError(f"Step {number}: there is no preset named {step['preset']}")
+        return clock
 
     def _clock_snapshot(library: Any) -> dict:
-        config = library.catalog.get_setting(
-            "clock",
-            {
-                "name": "Clock",
-                "slots": [],
-                "resync_minutes": [0],
-                "cursor": 0,
-            },
-        )
-        slots = [ClockSlot.from_json(item) for item in config.get("slots", [])]
-        pools = {
-            "music": library.catalog.entries_snapshot("music"),
-            "liner": library.catalog.entries_snapshot("liner"),
-        }
-        rendered_slots = []
-        for slot in slots:
-            count = sum(1 for entry in pools[slot.kind] if _clock_path_matches(slot, entry.path))
-            rendered_slots.append({**slot.to_json(), "ready_count": count})
-        result = {
-            **config,
-            "slots": rendered_slots,
-            "cursor": (getattr(bridge.player, "_clock", None) or config).get("cursor", 0),
+        setting = _clock_setting(library)
+        return {
+            "names": _clock_store().list_names(),
+            "active": _active_clock(library),
+            "types": step_types(),
+            "sources": [
+                {"id": s["id"], "kind": s["kind"], "path": s["path"], "recursive": s["recursive"]}
+                for s in library.catalog.sources()
+            ],
+            "presets": _preset_names(),
+            "cursor": (getattr(bridge.player, "_clock", None) or {}).get("cursor", 0),
             "last_status": getattr(bridge.player, "_clock_status", None),
+            "notice": OLD_CLOCK_MESSAGE if "slots" in setting else None,
         }
-        return result
 
-    def _clock_path_matches(slot: ClockSlot, path: str) -> bool:
-        root = os.path.normcase(os.path.normpath(os.path.abspath(os.path.expanduser(slot.folder))))
-        value = os.path.normcase(os.path.normpath(os.path.abspath(os.path.expanduser(path))))
-        try:
-            if os.path.commonpath((root, value)) != root:
-                return False
-        except ValueError:
-            return False
-        relative = os.path.relpath(value, root)
-        return relative != os.curdir and (slot.recursive or os.sep not in relative)
-
-    async def _save_clock(library: Any, config: dict) -> dict:
-        old = library.catalog.get_setting("clock", {})
-        config["cursor"] = old.get("cursor", 0) if isinstance(old, dict) else 0
-        library.catalog.set_setting("clock", config)
+    async def _select_clock(library: Any, name: str | None, cursor: int | None = None) -> dict:
+        """Make *name* active.  Reselecting the active one keeps its place."""
+        if name is not None:
+            _clock_store().load(name)
+        setting = _clock_setting(library)
+        if cursor is None:
+            kept = setting.get("cursor")
+            same = name is not None and setting.get("name") == name and type(kept) is int
+            cursor = kept if same else 0
+        library.catalog.set_setting("clock", {"name": name, "cursor": cursor})
         reload_clock = getattr(bridge.player, "configure_clock", None)
         if callable(reload_clock):
             await asyncio.to_thread(reload_clock)
         return _clock_snapshot(library)
+
+    def _existing_clock(name: str) -> dict:
+        try:
+            validate_name(name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            return _clock_store().load(name)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get("/api/library/clock")
     async def api_library_clock() -> dict:
         return _clock_snapshot(_catalog_library())
 
     @app.post("/api/library/clock")
-    async def api_library_save_clock(body: ClockBody) -> dict:
+    async def api_library_create_clock(body: ClockBody) -> dict:
         library = _catalog_library()
         try:
-            config = _validate_clock_config(library, body.name, body.slots, body.resync_minutes)
-        except ValueError as exc:
+            clock = _validate_native_clock(library, body.model_dump())
+            return _clock_store().save(clock, overwrite=False)
+        except (ValueError, OSError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return await _save_clock(library, config)
+
+    @app.post("/api/library/clock/active")
+    async def api_library_select_clock(body: ClockNameBody) -> dict:
+        try:
+            return await _select_clock(_catalog_library(), body.name)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/library/clock/import")
     async def api_library_import_clock(body: PalImportBody) -> dict:
@@ -2923,21 +2962,70 @@ def create_app(
             slots = parse_pal(
                 body.text, [source["path"] for source in library.catalog.sources("liner")]
             )
-            if len(slots) > 256:
-                raise ValueError("clock may contain at most 256 slots")
-            previous = library.catalog.get_setting("clock", {})
-            minutes = body.resync_minutes
-            if minutes is None:
-                minutes = previous.get("resync_minutes", [0]) if isinstance(previous, dict) else [0]
-            config = _validate_clock_config(
-                library,
-                body.name,
-                [slot.to_json() for slot in slots],
-                minutes,
-            )
-        except ValueError as exc:
+            clock = from_pal(body.name, slots, library.catalog.sources(), body.resync_minutes)
+            clock = _validate_native_clock(library, clock)
+            return _clock_store().save(clock, overwrite=False)
+        except (ValueError, OSError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return await _save_clock(library, config)
+
+    @app.get("/api/library/clock/{name}")
+    async def api_library_get_clock(name: str) -> dict:
+        return _existing_clock(name)
+
+    @app.put("/api/library/clock/{name}")
+    async def api_library_update_clock(name: str, body: ClockBody) -> dict:
+        library = _catalog_library()
+        _existing_clock(name)
+        if body.name != name:
+            raise HTTPException(status_code=400, detail="Use Rename to change the name")
+        try:
+            clock = _clock_store().save(_validate_native_clock(library, body.model_dump()))
+            if _active_clock(library) == name:
+                await asyncio.to_thread(bridge.player.configure_clock)
+            return clock
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/library/clock/{name}/duplicate")
+    async def api_library_duplicate_clock(name: str, body: NewClockNameBody) -> dict:
+        clock = _existing_clock(name)
+        try:
+            return _clock_store().save({**clock, "name": body.name}, overwrite=False)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/library/clock/{name}/rename")
+    async def api_library_rename_clock(name: str, body: NewClockNameBody) -> dict:
+        library = _catalog_library()
+        clock = _existing_clock(name)
+        store = _clock_store()
+        try:
+            renamed = validate_clockwheel({**clock, "name": body.name})
+            if body.name.casefold() == name.casefold():
+                # Only the letter case changes: the same file on Windows.
+                store.delete(name)
+                store.save(renamed)
+            else:
+                store.save(renamed, overwrite=False)
+                store.delete(name)
+            if _active_clock(library) == name:
+                cursor = _clock_setting(library).get("cursor")
+                await _select_clock(library, body.name, cursor if type(cursor) is int else 0)
+            return renamed
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.delete("/api/library/clock/{name}")
+    async def api_library_delete_clock(name: str) -> dict:
+        library = _catalog_library()
+        _existing_clock(name)
+        try:
+            _clock_store().delete(name)
+            if _active_clock(library) == name:
+                return await _select_clock(library, None)
+            return _clock_snapshot(library)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/library/points")
     async def api_library_points(path: str) -> dict:
@@ -2949,9 +3037,10 @@ def create_app(
         if record is None:
             raise HTTPException(status_code=404, detail="Recording not in library")
         record["playable"] = True
-        prepared_path = record["prepared_path"]
-        record["prepared"] = bool(
-            prepared_path and await asyncio.to_thread(Path(prepared_path).is_file)
+        from autodj.processing import loudness_matches
+
+        record["loudness_ready"] = await asyncio.to_thread(
+            loudness_matches, record.get("loudness"), Path(path), record["kind"]
         )
         advanced = record["kind"] == "music" and any(
             source["advanced"]
@@ -3224,6 +3313,8 @@ def create_app(
         apply_profile=api_profile_apply,
         profile_names=lambda: _profile_store().list_names(),
         liner_names=_liner_names,
+        clock_names=lambda: _clock_store().list_names(),
+        select_clock=lambda name: _select_clock(_catalog_library(), name),
         publish=_publish_schedule,
     )
     station_schedule.register(cart_action)
@@ -3384,6 +3475,7 @@ def serve(
                 cfg.index.active_dir, cfg.playback.stereotool_preset, require_existing=False
             ),
             input_trim_db=lambda: cfg.playback.stereotool_input_trim_db,
+            agc_drive_db=lambda: cfg.playback.stereotool_agc_drive_db,
         )
         player.bus.set_master(
             player._continuous_master,

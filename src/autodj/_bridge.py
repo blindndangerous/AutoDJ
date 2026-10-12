@@ -903,7 +903,7 @@ class PlayerBridge:
                 ),
                 "energy": round(entry.energy, 3) if entry.energy else 0.0,
                 "intro_lift_db": min(self.player._cfg.playback.intro_lift_max_db, lift or 0.0)
-                if intro_mode != "off"
+                if intro_mode == "replaygain"
                 else 0.0,
                 "intro_start_s": round(intro_start, 3) if intro_start is not None else None,
                 "intro_end_s": round(intro_end, 2) if intro_end is not None else None,
@@ -983,6 +983,10 @@ class PlayerBridge:
                 or ("replaygain" if self.player._cfg.replaygain.enabled else "off"),
                 "error": master.error
                 if master is not None and processing in {"smooth", "stereotool"}
+                else None,
+                # The chosen Stereo Tool preset plays without the AGC drive edit.
+                "preset_warning": master.preset_warning
+                if master is not None and processing == "stereotool"
                 else None,
                 "latency_seconds": master.latency_seconds
                 if master is not None and processing in {"smooth", "stereotool"}
@@ -1443,7 +1447,7 @@ class PlayerBridge:
                 "crossfade_bass_cutoff_hz": float(pb.crossfade_bass_cutoff_hz),
                 "pick_top_k": int(pb.pick_top_k),
                 "pick_temperature": float(pb.pick_temperature),
-                "quiet_boost_db": float(pb.quiet_boost_db),
+                "stereotool_agc_drive_db": float(pb.stereotool_agc_drive_db),
                 "intro_lift_max_db": float(pb.intro_lift_max_db),
                 "stereotool_input_trim_db": float(pb.stereotool_input_trim_db),
                 "stereotool_preset": pb.stereotool_preset,
