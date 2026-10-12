@@ -2972,9 +2972,11 @@ def create_app(
             "notice": OLD_CLOCK_MESSAGE if "slots" in setting else None,
         }
 
-    async def _select_clock(library: Any, name: str | None, cursor: int | None = None) -> dict:
+    async def _select_clock(
+        library: Any, name: str | None, cursor: int | None = None, *, renamed: bool = False
+    ) -> dict:
         """Make *name* active.  Reselecting the active one keeps its place."""
-        if name is not None:
+        if name is not None and not renamed:
             clock = _clock_store().load(name)
             sources = {source["id"]: source for source in library.catalog.sources()}
             for number, step in enumerate(clock["steps"], 1):
@@ -3079,7 +3081,10 @@ def create_app(
                 store.delete(name)
             if _active_clock(library) == name:
                 cursor = _clock_setting(library).get("cursor")
-                await _select_clock(library, body.name, cursor if type(cursor) is int else 0)
+                # Renaming the active clock does not change its conditions.
+                await _select_clock(
+                    library, body.name, cursor if type(cursor) is int else 0, renamed=True
+                )
             return renamed
         except (ValueError, OSError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

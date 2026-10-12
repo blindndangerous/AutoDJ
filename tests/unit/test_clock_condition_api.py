@@ -11,7 +11,7 @@ from fastapi import HTTPException
 from autodj.catalog import LibraryCatalog
 from autodj.clockwheel_store import ClockwheelStore, validate_clockwheel
 from autodj.player import Player
-from autodj.server import ClockNameBody
+from autodj.server import ClockNameBody, NewClockNameBody
 from tests.unit.test_clock_config_api import add_sources, app_for, body, call
 from tests.unit.test_clockwheel_store import _player, clock
 
@@ -131,3 +131,25 @@ def test_beets_conditions_require_available_fields_on_save_and_activation(tmp_pa
             json.loads((tmp_path / "clockwheels" / "Morning.json").read_text())["steps"]
             == saved["steps"]
         )
+
+
+def test_renaming_active_clock_keeps_it_selected_when_beets_is_unavailable(tmp_path):
+    with LibraryCatalog(tmp_path / "library.sqlite") as catalog:
+        _bridge, routes = app_for(catalog, tmp_path)
+        step = {
+            "type": "music",
+            "conditions": [{"field": "beets", "name": "mood", "operator": "is", "value": "happy"}],
+        }
+        ClockwheelStore(tmp_path / "clockwheels").save(clock([step]))
+        catalog.set_setting("clock", {"name": "Morning", "cursor": 0})
+        result = call(
+            routes,
+            "POST",
+            "/api/library/clock/{name}/rename",
+            "Morning",
+            NewClockNameBody(name="Daytime"),
+        )
+        assert result["name"] == "Daytime"
+        assert catalog.get_setting("clock")["name"] == "Daytime"
+        assert (tmp_path / "clockwheels" / "Daytime.json").exists()
+        assert not (tmp_path / "clockwheels" / "Morning.json").exists()
