@@ -1407,8 +1407,8 @@ class LibraryCatalog:
         for a new recording and analyses it again.  A key or BPM set here is
         remembered in ``user_tags`` so a later analysis keeps it; clearing
         it hands it back to the analysis.  ``remember_manual=False`` is for
-        imported embedded tags: only fields supplied here lose their manual
-        override, while omitted fields and their overrides stay untouched.
+        imported embedded tags: manual BPM/key overrides stay untouched, and
+        unchanged tag values do not cause a database write.
 
         Args:
             path: The recording, already rewritten on disk.
@@ -1435,15 +1435,25 @@ class LibraryCatalog:
             try:
                 db.execute("BEGIN IMMEDIATE")
                 row = db.execute(
-                    "SELECT id,size,fingerprint,embedded_at,loudness,user_tags FROM catalog_entries "
-                    "WHERE path=?",
+                    "SELECT id,size,fingerprint,embedded_at,loudness,user_tags,"
+                    "title,artist,album,genre,year,bpm,key,mode FROM catalog_entries WHERE path=?",
                     (normalized,),
                 ).fetchone()
                 if row is None:
                     db.rollback()
                     return False
-                values: dict[str, Any] = {**fields, "size": size, "fingerprint": fingerprint}
                 manual_tags = set(_user_tags(row["user_tags"], row["fingerprint"]))
+                if not remember_manual:
+                    protected = manual_tags | ({"mode"} if "key" in manual_tags else set())
+                    fields = {
+                        name: value
+                        for name, value in fields.items()
+                        if name not in protected and value != row[name]
+                    }
+                    if not fields:
+                        db.rollback()
+                        return True
+                values: dict[str, Any] = {**fields, "size": size, "fingerprint": fingerprint}
                 for name in _USER_TAGS:
                     if name in fields:
                         # A key is 0 to 11, -1 when cleared; a BPM 0 when cleared.

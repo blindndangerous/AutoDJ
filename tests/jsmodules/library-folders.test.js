@@ -22,7 +22,7 @@ function mount() {
     <section id="panel-library" hidden>
       <input id="source-folder-path"><select id="source-folder-kind"><option value="music">Music</option><option value="liner">Liner</option></select>
       <input id="source-folder-recursive" type="checkbox" checked><input id="source-folder-advanced" type="checkbox" checked>
-      <input id="source-folder-override-tags" type="checkbox"><button id="source-folder-add"></button><button id="source-folder-rescan"></button>
+      <input id="source-folder-override-tags" type="checkbox" aria-describedby="source-folder-override-tags-help"><p id="source-folder-override-tags-help">Rescan refreshes populated file tags. Hand-edited BPM and key values and cue points are retained.</p><button id="source-folder-add"></button><button id="source-folder-rescan"></button>
       <p id="source-folders-status"></p><ul id="source-folders"></ul>
     </section>
     <button id="edit-current-points"></button><section id="points-editor" hidden>
@@ -62,11 +62,19 @@ describe("clock folder and points controls", () => {
     rescan.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(JSON.parse(request.mock.calls[0][1].body)).toEqual({ override_tags: false });
+    await vi.waitFor(() => expect(document.getElementById("source-folders-status").textContent).toBe("Rescan started."));
 
     document.getElementById("source-folder-override-tags").checked = true;
     rescan.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(JSON.parse(request.mock.calls[1][1].body)).toEqual({ override_tags: true });
+    await vi.waitFor(() => expect(document.getElementById("source-folders-status").textContent).toBe("Rescan started; populated file tags will be refreshed."));
+  });
+
+  it("associates the embedded-tag override with its help in the page markup", () => {
+    const html = readFileSync(join(process.cwd(), "src", "autodj", "static", "index.html"), "utf8");
+    expect(html).toContain('id="source-folder-override-tags" type="checkbox" aria-describedby="source-folder-override-tags-help"');
+    expect(html).toContain('id="source-folder-override-tags-help">Rescan refreshes populated file tags. Hand-edited BPM and key values and cue points are retained.</p>');
   });
 
   it("parses seconds and MM:SS while preserving empty points", () => {

@@ -223,11 +223,15 @@ def test_scan_imports_recursive_music_and_liners_and_reuses_loudness(manager_fac
 
 
 @pytest.mark.parametrize(
-    ("embedded_bpm", "expected_bpm", "expected_tags"),
-    [(0, 125, ["bpm", "key"]), (130, 130, ["key"])],
+    ("embedded_bpm", "manual_bpm", "expected_bpm", "expected_tags"),
+    [
+        (0, True, 124.5, ["bpm", "key"]),
+        (124, True, 124.5, ["bpm", "key"]),
+        (130, False, 130, ["key"]),
+    ],
 )
 def test_scan_can_override_existing_tags_without_replacing_analysis(
-    manager_factory, tmp_path, embedded_bpm, expected_bpm, expected_tags
+    manager_factory, tmp_path, embedded_bpm, manual_bpm, expected_bpm, expected_tags
 ):
     from autodj.audio_meta import FileTags
 
@@ -240,7 +244,7 @@ def test_scan_can_override_existing_tags_without_replacing_analysis(
         make_entry(song, title="Old title", energy=0.42),
         points={"start": 0, "end": 180, "intro": 9},
     )
-    manager.catalog.retag(song, {"bpm": 125, "key": 4})
+    manager.catalog.retag(song, {"key": 4, **({"bpm": 124.5} if manual_bpm else {})})
     manager.refresh()
 
     with (
