@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import os
 import sqlite3
+import struct
 from pathlib import Path
 
 import mutagen
@@ -171,7 +172,7 @@ def test_a_failed_write_keeps_the_original(tmp_path: Path, monkeypatch) -> None:
     def full(*_args):
         raise OSError(errno.ENOSPC, "No space left on device")
 
-    monkeypatch.setattr(tag_edit, "_apply_vorbis", full)
+    monkeypatch.setattr(tag_edit, "_apply", full)
     with pytest.raises(TagError, match="disk is full"):
         write_tags(path, validate_tags({"title": "Changed"}))
     assert path.read_bytes() == before
@@ -212,7 +213,7 @@ def test_a_mutagen_failure_keeps_the_original(tmp_path: Path, monkeypatch) -> No
 def test_a_copy_that_reads_back_wrong_is_never_used(tmp_path: Path, monkeypatch) -> None:
     path = make_audio(tmp_path, ".ogg")
     before = path.read_bytes()
-    monkeypatch.setattr(tag_edit, "_first_text", lambda *_args: "something else")
+    monkeypatch.setattr(tag_edit, "_read", lambda *_args: "something else")
     with pytest.raises(TagError, match="did not read back"):
         write_tags(path, validate_tags({"title": "Changed"}))
     assert path.read_bytes() == before
@@ -401,7 +402,7 @@ def test_catalog_retag_keeps_vector_points_and_loudness(tmp_path: Path) -> None:
         assert record["embedded_at"] == song.stat().st_mtime
         assert catalog.has_vector(song)
         other = tmp_path / "other.flac"
-        other.touch()
+        other.write_bytes(b"not in the catalog")
         assert not catalog.retag(other, {"title": "x"})
         with pytest.raises(ValueError, match="only tag fields"):
             catalog.retag(song, {"points": "{}"})
@@ -421,3 +422,248 @@ def test_the_file_keeps_its_name_and_a_link_stays_a_link(tmp_path: Path) -> None
     write_tags(link, validate_tags({"title": "Through the link"}))
     assert link.is_symlink()
     assert read_file_tags(song).title == "Through the link"
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: durability, verification, containment and analysis
+# ---------------------------------------------------------------------------
+
+
+def test_the_copy_is_flushed_before_the_rename_and_the_folder_after(tmp_path, monkeypatch):
+    path = make_audio(tmp_path, ".flac")
+    order = []
+    real_replace = os.replace
+
+    def replace(source, target):
+        order.append(("replace", ""))
+        real_replace(source, target)
+
+    monkeypatch.setattr(tag_edit, "_flush", lambda p: order.append(("flush", Path(p).name)))
+    monkeypatch.setattr(tag_edit.os, "replace", replace)
+    monkeypatch.setattr(
+        tag_edit, "fsync_directory", lambda p: order.append(("folder", Path(p).name))
+    )
+    write_tags(path, validate_tags({"title": "Durable"}))
+    assert order == [
+        ("flush", tag_edit.temp_path(path).name),
+        ("replace", ""),
+        ("folder", tmp_path.name),
+    ]
+
+
+@pytest.mark.parametrize("version", [3, 4])
+def test_an_id3_tag_keeps_its_version(tmp_path: Path, version: int) -> None:
+    from mutagen.id3 import ID3, TIT2
+
+    path = make_audio(tmp_path, ".mp3")
+    audio = mutagen.File(str(path))
+    audio.add_tags()
+    audio.tags.add(TIT2(encoding=3, text=["Old"]))
+    audio.save(v2_version=version)
+
+    write_tags(path, validate_tags({"year": "1987", "title": "New"}))
+
+    tags = ID3(str(path), translate=False)
+    assert tags.version[1] == version
+    # 2.3 has no TDRC: the year is TYER there.
+    assert ("TYER" in tags) == (version == 3)
+    assert ("TDRC" in tags) == (version == 4)
+    assert read_file_tags(path).year == 1987
+
+
+def test_every_changed_field_is_read_back(tmp_path: Path, monkeypatch) -> None:
+    path = make_audio(tmp_path, ".flac")
+    before = path.read_bytes()
+    real_set = tag_edit._set
+
+    def wrong_artist(tags, family, key, text):
+        real_set(tags, family, key, "Someone else" if key == "artist" else text)
+
+    monkeypatch.setattr(tag_edit, "_set", wrong_artist)
+    with pytest.raises(TagError, match="did not read back"):
+        write_tags(path, validate_tags({"title": "Fine", "artist": "Band"}))
+    assert path.read_bytes() == before
+
+
+def test_a_crashed_copy_is_replaced_and_removed(tmp_path: Path) -> None:
+    path = make_audio(tmp_path, ".flac")
+    leftover = tag_edit.temp_path(path)
+    assert leftover.name == ".song.flac.autodj-tags.tmp"
+    leftover.write_bytes(b"left by a crash")
+    write_tags(path, validate_tags({"title": "Clean"}))
+    assert not leftover.exists()
+    assert read_file_tags(path).title == "Clean"
+
+
+def test_a_file_outside_the_library_folders_is_refused(tmp_path: Path) -> None:
+    library = tmp_path / "Music"
+    library.mkdir()
+    outside = make_audio(tmp_path, ".flac", stem="outside")
+    before = outside.read_bytes()
+    with pytest.raises(TagError, match="outside the library folders"):
+        write_tags(outside, validate_tags({"title": "x"}), roots=[library])
+    assert outside.read_bytes() == before
+    inside = make_audio(library, ".flac")
+    write_tags(inside, validate_tags({"title": "In"}), roots=[library])
+    assert read_file_tags(inside).title == "In"
+    link = library / "link.flac"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symbolic links are not available here")
+    with pytest.raises(TagError, match="outside the library folders"):
+        write_tags(link, validate_tags({"title": "x"}), roots=[library])
+    assert outside.read_bytes() == before
+
+
+def test_roots_on_another_drive_do_not_match(monkeypatch, tmp_path: Path) -> None:
+    def other_drive(_paths):
+        raise ValueError("paths are on different drives")
+
+    monkeypatch.setattr(tag_edit.os.path, "commonpath", other_drive)
+    assert not tag_edit.inside_roots(tmp_path / "a.flac", [tmp_path])
+
+
+def test_the_guard_stops_the_rename(tmp_path: Path) -> None:
+    import contextlib
+
+    path = make_audio(tmp_path, ".flac")
+    before = path.read_bytes()
+    entered = []
+
+    @contextlib.contextmanager
+    def on_air(target):
+        entered.append(target)
+        raise TagError("This song is playing now.")
+        yield  # pragma: no cover
+
+    with pytest.raises(TagError, match="playing now"):
+        write_tags(path, validate_tags({"title": "x"}), guard=on_air)
+    assert entered == [Path(os.path.realpath(path))]
+    assert path.read_bytes() == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == [path.name]
+
+
+def test_the_owner_is_kept_where_allowed(tmp_path: Path, monkeypatch) -> None:
+    path = make_audio(tmp_path, ".flac")
+    calls = []
+    monkeypatch.setattr(tag_edit.os, "chown", lambda *args: calls.append(args), raising=False)
+    write_tags(path, validate_tags({"title": "Owned"}))
+    assert calls
+    assert calls[0][1:] == (path.stat().st_uid, path.stat().st_gid)
+
+    def refused(*_args):
+        raise PermissionError(errno.EPERM, "not allowed")
+
+    monkeypatch.setattr(tag_edit.os, "chown", refused, raising=False)
+    write_tags(path, validate_tags({"title": "Still saved"}))
+    assert read_file_tags(path).title == "Still saved"
+    monkeypatch.delattr(tag_edit.os, "chown", raising=False)
+    write_tags(path, validate_tags({"title": "No chown"}))
+    assert read_file_tags(path).title == "No chown"
+
+
+@pytest.mark.parametrize("error", [ValueError("bad"), struct.error("short"), IndexError("x")])
+def test_a_damaged_file_is_never_an_error_for_track_info(tmp_path, monkeypatch, error) -> None:
+    path = make_audio(tmp_path, ".flac")
+
+    def broken(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(mutagen, "File", broken)
+    monkeypatch.setattr(tag_edit, "read_reporting_tags", broken)
+    assert not tags_writable(path)
+    assert tag_edit.read_isrc(path) == ""
+
+
+def test_a_truncated_mp3_is_not_writable(tmp_path: Path) -> None:
+    path = tmp_path / "cut.mp3"
+    path.write_bytes(b"ID3\x04\x00\x00\x7f\x7f\x7f\x7f" + b"\xff" * 7)
+    assert not tags_writable(path)
+    assert tag_edit.read_isrc(path) == ""
+
+
+def test_retag_never_stores_an_unknown_identity(tmp_path: Path) -> None:
+    song = make_audio(tmp_path, ".flac")
+    catalog = LibraryCatalog(tmp_path / "library.db")
+    try:
+        catalog.put_entry(make_entry(song))
+        before = catalog.record_for_path(song)
+        song.unlink()
+        with pytest.raises(OSError, match="cannot read"):
+            catalog.retag(song, {"title": "Gone"})
+        assert catalog.record_for_path(song) == before
+    finally:
+        catalog.close()
+
+
+def test_a_hand_set_key_and_bpm_outlive_analysis(tmp_path: Path) -> None:
+    from autodj.indexer import _apply_analysis_metadata
+
+    song = make_audio(tmp_path, ".flac")
+    catalog = LibraryCatalog(tmp_path / "library.db")
+    try:
+        catalog.put_entry(make_entry(song))
+        write_tags(song, validate_tags({"key": "8A", "bpm": "99"}))
+        catalog.retag(song, {"key": 9, "mode": 0, "bpm": 99.0})
+        record = catalog.record_for_path(song)
+        assert record["user_tags"] == ["bpm", "key"]
+        analysis = {"energy": 0.3, "key": 2, "mode": 1, "bpm": 140.0, "tempo_confidence": 0.9}
+        vector = np.ones(FEATURE_DIM, dtype=np.float32)
+        assert catalog.store_analysis(song, record["size"], record["fingerprint"], analysis, vector)
+        stored = catalog.record_for_path(song)
+        assert (stored["key"], stored["mode"], stored["bpm"]) == (9, 0, 99.0)
+        assert stored["energy"] == pytest.approx(0.3)
+        # The CPU analysis job stores a whole entry for the same file.
+        measured = make_entry(song)
+        _apply_analysis_metadata(measured, {**analysis, "bpm": 0.0})
+        measured.key, measured.mode, measured.bpm = 4, 1, 150.0
+        catalog.put_entry(measured)
+        stored = catalog.record_for_path(song)
+        assert (stored["key"], stored["mode"], stored["bpm"]) == (9, 0, 99.0)
+        # Clearing hands the field back to the analysis.
+        catalog.retag(song, {"key": -1, "mode": -1})
+        assert catalog.record_for_path(song)["user_tags"] == ["bpm"]
+        catalog.store_analysis(song, stored["size"], stored["fingerprint"], analysis, vector)
+        assert catalog.record_for_path(song)["key"] == 2
+        # New bytes are a new recording: nothing is kept by hand.
+        with song.open("ab") as handle:
+            handle.write(b"\0" * 4096)
+        catalog.put_entry(make_entry(song))
+        assert catalog.record_for_path(song)["user_tags"] == []
+    finally:
+        catalog.close()
+
+
+def test_analysis_metadata_keeps_named_fields() -> None:
+    from autodj.indexer import IndexEntry, _apply_analysis_metadata
+
+    entry = IndexEntry("x.flac", "t", "a", "b", "", 0.0, 0, 1.0, 0.0, 3, 0, 0.0)
+    analysis = {"energy": 0.5, "key": 7, "mode": 1, "bpm": 128.0, "tempo_confidence": 1.0}
+    _apply_analysis_metadata(entry, analysis, keep={"key", "bpm"})
+    assert (entry.key, entry.mode, entry.bpm, entry.energy) == (3, 0, 0.0, 0.5)
+    _apply_analysis_metadata(entry, analysis)
+    assert (entry.key, entry.mode, entry.bpm) == (7, 1, 128.0)
+
+
+def test_unreadable_user_tags_count_as_none() -> None:
+    from autodj.catalog import _user_tags
+
+    assert _user_tags("not json") == []
+    assert _user_tags('{"key": 1}') == []
+    assert _user_tags('["key", "title"]') == ["key"]
+
+
+def test_the_page_and_the_server_agree_on_keys() -> None:
+    import json
+
+    from autodj.beets import parse_initial_key
+
+    # The same list is run against the page's check in tests/jsmodules/tag-editor.test.js.
+    cases = json.loads(Path("tests/jsmodules/golden/key-cases.json").read_text(encoding="utf-8"))
+    assert [key for key in cases["accepted"] if parse_initial_key(key) is None] == []
+    assert [key for key in cases["refused"] if parse_initial_key(key) is not None] == []
+    for key in cases["refused"]:
+        if key.strip():
+            with pytest.raises(TagError, match="Camelot"):
+                validate_tags({"key": key})
