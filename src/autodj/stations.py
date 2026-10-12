@@ -44,6 +44,7 @@ from autodj.station_log import CURRENT_STATION, DEFAULT_SLUG
 if TYPE_CHECKING:
     from autodj._bridge import PlayerBridge
     from autodj.carts import StationCarts
+    from autodj.clip_dates import LinerGate
     from autodj.config import AutoDJConfig
     from autodj.indexer import IndexEntry
     from autodj.library import LibraryManager
@@ -137,6 +138,11 @@ class StationPaths:
     def time_check_clips(self) -> Path:
         """Recorded time check clips: ``[time_checks] clips_folder`` or the default."""
         return Path(self._cfg.time_checks.clips_folder or self.state_dir / "time_checks")
+
+    @property
+    def liner_dates(self) -> Path:
+        """The voice liners' play dates."""
+        return self.state_dir / "liner_dates.json"
 
     @property
     def listener_bans(self) -> Path:
@@ -316,6 +322,20 @@ def start_server_audio_liners(
     bridge.attach_liner_scheduler(scheduler)
 
 
+def _liner_gate(bridge: PlayerBridge, paths: StationPaths) -> LinerGate:
+    """The station's liner play dates, with the catalog naming registered liners."""
+    from autodj.clip_dates import LinerDates, LinerGate, station_today
+
+    cfg = bridge.player._cfg
+
+    def liner_id(path: str) -> str:
+        library = bridge.library
+        record = library.catalog.record_for_path(path) if library is not None else None
+        return str(record["id"]) if record else Path(path).name
+
+    return LinerGate(LinerDates(paths.liner_dates), lambda: station_today(cfg), liner_id)
+
+
 def _registered_liners(
     bridge: PlayerBridge, owns: Callable[[str], bool] | None = None
 ) -> list[tuple[str, Path]]:
@@ -491,6 +511,11 @@ class StationRuntime:
         self.server_audio = server_audio
         self.first_track = first_track
         self.paths = paths if paths is not None else StationPaths.default(bridge.player._cfg)
+        self.liner_gate = _liner_gate(bridge, self.paths)
+        # The clockwheel's liner steps pass over liners outside their dates.
+        # A plain function, so copying the player's settings never copies the store.
+        gate = self.liner_gate
+        bridge.player.liner_filter = lambda entries: gate.playable(entries)
         self.nowplaying = NowPlaying(bridge, timezone=timezone)
         self.webhooks: WebhookWorker = WebhookWorker(getattr(bridge.player._cfg, "webhooks", ()))
         self.listener_access: ListenerAccess | None = (
@@ -637,6 +662,8 @@ class StationRuntime:
         if bridge.liner_scheduler is not None:
             # The time check after the hour plays where an automatic liner would.
             bridge.liner_scheduler.announcement = self.time_checks.due_audio
+            # Automatic liners pass over the ones outside their play dates.
+            bridge.liner_scheduler.play_dates = self.liner_gate.refusal
         self._broadcast_task = asyncio.create_task(self.broadcast())
         self.webhooks.start()
 

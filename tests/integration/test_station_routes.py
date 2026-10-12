@@ -124,6 +124,7 @@ STATION = frozenset(
         "/liners/upload",
         "/liners/file/{name}",
         "/liners/test",
+        "/liners/dates/{liner_id}",
         "/library/clock",
         "/library/clock/active",
         "/library/clock/import",

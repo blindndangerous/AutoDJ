@@ -1518,6 +1518,65 @@ describe("static accessibility contracts", () => {
     `))).toBe(false);
   });
 
+  it("keeps selected and pressed states readable without colour", () => {
+    const forced = "(forced-colors: active)";
+    // Chromium's forced-colours backplate is Canvas: HighlightText on it
+    // was invisible, so the state rule opts out of forcing.
+    for (const selector of [
+      '#view-nav [role="tab"][aria-selected="true"]',
+      '.subtabs [role="tab"][aria-selected="true"]',
+      'button[aria-pressed="true"]',
+    ]) {
+      expect(lastValue(selector, "forced-color-adjust", forced), selector).toBe("none");
+    }
+    // Pressed differs from not pressed by a tick as well as by colour
+    // (WCAG 1.4.1), and the tick has empty alt text so it is not spoken.
+    expect(lastValue('button[aria-pressed="true"]::before', "content"))
+      .toBe('"\\2713" / ""');
+    // A transition on the background alone left a tab just left with
+    // light text on the fading light fill.
+    expect(lastValue("button", "transition")).toBeUndefined();
+    // The cue ticks differ by hue only, so their text is shown with the key.
+    expect(lastValue(
+      "#cue-legend:not([hidden]) ~ #cue-details.visually-hidden", "clip",
+    )).toBe("auto");
+    // The phone layout's slider track meets 3:1 against the card.
+    expect(lastValue(":root", "--range-track")).toBe("#5a7bb0");
+    expect(contrast("#5a7bb0", "#16213e")).toBeGreaterThanOrEqual(3);
+    // Compatible Camelot wedges carry an accent edge, not just a 1.8:1 fill.
+    expect(lastValue("#camelot-wheel .sector.compat", "stroke")).toBe("var(--accent)");
+  });
+
+  it("keeps targets, fields and text inside the column", () => {
+    // WCAG 2.5.8: every checkbox and radio button is 24 x 24 px.
+    for (const selector of ['input[type="checkbox"]', 'input[type="radio"]']) {
+      expect(lastValue(selector, "width"), selector).toBe("1.5rem");
+      expect(lastValue(selector, "height"), selector).toBe("1.5rem");
+    }
+    // WCAG 1.4.10 / 1.4.4: no field or fieldset outgrows its column, long
+    // paths break, and the column widens with the reader's text size.
+    for (const selector of ["input", "select", "textarea"]) {
+      expect(lastValue(selector, "max-width"), selector).toBe("100%");
+    }
+    expect(lastValue("fieldset", "min-width")).toBe("0");
+    expect(lastValue("body", "overflow-wrap")).toBe("break-word");
+    expect(lastValue("main", "max-width")).toMatch(/rem$/);
+    expect(lastValue(".settings-row", "flex-wrap")).toBe("wrap");
+    // Typeless, time and date fields get the same dark 44 px field as text.
+    for (const selector of ["input:not([type])", 'input[type="time"]', 'input[type="date"]']) {
+      expect(lastValue(selector, "min-height"), selector).toBe("44px");
+    }
+    // The forms that were bare label / field / button siblings use the
+    // source-order form layout.
+    installDocument();
+    for (const id of [
+      "source-folder-path", "library-browse-query", "clock-name",
+      "clock-step-type", "listener-ban-address", "token-secret",
+    ]) {
+      expect(document.getElementById(id).closest(".flow-form"), id).not.toBeNull();
+    }
+  });
+
   it("keeps durable playback evidence separate from scoped announcements", () => {
     expect(libraryLogOwnershipIsScoped()).toBe(true);
     expect(libraryLogOwnershipIsScoped(htmlSource.replace(
@@ -1925,6 +1984,89 @@ describe("static accessibility contracts", () => {
         .reduce((text, el) => text.replace(el.textContent, ""), kbd.textContent);
       expect(spoken, kbd.textContent).toMatch(/[A-Za-z]/);
     }
+  });
+
+  it("gives liner and cart play dates native labelled date inputs and visible error text", () => {
+    installDocument({ html: htmlSource });
+    const fields = [
+      ["ln-not-before", "Not before", "ln-dates-desc"],
+      ["ln-not-after", "Do not play after", "ln-dates-desc"],
+      ["cart-not-before", "Not before", "cart-dates-desc"],
+      ["cart-not-after", "Do not play after", "cart-dates-desc"],
+    ];
+    for (const [id, label, desc] of fields) {
+      const input = document.getElementById(id);
+      expect(input.getAttribute("type")).toBe("date");
+      expect(input.hasAttribute("required")).toBe(false);
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+      expect(input.getAttribute("aria-describedby")).toBe(desc);
+      expect(document.getElementById(desc).textContent).toMatch(/Optional|optional/);
+    }
+    // Errors are words on the page, in an element a field can be described by.
+    for (const id of ["ln-dates-error", "cart-edit-error"]) {
+      const error = document.getElementById(id);
+      expect(error.classList.contains("field-error")).toBe(true);
+      expect(error.hidden).toBe(true);
+    }
+    const form = document.getElementById("ln-dates-form");
+    expect(form.hasAttribute("novalidate")).toBe(true);
+    expect(form.querySelector("fieldset > legend").id).toBe("ln-dates-legend");
+    // Date inputs share the 44 px native control height (2.5.8).
+    const rule = stripCssComments(cssSource).match(/([^{}]*)\{[^{}]*min-height:\s*44px[^{}]*\}/g)
+      .find((block) => block.includes('input[type="text"]') && block.includes("padding"));
+    expect(rule).toContain('input[type="date"]');
+  });
+
+  it("gives category dayparting labelled native day and time controls", () => {
+    installDocument({ html: htmlSource });
+    const group = document.querySelector("#categories-daypart");
+    expect(group.tagName).toBe("FIELDSET");
+    expect(group.querySelector(":scope > legend").textContent.trim()).toBe("When the songs may play");
+    const help = document.getElementById(group.getAttribute("aria-describedby"));
+    expect(help.textContent).toMatch(/^\s*Optional\./);
+    expect(help.hidden).toBe(false);
+    const days = group.querySelector("#categories-days");
+    expect(days.querySelector(":scope > legend").textContent).toBe("Days");
+    const boxes = [...days.querySelectorAll('input[type="checkbox"]')];
+    expect(boxes.map((box) => document.querySelector(`label[for="${box.id}"]`).textContent))
+      .toEqual(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]);
+    for (const [id, label] of [["categories-hours-from", "Allowed from"], ["categories-hours-until", "Allowed until"]]) {
+      const input = document.getElementById(id);
+      expect(input.getAttribute("type")).toBe("time");
+      expect(input.hasAttribute("required")).toBe(false);
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+    }
+    // Time inputs share the 44 px native control height (2.5.8).
+    const rule = stripCssComments(cssSource).match(/([^{}]*)\{[^{}]*min-height:\s*44px[^{}]*\}/g)
+      .find((block) => block.includes('input[type="text"]') && block.includes("padding"));
+    expect(rule).toContain('input[type="time"]');
+  });
+
+  it("gives the schedule date range native labelled date inputs and a target-size rule", () => {
+    installDocument({ html: htmlSource });
+    const group = document.querySelector("#schedule-range");
+    expect(group.tagName).toBe("FIELDSET");
+    expect(group.querySelector("legend").textContent.trim()).toBe("Date range");
+    for (const [id, label] of [["schedule-start-date", "Start date"], ["schedule-end-date", "End date"]]) {
+      const input = document.getElementById(id);
+      expect(input.getAttribute("type")).toBe("date");
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+      // Optional: no required attribute, and the description says so in words.
+      expect(input.hasAttribute("required")).toBe(false);
+      const desc = document.getElementById(input.getAttribute("aria-describedby"));
+      expect(desc.textContent).toMatch(/^\s*Optional\./);
+    }
+    // The form's error text has an ID to be linked from the field it names.
+    expect(document.querySelector("#schedule-form-error").classList.contains("field-error")).toBe(true);
+    // The days description is not linked in the markup: the script links it
+    // only while it is shown, because a hidden description is still read.
+    expect(document.querySelector("#schedule-days").hasAttribute("aria-describedby")).toBe(false);
+    expect(document.querySelector("#schedule-days-desc").dataset.repeat).toBe("interval");
+    // Date and time inputs share the 44 px native control height (2.5.8).
+    const rule = stripCssComments(cssSource).match(/([^{}]*)\{[^{}]*min-height:\s*44px[^{}]*\}/g)
+      .find((block) => block.includes('input[type="text"]') && block.includes("padding"));
+    expect(rule).toContain('input[type="date"]');
+    expect(rule).toContain('input[type="time"]');
   });
 
   it("keeps the transition effect description to one sentence", () => {

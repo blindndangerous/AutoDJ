@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import time
 import wave
 from collections.abc import Callable, Iterator
@@ -405,3 +406,33 @@ def test_browser_playback_fetches_from_the_carts_own_station(tmp_path: Path) -> 
     # The default station's wall keeps the addresses the page always used.
     bridge = PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock())
     assert create_app(bridge).state.stations.default.carts.api_root == "/api"
+
+
+def test_a_cart_outside_its_play_dates_is_skipped_in_words(tmp_path: Path) -> None:
+    rig = _server_rig(tmp_path)
+    with rig.client:
+        rig.upload()
+        assigned = rig.assign(not_after="2000-01-01")
+        assert assigned.status_code == 200, assigned.text
+        assert assigned.json()["slot"]["not_after"] == "2000-01-01"
+        listed = rig.client.get("/api/carts").json()
+        assert listed["today"] > "2000-01-01"
+        assert listed["wall"]["pages"][0]["slots"][2]["not_after"] == "2000-01-01"
+        refused = rig.play()
+        assert refused.status_code == 409
+        assert refused.json()["detail"] == (
+            "Cart 3, Station ID was skipped: it is expired after 1 January 2000"
+        )
+        rig.bridge.liner_scheduler.play_cart.assert_not_called()
+        # A scheduled run fails with the same words.
+        with pytest.raises(Exception, match="expired after 1 January 2000"):
+            rig.client.portal.call(rig.action.handle, {"page": "1", "slot": "3"})
+
+        rig.assign(not_before="2099-12-31")
+        assert "not playable before 31 December 2099" in rig.play().json()["detail"]
+        assert rig.assign(not_before="2026-12-26", not_after="2026-11-27").status_code == 422
+        rig.assign()
+        assert rig.play().status_code == 200
+        saved = json.loads((tmp_path / "carts.json").read_text(encoding="utf-8"))
+        # Without dates the slot is written as before, so an older AutoDJ reads it.
+        assert "not_after" not in saved["pages"][0]["slots"][2]

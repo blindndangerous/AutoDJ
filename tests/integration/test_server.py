@@ -327,6 +327,11 @@ class TestLiners:
                 "editable": True,
                 "length": 3.0,
                 "points": {"start": 0.2, "end": 2.8},
+                "not_before": None,
+                "not_after": None,
+                "dates_text": "",
+                "playable": True,
+                "unplayable_text": "",
             }
         ]
         response = tc.get("/api/liners/file/stable-liner-id")
@@ -411,6 +416,46 @@ class TestLiners:
         body = tc.get("/api/liners").json()
         assert body["count"] == 2
         assert sorted(body["files"]) == ["intro.mp3", "outro.wav"]
+
+    def test_liner_play_dates_are_listed_set_refused_and_forgotten(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        (folder / "promo.mp3").write_bytes(b"\x00")
+        (folder / "id.wav").write_bytes(b"\x00")
+        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(tmp_path / "active")
+        bridge.player._cfg.server.station_timezone = "UTC"
+
+        tc = TestClient(create_app(bridge))
+        body = tc.get("/api/liners").json()
+        assert body["today"] > "2000-01-01"
+        # The page works out the station's day itself at each pick.
+        assert body["timezone"] == "UTC"
+        item = next(entry for entry in body["items"] if entry["id"] == "promo.mp3")
+        assert (item["dates_text"], item["playable"]) == ("", True)
+
+        saved = tc.put("/api/liners/dates/promo.mp3", json={"not_after": "2000-01-01"})
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["dates_text"] == "Plays until 1 January 2000"
+        assert saved.json()["unplayable_text"] == "expired after 1 January 2000"
+        listed = {entry["id"]: entry for entry in tc.get("/api/liners").json()["items"]}
+        assert listed["promo.mp3"]["playable"] is False
+        assert listed["id.wav"]["playable"] is True
+
+        refused = tc.put(
+            "/api/liners/dates/promo.mp3",
+            json={"not_before": "2026-12-26", "not_after": "2026-12-01"},
+        )
+        assert refused.status_code == 400
+        assert refused.json()["field"] == "not_after"
+        assert tc.put("/api/liners/dates/missing.mp3", json={}).status_code == 404
+
+        assert tc.delete("/api/liners/file/promo.mp3").status_code == 200
+        (folder / "promo.mp3").write_bytes(b"\x00")
+        again = {entry["id"]: entry for entry in tc.get("/api/liners").json()["items"]}
+        assert again["promo.mp3"]["playable"] is True
 
     def test_liner_file_endpoint(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient

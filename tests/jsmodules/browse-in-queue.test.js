@@ -16,9 +16,17 @@ function installIndex() {
 const byId = (id) => document.getElementById(id);
 
 // Focusable controls in DOM order, as Tab reaches them.
+// A control inside a hidden part of *root* (a closed form) is not in the order.
+function hiddenWithin(node, root) {
+  for (let element = node; element && element !== root; element = element.parentElement) {
+    if (element.hidden) return true;
+  }
+  return false;
+}
+
 function tabOrder(root) {
   return [...root.querySelectorAll("a[href], button, input, select, textarea, summary, [tabindex]")]
-    .filter((node) => !node.disabled && node.getAttribute("tabindex") !== "-1");
+    .filter((node) => !node.disabled && node.getAttribute("tabindex") !== "-1" && !hiddenWithin(node, root));
 }
 
 afterEach(() => {
