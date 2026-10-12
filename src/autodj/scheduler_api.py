@@ -96,6 +96,9 @@ def _builtin_actions(
             raise ValueError("Scheduled liners need server audio or stream mode")
         if bridge.station is not None and bridge.station.state != "playing":
             raise ValueError("The stream must be playing to air a liner")
+        refusal = await asyncio.to_thread(worker.refusal, params["name"])
+        if refusal is not None:
+            raise ValueError(f"Liner {params['name']} was skipped: it is {refusal}")
         try:
             audio = await asyncio.to_thread(worker.decode, params["name"])
         except LinerDecodeError as exc:
@@ -239,6 +242,8 @@ def _event_view(scheduler: Scheduler, event: ScheduledEvent) -> dict[str, Any]:
         **event.model_dump(mode="json"),
         "repeat_text": describe_repeat(event),
         "action_text": scheduler.summary(event),
+        # No run left: a one-time event that ran, or one past its end date.
+        "ended": scheduler.next_time(event) is None,
     }
 
 

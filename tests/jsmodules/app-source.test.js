@@ -938,7 +938,9 @@ describe("app request behavior", () => {
     };
     expect(pause.getAttribute("aria-label")).toBe("Play or Pause");
     expect(readableText(pause)).toBe("");
-    expect(pause.textContent).toMatch(/ Play\/Pause$/);
+    // The visible words are the name, so speech input can say what it
+    // sees (WCAG 2.5.3, label in name).
+    expect(pause.textContent).toMatch(/ Play or Pause$/);
 
     webSocket.onmessage({ data: JSON.stringify({
       current_track: { path: "a.mp3", title: "A" }, is_paused: true, is_muted: true,

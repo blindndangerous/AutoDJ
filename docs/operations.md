@@ -81,7 +81,8 @@ logs keep plain progress messages.
 In the web page, add, remove and rescan music and voice liner folders in the **Library tools**
 tab. Browse what they hold in **Queue & Search**, after Search: **Browse library** lists all
 music, all voice liners or one registered folder, 100 tracks a page, and **Browse voice liners**
-lists the liner files with Delete and Track info. Track info's Return to Queue & Search button
+lists the liner files with Delete, Track info and Play dates (see
+[Liner and cart play dates](#liner-and-cart-play-dates)). Track info's Return to Queue & Search button
 puts focus back on the button that opened it.
 
 With `[playback] import_external_cues` on (the default), intro and outro markers set in Mixxx,
@@ -1500,6 +1501,7 @@ artists file is `index/<name>/related-artists.toml` and is read only when
   time_checks folder under the active index). Generated TTS cache files are rebuilt when needed.
 - `categories.json`, the rotation categories. Their playlist files are not included; the script
   that writes them can write them again.
+- `liner_dates.json`, the voice liners' play dates.
 - `manifest.json`, which records the AutoDJ version that made the archive and lists its files.
 
 Backups do not include `config.toml` or `config.local.toml`. Copy those yourself
@@ -1632,12 +1634,61 @@ The server keeps the wall in `carts.json` in the active index folder and the upl
 a profile records the name of the cart page shown, and applying the profile shows that page; a
 profile whose page has been renamed is refused.
 
+A cart can also have play dates; see [Liner and cart play dates](#liner-and-cart-play-dates).
+
+## Liner and cart play dates
+
+A voice liner or a cart can have a **Not before** date, a **Do not play after** date, or both,
+such as a promotion that must stop after the event. Both days are included, and the days are
+read in the station time zone (`[server] station_timezone`). Leave both empty to play the clip
+on any day.
+
+- **Voice liners:** in Queue & Search, **Browse voice liners**, press **Play dates** on a liner.
+  Outside its dates, automatic liners (in the browser and on the server), clockwheel liner steps
+  and scheduled liner events skip it, and a scheduled event's run says why in Recent runs. The
+  liner list says the dates in words, such as "Plays until 26 December 2026", and adds "Skipped
+  now: expired after 26 December 2026". **Test** never picks a skipped liner. A cart that plays
+  the liner still plays it; give the cart its own dates.
+- **Carts:** set the dates in the cart editor. Outside them, pressing the cart, its key or a
+  scheduled Play cart event plays nothing and says why, such as "Cart 3, Promo was skipped: it
+  is expired after 26 December 2026", and the cart button ends with "expired" or "not playable
+  yet".
+
+Liner dates are kept in `liner_dates.json` in the active index folder, by the ID Browse voice
+liners uses (the library ID of a registered liner, or the file name of one in the liner folder),
+and are included in backups. Deleting a liner forgets its dates. Cart dates are kept with the
+cart in `carts.json`. A liner or cart without dates is saved as before, so an older AutoDJ still
+reads both files. Time check voice packs have no dates yet: their files are the hours and
+minutes of a voice rather than clips that run out.
+
 ## Scheduler
 
 Open **Settings**, then **Schedule** to add timed station events. An event runs once, every day,
 on weekdays (Monday to Friday), on chosen days, or every N minutes. An every-N-minutes event can
 have an active window, such as 22:00 until 02:00; a window may cross midnight, and both ends run.
-Without a window the count starts again at local midnight.
+Without a window the count starts again at local midnight. An every-N-minutes event can also keep
+to chosen days; leave every day unchecked to run every day.
+
+Any event can have a **Date range**: an optional start date, end date, or both. The event runs
+only on dates from the start date to the end date, both included, in the station time zone, and
+the **Next events** list skips the dates outside it. An active window that crosses midnight
+belongs to the day it starts: a Friday 18:00 until 02:00 window whose end date is that Friday
+runs until 02:00 on Saturday, and a window that started the day before the start date does not
+run. The events list says the range in words, such as "Every day at 00:00, from 27 November to 26
+December 2026", and an event with no run left says "Ended, no runs left". An event whose range
+has no run left cannot be saved enabled; save it disabled, or move its end date. Schedule files
+from earlier versions load unchanged, and an event without a range is saved without the two
+fields.
+
+A seasonal clockwheel, such as a holiday one from 27 November to 26 December, takes two events:
+
+1. **Holiday music**: repeat every day at 00:00, start date 27 November, end date 26 December,
+   action **Change song picking** to the holiday clockwheel. Running every day means a manual
+   change, or a midnight missed while AutoDJ was stopped, is put right the next day.
+2. **Regular music**: once on 27 December at 00:00, action **Change song picking** back to the
+   usual clockwheel.
+
+Use **Run now** on the first event to start the season at once when you add it partway through.
 
 Times use `[server] station_timezone`, an IANA name such as `America/Denver`, or the system time
 zone when that is not set (UTC when the system has no IANA name). The Schedule panel shows the
@@ -1845,6 +1896,29 @@ as for folder steps. When a step's category has no songs or was deleted, the ser
 says so once and the clockwheel moves on to its next step. When no step of a clockwheel with
 category steps has a song to play, the station plays a song from the whole library, as the other
 pick modes do when they cannot pick, rather than going silent; the clockwheel keeps its place.
+
+**Dayparting.** Under **When the songs may play**, a category can allow its songs only on chosen
+days, only between two times (**Allowed from** and **Allowed until**), or both, such as Friday and
+Saturday from 22:00 until 02:00. Leave every day unchecked for every day and both times empty for
+all day. The times are wall-clock times in the station time zone (`[server] station_timezone`);
+the start time is included and the end time is not. A window that crosses midnight belongs to the
+day it starts, so Friday 22:00 until 02:00 still allows the songs at 01:00 on Saturday. On the
+night the clocks go back, a window inside the repeated hour is open for both passes; on the night
+they go forward, one inside the skipped hour does not open.
+
+Outside its days and hours, a category's songs are left out of every pick mode: similar songs,
+discovery, random, least recently played and every clockwheel step, and a clockwheel step for
+that category is skipped with "outside its hours" in the clockwheel status and the server log. A
+song in several categories plays only while every one of them allows it. Relaxing the repeat rules
+or the DMCA limits never brings such a song back. When nothing else at all can play, the station
+plays one anyway rather than going silent, and the server log says so. A song you queue yourself
+plays at any time. The list says each category's days and hours in words and when it is outside
+them now. The hours are checked when a song is picked, which in server audio and stream modes
+can be a few minutes before it plays.
+
+For dayparting single songs, make a category from a beets query on a field you set, such as
+`beet modify daypart=night` and the query `daypart:night`, and give it the hours. Categories that
+have no days or hours are saved as before, so an older AutoDJ still reads the file.
 
 The categories are kept in `categories.json` in the active index folder, written atomically and
 included in `autodj backup`; a damaged file is set aside as `categories.json.bad-<id>` and the

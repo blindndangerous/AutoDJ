@@ -10,6 +10,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Play dates for voice liners and carts: a **Not before** date, a **Do not play after** date, or
+  both, in the station time zone. Outside them, automatic liners, clockwheel liner steps and
+  scheduled liner events skip the liner, and a cart plays nothing and says why. Browse voice
+  liners has a Play dates button on each liner and says each liner's dates in words, with
+  "Skipped now: expired after ..." when it is outside them; cart buttons end with "expired" or
+  "not playable yet". Liner dates are kept in `liner_dates.json` and backed up; cart dates are
+  kept in `carts.json`. Clips without dates are saved as before. The cart editor now shows a
+  refused field's error on the page as well as saying it.
+- Dayparting for rotation categories: a category can allow its songs only on chosen days, only
+  between two times, or both, such as Friday and Saturday from 22:00 until 02:00, in the station
+  time zone. Outside those hours its songs are left out of every pick mode (similar songs,
+  discovery, random, least recently played and clockwheels), and a clockwheel step for it is
+  skipped with the reason in the clockwheel status and the server log. Relaxing the repeat rules
+  or the DMCA limits never brings them back; only when nothing else can play does one play, with a
+  warning. A song you queue yourself plays at any time. A category from a beets query on a field
+  such as `daypart` gives single songs their own hours. The categories list says the hours in
+  words and when a category is outside them now. Categories without hours are saved as before.
+
 - Groundwork for running several stations on one server (#70). Every control address also answers
   under `/api/stations/default/...`, and the play log, last-played times and active clockwheel are
   kept per station in `library.db`. Existing plays belong to the default station, so nothing
@@ -23,6 +41,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `default` is reserved, two stations cannot share a recording folder or a relay target, and
   errors name the station. See "Several stations" in `docs/operations.md`. A configuration
   without these tables behaves exactly as before.
+- Schedule events can have a date range: an optional start date and end date, both included, in
+  the station time zone. Outside the range an event does not run, and Next events skips it. An
+  active window that crosses midnight belongs to the day it starts, so a Friday 18:00 until 02:00
+  window still runs to 02:00 after its end date. Every-few-minutes events can also keep to chosen
+  days. The events list says the range in words ("Every day at 00:00, from 27 November to 26
+  December 2026") and says when an event has no runs left, and Next events gives the year when it
+  is not this one. The date fields are native, labelled date inputs, and a form error is now
+  linked to the field it names. Existing schedule files load unchanged. Operations describes a
+  holiday clockwheel season as an example.
 
 - `autodj worker --idle-exit MINUTES` keeps asking for new songs every half minute and stops only
   once the queue has stayed empty for that long, so a worker started alongside a Rescan does not
@@ -230,6 +257,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The web page works better for people who see it. In Windows High Contrast (forced colours) the
+  selected section tab and Settings subtab now show their names; they were blank. Queue &
+  Search no longer scrolls sideways when a music folder has a long path, and no view scrolls
+  sideways at 320 px wide or with text at 200 %. Library tools, Browse library, the clockwheel
+  editor, the address-ban form and the new worker token lay out each label above its field
+  instead of running them together, and each clockwheel step is one row. Checkboxes and radio
+  buttons are 24 px everywhere. Pressed toggles such as Mute and Record broadcast show a tick as
+  well as the orange fill, cue points are listed in words under their colour key, compatible
+  Camelot keys get an outline, and the phone slider track is visible. The Play or Pause button
+  shows the words it is called by, for speech input. Time, date and address-ban fields match the
+  other fields, list bullets stay inside their cards, a status message no longer stays over the
+  next view after you change tabs, and a control reached with Tab near the window's edge is
+  scrolled fully into view.
 - Voice pack exact-hour files may have a space, `_` or `-` before the `o`, as in `hrs05_o.mp3`,
   so packs named that way say "it's 5 o'clock" on the hour instead of skipping the top of the hour.
 

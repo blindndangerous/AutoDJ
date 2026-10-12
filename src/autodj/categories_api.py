@@ -26,9 +26,11 @@ from autodj.categories import (
     CategoryIndex,
     CategorySpec,
     Resolution,
+    describe_daypart,
     list_playlists,
     new_id,
     parse_spec,
+    station_now,
     summary,
 )
 from autodj.clockwheel_store import ClockwheelStore
@@ -98,6 +100,11 @@ def install_categories(
                 uses.setdefault(category, []).extend(names)
         return uses
 
+    def daypart(category: CategorySpec) -> dict[str, Any]:
+        """The allowed days and hours in words, and whether they allow now."""
+        now = station_now(bridge.player._cfg)
+        return {"daypart_text": describe_daypart(category), "allowed_now": category.allows(now)}
+
     def listing(categories: CategoryIndex) -> dict[str, Any]:
         saved, results = categories.resolutions()
         uses = all_uses()
@@ -105,8 +112,9 @@ def install_categories(
         return {
             "categories": [
                 {
-                    **category.model_dump(),
+                    **category.model_dump(mode="json"),
                     **counts(results[category.id]),
+                    **daypart(category),
                     "used_by": uses.get(category.id, []),
                 }
                 for category in saved
@@ -142,7 +150,7 @@ def install_categories(
                 saved = [category if c.id == category_id else c for c in saved]
             categories.save(saved)
         return {
-            "category": {**category.model_dump(), **counts(result)},
+            "category": {**category.model_dump(mode="json"), **counts(result), **daypart(category)},
             **listing(categories),
         }
 

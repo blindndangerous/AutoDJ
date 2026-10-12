@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -147,3 +148,46 @@ def test_categories_are_checked_saved_used_by_clockwheels_and_deleted(tmp_path):
         assert client.delete(f"/api/categories/{decade_id}").status_code == 404
         # The clockwheel still loads; its step is skipped when the station reaches it.
         assert client.get("/api/library/clock/Throwback").status_code == 200
+
+
+def test_categories_save_and_report_their_days_and_hours(tmp_path, monkeypatch):
+    with LibraryCatalog(tmp_path / "library.sqlite") as catalog:
+        app, client, _songs = _client(tmp_path, catalog)
+        _pair(app, client)
+        friday_night = datetime(2026, 10, 16, 23, 0)
+        monkeypatch.setattr("autodj.categories_api.station_now", lambda _cfg: friday_night)
+        body = {
+            "name": "Late night",
+            "source": "query",
+            "query": "genre:rock",
+            "days": [4, 5],
+            "hours_from": "22:00",
+            "hours_until": "02:00",
+        }
+        created = client.post("/api/categories", json=body)
+        assert created.status_code == 201, created.text
+        saved = created.json()["category"]
+        assert (saved["days"], saved["hours_from"], saved["hours_until"]) == (
+            [4, 5],
+            "22:00:00",
+            "02:00:00",
+        )
+        assert saved["daypart_text"] == "Plays only on Friday and Saturday from 22:00 until 02:00"
+        assert saved["allowed_now"] is True
+        monday_noon = datetime(2026, 10, 12, 12, 0)
+        monkeypatch.setattr("autodj.categories_api.station_now", lambda _cfg: monday_noon)
+        listed = client.get("/api/categories").json()["categories"][0]
+        assert (listed["daypart_text"], listed["allowed_now"]) == (saved["daypart_text"], False)
+
+        refused = client.post(
+            "/api/categories", json={**body, "name": "Other", "hours_until": "22:00"}
+        )
+        assert refused.status_code == 400
+        assert refused.json() == {
+            "detail": "Allowed until must differ from Allowed from",
+            "field": "hours_until",
+        }
+        plain = client.post(
+            "/api/categories", json={"name": "Rock", "source": "query", "query": "genre:rock"}
+        ).json()["category"]
+        assert (plain["daypart_text"], plain["allowed_now"]) == ("", True)

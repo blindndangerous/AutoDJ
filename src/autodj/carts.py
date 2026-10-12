@@ -12,15 +12,21 @@ liner path.  The mode sets the music level while the cart plays: ``duck``
 uses the voice liner duck depth, ``over`` leaves the music alone and
 ``replace`` fades it out.  The song keeps playing silently under a
 replacing cart and fades back in when the cart ends.
+
+A slot may have play dates (:mod:`autodj.clip_dates`): before its "not
+before" day or after its "do not play after" day, in the station time zone,
+the cart is skipped with the reason in words, whether pressed or scheduled.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import uuid
 from collections.abc import Awaitable, Callable
+from datetime import date as Date
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
@@ -30,6 +36,7 @@ from fastapi import File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from autodj.clip_dates import ClipDates, station_today
 from autodj.liner_files import (
     InvalidLinerName,
     LinerConflictError,
@@ -71,6 +78,9 @@ class CartSlot(BaseModel):
     mode: Literal["duck", "over", "replace"] = "duck"
     # Seconds; measured by the server when the slot is saved.
     duration: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    # Play dates, both included; outside them the cart is skipped.
+    not_before: Date | None = None
+    not_after: Date | None = None
 
     @field_validator("name")
     @classmethod
@@ -81,7 +91,12 @@ class CartSlot(BaseModel):
     def _upload_name(self) -> CartSlot:
         if self.source == "upload":
             validate_liner_name(self.clip)
+        self.dates()  # Do not play after must not come before Not before.
         return self
+
+    def dates(self) -> ClipDates:
+        """The slot's play dates."""
+        return ClipDates(not_before=self.not_before, not_after=self.not_after)
 
 
 class CartPage(BaseModel):
@@ -182,8 +197,16 @@ class CartStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         part = self.path.with_name(f".{STATE_FILE}.{uuid.uuid4().hex}.tmp")
         try:
+            document = self.wall.model_dump(mode="json")
+            # A slot without play dates is written without the two keys, so
+            # an older AutoDJ, which refuses unknown keys, still reads the wall.
+            for page in document["pages"]:
+                for assigned in page["slots"]:
+                    for key in ("not_before", "not_after"):
+                        if assigned is not None and assigned[key] is None:
+                            del assigned[key]
             with part.open("x", encoding="utf-8", newline="\n") as handle:
-                handle.write(self.wall.model_dump_json(indent=2) + "\n")
+                handle.write(json.dumps(document, indent=2, ensure_ascii=False) + "\n")
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(part, self.path)
@@ -353,6 +376,10 @@ class StationCarts:
                 decode, or the server mix cannot air it now.
         """
         assigned = self.store.slot(page, slot)
+        dates = assigned.dates()
+        refusal = None if dates.empty else dates.refusal(station_today(self.bridge.player._cfg))
+        if refusal is not None:
+            raise CartError(409, f"Cart {slot}, {assigned.name} was skipped: it is {refusal}")
         scheduler = self.bridge.liner_scheduler
         if scheduler is not None and (reason := self.not_on_air()) is not None:
             raise CartError(409, reason)
@@ -436,7 +463,12 @@ def install_carts(router: StationRouter) -> None:
         """The wall, and the clips a slot can use."""
         carts = station.carts
         choices = await asyncio.to_thread(carts.clip_choices)
-        return {"wall": carts.store.wall.model_dump(), **choices}
+        return {
+            "wall": carts.store.wall.model_dump(mode="json"),
+            # The station's day, so the page can say which carts are outside their dates.
+            "today": station_today(station.cfg).isoformat(),
+            **choices,
+        }
 
     @router.put("/carts/pages/{page}/slots/{slot}")
     async def set_slot(station: StationDep, page: int, slot: int, body: CartSlot) -> dict[str, Any]:
