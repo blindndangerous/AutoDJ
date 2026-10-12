@@ -867,3 +867,28 @@ def test_clock_conditions_are_worked_out_once_per_library_generation(station, mo
     music = (a, b)  # The library published new entries.
     assert player._clock_pick(player._pick_context(), 0).entry is b
     assert len(built) == 2
+
+
+def test_clock_save_during_pick_keeps_original_slots_and_step(station, monkeypatch):
+    import autodj.clockwheel as clockwheel
+
+    player, (a, b, *_), _ = station
+    player._clock = {"cursor": 0}
+    player._clock_slots = [clockwheel.ClockSlot(kind="track", path=a.path)]
+    old_steps = [{"type": "track", "path": a.path}]
+    player._clock_steps = old_steps
+    monkeypatch.setattr(player, "playable_entries", lambda: (a, b))
+    original_pick = clockwheel.pick_slot
+
+    def save_then_pick(*args, **kwargs):
+        player._clock = {"cursor": 0}
+        player._clock_slots = [clockwheel.ClockSlot(kind="track", path=b.path)]
+        player._clock_steps = [{"type": "track", "path": b.path}]
+        return original_pick(*args, **kwargs)
+
+    monkeypatch.setattr(clockwheel, "pick_slot", save_then_pick)
+    picked = player._clock_pick(player._pick_context(), None)
+    assert picked.entry is a
+    assert picked.step_snapshot["step"] == {"type": "track", "path": a.path}
+    old_steps[0]["path"] = b.path
+    assert picked.step_snapshot["step"]["path"] == a.path

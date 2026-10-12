@@ -47,7 +47,7 @@ def _build_why(player: Any, cur: Any) -> list[str]:
     mode = getattr(player, "_last_pick_mode", "similarity")
     reasons = explain_pick(prev, cur, mode=mode)
     step = getattr(player, "_last_clock_step", None)
-    if mode == "clock" and step and reasons:
+    if mode in {"clock", "seed"} and step and reasons:
         reasons[0] = f"Clockwheel step {step['number']}."
     return reasons
 

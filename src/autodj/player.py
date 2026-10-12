@@ -18,7 +18,7 @@ import sqlite3
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from concurrent.futures import Future, wait
 from copy import deepcopy
@@ -1094,9 +1094,9 @@ class Player:
                 if picked.entry is None:
                     return self._empty_category_fallback(None, context)
                 upcoming = self._dmca_checked(picked.entry, context)
-                song_step = self._clock_step_snapshot(picked.step_index)
-                self._seed_clock_step = self._clock_step_snapshot(
-                    picked.liner_step_index if picked.liner is not None else picked.step_index
+                song_step = picked.step_snapshot
+                self._seed_clock_step = (
+                    picked.liner_step_snapshot if picked.liner is not None else picked.step_snapshot
                 )
                 if picked.liner is not None:
                     if picked.liner_requires_following:
@@ -1308,11 +1308,15 @@ class Player:
     def _clock_pick(self, context: _PickContext, cursor: int | None) -> Any:
         from autodj.clockwheel import ClockPick, ConditionPaths, pick_slot
 
-        if self._clock is None:
+        with settings_lock(self):
+            clock = self._clock
+            slots = getattr(self, "_clock_slots", ())
+            steps = getattr(self, "_clock_steps", ())
+        if clock is None:
             return ClockPick(
                 None, None, 0, [getattr(self, "_clock_status", None) or "No clockwheel is active"]
             )
-        position = self._clock.get("cursor", 0) if cursor is None else cursor
+        position = clock.get("cursor", 0) if cursor is None else cursor
 
         recent = set(context.recent)
         entries = self.playable_entries()
@@ -1337,7 +1341,7 @@ class Player:
         condition_errors = {}
         fields = {
             condition["name"]
-            for slot in self._clock_slots
+            for slot in slots
             for condition in slot.conditions
             if condition["field"] == "beets"
         }
@@ -1345,7 +1349,7 @@ class Player:
             known, items, error = self._library.clock_beets.snapshot(fields)
             # The same mapping until Beets is read again, so the cache below holds.
             beets_items = items or None
-            for index, slot in enumerate(self._clock_slots):
+            for index, slot in enumerate(slots):
                 for condition in slot.conditions:
                     if condition["field"] == "beets":
                         if error:
@@ -1362,8 +1366,8 @@ class Player:
         else:
             self._clock_condition_errors = ()
         cache = getattr(self, "_clock_condition_cache", None)
-        if cache is None or not cache.current(self._clock_slots, entries, liners, beets_items):
-            cache = ConditionPaths(self._clock_slots, entries, liners, beets_items)
+        if cache is None or not cache.current(slots, entries, liners, beets_items):
+            cache = ConditionPaths(slots, entries, liners, beets_items)
             self._clock_condition_cache = cache
 
         def pick(
@@ -1389,7 +1393,7 @@ class Player:
             else:
                 pool = tuple(entry for entry in entries if allowed(entry))
             return pick_slot(
-                self._clock_slots,
+                slots,
                 position,
                 pool,
                 last_played,
@@ -1467,11 +1471,14 @@ class Player:
                 self._clock_status = f"Settings step skipped: {exc}"
         if picked.entry is not None:
             _log_repeat_blocks(context.repeat, picked.entry)
-        return picked
+        return replace(
+            picked,
+            step_snapshot=self._clock_step_snapshot(picked.step_index, steps),
+            liner_step_snapshot=self._clock_step_snapshot(picked.liner_step_index, steps),
+        )
 
-    def _clock_step_snapshot(self, index: int | None) -> dict | None:
+    def _clock_step_snapshot(self, index: int | None, steps: Sequence[dict]) -> dict | None:
         """Freeze the selected native step and labels for the Why display."""
-        steps = getattr(self, "_clock_steps", ())
         if index is None or not 0 <= index < len(steps):
             return None
         step = deepcopy(steps[index])
@@ -1802,7 +1809,7 @@ class Player:
                     "",
                 )
             picked = self._clock_pick(context, cursor)
-            self._chosen_clock_step = self._clock_step_snapshot(picked.step_index)
+            self._chosen_clock_step = picked.step_snapshot
             if picked.entry is None:
                 # Only empty or deleted categories left nothing to play.
                 rescue = self._empty_category_fallback(current, context)
@@ -1835,7 +1842,7 @@ class Player:
                         reset = self._clock_pick(context, 0)
                         if reset.entry is not None:
                             picked = reset
-                            self._chosen_clock_step = self._clock_step_snapshot(reset.step_index)
+                            self._chosen_clock_step = reset.step_snapshot
                             self._clock_status = "Restarting the clock at the nearest song handoff"
                             following = next_boundary(
                                 datetime.fromtimestamp(max(boundary, when)).astimezone(),

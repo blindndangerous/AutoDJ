@@ -195,6 +195,7 @@ class ClockPick:
 
     ``preset`` is the last settings step passed on the way to the entry.
     ``step_index`` and ``liner_step_index`` identify the steps that selected them.
+    The player attaches display snapshots from the same clock used for selection.
     """
 
     entry: Any | None
@@ -205,6 +206,8 @@ class ClockPick:
     liner_requires_following: bool = False
     step_index: int | None = None
     liner_step_index: int | None = None
+    step_snapshot: dict[str, Any] | None = None
+    liner_step_snapshot: dict[str, Any] | None = None
 
 
 #: Slot kinds that pick the music itself (a liner only rides on one).

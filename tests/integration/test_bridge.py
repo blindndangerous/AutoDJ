@@ -47,7 +47,8 @@ def _attach_cache(bridge, cache) -> None:
 
 
 class TestStateHelpers:
-    def test_state_includes_the_current_clockwheel_step(self, bridge) -> None:
+    @pytest.mark.parametrize("mode", ["clock", "seed"])
+    def test_state_includes_the_current_clockwheel_step(self, bridge, mode) -> None:
         step = {
             "number": 2,
             "step": {"type": "track", "path": "Song.flac"},
@@ -55,7 +56,7 @@ class TestStateHelpers:
             "categories": [],
         }
         bridge.player._last_clock_step = step
-        bridge.player._last_pick_mode = "clock"
+        bridge.player._last_pick_mode = mode
         state = bridge.get_state()
         assert state["clock_step"] == step
         assert state["why_this_track"][0] == "Clockwheel step 2."

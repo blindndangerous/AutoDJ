@@ -233,7 +233,7 @@ def test_clock_step_snapshot_keeps_the_selected_step_and_display_labels():
             categories=lambda: [SimpleNamespace(id="favorites", name="Favorites")]
         ),
     )
-    snapshot = player._clock_step_snapshot(0)
+    snapshot = player._clock_step_snapshot(0, player._clock_steps)
 
     native_step["category"] = "renamed"
     assert snapshot == {
