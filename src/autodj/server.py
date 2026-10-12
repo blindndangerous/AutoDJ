@@ -168,6 +168,8 @@ class _WebSocketClient:
     handler_task: asyncio.Task[Any] | None = None
     failure_code: int | None = None
     close_started: bool = False
+    # The socket's route template, for the audit log: /ws or the station's.
+    route: str = "/ws"
 
 
 async def _close_websocket_client(
@@ -193,7 +195,7 @@ async def _close_websocket_client(
                 failure_action,
                 "rejected",
                 method="WS",
-                route="/ws",
+                route=client.route,
                 status=code,
                 level=logging.WARNING,
             )
@@ -1710,6 +1712,7 @@ def create_app(
             request_id=request_id,
             session_is_valid=session_is_valid,
             handler_task=asyncio.current_task(),
+            route=route,
         )
         client_host = getattr(getattr(websocket, "client", None), "host", "unknown")
         async with station.ws_lock:

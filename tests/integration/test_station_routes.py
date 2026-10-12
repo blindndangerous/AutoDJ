@@ -337,3 +337,41 @@ def test_the_audit_log_names_the_station_route(caplog: pytest.LogCaptureFixture)
         if record.name == "autodj.audit"
     ]
     assert routes == [STATION_PREFIX + "/mute"]
+
+
+@pytest.mark.parametrize("path", ["/api/stations/default/ws", "/api/stations/nope/ws"])
+def test_a_station_socket_needs_a_session_before_its_name_is_checked(path: str) -> None:
+    client, _bridge = _app(access_token=_TOKEN)
+    with (
+        pytest.raises(WebSocketDisconnect) as closed,
+        client.websocket_connect(path, headers={"Origin": "http://testserver"}),
+    ):
+        pass
+    # 4401 for a known name and an unknown one alike: no session, no answer about names.
+    assert closed.value.code == 4401
+
+
+async def test_a_failed_close_audits_the_station_socket_route(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import json
+    import logging
+
+    from autodj.server import _close_websocket_client, _WebSocketClient
+
+    class BrokenSocket:
+        async def close(self, *, code: int) -> None:
+            raise RuntimeError(code)
+
+    client = _WebSocketClient(BrokenSocket(), request_id="b" * 32, route=STATION_PREFIX + "/ws")
+    with caplog.at_level(logging.WARNING, logger="autodj.audit"):
+        closed = await _close_websocket_client(
+            client, code=1013, timeout_seconds=0.1, failure_action="broadcast"
+        )
+    assert not closed
+    routes = [
+        json.loads(record.message)["route"]
+        for record in caplog.records
+        if record.name == "autodj.audit"
+    ]
+    assert routes == [STATION_PREFIX + "/ws"]
