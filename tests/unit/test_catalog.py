@@ -609,9 +609,10 @@ def test_unembedded_count_matches_paths_and_tracks_external_changes(tmp_path: Pa
     songs = [music / "top.flac", nested / "nested.flac", liners / "liner.flac"]
     for song in songs:
         song.write_bytes(b"audio")
-    with LibraryCatalog(tmp_path / "catalog.db") as catalog, LibraryCatalog(
-        tmp_path / "catalog.db"
-    ) as other:
+    with (
+        LibraryCatalog(tmp_path / "catalog.db") as catalog,
+        LibraryCatalog(tmp_path / "catalog.db") as other,
+    ):
         catalog.add_source(music, recursive=False, advanced=True)
         nested_source = catalog.add_source(nested, recursive=True, advanced=False)
         catalog.add_source(liners, "liner", recursive=True, advanced=False)
