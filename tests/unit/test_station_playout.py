@@ -409,3 +409,18 @@ def test_saved_render_is_built_in_one_buffer(decoded):
     assert result.full_audio is not None
     assert np.shares_memory(result.audio, result.full_audio)
     assert result.audio[-1, 0] == pytest.approx(2 / 8)  # the incoming head, in place
+
+
+@pytest.mark.parametrize("known", [True, False])
+def test_play_path_refuses_a_long_track_before_decoding(station, tmp_path, monkeypatch, known):
+    """The library's length (or the header's) refuses it; no FFmpeg run, no loudness pass."""
+    from autodj.stereo import TrackTooLongError
+
+    player, (entry, *_), _points = station
+    player._cfg.playback.loudness_processing = "smooth"
+    entry.length = 3 * 3600.0 if known else 0.0
+    monkeypatch.setattr("autodj.processing.probe_seconds", lambda _path: 3 * 3600.0)
+    for name in ("load_and_measure_audio", "load_processed_audio", "analyze_loudness"):
+        monkeypatch.setattr(f"autodj.processing.{name}", MagicMock(side_effect=AssertionError))
+    with pytest.raises(TrackTooLongError):
+        Player._load_playout_audio(player, entry)

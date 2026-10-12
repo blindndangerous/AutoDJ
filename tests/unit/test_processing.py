@@ -363,3 +363,33 @@ def test_one_pass_decode_rejects_silence_long_tracks_and_reports_errors(
     np.testing.assert_allclose(audio, 0.1 * 10 ** ((-28.0 + 20.0) / 20), rtol=1e-6)
     assert "damaged frame recovered" in caplog.text
     assert "LUFS" not in caplog.text
+
+
+def test_scan_refuses_a_track_over_the_limit_before_decoding(tmp_path: Path, monkeypatch) -> None:
+    """A three-hour mix once needed about 10 GB to analyse; its header says it is too long."""
+    source = _source(tmp_path / "mix.wav")  # 3 s
+    monkeypatch.setattr(processing, "load_stereo", MagicMock(side_effect=AssertionError("decoded")))
+    with pytest.raises(processing.TrackTooLongError) as refused:
+        processing.analyze_basic(source, max_seconds=1.0)
+    assert refused.value.seconds == pytest.approx(3.0)
+
+
+def test_scan_passes_the_limit_to_the_decode(tmp_path: Path, monkeypatch) -> None:
+    """A header that understates the length is caught by the decode, a second past the limit."""
+    source = _source(tmp_path / "song.wav")
+    monkeypatch.setattr(processing, "probe_seconds", lambda _source: None)
+    with pytest.raises(processing.TrackTooLongError):
+        processing.analyze_basic(source, max_seconds=1.0)
+    entry, _points = processing.analyze_basic(source, max_seconds=10.0)
+    assert entry.length == pytest.approx(3.0)
+
+
+def test_probe_seconds_reads_headers_then_ffprobe(tmp_path: Path, monkeypatch) -> None:
+    source = _source(tmp_path / "song.wav")
+    assert processing.probe_seconds(source) == pytest.approx(3.0)
+    monkeypatch.setattr(
+        "autodj.audio_meta.read_file_tags", MagicMock(side_effect=OSError("no tags"))
+    )
+    if shutil.which("ffprobe"):
+        assert processing.probe_seconds(source) == pytest.approx(3.0, abs=0.05)
+    assert processing.probe_seconds(tmp_path / "missing.wav") is None

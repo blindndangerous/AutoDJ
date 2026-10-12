@@ -2525,7 +2525,22 @@ class Player:
         return (audio * gain).astype(np.float32)
 
     def _load_playout_audio(self, entry: IndexEntry) -> np.ndarray:
-        """Decode originals on the render worker, preserving source cue positions."""
+        """Decode originals on the render worker, preserving source cue positions.
+
+        A track the library (or, failing that, the file's header) says is
+        longer than ``server_max_track_minutes`` is refused before FFmpeg
+        starts; the decode would stop a second past the limit and refuse it
+        anyway, after holding that much audio.
+
+        Raises:
+            TrackTooLongError: The track is longer than the limit.
+        """
+        from autodj.processing import probe_seconds
+
+        limit = self._max_render_seconds()
+        known = float(getattr(entry, "length", 0.0) or 0.0) or probe_seconds(Path(entry.path))
+        if known is not None and known > limit + 1.0:
+            raise TrackTooLongError(str(entry.path), known)
         if self._cfg.playback.loudness_processing not in {"smooth", "stereotool"}:
             audio = load_stereo(entry.path, SAMPLE_RATE, self._max_render_seconds())
             return self._lift_intro(self._apply_replaygain(audio, entry.path), entry)

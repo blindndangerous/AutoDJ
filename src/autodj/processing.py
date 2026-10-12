@@ -319,10 +319,65 @@ def load_and_measure_audio(
     return audio, measurement
 
 
-def analyze_basic(source: Path, kind: str = "music") -> tuple[IndexEntry, dict[str, float | None]]:
+def probe_seconds(source: Path) -> float | None:
+    """Return *source*'s length in seconds from its headers, without decoding it.
+
+    Uses the tags' audio info (read by mutagen), then ``ffprobe``; ``None``
+    when neither knows.  Header lengths can be estimates (a VBR MP3 without
+    a Xing header), so callers keep their exact check after decoding.
+    """
+    from autodj.audio_meta import read_file_tags
+
+    try:
+        seconds = read_file_tags(source).length
+    except Exception:
+        seconds = 0.0
+    if seconds > 0:
+        return seconds
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        return None
+    try:
+        result = subprocess.run(  # nosec B603 -- fixed ffprobe argv, no shell
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(source),
+            ],
+            capture_output=True,
+            check=False,
+            timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        seconds = float(result.stdout.decode(errors="replace").strip())
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    return seconds if math.isfinite(seconds) and seconds > 0 else None
+
+
+def analyze_basic(
+    source: Path, kind: str = "music", max_seconds: float | None = None
+) -> tuple[IndexEntry, dict[str, float | None]]:
     """Return basic library metadata and conservative timing suggestions.
 
     Full beat-grid and embedding analysis remain separate background work.
+
+    Args:
+        source: Audio file.
+        kind: ``"music"`` or ``"liner"``.
+        max_seconds: Longest track to analyse, or ``None`` for no limit.
+            The analysis holds the whole track in memory several times over
+            (a three-hour mix needed about 10 GB), so a longer track is
+            refused from its header length before anything is decoded, and
+            the decode itself stops a second past the limit.
+
+    Raises:
+        TrackTooLongError: If the track is longer than *max_seconds*.
     """
     from autodj.audio_meta import load_lrc_for, read_file_tags
     from autodj.dj_meta import detect_intro_outro, detect_intro_start
@@ -332,7 +387,11 @@ def analyze_basic(source: Path, kind: str = "music") -> tuple[IndexEntry, dict[s
     if kind not in {"music", "liner"}:
         raise ValueError("kind must be 'music' or 'liner'")
     source = Path(source)
-    audio = load_stereo(str(source))
+    if max_seconds is not None:
+        seconds = probe_seconds(source)
+        if seconds is not None and seconds > max_seconds + 1.0:
+            raise TrackTooLongError(str(source), seconds)
+    audio = load_stereo(str(source), SAMPLE_RATE, max_seconds)
     length = len(audio) / SAMPLE_RATE
     mono = audio.mean(axis=1)
     tags = read_file_tags(source)

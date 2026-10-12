@@ -91,8 +91,8 @@ def manager_factory(tmp_path):
         manager.close()
 
 
-def fake_basic(path: Path, kind: str = "music"):
-    del kind
+def fake_basic(path: Path, kind: str = "music", max_seconds: float | None = None):
+    del kind, max_seconds
     return make_entry(path), {
         "start": 0.0,
         "intro": 10.0,
@@ -210,7 +210,7 @@ def test_scan_continues_after_per_file_failure(manager_factory, tmp_path):
     good.write_bytes(b"good")
     manager = manager_factory(music=music)
 
-    def analyze(path, kind="music"):
+    def analyze(path, kind="music", max_seconds=None):
         if path == bad:
             raise ValueError("decode failed")
         return fake_basic(path, kind)
@@ -378,8 +378,8 @@ def test_replaced_track_resets_manual_cues_and_derived_cache(
 
     song.write_bytes(b"replacement audio with different bytes and length")
 
-    def short_track(path: Path, kind: str = "music"):
-        del kind
+    def short_track(path: Path, kind: str = "music", max_seconds: float | None = None):
+        del kind, max_seconds
         fresh = make_entry(path)
         fresh.length = 100.0
         return fresh, {
@@ -464,7 +464,7 @@ def test_unchanged_liner_with_unset_analysis_segue_is_backfilled(manager_factory
     ):
         manager.scan()
 
-    analyzed.assert_called_once_with(liner, kind="liner")
+    analyzed.assert_called_once_with(liner, kind="liner", max_seconds=15 * 60.0)
     points = manager.catalog.points(liner)
     assert points["segue"] == 160.0
     assert points["end"] == 180.0
@@ -501,7 +501,7 @@ def test_liner_segue_backfill_clamps_to_saved_manual_range(manager_factory, tmp_
     ):
         manager.scan()
 
-    analyzed.assert_called_once_with(liner, kind="liner")
+    analyzed.assert_called_once_with(liner, kind="liner", max_seconds=15 * 60.0)
     assert manager.catalog.points(liner) == {
         "start": 20.0,
         "intro": 30.0,

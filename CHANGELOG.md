@@ -154,6 +154,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The library scan no longer runs out of memory on very long files such as multi-hour mixes. A
+  track longer than `[playback] server_max_track_minutes` is refused from its header length before
+  it is decoded, with a warning naming it, and the decode stops a second past the limit. Server
+  playout also refuses such a track before decoding or measuring it.
+
 - A voice liner, cart or time check being decoded no longer holds up the mix bus. Liners are now
   decoded without the scheduler's state lock, the bus never waits for that lock when a planned
   liner is heard, and carts and time checks play without waiting for a liner decode.
