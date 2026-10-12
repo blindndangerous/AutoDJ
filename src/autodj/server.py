@@ -103,7 +103,12 @@ from autodj.security import (
     new_request_id,
     peer_address,
 )
-from autodj.station_log import CURRENT_STATION, install_log_prefix, station_thread
+from autodj.station_log import (
+    CURRENT_STATION,
+    DEFAULT_SLUG,
+    install_log_prefix,
+    station_thread,
+)
 from autodj.station_routes import (
     STATION_PREFIX,
     StationRouter,
@@ -119,10 +124,12 @@ from autodj.stations import (
     StationPaths,
     StationRegistry,
     StationRuntime,
+    StoppedStation,
+    public_feed_path,
     quiesce_cache_writers,
     tick_stream_workers,
 )
-from autodj.status_page import STATUS_PAGE_CSP, render_status_page
+from autodj.status_page import STATUS_PAGE_CSP, render_off_air_page, render_status_page
 from autodj.stereotool_presets import MAX_PRESET_BYTES
 from autodj.stream import EncoderUnavailableError, ListenerLimitError
 from autodj.tls import CertificateReloader
@@ -1216,11 +1223,35 @@ def create_app(
             return {"status": "ok"}
         return {"status": "ok", "tracks": bridge.sim.ntotal}
 
-    @app.api_route("/status", methods=["GET", "HEAD"], response_class=HTMLResponse)
-    async def get_status_page() -> HTMLResponse:
-        """Serve the public station status page, built from the same feed."""
+    def status_page(station: StationRuntime | StoppedStation, *, by_name: bool) -> HTMLResponse:
+        """A station's public status page; a stopped station's says it is off air (503)."""
+        slug = station.slug
+        feed_url = public_feed_path(slug, by_name=by_name)
+        stream_path = f"/stations/{slug}.mp3" if by_name else "/stream.mp3"
+        m3u_path = stream_path.removesuffix(".mp3") + ".m3u"
+        playlist_name = f"{slug}.m3u" if slug != DEFAULT_SLUG else "autodj.m3u"
+        if isinstance(station, StoppedStation):
+            html = render_off_air_page(
+                station.name,
+                feed_url=feed_url,
+                stream_path=stream_path,
+                m3u_path=m3u_path,
+                playlist_name=playlist_name,
+            )
+            status = 503
+        else:
+            html = render_status_page(
+                station.nowplaying.snapshot(),
+                stream_mode=station.bridge.stream_mode,
+                feed_url=feed_url,
+                stream_path=stream_path,
+                m3u_path=m3u_path,
+                playlist_name=playlist_name,
+            )
+            status = 200
         return HTMLResponse(
-            render_status_page(runtime.nowplaying.snapshot(), stream_mode=bridge.stream_mode),
+            html,
+            status_code=status,
             headers={
                 "Cache-Control": "no-cache",
                 "Content-Security-Policy": STATUS_PAGE_CSP,
@@ -1228,6 +1259,20 @@ def create_app(
                 "Referrer-Policy": "no-referrer",
             },
         )
+
+    @app.api_route("/status", methods=["GET", "HEAD"], response_class=HTMLResponse)
+    async def get_status_page() -> HTMLResponse:
+        """Serve the default station's public status page, built from its feed."""
+        return status_page(stations.default, by_name=False)
+
+    @app.api_route("/stations/{slug}/status", methods=["GET", "HEAD"], response_class=HTMLResponse)
+    async def get_station_status_page(slug: str) -> HTMLResponse:
+        """Serve any station's public status page by name; 503 "off air" while it is stopped."""
+        try:
+            station = stations.get(slug)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Not Found") from None
+        return status_page(station, by_name=True)
 
     # ------------------------------------------------------------------
     # Radio stream (stream mode only; 404 otherwise)
@@ -2245,9 +2290,11 @@ def serve(
         audio_mode = "server-audio" if not no_playback else "browser-driven"
     for extra in extra_stations:
         logger.info(
-            "Station %s (%s): %s/stations/%s.mp3%s",
+            "Station %s (%s): %s/stations/%s.mp3, status page %s/stations/%s/status%s",
             extra.slug,
             extra.name,
+            advertised_origin,
+            extra.slug,
             advertised_origin,
             extra.slug,
             "" if extra.autostart else " (stopped until started)",

@@ -2279,3 +2279,30 @@ describe("static accessibility contracts", () => {
     expect(desc.split(/\s+/).length).toBeLessThan(20);
   });
 });
+
+describe("public status page contracts", () => {
+  const statusCss = stripCssComments(readFileSync(staticPath("modules", "status-page.css"), "utf8"));
+  const statusScript = readFileSync(staticPath("modules", "status-page.js"), "utf8");
+
+  it("draws every colour from the system palette, so light, dark and forced colours all hold", () => {
+    // No literal colours: Canvas, CanvasText, LinkText, ButtonText and
+    // ButtonFace follow the theme the reader or the web UI chose.
+    expect(statusCss).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
+    expect(statusCss).toMatch(/:root\[data-theme="light"\]\s*\{\s*color-scheme: light;/);
+    expect(statusCss).toMatch(/:root\[data-theme="dark"\]\s*\{\s*color-scheme: dark;/);
+  });
+
+  it("keeps a visible focus ring and a large enough target on every control", () => {
+    expect(statusCss).toMatch(/button:focus-visible,\s*a:focus-visible\s*\{\s*outline: 3px solid currentcolor;/);
+    expect(statusCss).toMatch(/button\s*\{[^}]*min-height: 44px;/);
+    // One column on a phone, so nothing scrolls sideways at 320 px.
+    expect(statusCss).toMatch(/@media \(max-width: 24rem\)\s*\{\s*dl\s*\{\s*grid-template-columns: 1fr;/);
+  });
+
+  it("polls only the station's own same-site feed and never moves focus", () => {
+    expect(statusScript).toMatch(/feed\.startsWith\("\/"\) && !feed\.startsWith\("\/\/"\)/);
+    expect(statusScript).not.toMatch(/\.focus\(/);
+    // Off air is said in the one live line, not a second region.
+    expect(statusScript).not.toMatch(/aria-live/);
+  });
+});

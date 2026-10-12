@@ -323,8 +323,24 @@ script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-a
 `/modules/status-page.js` and `/modules/status-page.css`, which were already public with the
 rest of `/modules/`. It has no forms or controls, so framing it elsewhere gains nothing.
 
+Every station has the same two public surfaces under its own name:
+`GET|HEAD /api/stations/<slug>/nowplaying` and `GET|HEAD /stations/<slug>/status`. The default
+station keeps `/api/nowplaying` and `/status`, and also answers by the name `default`. These are
+public only for a configured slug; any other name, and anything else under a station's name,
+needs a session first and then returns 404. Each station's feed and page carry only that
+station's name, songs, listener counts and public stream path, from its own snapshot. A station's
+page names its own feed in a `data-feed` attribute, and the page script polls it only when it
+is a same-site path, so the attribute cannot send the page to another host (the
+`connect-src 'self'` policy also refuses that). While a station is stopped, its feed answers 503
+`{"detail": "That station is off air"}` (still with the wildcard CORS header, so outside sites
+can read it) and its page answers 503 with its name and "off air". Like the stream's 503, this
+shows that the slug exists and gives the station's configured name; that is accepted, since a
+station's name is public whenever it is on air. Listener Basic credentials protect only a
+station's stream, never its feed or page, as for the default station.
+
 Configured webhooks make outbound HTTP requests to operator-chosen URLs after track
-changes. Their URLs can contain tokens and are accepted only from `config.local.toml`;
+changes. Each station has its own (`[[stations.<slug>.webhooks]]`), which receive only that
+station's feed. Their URLs can contain tokens and are accepted only from `config.local.toml`;
 the paired status API exposes the host and last result, never the URL or response body.
 The send-test route requires pairing. Operators should choose destinations they trust,
 since each receives the public now-playing metadata.

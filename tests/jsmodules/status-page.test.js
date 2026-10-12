@@ -2,10 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   NOTHING_PLAYING,
+  OFF_AIR,
   PAUSED_TEXT,
   UNREACHABLE_TEXT,
   UPDATING_TEXT,
+  feedUrl,
   listenersText,
+  offAirText,
   startStatusPage,
   trackText,
   uptimeText,
@@ -24,7 +27,7 @@ function mount() {
       <dl>
         <dt>Listening now</dt><dd id="status-listeners">1 listener</dd>
         <dt>Peak today</dt><dd id="status-peak">2 listeners</dd>
-        <dt>AutoDJ running for</dt><dd id="status-uptime">5 minutes</dd>
+        <dt>On air for</dt><dd id="status-uptime">5 minutes</dd>
       </dl>
     </main>
     <footer><p id="status-updated">Reload the page for the latest.</p>
@@ -218,6 +221,26 @@ describe("status page polling", () => {
     expect(byId("status-updated").textContent).toBe(PAUSED_TEXT);
   });
 
+  it("says once that a stopped station is off air, then the song when it is back", async () => {
+    const offAir = Object.assign(new Error("That station is off air"), { status: 503 });
+    load.mockRejectedValue(offAir);
+    start();
+    await settle();
+    const now = byId("status-now");
+    expect(now.textContent).toBe(offAirText("Radio"));
+    expect(byId("status-listeners").textContent).toBe("0 listeners");
+    expect(byId("status-uptime").textContent).toBe(OFF_AIR);
+    // Off air is an answer, not a failure to reach the station.
+    expect(byId("status-updated").textContent).toBe(UPDATING_TEXT);
+    const write = vi.spyOn(now, "textContent", "set");
+    await page.poll();
+    expect(write).not.toHaveBeenCalled();
+    load.mockResolvedValue(FEED);
+    await page.poll();
+    expect(now.textContent).toBe("Song by Artist, from the album Album.");
+    expect(byId("status-uptime").textContent).toBe("5 minutes");
+  });
+
   it("stops polling when stopped", async () => {
     start();
     await settle();
@@ -227,5 +250,19 @@ describe("status page polling", () => {
     document.dispatchEvent(new Event("visibilitychange"));
     await settle();
     expect(load).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("status page feed address", () => {
+  it("polls the feed the page names, and only a same-site path", () => {
+    document.body.innerHTML = "";
+    document.body.dataset.feed = "/api/stations/nightowl/nowplaying";
+    expect(feedUrl(document)).toBe("/api/stations/nightowl/nowplaying");
+    document.body.dataset.feed = "//evil.example/feed";
+    expect(feedUrl(document)).toBe("/api/nowplaying");
+    document.body.dataset.feed = "https://evil.example/feed";
+    expect(feedUrl(document)).toBe("/api/nowplaying");
+    delete document.body.dataset.feed;
+    expect(feedUrl(document)).toBe("/api/nowplaying");
   });
 });

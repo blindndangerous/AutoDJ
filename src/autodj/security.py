@@ -485,7 +485,8 @@ def _is_public_path(path: str, slugs: AbstractSet[str] = frozenset()) -> bool:
     Listening (``/stream.mp3`` and ``/stream.m3u``, and
     ``/stations/<slug>.mp3`` and ``.m3u`` for a configured station) does
     not require pairing; control APIs require a session.  A configured
-    station's public now-playing feed is public under its station path too.
+    station's public now-playing feed is public under its station path too,
+    and so is its status page, ``/stations/<slug>/status``.
     """
     relative = station_relative(path, slugs)
     if relative is not None:
@@ -494,8 +495,16 @@ def _is_public_path(path: str, slugs: AbstractSet[str] = frozenset()) -> bool:
         path in _PUBLIC_FILES
         or path in {"/stream.mp3", "/stream.m3u"}
         or _is_station_stream(path, slugs)
+        or _is_station_status(path, slugs)
         or _safe_public_prefix(path, "/modules/")
     )
+
+
+def _is_station_status(path: str, slugs: AbstractSet[str]) -> bool:
+    """Whether *path* is ``/stations/<slug>/status`` for a configured *slug*."""
+    name = path.removeprefix("/stations/")
+    slug, slash, rest = name.partition("/")
+    return name != path and bool(slash) and rest == "status" and slug in slugs
 
 
 def _is_station_stream(path: str, slugs: AbstractSet[str]) -> bool:

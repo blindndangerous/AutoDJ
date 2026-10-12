@@ -41,6 +41,13 @@
 //         Dismiss button works by mouse and by keyboard, putting focus
 //         back where it was.
 //
+//   - the public status pages: /status, and each station's
+//     /stations/<slug>/status that /api/stations lists (a stopped
+//     station's "off air" page too), in every theme mode: axe-core's
+//     WCAG 2.2 A/AA rules, the theme applied, and every focus stop's
+//     outline 3:1; in the System light mode reflow at 320 px and 200 %
+//     text.
+//
 // Set AUTODJ_URL=http://host:port before running, e.g.:
 //   AUTODJ_URL=http://localhost:8080 node tests/playwright/visual_audit.mjs
 // Set AUTODJ_CPU_THROTTLE=<rate>, e.g. 6, to slow Chromium's CPU that many
@@ -705,15 +712,103 @@ async function previewOutputProblems(page) {
   return problems;
 }
 
+// The public status pages to audit: the default station's, and each
+// station's that the station list names (a paired or open server lists
+// them; otherwise only /status is audited).
+async function statusPagePaths(page) {
+  await page.goto(`${BASE}/status`, { waitUntil: "networkidle", timeout: 20000 });
+  const listed = await page.evaluate(async () => {
+    try {
+      const response = await fetch("/api/stations", { headers: { Accept: "application/json" } });
+      if (!response.ok) return [];
+      const body = await response.json();
+      return (body.stations || []).map((station) => station.status_path).filter(Boolean);
+    } catch {
+      return [];
+    }
+  });
+  return [...new Set(["/status", ...listed])];
+}
+
+function statusThemeState(page) {
+  return page.evaluate(() => {
+    const [r, g, b] = (window.getComputedStyle(document.body).backgroundColor.match(/\d+/g) || [])
+      .map(Number);
+    return {
+      theme: document.documentElement.getAttribute("data-theme"),
+      dark: (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 < 0.5,
+    };
+  });
+}
+
+// Every status page in every theme mode, then the layout checks.
+async function auditStatusPages(browser, out) {
+  const probe = await browser.newContext({ bypassCSP: true });
+  const paths = await statusPagePaths(await probe.newPage());
+  await probe.close();
+  out.statusPaths = paths;
+  for (const mode of THEME_MODES) {
+    const context = await themeContext(browser, mode);
+    const page = await newPage(context);
+    page.on("pageerror", (error) => out.pageerrors.push(`${mode.name} status: ${error.message}`));
+    try {
+      for (const path of paths) {
+        const where = `${mode.name} ${path}`;
+        // A stopped station's page answers 503 and is still a whole page.
+        await page.goto(`${BASE}${path}`, { waitUntil: "networkidle", timeout: 20000 });
+        await settle(page);
+        const problems = [];
+        for (const violation of await axeViolations(page)) {
+          problems.push(`axe ${violation.id}: ${violation.targets.join(", ")}`);
+        }
+        const state = await statusThemeState(page);
+        if (state.theme !== mode.stored) problems.push(`data-theme ${state.theme}`);
+        if (state.dark !== (mode.theme === "dark")) problems.push(`background not ${mode.theme}`);
+        await installContrastHelpers(page);
+        problems.push(...await focusProblems(page, "body", { measureColour: true }));
+        if (problems.length) out.statusPage[where] = problems;
+      }
+    } finally {
+      await context.close();
+    }
+  }
+  for (const [label, viewport, fontSize] of [
+    ["reflow 320", { width: 320, height: 640 }, ""],
+    ["text 200%", { width: 1280, height: 800 }, "200%"],
+  ]) {
+    const context = await browser.newContext({ viewport, reducedMotion: "reduce",
+      colorScheme: "light", bypassCSP: true });
+    if (fontSize) {
+      await context.addInitScript((size) => {
+        document.addEventListener("DOMContentLoaded", () => {
+          document.documentElement.style.fontSize = size;
+        });
+      }, fontSize);
+    }
+    const page = await newPage(context);
+    try {
+      for (const path of paths) {
+        await page.goto(`${BASE}${path}`, { waitUntil: "networkidle", timeout: 20000 });
+        const overflow = await horizontalOverflow(page);
+        if (overflow) out.statusPage[`${label} ${path}`] = [JSON.stringify(overflow)];
+      }
+    } finally {
+      await context.close();
+    }
+  }
+}
+
 export async function audit(name, launcher) {
   const browser = await launcher.launch();
   const out = {
     browser: name, axe: {}, nonText: {}, focusColour: {}, toast: {}, themeState: {},
-    reflow320: {}, text200: {}, smallChoices: {}, focus: {}, behaviour: {}, pageerrors: [],
+    reflow320: {}, text200: {}, smallChoices: {}, focus: {}, behaviour: {}, statusPage: {},
+    statusPaths: [], pageerrors: [],
   };
   if (SHOTS) mkdirSync(SHOTS, { recursive: true });
   try {
     for (const mode of THEME_MODES) await auditTheme(browser, mode, out);
+    await auditStatusPages(browser, out);
 
     const wide = await browser.newContext({ viewport: { width: 1280, height: 800 },
       reducedMotion: "reduce", colorScheme: "light", bypassCSP: true });
@@ -763,7 +858,7 @@ export function validateVisualAudit(name, result) {
   const failures = [];
   for (const key of [
     "axe", "nonText", "focusColour", "toast", "themeState",
-    "reflow320", "text200", "smallChoices", "focus", "behaviour",
+    "reflow320", "text200", "smallChoices", "focus", "behaviour", "statusPage",
   ]) {
     const entries = Object.entries(result[key]);
     if (entries.length) failures.push(`${key}: ${JSON.stringify(Object.fromEntries(entries))}`);
