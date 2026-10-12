@@ -1123,7 +1123,7 @@ def install_station_routes(router: StationRouter) -> None:
                     }
                 )
         # Each liner's play dates, in words, and whether it may play today.
-        from autodj.clip_dates import station_today
+        from autodj.clip_dates import station_today, station_zone
 
         today = station_today(cfg)
         dates = await asyncio.to_thread(station.liner_gate.store.all)
@@ -1135,6 +1135,8 @@ def install_station_routes(router: StationRouter) -> None:
             # default is rendered from a Path.
             "folder": cfg.playback.liners_folder or str(folder),
             "today": today.isoformat(),
+            # So a page left open past midnight still knows the station's day.
+            "timezone": station_zone(cfg),
             "files": [f.name for f in lib.files],
             "count": len(lib.files),
             "items": items,

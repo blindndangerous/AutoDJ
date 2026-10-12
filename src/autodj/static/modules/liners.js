@@ -196,10 +196,34 @@ function _postConfig(els, postSettings, control) {
   }, control);
 }
 
+// The station's calendar day now, as YYYY-MM-DD, or "" when the page does
+// not know the station time zone.  Worked out at each pick, so a page left
+// open past midnight does not keep the day the list was loaded on.
+function stationDay(timeZone, now = new Date()) {
+  if (!timeZone) return "";
+  try {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+      timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+    }).formatToParts(now).map(({ type, value }) => [type, value]));
+    return `${parts.year}-${parts.month}-${parts.day}`;
+  } catch {
+    return "";
+  }
+}
+
+// Whether a liner may play on *day* (ISO dates compare as text); without a
+// day, the server's word when the list was loaded.
+function linerPlayable(item, day) {
+  if (!day) return item.playable !== false;
+  if (item.not_after && day > item.not_after) return false;
+  return !(item.not_before && day < item.not_before);
+}
+
 function _pickLiner() {
   // A liner outside its play dates is skipped, as the server skips it.
+  const day = stationDay(state.lib.timezone);
   const items = state.lib.items?.length
-    ? state.lib.items.filter((item) => item.playable !== false)
+    ? state.lib.items.filter((item) => linerPlayable(item, day))
     : (state.lib.files || []).map((name) => ({ id: name, name }));
   if (items.length === 0) return null;
   const mode = (state.lib.config && state.lib.config.pick_mode) || "random";
@@ -446,7 +470,9 @@ export function installLiners(els, deps) {
     els.lnTestBtn.addEventListener("click", async (event) => {
       const name = _pickLiner();
       if (!name) {
-        _setStatus(els, "No liner files in folder.");
+        _setStatus(els, state.lib.items?.length
+          ? "Every liner is outside its play dates, so Test has nothing to play."
+          : "No liner files in folder.");
         return;
       }
       if (deps.testOnServer()) {

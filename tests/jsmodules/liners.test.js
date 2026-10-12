@@ -650,7 +650,7 @@ describe("liner play dates", () => {
     not_before: null, not_after: null, dates_text: "", playable: true, unplayable_text: "",
   };
 
-  async function install(onPut = () => json({ ...ID, not_after: "2027-01-31", dates_text: "Plays until 31 January 2027" })) {
+  async function install(onPut = () => json({ ...ID, not_after: "2027-01-31", dates_text: "Plays until 31 January 2027" }), listed = {}) {
     vi.resetModules();
     const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
     const template = document.createElement("template");
@@ -659,7 +659,7 @@ describe("liner play dates", () => {
     document.body.replaceChildren(template.content.cloneNode(true));
     let items = [PROMO, ID];
     const fetchImpl = vi.fn((url, options = {}) => {
-      if (url === "/api/liners") return Promise.resolve(json({ config: { duck_db: -12 }, files: ["id.wav", "promo.mp3"], items }));
+      if (url === "/api/liners") return Promise.resolve(json({ config: { duck_db: -12 }, files: ["id.wav", "promo.mp3"], items, ...listed }));
       if (url.startsWith("/api/liners/dates/")) {
         const reply = onPut(JSON.parse(options.body));
         if (reply.status === 200) items = [PROMO, { ...ID, not_after: "2027-01-31", dates_text: "Plays until 31 January 2027" }];
@@ -677,7 +677,7 @@ describe("liner play dates", () => {
       lnBrowseStatus: document.getElementById("ln-browse-status"),
       lnTestBtn: document.getElementById("ln-test"),
     }, { canPlay: () => false, prepareTest: () => null, playLiner: vi.fn(), postSettings: vi.fn(), testOnServer: () => true });
-    await vi.waitFor(() => expect(list.querySelectorAll("li")).toHaveLength(2));
+    await vi.waitFor(() => expect(list.querySelectorAll("li")).toHaveLength((listed.items || items).length));
     return { list, fetchImpl, status: document.getElementById("ln-browse-status") };
   }
 
@@ -702,6 +702,39 @@ describe("liner play dates", () => {
     const names = fetchImpl.mock.calls.filter(([url]) => url === "/api/liners/test")
       .map(([, options]) => JSON.parse(options.body).name);
     expect(new Set(names)).toEqual(new Set(["id.wav"]));
+  });
+
+  it("skips a liner that expires while the page is open, by the station's day", async () => {
+    // Loaded at 23:50 on 26 December in the station's zone, when the promo
+    // may still play; Test after midnight there must not pick it.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-12-27T06:50:00Z"));
+      const { fetchImpl } = await install(undefined, {
+        timezone: "America/Denver",
+        items: [{ ...PROMO, playable: true, unplayable_text: "" }, ID],
+      });
+      vi.setSystemTime(new Date("2026-12-27T07:30:00Z"));
+      const test = document.getElementById("ln-test");
+      for (let press = 0; press < 6; press += 1) {
+        await vi.waitFor(() => expect(test.disabled).toBe(false));
+        test.click();
+        await vi.waitFor(() => expect(fetchImpl.mock.calls.filter(([url]) => url === "/api/liners/test")).toHaveLength(press + 1));
+      }
+      const names = fetchImpl.mock.calls.filter(([url]) => url === "/api/liners/test")
+        .map(([, options]) => JSON.parse(options.body).name);
+      expect(new Set(names)).toEqual(new Set(["id.wav"]));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("says so when Test finds every liner outside its play dates", async () => {
+    const { fetchImpl } = await install(undefined, { items: [PROMO] });
+    document.getElementById("ln-test").click();
+    await vi.waitFor(() => expect(document.getElementById("ln-status").textContent)
+      .toContain("Every liner is outside its play dates"));
+    expect(fetchImpl.mock.calls.some(([url]) => url === "/api/liners/test")).toBe(false);
   });
 
   it("edits a liner's dates and returns focus to its Play dates button", async () => {

@@ -431,6 +431,8 @@ class TestLiners:
         tc = TestClient(create_app(bridge))
         body = tc.get("/api/liners").json()
         assert body["today"] > "2000-01-01"
+        # The page works out the station's day itself at each pick.
+        assert body["timezone"] == "UTC"
         item = next(entry for entry in body["items"] if entry["id"] == "promo.mp3")
         assert (item["dates_text"], item["playable"]) == ("", True)
 
