@@ -492,6 +492,7 @@
 
     #library-results-table, #source-folders-table {
       width: 100%;
+      table-layout: fixed;
       border-collapse: collapse;
       margin-top: 0.75rem;
     }
@@ -501,10 +502,16 @@
       border-bottom: 1px solid var(--border);
       text-align: left;
       vertical-align: middle;
+      overflow-wrap: anywhere;
     }
-    #library-results-table td:first-child { min-width: 12rem; }
-    #source-folders-table td:nth-child(2) { overflow-wrap: anywhere; }
-    #source-folders-table label { display: block; margin: 0.2rem 0; }
+    #library-results-table th:first-child { width: 25%; }
+    #library-results-table th:not(:first-child) { width: 18.75%; }
+    #source-folders-table th:nth-child(1) { width: 14%; }
+    #source-folders-table th:nth-child(2) { width: 28%; }
+    #source-folders-table th:nth-child(3) { width: 18%; }
+    #source-folders-table th:nth-child(4) { width: 24%; }
+    #source-folders-table th:nth-child(5) { width: 16%; }
+    #source-folders-table label { display: block; margin: 0.2rem 0; overflow-wrap: anywhere; }
     .result-name {
       flex: 1;
       min-width: 0;
@@ -1362,6 +1369,21 @@
       #queue-list li {
         flex-wrap: wrap;
         row-gap: 0.4rem;
+      }
+      #library-results-table th, #library-results-table td,
+      #source-folders-table th, #source-folders-table td {
+        padding: 0.35rem 0.2rem;
+      }
+      #library-results-table .result-btn, #source-folders-table button {
+        width: 100%;
+        min-width: 0;
+        padding: 0.25rem 0.1rem;
+        white-space: normal;
+      }
+      #library-results-table .result-name {
+        display: block;
+        overflow-wrap: anywhere;
+        white-space: normal;
       }
       .queue-name,
       .result-name {
