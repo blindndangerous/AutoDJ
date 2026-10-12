@@ -10,6 +10,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Dayparting for rotation categories: a category can allow its songs only on chosen days, only
+  between two times, or both, such as Friday and Saturday from 22:00 until 02:00, in the station
+  time zone. Outside those hours its songs are left out of every pick mode (similar songs,
+  discovery, random, least recently played and clockwheels), and a clockwheel step for it is
+  skipped with the reason in the clockwheel status and the server log. Relaxing the repeat rules
+  or the DMCA limits never brings them back; only when nothing else can play does one play, with a
+  warning. A song you queue yourself plays at any time. A category from a beets query on a field
+  such as `daypart` gives single songs their own hours. The categories list says the hours in
+  words and when a category is outside them now. Categories without hours are saved as before.
+
 - Groundwork for running several stations on one server (#70). Every control address also answers
   under `/api/stations/default/...`, and the play log, last-played times and active clockwheel are
   kept per station in `library.db`. Existing plays belong to the default station, so nothing

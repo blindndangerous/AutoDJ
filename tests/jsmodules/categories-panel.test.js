@@ -100,7 +100,7 @@ describe("categories markup", () => {
     }
     // The form and the source choice are grouped with a legend each.
     const fieldsets = [...section.querySelectorAll("fieldset")];
-    expect(fieldsets.map((set) => set.querySelector(":scope > legend")?.textContent)).toEqual(["Add category", "Songs come from"]);
+    expect(fieldsets.map((set) => set.querySelector(":scope > legend")?.textContent)).toEqual(["Add category", "Songs come from", "When the songs may play", "Days"]);
     expect([...section.querySelectorAll('input[type="radio"]')].every((radio) => radio.name === "categories-source")).toBe(true);
     expect(byId("categories-query").getAttribute("aria-describedby")).toBe("categories-query-help");
     expect(byId("categories-playlist").getAttribute("aria-describedby")).toBe("categories-playlist-help");
@@ -187,6 +187,84 @@ describe("categories form", () => {
     expect(put.url).toBe("/api/categories/c2");
     expect(put.body).toEqual({ name: "A", source: "m3u", query: "", playlist: "Gold/C.m3u8" });
     expect(document.activeElement).toBe(rowButton(1, "edit"));
+  });
+
+  it("saves allowed days and hours, fills them in on Edit and says them in the list", async () => {
+    const server = await open();
+    byId("categories-add").click();
+    byId("categories-name").value = "Late night";
+    byId("categories-query").value = "genre:jazz";
+    byId("categories-day-4").checked = true;
+    byId("categories-day-5").checked = true;
+    byId("categories-hours-from").value = "22:00";
+    byId("categories-hours-until").value = "02:00";
+    byId("categories-save").click();
+    await vi.waitFor(() => expect(status()).toBe("Saved Late night: 42 songs."));
+    expect(server.calls.find((call) => call.method === "POST").body).toEqual({
+      name: "Late night", source: "query", query: "genre:jazz", playlist: "",
+      days: [4, 5], hours_from: "22:00", hours_until: "02:00",
+    });
+
+    server.categories[2] = {
+      ...server.categories[2], hours_from: "22:00:00", hours_until: "02:00:00",
+      daypart_text: "Plays only on Friday and Saturday from 22:00 until 02:00", allowed_now: false,
+    };
+    await controls.refresh();
+    expect(items()[2].querySelector("span").textContent).toContain(
+      "Plays only on Friday and Saturday from 22:00 until 02:00. Outside its hours now.");
+    rowButton(2, "edit").click();
+    expect(byId("categories-day-4").checked).toBe(true);
+    expect(byId("categories-day-0").checked).toBe(false);
+    expect(byId("categories-hours-from").value).toBe("22:00");
+    expect(byId("categories-hours-until").value).toBe("02:00");
+  });
+
+  it("names a half-typed time instead of saving the category for all day", async () => {
+    const server = await open();
+    byId("categories-add").click();
+    byId("categories-name").value = "Late night";
+    byId("categories-query").value = "genre:jazz";
+    // A browser reports a half-typed time as an empty value with bad input.
+    const from = byId("categories-hours-from");
+    Object.defineProperty(from, "validity", { configurable: true, value: { badInput: true } });
+    byId("categories-save").click();
+    expect(document.activeElement).toBe(from);
+    expect(from.getAttribute("aria-invalid")).toBe("true");
+    expect(from.getAttribute("aria-describedby")).toBe("categories-form-error");
+    expect(byId("categories-form-error").textContent).toBe(
+      "Allowed from is not a whole time. Enter hours and minutes, such as 22:00, or clear it.");
+    expect(server.calls.some((call) => call.method === "POST")).toBe(false);
+  });
+
+  it("names a half-filled or empty time window and links the error to the field", async () => {
+    const server = await open();
+    byId("categories-add").click();
+    byId("categories-name").value = "Late night";
+    byId("categories-query").value = "genre:jazz";
+    byId("categories-hours-from").value = "22:00";
+    byId("categories-save").click();
+    const until = byId("categories-hours-until");
+    expect(document.activeElement).toBe(until);
+    expect(until.getAttribute("aria-invalid")).toBe("true");
+    expect(until.getAttribute("aria-describedby")).toBe("categories-form-error");
+    expect(byId("categories-form-error").textContent).toBe("Enter both Allowed from and Allowed until, or leave both empty.");
+    until.value = "22:00";
+    until.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(until.hasAttribute("aria-describedby")).toBe(false);
+    byId("categories-save").click();
+    expect(byId("categories-form-error").textContent).toBe("Allowed until must differ from Allowed from.");
+    expect(server.calls.some((call) => call.method === "POST")).toBe(false);
+
+    until.value = "02:00";
+    server.refuse = new FieldError("Days must be numbered 0 (Monday) to 6 (Sunday)", "days");
+    byId("categories-save").click();
+    await vi.waitFor(() => expect(document.activeElement).toBe(byId("categories-day-0")));
+    for (let day = 0; day < 7; day += 1) {
+      expect(byId(`categories-day-${day}`).getAttribute("aria-invalid")).toBe("true");
+      expect(byId(`categories-day-${day}`).getAttribute("aria-describedby")).toBe("categories-form-error");
+    }
+    byId("categories-day-3").dispatchEvent(new Event("input", { bubbles: true }));
+    expect(byId("categories-day-0").hasAttribute("aria-invalid")).toBe(false);
   });
 
   it("marks, focuses and says the field at fault, in the page and from the server", async () => {

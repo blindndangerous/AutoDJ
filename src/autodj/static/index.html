@@ -2006,6 +2006,30 @@
               M3U and M3U8 files in <span id="categories-folder">the playlists folder</span>. Each line is matched to a song in the library, by its full path or by a path from the playlist's folder or the music folder; lines that match none are counted as missing.
             </p>
           </div>
+          <fieldset id="categories-daypart" aria-describedby="categories-daypart-help">
+            <legend>When the songs may play</legend>
+            <p class="setting-desc" id="categories-daypart-help">
+              Optional. Outside these days and hours no pick mode plays the category's songs, and a clockwheel step for it is skipped. A song in several categories plays only when all of them allow it. Leave every day unchecked for every day, and both times empty for all day. Times are in the station time zone, and a window that crosses midnight, such as 22:00 until 02:00, belongs to the day it starts. A song you queue yourself plays at any time.
+            </p>
+            <fieldset id="categories-days">
+              <legend>Days</legend>
+            <div class="settings-check"><input type="checkbox" id="categories-day-0" value="0"><label for="categories-day-0">Monday</label></div>
+            <div class="settings-check"><input type="checkbox" id="categories-day-1" value="1"><label for="categories-day-1">Tuesday</label></div>
+            <div class="settings-check"><input type="checkbox" id="categories-day-2" value="2"><label for="categories-day-2">Wednesday</label></div>
+            <div class="settings-check"><input type="checkbox" id="categories-day-3" value="3"><label for="categories-day-3">Thursday</label></div>
+            <div class="settings-check"><input type="checkbox" id="categories-day-4" value="4"><label for="categories-day-4">Friday</label></div>
+            <div class="settings-check"><input type="checkbox" id="categories-day-5" value="5"><label for="categories-day-5">Saturday</label></div>
+            <div class="settings-check"><input type="checkbox" id="categories-day-6" value="6"><label for="categories-day-6">Sunday</label></div>
+            </fieldset>
+            <div class="settings-row">
+              <label for="categories-hours-from">Allowed from</label>
+              <input type="time" id="categories-hours-from">
+            </div>
+            <div class="settings-row">
+              <label for="categories-hours-until">Allowed until</label>
+              <input type="time" id="categories-hours-until">
+            </div>
+          </fieldset>
           <button type="button" id="categories-check" aria-describedby="categories-match">Check</button>
           <!-- The last Check or Save result.  Plain text: Check and Save say it once. -->
           <p id="categories-match">Not checked yet.</p>
