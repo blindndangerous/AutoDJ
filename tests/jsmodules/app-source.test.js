@@ -1498,9 +1498,12 @@ describe("app request behavior", () => {
     try {
       const { fetchImpl } = await setupApp({
         onRequest: (url) => url.startsWith("/api/history")
-          ? jsonResponse({ total: 1, page: 1, pages: 1, items: [{
+          ? jsonResponse({ total: 2, page: 1, pages: 1, items: [{
             event_id: "play-1", path: "M:/song.flac", played_at: "2026-01-01T00:00:00Z",
             title: "Song", artist: "Artist", duration: 60,
+          }, {
+            event_id: "play-2", path: "M:/other.flac", played_at: "2025-12-31T23:00:00Z",
+            title: "Other", artist: "Another", duration: 120,
           }] })
           : url.startsWith("/api/library/points?")
             ? jsonResponse({ path: "M:/song.flac", title: "Song", artist: "Artist", kind: "music", points: {} })
@@ -1513,8 +1516,24 @@ describe("app request behavior", () => {
         return found;
       });
       expect(button.getAttribute("aria-label")).toBe("Track info for Artist — Song");
-      button.focus();
-      button.click();
+      const tbody = document.querySelector("#history-tbody");
+      const cells = [...tbody.querySelectorAll("td")];
+      expect(cells.map((cell) => cell.getAttribute("role"))).toEqual([
+        "gridcell", "rowheader", "gridcell", "gridcell",
+        "gridcell", "rowheader", "gridcell", "gridcell",
+      ]);
+      expect(cells.filter((cell) => cell.tabIndex === 0)).toEqual([cells[0]]);
+      expect(button.tabIndex).toBe(-1);
+      cells[0].focus();
+      cells[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+      expect(document.activeElement).toBe(cells[4]);
+      cells[4].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+      expect(document.activeElement).toBe(cells[0]);
+      cells[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+      expect(document.activeElement).toBe(cells[1]);
+      const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+      cells[1].dispatchEvent(enter);
+      expect(enter.defaultPrevented).toBe(true);
       await vi.waitFor(() => expect(document.querySelector("#panel-track-info").hidden).toBe(false));
       expect(document.querySelector("#track-info-heading").textContent).toBe("Track info: Artist — Song");
       const back = document.querySelector("#track-info-return");

@@ -26,6 +26,8 @@ import {
   withDisabled,
 } from "./modules/api-client.js";
 import { installSeekController } from "./modules/seek-controller.js";
+import { tableRow } from "./modules/table-row.js";
+import { installTableNavigation } from "./modules/table-navigation.js";
 import { installLibraryFolders } from "./modules/library-folders.js";
 import { installCategoriesPanel } from "./modules/categories-panel.js";
 import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
@@ -2126,6 +2128,7 @@ import { formatPlayedAt, historyNeedsDates } from "./modules/history-format.js";
 import { installHistoryExport } from "./modules/history-export.js";
 
 let _histPage = 1;
+const historyNavigation = installTableNavigation(document.getElementById("history-tbody"));
 // The history request in flight: a newer one aborts it.
 let historyRequest = null;
 // Page 1's newest played_at and whether its rows show dates; null when
@@ -2136,17 +2139,20 @@ let _histWithDate = false;
 let _histPlayingPath = null;
 
 function historyRowHtml(it, withDate) {
-  const name = escHtml(fmtTrack(it));
-  const path = escHtml(it.path || "");
-  const historyId = escHtml(it.event_id || `${it.played_at}:${it.path || ""}`);
-  return `<tr>
-      <td>${escHtml(formatPlayedAt(it.played_at, withDate))}</td>
-      <td>${escHtml(it.title)} <button type="button" class="history-info"
-        data-path="${path}" data-history-id="${historyId}"
-        aria-label="Track info for ${name}">Track info</button></td>
-      <td>${escHtml(it.artist)}</td>
-      <td>${_fmtDuration(it.duration)}</td>
-    </tr>`;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "history-info";
+  button.dataset.path = it.path || "";
+  button.dataset.historyId = it.event_id || `${it.played_at}:${it.path || ""}`;
+  button.setAttribute("aria-label", `Track info for ${fmtTrack(it)}`);
+  button.textContent = "Track info";
+  const title = document.createElement("span");
+  title.textContent = it.title ?? "";
+  const titleAndInfo = document.createDocumentFragment();
+  titleAndInfo.append(title, " ", button);
+  return tableRow(document, [
+    formatPlayedAt(it.played_at, withDate), titleAndInfo, it.artist ?? "", _fmtDuration(it.duration),
+  ], { rowHeaderIndex: 1 });
 }
 
 function showHistoryPaging(data) {
@@ -2202,6 +2208,7 @@ async function fetchHistory(page, { announce = false } = {}) {
     let focusLost = false;
     if (!data.total) {
       tbody.replaceChildren();
+      historyNavigation.refresh();
       table.setAttribute("hidden", "");
       pag.setAttribute("hidden", "");
       empty.textContent = "No playback history yet.";
@@ -2220,7 +2227,8 @@ async function fetchHistory(page, { announce = false } = {}) {
     table.removeAttribute("hidden");
     const withDate = historyNeedsDates(data.items);
     const focusedId = focusedButton?.dataset.historyId;
-    tbody.innerHTML = data.items.map((it) => historyRowHtml(it, withDate)).join("");
+    tbody.replaceChildren(...data.items.map((it) => historyRowHtml(it, withDate)));
+    historyNavigation.refresh();
     if (focusedId) {
       const replacement = [...tbody.querySelectorAll(".history-info")]
         .find((button) => button.dataset.historyId === focusedId);
@@ -2257,6 +2265,7 @@ async function fetchHistory(page, { announce = false } = {}) {
       return;
     }
     if (tbody) tbody.replaceChildren();
+    historyNavigation.refresh();
     if (table) table.setAttribute("hidden", "");
     if (pag) pag.setAttribute("hidden", "");
     if (empty) {
@@ -2304,11 +2313,9 @@ async function addNewHistoryRows() {
     ? document.activeElement.closest(".history-info") : null;
   const focusedIndex = focusedButton
     ? [...tbody.querySelectorAll(".history-info")].indexOf(focusedButton) : -1;
-  // A template parses table rows on their own, without a table around them.
-  const rows = document.createElement("template");
-  rows.innerHTML = fresh.map((it) => historyRowHtml(it, _histWithDate)).join("");
-  tbody.prepend(rows.content);
+  tbody.prepend(...fresh.map((it) => historyRowHtml(it, _histWithDate)));
   while (tbody.children.length > 50) tbody.lastElementChild.remove();
+  historyNavigation.refresh();
   if (focusedButton && !focusedButton.isConnected) focusRemainingHistoryRow(tbody, focusedIndex,
     "That play is no longer in the displayed History rows.");
   _histNewestAt = data.items[0].played_at;
