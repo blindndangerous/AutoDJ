@@ -358,7 +358,8 @@ export function installClockwheelPanel({ document: doc = document, request = req
 
   function resetForm() {
     editing = null;
-    el("clock-step-require-following").checked = false;
+    const requireFollowing = el("clock-step-require-following");
+    if (requireFollowing) requireFollowing.checked = false;
     if (legend) legend.textContent = "Add a step";
     addButton.textContent = "Add step";
     if (cancelEdit) cancelEdit.hidden = true;

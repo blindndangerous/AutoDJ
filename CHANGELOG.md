@@ -261,6 +261,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The clockwheel's reset timing now measures every song from its start cue to its end cue (or its
+  segue or outro, when earlier) for all clockwheels, not only for liner steps with "Only play if
+  the following track fits before the next reset" ticked. Silence before the start cue and an
+  unused tail after the end cue no longer count toward a song's length when AutoDJ decides
+  whether to restart the clock at the next song handoff.
+
 - `autodj index` now adds songs from registered folders and saves analysis in the current
   library, matching Library tools. Limits apply to advanced analysis; songs are added first.
   Force replaces analysis without clearing cues or history, and Enrich updates the current
