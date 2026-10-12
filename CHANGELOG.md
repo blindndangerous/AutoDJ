@@ -10,6 +10,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Rotation categories for clockwheels (Library tools, Categories), such as A, B, C and D or
+  "Remembering the 2000s". A category's songs come from a beets query or from an M3U or M3U8 file
+  in the playlists folder (`[library] playlists_folder`, by default `playlists/` in the index
+  folder), with each line matched to a library track and the lines that match none counted and
+  named. Queries use the common beets syntax (`field:value`, ranges such as
+  `original_year:2000..2009`, `^` to leave out, quoted phrases) on any beets field, flexible
+  attributes included, read from the beets database opened read-only; regular expressions,
+  alternatives and other syntax AutoDJ does not run are refused in words. Year filters use
+  `original_year`, falling back to `year` when beets has none, and the list, Check and
+  `autodj doctor` count the songs that used the fallback. A new clockwheel step, "Music from a
+  category", picks the least recently played or a random song of a category under the repeat
+  rules and the DMCA limits, like a folder step. Categories are worked out again only when the
+  categories, beets, a playlist file or the library change. An empty or deleted category is
+  logged and skipped, and a clockwheel whose category steps all come up empty plays a song from
+  the whole library instead of going silent. Categories are kept in `categories.json` and in
+  backups; `autodj doctor` names the empty ones and the missing playlist tracks.
+
 - Several named clockwheels (Library tools, Clockwheels): create, duplicate, rename, delete,
   activate one or turn the clockwheel off. Each is a versioned JSON file in `clockwheels/` in the
   active index folder, included in backups. A step editor lists steps as "Step 3 of 12, music from
