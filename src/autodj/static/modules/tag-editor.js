@@ -9,7 +9,7 @@
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { announceStatus } from "./live-region.js";
 
-export const TAG_FIELDS = ["title", "artist", "album", "genre", "year", "bpm", "key", "isrc"];
+const TAG_FIELDS = ["title", "artist", "album", "genre", "year", "bpm", "key", "isrc"];
 const TEXT_FIELDS = new Set(["title", "artist", "album", "genre"]);
 const LABELS = { title: "Title", artist: "Artist", album: "Album", genre: "Genre" };
 const MAX_TEXT = 500;
