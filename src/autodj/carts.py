@@ -36,7 +36,7 @@ from fastapi import File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from autodj.clip_dates import ClipDates, parse_dates, station_today, station_zone
+from autodj.clip_dates import ClipDates, ClipDatesError, parse_dates, station_today, station_zone
 from autodj.liner_files import (
     InvalidLinerName,
     LinerConflictError,
@@ -67,6 +67,17 @@ def _clean_name(value: str) -> str:
     return value
 
 
+class CartDatesError(ClipDatesError):
+    """A cart's play dates refused, naming the field.
+
+    ``reports_field`` marks it for the server's 422 handler, which answers
+    ``{"detail": ..., "field": ...}`` for it alone; every other 422 keeps
+    its list of problems.
+    """
+
+    reports_field = True
+
+
 class CartSlot(BaseModel):
     """One assigned clip and how it plays."""
 
@@ -92,8 +103,11 @@ class CartSlot(BaseModel):
         if self.source == "upload":
             validate_liner_name(self.clip)
         # Do not play after must not come before Not before.  The error names
-        # its field, so the 422 can point the page at it.
-        parse_dates({"not_before": self.not_before, "not_after": self.not_after})
+        # its field, so the cart routes' 422 can point the page at it.
+        try:
+            parse_dates({"not_before": self.not_before, "not_after": self.not_after})
+        except ClipDatesError as exc:
+            raise CartDatesError(exc.field, exc.message) from None
         return self
 
     def dates(self) -> ClipDates:

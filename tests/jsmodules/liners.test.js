@@ -758,6 +758,26 @@ describe("liner play dates", () => {
     }
   });
 
+  it("keeps focus on the same liner when a midnight refresh finds the list changed", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval"] });
+    try {
+      vi.setSystemTime(new Date("2026-12-27T06:50:00Z"));
+      const open = { ...PROMO, playable: true, unplayable_text: "" };
+      const listed = { timezone: "America/Denver", today: "2026-12-26", items: [open, ID] };
+      const { list } = await install(undefined, listed);
+      datesButton(list, "id.wav").focus();
+      // A liner was added outside this page meanwhile, so the rows are drawn again.
+      const added = { ...ID, id: "new.wav", name: "new.wav" };
+      Object.assign(listed, { today: "2026-12-27", items: [added, PROMO, ID] });
+      vi.setSystemTime(new Date("2026-12-27T07:01:00Z"));
+      vi.advanceTimersByTime(60_000);
+      await vi.waitFor(() => expect(list.querySelectorAll("li")).toHaveLength(3));
+      await vi.waitFor(() => expect(document.activeElement).toBe(datesButton(list, "id.wav")));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("says so when Test finds every liner outside its play dates", async () => {
     const { fetchImpl } = await install(undefined, { items: [PROMO] });
     document.getElementById("ln-test").click();

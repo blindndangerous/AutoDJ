@@ -275,6 +275,9 @@ class LinerScheduler:
         self._registered_liners = registered_liners
         self._path_decoder = path_decoder or decode_liner_path
         self.play_dates = play_dates
+        # The same, for a liner that airs at a given Unix time (a talk-up
+        # planned ahead): ``(name, at)``.  The station sets it.
+        self.play_dates_at: Callable[[str, float], str | None] | None = None
         self._registered_cursor = 0
         self._prepared: _Prepared | None = None
         # Rendered audio due at this song change instead of an automatic
@@ -456,8 +459,17 @@ class LinerScheduler:
         step = next(step for step in range(size) if playable[(start + step) % size])
         return (start + step) % size, step + 1
 
-    def refusal(self, name: str) -> str | None:
-        """Why liner *name* (catalog ID or file name) may not play now, or ``None``."""
+    def refusal(self, name: str, at: float | None = None) -> str | None:
+        """Why liner *name* (catalog ID or file name) may not play now, or ``None``.
+
+        With *at*, a Unix time, judged by the day the liner airs then.
+        """
+        if at is not None and self.play_dates_at is not None:
+            try:
+                return self.play_dates_at(name, at)
+            except Exception:
+                logger.warning("Could not read the play dates of liner %s", name, exc_info=True)
+                return None
         if self.play_dates is None:
             return None
         try:
@@ -752,7 +764,9 @@ class LinerScheduler:
         # Liners outside their play dates are passed over, as automatic
         # picks pass over them; the dates are read before the state lock.
         names = [key for key, _path in registered] or [path.name for path in self._library.files]
-        playable = [self.refusal(name) is None for name in names]
+        # Judged by the day the liner airs, at the handoff *seconds* from now.
+        airs = time.time() + seconds
+        playable = [self.refusal(name, airs) is None for name in names]
         with self._state():
             answer = check_locked()
             if answer != "":

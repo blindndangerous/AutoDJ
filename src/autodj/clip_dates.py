@@ -166,11 +166,16 @@ class LinerDates:
         self._dates: dict[str, ClipDates] = {}
 
     def _stat(self) -> tuple[int, int, int] | None:
+        """The file's time, size and ID; ``None`` when there is no file.
+
+        Raises:
+            OSError: The file is there but cannot be looked at.
+        """
         # The file ID too: every save replaces the file, so a new file of the
         # same size written within one tick of the clock is still noticed.
         try:
             found = self.path.stat()
-        except OSError:
+        except FileNotFoundError:
             return None
         return found.st_mtime_ns, found.st_size, found.st_ino
 
@@ -186,24 +191,41 @@ class LinerDates:
         )
 
     def _load_locked(self) -> dict[str, ClipDates]:
-        """Every liner's dates, read again if the file changed. Caller holds ``_lock``."""
+        """Every liner's dates, read again if the file changed. Caller holds ``_lock``.
+
+        Only a file that is not valid dates is set aside.  One that cannot
+        be read just now (a busy disk, a share away) is left as it is.
+
+        Raises:
+            OSError: The file could not be looked at or read.
+        """
         stamp = self._stat()
         if stamp == self._stamp:
             return dict(self._dates)
         dates: dict[str, ClipDates] = {}
         if stamp is not None:
+            data = self.path.read_bytes()
             try:
-                dates = _LinerDatesFile.model_validate_json(self.path.read_bytes()).liners
-            except (OSError, ValueError) as exc:
+                dates = _LinerDatesFile.model_validate_json(data).liners
+            except ValueError as exc:
                 self._keep_bad_copy(str(exc).splitlines()[0])
                 stamp = None
         self._stamp, self._dates = stamp, dates
         return dict(dates)
 
     def all(self) -> dict[str, ClipDates]:
-        """Every liner's dates, read again if the file changed."""
+        """Every liner's dates, read again if the file changed.
+
+        When the file cannot be read just now, the dates last read are used
+        and a warning logged; a save then refuses (see :meth:`set`), so
+        nothing is written over the file.
+        """
         with self._lock:
-            return self._load_locked()
+            try:
+                return self._load_locked()
+            except OSError as exc:
+                logger.warning("Could not read the liner dates file %s: %s", self.path, exc)
+                return dict(self._dates)
 
     def get(self, liner_id: str) -> ClipDates:
         """The dates of *liner_id*; empty when it has none."""
@@ -214,6 +236,7 @@ class LinerDates:
 
         Raises:
             ClipDatesError: Too many liners have dates already.
+            OSError: The file could not be read, so nothing is written.
         """
         # Read, change and write under one lock, so two saves at once (two
         # requests, or a save and a delete) never lose each other's change.
@@ -240,6 +263,9 @@ class LinerDates:
         """Remove the dates of *liner_ids* in one write; the IDs that had dates.
 
         The file is left as it is when none of them had dates.
+
+        Raises:
+            OSError: The file could not be read, so nothing is written.
         """
         with self._lock:
             current = self._load_locked()
@@ -262,6 +288,9 @@ class LinerGate:
         today: The station's calendar day now.
         liner_id: The ID a liner path is known by (its catalog ID, or its
             file name), for the clockwheel's liner steps.
+        day_at: The station's calendar day at a Unix time, for a liner that
+            airs later (a talk-up planned ahead, a clockwheel liner before
+            the next song); without it, today is used.
     """
 
     def __init__(
@@ -269,22 +298,30 @@ class LinerGate:
         store: LinerDates,
         today: Callable[[], Date],
         liner_id: Callable[[str], str] = lambda path: Path(path).name,
+        day_at: Callable[[float], Date] | None = None,
     ) -> None:
         self.store = store
         self._today = today
         self._liner_id = liner_id
+        self._day_at = day_at
 
-    def refusal(self, liner_id: str) -> str | None:
-        """Why *liner_id* may not play now, or ``None`` when it may."""
+    def _day(self, at: float | None) -> Date:
+        return self._day_at(at) if at is not None and self._day_at is not None else self._today()
+
+    def refusal(self, liner_id: str, at: float | None = None) -> str | None:
+        """Why *liner_id* may not play now (or at Unix time *at*), or ``None`` when it may."""
         dates = self.store.all().get(liner_id)
-        return dates.refusal(self._today()) if dates is not None else None
+        return dates.refusal(self._day(at)) if dates is not None else None
 
-    def playable(self, entries: Sequence[Any]) -> Sequence[Any]:
-        """The liner *entries* that may play now; *entries* itself when no liner has dates."""
+    def playable(self, entries: Sequence[Any], at: float | None = None) -> Sequence[Any]:
+        """The liner *entries* that may play now, or at Unix time *at*.
+
+        *entries* itself when no liner has dates.
+        """
         dates = self.store.all()
         if not dates:
             return entries
-        today = self._today()
+        today = self._day(at)
         return tuple(
             entry
             for entry in entries

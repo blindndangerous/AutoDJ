@@ -1275,6 +1275,12 @@ def install_station_routes(router: StationRouter) -> None:
             return JSONResponse(
                 status_code=400, content={"detail": exc.message, "field": exc.field}
             )
+        except OSError as exc:
+            logger.warning("Could not save liner dates: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail="The liner dates file could not be read just now; nothing was saved",
+            ) from exc
         return {**item, **dates.view(station_today(station.cfg))}
 
     @router.get("/liners/file/{name}")
@@ -1328,6 +1334,11 @@ def install_station_routes(router: StationRouter) -> None:
             return {"played": None, "message": "Nobody is listening, so the liner was not played."}
         if state == "paused":
             return {"played": None, "message": "Playback is paused, so the liner was not played."}
+        # Test never plays a liner outside its play dates, as the automatic
+        # liners skip it; the page says why.
+        refused = await asyncio.to_thread(scheduler.refusal, body.name) if body.name else None
+        if isinstance(refused, str) and refused:
+            return {"played": None, "message": f"That liner was skipped: it is {refused}."}
         played = await asyncio.to_thread(scheduler.fire, body.name)
         return {"played": played}
 

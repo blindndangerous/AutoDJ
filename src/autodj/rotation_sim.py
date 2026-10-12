@@ -586,6 +586,7 @@ def _liner_filter(source: SimulationSource, snapshot: PlayerSnapshot, player: _S
         _ReadOnlyLinerDates(source.liner_dates),
         lambda: station_wall(player._cfg, player._sim_now).date(),
         liner_id,
+        lambda at: station_wall(player._cfg, at).date(),
     )
     return gate.playable
 

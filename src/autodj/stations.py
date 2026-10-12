@@ -324,6 +324,7 @@ def start_server_audio_liners(
 
 def _liner_gate(bridge: PlayerBridge, paths: StationPaths) -> LinerGate:
     """The station's liner play dates, with the catalog naming registered liners."""
+    from autodj.categories import station_wall
     from autodj.clip_dates import LinerDates, LinerGate, station_today
 
     cfg = bridge.player._cfg
@@ -333,7 +334,17 @@ def _liner_gate(bridge: PlayerBridge, paths: StationPaths) -> LinerGate:
         record = library.catalog.record_for_path(path) if library is not None else None
         return str(record["id"]) if record else Path(path).name
 
-    return LinerGate(LinerDates(paths.liner_dates), lambda: station_today(cfg), liner_id)
+    return LinerGate(
+        LinerDates(paths.liner_dates),
+        lambda: station_today(cfg),
+        liner_id,
+        lambda at: station_wall(cfg, at).date(),
+    )
+
+
+#: A library (catalog) record ID: 32 hexadecimal digits.  A liner folder
+#: file name always has an extension, so the two never meet.
+_CATALOG_ID = re.compile(r"[0-9a-f]{32}")
 
 
 def prune_liner_dates(station: StationRuntime) -> list[str]:
@@ -350,8 +361,17 @@ def prune_liner_dates(station: StationRuntime) -> list[str]:
     if not dates:
         return []
     library = station.bridge.library
-    folder = station.paths.liners
-    folder_present = folder.is_dir()
+    # The liner folder, listed once.  A folder that cannot be listed (a share
+    # that is away, a moment of trouble) forgets nothing from it.
+    names: set[str] | None
+    try:
+        with os.scandir(station.paths.liners) as listing:
+            names = {item.name for item in listing if item.is_file()}
+    except OSError as exc:
+        logger.info(
+            "Station %s: liner folder not listed (%s); keeping its dates", station.slug, exc
+        )
+        names = None
     gone = []
     for liner_id in dates:
         record = library.catalog.record_for_id(liner_id) if library is not None else None
@@ -363,9 +383,11 @@ def prune_liner_dates(station: StationRuntime) -> list[str]:
                 and library.is_gone(record["path"])
             ):
                 gone.append(liner_id)
-        elif (
-            folder_present and Path(liner_id).name == liner_id and not (folder / liner_id).is_file()
-        ):
+        elif _CATALOG_ID.fullmatch(liner_id):
+            # A library ID without a record (a source removed, say): kept,
+            # because it is not a file name in the liner folder.
+            continue
+        elif names is not None and Path(liner_id).name == liner_id and liner_id not in names:
             gone.append(liner_id)  # one in the liner folder, gone from it
     forgotten = store.forget(gone)
     if forgotten:
@@ -557,7 +579,7 @@ class StationRuntime:
         # The clockwheel's liner steps pass over liners outside their dates.
         # A plain function, so copying the player's settings never copies the store.
         gate = self.liner_gate
-        bridge.player.liner_filter = lambda entries: gate.playable(entries)
+        bridge.player.liner_filter = lambda entries, at=None: gate.playable(entries, at)
         self.nowplaying = NowPlaying(bridge, timezone=timezone)
         self.webhooks: WebhookWorker = WebhookWorker(getattr(bridge.player._cfg, "webhooks", ()))
         self.listener_access: ListenerAccess | None = (
@@ -706,6 +728,8 @@ class StationRuntime:
             bridge.liner_scheduler.announcement = self.time_checks.due_audio
             # Automatic liners pass over the ones outside their play dates.
             bridge.liner_scheduler.play_dates = self.liner_gate.refusal
+            # A talk-up planned ahead is judged by the day it airs.
+            bridge.liner_scheduler.play_dates_at = self.liner_gate.refusal
         self._broadcast_task = asyncio.create_task(self.broadcast())
         self.webhooks.start()
 

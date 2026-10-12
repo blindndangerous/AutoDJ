@@ -123,7 +123,20 @@ async function _followStationDay(els, now = new Date()) {
   const rows = [...els.lnFileList.querySelectorAll(":scope > li[data-liner-id]")];
   const same = rows.length === items.length && rows.every((row, i) => row.dataset.linerId === items[i].id);
   if (!same) {
+    // The liners changed meanwhile: draw the list again, then put focus back
+    // on the same button of the same liner (or the next row's), so a
+    // midnight redraw never drops it.
+    const focused = els.lnFileList.contains(document.activeElement) ? document.activeElement : null;
+    const row = focused?.closest("li[data-liner-id]");
+    const label = focused?.getAttribute("aria-label");
+    const index = focused ? [...els.lnFileList.querySelectorAll("button")].indexOf(focused) : -1;
     await _loadLibrary(els, epoch);
+    if (!focused || focused.isConnected) return;
+    const again = row && [...els.lnFileList.querySelectorAll(":scope > li[data-liner-id]")]
+      .find((item) => item.dataset.linerId === row.dataset.linerId);
+    const target = (again && [...again.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === label))
+      || nextRowControl(els.lnFileList, "button", Math.max(index, 0), els.lnFileList);
+    target.focus();
     return;
   }
   state.lib = body;

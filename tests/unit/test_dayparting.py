@@ -565,5 +565,48 @@ def test_a_song_whose_window_closes_before_it_would_start_is_not_picked() -> Non
     player._now = lambda: almost  # type: ignore[method-assign]
     current = next(entry for entry in entries if entry.title not in NIGHT)
     player._clock_music_span = lambda _entry: (0.0, 240.0)  # type: ignore[method-assign]
+    player._state.current_track = current
+    player.note_browser_start(current)
     for _ in range(12):
         assert player._pick_next(current).title not in NIGHT
+
+
+def test_a_browser_pick_is_timed_from_what_is_left_of_the_song_playing() -> None:
+    player = _player("random", dmca=False)
+    current, other = player.playable_entries()[:2]
+    now = [1000.0]
+    player._now = lambda: now[0]  # type: ignore[method-assign]
+    player._clock_music_span = lambda _entry: (0.0, 200.0)  # type: ignore[method-assign]
+    player._state.current_track = current
+    player.note_browser_start(current)
+    assert player._browser_handoff(current) == 1200.0
+    now[0] = 1150.0  # 150 seconds in, the next track is picked again (a skip, say)
+    assert player._browser_handoff(current) == 1200.0
+    now[0] = 1300.0  # running long: it starts now at the earliest
+    assert player._browser_handoff(current) == 1300.0
+    # A track that is no longer playing hands over now.
+    assert player._browser_handoff(other) == 1300.0
+
+
+def test_advancing_in_the_browser_times_each_pick_by_when_it_plays() -> None:
+    from autodj._bridge import PlayerBridge
+
+    player = _player("random", dmca=False)
+    current = player.playable_entries()[0]
+    player._state.current_track = current
+    now = [5000.0]
+    player._now = lambda: now[0]  # type: ignore[method-assign]
+    player._clock_music_span = lambda entry: (0.0, float(entry.length))  # type: ignore[method-assign]
+    asked: list[float | None] = []
+    real = player._pick_next
+
+    def recording(seed: Any, *, at: float | None = None) -> Any:
+        asked.append(at)
+        return real(seed, at=at)
+
+    player._pick_next = recording  # type: ignore[method-assign]
+    bridge = PlayerBridge(player=player, sim=player._sim)
+    bridge.advance_now()
+    nxt = player._state.current_track
+    # The replacement plays now; the one after it when the new track ends.
+    assert asked == [5000.0, 5000.0 + nxt.length]
