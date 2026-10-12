@@ -8,8 +8,9 @@ these names (letters compared without regard to case, extension ``.wav``,
 - an *hour file*: letters, spaces, ``_`` or ``-`` that include ``h`` and no
   ``m``, then two digits 00 to 23 (``hr_05.mp3``, ``H05.wav``, ``hour-17.ogg``);
   it says "it's 5" and is followed by a minute file;
-- an *exact-hour file*: an hour file name with ``o`` straight after the digits
-  (``hr_05o.mp3``); it says "it's 5 o'clock" and plays alone at minute 00;
+- an *exact-hour file*: an hour file name with ``o`` after the digits, straight
+  after them or after one space, ``_`` or ``-`` (``hr_05o.mp3``, ``hrs05_o.mp3``);
+  it says "it's 5 o'clock" and plays alone at minute 00;
 - a *minute file*: letters, spaces, ``_`` or ``-`` that include ``m`` and no
   ``h``, then two digits 00 to 59 (``m_56.mp3``, ``min 07.wav``);
 - ``intro``, ``outro``, ``am`` and ``pm`` (``intro.wav``, ``PM.mp3``).
@@ -37,7 +38,7 @@ from autodj.stereo import SAMPLE_RATE
 
 AUDIO_EXTENSIONS = (".wav", ".mp3", ".flac", ".ogg")
 EXTRAS = ("intro", "outro", "am", "pm")
-_TIME_NAME = re.compile(r"([a-z _-]*)(\d{2})(o?)")
+_TIME_NAME = re.compile(r"([a-z _-]*)(\d{2})((?:[ _-]?o)?)")
 _LABELS = {"hour": "hour", "exact": "exact hour", "minute": "minute"}
 
 #: Frames quieter than this, relative to the piece's own peak, are silence.

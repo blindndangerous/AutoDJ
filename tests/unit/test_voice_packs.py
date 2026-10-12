@@ -194,6 +194,9 @@ def test_join_refuses_nothing_and_silence() -> None:
     [
         ("hr_05.mp3", ("hour", 5)),
         ("HR_05O.MP3", ("exact", 5)),
+        ("hrs05_o.mp3", ("exact", 5)),
+        ("HRS14-o.mp3", ("exact", 14)),
+        ("hrs05_0.mp3", "not an hour, minute, intro, outro, am or pm name"),
         ("hour-17.ogg", ("hour", 17)),
         ("h23.wav", ("hour", 23)),
         ("m_56.mp3", ("minute", 56)),
@@ -207,6 +210,7 @@ def test_join_refuses_nothing_and_silence() -> None:
         ("hr_24.mp3", "hour over 23"),
         ("m_60.mp3", "minute over 59"),
         ("m_05o.mp3", "o after a minute number"),
+        ("min05_o.mp3", "o after a minute number"),
         ("hr_5.mp3", "not an hour, minute, intro, outro, am or pm name"),
         ("voice2 hr_05.mp3", "not an hour, minute, intro, outro, am or pm name"),
     ],
