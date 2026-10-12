@@ -30,16 +30,20 @@ import hashlib
 import logging
 import time
 import weakref
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from fastapi import File, Form, HTTPException, Request, UploadFile
+from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from autodj.breaks import (
     EXTENSIONS,
     KINDS,
     Break,
+    BreakCues,
     BreakDesk,
     BreakError,
     SlotPlan,
@@ -71,8 +75,6 @@ CONTEXT_ROWS = 10
 #: How long an upload waits for the decoder before the server says it is busy.
 DECODE_WAIT_SECONDS = 20.0
 _NO_STORE = {"Cache-Control": "no-store"}
-
-_Id = Annotated[str, Form(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.:-]+$")]
 
 
 def _path_id(path: str) -> str:
@@ -259,95 +261,92 @@ def install_breaks(router: StationRouter) -> None:
         return JSONResponse(await asyncio.to_thread(_context, station), headers=_NO_STORE)
 
     @router.post("/announcer/breaks", status_code=201)
-    async def announcer_upload(
-        station: StationDep,
-        request: Request,
-        file: Annotated[UploadFile, File()],
-        kind: Annotated[Literal["dj", "news", "weather", "music_news"], Form()],
-        slot_id: Annotated[str, Form(min_length=32, max_length=32)],
-        ending_id: _Id,
-        upcoming_id: _Id,
-        placement: Annotated[Literal["auto", "talk_up", "standalone"], Form()] = "auto",
-        allow_outro: Annotated[bool, Form()] = False,
-        expires_s: Annotated[int | None, Form(ge=30)] = None,
-        label: Annotated[str, Form(max_length=200)] = "",
-    ) -> JSONResponse:
-        """Upload one break for the open song change."""
+    async def announcer_upload(station: StationDep, request: Request) -> JSONResponse:
+        """Upload one break for the open song change.
+
+        The body is read only after the token, the station, the declared
+        length and the station's room are checked, and room for it is held
+        while it arrives and decodes, so uploads in parallel cannot pass the
+        caps together.
+        """
         token, desk = announcer(request, station)
         require_breaks(station, desk)
         config = desk.config
-        if kind != "dj" and placement == "talk_up":
-            raise HTTPException(
-                status_code=422, detail="Only a DJ break can talk up a song; use standalone"
-            )
-        if not valid_id(slot_id):
-            raise HTTPException(status_code=422, detail="slot_id is not a slot id")
-        if expires_s is not None and expires_s > config.max_expires_seconds:
-            raise HTTPException(
-                status_code=422,
-                detail=f"expires_s must be at most {config.max_expires_seconds}",
-            )
-        suffix = Path(file.filename or "").suffix.lower()
-        if suffix not in EXTENSIONS:
-            raise HTTPException(
-                status_code=415,
-                detail="A break must be one of these file types: " + ", ".join(EXTENSIONS),
-            )
-        slot = await asyncio.to_thread(_current_slot, station)
-        if slot is None or slot["slot_id"] != slot_id:
-            return refused(409, "That song change is no longer open", "slot_closed", slot)
-        if (slot["ending"] or {}).get("id") != ending_id or (slot["upcoming"] or {}).get(
-            "id"
-        ) != upcoming_id:
-            return refused(
-                409, "The songs around that song change have changed", "pair_changed", slot
-            )
-        try:
-            desk.check_room(slot_id)
-        except BreakError as exc:
-            return refused(exc.status, exc.detail, exc.reason, slot)
-
+        cap = config.max_upload_bytes
+        declared = request.headers.get("content-length")
+        size = cap
+        if declared is not None:
+            if not declared.isdecimal() or int(declared) > cap + MULTIPART_OVERHEAD_BYTES:
+                raise HTTPException(
+                    status_code=413, detail=f"A break may be at most {config.max_upload_mb} MB"
+                )
+            size = min(cap, int(declared))
         break_id = new_id()
-        name = file_name(break_id, suffix)
         try:
-            path, size = await store_liner_upload(
-                desk.folder, name, file, max_bytes=config.max_upload_bytes, replace=False
-            )
-        except LinerTooLargeError as exc:
-            raise HTTPException(
-                status_code=413, detail=f"A break may be at most {config.max_upload_mb} MB"
-            ) from exc
+            desk.reserve(break_id, "", size, file_name(break_id, ".part"))
+        except BreakError as exc:
+            return refused(exc.status, exc.detail, exc.reason, None)
+        path: Path | None = None
         booked = False
         try:
-            gate = decoder()
+            fields, upload = await _read_form(request)
             try:
-                await asyncio.wait_for(gate.acquire(), DECODE_WAIT_SECONDS)
-            except TimeoutError as exc:
-                raise HTTPException(
-                    status_code=503,
-                    detail="The server is decoding other breaks; try again shortly",
-                    headers={"Retry-After": "5"},
-                ) from exc
-            try:
-                cues = await asyncio.to_thread(_decode_cues, path, config.max_seconds)
+                suffix = Path(upload.filename or "").suffix.lower()
+                if suffix not in EXTENSIONS:
+                    raise HTTPException(
+                        status_code=415,
+                        detail="A break must be one of these file types: " + ", ".join(EXTENSIONS),
+                    )
+                if fields.kind != "dj" and fields.placement == "talk_up":
+                    raise HTTPException(
+                        status_code=422, detail="Only a DJ break can talk up a song; use standalone"
+                    )
+                if fields.expires_s is not None and fields.expires_s > config.max_expires_seconds:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"expires_s must be at most {config.max_expires_seconds}",
+                    )
+                slot = await asyncio.to_thread(_current_slot, station)
+                if slot is None or slot["slot_id"] != fields.slot_id:
+                    return refused(409, "That song change is no longer open", "slot_closed", slot)
+                if (slot["ending"] or {}).get("id") != fields.ending_id or (
+                    slot["upcoming"] or {}
+                ).get("id") != fields.upcoming_id:
+                    return refused(
+                        409, "The songs around that song change have changed", "pair_changed", slot
+                    )
+                name = file_name(break_id, suffix)
+                try:
+                    desk.retarget(break_id, fields.slot_id, name)
+                except BreakError as exc:
+                    return refused(exc.status, exc.detail, exc.reason, slot)
+                try:
+                    path, stored = await store_liner_upload(
+                        desk.folder, name, upload, max_bytes=cap, replace=False
+                    )
+                except LinerTooLargeError as exc:
+                    raise HTTPException(
+                        status_code=413, detail=f"A break may be at most {config.max_upload_mb} MB"
+                    ) from exc
             finally:
-                gate.release()
+                await upload.close()
+            cues = await decode_one(path, config.max_seconds)
             now = time.time()
             item = Break(
                 break_id=break_id,
-                kind=kind,
-                slot_id=slot_id,
-                ending=ending_id,
-                upcoming=upcoming_id,
-                placement=placement,
-                allow_outro=bool(allow_outro),
+                kind=fields.kind,
+                slot_id=fields.slot_id,
+                ending=fields.ending_id,
+                upcoming=fields.upcoming_id,
+                placement=fields.placement,
+                allow_outro=fields.allow_outro,
                 path=path,
-                size=size,
+                size=stored,
                 cues=cues,
-                label=_clean_label(label),
+                label=_clean_label(fields.label),
                 token_name=token.name,
                 created_at=now,
-                expires_at=now + (expires_s or config.default_expires_seconds),
+                expires_at=now + (fields.expires_s or config.default_expires_seconds),
             )
             try:
                 await asyncio.to_thread(station.player.book_break, item)
@@ -357,11 +356,19 @@ def install_breaks(router: StationRouter) -> None:
             booked = True
         finally:
             if not booked:
-                await asyncio.shield(asyncio.to_thread(path.unlink, missing_ok=True))
+                # The file goes now if it can; if a decode still holds it, the
+                # station's upkeep deletes it once the decode lets go.
+                gone = path is None or await asyncio.shield(asyncio.to_thread(_quiet_unlink, path))
+                desk.release(break_id, None if gone else path)
         slot = await asyncio.to_thread(_current_slot, station)
         view = item.view()
-        view["airs_in_s"] = slot["airs_in_s"] if slot and slot["slot_id"] == slot_id else None
+        view["airs_in_s"] = (
+            slot["airs_in_s"] if slot and slot["slot_id"] == fields.slot_id else None
+        )
         return JSONResponse(view, status_code=201, headers=_NO_STORE)
+
+    async def decode_one(path: Path, max_seconds: float) -> BreakCues:
+        return await _gated_decode(decoder(), path, max_seconds)
 
     @router.get("/announcer/breaks")
     async def announcer_breaks(station: StationDep, request: Request) -> JSONResponse:
@@ -393,21 +400,24 @@ def install_breaks(router: StationRouter) -> None:
         return JSONResponse(item.view(), headers=_NO_STORE)
 
 
-def _decode_cues(path: Path, max_seconds: float) -> Any:
-    """Decode an uploaded break and find its speech (blocking).
+def _decode_cues(path: Path, max_seconds: float) -> BreakCues:
+    """Decode an uploaded break within its limits and find its speech (blocking).
 
     Raises:
-        HTTPException: 422 when the file is not audio AutoDJ can play, is
-            longer than *max_seconds*, or holds no speech.
+        HTTPException: 422 when the file is not audio AutoDJ can play, breaks
+            the rate, channel or length limits, or holds no speech.
     """
-    from autodj.stereo import TrackTooLongError, load_stereo
+    from autodj.break_audio import BreakAudioError, decode_break
+    from autodj.stereo import TrackTooLongError
 
     try:
-        audio = load_stereo(str(path), SAMPLE_RATE, max_seconds)
+        audio = decode_break(path, max_seconds)
     except TrackTooLongError as exc:
         raise HTTPException(
             status_code=422, detail=f"A break may be at most {max_seconds:g} seconds long"
         ) from exc
+    except BreakAudioError as exc:
+        raise HTTPException(status_code=422, detail=f"That break cannot be used: {exc}") from exc
     except Exception as exc:
         raise HTTPException(
             status_code=422, detail="That file is not audio AutoDJ can play"
@@ -416,6 +426,101 @@ def _decode_cues(path: Path, max_seconds: float) -> Any:
         return speech_cues(audio)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=f"That break is unusable: {exc}") from exc
+
+
+async def _gated_decode(
+    gate: asyncio.Semaphore,
+    path: Path,
+    max_seconds: float,
+    decode: Callable[[Path, float], BreakCues] | None = None,
+) -> BreakCues:
+    """Decode an upload in a worker thread, one at a time across the server.
+
+    The gate opens when the decode thread ends, not when the request does,
+    so a client that hangs up cannot let a second decode start beside a
+    running one.
+
+    Raises:
+        HTTPException: 503 with ``Retry-After`` when the gate stays shut
+            for :data:`DECODE_WAIT_SECONDS`; as :func:`_decode_cues`.
+    """
+    run = decode or _decode_cues
+    try:
+        await asyncio.wait_for(gate.acquire(), DECODE_WAIT_SECONDS)
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="The server is decoding other breaks; try again shortly",
+            headers={"Retry-After": "5"},
+        ) from exc
+    loop = asyncio.get_running_loop()
+
+    def work() -> BreakCues:
+        try:
+            return run(path, max_seconds)
+        finally:
+            loop.call_soon_threadsafe(gate.release)
+
+    return await asyncio.to_thread(work)
+
+
+def _quiet_unlink(path: Path) -> bool:
+    """Delete *path*; whether it is gone."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        return False
+    return True
+
+
+class _UploadFields(BaseModel):
+    """The form fields of a break upload, besides the file."""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["dj", "news", "weather", "music_news"]
+    slot_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    ending_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.:-]+$")
+    upcoming_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.:-]+$")
+    placement: Literal["auto", "talk_up", "standalone"] = "auto"
+    allow_outro: bool = False
+    expires_s: int | None = Field(default=None, ge=30)
+    label: str = Field(default="", max_length=200)
+
+
+async def _read_form(request: Request) -> tuple[_UploadFields, StarletteUploadFile]:
+    """Parse the multipart body: one file and a few short fields.
+
+    Raises:
+        HTTPException: 422 for a missing file, an unknown or bad field, or
+            a body that is not a form of one file.
+    """
+    try:
+        form = await request.form(max_files=1, max_fields=16, max_part_size=4096)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422, detail="Send the break as multipart/form-data"
+        ) from exc
+    upload = form.get("file")
+    values = {key: value for key, value in form.multi_items() if key != "file"}
+    if not isinstance(upload, StarletteUploadFile) or any(
+        not isinstance(value, str) for value in values.values()
+    ):
+        await form.close()
+        raise HTTPException(status_code=422, detail="Send one audio file as the field file")
+    try:
+        fields = _UploadFields.model_validate(values)
+    except ValidationError as exc:
+        await form.close()
+        raise HTTPException(
+            status_code=422,
+            detail=[
+                {"loc": [str(part) for part in error.get("loc", ())], "msg": str(error["msg"])}
+                for error in exc.errors()
+            ],
+        ) from exc
+    return fields, upload
 
 
 __all__ = [

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +17,7 @@ from autodj.breaks import (
     ON_AIR,
     QUEUED,
     RENDERED,
+    RENDERED_GRACE_SECONDS,
     BreakDesk,
     BreakError,
     file_name,
@@ -255,15 +258,25 @@ def test_drops_and_their_reasons(desk):
 def test_the_first_upkeep_sweeps_files_a_previous_run_left(desk):
     desk, _clock, _config = desk
     leftover = desk.folder / f"brk-{new_id()}.mp3"
-    part = desk.folder / f".brk-{new_id()}.wav.0123456789abcdef.part"
+    old_part = desk.folder / f".brk-{new_id()}.wav.0123456789abcdef.part"
+    young_part = desk.folder / f".brk-{new_id()}.wav.fedcba9876543210.part"
+    arriving = new_id()
+    desk.reserve(arriving, "", 10, f"brk-{arriving}.wav")
+    held_part = desk.folder / f".brk-{arriving}.wav.0011223344556677.part"
     other = desk.folder / "keep-me.wav"
-    for path in (leftover, part, other):
+    for path in (leftover, old_part, young_part, held_part, other):
         path.write_bytes(b"x")
+    hour_ago = time.time() - 3600
+    os.utime(old_part, (hour_ago, hour_ago))
+    os.utime(held_part, (hour_ago, hour_ago))
     item = make_break(desk, new_id())
     desk.add(item)
     assert desk.needs_maintenance()
     desk.maintain()
-    assert not leftover.exists() and not part.exists()
+    assert not leftover.exists() and not old_part.exists()
+    # An upload still arriving keeps its part file, as does a part too
+    # young to be a leftover.
+    assert held_part.exists() and young_part.exists()
     assert other.exists() and item.path.exists()
 
 
@@ -316,3 +329,125 @@ def test_breaks_settings_defaults_and_conversions():
 def test_breaks_settings_are_checked(values, error):
     with pytest.raises(error):
         BreaksConfig(**values)
+
+
+# ---------------------------------------------------------------------------
+# Room held for uploads, late rendered breaks, emptied slots, upkeep
+# ---------------------------------------------------------------------------
+
+
+def test_uploads_in_progress_hold_room_until_booked_or_released(desk):
+    desk, _clock, config = desk
+    slot = new_id()
+    first, second, third = new_id(), new_id(), new_id()
+    desk.reserve(first, "", 100, "a")
+    desk.reserve(second, "", 100, "b")
+    desk.retarget(first, slot, f"brk-{first}.wav")
+    desk.retarget(second, slot, f"brk-{second}.wav")
+    # Both uploads count against the slot and the station before either is booked.
+    desk.reserve(third, "", 1, "c")
+    with pytest.raises(BreakError) as full_slot:
+        desk.retarget(third, slot, "c")
+    assert full_slot.value.reason == "slot_full"
+    with pytest.raises(BreakError) as full:
+        desk.reserve(new_id(), "", 1, "d")
+    assert full.value.reason == "queue_full"
+    desk.release(third)
+    # Booking turns a reservation into the break; it is not counted twice.
+    item = make_break(desk, slot)
+    item.break_id = first
+    desk.add(item)
+    assert desk.waiting_in(slot) == 1
+    desk.release(second)
+    desk.check_room(slot, config.quota_bytes - item.size)
+
+
+def test_a_rendered_break_that_never_airs_expires(desk):
+    desk, clock, _config = desk
+    item = make_break(desk, new_id())
+    desk.add(item)
+    desk.take(item.slot_id, clock.now + 30)
+    clock.now += 30 + RENDERED_GRACE_SECONDS - 1
+    assert not desk.needs_maintenance() or desk.get(item.break_id).state == RENDERED
+    desk.maintain()
+    assert desk.get(item.break_id).state == RENDERED
+    clock.now += 2
+    assert desk.needs_maintenance()
+    desk.maintain()
+    finished = desk.get(item.break_id)
+    assert finished.state == EXPIRED
+    assert finished.reason == "it was mixed in but never reached the air"
+    assert not item.path.exists()
+    # It no longer holds the station's room.
+    desk.check_room(new_id())
+
+
+def test_a_slot_with_no_waiting_breaks_left_is_reported_once_the_lock_is_free(desk):
+    desk, clock, _config = desk
+    emptied: list[str] = []
+
+    def heard(slot: str) -> None:
+        # The desk's lock is free: asking it again does not deadlock.
+        assert desk.waiting_in(slot) == 0
+        emptied.append(slot)
+
+    desk.on_slot_empty = heard
+    slot = new_id()
+    first, second = make_break(desk, slot), make_break(desk, slot)
+    desk.add(first)
+    desk.add(second)
+    desk.cancel(first.break_id)
+    assert emptied == []  # one break still waits
+    desk.drop(second.break_id, "gone")
+    assert emptied == [slot]
+    late = make_break(desk, new_id(), expires_at=clock.now + 1)
+    desk.add(late)
+    clock.now += 2
+    desk.maintain()
+    assert emptied == [slot, late.slot_id]
+
+
+def test_log_lines_are_written_after_the_lock_is_released(desk, caplog):
+    desk, _clock, _config = desk
+    locked: list[bool] = []
+
+    class Spy(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            locked.append(desk._lock.locked())
+
+    spy = Spy()
+    logging.getLogger("autodj.breaks").addHandler(spy)
+    try:
+        item = make_break(desk, new_id())
+        desk.add(item)
+        desk.cancel(item.break_id)
+    finally:
+        logging.getLogger("autodj.breaks").removeHandler(spy)
+    assert locked and not any(locked)
+
+
+def test_a_file_that_cannot_be_deleted_yet_is_tried_again(desk, monkeypatch):
+    desk, _clock, _config = desk
+    item = make_break(desk, new_id())
+    desk.add(item)
+    desk.cancel(item.break_id)
+    real_unlink = Path.unlink
+    calls = {"n": 0}
+
+    def busy(self, missing_ok=False):
+        if self == item.path and calls["n"] < 2:
+            calls["n"] += 1
+            raise PermissionError("in use")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", busy)
+    desk.maintain()
+    assert item.path.exists() and desk.needs_maintenance()
+    desk.maintain()
+    desk.maintain()
+    assert not item.path.exists()
+    abandoned = desk.folder / f"brk-{new_id()}.wav"
+    abandoned.write_bytes(b"x")
+    desk.release(new_id(), abandoned)
+    desk.maintain()
+    assert not abandoned.exists()

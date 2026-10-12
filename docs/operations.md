@@ -1559,8 +1559,14 @@ file only the announcer's account can read. AutoDJ stores only a digest of it an
 Revoking the token in Settings or with `autodj tokens revoke <id>` stops it at its next request.
 
 The token travels in the `Authorization: Bearer` header. AutoDJ accepts it over plain HTTP only
-from the same machine (`127.0.0.1` or `::1`); from anywhere else it needs HTTPS. A request with an
-`Origin` header, as every browser sends, is refused: these routes are for programs only.
+from the same machine (`127.0.0.1` or `::1`) and only when no proxy carried the request: a plain
+HTTP request with a `Forwarded`, `X-Forwarded-*` or `X-Real-IP` header is refused (403) even from
+loopback, because a reverse proxy on the same machine may have brought it in from the network in
+the clear. From anywhere else, or through a reverse proxy, it needs HTTPS. A reverse proxy must
+terminate TLS itself and send `X-Forwarded-Proto: https`, and AutoDJ must trust that proxy
+(`[stream] trusted_proxies` on a streaming server; a server that does not stream trusts a proxy on
+its own machine). A request with an `Origin` header, as every browser sends, is refused: these
+routes are for programs only.
 
 ### API reference
 
@@ -1658,9 +1664,11 @@ Refusals:
   holds `max_per_slot` breaks, and a plain `409` while breaks are off.
 - `429` when the station already holds `max_queued` waiting breaks, or the token sent more than
   `requests_per_minute` requests; wait for `Retry-After` seconds.
-- `413` for a file over `max_upload_mb`, `415` for a file type that is not allowed, `422` for a
-  file AutoDJ cannot decode, one longer than `max_seconds`, one with less than half a second of
-  sound, or a field out of range.
+- `413` for a file over `max_upload_mb` (refused from the declared `Content-Length` before the
+  body is read), `415` for a file type that is not allowed, `422` for a file AutoDJ cannot decode,
+  one whose contents do not match its extension, one over 192 kHz or with more than two channels,
+  one longer than `max_seconds`, one with less than half a second of sound, a missing file, an
+  unknown field or a field out of range.
 - `503` with `Retry-After` while other breaks are being decoded; `507` when the waiting files
   would pass `quota_mb`.
 - `401` for a missing, wrong or revoked token, `403` for a token for another station, a request
@@ -1706,9 +1714,21 @@ curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \
 Uploads go to the station's `announcements` folder (`<index_dir>/<name>/announcements`, or
 `stations/<slug>/announcements` beneath it for another station) under a name AutoDJ makes up. That
 folder is never part of liner rotation. A break's file is deleted once it has aired, been dropped
-or expired, and any file left by a previous run is deleted when the station starts. Decoding an
-upload happens away from the playout, one upload at a time, so a burst of uploads never holds up
-the audio or the next render.
+or expired, and any file left by a previous run is deleted when the station starts (an upload
+still arriving is left alone). Room for an upload (its place in `max_queued` and `max_per_slot`
+and its bytes in `quota_mb`) is held from before its body is read until it is booked or refused,
+so uploads sent together cannot pass the limits together. Decoding an upload happens away from the
+playout, one upload at a time, so a burst of uploads never holds up the audio or the next render.
+
+A break is decoded with limits a library song does not need: the file's header is read first, and
+a file over 192 kHz, with more than two channels, or longer than `max_seconds` is refused before
+any sample is decoded. FFmpeg is told the format from the extension instead of guessing it, may
+open only local files and pipes, and its output (stereo at 44.1 kHz) is read against a byte
+budget. The break is decoded again the same way when it is mixed in, and where its speech starts
+and ends is found again in the audio that plays, so Smooth or Stereo Tool processing cannot move
+the voice off its marks. A break mixed into a render that is thrown away unplayed (the station
+jumped, or the render was replaced) is dropped at once; one that has still not started ten
+minutes after its expected air time expires.
 
 The log records each break by the first eight characters of its id: when it is booked, mixed in,
 aired, dropped or expired, and why.
@@ -1893,6 +1913,11 @@ zone (`[server] station_timezone`) and must fall between
 a run song for song, in every pick mode. Runs are capped at 30 days or 20,000 songs, and at ten
 minutes of work: a run that reaches that limit stops with the songs picked so far, and the report
 says so.
+
+With `[breaks] enabled = true`, the station picks the song after the next one a song early so
+announcer breaks can name it (see [Announcer breaks](#announcer-breaks-dj-breaks-news-and-weather)),
+and a booked break keeps that song whatever the queue does. The rotation tester does not model
+either: it picks each song when the one before it ends, as a station with breaks off does.
 
 `autodj simulate` can run beside a running server. It opens `library.db` read-only: no write
 lock, no migration, and the file itself is never written, though SQLite may create the

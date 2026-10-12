@@ -2410,6 +2410,12 @@ describe("static accessibility contracts", () => {
       .toEqual(["Analysis worker", "Announcer"]);
     expect(document.getElementById("token-scope-desc").textContent)
       .toMatch(/Neither can play, change settings or read anything else/);
+    // Token use says the Station choice appears, and Station starts with a
+    // placeholder, so no station is chosen silently.
+    expect(document.getElementById("token-scope-desc").textContent)
+      .toMatch(/choosing Announcer shows a Station choice below/);
+    expect([...station.options].map((option) => [option.value, option.textContent]))
+      .toEqual([["", "Choose a station"]]);
     // The station choice and its help start hidden, together.
     expect(document.getElementById("token-station-row").hidden).toBe(true);
     expect(document.getElementById("token-station-desc").hidden).toBe(true);

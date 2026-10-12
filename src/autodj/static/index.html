@@ -1808,12 +1808,14 @@
         </select>
       </div>
       <span class="setting-desc" id="token-scope-desc">
-        A worker token can only analyse songs.  An announcer token can only read one station's coming songs and send that station breaks.  Neither can play, change settings or read anything else.
+        A worker token can only analyse songs.  An announcer token can only read one station's coming songs and send that station breaks; choosing Announcer shows a Station choice below.  Neither can play, change settings or read anything else.
       </span>
       <!-- Shown only for an announcer token: it works for one station. -->
       <div class="settings-row" id="token-station-row" hidden>
         <label for="token-station">Station</label>
-        <select id="token-station" aria-describedby="token-station-desc"></select>
+        <select id="token-station" aria-describedby="token-station-desc">
+          <option value="">Choose a station</option>
+        </select>
       </div>
       <span class="setting-desc" id="token-station-desc" hidden>
         The station this announcer token sends breaks to.  It works for no other station.

@@ -151,7 +151,7 @@ def test_a_break_that_cannot_be_decoded_is_dropped_and_the_music_plays(station):
     assert render is not None and render.break_events == ()
     assert incoming_entry(render) == pytest.approx(10.0, abs=1e-3)
     assert desk.get(item.break_id).state == DROPPED
-    assert desk.get(item.break_id).reason == "its file could not be decoded"
+    assert desk.get(item.break_id).reason == "its file could not be decoded or holds no speech"
 
 
 @pytest.mark.parametrize("mode", ["smooth", "stereotool"])
@@ -163,7 +163,10 @@ def test_processed_stations_process_a_break_like_a_voice_liner(station, mode, mo
     load = MagicMock(return_value=(audio, {}))
     monkeypatch.setattr("autodj.processing.load_and_measure_audio", load)
     assert player._load_break_audio(item) is audio
-    load.assert_called_once_with(item.path, "liner", desk.config.max_seconds + 1.0)
+    # FFmpeg is told the demuxer, so it probes nothing.
+    load.assert_called_once_with(
+        item.path, "liner", desk.config.max_seconds + 1.0, input_format="wav"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -364,3 +367,69 @@ def test_with_breaks_off_nothing_is_planned(tmp_path):
     _render_a, _render_b, plan = start_station(player, entries)
     assert plan is None
     assert player.slot_status() == (None, 0.0, 0.0)
+
+
+def test_cues_are_found_again_in_the_audio_that_plays(station, monkeypatch):
+    player, (a, b, _c, _d), _points, desk = station
+    item = make_break(desk, new_id(), kind="news", seconds=3.0)
+    desk.add(item)
+    # Processing that adds a second of quiet before the voice moves its start.
+    shifted = np.zeros((round(5.0 * SR), 2), dtype=np.float32)
+    shifted[SR : 4 * SR, 1] = 0.5
+    monkeypatch.setattr(player, "_load_break_audio", lambda _item: shifted)
+    render = player._render_track(a, b, 0, breaks=tuple(desk.take(item.slot_id, 0.0)))
+    start, end = voice_span(render)
+    assert at(render, start + 0.06)[1] == pytest.approx(0.5)
+    assert end - start == pytest.approx(3.05, abs=0.03)
+    assert incoming_entry(render) == pytest.approx(end, abs=1e-3)
+
+
+def test_a_render_thrown_away_drops_its_breaks(station):
+    player, entries, _points, desk = station
+    _render_a, render_b, plan = start_station(player, entries)
+    item = make_break(desk, plan.slot_id)
+    player.book_break(item)
+    player._on_track_start(render_b)
+    render_c = player._next_rendered()
+    assert desk.get(item.break_id).state == RENDERED
+    player._render_ahead._discard(render_c)
+    assert desk.get(item.break_id).state == DROPPED
+    assert desk.get(item.break_id).reason == "its render was thrown away before it played"
+
+
+def test_another_clockwheel_discards_the_plan_and_its_breaks(station):
+    player, entries, _points, desk = station
+    _render_a, render_b, plan = start_station(player, entries)
+    item = make_break(desk, plan.slot_id)
+    player.book_break(item)
+    player._pending_clock_name = "Night"  # what selecting another clockwheel leaves
+    player._on_track_start(render_b)
+    assert player._claim_slot_plan(plan.ending) is None
+    assert desk.get(item.break_id).state == DROPPED
+    assert desk.get(item.break_id).reason == "the clockwheel changed"
+
+
+def test_a_slot_whose_breaks_all_went_is_unpinned(station):
+    player, entries, _points, desk = station
+    _a, b, c, _d = entries
+    _render_a, _render_b, plan = start_station(player, entries)
+    item = make_break(desk, plan.slot_id)
+    player.book_break(item)
+    assert player._slot_plan.pinned
+    desk.cancel(item.break_id)
+    assert not player._slot_plan.pinned
+    # Unpinned, a queue edit may change the slot again.
+    player._render_ahead.request_plan = MagicMock()
+    player._state.queue[:] = [b, c]
+    player.refresh_render_ahead()
+    assert player._slot_plan.stale
+
+
+def test_a_discarded_plan_gives_back_its_clock_move(station):
+    player, entries, _points, _desk = station
+    _render_a, _render_b, plan = start_station(player, entries)
+    player._pending_clock_boundary = 123.0
+    plan.boundary_before = 99.0
+    plan.stale = True
+    assert player._claim_slot_plan(plan.ending) is None
+    assert player._pending_clock_boundary == 99.0

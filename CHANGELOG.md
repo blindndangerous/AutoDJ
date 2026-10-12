@@ -22,8 +22,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   silence after the speech, reports each break as queued, rendered, on the air, aired, dropped or
   expired with the reason in words, and deletes the file afterwards. Breaks are off until
   `[breaks] enabled = true`, need saved-point playback, and work per station. Uploads are capped
-  in size, length and number, decoded away from the playout, and checked before they are
-  accepted. Operations has the API with example requests.
+  in size, length and number before their body is read, limited to 192 kHz and two channels,
+  decoded away from the playout within a memory budget, and checked before they are accepted.
+  Operations has the API with example requests.
 - Announcer tokens: in Settings, Analysis workers, Machine tokens, **Token use** now offers
   Announcer, with a **Station** choice that shows only for it. An announcer token works for that
   one station and only for the breaks API.
@@ -524,6 +525,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   or reads `index/.stream-secret`. It does not delete an existing one; the file is unused and you
   can delete it.
 - The librosa file-loading fallback. Librosa still detects beats, tempo and audio features.
+
+### Security
+
+- FFmpeg may now open only local files and pipes whenever AutoDJ asks it to read a song, a liner,
+  a cart clip or a break (`-protocol_whitelist file,pipe`). A file that FFmpeg took for a playlist
+  could otherwise make it fetch addresses on the network.
+- A machine token (an analysis worker's or an announcer's) is refused on plain HTTP when the
+  request carries a `Forwarded`, `X-Forwarded-*` or `X-Real-IP` header, even from the same
+  machine: a reverse proxy there may have carried it in from the network unencrypted. Through a
+  proxy, machine tokens need TLS at the proxy and `X-Forwarded-Proto: https` from a proxy the
+  server trusts.
 
 ## [0.20.0] - 2026-10-11
 

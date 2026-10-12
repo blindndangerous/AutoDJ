@@ -259,6 +259,7 @@ class SlotPlan:
         reserved: Queue entries the pick passed over because earlier
             renders hold them.
         ending_offset_s: Seconds of *ending* already played when it starts.
+        clock_name: The clockwheel *next_cursor* is a place in (#133).
         pinned: A break is booked: keep the pair whatever the queue does.
         stale: A queue edit changed what the pick would be (unpinned only).
     """
@@ -277,6 +278,7 @@ class SlotPlan:
     queue_reserved: IndexEntry | None
     reserved: tuple[IndexEntry, ...]
     ending_offset_s: float = 0.0
+    clock_name: str | None = None
     pinned: bool = False
     stale: bool = False
 
@@ -298,12 +300,33 @@ class _Counts:
     waiting_bytes: int = 0
 
 
+@dataclass
+class _Reservation:
+    """Room held for an upload that is still arriving or decoding."""
+
+    slot_id: str
+    size: int
+    name: str
+
+
+#: A rendered break that has not started this long after its expected air
+#: time never will (its render was discarded): it expires.
+RENDERED_GRACE_SECONDS = 600.0
+#: A part file younger than this may still be arriving; the start-up sweep
+#: leaves it.
+PART_GRACE_SECONDS = 600.0
+#: Attempts to delete a file before the desk gives up on it.
+DELETE_ATTEMPTS = 10
+
+
 class BreakDesk:
     """One station's breaks: booking, state, and their files.
 
-    Every method takes only the desk's own short lock, except
-    :meth:`maintain`, which deletes files and must run off the event loop
-    and off the audio thread.
+    Every method takes only the desk's own short lock and logs after
+    releasing it, except :meth:`maintain`, which deletes files and must run
+    off the event loop and off the audio thread.  *on_slot_empty* (set by
+    the player) hears, with no lock held, that a slot has no waiting
+    breaks left, so the player can unpin it.
     """
 
     def __init__(
@@ -325,9 +348,14 @@ class BreakDesk:
         self._clock = clock
         self._lock = threading.Lock()
         self._breaks: OrderedDict[str, Break] = OrderedDict()
-        # Files of finished breaks, deleted by maintain().
-        self._doomed: list[Path] = []
+        self._reserved: dict[str, _Reservation] = {}
+        # Files of finished breaks and abandoned uploads, deleted by maintain(),
+        # with how many times each has failed to go.
+        self._doomed: dict[Path, int] = {}
+        # Log lines decided under the lock and written after it.
+        self._logs: list[tuple[int, str, tuple[Any, ...]]] = []
         self._swept = False
+        self.on_slot_empty: Callable[[str], None] | None = None
 
     @property
     def config(self) -> BreaksConfig:
@@ -338,6 +366,28 @@ class BreakDesk:
     def enabled(self) -> bool:
         """Whether the station takes breaks."""
         return self.config.enabled is True
+
+    def _log(self, level: int, message: str, *args: Any) -> None:
+        """Queue a log line (hold the lock); :meth:`_flush` writes it."""
+        self._logs.append((level, message, args))
+
+    def _flush(self, emptied: set[str] | None = None) -> None:
+        """Write queued log lines and report emptied slots, with the lock released."""
+        with self._lock:
+            logs, self._logs = self._logs, []
+            emptied = {
+                slot
+                for slot in emptied or ()
+                if not any(
+                    item.slot_id == slot and item.state == QUEUED for item in self._breaks.values()
+                )
+            }
+        for level, message, args in logs:
+            logger.log(level, message, *args)
+        callback = self.on_slot_empty
+        if callback is not None:
+            for slot in emptied:
+                callback(slot)
 
     # ------------------------------------------------------------------
     # Booking (API threads)
@@ -351,19 +401,16 @@ class BreakDesk:
                 counts.waiting_bytes += item.size
                 if item.slot_id == slot_id:
                     counts.in_slot += 1
+        for held in self._reserved.values():
+            counts.waiting += 1
+            counts.waiting_bytes += held.size
+            if held.slot_id == slot_id:
+                counts.in_slot += 1
         return counts
 
-    def check_room(self, slot_id: str, size: int = 0) -> None:
-        """Refuse a break the station has no room for.
-
-        Raises:
-            BreakError: 429 when the station already holds
-                ``max_queued`` breaks, 409 when the slot holds
-                ``max_per_slot``, 507 when the files would pass the quota.
-        """
+    def _room_locked(self, slot_id: str, size: int) -> None:
         config = self.config
-        with self._lock:
-            counts = self._counts(slot_id)
+        counts = self._counts(slot_id)
         if counts.waiting >= config.max_queued:
             raise BreakError(
                 429,
@@ -381,26 +428,84 @@ class BreakDesk:
                 507, "The waiting break files would pass this station's quota", "quota"
             )
 
-    def add(self, item: Break) -> None:
-        """Keep a booked break.  Call with the player's slot lock held.
+    def check_room(self, slot_id: str, size: int = 0) -> None:
+        """Refuse a break the station has no room for.
+
+        Raises:
+            BreakError: 429 when the station already holds ``max_queued``
+                breaks (uploads in progress included), 409 when the slot
+                holds ``max_per_slot``, 507 when the files would pass the quota.
+        """
+        with self._lock:
+            self._room_locked(slot_id, size)
+
+    def reserve(self, break_id: str, slot_id: str, size: int, name: str) -> None:
+        """Hold room for an upload before its body is read.
+
+        *size* is the request's declared length (or the largest break the
+        station takes).  :meth:`add` takes the place over; :meth:`release`
+        gives it back.
 
         Raises:
             BreakError: As :meth:`check_room`.
         """
-        self.check_room(item.slot_id, item.size)
         with self._lock:
+            self._room_locked(slot_id, size)
+            self._reserved[break_id] = _Reservation(slot_id, size, name)
+
+    def retarget(self, break_id: str, slot_id: str, name: str) -> None:
+        """Move an upload's held room to the slot its form named, under its file name.
+
+        Raises:
+            BreakError: As :meth:`check_room` (the slot is full); the room
+                stays held for :meth:`release`.
+        """
+        with self._lock:
+            held = self._reserved.pop(break_id)
+            try:
+                self._room_locked(slot_id, held.size)
+            finally:
+                self._reserved[break_id] = held
+            held.slot_id = slot_id
+            held.name = name
+
+    def release(self, break_id: str, path: Path | None = None) -> None:
+        """Give back an upload's room; its file, if any, is deleted later."""
+        with self._lock:
+            self._reserved.pop(break_id, None)
+            if path is not None:
+                self._doomed.setdefault(path, 0)
+
+    def add(self, item: Break) -> None:
+        """Keep a booked break.  Call with the player's slot lock held.
+
+        Its reservation, if any, becomes the break.
+
+        Raises:
+            BreakError: As :meth:`check_room`.
+        """
+        with self._lock:
+            held = self._reserved.pop(item.break_id, None)
+            try:
+                self._room_locked(item.slot_id, item.size)
+            except BreakError:
+                if held is not None:
+                    self._reserved[item.break_id] = held
+                raise
             item.state = QUEUED
             item.updated_at = self._clock()
             self._breaks[item.break_id] = item
-        logger.info(
-            "Break %s (%s%s) booked for slot %s by %s; %s of speech",
-            item.break_id[:8],
-            item.kind,
-            f", {item.label}" if item.label else "",
-            item.slot_id[:8],
-            item.token_name,
-            f"{item.cues.speech:.1f} s",
-        )
+            self._log(
+                logging.INFO,
+                "Break %s (%s%s) booked for slot %s by %s; %.1f s of speech",
+                item.break_id[:8],
+                item.kind,
+                f", {item.label}" if item.label else "",
+                item.slot_id[:8],
+                item.token_name,
+                item.cues.speech,
+            )
+        self._flush()
 
     def get(self, break_id: str) -> Break | None:
         """A copy of the break with this id, or ``None``."""
@@ -438,7 +543,9 @@ class BreakDesk:
                     item.state,
                 )
             self._finish_locked(item, DROPPED, "cancelled by the announcer")
-            return replace(item)
+            result = replace(item)
+        self._flush({item.slot_id})
+        return result
 
     def waiting_in(self, slot_id: str) -> int:
         """How many breaks are booked for *slot_id* and not yet rendered."""
@@ -472,14 +579,17 @@ class BreakDesk:
                 item.eta = airs_at
                 item.updated_at = self._clock()
                 taken.append(item)
-        taken.sort(key=lambda item: (item.kind == "dj", item.created_at))
-        for item in taken:
-            logger.info(
-                "Break %s is mixed into the song change; it airs in about %d s",
-                item.break_id[:8],
-                max(0, round(airs_at - self._clock())),
-            )
-        return [replace(item) for item in taken]
+            taken.sort(key=lambda item: (item.kind == "dj", item.created_at))
+            for item in taken:
+                self._log(
+                    logging.INFO,
+                    "Break %s is mixed into the song change; it airs in about %d s",
+                    item.break_id[:8],
+                    max(0, round(airs_at - self._clock())),
+                )
+            copies = [replace(item) for item in taken]
+        self._flush()
+        return copies
 
     def mixed_as(self, break_id: str, placement: str) -> None:
         """Record how a rendered break was placed (talk_up or standalone)."""
@@ -490,10 +600,13 @@ class BreakDesk:
 
     def drop(self, break_id: str, reason: str) -> None:
         """Drop one break that has not finished, with *reason*."""
+        slots = set()
         with self._lock:
             item = self._breaks.get(break_id)
             if item is not None and item.state not in TERMINAL:
                 self._finish_locked(item, DROPPED, reason)
+                slots.add(item.slot_id)
+        self._flush(slots)
 
     def drop_slot(self, slot_id: str, reason: str) -> int:
         """Drop the breaks still waiting for *slot_id*; returns how many."""
@@ -505,6 +618,7 @@ class BreakDesk:
             ]
             for item in items:
                 self._finish_locked(item, DROPPED, reason)
+        self._flush()
         return len(items)
 
     def drop_unaired(self, reason: str) -> int:
@@ -515,6 +629,7 @@ class BreakDesk:
                 self._finish_locked(
                     item, DROPPED, f"cut short: {reason}" if item.state == ON_AIR else reason
                 )
+        self._flush()
         return len(items)
 
     def on_air(self, break_id: str) -> None:
@@ -533,16 +648,17 @@ class BreakDesk:
                 if item.aired_at is None:
                     item.aired_at = self._clock()
                 self._finish_locked(item, AIRED, "")
+        self._flush()
 
     def _finish_locked(self, item: Break, state: str, reason: str) -> None:
         item.state = state
         item.reason = reason
         item.updated_at = self._clock()
-        self._doomed.append(item.path)
+        self._doomed.setdefault(item.path, 0)
         if state == AIRED:
-            logger.info("Break %s aired", item.break_id[:8])
+            self._log(logging.INFO, "Break %s aired", item.break_id[:8])
         else:
-            logger.warning("Break %s %s: %s", item.break_id[:8], state, reason)
+            self._log(logging.WARNING, "Break %s %s: %s", item.break_id[:8], state, reason)
 
     # ------------------------------------------------------------------
     # Upkeep (a worker thread, from the station's tick)
@@ -556,43 +672,88 @@ class BreakDesk:
                 not self._swept
                 or bool(self._doomed)
                 or len(self._breaks) > HISTORY
-                or any(
-                    item.state == QUEUED and now > item.expires_at for item in self._breaks.values()
-                )
+                or any(self._late_locked(item, now) for item in self._breaks.values())
             )
+
+    @staticmethod
+    def _late_locked(item: Break, now: float) -> bool:
+        if item.state == QUEUED:
+            return now > item.expires_at
+        return (
+            item.state == RENDERED
+            and item.eta is not None
+            and now > item.eta + RENDERED_GRACE_SECONDS
+        )
 
     def maintain(self) -> None:
         """Expire late breaks, delete finished files and forget old history.
 
-        The first run also deletes break files a previous run left behind:
-        breaks do not survive a restart, as the slot plan does not.
+        A queued break past its expiry, and a rendered one long past its
+        expected air time (its render was thrown away), expire.  The first
+        run also deletes break files a previous run left behind, sparing
+        uploads in progress: breaks do not survive a restart, as the slot
+        plan does not.
         """
         now = self._clock()
+        emptied: set[str] = set()
         with self._lock:
             for item in self._breaks.values():
-                if item.state == QUEUED and now > item.expires_at:
-                    self._finish_locked(item, EXPIRED, "it expired before its song change")
-            doomed, self._doomed = self._doomed, []
+                if self._late_locked(item, now):
+                    reason = (
+                        "it expired before its song change"
+                        if item.state == QUEUED
+                        else "it was mixed in but never reached the air"
+                    )
+                    if item.state == QUEUED:
+                        emptied.add(item.slot_id)
+                    self._finish_locked(item, EXPIRED, reason)
+            doomed = dict(self._doomed)
             finished = [key for key, item in self._breaks.items() if item.state in TERMINAL]
             for key in finished[: max(0, len(self._breaks) - HISTORY)]:
                 del self._breaks[key]
-            live = {item.path.name for item in self._breaks.values() if item.state not in TERMINAL}
+            keep = {item.path.name for item in self._breaks.values() if item.state not in TERMINAL}
+            keep.update(held.name for held in self._reserved.values())
             sweep = not self._swept
             self._swept = True
-        for path in doomed:
+        failed: dict[Path, int] = {}
+        for path, attempts in doomed.items():
             try:
                 path.unlink(missing_ok=True)
             except OSError:
-                logger.warning("Could not delete the break file %s", path.name, exc_info=True)
+                if attempts + 1 < DELETE_ATTEMPTS:
+                    failed[path] = attempts + 1
+                else:
+                    logger.warning("Could not delete the break file %s", path.name, exc_info=True)
+        with self._lock:
+            for path in doomed:
+                self._doomed.pop(path, None)
+            self._doomed.update(failed)
         if sweep and self.folder.is_dir():
-            for path in self.folder.iterdir():
-                if (_FILE.fullmatch(path.name) or path.name.startswith(".brk-")) and (
-                    path.name not in live
-                ):
-                    try:
-                        path.unlink(missing_ok=True)
-                    except OSError:
-                        logger.warning("Could not delete %s", path.name, exc_info=True)
+            # File times are the computer's, whatever clock the desk keeps.
+            self._sweep(keep, time.time())
+        self._flush(emptied)
+
+    def _sweep(self, keep: set[str], now: float) -> None:
+        """Delete break files a previous run left, sparing *keep* and young part files."""
+        for path in self.folder.iterdir():
+            name = path.name
+            if _FILE.fullmatch(name):
+                if name in keep:
+                    continue
+            elif name.startswith(".brk-") and name.endswith(".part"):
+                if any(name.startswith(f".{kept}.") for kept in keep):
+                    continue
+                try:
+                    if now - path.stat().st_mtime < PART_GRACE_SECONDS:
+                        continue
+                except OSError:
+                    continue
+            else:
+                continue
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Could not delete %s", name, exc_info=True)
 
 
 def placement_for(

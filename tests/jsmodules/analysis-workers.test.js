@@ -235,7 +235,7 @@ describe("Analysis workers panel", () => {
   it("shows the station choice only for an announcer token and sends it", async () => {
     const { request } = install();
     open();
-    await vi.waitFor(() => expect(byId("token-station").options).toHaveLength(2));
+    await vi.waitFor(() => expect(byId("token-station").options).toHaveLength(3));
     expect(byId("token-station-row").hidden).toBe(true);
     expect(byId("token-station-desc").hidden).toBe(true);
     const scope = byId("token-scope");
@@ -244,7 +244,9 @@ describe("Analysis workers panel", () => {
     expect(byId("token-station-row").hidden).toBe(false);
     expect(byId("token-station-desc").hidden).toBe(false);
     expect([...byId("token-station").options].map((o) => o.textContent))
-      .toEqual(["Ice Cold (default)", "Night Owl (nightowl)"]);
+      .toEqual(["Choose a station", "Ice Cold (default)", "Night Owl (nightowl)"]);
+    // Nothing is chosen for the user.
+    expect(byId("token-station").value).toBe("");
     byId("token-station").value = "nightowl";
     byId("token-name").value = "radiodj";
     byId("token-create").click();
@@ -259,11 +261,10 @@ describe("Analysis workers panel", () => {
     expect(byId("token-station-row").hidden).toBe(true);
   });
 
-  it("asks for a station when there is none to choose", async () => {
+  it("asks for a station until one is chosen, and keeps the choice across reloads", async () => {
     const { request } = install();
     open();
-    await vi.waitFor(() => expect(byId("token-station").options).toHaveLength(2));
-    byId("token-station").replaceChildren();
+    await vi.waitFor(() => expect(byId("token-station").options).toHaveLength(3));
     byId("token-scope").value = "announcer";
     byId("token-name").value = "radiodj";
     byId("token-create").click();
@@ -271,6 +272,19 @@ describe("Analysis workers panel", () => {
     expect(document.activeElement).toBe(byId("token-station"));
     expect(request).not.toHaveBeenCalledWith("/api/machine-tokens", expect.objectContaining({
       method: "POST" }));
+    // A reload of the same stations leaves the options and the choice alone.
+    byId("token-station").value = "nightowl";
+    const first = byId("token-station").options[1];
+    byId("token-done").click();
+    byId("workers-refresh").click();
+    const panel = byId("spanel-workers");
+    panel.open = false;
+    panel.dispatchEvent(new Event("toggle"));
+    open();
+    await vi.waitFor(() => expect(request.mock.calls.filter(([url]) => url === "/api/machine-tokens"))
+      .toHaveLength(2));
+    expect(byId("token-station").options[1]).toBe(first);
+    expect(byId("token-station").value).toBe("nightowl");
   });
 
   it("revokes a token after confirmation and moves focus sensibly", async () => {
