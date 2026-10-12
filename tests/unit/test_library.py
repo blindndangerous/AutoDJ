@@ -1129,3 +1129,60 @@ def test_browse_and_search_answer_from_memory(manager_factory, tmp_path, monkeyp
         assert [row["title"] for row in PlayerBridge.search(bridge, "beta artist")] == ["Beta"]
     index = manager.search_index()
     assert manager.search_index() is index  # built once per library snapshot
+
+
+def _generation(number: int):
+    from autodj.index_manifest import IndexManifest
+
+    return IndexManifest(1, number, 2, "2026-01-01T00:00:00Z", f"t{number}", f"v{number}")
+
+
+def test_restart_does_not_import_an_imported_generation_again(tmp_path, monkeypatch):
+    import faiss
+
+    from autodj.similarity import SimilarityIndex
+
+    music = tmp_path / "Music"
+    music.mkdir()
+    songs = [music / "a.flac", music / "b.flac"]
+    for song in songs:
+        song.write_bytes(song.name.encode())
+    vectors = np.eye(2, FEATURE_DIM, dtype=np.float32)
+    cfg = make_config(tmp_path, music=music)
+
+    def legacy(number):
+        index = faiss.IndexFlatIP(FEATURE_DIM)
+        index.add(vectors)
+        sim = SimilarityIndex(index, [make_entry(song) for song in songs])
+        sim._manifest = _generation(number)
+        return sim
+
+    LibraryManager(cfg, legacy(1)).close()
+
+    def no_seeding(*_args, **_kwargs):
+        raise AssertionError("re-imported")
+
+    monkeypatch.setattr(LibraryCatalog, "seed_entries", no_seeding)
+    sim = legacy(1)
+    manager = LibraryManager(cfg, sim)
+    try:
+        # The catalog's vectors replace the loaded generation's, as before.
+        assert [Path(entry.path) for entry in sim.entries_snapshot()] == songs
+        np.testing.assert_array_equal(sim.faiss_index.reconstruct_n(0, 2), vectors)
+    finally:
+        manager.close()
+    monkeypatch.undo()
+
+    # A new generation is imported, a chunk of rows at a time.
+    sim = legacy(2)
+    reconstruct = Mock(side_effect=AssertionError("one row at a time"))
+    monkeypatch.setattr(sim.faiss_index, "reconstruct", reconstruct, raising=False)
+    LibraryManager(cfg, sim).close()
+    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+        assert catalog.get_setting("imported_index_generation")["generation"] == 2
+
+
+def test_library_database_uses_wal(tmp_path):
+    with LibraryCatalog(tmp_path / "library.db") as catalog:
+        mode = catalog._db().execute("PRAGMA journal_mode").fetchone()[0]
+    assert mode == "wal"

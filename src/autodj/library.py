@@ -14,7 +14,14 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 import numpy as np
 
 from autodj.beets import Track
-from autodj.catalog import Coverage, LibraryCatalog, _covered_by, _path, _prefix
+from autodj.catalog import (
+    VECTOR_CHUNK,
+    Coverage,
+    LibraryCatalog,
+    _covered_by,
+    _path,
+    _prefix,
+)
 from autodj.indexer import (
     FEATURE_DIM,
     LIBRARY_DECODE_LOG,
@@ -32,6 +39,9 @@ from autodj.processing import (
 from autodj.stereo import SAMPLE_RATE, DecodeReport
 
 logger = logging.getLogger(__name__)
+
+# Catalog setting naming the legacy index generation already seeded.
+_IMPORTED_GENERATION = "imported_index_generation"
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
@@ -122,32 +132,66 @@ class LibraryManager:
         liner_root = cfg.playback.liners_folder or str(cfg.index.active_dir / "liners")
         try:
             self.catalog.seed_sources(cfg.library.music_dir, liner_root)
-            self.seed_index(sim.entries_snapshot(), self._legacy_vectors())
+            self.import_legacy()
         except BaseException:
             self.catalog.close()
             raise
 
-    def _legacy_vectors(self) -> np.ndarray:
-        count = int(self.sim.faiss_index.ntotal)
-        if count == 0:
-            return np.empty((0, FEATURE_DIM), dtype=np.float32)
-        return np.vstack([self.sim.faiss_index.reconstruct(i) for i in range(count)]).astype(
-            np.float32, copy=False
-        )
+    def import_legacy(self) -> None:
+        """Seed the loaded legacy generation into the catalog, once per generation.
 
-    def seed_index(self, entries: Iterable[IndexEntry], vectors: np.ndarray) -> None:
-        """Seed new legacy generations into the catalog, without changing them.
-
-        Also hands the catalog's vectors back to ``sim``, which a reload of
-        the legacy generation from disk has just replaced.
+        The generation files are never changed.  A generation already
+        imported (by its manifest) is not read again, so a restart does not
+        re-import 77k tracks; the catalog's vectors are handed back to
+        ``sim`` either way, because loading a generation replaces them.
         """
-        items = list(entries)
-        matrix = np.asarray(vectors, dtype=np.float32)
-        if matrix.shape != (len(items), FEATURE_DIM):
-            raise ValueError("legacy vectors do not match the index entries")
-        self.catalog.seed_entries(items)
-        self.catalog.seed_vectors(items, matrix)
+        manifest = getattr(self.sim, "manifest", None)
+        key = (
+            {
+                "generation": manifest.generation,
+                "tracks_sha256": manifest.tracks_sha256,
+                "vectors_sha256": manifest.vectors_sha256,
+            }
+            if manifest is not None
+            else None
+        )
+        if key is None or self.catalog.get_setting(_IMPORTED_GENERATION) != key:
+            self._seed_legacy(list(self.sim.entries_snapshot()))
+            if key is not None:
+                self.catalog.set_setting(_IMPORTED_GENERATION, key)
         self.refresh(force_vectors=True)
+
+    def _legacy_rows(self, start: int, stop: int) -> np.ndarray:
+        """Rows *start* to *stop* of the legacy FAISS index, as one float32 matrix."""
+        index = self.sim.faiss_index
+        reconstruct_n = getattr(index, "reconstruct_n", None)
+        if reconstruct_n is not None:
+            rows = reconstruct_n(start, stop - start)
+        else:
+            rows = np.vstack([index.reconstruct(row) for row in range(start, stop)])
+        matrix = np.asarray(rows, dtype=np.float32)
+        if matrix.shape != (stop - start, FEATURE_DIM):
+            raise ValueError("legacy vectors do not match the index entries")
+        return matrix
+
+    def _seed_legacy(self, entries: list[IndexEntry]) -> None:
+        """Add the legacy tracks and vectors the catalog lacks, a chunk at a time."""
+        count = int(self.sim.faiss_index.ntotal)
+        if count != len(entries):
+            raise ValueError("legacy vectors do not match the index entries")
+        if count:
+            self._legacy_rows(0, 1)  # refuse a mismatched index before writing anything
+        self.catalog.seed_entries(entries)
+        have = self.catalog.paths_with_vectors()
+        for start in range(0, count, VECTOR_CHUNK):
+            stop = min(count, start + VECTOR_CHUNK)
+            wanted = [row for row in range(start, stop) if _path(entries[row].path) not in have]
+            if not wanted:
+                continue
+            rows = self._legacy_rows(start, stop)
+            self.catalog.seed_vectors(
+                [entries[row] for row in wanted], rows[[row - start for row in wanted]]
+            )
 
     def _changed(self) -> bool:
         """Whether records, vectors or sources changed since the last load."""

@@ -3406,7 +3406,14 @@ def serve(
     """
     from dataclasses import replace
 
+    import faiss
+
     from autodj.config import validate_server_exposure
+
+    # One exact search per pick: OpenMP's thread pool makes it slower (27 ms
+    # on one thread against 41 ms on four, measured on 77k tracks) and
+    # competes with the mix bus on a small NAS.  Results are the same.
+    faiss.omp_set_num_threads(1)
 
     host = cfg.server.host if host is None else host
     port = cfg.server.port if port is None else port

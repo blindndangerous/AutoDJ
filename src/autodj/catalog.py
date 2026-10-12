@@ -295,6 +295,13 @@ class LibraryCatalog:
         )
         self._conn.row_factory = sqlite3.Row
         try:
+            # WAL: a reload's long read never blocks the play log's writes,
+            # and other processes (the analysis job) read alongside.  Only
+            # this machine uses library.db: an index copied from another
+            # machine brings the generation files and dj_meta.db, never it,
+            # and a backup restore removes stale -wal and -shm files.
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.executescript(_SCHEMA)
             self._add_missing_columns()
             self._conn.executescript(_CHANGE_TRACKING)
@@ -827,19 +834,26 @@ class LibraryCatalog:
     def seed_entries(self, entries: Iterable[IndexEntry]) -> int:
         """Import existing indexed records without replacing catalog metadata."""
         with self._lock:
+            existing = {row[0] for row in self._db().execute("SELECT path FROM catalog_entries")}
             count = 0
             for entry in entries:
                 path = _path(entry.path)
-                exists = (
-                    self._db()
-                    .execute("SELECT 1 FROM catalog_entries WHERE path=?", (path,))
-                    .fetchone()
-                )
-                if not exists:
+                if path not in existing:
                     self._put(entry, "music", None, "auto", None)
+                    existing.add(path)
                     count += 1
             self._db().commit()
             return count
+
+    def paths_with_vectors(self) -> set[str]:
+        """Paths of every record that has a vector."""
+        with self._lock:
+            return {
+                row[0]
+                for row in self._db().execute(
+                    "SELECT e.path FROM catalog_entries e JOIN catalog_vectors v ON v.entry_id=e.id"
+                )
+            }
 
     def set_vector(self, path: str | Path, vector: np.ndarray) -> None:
         from autodj.indexer import FEATURE_DIM
@@ -870,20 +884,17 @@ class LibraryCatalog:
             raise ValueError(f"vectors must be finite with shape ({len(entries)}, {FEATURE_DIM})")
         with self._lock:
             db, count = self._db(), 0
+            ids = dict(db.execute("SELECT path, id FROM catalog_entries").fetchall())
+            have = {row[0] for row in db.execute("SELECT entry_id FROM catalog_vectors")}
             for entry, vector in zip(entries, matrix, strict=True):
-                row = db.execute(
-                    "SELECT id FROM catalog_entries WHERE path=?", (_path(entry.path),)
-                ).fetchone()
-                if row is None:
+                record_id = ids.get(_path(entry.path))
+                if record_id is None or record_id in have:
                     continue
-                exists = db.execute(
-                    "SELECT 1 FROM catalog_vectors WHERE entry_id=?", (row["id"],)
-                ).fetchone()
-                if not exists:
-                    db.execute(
-                        "INSERT INTO catalog_vectors VALUES (?,?)", (row["id"], vector.tobytes())
-                    )
-                    count += 1
+                db.execute(
+                    "INSERT INTO catalog_vectors VALUES (?,?)", (record_id, vector.tobytes())
+                )
+                have.add(record_id)
+                count += 1
             db.commit()
             return count
 

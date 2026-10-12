@@ -1747,9 +1747,9 @@ class PlayerBridge:
             return self.sim.ntotal
         count = self.sim.reload_from_disk(cfg.index.active_dir, music_dir=cfg.library.music_dir)
         if self.library is not None:
-            entries = list(self.sim.entries_snapshot())
-            vectors = self.sim.faiss_index.reconstruct_n(0, len(entries))
-            self.library.seed_index(entries, vectors)
+            # Seeds only what the catalog lacks, and gives sim back the
+            # catalog's vectors, which the reload replaced.
+            self.library.import_legacy()
             count = self.sim.ntotal
         # The no-repeat window is clamped to the library size; a library
         # that grew from empty (or shrank) needs it worked out again, or
