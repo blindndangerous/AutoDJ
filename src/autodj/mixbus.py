@@ -121,6 +121,9 @@ class RenderedTrack:
     next_clock_boundary: float | None = None
     clock_step: dict | None = None
     next_clock_step: dict | None = None
+    clock_revision: int | None = None
+    next_clock_revision: int | None = None
+    next_clock_name: str | None = None
     liner_plan_key: str = ""
     full_audio: np.ndarray | None = None
     source_start_offset: int = 0

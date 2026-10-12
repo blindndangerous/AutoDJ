@@ -7,6 +7,7 @@ Audio crossfade math is tested with real numpy arrays.
 import os
 import subprocess
 import sys
+import threading
 from collections import deque
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -2057,6 +2058,9 @@ def test_next_rendered_carries_offset_between_tracks(monkeypatch):
     from autodj.mixbus import RenderedTrack
 
     p = player_mod.Player.__new__(player_mod.Player)
+    p._clock_lock = threading.RLock()
+    p._clock_revision = 0
+    p._pending_clock_cursor_revision = None
     p._state = player_mod.PlayerState()
     p._set_generation = 0
     p._pending_pick_mode = "seed"
@@ -2085,6 +2089,9 @@ def test_next_rendered_skips_unrenderable_tracks_and_stops_without_a_cursor() ->
     from autodj.mixbus import RenderedTrack
 
     p = Player.__new__(Player)
+    p._clock_lock = threading.RLock()
+    p._clock_revision = 0
+    p._pending_clock_cursor_revision = None
     p._state = PlayerState()
     p._set_generation = 0
     p._pending_pick_mode = "seed"
@@ -2114,6 +2121,9 @@ def test_next_rendered_skips_unrenderable_tracks_and_stops_without_a_cursor() ->
 def test_next_rendered_gives_up_after_five_failed_renders() -> None:
 
     p = Player.__new__(Player)
+    p._clock_lock = threading.RLock()
+    p._clock_revision = 0
+    p._pending_clock_cursor_revision = None
     p._state = PlayerState()
     p._set_generation = 0
     p._pending_pick_mode = "seed"

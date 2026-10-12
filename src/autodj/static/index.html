@@ -2195,7 +2195,13 @@
       </fieldset>
       <label for="clock-resync-minutes">Restart at these minutes past each hour</label>
       <input id="clock-resync-minutes" type="text" inputmode="numeric" value="0" autocomplete="off" aria-describedby="clock-resync-help">
-      <p id="clock-resync-help">Comma separated, 0 to 59, such as 0, 30. The clockwheel goes back to step 1 at the song change nearest each minute. Leave empty never to restart.</p>
+      <p id="clock-resync-help">Comma separated, 0 to 59, such as 0, 30. The clockwheel goes back to step 1 at the song change nearest each minute. Leave empty to restart only when the wheel wraps.</p>
+      <label for="clock-apply-timing">Apply saved changes</label>
+      <select id="clock-apply-timing">
+        <option value="next_restart" selected>At the next clock restart</option>
+        <option value="immediate">Immediately, start at step 1</option>
+        <option value="continue">Immediately, continue at next step</option>
+      </select>
       <button type="button" id="clock-save">Save clockwheel</button>
     </section>
   </section>

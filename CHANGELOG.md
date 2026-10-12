@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Saving edits to the active clockwheel can now apply at its next scheduled restart or immediately
+  to the earliest selection not already lined up. With no restart minutes, deferred edits apply at
+  the next natural wheel wrap; the editor shows when an edit is waiting.
 - **Why this track?** names the clockwheel step that selected the song, with its number and the same description shown in the clockwheel list. Music and category steps say whether they choose the least recently played song or choose at random.
 - A separate output device for previews (#54). In Settings, Sound, **Preview output device**
   sends the cue point preview in Track info, which Queue & Search, History and the library open,
