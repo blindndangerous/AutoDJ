@@ -169,6 +169,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Hard scheduled liners and time checks prepare their audio before skipping the current song.
+  Missing clips or failed speech generation leave the song playing and report the failed event.
 - Clock music slots with repeat rules disabled still skip silent tracks and songs already
   playing or being prepared.
 - A clock whose slots hold only songs just played or being prepared repeats one of them, with a

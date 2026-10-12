@@ -374,12 +374,14 @@ class Action:
 
     ``interrupt`` says when a hard event fades out the current song:
     ``"after"`` the change, so the next song reflects it; ``"before"`` it,
-    so a liner airs over the next song; or ``"none"``.
+    so a liner airs over the next song; or ``"none"``. Audio handlers prepare
+    the clip and return a playback callable; preparation must succeed before
+    the interruption. The callable runs on a worker thread.
     """
 
     name: str
     description: str
-    handle: Callable[[dict[str, str]], Awaitable[None]]
+    handle: Callable[[dict[str, str]], Awaitable[Callable[[], None] | None]]
     fields: tuple[ActionField, ...] = ()
     interrupt: Literal["before", "after", "none"] = "after"
 
@@ -651,9 +653,11 @@ class Scheduler:
             if action is None:
                 raise ValueError(f"Action {event.action} is not available")
             hard = event.timing == "hard"
+            play = await action.handle(dict(event.params))
             if hard and action.interrupt == "before":
                 self._interrupt()
-            await action.handle(dict(event.params))
+            if play is not None:
+                await asyncio.to_thread(play)
             if hard and action.interrupt == "after":
                 self._interrupt()
         except Exception as exc:

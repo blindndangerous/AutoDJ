@@ -11,6 +11,7 @@ from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, StrictBool, ValidationError
 
+from autodj.liner_scheduler import LinerDecodeError
 from autodj.scheduler import (
     Action,
     ActionField,
@@ -88,14 +89,17 @@ def _builtin_actions(
         bridge.set_playback_settings(PlaybackSettingsBody.model_validate({"pick_mode": mode}))
         bridge.save_persistent_state()
 
-    async def liner(params: dict[str, str]) -> None:
+    async def liner(params: dict[str, str]) -> Callable[[], None]:
         worker = bridge.liner_scheduler
         if worker is None:
             raise ValueError("Scheduled liners need server audio or stream mode")
         if bridge.station is not None and bridge.station.state != "playing":
             raise ValueError("The stream must be playing to air a liner")
-        if await asyncio.to_thread(worker.fire, params["name"]) is None:
-            raise ValueError(f"Liner {params['name']} could not be played")
+        try:
+            audio = await asyncio.to_thread(worker.decode, params["name"])
+        except LinerDecodeError as exc:
+            raise ValueError(f"Liner {params['name']} could not be played") from exc
+        return lambda: worker.play_audio(audio)
 
     async def stream(params: dict[str, str]) -> None:
         station = bridge.station
