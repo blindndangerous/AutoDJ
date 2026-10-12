@@ -33,6 +33,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   kept per station in `library.db`. Existing plays belong to the default station, so nothing
   changes for a single station. `autodj export-plays --station NAME` exports one station's plays.
 
+- `[stations.<slug>]` tables in `config.toml` describe more stations (#70), each with its own
+  `playback`, `stream`, `recording`, `dmca`, `time_checks`, `presets` and other station sections.
+  A station starts from the defaults rather than copying the default station's settings. Its
+  listener credentials, relay passwords and webhooks belong in `config.local.toml` (relay
+  passwords can also come from `AUTODJ_STATION_<SLUG>_RELAY_<NAME>_PASSWORD`). Names are checked,
+  `default` is reserved, two stations cannot share a recording folder or a relay target, and
+  errors name the station. See "Several stations" in `docs/operations.md`. A configuration
+  without these tables behaves exactly as before.
 - Schedule events can have a date range: an optional start date and end date, both included, in
   the station time zone. Outside the range an event does not run, and Next events skips it. An
   active window that crosses midnight belongs to the day it starts, so a Friday 18:00 until 02:00
