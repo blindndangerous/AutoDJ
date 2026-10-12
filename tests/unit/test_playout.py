@@ -167,6 +167,36 @@ def test_negative_overlap_falls_back_to_liner_first_when_main_exceeds_intro():
     assert handoff.incoming_s == pytest.approx(8)
 
 
+@pytest.mark.parametrize("incoming", [{}, {"intro": 0}])
+def test_negative_overlap_with_missing_or_zero_intro_uses_liner_first(incoming):
+    handoff = render_handoff(
+        audio(12),
+        {"outro": 4, "segue": 8, "end": 12},
+        incoming,
+        liner=audio(2, 0.2),
+        overlap_start=-3,
+        outro_lead_limit=None,
+    )
+    assert handoff.liner_s == pytest.approx(6)
+    assert handoff.incoming_s == pytest.approx(8)
+
+
+def test_negative_overlap_keeps_tail_after_a_short_liner_segue():
+    handoff = render_handoff(
+        audio(12),
+        {"outro": 4, "segue": 8, "end": 12},
+        {"intro": 5},
+        liner=audio(5, 0.2),
+        overlap_start=-3,
+        liner_segue=2,
+        outro_lead_limit=None,
+    )
+    assert handoff.liner_s == pytest.approx(11)
+    assert handoff.incoming_s == pytest.approx(8)
+    assert len(handoff.next_overlay) == 8 * SAMPLE_RATE
+    assert handoff.next_overlay[-1, 0] == pytest.approx(0.2)
+
+
 @pytest.mark.parametrize("overlap", [-15.01, float("nan"), float("inf")])
 def test_invalid_negative_overlap_is_rejected(overlap):
     with pytest.raises(ValueError, match="overlap_start"):

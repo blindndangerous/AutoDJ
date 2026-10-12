@@ -570,14 +570,35 @@ def test_voice_followed_by_id_never_starts_id_before_song_segue(station):
     assert len(result.audio) - result.overlap_frames == 12 * SR
 
 
-def test_later_negative_liner_cue_delays_the_chain_within_song_intro(station):
+def test_later_negative_liner_cue_does_not_delay_an_earlier_zero_liner(station):
     player, (a, b, voice, jingle), points = station
     points[b.path]["intro"] = 6
     points[voice.path].update(start=0, segue=1, end=1, overlap_start=0)
     points[jingle.path].update(start=0, segue=1, end=1, overlap_start=-3)
     result = player._render_track(a, b, 0, liners=((voice, False), (jingle, False)))
-    assert result.liner_events == ((12 * SR, voice, False), (13 * SR, jingle, False))
+    assert result.liner_events == ((10 * SR, voice, False), (11 * SR, jingle, False))
     assert len(result.audio) - result.overlap_frames == 10 * SR
+
+
+def test_first_negative_attached_liner_starts_after_music_and_keeps_tail(station):
+    player, (a, b, voice, _), points = station
+    points[b.path]["intro"] = 6
+    points[voice.path].update(start=0.5, segue=2, end=4, overlap_start=-3)
+    result = player._render_track(a, b, 0, liners=((voice, False),))
+    assert result.liner_events == ((13 * SR, voice, False),)
+    assert len(result.audio) - result.overlap_frames == 10 * SR
+    assert result.full_audio[round(14 * SR), 1] == pytest.approx(0.5)
+    assert result.full_audio[round(16.25 * SR), 1] == pytest.approx(0.5)
+
+
+def test_seed_liner_negative_cue_starts_it_after_incoming_music(station):
+    player, (_, b, voice, _), points = station
+    points[b.path]["intro"] = 6
+    points[voice.path].update(start=0.5, segue=2, end=4, overlap_start=-3)
+    result = player._render_track(voice, b, 0)
+    assert result.full_audio[0, 0] == pytest.approx(0.25)
+    assert result.full_audio[round(2.9 * SR), 1] == pytest.approx(0)
+    assert result.full_audio[round(3 * SR), 1] == pytest.approx(0.5)
 
 
 @pytest.fixture

@@ -3168,6 +3168,7 @@ class Player:
         clips, events, release = [], [], 0.0
         negative_constraints, zero_constraints = [], []
         has_negative_overlap = has_ordinary_overlap = False
+        first_overlap_negative = False
         outro_lead_limit = None
         frames = 0
         main_frames = 0
@@ -3184,6 +3185,7 @@ class Player:
             overlap_point = points.get("overlap_start")
             has_negative_overlap = overlap_point is not None and overlap_point < 0
             has_ordinary_overlap = overlap_point is None or overlap_point > 0
+            first_overlap_negative = has_negative_overlap
             if has_negative_overlap:
                 negative_constraints.append((0, overlap_point, main_frames))
             elif overlap_point == 0:
@@ -3230,6 +3232,8 @@ class Player:
                     zero_constraints.append((clip_offset, clip_main_frames))
                 else:
                     has_ordinary_overlap = True
+                if not clips:
+                    first_overlap_negative = overlap_point is not None and overlap_point < 0
                 if overlap > 0 or overlap_point is None:
                     release = max(release, frames / SAMPLE_RATE + overlap)
                 if overlap_point == 0:
@@ -3274,6 +3278,8 @@ class Player:
             )
             if has_ordinary_overlap:
                 constraints.append(release)
+            if not first_overlap_negative:
+                constraints.append(0.0)
             release = max(constraints)
         elif fit_main_frames:
             release = max(release, fit_main_frames / SAMPLE_RATE - incoming_intro)

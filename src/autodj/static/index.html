@@ -413,11 +413,11 @@
           <button type="button" data-preview="end">Preview End</button>
         </div>
         <div class="cue-point-row">
-          <label>Overlap start (seconds or MM:SS; -15 to 0 starts after the next song) <input type="text" inputmode="decimal" data-point="overlap_start" aria-label="Overlap start time"><span data-point-source="overlap_start"></span></label>
+          <label>Overlap start (seconds or MM:SS; minimum -15) <input type="text" inputmode="decimal" data-point="overlap_start" aria-describedby="negative-overlap-help"><span data-point-source="overlap_start"></span></label>
           <button type="button" data-set-current="overlap_start" aria-label="Set Overlap start to preview position">Use preview position</button>
           <button type="button" data-preview="overlap_start">Preview Overlap start</button>
         </div>
-        <small id="negative-overlap-help" hidden>Starts after next song; limited by its intro.</small>
+        <small id="negative-overlap-help" hidden>A negative value delays this liner by up to 15 seconds, limited by the next song’s intro. Preview and Use preview position are unavailable for negative values.</small>
       </div>
       <button type="button" id="points-save">Save points</button>
       <audio id="points-preview" controls preload="none" aria-label="Song point preview" data-preview-output></audio>
