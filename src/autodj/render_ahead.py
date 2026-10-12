@@ -50,6 +50,13 @@ class RenderAhead:
       the next render re-renders it with a fresh pick.
     * *skip_past(track)*: point the cursor just after *track* (used when
       the bus takes a fallback).
+
+    An optional *plan(track)* hook runs on the worker after each render
+    becomes ready, and again after :meth:`request_plan`, while the ready
+    track waits for the bus.  It may read and change the cursor's own
+    look-ahead state (the player plans the song change after the ready
+    track there); cursor moves that arrive meanwhile are queued as they
+    are during a render, so a plan never races a reset.
     """
 
     def __init__(
@@ -58,6 +65,7 @@ class RenderAhead:
         is_stale: Callable[[RenderedTrack], bool],
         rewind: TrackHook,
         skip_past: TrackHook,
+        plan: TrackHook | None = None,
     ) -> None:
         """Create an idle worker; call :meth:`start` to begin rendering.
 
@@ -67,8 +75,12 @@ class RenderAhead:
             is_stale: See the class docstring.
             rewind: See the class docstring.
             skip_past: See the class docstring.
+            plan: See the class docstring.
         """
         self._render = render
+        self._plan = plan
+        self._plan_due = False
+        self._planning = False
         self._is_stale = is_stale
         self._rewind = rewind
         self._skip_past = skip_past
@@ -149,6 +161,18 @@ class RenderAhead:
                 self._cond.notify_all()
             return track
 
+    def request_plan(self) -> None:
+        """Run the *plan* hook again soon, if a rendered track is waiting.
+
+        Safe from any thread; does nothing without a *plan* hook.
+        """
+        if self._plan is None:
+            return
+        with self._cond:
+            if self._ready is not None:
+                self._plan_due = True
+                self._cond.notify_all()
+
     def wait_ready(self, timeout: float) -> bool:
         """Block up to *timeout* seconds until :meth:`pop` would return a track.
 
@@ -202,7 +226,7 @@ class RenderAhead:
 
     def _apply(self, move: Callable[[], None]) -> None:
         """Run a cursor move now if the worker is idle, else queue it (lock held)."""
-        if self._rendering or self._deferred:
+        if self._rendering or self._planning or self._deferred:
             self._deferred.append(move)
         else:
             move()
@@ -211,7 +235,7 @@ class RenderAhead:
         """Worker body: render whenever no track is waiting."""
         while True:
             with self._cond:
-                self._cond.wait_for(lambda: self._stopped or self._ready is None)
+                self._cond.wait_for(lambda: self._stopped or self._ready is None or self._plan_due)
                 if self._stopped:
                     # Only one worker is ever assigned at a time (start() never
                     # replaces a live one), so this is always our own entry;
@@ -221,15 +245,35 @@ class RenderAhead:
                 pending, self._deferred = self._deferred, []
                 for move in pending:
                     move()
-                self._rendering = True
-                self._revalidate = False
-                generation = self._generation
+                waiting = self._ready
+                self._plan_due = False
+                if waiting is not None:
+                    self._planning = True
+                else:
+                    self._rendering = True
+                    self._revalidate = False
+                    generation = self._generation
+            if waiting is not None:
+                self._run_plan(waiting)
+                continue
             track: RenderedTrack | None = None
             try:
                 track = self._render()
             except Exception:
                 logger.exception("Rendering the next track failed")
             self._settle(track, generation)
+
+    def _run_plan(self, track: RenderedTrack) -> None:
+        """Run the *plan* hook for the waiting *track*; a failure is only logged."""
+        try:
+            if self._plan is not None:
+                self._plan(track)
+        except Exception:
+            logger.exception("Planning the song change after the next track failed")
+        finally:
+            with self._cond:
+                self._planning = False
+                self._cond.notify_all()
 
     def _settle(self, track: RenderedTrack | None, generation: int) -> None:
         """Decide what becomes of a finished render.
@@ -249,6 +293,7 @@ class RenderAhead:
                     if track is not None:
                         self._ready = track
                         self._fallback = None
+                        self._plan_due = self._plan is not None
                         self._cond.notify_all()
                     elif not self._stopped:
                         self._cond.wait(_RETRY_SECONDS)

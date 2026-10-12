@@ -8,10 +8,13 @@ from autodj.machine_tokens import (
     KNOWN_SCOPES,
     LAST_USED_RESOLUTION_SECONDS,
     SCOPE_ANALYSIS_WORKER,
+    SCOPE_ANNOUNCER,
+    STATION_SCOPES,
     MachineTokenStore,
     token_id_of,
     validate_name,
     validate_scopes,
+    validate_station,
 )
 
 
@@ -156,3 +159,81 @@ def test_tokens_command_creates_lists_and_revokes(tmp_path):
     assert bad.exit_code == 2
     blank = runner.invoke(cli, [*base, "create", " ", "--scope", SCOPE_ANALYSIS_WORKER])
     assert blank.exit_code == 1
+
+
+def test_an_announcer_token_is_bound_to_one_station(store):
+    tokens, _clock = store
+    token, secret = tokens.create("radiodj", [SCOPE_ANNOUNCER], "nightowl")
+    assert token.station == "nightowl"
+    found = tokens.authenticate(secret, SCOPE_ANNOUNCER)
+    assert found is not None and found.station == "nightowl"
+    assert tokens.list_tokens()[0].station == "nightowl"
+    assert tokens.get(token.token_id).station == "nightowl"
+    # It is no worker token, and a worker token is no announcer.
+    assert tokens.authenticate(secret, SCOPE_ANALYSIS_WORKER) is None
+    _worker, worker_secret = tokens.create("box", [SCOPE_ANALYSIS_WORKER])
+    assert tokens.authenticate(worker_secret, SCOPE_ANNOUNCER) is None
+    assert {SCOPE_ANNOUNCER} == STATION_SCOPES
+
+
+@pytest.mark.parametrize(
+    ("scopes", "station"),
+    [
+        ([SCOPE_ANNOUNCER], None),
+        ([SCOPE_ANNOUNCER], ""),
+        ([SCOPE_ANNOUNCER], "Bad Name"),
+        ([SCOPE_ANNOUNCER], "../x"),
+        ([SCOPE_ANALYSIS_WORKER], "default"),
+    ],
+)
+def test_station_binding_is_validated(store, scopes, station):
+    tokens, _clock = store
+    with pytest.raises(ValueError):
+        tokens.create("radiodj", scopes, station)
+    assert validate_station([SCOPE_ANALYSIS_WORKER], None) is None
+
+
+def test_an_older_token_file_gains_the_station_column(tmp_path):
+    path = tmp_path / ".machine-tokens.sqlite3"
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "CREATE TABLE machine_tokens (token_id TEXT PRIMARY KEY, name TEXT NOT NULL, "
+            "scopes TEXT NOT NULL, secret_sha256 TEXT NOT NULL, created_at INTEGER NOT NULL, "
+            "last_used_at INTEGER, revoked_at INTEGER)"
+        )
+        db.execute(
+            "INSERT INTO machine_tokens VALUES (?, 'old', ?, ?, 1, NULL, NULL)",
+            ("a" * 32, SCOPE_ANALYSIS_WORKER, "0" * 64),
+        )
+    db.close()
+    tokens = MachineTokenStore(path)
+    assert [(t.name, t.station) for t in tokens.list_tokens()] == [("old", None)]
+    made, _secret = tokens.create("radiodj", [SCOPE_ANNOUNCER], "default")
+    assert tokens.get(made.token_id).station == "default"
+
+
+def test_tokens_command_binds_an_announcer_token(tmp_path):
+    from click.testing import CliRunner
+
+    from autodj.cli import cli
+
+    config = tmp_path / "config.toml"
+    config.write_text(f'[index]\nindex_dir = "{(tmp_path / "index").as_posix()}"\n')
+    runner = CliRunner()
+    base = ["--config", str(config), "tokens"]
+    made = runner.invoke(
+        cli, [*base, "create", "radiodj", "--scope", SCOPE_ANNOUNCER, "--station", "default"]
+    )
+    assert made.exit_code == 0, made.output
+    secret = made.stdout.strip()
+    listed = runner.invoke(cli, [*base, "list"])
+    assert "station: default" in listed.output
+    assert secret.split(".")[2] not in listed.output
+    unknown = runner.invoke(
+        cli, [*base, "create", "x", "--scope", SCOPE_ANNOUNCER, "--station", "nightowl"]
+    )
+    assert unknown.exit_code == 1
+    assert "No station is named" in unknown.output
+    unbound = runner.invoke(cli, [*base, "create", "x", "--scope", SCOPE_ANNOUNCER])
+    assert unbound.exit_code == 1
+    assert "needs the station" in unbound.output

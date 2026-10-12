@@ -1,6 +1,8 @@
 // Settings > Analysis workers: the computers analysing songs for this
-// server (autodj worker), how many songs are waiting, and the tokens
-// those computers use.
+// server (autodj worker), how many songs are waiting, and the machine
+// tokens those computers and an announcer program (radiodj, #88) use.
+// An announcer token is bound to one station, chosen in #token-station,
+// which shows only while Token use is an announcer.
 //
 // Loads when its Settings subtab is shown and refreshes the workers every
 // ten seconds while it stays shown.  Refreshing changes each row's words
@@ -63,12 +65,17 @@ export function queueWords(view) {
   return `${waiting}${now}.  ${server}`;
 }
 
-function tokenWords(token, scopeLabels) {
+// "radiodj.  Announcer: DJ breaks, news and weather, for Night Owl.
+// Created 3 May 2026, never used."
+export function tokenWords(token, scopeLabels, stationNames = new Map()) {
   const scopes = token.scopes.map((scope) => scopeLabels.get(scope) || scope).join(", ");
+  const station = token.station
+    ? `, for ${stationNames.get(token.station) || token.station}`
+    : "";
   const used = token.last_used_at == null
     ? "never used"
     : `last used ${lastSeenWords(token.last_used_at)}`;
-  return `${token.name}.  ${scopes}.  Created ${shownDate(token.created_at)}, ${used}.`;
+  return `${token.name}.  ${scopes}${station}.  Created ${shownDate(token.created_at)}, ${used}.`;
 }
 
 export function installAnalysisWorkers({
@@ -86,6 +93,10 @@ export function installAnalysisWorkers({
   const workerList = get("workers-list");
   const refresh = get("workers-refresh");
   const nameInput = get("token-name");
+  const scopeSelect = get("token-scope");
+  const stationRow = get("token-station-row");
+  const stationSelect = get("token-station");
+  const stationDesc = get("token-station-desc");
   const create = get("token-create");
   const fresh = get("token-new");
   const freshName = get("token-new-name");
@@ -95,14 +106,19 @@ export function installAnalysisWorkers({
   const tokenList = get("token-list");
   const tokensEmpty = get("token-list-empty");
   if (!panel || !status || !queue || !workerList || !refresh || !nameInput || !create
-      || !fresh || !freshName || !secretField || !copy || !done || !tokenList || !tokensEmpty) {
+      || !fresh || !freshName || !secretField || !copy || !done || !tokenList || !tokensEmpty
+      || !scopeSelect || !stationRow || !stationSelect || !stationDesc) {
     return { load: async () => false };
   }
 
   const workerRows = new Map();
   const tokenRows = new Map();
   let tokens = [];
-  let scopeLabels = new Map([["analysis-worker", "Analysis worker"]]);
+  let scopeLabels = new Map([...scopeSelect.options].map((option) => [option.value,
+    option.textContent]));
+  // Scopes that bind a token to one station (the announcer's).
+  let stationScopes = new Set(["announcer"]);
+  let stationNames = new Map();
   let timer = null;
 
   const say = (message, tone = "info") => {
@@ -181,7 +197,7 @@ export function installAnalysisWorkers({
       }
       tokenList.append(li);
       li.token = token;
-      li.text.textContent = tokenWords(token, scopeLabels);
+      li.text.textContent = tokenWords(token, scopeLabels, stationNames);
       li.revoke.setAttribute("aria-label", `Revoke token ${token.name}`);
     }
     tokensEmpty.hidden = tokens.length > 0;
@@ -192,7 +208,11 @@ export function installAnalysisWorkers({
       const body = await request("/api/machine-tokens");
       if (Array.isArray(body.scopes)) {
         scopeLabels = new Map(body.scopes.map((scope) => [scope.id, scope.label]));
+        stationScopes = new Set(body.scopes.filter((scope) => scope.station)
+          .map((scope) => scope.id));
+        showScopes(body.scopes);
       }
+      if (Array.isArray(body.stations)) showStations(body.stations);
       tokens = Array.isArray(body.tokens) ? body.tokens : [];
       showTokens();
       return true;
@@ -200,6 +220,43 @@ export function installAnalysisWorkers({
       say(`Could not load the tokens: ${errorValue.message}`, "error");
       return false;
     }
+  }
+
+  function option(label, value) {
+    const made = doc.createElement("option");
+    made.value = value;
+    made.textContent = label;
+    return made;
+  }
+
+  // The scope choices, keeping the one chosen; rebuilt only when they change.
+  function showScopes(scopes) {
+    const wanted = scopes.map((scope) => `${scope.id}\n${scope.label}`).join("\n");
+    const shown = [...scopeSelect.options].map((option) => `${option.value}\n${option.textContent}`)
+      .join("\n");
+    if (wanted === shown) return;
+    const chosen = scopeSelect.value;
+    scopeSelect.replaceChildren(...scopes.map((scope) => option(scope.label, scope.id)));
+    if (scopes.some((scope) => scope.id === chosen)) scopeSelect.value = chosen;
+    showStationChoice();
+  }
+
+  function showStations(stations) {
+    stationNames = new Map(stations.map((station) => [station.slug, station.name]));
+    const chosen = stationSelect.value;
+    stationSelect.replaceChildren(...stations.map((station) => option(
+      station.name && station.name !== station.slug
+        ? `${station.name} (${station.slug})` : station.slug,
+      station.slug,
+    )));
+    if (stations.some((station) => station.slug === chosen)) stationSelect.value = chosen;
+  }
+
+  // The Station choice shows only for a token that works for one station.
+  function showStationChoice() {
+    const bound = stationScopes.has(scopeSelect.value);
+    stationRow.hidden = !bound;
+    stationDesc.hidden = !bound;
   }
 
   function hideSecret() {
@@ -217,12 +274,22 @@ export function installAnalysisWorkers({
       return;
     }
     nameInput.removeAttribute("aria-invalid");
+    const scope = scopeSelect.value;
+    const payload = { name, scopes: [scope] };
+    if (stationScopes.has(scope)) {
+      if (!stationSelect.value) {
+        say("Choose the station this token sends breaks to.", "error");
+        stationSelect.focus();
+        return;
+      }
+      payload.station = stationSelect.value;
+    }
     let body;
     try {
       body = await withDisabled(create, () => request("/api/machine-tokens", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, scopes: ["analysis-worker"] }),
+        body: JSON.stringify(payload),
       }));
     } catch (errorValue) {
       if (errorValue.status === 422) nameInput.setAttribute("aria-invalid", "true");
@@ -267,8 +334,8 @@ export function installAnalysisWorkers({
     let result = null;
     const confirmed = await confirm(doc, {
       title: `Revoke token ${token.name}?`,
-      message: "A worker using it stops at its next request and gives its songs back.  "
-        + "That computer needs a new token to work again.",
+      message: "A program using it stops at its next request; a worker gives its songs back.  "
+        + "That computer or program needs a new token to work again.",
       confirmLabel: "Revoke",
       onConfirm: async () => {
         try {
@@ -311,6 +378,7 @@ export function installAnalysisWorkers({
   refresh.addEventListener("click", () => void withDisabled(refresh,
     () => loadWorkers({ announce: true })));
   create.addEventListener("click", () => void createToken());
+  scopeSelect.addEventListener("change", showStationChoice);
   nameInput.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
     event.preventDefault();

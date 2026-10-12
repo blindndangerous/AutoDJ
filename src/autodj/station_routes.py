@@ -742,6 +742,11 @@ def equip_station(
     station.time_checks = TimeChecks(station.cfg, station.timezone, station.paths)
     schedule.register(time_check_action(station.time_checks, bridge))
 
+    from autodj.breaks import BreakDesk
+
+    station.breaks = BreakDesk(lambda: station.cfg.breaks, station.paths.announcements)
+    bridge.player.break_desk = station.breaks
+
 
 # ---------------------------------------------------------------------------
 # The router
@@ -800,6 +805,7 @@ class StationRouter:
 
 def install_station_routes(router: StationRouter) -> None:
     """Register every station route, with paths relative to the API root (``/skip``, ...)."""
+    from autodj.breaks_api import install_breaks
     from autodj.carts import install_carts
     from autodj.scheduler_api import install_scheduler
     from autodj.time_checks import install_time_checks
@@ -1623,6 +1629,7 @@ def install_station_routes(router: StationRouter) -> None:
     install_carts(router)
     install_scheduler(router)
     install_time_checks(router)
+    install_breaks(router)
 
 
 __all__ = [

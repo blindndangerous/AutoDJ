@@ -77,7 +77,10 @@ from starlette.types import Receive, Scope, Send
 
 # PlayerBridge lives in autodj._bridge; it is re-exported here.
 from autodj._bridge import PlayerBridge
+from autodj.breaks_api import ANNOUNCER_SCOPES, UPLOAD_PATH
+from autodj.breaks_api import MULTIPART_OVERHEAD_BYTES as BREAK_MULTIPART_OVERHEAD
 from autodj.categories_api import install_categories
+from autodj.config import BreaksConfig
 from autodj.icy import METAINT
 from autodj.indexer import analysis_identity
 from autodj.lan import PAIRING_ON_REQUEST_HINT, format_lan_banner, lan_urls, running_in_container
@@ -909,6 +912,8 @@ def create_app(
         "/api/stereo-tool-presets/upload": lambda: MAX_PRESET_BYTES + _MULTIPART_OVERHEAD_BYTES,
         "/api/schedule": lambda: _SCHEDULE_BODY_MAX_BYTES,
         "/api/machine-tokens": lambda: SMALL_BODY_MAX_BYTES,
+        # The largest break any station takes; each station checks its own.
+        UPLOAD_PATH: lambda: _break_upload_cap(stations),
         WORKER_PREFIX + "result": lambda: RESULT_BODY_MAX_BYTES,
         **{
             WORKER_PREFIX + name: (lambda: SMALL_BODY_MAX_BYTES)
@@ -932,7 +937,7 @@ def create_app(
         SecurityMiddleware,
         policy=policy,
         body_limits=body_limits,
-        machine_scopes=MACHINE_SCOPES,
+        machine_scopes={**MACHINE_SCOPES, **ANNOUNCER_SCOPES},
         machine_auth=lambda token, scope: machine_tokens().authenticate(token, scope),
         station_slugs=stations.slugs,
     )
@@ -942,6 +947,7 @@ def create_app(
         tokens=machine_tokens,
         library=lambda: getattr(bridge, "library", None),
         identity=lambda: analysis_identity(bridge.player._cfg.model.name, model_commit()),
+        stations=lambda: _station_names(stations),
     )
     # Compresses the page, scripts and JSON; audio, cover art and Range
     # replies pass through as is.
@@ -1876,6 +1882,32 @@ def create_app(
         app, bridge, clock_roots=lambda: [paths.clockwheels for paths in stations.paths()]
     )
     return app
+
+
+def _station_names(stations: StationRegistry) -> list[tuple[str, str]]:
+    """``(slug, name)`` of every configured station, the default first."""
+    first = stations.default.slug
+    names = []
+    for slug in (first, *sorted(stations.slugs() - {first})):
+        try:
+            name = str(stations.get(slug).name)
+        except Exception:  # a station whose configuration cannot say
+            name = slug
+        names.append((slug, name))
+    return names
+
+
+def _break_upload_cap(stations: StationRegistry) -> int:
+    """The request-body cap of a break upload: the largest any running station takes."""
+    caps = [
+        getattr(getattr(station.cfg, "breaks", None), "max_upload_bytes", None)
+        for station in stations.all()
+    ]
+    largest = max(
+        (cap for cap in caps if isinstance(cap, int)),
+        default=BreaksConfig().max_upload_bytes,
+    )
+    return largest + BREAK_MULTIPART_OVERHEAD
 
 
 def _share_station(stations: StationRegistry, station: StationRuntime) -> None:

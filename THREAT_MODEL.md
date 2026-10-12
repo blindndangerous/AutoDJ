@@ -246,13 +246,14 @@ configured hosts, because container addresses are not reachable from the network
 allowed. The Compose service uses the host network and sets `AUTODJ_HOST_NETWORK=1`, so it prints
 the detected addresses as a bare-metal server does.
 
-## Machine tokens and analysis workers
+## Machine tokens, analysis workers and announcer breaks
 
 A machine token is a bearer secret for a program, not a person. Settings, Analysis workers
 creates, lists and revokes them; those routes (`/api/machine-tokens`) are ordinary paired-browser
 routes and need a session when pairing is on. `autodj tokens list|create|revoke` does the same
-from a shell on the server (it can read and write the token database anyway). The same store is
-meant for radiodj's upload tokens (#88), which add their own scopes.
+from a shell on the server (it can read and write the token database anyway). Two scopes exist:
+`analysis-worker` for `autodj worker`, and `announcer` for a program that sends one station
+spoken breaks (#88, see [Announcer breaks](#announcer-breaks)).
 
 - A token reads `adj1.<id>.<secret>`: 32 hex digits naming the row and 256 random bits. It is
   shown once, in the reply to the request that created it (sent with `Cache-Control: no-store`),
@@ -263,10 +264,14 @@ meant for radiodj's upload tokens (#88), which add their own scopes.
 - Every check compares digests in constant time and answers a wrong secret, an unknown id, a
   revoked token and a missing scope with the same 401. Revoking takes effect on the next request
   and gives back any songs the worker had claimed.
-- Each token carries scopes, and each machine route names the one scope it needs. A machine token
-  opens only the routes under `/api/worker/`; it is no session and opens no browser route. A
-  browser session opens no worker route: they need `Authorization: Bearer`, and the middleware
-  refuses any request to them that carries an `Origin` header, which every browser page sends.
+- Each token carries scopes, and each machine route names the one scope it needs: a worker token
+  opens only the routes under `/api/worker/`, an announcer token only those under
+  `/api/announcer/` and `/api/stations/<slug>/announcer/`. A machine token is no session and
+  opens no browser route. A browser session opens no machine route: they need
+  `Authorization: Bearer`, and the middleware refuses any request to them that carries an
+  `Origin` header, which every browser page sends. The middleware treats a path under
+  `/api/stations/<any name>/` like the same path under `/api/`, so a machine route cannot be
+  reached as a browser route by another address.
 - A bearer token is refused over plain HTTP unless the client is on this machine (loopback): the
   server answers 403 "Machine tokens need HTTPS". `autodj worker` itself refuses to send its token
   to `http://` on another host, and never follows a redirect, which would hand the token to the
@@ -304,6 +309,46 @@ tokens only to machines you trust with that.
 `autodj worker --before-command` and `--after-command` run a program the operator typed, split
 like a shell would but without a shell, with a two-minute limit. They come from the worker's own
 command line, never from the server.
+
+### Announcer breaks
+
+An announcer token is bound to one station when it is created; the station is stored with the
+token and every announcer route refuses a token for another station with 403. The program is
+meant to run on the station's machine and reach AutoDJ at `127.0.0.1`, so the token never crosses
+the network; from any other machine it needs HTTPS as above. The token and its secret are never
+logged or returned after creation; log lines name a break by the first eight characters of its
+own random id and the token by its name.
+
+What an announcer can do with a valid token:
+
+- Read its station's playing song, next song, the open slot, the latest ten plays and the first
+  ten queued songs: titles, artists, albums, years, lengths and library ids, never file paths.
+- Upload a break for the open slot. The body is capped by the middleware at the largest
+  `[breaks] max_upload_mb` of the running stations plus 64 KiB, before any route reads it, and the
+  route stops writing at its own station's limit (413). The file name is the server's own
+  (`brk-<random id>.<extension>`), written to the station's `announcements` folder through a
+  hidden part file, so the request's file name chooses only the extension, from the liner audio
+  types (415 for any other). The file is decoded with soundfile or FFmpeg in a worker thread, one
+  upload at a time across the server, before it is accepted; a file that does not decode, is
+  longer than `max_seconds` or holds no sound is deleted and refused (422). FFmpeg parses the
+  upload, so a malformed file reaches FFmpeg's demuxers; the scope only lets a program the
+  operator trusts do this.
+- Look up and cancel its station's breaks, by their random ids.
+
+It cannot change the queue, settings, clockwheels, liners or anything else. A booked break pins
+the song after it, so a token can keep one song in place for one song change; it cannot choose
+that song, which the station's own pick made. Each station holds at most `max_queued` waiting
+breaks, `max_per_slot` per song change and `quota_mb` of waiting files (429, 409 and 507 past
+those), each token may make `requests_per_minute` requests (429 with `Retry-After`), and a break
+waits at most `max_expires_seconds`. Expired, dropped and aired breaks are deleted by the
+station's once-a-second upkeep, off the event loop; files a previous run left are deleted when the
+station starts.
+
+On-air safety: nothing an announcer does runs on the audio thread or waits for it. The breaks are
+mixed by the render-ahead worker one song ahead, as liners are; the mix bus only marks a break
+on the air through a short lock. A break that cannot be decoded at render time is dropped and the
+music renders without it. The song change after the next song is picked early only on stations
+with `[breaks] enabled = true`.
 
 ## Radio stream listening
 

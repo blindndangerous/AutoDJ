@@ -10,6 +10,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Announcer breaks (#88): an announcer program on the station's machine, such as radiodj, can
+  send a station DJ breaks, news, weather and music news through a new breaks API, with no
+  AzuraCast in between. AutoDJ prepares each song change one song ahead, so it now also picks the
+  song after the next one and offers that song change as the open slot; the program writes a
+  break for that pair of songs and uploads it. A DJ break talks up the next song (the speech ends
+  as its vocal starts, over its intro) when the song has an intro of at least two seconds, and
+  otherwise plays between the songs; `[breaks] dj_placement` chooses. News, weather and music
+  news play between the songs. The music drops by `[breaks] duck_db` under the voice, or by the
+  liners' duck depth. A booked break keeps its next song whatever the queue does. AutoDJ trims the
+  silence after the speech, reports each break as queued, rendered, on the air, aired, dropped or
+  expired with the reason in words, and deletes the file afterwards. Breaks are off until
+  `[breaks] enabled = true`, need saved-point playback, and work per station. Uploads are capped
+  in size, length and number, decoded away from the playout, and checked before they are
+  accepted. Operations has the API with example requests.
+- Announcer tokens: in Settings, Analysis workers, Machine tokens, **Token use** now offers
+  Announcer: DJ breaks, news and weather, with a **Station** choice that shows only for it. An
+  announcer token works for that one station and only for the breaks API.
+  `autodj tokens create NAME --scope announcer --station SLUG` does the same, and
+  `autodj tokens list` names a token's station.
+
 - A separate output device for previews (#54). In Settings, Sound, **Preview output device**
   sends the cue point preview in Track info, which Queue & Search, History and the library open,
   to a device of its own, such as headphones, while the browser mix stays on the speakers.

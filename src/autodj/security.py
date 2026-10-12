@@ -587,7 +587,10 @@ class SecurityMiddleware:
         routes need.  Those routes take only ``Authorization: Bearer``
         tokens, checked by *machine_auth(token, scope)*, which returns who
         the token belongs to or ``None``; a browser session does not work
-        there, and a machine token works nowhere else.
+        there, and a machine token works nowhere else.  A prefix under
+        ``/api/`` also covers the same path under ``/api/stations/<slug>/``,
+        whatever the name, so a station route is never a browser route by
+        another address.
         """
         self.app = app
         self._policy = policy
@@ -598,8 +601,9 @@ class SecurityMiddleware:
 
     def _machine_scope(self, path: str) -> str | None:
         """The token scope *path* needs, or ``None`` for a browser route."""
+        relative = station_relative(path, None)
         for prefix, scope_name in self._machine_scopes.items():
-            if path.startswith(prefix):
+            if path.startswith(prefix) or (relative is not None and relative.startswith(prefix)):
                 return scope_name
         return None
 
