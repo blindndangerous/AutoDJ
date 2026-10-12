@@ -16,9 +16,49 @@ from autodj.mastering import _QUEUE_BLOCKS, BLOCK_FRAMES, BLOCK_SECONDS, Continu
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is unavailable")
 
+# The advertised pipeline delay in blocks; processed audio is due from here on.
+_LATENCY_BLOCKS = 24
+
 
 def _block(value: float = 0.0) -> np.ndarray:
     return np.full((BLOCK_FRAMES, 2), value, dtype=np.float32)
+
+
+# Generous: the pipeline normally keeps up within a block or two.
+_CATCH_UP_SECONDS = 30.0
+
+
+def _caught_up(master: ContinuousMaster, *, cushion_due: bool) -> bool:
+    with master._lock:
+        if master._input:
+            return False  # the pipe writer has not taken the last block yet
+        if master._ready and not master._failed:
+            # Live: the next processed block must exist, or the lifecycle
+            # thread must first notice that the processor died.
+            return bool(master._output) and master._output[0][0] == master._generation
+        if cushion_due:
+            return len(master._output) > master._output_guard_blocks
+        return True
+
+
+def _live_step(
+    master: ContinuousMaster, block: np.ndarray, *, cushion_due: bool = False
+) -> np.ndarray:
+    """Feed one block once the master's own threads have caught up.
+
+    The bus calls ``process`` every 20 ms and never waits; these tests keep
+    that pace but also wait until FFmpeg and the pipe threads have handled
+    the previous blocks.  On a busy machine they can fall a few blocks
+    behind, which the master rightly treats as an underrun and restarts;
+    that is scheduling, not the behaviour under test.  ``cushion_due`` marks
+    the block at the advertised latency, by which the output cushion must
+    be full.
+    """
+    deadline = time.monotonic() + _CATCH_UP_SECONDS
+    while not _caught_up(master, cushion_due=cushion_due):
+        assert time.monotonic() < deadline, "the master pipeline stopped making progress"
+        time.sleep(0.002)
+    return master.process(block)
 
 
 def test_live_pipeline_processes_continuously_and_closes() -> None:
@@ -28,7 +68,7 @@ def test_live_pipeline_processes_continuously_and_closes() -> None:
         deadline = time.monotonic()
         for index in range(55):
             block = _block(0.03 if index >= 20 else 0.0)
-            output.append(master.process(block))
+            output.append(_live_step(master, block, cushion_due=index == _LATENCY_BLOCKS))
             deadline = max(deadline, time.monotonic()) + BLOCK_SECONDS
             time.sleep(max(0, deadline - time.monotonic()))
         audible = [sample for sample in output if np.any(sample)]
@@ -37,7 +77,7 @@ def test_live_pipeline_processes_continuously_and_closes() -> None:
         assert max(float(np.max(np.abs(sample))) for sample in audible) <= 0.871
         assert master.error is None
         assert master.restarts == 0
-        assert master.latency_seconds == pytest.approx(24 * BLOCK_SECONDS)
+        assert master.latency_seconds == pytest.approx(_LATENCY_BLOCKS * BLOCK_SECONDS)
     finally:
         start = time.monotonic()
         master.close()
@@ -83,21 +123,21 @@ def test_killed_ffmpeg_recovers_without_dropping_the_live_timeline() -> None:
     outputs = []
     try:
         deadline = time.monotonic()
-        for _ in range(45):
-            outputs.append(master.process(_block(0.04)))
+        for index in range(45):
+            outputs.append(_live_step(master, _block(0.04), cushion_due=index == _LATENCY_BLOCKS))
             deadline = max(deadline, time.monotonic()) + BLOCK_SECONDS
             time.sleep(max(0, deadline - time.monotonic()))
         process = master._proc
         assert process is not None and process.poll() is None
         process.kill()
         for _ in range(100):
-            outputs.append(master.process(_block(0.04)))
+            outputs.append(_live_step(master, _block(0.04)))
             deadline = max(deadline, time.monotonic()) + BLOCK_SECONDS
             time.sleep(max(0, deadline - time.monotonic()))
         assert master.restarts == 1
         assert master.error is None
         assert all(np.isfinite(block).all() for block in outputs)
-        assert all(np.any(np.abs(block) > 1e-7) for block in outputs[24:])
+        assert all(np.any(np.abs(block) > 1e-7) for block in outputs[_LATENCY_BLOCKS:])
         assert max(float(np.max(np.abs(block))) for block in outputs) <= 0.871
     finally:
         master.close()
@@ -258,6 +298,25 @@ def test_output_cushion_absorbs_jitter_then_recovers_from_real_underrun(mode) ->
             assert master.error == "master output underrun; restarting processor"
             assert master.restarts == 1
             assert master._generation == generation + 1
+    finally:
+        master.close()
+
+
+def test_a_processor_faster_than_measured_still_waits_out_the_advertised_delay() -> None:
+    master = ContinuousMaster(mode=lambda: "off")
+    master.close()
+    # Run the consumer without a worker: the processed audio is all there at once.
+    master._closed = False
+    master._select_mode = lambda: "smooth"
+    try:
+        with master._lock:
+            master._switch(True, "smooth")
+            generation = master._generation
+            master._output.extend((generation, _block(0.1)) for _ in range(_QUEUE_BLOCKS))
+            outputs = [master.process(_block(0.03)) for _ in range(_LATENCY_BLOCKS + 1)]
+        assert not any(np.any(block) for block in outputs[:_LATENCY_BLOCKS])
+        np.testing.assert_array_equal(outputs[_LATENCY_BLOCKS], _block(0.1))
+        assert master.error is None
     finally:
         master.close()
 

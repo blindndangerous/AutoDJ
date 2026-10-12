@@ -505,15 +505,28 @@ def test_close_ends_a_blocked_send(fast) -> None:
 
 def test_status_never_contains_the_password(fast) -> None:
     script = Script(RelayError("the server rejected the user name or password"))
-    relay = _relay(script)
+    statuses: list[dict[str, Any]] = []
+    retrying = threading.Event()
+
+    def record() -> None:
+        # Called on the relay thread at each change: polling could miss the
+        # retry, which lasts only the 10 ms backoff before the next login.
+        statuses.append(relay.status())
+        if statuses[-1]["state"] == "retrying":
+            retrying.set()
+
+    relay = _relay(script, on_change=record)
     relay.start()
     try:
-        _wait_until(lambda: relay.status()["state"] == "retrying")
-        status = relay.status()
+        assert retrying.wait(timeout=10)
     finally:
         relay.close()
+    statuses.append(relay.status())
+    status = next(status for status in statuses if status["state"] == "retrying")
     assert status["target"] == "radio.example.com:8000/live"
-    assert PASSWORD not in json.dumps(status)
+    assert status["error"] == "the server rejected the user name or password"
+    for status in statuses:
+        assert PASSWORD not in json.dumps(status)
 
 
 # -- the manager ----------------------------------------------------------------------
