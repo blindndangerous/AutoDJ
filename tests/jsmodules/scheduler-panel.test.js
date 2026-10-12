@@ -350,6 +350,28 @@ describe("Schedule panel", () => {
     expect(later).toContain("2027");
   });
 
+  it("reads this year in the station time zone", async () => {
+    const server = fakeServer();
+    const reply = server.request.getMockImplementation();
+    // 08:00 UTC on 31 December is 22:00 that day at UTC+14, and 12:00 UTC
+    // is already 1 January there.
+    server.request.mockImplementation(async (url, options) => {
+      const data = await reply(url, options);
+      if (url !== "/api/schedule" || options?.method) return data;
+      return {
+        ...data, timezone: "Pacific/Kiritimati",
+        upcoming: [{ ...data.upcoming[0], time: "2026-12-31T12:00:00+00:00" }],
+      };
+    });
+    installSchedulerPanel({ doc: document, request: server.request, now: () => Date.parse("2026-12-31T08:00:00Z") });
+    initSubtabs(byId("settings-tabs"), { storage: null });
+    byId("stab-schedule").click();
+    await vi.waitFor(() => expect(byId("schedule-timezone").textContent).toBe("Pacific/Kiritimati"));
+    const [first] = [...byId("schedule-upcoming").children].map((item) => item.textContent);
+    expect(first).toContain("January");
+    expect(first).toContain("2027");
+  });
+
   it("says when an action has nothing to choose yet", async () => {
     const server = fakeServer();
     const empty = { ...ACTIONS[0], fields: [{ ...ACTIONS[0].fields[0], options: [] }] };

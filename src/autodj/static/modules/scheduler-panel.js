@@ -65,11 +65,20 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
 
   // ---- Times ----------------------------------------------------------
 
+  // The year of an instant in the station time zone, as the list shows it.
+  function stationYear(instant) {
+    try {
+      return new Intl.DateTimeFormat("en", { year: "numeric", timeZone: data.timezone || undefined }).format(instant);
+    } catch {
+      return String(new Date(instant).getFullYear());
+    }
+  }
+
   // The weekday and date are always said; the year only when it is not
-  // this year's.
+  // this year's in the station time zone.
   function formatWhen(iso) {
     const options = { weekday: "long", day: "numeric", month: "long", hour: "numeric", minute: "2-digit" };
-    if (new Date(iso).getFullYear() !== new Date(now()).getFullYear()) options.year = "numeric";
+    if (stationYear(new Date(iso)) !== stationYear(now())) options.year = "numeric";
     try {
       return new Intl.DateTimeFormat(undefined, { ...options, timeZone: data.timezone || undefined }).format(new Date(iso));
     } catch {
