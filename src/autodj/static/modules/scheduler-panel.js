@@ -9,8 +9,9 @@
 // Focus: Add event and Edit move to the Name field.  Save and Cancel move
 // to the event's Edit button (Add event when there is none).  Delete moves
 // to the Edit button of the event that took its place.  A bad field is
-// named in words, marked aria-invalid and focused.  Rows are updated in
-// place, so a refresh never takes focus away from a row's button.
+// named in words, marked aria-invalid, described by the error text and
+// focused.  Rows are updated in place, so a refresh never takes focus away
+// from a row's button.
 
 import { requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
@@ -64,8 +65,20 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
 
   // ---- Times ----------------------------------------------------------
 
+  // The year of an instant in the station time zone, as the list shows it.
+  function stationYear(instant) {
+    try {
+      return new Intl.DateTimeFormat("en", { year: "numeric", timeZone: data.timezone || undefined }).format(instant);
+    } catch {
+      return String(new Date(instant).getFullYear());
+    }
+  }
+
+  // The weekday and date are always said; the year only when it is not
+  // this year's in the station time zone.
   function formatWhen(iso) {
     const options = { weekday: "long", day: "numeric", month: "long", hour: "numeric", minute: "2-digit" };
+    if (stationYear(new Date(iso)) !== stationYear(now())) options.year = "numeric";
     try {
       return new Intl.DateTimeFormat(undefined, { ...options, timeZone: data.timezone || undefined }).format(new Date(iso));
     } catch {
@@ -89,7 +102,8 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
 
   function eventText(event) {
     const timing = event.timing === "hard" ? "Hard timing" : "Soft timing";
-    return `${event.name}: ${event.repeat_text}. ${event.action_text}. ${timing}.${event.enabled ? "" : " Disabled."}`;
+    const state = `${event.enabled ? "" : " Disabled."}${event.ended ? " Ended, no runs left." : ""}`;
+    return `${event.name}: ${event.repeat_text}. ${event.action_text}. ${timing}.${state}`;
   }
 
   // One button of a row: short on screen, named for the event for a
@@ -316,6 +330,10 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     for (const part of form.querySelectorAll("[data-repeat]")) {
       part.hidden = !part.dataset.repeat.split(" ").includes(repeatSelect.value);
     }
+    // A description named by aria-describedby is read even when hidden.
+    const daysGroup = get("days");
+    if (repeatSelect.value === "interval") daysGroup.setAttribute("aria-describedby", "schedule-days-desc");
+    else daysGroup.removeAttribute("aria-describedby");
   }
 
   function openForm(event = null) {
@@ -333,6 +351,8 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     get("interval").value = String(event?.interval_minutes ?? 60);
     get("window-start").value = event?.window_start?.slice(0, 5) ?? "";
     get("window-end").value = event?.window_end?.slice(0, 5) ?? "";
+    get("start-date").value = event?.start_date ?? "";
+    get("end-date").value = event?.end_date ?? "";
     get("timing").value = event?.timing ?? "soft";
     get("enabled").checked = event ? event.enabled : true;
     showRepeatFields();
@@ -346,10 +366,24 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     clearError();
   }
 
+  // The error text joins or leaves a control's own description.
+  function linkError(control, linked) {
+    const ids = (control.getAttribute("aria-describedby") || "").split(/\s+/)
+      .filter((id) => id && id !== formError.id);
+    if (linked) ids.push(formError.id);
+    if (ids.length) control.setAttribute("aria-describedby", ids.join(" "));
+    else control.removeAttribute("aria-describedby");
+  }
+
+  function unmark(control) {
+    control.removeAttribute("aria-invalid");
+    linkError(control, false);
+  }
+
   function clearError() {
     formError.hidden = true;
     formError.textContent = "";
-    for (const element of form.querySelectorAll("[aria-invalid]")) element.removeAttribute("aria-invalid");
+    for (const element of form.querySelectorAll("[aria-invalid]")) unmark(element);
   }
 
   function fieldControls(field) {
@@ -362,7 +396,7 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     const ids = {
       name: "name", action: "action", repeat: "repeat", date: "date", time: "time",
       interval_minutes: "interval", window_start: "window-start", window_end: "window-end",
-      timing: "timing", enabled: "enabled",
+      start_date: "start-date", end_date: "end-date", timing: "timing", enabled: "enabled",
     };
     const control = ids[field] && get(ids[field]);
     return control ? [control] : [];
@@ -374,7 +408,10 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     formError.textContent = message;
     formError.hidden = false;
     const controls = fieldControls(field);
-    for (const control of controls) control.setAttribute("aria-invalid", "true");
+    for (const control of controls) {
+      control.setAttribute("aria-invalid", "true");
+      linkError(control, true);
+    }
     say(message, "error");
     controls[0]?.focus();
     return controls.length > 0;
@@ -398,7 +435,6 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     }
     if (repeat === "once" && !get("date").value) return ["date", "Enter a date"];
     if (USES_TIME.has(repeat) && !get("time").value) return ["time", "Enter a time"];
-    if (repeat === "days" && !dayBoxes.some((box) => box.checked)) return ["days", "Choose at least one day"];
     if (repeat === "interval") {
       const minutes = Number(get("interval").value);
       if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) {
@@ -411,6 +447,19 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
       }
       if (start && start === end) return ["window_end", "Active until must differ from Active from"];
     }
+    if (repeat === "days" && !dayBoxes.some((box) => box.checked)) return ["days", "Choose at least one day"];
+    // Date inputs give "" for a date that is not complete, and ISO dates
+    // compare as text.
+    for (const [field, id, label] of [["start_date", "start-date", "start date"], ["end_date", "end-date", "end date"]]) {
+      if (!get(id).value && get(id).validity?.badInput) return [field, `Enter a whole ${label}, or leave it empty`];
+    }
+    const from = get("start-date").value;
+    const until = get("end-date").value;
+    if (from && until && until < from) return ["end_date", "End date must be on or after the start date"];
+    const day = get("date").value;
+    if (repeat === "once" && ((from && day < from) || (until && day > until))) {
+      return ["date", "Date must be within the start and end dates"];
+    }
     return null;
   }
 
@@ -422,9 +471,12 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
       name: nameInput.value.trim(), action: actionSelect.value, params, repeat,
       timing: get("timing").value, enabled: get("enabled").checked,
     };
+    // An empty date is no limit; the server reads a missing one the same way.
+    if (get("start-date").value) body.start_date = get("start-date").value;
+    if (get("end-date").value) body.end_date = get("end-date").value;
     if (repeat === "once") body.date = get("date").value;
     if (USES_TIME.has(repeat)) body.time = get("time").value;
-    if (repeat === "days") body.days = dayBoxes.filter((box) => box.checked).map((box) => Number(box.value));
+    if (repeat === "days" || repeat === "interval") body.days = dayBoxes.filter((box) => box.checked).map((box) => Number(box.value));
     if (repeat === "interval") {
       body.interval_minutes = Number(get("interval").value);
       body.window_start = get("window-start").value || null;
@@ -483,7 +535,7 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
   form.addEventListener("input", (event) => {
     if (event.target.getAttribute?.("aria-invalid")) {
       const group = dayBoxes.includes(event.target) ? dayBoxes : [event.target];
-      for (const control of group) control.removeAttribute("aria-invalid");
+      for (const control of group) unmark(control);
     }
   });
   form.addEventListener("submit", (event) => void save(event));

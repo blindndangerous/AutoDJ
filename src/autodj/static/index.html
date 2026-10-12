@@ -1322,16 +1322,6 @@
           <label for="schedule-time">Time</label>
           <input type="time" id="schedule-time" required>
         </div>
-        <fieldset id="schedule-days" data-repeat="days">
-          <legend>Days</legend>
-          <div class="settings-check"><input type="checkbox" id="schedule-day-0" value="0"><label for="schedule-day-0">Monday</label></div>
-          <div class="settings-check"><input type="checkbox" id="schedule-day-1" value="1"><label for="schedule-day-1">Tuesday</label></div>
-          <div class="settings-check"><input type="checkbox" id="schedule-day-2" value="2"><label for="schedule-day-2">Wednesday</label></div>
-          <div class="settings-check"><input type="checkbox" id="schedule-day-3" value="3"><label for="schedule-day-3">Thursday</label></div>
-          <div class="settings-check"><input type="checkbox" id="schedule-day-4" value="4"><label for="schedule-day-4">Friday</label></div>
-          <div class="settings-check"><input type="checkbox" id="schedule-day-5" value="5"><label for="schedule-day-5">Saturday</label></div>
-          <div class="settings-check"><input type="checkbox" id="schedule-day-6" value="6"><label for="schedule-day-6">Sunday</label></div>
-        </fieldset>
         <div data-repeat="interval">
           <div class="settings-row">
             <label for="schedule-interval">Minutes between runs</label>
@@ -1349,6 +1339,34 @@
             Optional.  Leave both empty to run all day.  The window may cross midnight, such as 22:00 until 02:00.
           </span>
         </div>
+        <fieldset id="schedule-days" data-repeat="days interval">
+          <legend>Days</legend>
+          <!-- Named by the fieldset's aria-describedby only while shown (scheduler-panel.js). -->
+          <p class="setting-desc" id="schedule-days-desc" data-repeat="interval">
+            Optional.  Leave every day unchecked to run every day.  A window that crosses midnight belongs to the day it starts.
+          </p>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-0" value="0"><label for="schedule-day-0">Monday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-1" value="1"><label for="schedule-day-1">Tuesday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-2" value="2"><label for="schedule-day-2">Wednesday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-3" value="3"><label for="schedule-day-3">Thursday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-4" value="4"><label for="schedule-day-4">Friday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-5" value="5"><label for="schedule-day-5">Saturday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-6" value="6"><label for="schedule-day-6">Sunday</label></div>
+        </fieldset>
+        <fieldset id="schedule-range">
+          <legend>Date range</legend>
+          <div class="settings-row">
+            <label for="schedule-start-date">Start date</label>
+            <input type="date" id="schedule-start-date" aria-describedby="schedule-range-desc">
+          </div>
+          <div class="settings-row">
+            <label for="schedule-end-date">End date</label>
+            <input type="date" id="schedule-end-date" aria-describedby="schedule-range-desc">
+          </div>
+          <span class="setting-desc" id="schedule-range-desc">
+            Optional.  The event runs only from the start date to the end date, both included, in the station time zone.  Leave either empty for no limit on that side.  A window that crosses midnight on the end date runs to its end.
+          </span>
+        </fieldset>
         <div class="settings-row">
           <label for="schedule-timing">Timing</label>
           <select id="schedule-timing" aria-describedby="schedule-timing-desc">
