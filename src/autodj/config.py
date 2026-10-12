@@ -1443,10 +1443,25 @@ class TimeChecksConfig(_Section):
     outro_clip: str | None = None
     tts_command: list[str] = field(default_factory=list)
     rule: str = "off"
+    voice_packs: list[str] = field(default_factory=list)
+    pack_order: str = "rotate"
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
             raise TypeError("time_checks.enabled must be true or false")
+        if self.pack_order not in ("rotate", "random"):
+            raise ValueError("time_checks.pack_order must be 'rotate' or 'random'")
+        packs = self.voice_packs
+        if not isinstance(packs, list) or any(
+            not isinstance(path, str) or not path.strip() for path in packs
+        ):
+            raise TypeError("time_checks.voice_packs must be an array of nonempty folder paths")
+        self.voice_packs = [str(Path(path).expanduser()) for path in packs]
+        names = [Path(path).name.casefold() for path in self.voice_packs]
+        if "" in names or len(set(names)) != len(names):
+            raise ValueError(
+                "time_checks.voice_packs folders need distinct names; the name shows in Settings"
+            )
         if self.hour_format not in ("12", "24"):
             raise ValueError("time_checks.hour_format must be '12' or '24'")
         if self.rule not in ("off", "after_hour_song"):

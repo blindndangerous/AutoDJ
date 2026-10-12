@@ -10,7 +10,9 @@ that wrote it and the list of files) and these members:
   ``index/time_checks.json``, ``index/listener_bans.json`` and ``index/recording.json``
   from the active index folder.
 - ``liners/...``, ``carts/...``, ``time_checks/...`` and ``profiles/...``: every file in
-  those folders.
+  those folders and their subfolders.  Time check voice packs kept in subfolders of the
+  ``time_checks`` folder come along; packs listed from other folders do not, as they are
+  external libraries like the music.
 - ``stereo-tool-presets/...``: the uploaded ``.sts`` presets.
 
 Broadcast recordings are archives, not station state: they can run to many

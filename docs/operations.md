@@ -1416,7 +1416,10 @@ stream mode. Both use `[server] station_timezone` (or the detected system zone),
 said is the time when the check plays. A check plays at most once an hour from the rule: when a
 scheduled check already played in that hour, the rule stays quiet.
 
-A check is one clip: the optional intro, the time, and the optional outro. It plays like a
+A check is one clip: the optional intro, the time, and the optional outro. The time comes from
+the first source that has the minute: a ticked voice pack, then a recorded minute clip, then
+text to speech. A missing or unreadable file only moves on to the next source; it never stops
+the music. It plays like a
 voice liner, with the liner duck depth. After the hour, in server audio or stream mode, it takes
 the place of the automatic liner due at that song change and uses **Talk up to the vocal** when
 the clip fits before the singing. When a talk-up liner is already playing over the crossfade
@@ -1433,6 +1436,87 @@ many minute clips there are. Run `uv run autodj doctor` for the number missing, 
 missing names, and warnings for a missing folder, intro or outro clip or TTS program. A minute
 without a clip uses TTS when it is configured. Without a clip or working TTS command, the check
 is skipped and the server logs one warning.
+
+### Voice packs
+
+A voice pack is a folder of short recordings that AutoDJ joins into one sentence, the way
+RadioBOSS does, so its packs work as they are: an hour file says "it's 5", a minute file says
+"fifty-six", and an exact-hour file says "it's 5 o'clock". List the folders in `config.toml`;
+the folder name is the pack's name in Settings, so two packs cannot share a folder name:
+
+```toml
+[time_checks]
+voice_packs = ["D:/Voices/Studio", "D:/Voices/Night"]
+pack_order = "rotate"   # or "random"
+```
+
+**Settings**, **Time checks** shows each pack as a checkbox under **Voice packs**. Its
+description says how many of the 1440 minutes it can say, which hour, exact-hour and minute
+files are missing, the optional files it uses, and any files it does not use. Tick the packs to
+use; with no saved choice every listed pack is ticked. **When several packs are ticked**
+chooses whether they take turns, one per check, or one is picked at random. When the chosen
+pack cannot say the minute, the other ticked packs are tried before the recorded clips.
+**Voice to test** picks one pack, ticked or not, for **Play a time check now**; when the
+server plays it, the result says which source spoke. The browser only ever sends a pack's name; the folders stay
+in `config.toml`.
+
+AutoDJ reads only the files directly in the folder, with the extension `.wav`, `.mp3`, `.flac`
+or `.ogg`, and compares letters without regard to case. It recognises these names:
+
+- Hour file: letters, spaces, `_` or `-` that include `h` and no `m`, then a two-digit hour
+  from 00 to 23. Examples: `hr_05.mp3`, `H05.wav`, `hour-17.ogg`.
+- Exact-hour file: an hour file name with `o` straight after the digits, such as
+  `hr_05o.mp3`. It plays alone at minute 00.
+- Minute file: letters, spaces, `_` or `-` that include `m` and no `h`, then a two-digit minute
+  from 00 to 59. Examples: `m_56.mp3`, `min 07.wav`.
+- `intro` and `outro` (such as `intro.wav`): said before and after the time, joined in the same
+  way. They are part of the pack's voice; `intro_clip` and `outro_clip` still wrap the whole
+  check.
+- `am` and `pm`: in 12-hour mode, said after the time when the pack has both.
+
+At minute 00 AutoDJ uses the exact-hour file; without one it uses the hour file and `m_00`.
+Other minutes use the hour file and the minute file. Any other audio file is listed as not
+used, and AutoDJ does not guess: a name with both or neither of `h` and `m` before the number
+(`hm_05.mp3`), a number out of range (`hr_24.mp3`), a number that is not two digits
+(`hr_5.mp3`), a minute with `o`, an `am` file without a `pm` file, or two files for the same
+piece (`hr_05.mp3` and `H05.wav`: neither is used, so hour 05 counts as missing). Rename the
+files and the next check picks them up.
+
+Hour files are named with the 24-hour clock. In 24-hour mode a pack needs all 24. In 12-hour
+mode, when the file for hour 13 to 23 is missing, the file for 1 to 11 is used, and the file
+for 12 stands in for 00; so a 12-hour pack with `hr_01` to `hr_12` covers the day, and its
+`am` and `pm` files tell the halves apart. A 24-hour mode check never uses a 12-hour file,
+which would say the wrong hour.
+
+Joining makes the pieces sound like one sentence:
+
+- Leading and trailing silence is cut from each piece. Silence is anything 45 dB under the
+  piece's own peak, measured in 5 ms steps, so soft consonants stay; 10 ms is kept before the
+  first sound and 30 ms after the last for the word's natural decay. Only the ends are cut: a
+  pause inside a recording stays.
+- Each piece is brought to the pieces' average speech loudness, moving no piece more than 12 dB,
+  and all of them come down together if one would peak above -0.2 dBFS.
+- Neighbouring pieces overlap by 40 ms with an equal-power crossfade. The overlap is exactly the
+  10 ms lead plus the 30 ms decay that trimming kept, so only those quiet margins are blended:
+  the first word is at full level until its last sound and the next word reaches full level at
+  its first sound, with no gap and no click. The joined voice fades in and out over 3 ms.
+
+AutoDJ keeps about 32 MB of joined checks in memory, per pack and minute, and joins again when a
+pack file is replaced, added or removed. The check then plays through the voice liner path like
+any other, with the same duck and talk-up timing.
+
+`uv run autodj doctor` shows one `voice-pack-<name>` line per pack, with the same coverage
+text and the folder, and warns when the folder is missing, a file is not used, or the pack
+cannot say every minute. The `time-checks` line warns about a missing TTS fallback only for
+minutes that neither a ticked pack nor a recorded clip can say, and warns when a saved pack
+name is not in `voice_packs`.
+
+Backups include voice packs kept in subfolders of the `time_checks` folder (for example
+`<index>/time_checks/Studio`), because every file in that folder is backed up. Packs listed
+from other folders are not copied, like the music library: back them up yourself with
+`config.toml`.
+
+### Text to speech
 
 The speech says "It's 3:05", or "It's 15:05" in 24-hour mode. On the hour it says "It's 3
 o'clock" in 12-hour mode and "It's 15 hundred" in 24-hour mode, and in both modes "It's midnight"
@@ -1472,8 +1556,9 @@ through the screen reader and writes no sound to the file. To list the installed
 [System.Speech.Synthesis.SpeechSynthesizer]::new().GetInstalledVoices().VoiceInfo.Name"`.
 
 Choose one command, and test it with **Play a time check now**. `intro_clip`, `outro_clip`,
-`clips_folder`, and `tts_command` are local file settings only; the browser cannot change or
-read them. The enabled switch, hour format, and rule live in versioned `time_checks.json` in
-the index folder after you change them in Settings, and a wrong version stops startup with an
+`clips_folder`, `voice_packs` and `tts_command` are local file settings only; the browser
+cannot change or read them. The enabled switch, hour format, rule, ticked packs and pack order
+live in versioned `time_checks.json` in the index folder after you change them in Settings; a
+key the file lacks takes the `config.toml` value, and a wrong version stops startup with an
 error. Backups include `time_checks.json` and the recorded clips; copy `config.toml` yourself
 if you use custom paths or a TTS command.

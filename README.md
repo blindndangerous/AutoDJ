@@ -17,8 +17,9 @@ uploaded to a cloud service.
 - Voice liners that play spoken clips over the music on a schedule.
 - A cart wall for instant jingles, station IDs and sound effects, with numbered keys and
   duck, over or replace playback modes.
-- Spoken time checks from recorded minute clips or an external TTS command, scheduled or after
-  the song that crosses the hour.
+- Spoken time checks from RadioBOSS-style voice packs (hour and minute files joined into one
+  sentence), recorded minute clips or an external TTS command, scheduled or after the song that
+  crosses the hour.
 - A scheduler that switches profiles, presets or the clockwheel, plays liners, starts or stops the
   stream and turns discovery on or off at set times.
 - Broadcast recording to dated MP3 files, with hourly or show splits, scheduled controls and retention.
