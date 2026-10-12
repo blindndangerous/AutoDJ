@@ -197,7 +197,7 @@ describe("clockwheel editor", () => {
     expect(status()).toBe("");
   });
 
-  it("navigates step names with arrows, edits with Enter and removes with Delete", async () => {
+  it("navigates step names with arrows, edits with Enter and asks before Delete removes a step", async () => {
     await open(fakeServer());
     rowButton(1, "edit").focus();
     rowButton(1, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
@@ -223,10 +223,47 @@ describe("clockwheel editor", () => {
     expect(byId("clock-step-legend").textContent).toBe("Edit step 3");
     rowButton(2, "edit").focus();
     rowButton(2, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    expect(byId("confirm-title").textContent).toBe("Delete step 3, track Album/Song.flac?");
+    expect(byId("confirm-accept").textContent).toBe("Delete step");
+    expect(document.activeElement).toBe(byId("confirm-cancel"));
+    expect(rows()).toHaveLength(3);
+    byId("confirm-accept").click();
+    await vi.waitFor(() => expect(status()).toBe("Deleted step 3, track Album/Song.flac. 2 steps remain. Not saved yet."));
+    expect(byId("confirm-dialog").open).toBe(false);
     expect(rows()).toHaveLength(2);
     expect(document.activeElement).toBe(rowButton(1, "edit"));
     rowButton(1, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", repeat: true, bubbles: true, cancelable: true }));
+    expect(byId("confirm-dialog").open).toBe(false);
     expect(rows()).toHaveLength(2);
+  });
+
+  it("keeps the step when the Delete key's question is cancelled", async () => {
+    await open(fakeServer());
+    rowButton(0, "duplicate").focus();
+    rowButton(0, "duplicate").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    expect(byId("confirm-title").textContent).toBe("Delete step 1, music from Rock?");
+    expect(document.activeElement).toBe(byId("confirm-cancel"));
+    byId("confirm-cancel").click();
+    await vi.waitFor(() => expect(document.activeElement).toBe(rowButton(0, "duplicate")));
+    expect(rows()).toHaveLength(3);
+    expect(rowText(0)).toBe("music from Rock");
+    expect(byId("clock-next").textContent).not.toBe("Save to play these changes.");
+    expect(status()).toBe("");
+  });
+
+  it("deletes the last step after the Delete key's question and moves focus to the step type", async () => {
+    const server = fakeServer();
+    server.clocks.Morning.steps = [MUSIC];
+    await open(server);
+    rowButton(0, "edit").focus();
+    rowButton(0, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    byId("confirm-accept").click();
+    await vi.waitFor(() => expect(status()).toBe("Deleted step 1, music from Rock. No steps are left. Not saved yet."));
+    expect(rows()).toHaveLength(0);
+    expect(document.activeElement).toBe(byId("clock-step-type"));
   });
 
   it("moves a step with Alt+Down, keeps focus on it and says the new position", async () => {

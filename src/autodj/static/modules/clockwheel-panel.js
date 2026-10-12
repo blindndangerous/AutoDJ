@@ -250,15 +250,20 @@ export function installClockwheelPanel({ document: doc = document, request = req
     if (focusIndex !== null) focusRow(focusIndex, action);
   }
 
-  function focusRow(index, action) {
+  // Makes one button of a row the list's tab stop and returns it.
+  function rowTarget(index, action) {
     const row = steps.querySelector(`li[data-index="${index}"]`);
-    if (!row) return;
+    if (!row) return null;
     const wanted = row.querySelector(`button[data-action="${action}"]`);
     const other = { "move-up": "move-down", "move-down": "move-up" }[action] || "edit";
     const target = wanted && !wanted.disabled ? wanted : row.querySelector(`button[data-action="${other}"]:not([disabled])`)
       || row.querySelector('button[data-action="edit"]');
     steps.querySelectorAll("button[data-action]").forEach((button) => { button.tabIndex = button === target ? 0 : -1; });
-    target?.focus();
+    return target;
+  }
+
+  function focusRow(index, action) {
+    rowTarget(index, action)?.focus();
   }
 
   function changed(message, focusIndex, action) {
@@ -280,18 +285,46 @@ export function installClockwheelPanel({ document: doc = document, request = req
     changed(`Moved. ${position(to)}.`, to, action);
   }
 
-  function remove(index) {
+  // Removes a step and renders the list; returns what to say and where focus belongs.
+  function removeStep(index) {
     const gone = describe(clock.steps[index]);
     clock.steps.splice(index, 1);
     if (editing !== null) resetForm();
+    dirty = true;
+    renderSteps();
     const left = clock.steps.length;
     const message = `Deleted step ${index + 1}, ${gone}.`;
-    if (left) {
-      changed(`${message} ${left === 1 ? "1 step remains" : `${left} steps remain`}.`, Math.min(index, left - 1), "edit");
-    } else {
-      changed(`${message} No steps are left.`, null);
-      typeSelect.focus();
-    }
+    if (!left) return { message: `${message} No steps are left. Not saved yet.`, target: typeSelect };
+    return {
+      message: `${message} ${left === 1 ? "1 step remains" : `${left} steps remain`}. Not saved yet.`,
+      target: rowTarget(Math.min(index, left - 1), "edit"),
+    };
+  }
+
+  function remove(index) {
+    const { message, target } = removeStep(index);
+    target?.focus();
+    say(message);
+  }
+
+  // The Delete key asks first; the Delete button does not.  The page is
+  // inert while the dialog is open, so confirmAction moves focus once it
+  // closes, and the status is said after that.
+  async function confirmRemove(index, action) {
+    const step = clock.steps[index];
+    let removed = null;
+    await confirmAction(doc, {
+      title: `Delete step ${index + 1}, ${describe(step)}?`,
+      message: "The change is kept only when you press Save clockwheel.",
+      confirmLabel: "Delete step",
+      onConfirm: () => {
+        const at = clock ? clock.steps.indexOf(step) : -1;
+        if (at >= 0) removed = removeStep(at);
+        return removed?.target ?? null;
+      },
+    });
+    if (removed) say(removed.message);
+    else if (clock?.steps.includes(step)) focusRow(clock.steps.indexOf(step), action);
   }
 
   function rowAction(action, index) {
@@ -341,7 +374,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       focusRow(Number(row.dataset.index), buttons[event.key === "Home" ? 0 : buttons.length - 1].dataset.action);
     } else if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key === "Delete") {
       event.preventDefault();
-      if (!event.repeat) rowAction("delete", Number(row.dataset.index));
+      if (!event.repeat) void confirmRemove(Number(row.dataset.index), event.target.dataset?.action || "edit");
     } else if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
         && event.key === "Enter" && event.target.dataset?.action === "edit") {
       event.preventDefault();

@@ -49,8 +49,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Several named clockwheels (Library tools, Clockwheels): create, duplicate, rename, delete,
   activate one or turn the clockwheel off. Each is a versioned JSON file in `clockwheels/` in the
   active index folder, included in backups. The step editor has numbered names with Edit, Move up,
-  Move down, Duplicate and Delete buttons. Up/Down navigate names, Enter edits, and Delete removes
-  a step; Alt+Up/Down still move the focused step without changing the playback shortcuts. Steps
+  Move down, Duplicate and Delete buttons. Up/Down navigate names, Enter edits, and the Delete key
+  asks before it removes a step; Alt+Up/Down still move the focused step without changing the
+  playback shortcuts. Steps
   can play music or liners from a library folder or a folder inside it, a specific track, or
   switch preset. Profiles remember the active clockwheel, and the schedule's
   "Change song picking" action can switch to a clockwheel by name. Import .PAL turns a SAM
