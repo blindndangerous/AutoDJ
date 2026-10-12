@@ -666,6 +666,10 @@ describe("liner play dates", () => {
         return Promise.resolve(reply);
       }
       if (url === "/api/liners/test") return Promise.resolve(json({ played: JSON.parse(options.body).name }));
+      if (url.startsWith("/api/liners/file/") && options.method === "DELETE") {
+        items = items.filter((item) => `/api/liners/file/${encodeURIComponent(item.id)}` !== url);
+        return Promise.resolve(json({ deleted: "id.wav", message: "Its play dates could not be forgotten just now" }));
+      }
       return Promise.reject(new Error(`Unexpected request: ${url}`));
     });
     vi.stubGlobal("fetch", fetchImpl);
@@ -773,6 +777,38 @@ describe("liner play dates", () => {
       vi.advanceTimersByTime(60_000);
       await vi.waitFor(() => expect(list.querySelectorAll("li")).toHaveLength(3));
       await vi.waitFor(() => expect(document.activeElement).toBe(datesButton(list, "id.wav")));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("says when a deleted liner's play dates could not be forgotten", async () => {
+    const { list, status } = await install();
+    const dialog = document.getElementById("confirm-dialog");
+    dialog.showModal = () => { dialog.open = true; };
+    dialog.close = (value = "") => {
+      dialog.returnValue = value;
+      dialog.open = false;
+      dialog.dispatchEvent(new Event("close"));
+    };
+    list.querySelector('button[aria-label="Delete id.wav"]').click();
+    await vi.waitFor(() => expect(dialog.open).toBe(true));
+    document.getElementById("confirm-accept").click();
+    await vi.waitFor(() => expect(status.textContent).toBe(
+      "Deleted id.wav. Its play dates could not be forgotten just now."));
+  });
+
+  it("puts focus on the list heading when a midnight redraw leaves no liner", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval"] });
+    try {
+      vi.setSystemTime(new Date("2026-12-27T06:50:00Z"));
+      const listed = { timezone: "America/Denver", today: "2026-12-26", items: [ID] };
+      const { list } = await install(undefined, listed);
+      datesButton(list, "id.wav").focus();
+      Object.assign(listed, { today: "2026-12-27", items: [], files: [] });
+      vi.setSystemTime(new Date("2026-12-27T07:01:00Z"));
+      vi.advanceTimersByTime(60_000);
+      await vi.waitFor(() => expect(document.activeElement?.id).toBe("browse-liners-heading"));
     } finally {
       vi.useRealTimers();
     }

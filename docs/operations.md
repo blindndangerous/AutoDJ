@@ -1913,9 +1913,15 @@ liner deleted outside AutoDJ: a registered liner whose file the scan found gone 
 that is there, or a liner folder file that is no longer in the folder. A liner on a share that is
 not mounted keeps its dates, and so does every liner after a scan that could not read one of its
 folders, or when the liner folder cannot be listed: such a scan marks nothing gone and forgets
-nothing. Dates kept by a library ID that is no longer in the library are kept too. When
-`liner_dates.json` cannot be read just now, the dates last read are used, a save is refused with
-a message, and the file is never set aside; only a file that is not valid dates is set aside. A liner uploaded under a name that is not in use starts without
+nothing. A file listed but not reachable for a moment is not gone either. Dates kept by a library
+ID that is no longer in the library are kept too. A liner folder that a scan finds empty forgets
+its liners' dates only when the next scan finds it empty as well, and names are compared as the
+file system compares them (without case on Windows). When `liner_dates.json` cannot be read just
+now, or its folder is away (a dropped share says "not found" as a missing file does), the dates
+last read are used, a save is refused with a message, and the file is never set aside or written
+over; only a file that is not valid dates is set aside. An upload under a free name waits (it
+answers that the dates could not be read) until they can be read, so it never takes an old
+liner's dates, and deleting a liner says when its dates could not be forgotten yet. A liner uploaded under a name that is not in use starts without
 dates, even where an earlier file of that name left some; uploading over an existing liner with
 Replace keeps them. Cart dates are kept with the cart in `carts.json`. A liner or cart without
 dates is saved as before, so an older AutoDJ still reads both files.
@@ -2342,7 +2348,9 @@ date is shown under the form and linked to its field. The dates are kept beside 
 `time_checks.json` under `pack_dates`, written only when a pack has dates, and are kept for a
 pack taken out of `config.toml` until it comes back. Dates that cannot be read, and keys this
 version does not know, are logged and not used, and are written back as they were on the next
-save.
+save. Each save reads the file again first, so what another process wrote is kept. While the file
+cannot be read, saves are refused with a message rather than written over it; a file that is not
+valid JSON is set aside as `time_checks.json.bad-<id>` before the next save.
 
 AutoDJ reads only the files directly in the folder, with the extension `.wav`, `.mp3`, `.flac`
 or `.ogg`, and compares letters without regard to case. It recognises these names:

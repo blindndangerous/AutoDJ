@@ -101,6 +101,16 @@ export function renderLinerFileList(fileList, files, onDelete, onEdit = (path, k
   }));
 }
 
+// Where focus goes when the list has no liner left: the list's heading,
+// which takes focus from script only; the list itself without one.
+function _listHeading(list) {
+  const id = list.closest("section")?.getAttribute("aria-labelledby");
+  const heading = id ? list.ownerDocument.getElementById(id) : null;
+  if (!heading) return list;
+  if (!heading.hasAttribute("tabindex")) heading.tabIndex = -1;
+  return heading;
+}
+
 // The station's day changed while the page was open: read the list again
 // and change only the words of each row ("Skipped now: expired after ..."),
 // so focus stays where it is and nothing is announced.  A list whose liners
@@ -135,8 +145,9 @@ async function _followStationDay(els, now = new Date()) {
     const again = row && [...els.lnFileList.querySelectorAll(":scope > li[data-liner-id]")]
       .find((item) => item.dataset.linerId === row.dataset.linerId);
     const target = (again && [...again.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === label))
-      || nextRowControl(els.lnFileList, "button", Math.max(index, 0), els.lnFileList);
-    target.focus();
+      || nextRowControl(els.lnFileList, "button", Math.max(index, 0), null)
+      || _listHeading(els.lnFileList);
+    target?.focus();
     return;
   }
   state.lib = body;
@@ -206,8 +217,9 @@ async function _deleteLiner(els, name, button, label = name) {
     message: "The file is removed from the liners folder.",
     confirmLabel: "Delete liner",
     onConfirm: async () => {
+      let reply = null;
       try {
-        await requestJson(`/api/liners/file/${encodeURIComponent(name)}`, { method: "DELETE" });
+        reply = await requestJson(`/api/liners/file/${encodeURIComponent(name)}`, { method: "DELETE" });
       } catch (err) {
         if (!isAuthenticatedRequestCurrent(epoch)) return null;
         result = `Delete failed: ${err.message}`;
@@ -221,7 +233,8 @@ async function _deleteLiner(els, name, button, label = name) {
         result = `Deleted ${label}, but could not load liners: ${err.message}`;
         return button;
       }
-      result = `Deleted ${label}`;
+      // A delete whose play dates could not be forgotten says so.
+      result = reply?.message ? `Deleted ${label}. ${reply.message}.` : `Deleted ${label}`;
       return nextRowControl(list, "button", index, list);
     },
   });

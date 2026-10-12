@@ -121,6 +121,11 @@ class LibraryManager:
         # subfolder it could not read): its tracks are then not marked gone,
         # and the after-scan tidy-up does not run.
         self._walk_failed = False
+        # Files a scan listed but could not resolve; never marked gone.
+        self._seen_unresolved: set[str] = set()
+        # Whether the scan in progress worked out which tracks are gone; the
+        # after-scan tidy-up runs only then.
+        self._reconciled = False
         # The music paths, in FAISS row order, of the vectors handed to sim.
         self._vector_paths: tuple[str, ...] | None = None
         self._entries: tuple[IndexEntry, ...] = ()
@@ -620,8 +625,15 @@ class LibraryManager:
                     path = Path(current, name)
                     try:
                         path.resolve(strict=True).relative_to(resolved_root)
-                    except (OSError, ValueError):
+                    except ValueError:
                         # A file symlink may not expand the explicit source root.
+                        continue
+                    except OSError as exc:
+                        # Listed but not resolvable just now (a share flapping):
+                        # seen, so it is not marked gone, but not scanned.
+                        logger.debug("Library scan could not resolve %s: %s", path, exc)
+                        with self._lock:
+                            self._seen_unresolved.add(_path(path))
                         continue
                     normalized = _path(path)
                     # A registered liner root owns paths nested under music roots.
@@ -677,6 +689,8 @@ class LibraryManager:
         old = self.catalog.stored_entries()
         old_paths = {entry.path for _kind, entry in old}
         found_paths = {_path(path) for _kind, path in found}
+        with self._lock:
+            found_paths |= self._seen_unresolved
         missing = {
             entry.path
             for kind, entry in old
@@ -717,6 +731,7 @@ class LibraryManager:
             kept = {path for path in self._missing if not coverage.covered(path)}
             self._missing = frozenset(kept | missing)
             changed = self._missing != self._loaded_missing
+            self._reconciled = True
         if changed or moved:
             # Gone and moved tracks change now, not after the scan.
             self.refresh()
@@ -833,7 +848,10 @@ class LibraryManager:
         with self._lock:
             self._import_errors = []
             self._walk_failed = False
+            self._seen_unresolved = set()
+            self._reconciled = False
         self._set_state(running=True, phase="discovering", done=0, total=0, current="")
+        completed = False
         try:
             found = self._scan_basic(source_ids)
             # Only Smooth and Stereo Tool use the stored measurement (and
@@ -888,14 +906,18 @@ class LibraryManager:
                         self._state["done"] = done
                         self._state["total"] = done + len(loudness)
             self._set_state(phase="complete")
+            completed = True
         finally:
             self.refresh()
             self._set_state(running=False, current="")
             done_hook = self.on_scan_done
             with self._lock:
-                clean = not self._walk_failed
+                clean = completed and not self._walk_failed and self._reconciled
             if done_hook is not None and not clean:
-                logger.info("Library scan: a folder could not be read; skipping the tidy-up")
+                logger.info(
+                    "Library scan: a folder could not be read or the scan stopped early; "
+                    "skipping the tidy-up"
+                )
             elif done_hook is not None:
                 try:
                     done_hook()

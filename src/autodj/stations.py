@@ -372,6 +372,26 @@ def prune_liner_dates(station: StationRuntime) -> list[str]:
             "Station %s: liner folder not listed (%s); keeping its dates", station.slug, exc
         )
         names = None
+    file_keyed = [
+        liner_id
+        for liner_id in dates
+        if not _CATALOG_ID.fullmatch(liner_id) and Path(liner_id).name == liner_id
+    ]
+    if names is not None and not names and file_keyed:
+        # A readable but empty folder: a share can show one for a moment.
+        # Its dates go only when two scans in a row find it empty.
+        station.liner_folder_empty_scans = getattr(station, "liner_folder_empty_scans", 0) + 1
+        if station.liner_folder_empty_scans < 2:
+            logger.info(
+                "Station %s: the liner folder is empty; its liners' dates are kept until "
+                "the next scan finds it empty too",
+                station.slug,
+            )
+            names = None
+    elif names is not None:
+        station.liner_folder_empty_scans = 0
+    # Compared as the file system compares names (without case on Windows).
+    listed = {os.path.normcase(name) for name in names} if names is not None else None
     gone = []
     for liner_id in dates:
         record = library.catalog.record_for_id(liner_id) if library is not None else None
@@ -387,7 +407,11 @@ def prune_liner_dates(station: StationRuntime) -> list[str]:
             # A library ID without a record (a source removed, say): kept,
             # because it is not a file name in the liner folder.
             continue
-        elif names is not None and Path(liner_id).name == liner_id and liner_id not in names:
+        elif (
+            listed is not None
+            and Path(liner_id).name == liner_id
+            and os.path.normcase(liner_id) not in listed
+        ):
             gone.append(liner_id)  # one in the liner folder, gone from it
     forgotten = store.forget(gone)
     if forgotten:
@@ -602,6 +626,8 @@ class StationRuntime:
         # Whether a liner registered in the shared library is this station's
         # (set by the registry); with one station, every liner is.
         self.owns_liner: Callable[[str], bool] = _every_liner
+        # Scans in a row that found the liner folder empty (see prune_liner_dates).
+        self.liner_folder_empty_scans = 0
 
     @property
     def name(self) -> str:

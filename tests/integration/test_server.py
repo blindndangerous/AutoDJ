@@ -635,6 +635,38 @@ class TestLiners:
         assert replaced.status_code == 200, replaced.text
         assert set(store.all()) == {"id.wav"}
 
+    def test_an_upload_waits_while_the_dates_file_cannot_be_read(
+        self, bridge, tmp_path, monkeypatch
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        from autodj.clip_dates import ClipDates, LinerDates
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        (folder / "id.wav").write_bytes(b"\x00")
+        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(tmp_path / "active")
+        tc = TestClient(create_app(bridge))
+        store = tc.app.state.stations.default.liner_gate.store
+        store.set("promo.mp3", ClipDates(not_after="2000-01-01"))
+        store.set("id.wav", ClipDates(not_after="2000-01-01"))
+
+        def unreadable(*_args: object) -> None:
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(LinerDates, "forget", unreadable)
+        monkeypatch.setattr(LinerDates, "set", unreadable)
+        files = {"file": ("promo.mp3", b"audio-bytes", "audio/mpeg")}
+        refused = tc.post("/api/liners/upload", files=files)
+        assert refused.status_code == 503
+        assert "could not be read just now" in refused.json()["detail"]
+        assert not (folder / "promo.mp3").exists()
+        deleted = tc.delete("/api/liners/file/id.wav")
+        assert deleted.status_code == 200
+        assert deleted.json()["deleted"] == "id.wav"
+        assert "could not be forgotten just now" in deleted.json()["message"]
+
     def test_liner_upload_enforces_configured_limit(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 

@@ -8,6 +8,7 @@ import random
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
@@ -465,3 +466,92 @@ def test_clockwheel_liners_are_judged_by_the_day_they_air(tmp_path: Path) -> Non
     assert gate.playable(entries, 50.0) == entries
     assert gate.playable(entries, 150.0) == (entries[1],)
     assert gate.refusal("promo.wav", 150.0) == "expired after 26 December 2026"
+
+
+def test_a_dates_file_whose_folder_is_away_is_not_taken_as_missing(tmp_path: Path) -> None:
+    folder = tmp_path / "state"
+    store = LinerDates(folder / "liner_dates.json")
+    store.set("a.wav", CHRISTMAS)  # the first save makes the folder
+    away = tmp_path / "away"
+    folder.rename(away)  # the share drops: the file and its folder say "not found"
+    try:
+        with pytest.raises(FileNotFoundError):
+            store.set("b.wav", CHRISTMAS)
+        with pytest.raises(FileNotFoundError):
+            store.forget(["a.wav"])
+        assert set(store.all()) == {"a.wav"}  # the dates last read
+        assert not folder.exists()  # nothing written in its place
+    finally:
+        away.rename(folder)
+    assert set(LinerDates(folder / "liner_dates.json").all()) == {"a.wav"}
+
+
+def test_a_missing_file_in_a_folder_that_is_there_is_no_dates(tmp_path: Path) -> None:
+    store = LinerDates(tmp_path / "liner_dates.json")
+    assert store.all() == {}
+    store.set("a.wav", CHRISTMAS)
+    store.path.unlink()
+    assert store.all() == {}
+
+
+def test_confirm_missing_raises_when_the_folder_cannot_be_opened(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import autodj.fsutil as fsutil
+
+    error = FileNotFoundError(2, "No such file or directory")
+    fsutil.confirm_missing(tmp_path / "x.json", error)  # the folder is there: truly missing
+
+    def unreachable(_path: object) -> object:
+        # Windows maps ERROR_BAD_NETPATH (53) to ENOENT, as a missing file.
+        raise OSError(None, "The network path was not found", None, 53)
+
+    monkeypatch.setattr(fsutil.os, "scandir", unreachable)
+    with pytest.raises(FileNotFoundError):
+        fsutil.confirm_missing(tmp_path / "x.json", error)
+
+
+def test_a_save_whose_write_worked_is_not_reported_as_failed(tmp_path: Path, monkeypatch) -> None:
+    store = LinerDates(tmp_path / "liner_dates.json")
+    real_stat = LinerDates._stat
+    calls = []
+
+    def flaky(self: LinerDates) -> Any:
+        calls.append(1)
+        if len(calls) == 2:  # just after the write
+            raise PermissionError(13, "busy")
+        return real_stat(self)
+
+    monkeypatch.setattr(LinerDates, "_stat", flaky)
+    store.set("a.wav", CHRISTMAS)
+    monkeypatch.setattr(LinerDates, "_stat", real_stat)
+    assert set(LinerDates(store.path).all()) == {"a.wav"}
+    assert set(store.all()) == {"a.wav"}
+
+
+def test_liner_names_compare_as_the_file_system_does(tmp_path: Path, monkeypatch) -> None:
+    import autodj.stations as stations_module
+    from autodj.stations import prune_liner_dates
+
+    station = _station(tmp_path, {}, gone=set())
+    (station.paths.liners / "promo.wav").write_bytes(b"x")
+    station.liner_gate.store.set("Promo.WAV", CHRISTMAS)
+    # As on Windows, where names differ only in case are one file.
+    monkeypatch.setattr(stations_module.os.path, "normcase", str.lower)
+    assert prune_liner_dates(station) == []
+    assert "Promo.WAV" in station.liner_gate.store.all()
+
+
+def test_an_empty_liner_folder_forgets_only_when_two_scans_find_it_empty(tmp_path: Path) -> None:
+    from autodj.stations import prune_liner_dates
+
+    station = _station(tmp_path, {}, gone=set())
+    station.liner_folder_empty_scans = 0
+    for name in ("a.wav", "b.wav", "c.wav"):
+        station.liner_gate.store.set(name, CHRISTMAS)
+    assert prune_liner_dates(station) == []  # empty once: a share showing nothing for a moment
+    (station.paths.liners / "a.wav").write_bytes(b"x")
+    assert prune_liner_dates(station) == ["b.wav", "c.wav"]  # not empty: the count starts again
+    (station.paths.liners / "a.wav").unlink()
+    assert prune_liner_dates(station) == []
+    assert prune_liner_dates(station) == ["a.wav"]  # empty twice in a row
