@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Repeat rules that use minutes now keep and load up to 50,000 recent plays, so fast song rotations
+  retain more of the selected time window across picks and restarts.
+
 - A rotation tester (#125): Settings > Song picking > **Test rotation**, or
   `autodj simulate --days 7`, plays a span of time (up to 30 days) or a number of songs (up to
   20,000) through the station's own song picker, with its clockwheel, categories and their hours,

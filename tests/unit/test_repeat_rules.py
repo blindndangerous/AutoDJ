@@ -575,7 +575,7 @@ class TestHistoryBounds:
         assert plays_to_load(RepeatRules(track_window=500, artist_window=3)) == 500
         assert plays_to_load(RepeatRules(track_window=0, artist_window=0, title_window=7)) == 7
         assert plays_to_load(RepeatRules(track_window=10, title_minutes=60)) == HISTORY_LIMIT
-        assert plays_to_load(RepeatRules(track_window=9000, title_minutes=60)) == 9000
+        assert plays_to_load(RepeatRules(track_window=9000, title_minutes=60)) == HISTORY_LIMIT
         assert plays_to_load(RepeatRules(0, 0, 0, 0, 0, 0, album_window=0)) == 0
 
     def test_a_start_in_the_future_never_counts_for_a_rule_without_minutes(self) -> None:
