@@ -39,6 +39,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 
+from autodj.machine_tokens import KNOWN_SCOPES
 from autodj.secret_files import paired_devices_path
 
 if TYPE_CHECKING:
@@ -47,6 +48,7 @@ if TYPE_CHECKING:
     from autodj.doctor import DoctorReport
     from autodj.indexer import IndexEntry
     from autodj.library import LibraryManager
+    from autodj.machine_tokens import MachineTokenStore
     from autodj.pairing import DeviceRegistry
     from autodj.similarity import SimilarityIndex
 
@@ -698,6 +700,94 @@ def cmd_devices_reset(ctx: click.Context) -> None:
     """Revoke every paired browser session."""
     _cfg, registry = _device_registry(ctx)
     click.echo(f"Revoked {registry.reset()} paired browser(s).")
+
+
+@cli.group("tokens")
+def tokens_group() -> None:
+    """List, create and revoke machine tokens, such as analysis worker tokens.
+
+    The same tokens as Settings, Analysis workers, for a server without a
+    browser at hand (for example through `docker exec`).
+    """
+
+
+def _token_store(ctx: click.Context) -> tuple[AutoDJConfig, MachineTokenStore]:
+    from autodj.machine_tokens import MachineTokenStore
+    from autodj.secret_files import machine_tokens_path
+
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    return cfg, MachineTokenStore(machine_tokens_path(cfg))
+
+
+@tokens_group.command("list")
+@click.pass_context
+def cmd_tokens_list(ctx: click.Context) -> None:
+    """List active machine tokens (never their secrets)."""
+    from datetime import datetime
+
+    _cfg, store = _token_store(ctx)
+    tokens = store.list_tokens()
+    if not tokens:
+        click.echo("No machine tokens.")
+        return
+
+    def when(seconds: int | None) -> str:
+        if seconds is None:
+            return "never"
+        return datetime.fromtimestamp(seconds).strftime("%Y-%m-%d %H:%M")
+
+    for token in tokens:
+        click.echo(
+            f"{token.token_id}  {token.name}  scopes: {', '.join(token.scopes)}  "
+            f"created {when(token.created_at)}  last used {when(token.last_used_at)}"
+        )
+
+
+@tokens_group.command("create")
+@click.argument("name")
+@click.option(
+    "--scope",
+    "scopes",
+    multiple=True,
+    required=True,
+    type=click.Choice(sorted(KNOWN_SCOPES)),
+    help="What the token may do; give it once per scope.",
+)
+@click.pass_context
+def cmd_tokens_create(ctx: click.Context, name: str, scopes: tuple[str, ...]) -> None:
+    """Create a token NAME and print it once."""
+    _cfg, store = _token_store(ctx)
+    try:
+        token, secret = store.create(name, scopes)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    # stdout carries only the token, for scripts; the rest goes to stderr.
+    click.echo(secret)
+    click.echo(
+        f"Created token {token.token_id} for {token.name} ({', '.join(token.scopes)}).  "
+        "This token is shown only now and cannot be shown again: copy it now.",
+        err=True,
+    )
+
+
+@tokens_group.command("revoke")
+@click.argument("token_id")
+@click.pass_context
+def cmd_tokens_revoke(ctx: click.Context, token_id: str) -> None:
+    """Revoke one token at once; a worker using it stops at its next request."""
+    from autodj.analysis_queue import AnalysisQueue
+
+    cfg, store = _token_store(ctx)
+    if not store.revoke(token_id):
+        raise click.ClickException("Active machine token was not found.")
+    library_db = cfg.index.active_dir / "library.db"
+    if library_db.is_file():
+        queue = AnalysisQueue(library_db)
+        try:
+            queue.forget_worker(token_id)
+        finally:
+            queue.close()
+    click.echo(f"Revoked token {token_id}.")
 
 
 def _server_with_saved_token(cfg: AutoDJConfig) -> ServerConfig:
