@@ -55,7 +55,9 @@ The PR template lists the first two; check the rest as well:
   `uv run pre-commit run --all-files --hook-stage pre-push`.
 - Run `uv run autodj doctor` against intended local configuration.
 - For web UI changes, start AutoDJ and run Playwright Chromium audit with
-  `AUTODJ_BROWSERS=chromium npm run audit:ci`.
+  `AUTODJ_BROWSERS=chromium npm run audit:ci`. CI does not run WebKit, so also run
+  `AUTODJ_BROWSERS=webkit npm run audit:visual` after `npx playwright install webkit`
+  (see [Accessibility testing](docs/accessibility-testing.md)).
 - For container changes on Linux or WSL2, run `bash scripts/container_smoke.sh`.
 
 See [Operations](docs/operations.md) for setup, diagnosis, backup, restore, and upgrade procedures.

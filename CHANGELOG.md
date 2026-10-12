@@ -354,6 +354,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     is judged only in a long run). It can run for hours and write memory and processor samples to
     a file. See "Soak test" in
     `docs/operations.md`.
+- In Safari and other WebKit browsers, Settings, Time checks no longer scrolls sideways at 320 px
+  wide: a drop-down list whose choice is too long for its width now wraps the text onto a second
+  line instead of widening the page. Clicking Dismiss on the status message also leaves keyboard
+  focus on the control that had it; WebKit does not focus a clicked button, so focus used to fall
+  to the page itself. The visual audit passes in WebKit as well as Chromium and Firefox, and the
+  contributing and accessibility-testing guides say how to run it there.
+
 - Rotation tests now count repeat-rule violations on the opening song and after a fresh start,
   including steps configured to ignore repeat rules. Those picks could previously repeat a song
   while the report said no rules had been relaxed.
