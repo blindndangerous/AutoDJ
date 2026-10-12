@@ -12,6 +12,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A rotation tester (#125): Settings > Song picking > **Test rotation**, or
+  `autodj simulate --days 7`, plays a span of time (up to 30 days) or a number of songs (up to
+  20,000) through the station's own song picker, with its clockwheel, categories and their hours,
+  schedule and date ranges, repeat rules (related artists included) and DMCA limits, and reports
+  plays per song, category and artist, songs never played, which rules had to be relaxed and how
+  often, skipped clockwheel steps and why, DMCA conflicts and any moment with nothing to play.
+  Nothing on air changes. The report comes in words (headings and short lines) or JSON
+  (`--json`); a seed repeats a run exactly. Runs stop after ten minutes of work, with what they
+  have. `autodj simulate` opens the library read-only, so it can run beside a server. In the page
+  the run works in the background with a progress bar and a Cancel button, announces its end
+  once, and shows the results as headings and lists. See
+  [Operations](docs/operations.md#testing-the-rotation).
+
 - Editing tags from Track info (#53). A Tags section has fields for title, artist, album, genre,
   year, BPM, key and ISRC. Save tags writes only the changed fields into the file with mutagen
   (MP3, FLAC, M4A, Ogg Vorbis, Opus, WAV and AIFF) and updates the library at once, keeping the
@@ -307,6 +320,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Rotation tests now count repeat-rule violations on the opening song and after a fresh start,
+  including steps configured to ignore repeat rules. Those picks could previously repeat a song
+  while the report said no rules had been relaxed.
+
 - The web page works better for people who see it. In Windows High Contrast (forced colours) the
   selected section tab and Settings subtab now show their names; they were blank. Queue &
   Search no longer scrolls sideways when a music folder has a long path, and no view scrolls
@@ -391,6 +408,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   place it reached most recently.
 
 ### Changed
+
+- Clockwheel picks on a large library take less work, the same songs as before: in DMCA mode a
+  pick checks each song against only the few albums and artists at a limit (and none while nothing
+  is), the songs a clock can pick from are kept between picks until the library or the hours
+  change, and least-recently-played steps compare play times without reworking every path.
 
 - The clockwheel's reset timing now measures every song from its start cue to its end cue (or its
   segue or outro, when earlier) for all clockwheels, not only for liner steps with "Only play if

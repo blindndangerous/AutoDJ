@@ -49,6 +49,7 @@ def _softmax_pick(
     scored: list[tuple[float, IndexEntry]],
     top_k: int,
     temperature: float,
+    rng: random.Random | None = None,
 ) -> IndexEntry:
     """Pick one entry from *scored* by softmax-weighted random sampling.
 
@@ -59,6 +60,8 @@ def _softmax_pick(
         scored: Candidates as ``(score, entry)`` tuples, score-descending.
         top_k: Cap candidate pool to this many top entries.
         temperature: Softmax temperature.  Higher = more uniform; 0 = deterministic.
+        rng: The generator a dry run of the picker draws from; ``None``
+            draws from numpy's global one.
 
     Returns:
         Chosen :class:`IndexEntry`.
@@ -78,6 +81,8 @@ def _softmax_pick(
         return pool[0][1]
     probs = weights / total
     # Non-security weighted pick across nearest neighbours.
+    if rng is not None:
+        return rng.choices(pool, weights=probs.tolist())[0][1]  # nosec B311
     idx = int(np.random.choice(len(pool), p=probs))  # nosec B311
     return pool[idx][1]
 
@@ -423,6 +428,7 @@ class SimilarityIndex:
         pick_top_k: int = 1,
         pick_temperature: float = 0.0,
         repeat_filter: Callable[[IndexEntry], bool] | None = None,
+        rng: random.Random | None = None,
     ) -> IndexEntry:
         """Find the best next track after *current_path* that isn't in *recently_played*.
 
@@ -445,6 +451,8 @@ class SimilarityIndex:
                 rules (:class:`~autodj.repeat_rules.RepeatFilter`): ``True``
                 lets a candidate through.  Like the exclusion sets, it is
                 dropped when nothing passes it.
+            rng: The generator a dry run of the picker draws from (see
+                :func:`_softmax_pick`).
 
         Returns:
             The :class:`IndexEntry` for the recommended next track.
@@ -541,12 +549,12 @@ class SimilarityIndex:
 
             if target_bpm is None:
                 candidates.sort(key=lambda x: x[0], reverse=True)
-                best = _softmax_pick(candidates, pick_top_k, pick_temperature)
+                best = _softmax_pick(candidates, pick_top_k, pick_temperature, rng)
                 logger.debug("Next track: %s", best.display_name)
                 return self._public_entry(best)
 
             reranked = self._rerank(candidates, target_bpm, bpm_weight)
-            best = _softmax_pick(reranked, pick_top_k, pick_temperature)
+            best = _softmax_pick(reranked, pick_top_k, pick_temperature, rng)
             logger.debug(
                 "Next track (BPM re-ranked): %s (bpm=%.0f, target=%.0f)",
                 best.display_name,
@@ -560,6 +568,7 @@ class SimilarityIndex:
         current_path: str,
         recently_played: deque[str],
         allowed: Callable[[IndexEntry], bool] | None = None,
+        rng: random.Random | None = None,
     ) -> IndexEntry:
         """Find a sonically *distant* track for discovery mode injection.
 
@@ -576,6 +585,8 @@ class SimilarityIndex:
                 rules.  When any track passes it, the pick comes from the
                 least similar quarter of the tracks that do; otherwise it
                 is ignored.
+            rng: The generator a dry run of the picker draws from; ``None``
+                uses the random module.
 
         Returns:
             A :class:`IndexEntry` that is sonically distant from the current track.
@@ -584,6 +595,7 @@ class SimilarityIndex:
             SimilarityError: If *current_path* is not in the index or if no
                 non-excluded track that is not silent exists.
         """
+        chooser = rng if rng is not None else random
         with self._reload_lock:
             excluded = set(recently_played)
 
@@ -631,7 +643,7 @@ class SimilarityIndex:
 
             if distant_candidates:
                 # Non-security discovery pick — random.choice is fine here.
-                chosen = random.choice(distant_candidates)  # nosec B311
+                chosen = chooser.choice(distant_candidates)  # nosec B311
                 logger.debug("Discovery track: %s", chosen.display_name)
                 return self._public_entry(chosen)
 
@@ -639,19 +651,21 @@ class SimilarityIndex:
             fallback = [e for e in self.entries if eligible(e)]
             if fallback:
                 # Non-security fallback pick.
-                return self._public_entry(random.choice(fallback))  # nosec B311
+                return self._public_entry(chooser.choice(fallback))  # nosec B311
 
             raise SimilarityError(
                 "No candidates available for discovery — every track that is not silent "
                 "is in recently_played."
             )
 
-    def random_entry(self) -> IndexEntry | None:
+    def random_entry(self, rng: random.Random | None = None) -> IndexEntry | None:
         """Return a random track that is not silent, or ``None`` when there is none.
 
         The first track of a set and the Shuffle button pick with this.
+        *rng* is a dry run's own generator; ``None`` uses the random module.
         """
         with self._reload_lock:
             audible = [e for e in self._public_entries if not e.is_silent]
+        chooser = rng if rng is not None else random
         # Non-security pick of a starting track.
-        return random.choice(audible) if audible else None  # nosec B311
+        return chooser.choice(audible) if audible else None  # nosec B311

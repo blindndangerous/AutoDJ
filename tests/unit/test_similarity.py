@@ -844,7 +844,7 @@ class TestHardFilterExpansion:
 
         with patch(
             "autodj.similarity._softmax_pick",
-            side_effect=lambda candidates, _top_k, _temperature: candidates[0][1],
+            side_effect=lambda candidates, _top_k, _temperature, _rng=None: candidates[0][1],
         ) as choose:
             sim.find_next_for_path(
                 snapshot[0].path,
