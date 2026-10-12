@@ -283,8 +283,7 @@ def _with_library(player: Player) -> Player:
     entries = player._sim.entries_snapshot()
     player._library = SimpleNamespace(
         entries_snapshot=lambda kind="music": () if kind == "liner" else entries,
-        last_played=lambda: {},
-        remember_setting=lambda *_args: None,
+        ledger=SimpleNamespace(last_played=lambda: {}, remember_setting=lambda *_args: None),
     )
     return player
 

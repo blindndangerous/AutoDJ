@@ -25,6 +25,7 @@ import asyncio
 import contextlib
 import functools
 import logging
+import re
 import threading
 import time
 from collections.abc import Awaitable, Callable, Coroutine
@@ -48,6 +49,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DEFAULT_SLUG = "default"
+# A station's name: lower-case letters, digits and inner hyphens, at most 32
+# characters.  It names a folder and a URL path segment.
+SLUG_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?\Z")
 
 
 class StationPaths:
@@ -462,6 +466,11 @@ class StationRuntime:
     def player(self) -> Any:
         """The station's player."""
         return self.bridge.player
+
+    @property
+    def ledger(self) -> Any:
+        """The station's plays and settings in the shared library, or ``None`` without one."""
+        return self.bridge._ledger()
 
     # Both run on playout threads (mix bus, station), so a fault here is
     # logged and never reaches playback.

@@ -453,6 +453,26 @@ class TestExportPlaysCli:
             ["Artist", "Later", "song.flac", "isrc; label; performances", "1", "no"],
         ]
 
+    def test_exports_one_station_at_a_time(self, config: Path, tmp_path: Path) -> None:
+        song = tmp_path / "Music" / "song.flac"
+        with LibraryCatalog(tmp_path / "index" / "default" / "library.db") as catalog:
+            played = datetime(2026, 9, 1, 13).astimezone()
+            catalog.write_history([_row("ice", song, "Ice play", played)], station="icecold")
+        dates = ("--from", "2026-09-01", "--to", "2026-09-01")
+
+        def titles(*args: str) -> list[str]:
+            result = self._run(config, *dates, *args)
+            assert result.exit_code == 0, result.output
+            return [row[4] for row in csv.reader(io.StringIO(result.stdout, newline=""))][1:]
+
+        assert titles() == ["'=cmd"]
+        assert titles("--station", "default") == ["'=cmd"]
+        assert titles("--station", "icecold") == ["Ice play"]
+        assert titles("--station", "nobody") == []
+        refused = self._run(config, *dates, "--station", "../x")
+        assert refused.exit_code == 2
+        assert "--station" in refused.stderr
+
     @pytest.mark.parametrize(
         ("args", "message"),
         [

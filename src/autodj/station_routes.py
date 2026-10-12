@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import os
 from collections.abc import Awaitable, Callable, Iterator, Sequence
@@ -66,6 +67,7 @@ from autodj.settings_bodies import (
     VolumeBody,
     validate_playback_choices,
 )
+from autodj.station_ledger import setting_key
 from autodj.stations import DEFAULT_SLUG, StationRuntime
 from autodj.stream import EncoderUnavailableError
 
@@ -315,13 +317,13 @@ def _clock_store(station: StationRuntime) -> ClockwheelStore:
     return ClockwheelStore(station.paths.clockwheels)
 
 
-def _clock_setting(library: Any) -> dict:
-    setting = library.catalog.get_setting("clock", {})
+def _clock_setting(station: StationRuntime, library: Any) -> dict:
+    setting = library.catalog.get_setting(setting_key(station.slug, "clock"), {})
     return setting if isinstance(setting, dict) else {}
 
 
-def _active_clock(library: Any) -> str | None:
-    setting = _clock_setting(library)
+def _active_clock(station: StationRuntime, library: Any) -> str | None:
+    setting = _clock_setting(station, library)
     name = setting.get("name")
     # Old single-clock data has a name too, but no file behind it.
     return name if isinstance(name, str) and "slots" not in setting else None
@@ -412,12 +414,12 @@ _clock_genres = _GenreCache()
 
 
 def _clock_snapshot(station: StationRuntime, library: Any) -> dict:
-    setting = _clock_setting(library)
+    setting = _clock_setting(station, library)
     known, _, beets_error = _clock_beets(station, library).snapshot()
     player = station.player
     return {
         "names": _clock_store(station).list_names(),
-        "active": _active_clock(library),
+        "active": _active_clock(station, library),
         "types": step_types(),
         "sources": [
             {"id": s["id"], "kind": s["kind"], "path": s["path"], "recursive": s["recursive"]}
@@ -451,12 +453,14 @@ async def select_clock(
                 await asyncio.to_thread(
                     _validate_step_conditions, station, library, step, sources, number
                 )
-    setting = _clock_setting(library)
+    setting = _clock_setting(station, library)
     if cursor is None:
         kept = setting.get("cursor")
         same = name is not None and setting.get("name") == name and type(kept) is int
         cursor = kept if same else 0
-    library.catalog.set_setting("clock", {"name": name, "cursor": cursor})
+    library.catalog.set_setting(
+        setting_key(station.slug, "clock"), {"name": name, "cursor": cursor}
+    )
     reload_clock = getattr(station.player, "configure_clock", None)
     if callable(reload_clock):
         await asyncio.to_thread(reload_clock)
@@ -826,7 +830,9 @@ def install_station_routes(router: StationRouter) -> None:
         try:
             start = parse_bound(from_text)
             end = parse_bound(to_text, end=True)
-            plays = await asyncio.to_thread(plays_between, library.catalog, start, end)
+            plays = await asyncio.to_thread(
+                functools.partial(plays_between, station=station.slug), library.catalog, start, end
+            )
             last_day = end - timedelta(microseconds=1)
             if report_format == "soundexchange":
                 body = soundexchange_report(plays, service, category)
@@ -1024,7 +1030,7 @@ def install_station_routes(router: StationRouter) -> None:
         snap = ProfileSnapshot(**values)
         # The active clockwheel goes with the picking settings.
         library = station.bridge.library
-        snap.clockwheel = _active_clock(library) if library is not None else None
+        snap.clockwheel = _active_clock(station, library) if library is not None else None
         with _profile_http_errors():
             target = await asyncio.to_thread(_profile_store(station).save, snap)
         return {"saved": snap.name, "path": str(target)}
@@ -1495,7 +1501,7 @@ def install_station_routes(router: StationRouter) -> None:
                 _validate_native_clock, station, library, body.model_dump()
             )
             clock = _clock_store(station).save(checked)
-            if _active_clock(library) == name:
+            if _active_clock(station, library) == name:
                 await asyncio.to_thread(station.player.configure_clock)
             return clock
         except (ValueError, OSError) as exc:
@@ -1527,8 +1533,8 @@ def install_station_routes(router: StationRouter) -> None:
             else:
                 store.save(renamed, overwrite=False)
                 store.delete(name)
-            if _active_clock(library) == name:
-                cursor = _clock_setting(library).get("cursor")
+            if _active_clock(station, library) == name:
+                cursor = _clock_setting(station, library).get("cursor")
                 # Renaming the active clock does not change its conditions.
                 await select_clock(
                     station, library, body.name, cursor if type(cursor) is int else 0, renamed=True
@@ -1543,7 +1549,7 @@ def install_station_routes(router: StationRouter) -> None:
         _existing_clock(station, name)
         try:
             _clock_store(station).delete(name)
-            if _active_clock(library) == name:
+            if _active_clock(station, library) == name:
                 return await select_clock(station, library, None)
             return await asyncio.to_thread(_clock_snapshot, station, library)
         except (ValueError, OSError) as exc:

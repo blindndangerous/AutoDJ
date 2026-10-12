@@ -1257,7 +1257,9 @@ warning when some songs have neither an ISRC nor both an album and a label, beca
 may not be able to match those. Add `--missing` to get the songs that lack a field instead of the
 plays, one row each, with the fields they lack, how often they played, and a `matchable` column
 that says `no` for the songs SoundExchange may not be able to match. Add `--name` for a named index. Dates are in the server's time zone; an ISO
-8601 date and time also works, for example `--from 2026-09-01T06:00`.
+8601 date and time also works, for example `--from 2026-09-01T06:00`. Each station keeps its own
+play log: `--station NAME` exports another station's plays, and without it you get the default
+station's, which are all the plays logged before AutoDJ ran more than one station.
 
 In the web page, open History, go to "Export play log", choose the dates and the format, and press
 Export. AutoDJ says "Exporting play log" and the Export button is unavailable until the file is
