@@ -191,6 +191,12 @@ Every command takes `--help`, for example `uv run autodj serve --help`. The glob
 - `autodj analyse` fills in intro, outro, beat grid, and cue points for indexed tracks.
 - `autodj analyse-library` runs advanced analysis for tracks added through Library folders.
   The web interface starts this job in the background when requested.
+- `autodj worker --server https://HOST:PORT` analyses new songs for an AutoDJ server from another
+  computer, on its graphics card when PyTorch sees one. It downloads each song from the server, so
+  it needs no copy of the music. Create its token in Settings, Analysis workers, and pass it with
+  `--token` or `AUTODJ_WORKER_TOKEN`. `--once` stops when nothing is left; `--before-command` and
+  `--after-command` run a program before and after, such as one that stops and restarts another
+  program sharing the GPU. See [Using a GPU machine](docs/operations.md#using-a-gpu-machine).
 - `autodj migrate-index` previews a schema-3 to schema-4 conversion; add `--apply` to save a
   recovery copy and convert without repeating analysis. Interactive `serve` offers this too.
 - `autodj enrich` refreshes key and mode from your beets database.
@@ -487,6 +493,10 @@ current catalog stores absolute paths, so an existing catalog does not follow a 
 at a different path. Older manifest-based indexes store paths relative to `music_dir` and can be
 copied for one-time import when the destination has no catalog. See
 [Operations](docs/operations.md#more-than-one-machine) for that legacy migration procedure.
+
+A NAS without a graphics card can have a GPU machine analyse its new music: run `autodj worker`
+there with a token from Settings, Analysis workers. See
+[Using a GPU machine](docs/operations.md#using-a-gpu-machine).
 
 Per-machine file overrides go in `config.local.toml` next to loaded base configuration. Environment
 variables and CLI flags still take precedence.
