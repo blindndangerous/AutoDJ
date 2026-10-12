@@ -474,7 +474,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
             button.type = "button";
             button.dataset.action = key;
             button.tabIndex = index === 0 ? 0 : -1;
-            button.textContent = describeStep(step, data.sources, data.categories);
+            button.textContent = describe(step);
             cell.append(button);
             item.append(cell);
             continue;
