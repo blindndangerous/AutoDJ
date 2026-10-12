@@ -115,7 +115,7 @@ class RenderedTrack:
     loudness_processing: str = ""
     clock_cursor: int | None = None
     next_clock_cursor: int | None = None
-    # The clockwheel both clock cursors are places in (#133).
+    # The outgoing cursor belongs to this wheel; an edit may change the incoming one.
     clock_name: str | None = None
     clock_boundary: float | None = None
     next_clock_boundary: float | None = None

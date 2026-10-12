@@ -1950,7 +1950,7 @@ edit becomes the new step 1 there. If the restart-minute list is empty, the next
 wheel's natural wrap to step 1. The editor says when a saved edit is waiting. Choose **Immediately, start at step 1**
 to use the new steps for the earliest selection that has not already been lined up; the current
 track and an already committed handoff stay in place. Choose **Immediately, continue at next step**
-to keep the next cursor position when it still fits the edited wheel; otherwise playback starts at
+to keep the next step number when it still exists in the edited wheel; otherwise playback starts at
 step 1. Reordering or deleting steps can shift which step that position refers to. A server restart
 loads the latest saved clockwheel definition. API clients that omit `apply_timing` keep the immediate behavior.
 
