@@ -1548,7 +1548,29 @@ profile whose page has been renamed is refused.
 Open **Settings**, then **Schedule** to add timed station events. An event runs once, every day,
 on weekdays (Monday to Friday), on chosen days, or every N minutes. An every-N-minutes event can
 have an active window, such as 22:00 until 02:00; a window may cross midnight, and both ends run.
-Without a window the count starts again at local midnight.
+Without a window the count starts again at local midnight. An every-N-minutes event can also keep
+to chosen days; leave every day unchecked to run every day.
+
+Any event can have a **Date range**: an optional start date, end date, or both. The event runs
+only on dates from the start date to the end date, both included, in the station time zone, and
+the **Next events** list skips the dates outside it. An active window that crosses midnight
+belongs to the day it starts: a Friday 18:00 until 02:00 window whose end date is that Friday
+runs until 02:00 on Saturday, and a window that started the day before the start date does not
+run. The events list says the range in words, such as "Every day at 00:00, from 27 November to 26
+December 2026", and an event with no run left says "Ended, no runs left". An event whose range
+has no run left cannot be saved enabled; save it disabled, or move its end date. Schedule files
+from earlier versions load unchanged, and an event without a range is saved without the two
+fields.
+
+A seasonal clockwheel, such as a holiday one from 27 November to 26 December, takes two events:
+
+1. **Holiday music**: repeat every day at 00:00, start date 27 November, end date 26 December,
+   action **Change song picking** to the holiday clockwheel. Running every day means a manual
+   change, or a midnight missed while AutoDJ was stopped, is put right the next day.
+2. **Regular music**: once on 27 December at 00:00, action **Change song picking** back to the
+   usual clockwheel.
+
+Use **Run now** on the first event to start the season at once when you add it partway through.
 
 Times use `[server] station_timezone`, an IANA name such as `America/Denver`, or the system time
 zone when that is not set (UTC when the system has no IANA name). The Schedule panel shows the

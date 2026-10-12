@@ -25,6 +25,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   kept per station in `library.db`. Existing plays belong to the default station, so nothing
   changes for a single station. `autodj export-plays --station NAME` exports one station's plays.
 
+- Schedule events can have a date range: an optional start date and end date, both included, in
+  the station time zone. Outside the range an event does not run, and Next events skips it. An
+  active window that crosses midnight belongs to the day it starts, so a Friday 18:00 until 02:00
+  window still runs to 02:00 after its end date. Every-few-minutes events can also keep to chosen
+  days. The events list says the range in words ("Every day at 00:00, from 27 November to 26
+  December 2026") and says when an event has no runs left, and Next events gives the year when it
+  is not this one. The date fields are native, labelled date inputs, and a form error is now
+  linked to the field it names. Existing schedule files load unchanged. Operations describes a
+  holiday clockwheel season as an example.
+
 - `autodj worker --idle-exit MINUTES` keeps asking for new songs every half minute and stops only
   once the queue has stayed empty for that long, so a worker started alongside a Rescan does not
   exit before the scan has found the new music. The before- and after-commands still run once
