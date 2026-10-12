@@ -818,9 +818,10 @@ def create_app(
             from autodj.mastering import kill_leftover_processes
 
             # A player that would not stop kept its mastering process; no
-            # Stereo Tool may outlive the server.  (On the loop: the server
-            # is stopping, and usually there is nothing to kill.)
-            if killed := kill_leftover_processes():
+            # Stereo Tool may outlive the server.  In a worker thread: it
+            # waits up to 2 seconds for each process it kills.
+            loop = asyncio.get_running_loop()
+            if killed := await loop.run_in_executor(None, kill_leftover_processes):
                 logger.warning("Stopped %d mastering process(es) left running", killed)
             if writers_quiesced and cache_closed:
                 logger.info("Server stopped cleanly.")
@@ -1403,12 +1404,13 @@ def create_app(
     async def api_station_stop(slug: str) -> dict[str, Any]:
         """Stop a station other than the default: listeners, encoders, relays and player."""
         try:
-            await stations.stop(slug)
+            warnings = await stations.stop(slug)
         except KeyError:
             raise HTTPException(status_code=404, detail="No station has that name") from None
         except StationControlError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return stations.get(slug).summary()
+        # Stopped either way; what went wrong is said beside it.
+        return {**stations.get(slug).summary(), "warnings": warnings}
 
     @app.get("/api/search")
     async def api_search(q: str = "", limit: int = 100) -> dict[str, list]:
@@ -2087,11 +2089,20 @@ def _abandon_player(
                 logger.exception("A station that failed to start: holding its player failed")
         return
     master = getattr(player, "_continuous_master", None)
+    gone = True
     if master is not None:
         try:
-            master.close()
+            gone = master.close() is not False
         except Exception:
             logger.exception("A station that failed to start: closing its master failed")
+            gone = False
+    if not gone and on_stuck is not None:
+        # Its mastering process outlived the close: held, with Stereo Tool,
+        # until it has ended.
+        try:
+            on_stuck()
+        except Exception:
+            logger.exception("A station that failed to start: holding its master failed")
 
 
 def _missing_audio_modules() -> list[str]:

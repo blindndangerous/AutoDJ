@@ -302,9 +302,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     shutdown. Every step of a stop is tried even if an earlier one fails, so shutdown always
     stops every station and closes the library.
   - A station whose player does not finish within 30 seconds of a stop is listed as "stuck
-    stopping". It keeps its mastering process and Stereo Tool until the player ends, instead of
-    closing them under a running player. AutoDJ kills any mastering process still running when it
-    shuts down, so no Stereo Tool outlives the server.
+    stopping", and the log says so every minute. It keeps its mastering process and Stereo Tool
+    until the player ends and the mastering process has really ended, instead of closing them
+    under a running player.
+  - Stopping a station now says what went wrong: the reply has a `warnings` list in plain words
+    (empty after a clean stop), and the log line is a warning instead of "stopped".
+  - On a normal shutdown, AutoDJ kills any mastering process still running and lets none start
+    again. On Windows, mastering processes also end when AutoDJ is killed outright or crashes.
   - The check that only one station uses Stereo Tool can no longer miss a station that is
     starting or stopping at that moment.
   - A station that fails part of the way through starting now stops everything it had started:

@@ -1099,12 +1099,21 @@ need a paired browser, like the default station's.
   open pages are told at once. Other stations can be started and stopped meanwhile. If the
   stopping station used Stereo Tool, it keeps it until it has stopped, and another station asking
   for it is told to try again in a few seconds. The default station cannot be stopped.
+- The stop reply is the station's entry, as in `GET /api/stations`, plus `warnings`: a list of
+  what went wrong, in plain words, such as "Closing its recorder failed; the server log has the
+  details.". It is empty when everything stopped cleanly. The station is stopped either way.
 - If a station's player has not finished 30 seconds after a stop, the station is listed as
-  `stuck stopping`. Its player and mastering process keep running, because closing the mastering
-  process under a running player is unsafe, so it keeps Stereo Tool, and it cannot be started
-  again. When the player ends, the mastering process is closed and the station is `stopped`. The
-  same holds for a station that failed to start. When AutoDJ shuts down, it kills any mastering
-  process still running, so no Stereo Tool outlives the server.
+  `stuck stopping`, and the stop's `warnings` say so. Its player and mastering process keep
+  running, because closing the mastering process under a running player is unsafe, so it keeps
+  Stereo Tool, and it cannot be started again. The log says every minute that it is still stuck;
+  only a restart of AutoDJ frees a player that never ends. When the player ends, the mastering
+  process is closed, and closed again every few seconds until it has really ended; only then is
+  the station `stopped` and Stereo Tool free. The same holds for a station that failed to start.
+- On a normal shutdown, and when Python exits, AutoDJ kills any mastering process still running,
+  after making sure none can start again. On Windows each mastering process (Stereo Tool and its
+  FFmpeg limiter, or the FFmpeg master) is also tied to AutoDJ's own process with a job object,
+  so it ends even when AutoDJ is killed outright or crashes. On Linux and macOS, a hard kill of
+  AutoDJ (such as `kill -9`) can leave one running; stop it by hand.
 
 A station that cannot start, with the server or when asked, says why: in the log at startup, and
 in the reply to a start request. Whatever it had already started (its player, mastering process,
