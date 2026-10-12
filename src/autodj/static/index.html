@@ -2211,7 +2211,7 @@
           <fieldset id="categories-daypart" aria-describedby="categories-daypart-help">
             <legend>When the songs may play</legend>
             <p class="setting-desc" id="categories-daypart-help">
-              Optional. Outside these days and hours no pick mode plays the category's songs, and a clockwheel step for it is skipped. A song in several categories plays only when all of them allow it. Leave every day unchecked for every day, and both times empty for all day. Times are in the station time zone, and a window that crosses midnight, such as 22:00 until 02:00, belongs to the day it starts. A song you queue yourself plays at any time.
+              Optional. Outside these days, hours and dates no pick mode plays the category's songs, and a clockwheel step for it is skipped. A song in several categories plays only when all of them allow it. Leave every day unchecked for every day, both times empty for all day, and both dates empty for every day of the year; both dates are included, such as 1 December until 26 December for seasonal songs. Times and dates are in the station time zone, and a window that crosses midnight, such as 22:00 until 02:00, belongs to the day it starts. A song you queue yourself plays at any time.
             </p>
             <fieldset id="categories-days">
               <legend>Days</legend>
@@ -2230,6 +2230,14 @@
             <div class="settings-row">
               <label for="categories-hours-until">Allowed until</label>
               <input type="time" id="categories-hours-until">
+            </div>
+            <div class="settings-row">
+              <label for="categories-not-before">Not before</label>
+              <input type="date" id="categories-not-before">
+            </div>
+            <div class="settings-row">
+              <label for="categories-not-after">Do not play after</label>
+              <input type="date" id="categories-not-after">
             </div>
           </fieldset>
           <button type="button" id="categories-check" aria-describedby="categories-match">Check</button>
@@ -2320,6 +2328,33 @@
           <input id="clock-step-require-following" type="checkbox">
           <label for="clock-step-require-following">Only play if the following track fits before the next reset</label>
         </div>
+        <!-- step-hours.js: the step's days and hours.  A refused field is
+             linked to #clock-step-hours-error and focused; #clock-status says it. -->
+        <fieldset id="clock-step-hours" aria-describedby="clock-step-hours-help">
+          <legend>When this step plays</legend>
+          <p class="setting-desc" id="clock-step-hours-help">
+            Optional. Outside these days and hours the step is skipped, as an empty step is, and the clockwheel moves on to its next step. Leave every day unchecked for every day, and both times empty for all day. Times are in the station time zone, and a window that crosses midnight, such as 22:00 until 02:00, belongs to the day it starts.
+          </p>
+          <fieldset id="clock-step-days">
+            <legend>Days</legend>
+            <div class="settings-check"><input type="checkbox" id="clock-step-day-0" value="0"><label for="clock-step-day-0">Monday</label></div>
+            <div class="settings-check"><input type="checkbox" id="clock-step-day-1" value="1"><label for="clock-step-day-1">Tuesday</label></div>
+            <div class="settings-check"><input type="checkbox" id="clock-step-day-2" value="2"><label for="clock-step-day-2">Wednesday</label></div>
+            <div class="settings-check"><input type="checkbox" id="clock-step-day-3" value="3"><label for="clock-step-day-3">Thursday</label></div>
+            <div class="settings-check"><input type="checkbox" id="clock-step-day-4" value="4"><label for="clock-step-day-4">Friday</label></div>
+            <div class="settings-check"><input type="checkbox" id="clock-step-day-5" value="5"><label for="clock-step-day-5">Saturday</label></div>
+            <div class="settings-check"><input type="checkbox" id="clock-step-day-6" value="6"><label for="clock-step-day-6">Sunday</label></div>
+          </fieldset>
+          <div class="settings-row">
+            <label for="clock-step-hours-from">Allowed from</label>
+            <input type="time" id="clock-step-hours-from">
+          </div>
+          <div class="settings-row">
+            <label for="clock-step-hours-until">Allowed until</label>
+            <input type="time" id="clock-step-hours-until">
+          </div>
+          <p id="clock-step-hours-error" class="field-error" hidden></p>
+        </fieldset>
         <button type="button" id="clock-add-step">Add step</button>
         <button type="button" id="clock-cancel-edit" hidden>Cancel edit</button>
       </fieldset>

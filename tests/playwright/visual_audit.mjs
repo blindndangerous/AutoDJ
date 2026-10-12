@@ -225,6 +225,26 @@ async function openPackDatesError(page, visit) {
   await page.locator("#tc-not-after").fill("2026-12-31");
 }
 
+// Library tools: a category's season and a clockwheel step's hours, each
+// refused with its error on the page, linked to the field and focused.
+async function openDaypartErrors(page, visit) {
+  await page.locator("#categories-add").click();
+  await page.locator("#categories-name").fill("Christmas");
+  await page.locator("#categories-query").fill("genre:Christmas");
+  await page.locator("#categories-not-before").fill("2026-12-26");
+  await page.locator("#categories-not-after").fill("2026-12-01");
+  await page.locator("#categories-save").click();
+  await page.locator("#categories-form-error").waitFor({ state: "visible" });
+  await visit("library/category-dates-error");
+  await page.locator("#categories-cancel").click();
+  await page.locator("#clock-name").fill("Audit");
+  await page.locator("#clock-create").click();
+  await page.locator("#clock-step-hours-from").fill("22:00");
+  await page.locator("#clock-add-step").click();
+  await page.locator("#clock-step-hours-error").waitFor({ state: "visible" });
+  await visit("library/step-hours-error");
+}
+
 async function openEveryCard(page) {
   await page.evaluate(() => {
     for (const details of document.querySelectorAll("details")) details.open = true;
@@ -273,6 +293,7 @@ async function eachTarget(page, visit) {
       await settle(page);
       await visit(view);
       if (view === "track-info") await openTrackTags(page, visit);
+      if (view === "library") await openDaypartErrors(page, visit);
       continue;
     }
     const ids = await page.$$eval("#settings-tabs [role='tab']:not([hidden])",

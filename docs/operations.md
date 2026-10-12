@@ -2085,6 +2085,23 @@ leaves the clock off while the station keeps playing:
 that folder from the library stops the clockwheel until you edit its steps. Later features (carts,
 time checks, ad breaks) add their own step types through `autodj.clockwheel_store.register_step_type`.
 
+**When this step plays.** Any step can keep to chosen days, to hours (**Allowed from** and
+**Allowed until**), or both, in the step form's **When this step plays** fields, with the rule
+categories use: wall-clock times in the station time zone, the start included and the end not,
+and a window that crosses midnight belongs to the day it starts. Outside them the step is skipped
+as an empty step is, and the clockwheel moves on to its next step; a voice liner step outside
+its hours leaves the following song without its liner, and a Switch preset step outside its hours
+switches nothing. The hours are checked for when the song is expected to start, as the
+categories' are. The step list says them after the step, such as "music from Rock, only on
+Friday and Saturday from 22:00 until 02:00", the clockwheel status and the server log say why a
+step was skipped ("Step 3: outside its hours: plays only ..."), and the rotation tester counts
+those skips. When every step that could play a song is outside its hours, the station plays an
+allowed song from the whole library rather than going silent, as it does for categories. In the
+file a step has `"days": [4, 5], "hours_from": "22:00", "hours_until": "02:00"`; a step without
+them is written as before, so an older AutoDJ still reads the clockwheel. Use this for a step or
+two that differ at night; for a different clockwheel at night, a schedule event that switches
+clockwheels is simpler.
+
 **Import .PAL** turns a SAM Broadcaster `.PAL` file into a new clockwheel, once; the `.PAL` file
 is not used after that. Only `Dir[...]` and `SubDir[...]` lines with `QueueBottom` are read, and
 nothing in the file runs. Each folder must be a registered music or voice liner folder, or a folder
@@ -2187,6 +2204,14 @@ one plays anyway is logged once, and again only after the hours change.
 For dayparting single songs, make a category from a beets query on a field you set, such as
 `beet modify daypart=night` and the query `daypart:night`, and give it the hours. Categories that
 have no days or hours are saved as before, so an older AutoDJ still reads the file.
+
+**Seasons.** The same fields take a **Not before** and a **Do not play after** date, both
+included, in the station time zone, such as 1 December until 26 December for Christmas songs.
+Outside them the category's songs are left out exactly as outside its hours, and a clockwheel
+step for it is skipped with "outside its dates". Dates combine with days and hours: a Friday
+22:00 until 02:00 window whose last date is that Friday still plays until 02:00 on Saturday. The
+list says the season in words, such as "Plays only between 1 December 2026 and 26 December
+2026", and "Outside its dates now." A category without dates is saved without the two fields.
 
 The categories are kept in `categories.json` in the active index folder, written atomically and
 included in `autodj backup`; a damaged file is set aside as `categories.json.bad-<id>` and the

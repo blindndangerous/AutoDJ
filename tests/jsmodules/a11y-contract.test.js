@@ -2212,6 +2212,43 @@ describe("static accessibility contracts", () => {
     expect(rule).toContain('input[type="time"]');
   });
 
+  it("gives a category season labelled native date inputs inside its dayparting fieldset", () => {
+    installDocument({ html: htmlSource });
+    const group = document.querySelector("#categories-daypart");
+    for (const [id, label] of [["categories-not-before", "Not before"], ["categories-not-after", "Do not play after"]]) {
+      const input = document.getElementById(id);
+      expect(input.closest("#categories-daypart")).toBe(group);
+      expect(input.getAttribute("type")).toBe("date");
+      expect(input.hasAttribute("required")).toBe(false);
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+    }
+    expect(document.getElementById(group.getAttribute("aria-describedby")).textContent).toContain("dates");
+  });
+
+  it("gives a clockwheel step labelled native day and time controls and an error to link", () => {
+    installDocument({ html: htmlSource });
+    const group = document.querySelector("#clock-step-hours");
+    expect(group.tagName).toBe("FIELDSET");
+    expect(group.querySelector(":scope > legend").textContent.trim()).toBe("When this step plays");
+    expect(document.getElementById(group.getAttribute("aria-describedby")).textContent).toMatch(/^\s*Optional\./);
+    const days = group.querySelector("#clock-step-days");
+    expect(days.querySelector(":scope > legend").textContent).toBe("Days");
+    const boxes = [...days.querySelectorAll('input[type="checkbox"]')];
+    expect(boxes.map((box) => document.querySelector(`label[for="${box.id}"]`).textContent))
+      .toEqual(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]);
+    for (const [id, label] of [["clock-step-hours-from", "Allowed from"], ["clock-step-hours-until", "Allowed until"]]) {
+      const input = document.getElementById(id);
+      expect(input.getAttribute("type")).toBe("time");
+      expect(input.hasAttribute("required")).toBe(false);
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+    }
+    const error = document.querySelector("#clock-step-hours-error");
+    expect(error.classList.contains("field-error")).toBe(true);
+    expect(error.hasAttribute("aria-live")).toBe(false);
+    // It sits before Add step, so the fields are reached before the button.
+    expect(group.compareDocumentPosition(document.querySelector("#clock-add-step")) & 4).toBeTruthy(); // DOCUMENT_POSITION_FOLLOWING
+  });
+
   it("gives the schedule date range native labelled date inputs and a target-size rule", () => {
     installDocument({ html: htmlSource });
     const group = document.querySelector("#schedule-range");

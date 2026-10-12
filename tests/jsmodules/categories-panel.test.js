@@ -219,6 +219,52 @@ describe("categories form", () => {
     expect(byId("categories-hours-until").value).toBe("02:00");
   });
 
+  it("saves a season, fills it in on Edit and says when its dates hold the songs back", async () => {
+    const server = await open();
+    byId("categories-add").click();
+    byId("categories-name").value = "Christmas";
+    byId("categories-query").value = "genre:xmas";
+    byId("categories-not-before").value = "2026-12-01";
+    byId("categories-not-after").value = "2026-12-26";
+    byId("categories-save").click();
+    await vi.waitFor(() => expect(server.calls.some((call) => call.method === "POST")).toBe(true));
+    expect(server.calls.find((call) => call.method === "POST").body).toEqual({
+      name: "Christmas", source: "query", query: "genre:xmas", playlist: "",
+      not_before: "2026-12-01", not_after: "2026-12-26",
+    });
+    server.categories[2] = {
+      ...server.categories[2], not_before: "2026-12-01", not_after: "2026-12-26",
+      daypart_text: "Plays only between 1 December 2026 and 26 December 2026",
+      allowed_now: false, outside_now: "dates",
+    };
+    await controls.refresh();
+    expect(items()[2].querySelector("span").textContent).toContain(
+      "Plays only between 1 December 2026 and 26 December 2026. Outside its dates now.");
+    rowButton(2, "edit").click();
+    expect(byId("categories-not-before").value).toBe("2026-12-01");
+    expect(byId("categories-not-after").value).toBe("2026-12-26");
+  });
+
+  it("names a backwards season and links the error to Do not play after", async () => {
+    const server = await open();
+    byId("categories-add").click();
+    byId("categories-name").value = "Christmas";
+    byId("categories-query").value = "genre:xmas";
+    byId("categories-not-before").value = "2026-12-26";
+    byId("categories-not-after").value = "2026-12-01";
+    byId("categories-save").click();
+    const until = byId("categories-not-after");
+    expect(document.activeElement).toBe(until);
+    expect(until.getAttribute("aria-invalid")).toBe("true");
+    expect(until.getAttribute("aria-describedby")).toBe("categories-form-error");
+    expect(byId("categories-form-error").textContent).toBe(
+      "Do not play after must be on or after the Not before date.");
+    until.value = "2026-12-31";
+    until.dispatchEvent(new Event("input"));
+    expect(until.hasAttribute("aria-invalid")).toBe(false);
+    expect(server.calls.some((call) => call.method === "POST")).toBe(false);
+  });
+
   it("names a half-typed time instead of saving the category for all day", async () => {
     const server = await open();
     byId("categories-add").click();

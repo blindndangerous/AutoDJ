@@ -23,11 +23,13 @@ back to ``year`` when beets has none; songs with neither are left out, and
 the songs that used the fallback are counted so Settings and ``autodj
 doctor`` can say how many.
 
-A category may have allowed hours and days (dayparting): outside them its
-songs are not picked in any pick mode, and a clockwheel step for it is
-skipped.  The hours are wall-clock times in the station time zone; a
-window that crosses midnight belongs to the day it starts.  A song in
-several categories plays only while every one of them allows it.
+A category may have allowed hours and days (dayparting), and a first and
+last date (a season): outside them its songs are not picked in any pick
+mode, and a clockwheel step for it is skipped.  The hours are wall-clock
+times in the station time zone; a window that crosses midnight belongs to
+the day it starts, for its days and its dates alike.  A song in several
+categories plays only while every one of them allows it.  Clockwheel steps
+take the same days and hours (:class:`StepHours`).
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
+from datetime import date as Date
 from datetime import datetime, timedelta
 from datetime import time as Time
 from pathlib import Path
@@ -127,6 +130,9 @@ class CategorySpec(BaseModel):
     days: list[StrictInt] = Field(default_factory=list, max_length=7)
     hours_from: Time | None = None
     hours_until: Time | None = None
+    # A season: the first and last day the songs may play, both included.
+    not_before: Date | None = None
+    not_after: Date | None = None
 
     @field_validator("name")
     @classmethod
@@ -151,43 +157,17 @@ class CategorySpec(BaseModel):
 
     @model_validator(mode="after")
     def _daypart(self) -> Self:
-        if any(type(day) is not int or day not in range(7) for day in self.days):
-            raise CategoryError("days", "Days must be numbered 0 (Monday) to 6 (Sunday)")
-        self.days = sorted(set(self.days))
-        for name in ("hours_from", "hours_until"):
-            value = getattr(self, name)
-            if value is not None and (
-                value.tzinfo is not None or value.second or value.microsecond
-            ):
-                raise CategoryError(name, f"{_FIELD_NAMES[name]} must be a whole minute")
-        if (self.hours_from is None) != (self.hours_until is None):
-            missing = "hours_until" if self.hours_until is None else "hours_from"
-            raise CategoryError(
-                missing, "Enter both Allowed from and Allowed until, or leave both empty"
-            )
-        if self.hours_from is not None and self.hours_from == self.hours_until:
-            raise CategoryError("hours_until", "Allowed until must differ from Allowed from")
+        self.days = check_daypart(self)
         return self
 
     @property
     def dayparted(self) -> bool:
-        """Whether the category limits its songs to some days or hours."""
-        return bool(self.days) or self.hours_from is not None
+        """Whether the category limits its songs to some days, hours or dates."""
+        return limits_anything(self)
 
     def allows(self, wall: datetime) -> bool:
         """Whether the songs may play at the station's local wall time *wall*."""
-        if self.hours_from is None or self.hours_until is None:
-            return not self.days or wall.weekday() in self.days
-        at = wall.time()
-        day = wall.date()
-        if self.hours_from < self.hours_until:
-            if not self.hours_from <= at < self.hours_until:
-                return False
-        elif at < self.hours_until:
-            day -= timedelta(days=1)  # the window that began yesterday
-        elif at < self.hours_from:
-            return False
-        return not self.days or day.weekday() in self.days
+        return daypart_refusal(self, wall) is None
 
     def parsed_query(self) -> Query:
         """The query, parsed (an empty query for a playlist category)."""
@@ -227,9 +207,148 @@ _FIELD_NAMES = {
     "days": "Days",
     "hours_from": "Allowed from",
     "hours_until": "Allowed until",
+    "not_before": "Not before",
+    "not_after": "Do not play after",
 }
 
 _DAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+_MONTH_NAMES = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)  # fmt: skip
+
+
+def check_daypart(item: Any) -> list[int]:
+    """Check *item*'s days, hours and dates; return its days, sorted, each once.
+
+    *item* has ``days``, ``hours_from`` and ``hours_until``, and may have
+    ``not_before`` and ``not_after`` (a category; a clockwheel step has no
+    dates).
+
+    Raises:
+        CategoryError: Names the field at fault and says why in words.
+    """
+    days = item.days
+    if any(type(day) is not int or day not in range(7) for day in days):
+        raise CategoryError("days", "Days must be numbered 0 (Monday) to 6 (Sunday)")
+    for name in ("hours_from", "hours_until"):
+        value = getattr(item, name)
+        if value is not None and (value.tzinfo is not None or value.second or value.microsecond):
+            raise CategoryError(name, f"{_FIELD_NAMES[name]} must be a whole minute")
+    if (item.hours_from is None) != (item.hours_until is None):
+        missing = "hours_until" if item.hours_until is None else "hours_from"
+        raise CategoryError(
+            missing, "Enter both Allowed from and Allowed until, or leave both empty"
+        )
+    if item.hours_from is not None and item.hours_from == item.hours_until:
+        raise CategoryError("hours_until", "Allowed until must differ from Allowed from")
+    first, last = getattr(item, "not_before", None), getattr(item, "not_after", None)
+    if first is not None and last is not None and last < first:
+        raise CategoryError(
+            "not_after", "Do not play after must be on or after the Not before date"
+        )
+    return sorted(set(days))
+
+
+def limits_anything(item: Any) -> bool:
+    """Whether *item* (see :func:`check_daypart`) limits when its songs play."""
+    return (
+        bool(item.days)
+        or item.hours_from is not None
+        or getattr(item, "not_before", None) is not None
+        or getattr(item, "not_after", None) is not None
+    )
+
+
+def daypart_refusal(item: Any, wall: datetime) -> str | None:
+    """Why *item* does not allow local wall time *wall*: ``"hours"``, ``"dates"`` or ``None``.
+
+    The start time is included and the end time is not.  A window that
+    crosses midnight belongs to the day it starts, for the days and the
+    dates alike, so a Friday 22:00 until 02:00 window whose last date is
+    that Friday still runs at 01:00 on Saturday.
+    """
+    day = wall.date()
+    if item.hours_from is not None and item.hours_until is not None:
+        at = wall.time()
+        if item.hours_from < item.hours_until:
+            if not item.hours_from <= at < item.hours_until:
+                return "hours"
+        elif at < item.hours_until:
+            day -= timedelta(days=1)  # the window that began yesterday
+        elif at < item.hours_from:
+            return "hours"
+    if item.days and day.weekday() not in item.days:
+        return "hours"
+    first, last = getattr(item, "not_before", None), getattr(item, "not_after", None)
+    if (first is not None and day < first) or (last is not None and day > last):
+        return "dates"
+    return None
+
+
+def _day_words(day: Date) -> str:
+    return f"{day.day} {_MONTH_NAMES[day.month - 1]} {day.year}"
+
+
+class StepHours(BaseModel):
+    """A clockwheel step's allowed days and hours: outside them the step is skipped.
+
+    The same rule as a category's (see :func:`daypart_refusal`); no days
+    means every day and no hours all day.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    days: list[StrictInt] = Field(default_factory=list, max_length=7)
+    hours_from: Time | None = None
+    hours_until: Time | None = None
+
+    @model_validator(mode="after")
+    def _check(self) -> Self:
+        self.days = check_daypart(self)
+        return self
+
+    @property
+    def limits_anything(self) -> bool:
+        return limits_anything(self)
+
+    def refusal(self, wall: datetime) -> str | None:
+        """Why the step is skipped at *wall*, in words, or ``None`` when it may play."""
+        if daypart_refusal(self, wall) is None:
+            return None
+        text = describe_daypart(self)
+        return f"outside its hours: {text[0].lower()}{text[1:]}"
+
+    def to_json(self) -> dict[str, Any]:
+        """The step keys, only those set: ``days``, ``hours_from``, ``hours_until``."""
+        found: dict[str, Any] = {}
+        if self.days:
+            found["days"] = list(self.days)
+        if self.hours_from is not None and self.hours_until is not None:
+            found["hours_from"] = self.hours_from.strftime("%H:%M")
+            found["hours_until"] = self.hours_until.strftime("%H:%M")
+        return found
+
+
+#: The keys a clockwheel step may carry for its days and hours.
+STEP_HOURS_KEYS = ("days", "hours_from", "hours_until")
+
+
+def parse_step_hours(step: Mapping[str, Any]) -> StepHours | None:
+    """The days and hours a clockwheel step's JSON gives it, or ``None`` for none.
+
+    Raises:
+        ValueError: The days or hours are not valid; says which and why.
+    """
+    values = {key: step[key] for key in STEP_HOURS_KEYS if key in step}
+    if not values:
+        return None
+    try:
+        hours = StepHours.model_validate(values)
+    except ValidationError as exc:
+        found = spec_error(exc)
+        raise ValueError(found.message) from None
+    return hours if hours.limits_anything else None
 
 
 def station_now(cfg: AutoDJConfig) -> datetime:
@@ -249,9 +368,9 @@ def station_wall(cfg: AutoDJConfig, timestamp: float) -> datetime:
     return datetime.fromtimestamp(timestamp, zone).replace(tzinfo=None)
 
 
-def describe_daypart(spec: CategorySpec) -> str:
-    """Say a category's allowed days and hours in words; empty when it has none."""
-    if not spec.dayparted:
+def describe_daypart(spec: Any) -> str:
+    """Say a category's (or a step's) allowed days, hours and dates in words; empty for none."""
+    if not limits_anything(spec):
         return ""
     if spec.days == [0, 1, 2, 3, 4]:
         days = "on weekdays"
@@ -262,11 +381,27 @@ def describe_daypart(spec: CategorySpec) -> str:
         days = "on " + (names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}")
     else:
         days = "every day"
+    first, last = getattr(spec, "not_before", None), getattr(spec, "not_after", None)
+    if first is not None and last is not None:
+        season = f"between {_day_words(first)} and {_day_words(last)}"
+    elif first is not None:
+        season = f"from {_day_words(first)}"
+    elif last is not None:
+        season = f"until {_day_words(last)}"
+    else:
+        season = ""
     if spec.hours_from is None or spec.hours_until is None:
-        # All seven days ticked and no hours: nothing is held back.
-        return "Plays every day, at any hour" if days == "every day" else f"Plays only {days}"
-    start, end = spec.hours_from.strftime("%H:%M"), spec.hours_until.strftime("%H:%M")
-    return f"Plays only {days} from {start} until {end}"
+        if days != "every day":
+            text = f"Plays only {days}"
+        elif season:
+            return f"Plays only {season}"
+        else:
+            # All seven days ticked and no hours: nothing is held back.
+            return "Plays every day, at any hour"
+    else:
+        start, end = spec.hours_from.strftime("%H:%M"), spec.hours_until.strftime("%H:%M")
+        text = f"Plays only {days} from {start} until {end}"
+    return f"{text}, {season}" if season else text
 
 
 def spec_error(exc: ValidationError) -> CategoryError:
@@ -358,7 +493,13 @@ class CategoryStore:
         # A category without days or hours is written without the three keys,
         # so an older AutoDJ, which refuses unknown keys, still reads the file.
         for category in document["categories"]:
-            for key, empty in (("days", []), ("hours_from", None), ("hours_until", None)):
+            for key, empty in (
+                ("days", []),
+                ("hours_from", None),
+                ("hours_until", None),
+                ("not_before", None),
+                ("not_after", None),
+            ):
                 if category[key] == empty:
                     del category[key]
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -846,10 +987,11 @@ class CategoryIndex:
         paths: set[str] = set()
         reasons: dict[str, str] = {}
         for category in categories:
-            if category.dayparted and not category.allows(wall):
+            refused = daypart_refusal(category, wall) if category.dayparted else None
+            if refused:
                 paths |= results[category.id].paths
                 text = describe_daypart(category)
-                reasons[category.id] = f"outside its hours: {text[0].lower()}{text[1:]}"
+                reasons[category.id] = f"outside its {refused}: {text[0].lower()}{text[1:]}"
         closed = frozenset(paths)
         if cached is not None and cached[2] == closed:
             closed = cached[2]

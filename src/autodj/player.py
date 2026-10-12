@@ -601,6 +601,9 @@ class _PickContext:
             when nothing else at all can play does one play, with a warning.
         closed_categories: The ID of each such category and the reason, in
             words, for the clockwheel to skip its steps.
+        at: When the picked song is expected to start, in wall-clock
+            seconds, or ``None`` for now; clockwheel steps with days and
+            hours are checked then.
     """
 
     recent: deque
@@ -613,6 +616,7 @@ class _PickContext:
     follows: str | None = None
     closed: frozenset[str] = frozenset()
     closed_categories: Mapping[str, str] = field(default_factory=dict)
+    at: float | None = None
 
     def allows(self, entry: IndexEntry) -> bool:
         """True when *entry* keeps the DMCA complement (always, with the mode off)."""
@@ -1211,6 +1215,10 @@ class Player:
         boundary = next_boundary(
             datetime.fromtimestamp(self._now()).astimezone(), clock["resync_minutes"]
         )
+        from autodj.categories import parse_step_hours
+
+        # Each step's days and hours, by step index (None for a step without).
+        step_hours = tuple(parse_step_hours(step) for step in clock["steps"])
         with settings_lock(self):
             self._clock = {
                 "name": name,
@@ -1218,6 +1226,7 @@ class Player:
                 "resync_minutes": clock["resync_minutes"],
             }
             self._clock_slots = slots
+            self._clock_step_hours = step_hours
             self._clock_status = "Ready"
             self._seed_clock_following = None
             self._clock_next_boundary = boundary.timestamp() if boundary else None
@@ -1350,6 +1359,8 @@ class Player:
             cache = ConditionPaths(self._clock_slots, entries, liners, beets_items)
             self._clock_condition_cache = cache
 
+        closed_steps = self._closed_clock_steps(context)
+
         def pick(
             use_rules: bool,
             use_recent: bool,
@@ -1382,7 +1393,11 @@ class Player:
                 liners=playable_liners,
                 categories=categories,
                 beets=beets_items,
-                condition_errors=condition_errors,
+                # A step outside its days and hours is skipped like a step
+                # whose conditions cannot be read.
+                condition_errors={**condition_errors, **closed_steps}
+                if hours and closed_steps
+                else condition_errors,
                 condition_cache=cache,
                 closed_categories=context.closed_categories if hours else None,
             )
@@ -1434,7 +1449,7 @@ class Player:
         # nothing else.
         self._clock_closed_only = (
             picked.entry is None
-            and bool(closed or context.closed_categories)
+            and bool(closed or context.closed_categories or closed_steps)
             and pick(False, False, use_dmca=False, protected=follows_only, hours=False).entry
             is not None
         )
@@ -1452,6 +1467,23 @@ class Player:
         if picked.entry is not None:
             _log_repeat_blocks(context.repeat, picked.entry)
         return picked
+
+    def _closed_clock_steps(self, context: _PickContext) -> dict[int, str]:
+        """The clockwheel steps outside their days and hours, by index, and why.
+
+        Checked at the expected start of the song being picked, as the
+        categories' hours are.
+        """
+        step_hours = getattr(self, "_clock_step_hours", ())
+        if not any(step_hours):
+            return {}
+        wall = self._station_now(context.at)
+        closed = {}
+        for index, hours in enumerate(step_hours):
+            reason = hours.refusal(wall) if hours is not None else None
+            if reason:
+                closed[index] = reason
+        return closed
 
     def _eligible_entries(
         self,
@@ -1540,7 +1572,11 @@ class Player:
 
     def _log_category_skips(self, skipped: list[str]) -> None:
         """Log the category steps a pick passed over, once until the reasons change."""
-        reasons = tuple(reason for reason in skipped if reason.startswith("category"))
+        reasons = tuple(
+            reason
+            for reason in skipped
+            if reason.startswith("category") or "outside its hours" in reason
+        )
         if reasons and reasons != getattr(self, "_category_skips_logged", ()):
             logger.warning(
                 "Clock: %s; the clockwheel moved on to its next step", "; ".join(reasons)
@@ -2672,6 +2708,7 @@ class Player:
             follows.path if (follows := pending or playing) is not None else None,
             closed,
             closed_categories,
+            at,
         )
 
     def _station_now(self, at: float | None = None) -> datetime:
