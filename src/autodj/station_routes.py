@@ -453,14 +453,23 @@ async def select_clock(
                 await asyncio.to_thread(
                     _validate_step_conditions, station, library, step, sources, number
                 )
-    setting = _clock_setting(station, library)
+    # Through the station's ledger when it has one: its buffered cursor is
+    # the latest place, and an older one must not flush over this choice.
+    ledger = station.ledger
+    if ledger is not None:
+        setting = ledger.get_setting("clock", {})
+        setting = setting if isinstance(setting, dict) else {}
+    else:
+        setting = _clock_setting(station, library)
     if cursor is None:
         kept = setting.get("cursor")
         same = name is not None and setting.get("name") == name and type(kept) is int
         cursor = kept if same else 0
-    library.catalog.set_setting(
-        setting_key(station.slug, "clock"), {"name": name, "cursor": cursor}
-    )
+    value = {"name": name, "cursor": cursor}
+    if ledger is not None:
+        ledger.set_setting("clock", value)
+    else:
+        library.catalog.set_setting(setting_key(station.slug, "clock"), value)
     reload_clock = getattr(station.player, "configure_clock", None)
     if callable(reload_clock):
         await asyncio.to_thread(reload_clock)

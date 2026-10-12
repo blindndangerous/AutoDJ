@@ -63,6 +63,9 @@ class StationLedger:
         self.station = station
         self._entry_for_path = entry_for_path
         self._lock = threading.Lock()
+        # Held while settings are written, so a flush in progress cannot put
+        # back a value set_setting has just replaced.
+        self._settings_lock = threading.Lock()
         self._pending_plays: dict[str, float] = {}
         self._pending_history: dict[str, dict] = {}
         self._interrupted_plays: set[str] = set()
@@ -93,6 +96,18 @@ class StationLedger:
         """Buffer a runtime setting update without writing SQLite on an audio thread."""
         with self._lock:
             self._pending_settings[self.setting_key(name)] = value
+
+    def set_setting(self, name: str, value: Any) -> None:
+        """Write setting *name* now, dropping any update of it still buffered.
+
+        A choice made on a page, such as selecting a clockwheel, must not be
+        undone by an older update the player buffered before it (#133).
+        """
+        key = self.setting_key(name)
+        with self._settings_lock:
+            with self._lock:
+                self._pending_settings.pop(key, None)
+            self.catalog.set_setting(key, value)
 
     def remember_history(self, row: dict) -> None:
         """Queue a play-log entry without writing SQLite on the audio thread."""
@@ -132,8 +147,12 @@ class StationLedger:
         return rows
 
     def get_setting(self, name: str, default: Any = None) -> Any:
-        """The station's saved setting *name*, as last written."""
-        return self.catalog.get_setting(self.setting_key(name), default)
+        """The station's setting *name*, including an update not yet written."""
+        key = self.setting_key(name)
+        with self._lock:
+            if key in self._pending_settings:
+                return self._pending_settings[key]
+        return self.catalog.get_setting(key, default)
 
     def recent_history(self, limit: int = 500) -> list[dict]:
         """The station's latest *limit* completed plays, oldest first."""
@@ -180,13 +199,14 @@ class StationLedger:
                     self._pending_plays.pop(path, None)
 
     def _flush_settings(self) -> None:
-        with self._lock:
-            pending = dict(self._pending_settings)
-        for key, value in pending.items():
-            self.catalog.set_setting(key, value)
+        with self._settings_lock:
             with self._lock:
-                if self._pending_settings.get(key) == value:
-                    self._pending_settings.pop(key, None)
+                pending = dict(self._pending_settings)
+            for key, value in pending.items():
+                self.catalog.set_setting(key, value)
+                with self._lock:
+                    if self._pending_settings.get(key) == value:
+                        self._pending_settings.pop(key, None)
 
     def _flush_history(self) -> None:
         with self._lock:
