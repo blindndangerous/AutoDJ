@@ -1393,6 +1393,70 @@ ignored with a warning; re-enter any limits that still use those keys in that pa
 artists file is `index/<name>/related-artists.toml` and is read only when
 **Use related artists** is enabled. It must be at most 1 MiB.
 
+## Testing the rotation
+
+The rotation tester plays a span of time, or a number of songs, through the station's own song
+picker and reports what would happen, without changing anything on air. It answers questions such
+as "do a 720-minute song rule and a 240-minute artist rule starve my six-song Power category?"
+before the rules go live.
+
+It uses everything the station picks with: the pick mode or the active clockwheel and its place,
+the rotation categories and their days and hours, the schedule's song-picking changes (with their
+date ranges), the repeat rules including related artists, and the DMCA limits. It starts from the
+station's real play history and last-played times. The run picks with a private copy of the
+player, with its own clock and its own random choices, so the on-air player, its history, the
+clockwheel place and the library are never touched.
+
+From the command line:
+
+```bash
+uv run autodj simulate                       # the next 24 hours
+uv run autodj simulate --days 7 --seed 42    # a week, repeatable with the same seed
+uv run autodj simulate --picks 500 --json    # 500 songs, as JSON
+uv run autodj simulate --hours 12 --start 2026-10-16T18:00 --station nightowl
+```
+
+`--start` is read in the station time zone (`[server] station_timezone`). Without `--seed` a run
+draws a seed and the report gives it, so any run can be repeated exactly. Runs are capped at 30
+days or 20,000 songs.
+
+In the web page: Settings > Song picking > **Test rotation**. Choose a span or a number of songs,
+optionally a start and a seed, and press **Test rotation**. The run works in the background; a
+progress bar and a line of text show how far it has got, **Cancel test** stops it with the results
+so far, and the end is announced once. The results appear under **Rotation test results** as
+headings and lists. One run at a time per server; the run's thread works below normal priority and
+pauses between songs, so playback and the page keep their place.
+
+The report, in words or JSON, gives:
+
+- plays per song, per category and per artist: the fewest, the most and the average, and the most
+  played;
+- songs never played, with a count and the first ten, overall and per category;
+- how often each rule had to be relaxed, and which: same artist, related artist, same album, same
+  title, the track repeat window, dayparting and back-to-back repeats, plus fallbacks to a random
+  song. A clockwheel step set not to enforce the rules is counted apart;
+- clockwheel steps that were skipped or came up empty, with the reason, such as "all matching
+  entries blocked by rules" or "outside its hours";
+- DMCA conflicts: songs replaced to keep the limits, and limits broken when nothing could keep
+  them, by kind;
+- dead air: picks that found nothing (the station starts afresh) and minutes with nothing
+  playable;
+- the schedule changes it applied.
+
+What it approximates:
+
+- Time moves by each song's length from the catalog: from its saved start to its segue or outro
+  with saved-point transitions, less the crossfade otherwise. A song with no length counts as the
+  library's average.
+- A clockwheel liner adds its full length. Automatic liners, time checks, carts and the queue are
+  left out.
+- A scheduled change applies from the first song after its time; hard events do not cut a song
+  short. Profile switches are not simulated; the report names them.
+
+How long a run takes grows with the library. On a synthetic 77,000-song library with four
+categories and a seven-step clockwheel, an older four-core PC (2018) simulated a week (about 2,500
+songs) in just under two minutes, and in a little over three with the DMCA limits on.
+
 ## Backup
 
 `autodj backup` writes one ZIP file holding:

@@ -930,6 +930,53 @@
         Occasionally choose from the quarter of the library that sounds least like the current selection. This adds variety when similarity picks sound too alike.
       </span>
     </fieldset>
+
+    <!-- Test rotation (rotation-test.js): a dry run of song picking on the
+         server.  Both buttons stay enabled and in place at every step, so
+         focus never lands on a hidden or dead control.  The start and the
+         end are said once through #rotation-status; the progress line is
+         plain text, and the results are headings and lists, not live. -->
+    <fieldset id="rotation-test" aria-describedby="rotation-test-desc">
+      <legend>Test rotation</legend>
+      <p class="setting-desc" id="rotation-test-desc">Simulate song picking with the current clockwheel, categories, schedule, repeat rules and DMCA limits, then see how often each song, category and artist would play, which rules had to give way and whether anything would leave the station silent. Nothing on air changes.</p>
+      <div class="settings-row">
+        <label for="rotation-span">Simulate</label>
+        <select id="rotation-span">
+          <option value="hours:24" selected>24 hours</option>
+          <option value="days:3">3 days</option>
+          <option value="days:7">7 days</option>
+          <option value="days:14">14 days</option>
+          <option value="days:30">30 days</option>
+          <option value="picks:100">100 songs</option>
+          <option value="picks:1000">1,000 songs</option>
+        </select>
+      </div>
+      <div class="settings-row">
+        <label for="rotation-start">Start</label>
+        <input type="datetime-local" id="rotation-start" aria-describedby="rotation-start-desc">
+      </div>
+      <p class="setting-desc" id="rotation-start-desc">Optional. In the station time zone; leave it empty to start now.</p>
+      <div class="settings-row">
+        <label for="rotation-seed">Seed</label>
+        <input type="text" id="rotation-seed" inputmode="numeric" autocomplete="off" spellcheck="false" maxlength="15" aria-describedby="rotation-seed-desc">
+      </div>
+      <p class="setting-desc" id="rotation-seed-desc">Optional. A whole number; the same seed repeats a run exactly, and the results give the seed each run used.</p>
+      <p id="rotation-error" class="field-error" hidden></p>
+      <div class="settings-row">
+        <button type="button" id="rotation-run">Test rotation</button>
+        <button type="button" id="rotation-cancel">Cancel test</button>
+      </div>
+      <div class="settings-row" id="rotation-progress-row" hidden>
+        <label for="rotation-progress">Progress</label>
+        <progress id="rotation-progress" max="100" value="0" aria-describedby="rotation-progress-text"></progress>
+        <span id="rotation-progress-text"></span>
+      </div>
+      <div id="rotation-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+    </fieldset>
+    <section id="rotation-results" aria-labelledby="rotation-results-heading" hidden>
+      <h4 id="rotation-results-heading">Rotation test results</h4>
+      <div id="rotation-results-body"></div>
+    </section>
   </div>
 
   <div class="card" role="tabpanel" id="spanel-sound" aria-labelledby="stab-sound" hidden>

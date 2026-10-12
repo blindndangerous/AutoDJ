@@ -788,6 +788,7 @@ class StationRouter:
 def install_station_routes(router: StationRouter) -> None:
     """Register every station route, with paths relative to the API root (``/skip``, ...)."""
     from autodj.carts import install_carts
+    from autodj.rotation_api import install_rotation_test
     from autodj.scheduler_api import install_scheduler
     from autodj.time_checks import install_time_checks
 
@@ -1612,6 +1613,7 @@ def install_station_routes(router: StationRouter) -> None:
     install_carts(router)
     install_scheduler(router)
     install_time_checks(router)
+    install_rotation_test(router)
 
 
 __all__ = [
