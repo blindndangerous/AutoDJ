@@ -96,14 +96,7 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   focus back on the button pressed either way.
 - The public status page (`/status`): read with headings and the definition list, with and
   without JavaScript; the song line said once, politely, when the song changes, and nothing said
-  on a poll that finds the same song; the next song shown only while it is allowed; the "On air"
-  show line read as plain text, never spoken on a poll.
-- Settings, Shows: Add show and Edit landing on Name; adding a genre said once with focus kept in
-  its field, and Remove moving to the next Remove button; Check saying the match count once while
-  the count line stays silent; a bad year range or query said once, marked invalid and focused;
-  Save saying the count and any warning once and landing on the show's Edit button; Start now
-  saying "started, until" once and landing on Stop, Stop landing on Start now; and a scheduled
-  show's start and end said once from any tab, and not at all on a page opened during the show.
+  on a poll that finds the same song; the next song shown only while it is allowed.
 - Voice liners: uploading a liner, Test now, and each rotation mode, including the spoken
   result when an upload or test fails.
 - Queue & Search, browsing: Tab moving from Search to Browse library (Folder, Search text, Browse,

@@ -139,11 +139,6 @@ def _path(path: str | Path) -> str:
     return os.path.normcase(value) if os.name == "nt" else value
 
 
-def normalize_path(path: str | Path) -> str:
-    """*path* spelled the way the catalog stores it (absolute, normalized, case-folded on Windows)."""
-    return _path(path)
-
-
 def _under(path: str, root: str, recursive: bool) -> bool:
     try:
         relative = os.path.relpath(path, root)

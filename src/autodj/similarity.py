@@ -26,7 +26,6 @@ import random
 import threading
 from collections import deque
 from collections.abc import Callable
-from collections.abc import Set as AbstractSet
 from dataclasses import FrozenInstanceError, dataclass, fields
 from pathlib import Path
 from typing import cast
@@ -319,13 +318,11 @@ class SimilarityIndex:
         excluded_albums: set[str] | None,
         excluded_titles: set[str] | None,
         repeat_filter: Callable[[IndexEntry], bool] | None = None,
-        only: AbstractSet[str] | None = None,
     ) -> Callable[[IndexEntry], bool]:
         """Compose a single ``entry -> bool`` predicate from every active filter.
 
         *repeat_filter* runs last, so it only sees (and counts) candidates
-        every other filter let through.  *only*, when given, is a hard
-        filter: the paths a pick may return (a themed show's songs).
+        every other filter let through.
         """
         ex_art = {a.lower() for a in (excluded_artists or set()) if a}
         ex_alb = {a.lower() for a in (excluded_albums or set()) if a}
@@ -333,8 +330,6 @@ class SimilarityIndex:
 
         def _ok(entry: IndexEntry) -> bool:
             if entry.path in excluded or entry.is_silent:
-                return False
-            if only is not None and entry.path not in only:
                 return False
             if bpm_range is not None:
                 lo, hi = bpm_range
@@ -428,7 +423,6 @@ class SimilarityIndex:
         pick_top_k: int = 1,
         pick_temperature: float = 0.0,
         repeat_filter: Callable[[IndexEntry], bool] | None = None,
-        only: AbstractSet[str] | None = None,
     ) -> IndexEntry:
         """Find the best next track after *current_path* that isn't in *recently_played*.
 
@@ -451,8 +445,6 @@ class SimilarityIndex:
                 rules (:class:`~autodj.repeat_rules.RepeatFilter`): ``True``
                 lets a candidate through.  Like the exclusion sets, it is
                 dropped when nothing passes it.
-            only: The paths the pick may return, such as a themed show's
-                songs; never relaxed.  ``None`` allows every track.
 
         Returns:
             The :class:`IndexEntry` for the recommended next track.
@@ -512,7 +504,6 @@ class SimilarityIndex:
                 excluded_albums,
                 excluded_titles,
                 repeat_filter,
-                only,
             )
             candidates = self._search_with_expansion(query, predicate, initial_k, n_candidates)
 
@@ -531,8 +522,6 @@ class SimilarityIndex:
                     None,
                     None,
                     None,
-                    None,
-                    only,
                 )
                 candidates = self._search_with_expansion(
                     query,
@@ -571,7 +560,6 @@ class SimilarityIndex:
         current_path: str,
         recently_played: deque[str],
         allowed: Callable[[IndexEntry], bool] | None = None,
-        only: AbstractSet[str] | None = None,
     ) -> IndexEntry:
         """Find a sonically *distant* track for discovery mode injection.
 
@@ -588,8 +576,6 @@ class SimilarityIndex:
                 rules.  When any track passes it, the pick comes from the
                 least similar quarter of the tracks that do; otherwise it
                 is ignored.
-            only: The paths the pick may return, such as a themed show's
-                songs; never ignored.  ``None`` allows every track.
 
         Returns:
             A :class:`IndexEntry` that is sonically distant from the current track.
@@ -628,11 +614,7 @@ class SimilarityIndex:
             bottom_quartile = all_valid[bottom_start:]
 
             def eligible(entry: IndexEntry) -> bool:
-                return (
-                    entry.path not in excluded
-                    and not entry.is_silent
-                    and (only is None or entry.path in only)
-                )
+                return entry.path not in excluded and not entry.is_silent
 
             distant_candidates = [
                 self.entries[i] for _, i in bottom_quartile if eligible(self.entries[i])

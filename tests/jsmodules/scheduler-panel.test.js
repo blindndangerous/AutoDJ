@@ -174,38 +174,6 @@ describe("Schedule panel", () => {
     expect(byId("schedule-runs").textContent).toBe("No events have run yet.");
   });
 
-  it("asks for a time and leaves Timing to an action with its own timing", async () => {
-    ACTIONS.push({
-      name: "show_start", description: "Start show", own_timing: true,
-      fields: [
-        { name: "show", label: "Show", type: "select", options: [{ value: "s1", label: "Remembering the 2000s" }] },
-        { name: "until", label: "Ends at", type: "time" },
-      ],
-    });
-    try {
-      await openPanel(fakeServer());
-      byId("schedule-add").click();
-      expect(byId("schedule-own-timing").hidden).toBe(true);
-      expect(byId("schedule-action").hasAttribute("aria-describedby")).toBe(false);
-      expect(byId("schedule-timing").closest(".settings-row").hidden).toBe(false);
-      byId("schedule-action").value = "show_start";
-      byId("schedule-action").dispatchEvent(new Event("change"));
-      expect(byId("schedule-param-until").type).toBe("time");
-      expect(document.querySelector('label[for="schedule-param-until"]').textContent).toBe("Ends at");
-      expect(byId("schedule-timing").closest(".settings-row").hidden).toBe(true);
-      expect(byId("schedule-timing-desc").hidden).toBe(true);
-      expect(byId("schedule-own-timing").hidden).toBe(false);
-      expect(byId("schedule-action").getAttribute("aria-describedby")).toBe("schedule-own-timing");
-      byId("schedule-name").value = "Saturday night";
-      byId("schedule-time").value = "20:00";
-      submit();
-      await vi.waitFor(() => expect(status()).toBe("Enter ends at"));
-      expect(document.activeElement).toBe(byId("schedule-param-until"));
-    } finally {
-      ACTIONS.pop();
-    }
-  });
-
   it("adds an event from the server's action list and focuses its Edit button", async () => {
     const server = fakeServer();
     await openPanel(server);

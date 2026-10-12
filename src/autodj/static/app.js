@@ -29,7 +29,6 @@ import { installSeekController } from "./modules/seek-controller.js";
 import { installLibraryFolders } from "./modules/library-folders.js";
 import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
 import { installSchedulerPanel } from "./modules/scheduler-panel.js";
-import { installShowsPanel } from "./modules/shows-panel.js";
 import { installCartWall } from "./modules/cart-wall.js";
 import { createStreamMode, createStreamSettings } from "./modules/stream-mode.js";
 import { createRecordingControls } from "./modules/recording-controls.js";
@@ -210,7 +209,6 @@ let authExpiryHandled = false;
 let libraryFoldersControls = null;
 let clockwheelPanelControls = null;
 let schedulerPanelControls = null;
-let showsPanelControls = null;
 let cartWallControls = null;
 let reconnectGeneration = 0;
 let reconnectTimer = null;
@@ -309,7 +307,6 @@ function clearProtectedSessionData() {
   libraryFoldersControls?.clearProtectedData();
   clockwheelPanelControls?.clearProtectedData();
   schedulerPanelControls?.clear();
-  showsPanelControls?.clear();
   cartWallControls?.clear();
   const browseFolder = document.getElementById("library-browse-folder");
   if (browseFolder) {
@@ -485,7 +482,6 @@ function applyState(s) {
   else recordingControls.reset();
   nowPlayingSettings?.apply(s);
   listenerControls.apply(s);
-  showsPanelControls?.applyState(s);
   const browserMode = Boolean(s.browser_playback) && !inStream;
 
   // Now Playing
@@ -1277,10 +1273,6 @@ function connectWS() {
         cartWallControls?.event(message);
       } else if (message.type === "schedule_changed" || message.type === "schedule_run") {
         void schedulerPanelControls?.refresh();
-      } else if (message.type === "shows_changed") {
-        void showsPanelControls?.refresh();
-        // A show's name or end time shows up in a Start show event.
-        void schedulerPanelControls?.refresh();
       } else applyState(message);
     } catch (_) {}
   };
@@ -1327,7 +1319,6 @@ function connectWS() {
           libraryFoldersControls?.resume();
           clockwheelPanelControls?.resume();
           void schedulerPanelControls?.refresh();
-          void showsPanelControls?.refresh();
           connectWS();
         },
       });
@@ -2356,7 +2347,6 @@ libraryFoldersControls = installLibraryFolders({
 
 clockwheelPanelControls = installClockwheelPanel();
 schedulerPanelControls = installSchedulerPanel();
-showsPanelControls = installShowsPanel();
 
 import { installLiners, bumpLinerTrackCount } from "./modules/liners.js";
 import { installTimeChecks } from "./modules/time-checks.js";
@@ -2459,7 +2449,6 @@ function startAuthenticatedApp(initialState) {
   libraryFoldersControls?.resume();
   clockwheelPanelControls?.resume();
   void schedulerPanelControls?.refresh();
-  void showsPanelControls?.refresh();
   installLibraryJobs(_libEls);
   // Audio dependencies are owned by the audio engine. Inject closures
   // that read its live bindings and stop liner playback after auth expiry.

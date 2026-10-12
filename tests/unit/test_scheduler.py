@@ -580,34 +580,6 @@ def test_upcoming_merges_events_in_time_order(tmp_path: Path) -> None:
     assert rows[0][0] - rig.now == timedelta(minutes=30)
 
 
-def test_an_action_with_its_own_timing_runs_on_time_and_never_fades(tmp_path: Path) -> None:
-    rig = Rig(tmp_path / "schedule.json", playing=True)
-    rig.schedule.register(Action("show", "Start a show", rig.handle, own_timing=True))
-    rig.schedule.start()
-    rig.add(action="show", time="12:01")  # soft: would wait for the song
-    rig.add(name="Hard", action="show", time="12:02", timing="hard")  # would fade it
-    rig.tick_at("2026-10-11 12:01")
-    rig.tick_at("2026-10-11 12:02")
-    assert rig.calls == ["action", "action"]
-    assert rig.schedule.pending == []
-    assert rig.schedule.actions["show"].metadata()["own_timing"] is True
-    assert "own_timing" not in rig.schedule.actions["noop"].metadata()
-
-
-def test_a_time_field_needs_a_time_of_day() -> None:
-    from autodj.scheduler import ActionField, EventError
-
-    async def handle(_params: dict[str, str]) -> None:
-        return None
-
-    action = Action("x", "X", handle, (ActionField("until", "Ends at", kind="time"),))
-    assert action.metadata()["fields"] == [{"name": "until", "label": "Ends at", "type": "time"}]
-    assert action.check({"until": "21:30"}) == {"until": "21:30"}
-    for bad in ("24:00", "9:30", "21:60", "soon"):
-        with pytest.raises(EventError, match="must be a time such as 21:00"):
-            action.check({"until": bad})
-
-
 def test_failed_audio_preparation_does_not_interrupt(tmp_path: Path) -> None:
     rig = Rig(tmp_path / "schedule.json", playing=True)
     item = rig.add(action="liner", timing="hard")

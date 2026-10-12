@@ -66,8 +66,7 @@ def test_snapshot_exposes_metadata_without_paths() -> None:
     )
     feed = NowPlaying(bridge, timezone="UTC")
     payload = feed.snapshot()
-    assert payload["schema"] == 3
-    assert payload["show"] is None
+    assert payload["schema"] == 2
     assert payload["next_track"] is None
     assert payload["listener_count"] == 3
     assert payload["history"][0]["title"] == "Earlier"
@@ -290,92 +289,3 @@ def test_peak_listeners_today_resets_at_station_midnight_and_uptime_counts_up() 
     assert feed.snapshot()["peak_listeners_today"] == 1
     listeners[0] = 3
     assert feed.refresh()["peak_listeners_today"] == 3
-
-
-def test_a_show_start_is_its_own_webhook_event() -> None:
-    config = WebhookConfig("https://example.com/token")
-    payload = {
-        "station_name": "Station",
-        "current_track": {"artist": "A", "title": "T"},
-        "show": {"name": "Remembering the 2000s", "ends_at": "2026-10-11T21:00:00+00:00"},
-        "event": "show_started",
-    }
-    assert webhook_body(config, payload)["event"] == "show_started"
-    discord = webhook_body(WebhookConfig("https://example.com", "discord"), payload)
-    assert discord == {
-        "embeds": [
-            {"title": "Station", "description": "On air: Remembering the 2000s, until 21:00."}
-        ]
-    }
-    unnamed = webhook_body(
-        WebhookConfig("https://example.com", "discord"), {**payload, "show": None}
-    )
-    assert unnamed["embeds"][0]["description"] == "A show started."
-    # Anything else is a track change.
-    assert webhook_body(config, {**payload, "event": "other"})["event"] == "track_change"
-
-
-def test_a_track_change_never_replaces_a_waiting_show_start() -> None:
-    sent: list[str] = []
-    delivered = threading.Event()
-
-    def send(_config, payload):
-        sent.append(payload.get("event", "track_change"))
-        if len(sent) == 2:
-            delivered.set()
-        return True, None
-
-    worker = WebhookWorker((WebhookConfig("https://example.com/token"),))
-    worker.submit({"station_name": "S", "event": "show_started"})
-    worker.submit({"station_name": "S"})
-    with patch("autodj.webhooks._post", side_effect=send):
-        worker.start()
-        assert delivered.wait(2)
-        worker.close()
-    assert sent == ["show_started", "track_change"]
-
-
-def test_close_drops_waiting_show_starts() -> None:
-    worker = WebhookWorker((WebhookConfig("https://example.com/token"),))
-    for _ in range(5):
-        worker.submit({"station_name": "S", "event": "show_started"})
-    assert len(worker._events[0]) == 3
-    worker.close()
-    assert worker._events == {}
-
-
-def test_the_feed_carries_the_show_name_and_end_only() -> None:
-    bridge = _feed_bridge([0])
-    bridge.show_state = lambda: {
-        "id": "secret-id",
-        "name": "Remembering the 2000s",
-        "started_at": "2026-10-11T20:00:00+00:00",
-        "ends_at": "2026-10-11T21:00:00+00:00",
-    }
-    payload = NowPlaying(bridge, timezone="UTC").refresh()
-    assert payload["show"] == {
-        "name": "Remembering the 2000s",
-        "ends_at": "2026-10-11T21:00:00+00:00",
-    }
-    bridge.show_state = lambda: None
-    assert NowPlaying(bridge, timezone="UTC").refresh()["show"] is None
-
-
-def test_a_destination_chooses_its_events() -> None:
-    url = "https://example.com/token"
-    assert WebhookConfig(url).events == ("track_change", "show_started")
-    assert WebhookConfig(url, events=["show_started", "show_started"]).events == ("show_started",)
-    for bad in ([], ["track_change", "bogus"], "track_change", [1]):
-        with pytest.raises(ValueError, match="track_change, show_started or both"):
-            WebhookConfig(url, events=bad)  # type: ignore[arg-type]
-    songs = WebhookConfig("https://songs.example/a", events=("track_change",))
-    shows = WebhookConfig("https://shows.example/b", events=("show_started",))
-    worker = WebhookWorker((songs, shows))
-    worker.submit({"station_name": "S", "event": "show_started"})
-    worker.submit({"station_name": "S"})
-    assert worker._events == {1: [{"station_name": "S", "event": "show_started"}]}
-    assert list(worker._pending) == [0]
-    # A test send goes to the one destination whatever it asked for.
-    assert worker.submit({"station_name": "S"}, 1) is not None
-    assert list(worker._pending) == [0, 1]
-    worker.close()

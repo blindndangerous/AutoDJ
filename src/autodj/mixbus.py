@@ -73,8 +73,6 @@ class RenderedTrack:
         next_pick_mode: How *next_entry* was chosen.
         next_from_queue: Whether *next_entry* was peeked from the user
             queue (it stays queued until it starts).
-        next_show: The run of the themed show *next_entry* was picked
-            under, ``""`` for none; the pick is redone when that changes.
         set_generation: The stream set the bus took this track for; a
             track start from a set that has since stopped is ignored.
         previous_entry: The track rendered just before this one (the one
@@ -122,7 +120,6 @@ class RenderedTrack:
     liner_plan_key: str = ""
     full_audio: np.ndarray | None = None
     source_start_offset: int = 0
-    next_show: str = ""
 
 
 @dataclass(frozen=True)

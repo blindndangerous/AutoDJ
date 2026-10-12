@@ -169,10 +169,7 @@ def test_lifespan_hands_the_hour_rule_to_the_liner_scheduler(bridge, tmp_path) -
     bridge.player._cfg.index.index_dir = tmp_path
     bridge.liner_scheduler = MagicMock()
     with TestClient(create_app(bridge)):
-        # A show's intro or outro comes first, then the time check.
-        announcement = bridge.liner_scheduler.announcement
-        assert announcement.__name__ == "_due_announcement"
-        assert announcement() is None  # neither is due
+        assert bridge.liner_scheduler.announcement.__name__ == "due_audio"
 
 
 def test_voice_packs_are_chosen_by_name_and_tested_one_at_a_time(

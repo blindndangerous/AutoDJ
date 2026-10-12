@@ -33,29 +33,15 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_NoRedirect)
 
 
-#: Events besides a track change; one is never replaced by a later track change.
-EVENTS = ("show_started",)
-
-
 def webhook_body(config: WebhookConfig, payload: dict[str, Any]) -> dict[str, Any]:
-    """Build a generic or Discord message without exposing configuration.
-
-    A payload whose ``event`` is ``"show_started"`` announces the themed
-    show on air (its ``show`` field); any other is a track change.
-    """
-    event = payload.get("event") if payload.get("event") in EVENTS else "track_change"
+    """Build a generic or Discord message without exposing configuration."""
     if config.format == "generic":
-        return {**payload, "event": event}
-    station = str(payload.get("station_name") or "AutoDJ")[:256]
-    if event == "show_started":
-        from autodj.status_page import show_text
-
-        words = show_text(payload.get("show")) or "A show started."
-        return {"embeds": [{"title": station, "description": words[:4096]}]}
+        return {**payload, "event": "track_change"}
     track = payload.get("current_track") or {}
     artist = str(track.get("artist") or "Unknown artist")[:256]
     title = str(track.get("title") or "Unknown title")[:256]
     album = str(track.get("album") or "")[:256]
+    station = str(payload.get("station_name") or "AutoDJ")[:256]
     description = f"{artist} — {title}"
     if album:
         description += f"\nAlbum: {album}"
@@ -109,9 +95,6 @@ class WebhookWorker:
         self.configs = configs
         self._condition = threading.Condition()
         self._pending: dict[int, tuple[dict[str, Any], Future[bool] | None]] = {}
-        # Show events wait apart from track changes, so a song change that
-        # follows a show start at once does not replace its announcement.
-        self._events: dict[int, list[dict[str, Any]]] = {}
         self._status = ["Not sent" for _ in configs]
         self._failed = [False for _ in configs]
         self._closed = False
@@ -134,7 +117,6 @@ class WebhookWorker:
                 if result is not None and not result.done():
                     result.set_result(False)
             self._pending.clear()
-            self._events.clear()
             self._condition.notify_all()
         for thread in self._threads:
             thread.join(timeout=0.1)
@@ -153,20 +135,7 @@ class WebhookWorker:
                 if result is not None:
                     result.set_result(False)
                 return result
-            event = payload.get("event")
-            if index is None and event in EVENTS:
-                for target, config in enumerate(self.configs):
-                    if event in config.events:
-                        # A few at most: a newer one is what listeners need.
-                        self._events[target] = [*self._events.get(target, [])[-2:], payload]
-                self._condition.notify_all()
-                return None
-            wanted = (
-                [n for n, config in enumerate(self.configs) if "track_change" in config.events]
-                if index is None
-                else [index]
-            )
-            for target in wanted:
+            for target in range(len(self.configs)) if index is None else (index,):
                 previous = self._pending.get(target)
                 waiting = previous[1] if previous else None
                 if waiting is not None and result is not None:
@@ -194,17 +163,11 @@ class WebhookWorker:
     def _run(self, index: int) -> None:
         while True:
             with self._condition:
-                while (
-                    index not in self._pending and not self._events.get(index) and not self._closed
-                ):
+                while index not in self._pending and not self._closed:
                     self._condition.wait()
                 if self._closed:
                     return
-                waiting = self._events.get(index)
-                if waiting:
-                    payload, result = waiting.pop(0), None
-                else:
-                    payload, result = self._pending.pop(index)
+                payload, result = self._pending.pop(index)
             success = self._deliver(index, payload, 1 if result is not None else ATTEMPTS)
             if result is not None and not result.done():
                 result.set_result(success)
