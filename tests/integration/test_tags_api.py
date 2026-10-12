@@ -230,6 +230,7 @@ def test_concurrent_beets_saves_keep_the_latest_tags_and_mtime(
             first = beets_count == 1
         if first:
             first_beets_call.set()
+            assert tags_api._lock_for(song).locked()
             assert release_first_beets_call.wait(5)
         return real_update_beets(*args)
 
@@ -244,18 +245,23 @@ def test_concurrent_beets_saves_keep_the_latest_tags_and_mtime(
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         first = pool.submit(save, "First")
-        assert first_beets_call.wait(5)
-        second = pool.submit(save, "Second")
-        assert second_lookup.wait(5)
-        release_first_beets_call.set()
-        assert first.result(timeout=10).status_code == 200
-        assert second.result(timeout=10).status_code == 200
+        try:
+            assert first_beets_call.wait(5)
+            second = pool.submit(save, "Second")
+            assert second_lookup.wait(5)
+            release_first_beets_call.set()
+            assert first.result(timeout=10).status_code == 200
+            assert second.result(timeout=10).status_code == 200
+        finally:
+            release_first_beets_call.set()
 
     conn = sqlite3.connect(manager.cfg.library.beets_db)
     artist, mtime = conn.execute("SELECT artist, mtime FROM items").fetchone()
     conn.close()
     assert artist == "Second"
     assert mtime == song.stat().st_mtime
+    assert read_file_tags(song).artist == "Second"
+    assert manager.catalog.record_for_path(song)["artist"] == "Second"
 
 
 def test_a_song_beets_does_not_know_says_so(tagged, tmp_path: Path) -> None:
