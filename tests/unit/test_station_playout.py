@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from autodj.config import PlaybackConfig
+from autodj.mixbus import RenderedTrack
 from autodj.player import Player
 from autodj.stereo import SAMPLE_RATE as SR
 from tests.unit._fakes import make_cfg_mock, make_entry, make_sim_index
@@ -154,6 +155,43 @@ def test_saved_start_survives_next_rendered_metadata(station):
     result = player._next_rendered()
     assert result.start_offset == round(0.25 * SR)
     assert result.start_offset + len(result.audio) == 11 * SR
+
+
+def test_clock_step_provenance_follows_each_rendered_track(station, monkeypatch):
+    player, (a, b, voice, _), _points = station
+    steps = iter((
+        {"number": 2, "step": {"type": "music", "selection": "random"}},
+        {"number": 4, "step": {"type": "category", "selection": "least_recent"}},
+    ))
+
+    def choose(_current, _context):
+        player._chosen_clock_step = next(steps)
+        return b if player._pending_entry is a else voice, "clock", (), None, ""
+
+    monkeypatch.setattr(player, "_choose_station_next", choose)
+    monkeypatch.setattr(
+        player,
+        "_render_track",
+        lambda current, upcoming, *_args, **_kwargs: RenderedTrack(
+            current, np.zeros((10, 2), np.float32), upcoming, 0, "none"
+        ),
+    )
+    first_step = {"number": 1, "step": {"type": "liner", "selection": "random"}}
+    player._set_render_cursor(a, 0, "clock", clock_step=first_step)
+
+    first = player._next_rendered()
+    assert first.clock_step == first_step
+    assert first.next_clock_step["number"] == 2
+    player._start_playing(first)
+    assert player._last_clock_step == first_step
+
+    second = player._next_rendered()
+    assert second.clock_step["number"] == 2
+    assert second.next_clock_step["number"] == 4
+    player._rewind_render_cursor(second)
+    assert player._pending_clock_step == second.clock_step
+    player._skip_past_render(second)
+    assert player._pending_clock_step == second.next_clock_step
 
 
 def test_queue_edit_revalidates_liner_reservation(station):

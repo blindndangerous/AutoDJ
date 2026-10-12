@@ -45,7 +45,11 @@ def _build_why(player: Any, cur: Any) -> list[str]:
 
     prev = getattr(player, "_previous_track", None)
     mode = getattr(player, "_last_pick_mode", "similarity")
-    return explain_pick(prev, cur, mode=mode)
+    reasons = explain_pick(prev, cur, mode=mode)
+    step = getattr(player, "_last_clock_step", None)
+    if mode == "clock" and step and reasons:
+        reasons[0] = f"Clockwheel step {step['number']}."
+    return reasons
 
 
 def _library_job_snapshot() -> dict:
@@ -1066,6 +1070,9 @@ class PlayerBridge:
             "last_transition_fx": getattr(self.player, "_last_transition_fx", "none"),
             "next_transition_fx": self._next_transition_fx(current, upcoming),
             "why_this_track": _build_why(self.player, current),
+            "clock_step": getattr(self.player, "_last_clock_step", None)
+            if getattr(self.player, "_last_pick_mode", "") in {"clock", "seed"}
+            else None,
             "library_job": _library_job_snapshot(),
             # Browser-side audio drives playback only when the server is
             # headless (dry_run: no --server-audio, or missing audio deps) and

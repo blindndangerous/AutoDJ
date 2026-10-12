@@ -20,6 +20,7 @@ from collections import deque
 from collections.abc import Callable, Mapping
 from collections.abc import Set as AbstractSet
 from concurrent.futures import Future, wait
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -747,7 +748,8 @@ class Player:
     _clock: dict[str, Any] | None = None
     # The clockwheel _seed_clock_cursor is a place in (#133).
     _seed_clock_name: str | None = None
-    _seed_clock_following: tuple[IndexEntry, IndexEntry, int] | None = None
+    _seed_clock_step: dict | None = None
+    _seed_clock_following: tuple[IndexEntry, IndexEntry, int, dict | None] | None = None
     liner_scheduler: Any = None
     _skip_next_intro: bool = False
     _continuous_master: Any = None
@@ -856,6 +858,7 @@ class Player:
         # track was selected.  Read by the bridge to build the
         # "why this track" sentence list shown in the web UI.
         self._last_pick_mode: str = "seed"
+        self._last_clock_step: dict | None = None
         # Previous track played — kept so the explainer can compute deltas
         # against the current pick.
         self._previous_track: IndexEntry | None = None
@@ -919,6 +922,7 @@ class Player:
         self._pending_entry: IndexEntry | None = None
         self._pending_offset: int = 0
         self._pending_pick_mode: str = "seed"
+        self._pending_clock_step: dict | None = None
         # Whether the pending track was peeked from the user queue.  Queue
         # picks are peeked when rendered and removed from the queue only
         # when the track starts (see _take_render), so the queue the
@@ -1032,6 +1036,7 @@ class Player:
         In DMCA mode it keeps the complement too (see :meth:`_dmca_checked`).
         """
         self._seed_clock_following = None
+        self._seed_clock_step = None
         chosen: IndexEntry | None
         dmca = self._pick_context() if self._state.dmca_enabled else None
         if self._library is not None:
@@ -1047,6 +1052,10 @@ class Player:
                 if picked.entry is None:
                     return self._empty_category_fallback(None, context)
                 upcoming = self._dmca_checked(picked.entry, context)
+                song_step = self._clock_step_snapshot(picked.step_index)
+                self._seed_clock_step = self._clock_step_snapshot(
+                    picked.liner_step_index if picked.liner is not None else picked.step_index
+                )
                 if picked.liner is not None:
                     if picked.liner_requires_following:
                         if not self._clock_liner_fits(
@@ -1057,9 +1066,12 @@ class Player:
                             getattr(self, "_clock_next_boundary", None),
                         ):
                             self._seed_clock_cursor = picked.next_cursor
+                            self._seed_clock_step = song_step
                             return upcoming
                         # Keep the song whose length we checked, including on a re-render.
-                        self._seed_clock_following = (picked.liner, upcoming, picked.next_cursor)
+                        self._seed_clock_following = (
+                            picked.liner, upcoming, picked.next_cursor, song_step
+                        )
                     self._seed_clock_cursor = (picked.next_cursor - 1) % len(self._clock_slots)
                     return picked.liner
                 self._seed_clock_cursor = picked.next_cursor
@@ -1152,6 +1164,7 @@ class Player:
             "resync_minutes": clock["resync_minutes"],
         }
         self._clock_slots = slots
+        self._clock_steps = clock["steps"]
         self._clock_status = "Ready"
         from datetime import datetime
 
@@ -1395,6 +1408,38 @@ class Player:
             _log_repeat_blocks(context.repeat, picked.entry)
         return picked
 
+    def _clock_step_snapshot(self, index: int | None) -> dict | None:
+        """Freeze the selected native step and labels for the Why display."""
+        steps = getattr(self, "_clock_steps", ())
+        if index is None or not 0 <= index < len(steps):
+            return None
+        step = deepcopy(steps[index])
+        source_ids = {step["source"]} if "source" in step else set()
+        source_ids.update(
+            condition["source"]
+            for condition in step.get("conditions", ())
+            if condition.get("field") == "folder"
+        )
+        try:
+            sources = [
+                {"id": source["id"], "path": Path(source["path"]).name}
+                for source in self._library.catalog.sources()
+                if source["id"] in source_ids
+            ] if source_ids else []
+        except Exception:
+            sources = []
+        category_ids = {step["category"]} if step["type"] == "category" else set()
+        category_index = getattr(self._library, "categories", None)
+        try:
+            categories = [
+                {"id": category.id, "name": category.name}
+                for category in category_index.categories()
+                if category.id in category_ids
+            ] if category_index is not None and category_ids else []
+        except Exception:
+            categories = []
+        return {"number": index + 1, "step": step, "sources": sources, "categories": categories}
+
     def _category_members(self) -> dict[str, tuple[str, frozenset[str]]]:
         """Each rotation category's name and songs, or none when they cannot be read.
 
@@ -1633,6 +1678,7 @@ class Player:
         context: _PickContext,
     ) -> tuple[IndexEntry, str, tuple[tuple[IndexEntry, bool], ...], int | None, str]:
         liners, queued = self._station_queue(context.queue_reserved, self._pending_reserved_liners)
+        self._chosen_clock_step = None
         self._forget_other_clock_place()
         cursor = self._pending_clock_cursor
         seed = self._seed_clock_following
@@ -1642,6 +1688,7 @@ class Player:
             upcoming, mode = self._dmca_checked(queued, context, queued=True), "queue"
         elif self._cfg.playback.pick_mode == "clock":
             if seed is not None:
+                self._chosen_clock_step = seed[3] if len(seed) > 3 else getattr(self, "_seed_clock_step", None)
                 return (
                     self._dmca_checked(seed[1], context),
                     "clock",
@@ -1650,6 +1697,7 @@ class Player:
                     "",
                 )
             picked = self._clock_pick(context, cursor)
+            self._chosen_clock_step = self._clock_step_snapshot(picked.step_index)
             if picked.entry is None:
                 # Only empty or deleted categories left nothing to play.
                 rescue = self._empty_category_fallback(current, context)
@@ -1682,6 +1730,7 @@ class Player:
                         reset = self._clock_pick(context, 0)
                         if reset.entry is not None:
                             picked = reset
+                            self._chosen_clock_step = self._clock_step_snapshot(reset.step_index)
                             self._clock_status = "Restarting the clock at the nearest song handoff"
                             following = next_boundary(
                                 datetime.fromtimestamp(max(boundary, when)).astimezone(),
@@ -1909,10 +1958,13 @@ class Player:
                             "seed",
                             clock_cursor=getattr(self, "_seed_clock_cursor", None),
                             clock_name=self._seed_clock_name,
+                        clock_step=self._seed_clock_step,
                         )
+                    self._seed_clock_step = None
                 if current is None:
                     return None
             offset, pick_mode = self._pending_offset, self._pending_pick_mode
+            clock_step = self._pending_clock_step
             current_from_queue = self._pending_from_queue
             previous = self._pending_previous
             mixed_in_fx, mixed_in_ratio = self._pending_mixed_in
@@ -1930,6 +1982,7 @@ class Player:
             )
             liners: tuple[tuple[IndexEntry, bool], ...] = ()
             next_cursor, liner_key = clock_cursor, ""
+            next_clock_step = None
             context = self._pick_context(
                 pending=current,
                 starting=previous,
@@ -1942,6 +1995,7 @@ class Player:
                     next_entry, next_mode, liners, next_cursor, liner_key = (
                         self._choose_station_next(current, context)
                     )
+                    next_clock_step = self._chosen_clock_step
                 else:
                     next_entry, next_mode = self._choose_next(current, context)
             except Exception as exc:
@@ -1982,6 +2036,7 @@ class Player:
                 clock_cursor=next_cursor,
                 clock_boundary=self._pending_clock_boundary or clock_boundary,
                 clock_name=clock_name,
+                clock_step=next_clock_step,
             )
             if rendered is not None:
                 return replace(
@@ -1999,6 +2054,8 @@ class Player:
                     reserved_liners=reserved_liners,
                     clock_cursor=clock_cursor,
                     next_clock_cursor=next_cursor,
+                    clock_step=clock_step,
+                    next_clock_step=next_clock_step,
                     clock_name=clock_name,
                     clock_boundary=clock_boundary,
                     next_clock_boundary=self._pending_clock_boundary,
@@ -2019,6 +2076,7 @@ class Player:
         clock_cursor: int | None = None,
         clock_boundary: float | None = None,
         clock_name: str | None = None,
+        clock_step: dict | None = None,
     ) -> None:
         """Point the render-ahead cursor at *entry* (worker idle or queued).
 
@@ -2040,6 +2098,7 @@ class Player:
         self._pending_reserved_liners = reserved_liners
         self._pending_clock_cursor = clock_cursor
         self._pending_clock_name = clock_name
+        self._pending_clock_step = clock_step
         self._pending_clock_boundary = clock_boundary
 
     def _rewind_render_cursor(self, track: RenderedTrack) -> None:
@@ -2062,6 +2121,7 @@ class Player:
             clock_cursor=track.clock_cursor,
             clock_boundary=track.clock_boundary,
             clock_name=track.clock_name,
+            clock_step=track.clock_step,
         )
 
     def _skip_past_render(self, track: RenderedTrack) -> None:
@@ -2082,6 +2142,7 @@ class Player:
             clock_cursor=track.next_clock_cursor,
             clock_boundary=track.next_clock_boundary,
             clock_name=track.clock_name,
+            clock_step=track.next_clock_step,
         )
 
     def reset_render_ahead(
@@ -2105,9 +2166,12 @@ class Player:
             cursor = getattr(self, "_seed_clock_cursor", None)
             self._seed_clock_cursor = None
             clock = self._seed_clock_name
+            clock_step = self._seed_clock_step
+            self._seed_clock_step = None
             self._render_ahead.reset(
                 lambda: self._set_render_cursor(
-                    entry, offset, pick_mode, clock_cursor=cursor, clock_name=clock
+                    entry, offset, pick_mode, clock_cursor=cursor, clock_name=clock,
+                    clock_step=clock_step,
                 )
             )
         if self.liner_scheduler is not None and hasattr(self.liner_scheduler, "release_plan"):
@@ -2147,6 +2211,7 @@ class Player:
             self._playing_render = None
             self._state.current_track = None
             self._state.next_track = None
+            self._last_clock_step = None
             self._playback_pos[0] = 0
             self._playback_len = 0
             self._current_lyrics = []
@@ -2347,6 +2412,7 @@ class Player:
         self._last_transition_fx = rendered.mixed_in_fx
         self._beatmatch_ratio = rendered.mixed_in_ratio
         self._last_pick_mode = rendered.pick_mode
+        self._last_clock_step = rendered.clock_step
         seed_start = entry is self._seed_awaiting_start
         with self._pick_lock:
             if seed_start:

@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Why this track?** names the clockwheel step that selected the song, with its number and the same description shown in the clockwheel list. Music and category steps say whether they choose the least recently played song or choose at random.
 - A separate output device for previews (#54). In Settings, Sound, **Preview output device**
   sends the cue point preview in Track info, which Queue & Search, History and the library open,
   to a device of its own, such as headphones, while the browser mix stays on the speakers.

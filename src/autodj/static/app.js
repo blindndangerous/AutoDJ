@@ -29,6 +29,7 @@ import { installSeekController } from "./modules/seek-controller.js";
 import { installLibraryFolders } from "./modules/library-folders.js";
 import { installCategoriesPanel } from "./modules/categories-panel.js";
 import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
+import { describeStep } from "./modules/clockwheel-step.js";
 import { installSchedulerPanel } from "./modules/scheduler-panel.js";
 import { installCartWall } from "./modules/cart-wall.js";
 import { createStreamMode, createStreamSettings } from "./modules/stream-mode.js";
@@ -1075,7 +1076,14 @@ const _lyricEls = { lyricsCard, lyricsList };
 let _lastWhyKey = "";
 
 function applyWhyState(s) {
-  const reasons = (s && s.why_this_track) || [];
+  const reasons = [...((s && s.why_this_track) || [])];
+  const clockStep = s && s.clock_step;
+  if (clockStep) {
+    const generic = `Clockwheel step ${clockStep.number}.`;
+    const at = reasons.indexOf(generic);
+    if (at !== -1) reasons.splice(at, 1);
+    reasons.unshift(`Clockwheel step ${clockStep.number}: ${describeStep(clockStep.step, clockStep.sources, clockStep.categories)}.`);
+  }
   // Re-render only when the sentence list actually changes — keeps the
   // aria-live region from re-announcing on every per-second WS tick.
   const key = reasons.join("|") + "@" + (s.current_track ? s.current_track.path : "");
