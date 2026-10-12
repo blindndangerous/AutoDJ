@@ -37,10 +37,21 @@ function clock(seconds) {
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
 }
 
-function cartLabel(number, assigned) {
+// Why a cart is skipped on the station's day *today* (ISO dates compare as
+// text), or "".  The server makes the same check when the cart is played.
+function cartSkipped(assigned, today) {
+  if (!assigned || !today) return "";
+  if (assigned.not_after && today > assigned.not_after) return "expired";
+  if (assigned.not_before && today < assigned.not_before) return "not playable yet";
+  return "";
+}
+
+function cartLabel(number, assigned, today = "") {
   if (!assigned) return `Cart ${number}, empty`;
   const parts = [`Cart ${number}`, assigned.name];
   if (Number.isFinite(assigned.duration)) parts.push(clock(assigned.duration));
+  const skipped = cartSkipped(assigned, today);
+  if (skipped) parts.push(skipped);
   return parts.join(", ");
 }
 
@@ -67,6 +78,9 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   const mode = el("cart-mode");
   const file = el("cart-upload-file");
   const deleteUpload = el("cart-delete-upload");
+  const notBefore = el("cart-not-before");
+  const notAfter = el("cart-not-after");
+  const editError = el("cart-edit-error");
   let data = null;
   let requestEpoch = 0;
   let playEpoch = 0;
@@ -116,8 +130,30 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
     name.value = assigned?.name || "";
     source.value = assigned?.source || "liner";
     mode.value = assigned?.mode || "duck";
+    if (notBefore) notBefore.value = assigned?.not_before || "";
+    if (notAfter) notAfter.value = assigned?.not_after || "";
     fillClips(assigned?.clip || "");
-    for (const field of [name, clip]) field.removeAttribute("aria-invalid");
+    clearEditError();
+  }
+
+  // The error text joins or leaves a field's own description.
+  function linkError(field, linked) {
+    if (!editError) return;
+    const ids = (field.getAttribute("aria-describedby") || "").split(/\s+/)
+      .filter((id) => id && id !== editError.id);
+    if (linked) ids.push(editError.id);
+    if (ids.length) field.setAttribute("aria-describedby", ids.join(" "));
+    else field.removeAttribute("aria-describedby");
+  }
+
+  function unmark(field) {
+    field.removeAttribute("aria-invalid");
+    linkError(field, false);
+  }
+
+  function clearEditError() {
+    for (const field of [name, clip, notBefore, notAfter].filter(Boolean)) unmark(field);
+    if (editError) { editError.textContent = ""; editError.hidden = true; }
   }
 
   function openEditor(number) {
@@ -134,10 +170,10 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
     pageSelect.replaceChildren(...data.wall.pages.map((item, i) => option(i + 1, item.name)));
     pageSelect.value = String(data.wall.active_page);
     current.slots.forEach((assigned, i) => {
-      buttons[i].firstChild.textContent = cartLabel(i + 1, assigned);
+      buttons[i].firstChild.textContent = cartLabel(i + 1, assigned, data.today);
     });
     const number = editing();
-    slotSelect.replaceChildren(...current.slots.map((assigned, i) => option(i + 1, cartLabel(i + 1, assigned))));
+    slotSelect.replaceChildren(...current.slots.map((assigned, i) => option(i + 1, cartLabel(i + 1, assigned, data.today))));
     slotSelect.value = String(number);
     if (resetEditor) {
       pageName.value = current.name;
@@ -203,13 +239,26 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
 
   function invalid(field, message) {
     field.setAttribute("aria-invalid", "true");
+    // A cart editor field is named in the editor too, and linked to it.
+    if (editError && field.closest("section") === editError.closest("section")) {
+      editError.textContent = message;
+      editError.hidden = false;
+      linkError(field, true);
+    }
     say(message, true);
     field.focus();
   }
 
   async function save(button) {
+    clearEditError();
     if (!name.value.trim()) { invalid(name, "Enter a cart name."); return; }
     if (!clip.value) { invalid(clip, "Choose a clip, or upload one first."); return; }
+    const from = notBefore?.value || null;
+    const until = notAfter?.value || null;
+    if (from && until && until < from) {
+      invalid(notAfter, "Do not play after must be on or after the Not before date.");
+      return;
+    }
     const number = editing();
     const pageNumber = data.wall.active_page;
     await withDisabled(button, async () => {
@@ -217,10 +266,13 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
         await requestJson(`/api/carts/pages/${pageNumber}/slots/${number}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: name.value, source: source.value, clip: clip.value, mode: mode.value }),
+          body: JSON.stringify({
+            name: name.value, source: source.value, clip: clip.value, mode: mode.value,
+            ...(from ? { not_before: from } : {}), ...(until ? { not_after: until } : {}),
+          }),
         });
         await refresh(true);
-        say(`Saved. ${cartLabel(number, page()?.slots[number - 1])}.`);
+        say(`Saved. ${cartLabel(number, page()?.slots[number - 1], data?.today)}.`);
       } catch (error) {
         say(`Could not save cart ${number}. ${error.message}`, true);
       }
@@ -334,11 +386,11 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   slotSelect.addEventListener("change", () => loadEditor());
   source.addEventListener("change", () => fillClips(""));
   clip.addEventListener("change", () => {
-    clip.removeAttribute("aria-invalid");
+    unmark(clip);
     deleteUpload.disabled = source.value !== "upload" || !clip.value;
   });
-  for (const field of [name, pageName, file]) {
-    field.addEventListener("input", () => field.removeAttribute("aria-invalid"));
+  for (const field of [name, pageName, file, notBefore, notAfter].filter(Boolean)) {
+    field.addEventListener("input", () => unmark(field));
   }
   el("cart-save").addEventListener("click", (event) => void save(event.currentTarget));
   el("cart-clear").addEventListener("click", (event) => void clearSlot(event.currentTarget));

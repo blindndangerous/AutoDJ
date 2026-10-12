@@ -1986,6 +1986,37 @@ describe("static accessibility contracts", () => {
     }
   });
 
+  it("gives liner and cart play dates native labelled date inputs and visible error text", () => {
+    installDocument({ html: htmlSource });
+    const fields = [
+      ["ln-not-before", "Not before", "ln-dates-desc"],
+      ["ln-not-after", "Do not play after", "ln-dates-desc"],
+      ["cart-not-before", "Not before", "cart-dates-desc"],
+      ["cart-not-after", "Do not play after", "cart-dates-desc"],
+    ];
+    for (const [id, label, desc] of fields) {
+      const input = document.getElementById(id);
+      expect(input.getAttribute("type")).toBe("date");
+      expect(input.hasAttribute("required")).toBe(false);
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+      expect(input.getAttribute("aria-describedby")).toBe(desc);
+      expect(document.getElementById(desc).textContent).toMatch(/Optional|optional/);
+    }
+    // Errors are words on the page, in an element a field can be described by.
+    for (const id of ["ln-dates-error", "cart-edit-error"]) {
+      const error = document.getElementById(id);
+      expect(error.classList.contains("field-error")).toBe(true);
+      expect(error.hidden).toBe(true);
+    }
+    const form = document.getElementById("ln-dates-form");
+    expect(form.hasAttribute("novalidate")).toBe(true);
+    expect(form.querySelector("fieldset > legend").id).toBe("ln-dates-legend");
+    // Date inputs share the 44 px native control height (2.5.8).
+    const rule = stripCssComments(cssSource).match(/([^{}]*)\{[^{}]*min-height:\s*44px[^{}]*\}/g)
+      .find((block) => block.includes('input[type="text"]') && block.includes("padding"));
+    expect(rule).toContain('input[type="date"]');
+  });
+
   it("gives category dayparting labelled native day and time controls", () => {
     installDocument({ html: htmlSource });
     const group = document.querySelector("#categories-daypart");

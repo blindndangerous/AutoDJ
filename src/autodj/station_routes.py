@@ -24,7 +24,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeVar
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, ValidationError, model_validator
@@ -602,6 +602,26 @@ async def _recording_route(
         raise HTTPException(status_code=503, detail="Could not save the recording state") from exc
 
 
+# A liner without play dates, as the liner list shows it.
+_NO_DATES: dict[str, Any] = {
+    "not_before": None,
+    "not_after": None,
+    "dates_text": "",
+    "playable": True,
+    "unplayable_text": "",
+}
+
+
+async def _forget_liner_dates(station: StationRuntime, liner_id: str) -> None:
+    """Drop a deleted liner's play dates, so a new file of that name starts without them."""
+    from autodj.clip_dates import ClipDates
+
+    try:
+        await asyncio.to_thread(station.liner_gate.store.set, liner_id, ClipDates())
+    except OSError:
+        logger.warning("Could not forget the play dates of liner %s", liner_id, exc_info=True)
+
+
 def _liner_names(station: StationRuntime) -> list[str]:
     from autodj.liners import LinerLibrary
 
@@ -1102,10 +1122,21 @@ def install_station_routes(router: StationRouter) -> None:
                         "editable": False,
                     }
                 )
+        # Each liner's play dates, in words, and whether it may play today.
+        from autodj.clip_dates import station_today, station_zone
+
+        today = station_today(cfg)
+        dates = await asyncio.to_thread(station.liner_gate.store.all)
+        for item in items:
+            found = dates.get(item["id"])
+            item.update(found.view(today) if found is not None else _NO_DATES)
         return {
             # Echo the operator's configured string verbatim; only the derived
             # default is rendered from a Path.
             "folder": cfg.playback.liners_folder or str(folder),
+            "today": today.isoformat(),
+            # So a page left open past midnight still knows the station's day.
+            "timezone": station_zone(cfg),
             "files": [f.name for f in lib.files],
             "count": len(lib.files),
             "items": items,
@@ -1172,6 +1203,7 @@ def install_station_routes(router: StationRouter) -> None:
                     raise FileNotFoundError(path.name)
                 path.unlink()
                 await asyncio.to_thread(library.refresh)
+                await _forget_liner_dates(station, name)
             except InvalidLinerName as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             except FileNotFoundError as exc:
@@ -1188,7 +1220,28 @@ def install_station_routes(router: StationRouter) -> None:
             raise HTTPException(status_code=404, detail="Liner not found") from exc
         except OSError as exc:
             raise HTTPException(status_code=500, detail="Unable to delete liner") from exc
+        await _forget_liner_dates(station, name)
         return {"deleted": name}
+
+    @router.put("/liners/dates/{liner_id}", response_model=None)
+    async def api_liner_dates(
+        station: StationDep, liner_id: str, body: dict[str, Any] = Body(...)
+    ) -> dict[str, Any] | JSONResponse:
+        """Set a liner's play dates: "not before" and "do not play after", both optional."""
+        from autodj.clip_dates import ClipDatesError, parse_dates, station_today
+
+        listed = await api_liners(station)
+        item = next((entry for entry in listed["items"] if entry["id"] == liner_id), None)
+        if item is None:
+            raise HTTPException(status_code=404, detail="Liner not found")
+        try:
+            dates = parse_dates(body)
+            await asyncio.to_thread(station.liner_gate.store.set, liner_id, dates)
+        except ClipDatesError as exc:
+            return JSONResponse(
+                status_code=400, content={"detail": exc.message, "field": exc.field}
+            )
+        return {**item, **dates.view(station_today(station.cfg))}
 
     @router.get("/liners/file/{name}")
     async def api_liner_file(station: StationDep, name: str) -> FileResponse:

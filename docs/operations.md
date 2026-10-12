@@ -81,7 +81,8 @@ logs keep plain progress messages.
 In the web page, add, remove and rescan music and voice liner folders in the **Library tools**
 tab. Browse what they hold in **Queue & Search**, after Search: **Browse library** lists all
 music, all voice liners or one registered folder, 100 tracks a page, and **Browse voice liners**
-lists the liner files with Delete and Track info. Track info's Return to Queue & Search button
+lists the liner files with Delete, Track info and Play dates (see
+[Liner and cart play dates](#liner-and-cart-play-dates)). Track info's Return to Queue & Search button
 puts focus back on the button that opened it.
 
 With `[playback] import_external_cues` on (the default), intro and outro markers set in Mixxx,
@@ -1411,6 +1412,7 @@ artists file is `index/<name>/related-artists.toml` and is read only when
   time_checks folder under the active index). Generated TTS cache files are rebuilt when needed.
 - `categories.json`, the rotation categories. Their playlist files are not included; the script
   that writes them can write them again.
+- `liner_dates.json`, the voice liners' play dates.
 - `manifest.json`, which records the AutoDJ version that made the archive and lists its files.
 
 Backups do not include `config.toml` or `config.local.toml`. Copy those yourself
@@ -1542,6 +1544,33 @@ The server keeps the wall in `carts.json` in the active index folder and the upl
 `carts.json.bad-<id>` and an empty wall loads. Backups include the wall and the uploads. Saving
 a profile records the name of the cart page shown, and applying the profile shows that page; a
 profile whose page has been renamed is refused.
+
+A cart can also have play dates; see [Liner and cart play dates](#liner-and-cart-play-dates).
+
+## Liner and cart play dates
+
+A voice liner or a cart can have a **Not before** date, a **Do not play after** date, or both,
+such as a promotion that must stop after the event. Both days are included, and the days are
+read in the station time zone (`[server] station_timezone`). Leave both empty to play the clip
+on any day.
+
+- **Voice liners:** in Queue & Search, **Browse voice liners**, press **Play dates** on a liner.
+  Outside its dates, automatic liners (in the browser and on the server), clockwheel liner steps
+  and scheduled liner events skip it, and a scheduled event's run says why in Recent runs. The
+  liner list says the dates in words, such as "Plays until 26 December 2026", and adds "Skipped
+  now: expired after 26 December 2026". **Test** never picks a skipped liner. A cart that plays
+  the liner still plays it; give the cart its own dates.
+- **Carts:** set the dates in the cart editor. Outside them, pressing the cart, its key or a
+  scheduled Play cart event plays nothing and says why, such as "Cart 3, Promo was skipped: it
+  is expired after 26 December 2026", and the cart button ends with "expired" or "not playable
+  yet".
+
+Liner dates are kept in `liner_dates.json` in the active index folder, by the ID Browse voice
+liners uses (the library ID of a registered liner, or the file name of one in the liner folder),
+and are included in backups. Deleting a liner forgets its dates. Cart dates are kept with the
+cart in `carts.json`. A liner or cart without dates is saved as before, so an older AutoDJ still
+reads both files. Time check voice packs have no dates yet: their files are the hours and
+minutes of a voice rather than clips that run out.
 
 ## Scheduler
 

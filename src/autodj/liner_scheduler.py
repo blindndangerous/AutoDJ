@@ -237,6 +237,7 @@ class LinerScheduler:
         vocal_start: Callable[[IndexEntry], float | None] | None = None,
         registered_liners: Callable[[], list[tuple[str, Path]]] | None = None,
         path_decoder: Callable[[Path], np.ndarray] | None = None,
+        play_dates: Callable[[str], str | None] | None = None,
     ) -> None:
         """Build a scheduler.
 
@@ -256,6 +257,10 @@ class LinerScheduler:
                 browser's ``canPlay`` check, a skipped trigger stays due.
             vocal_start: Seconds into a track's file where its vocal
                 starts, or ``None`` when unknown; talk-ups need it.
+            play_dates: Why the liner with this ID (catalog ID or file
+                name) may not play today, from its play dates, or ``None``.
+                Automatic picks pass over refused liners; :meth:`refusal`
+                tells a scheduled event.  The station may set it later.
         """
         self._cfg = playback_cfg
         self._folder = folder
@@ -267,6 +272,7 @@ class LinerScheduler:
         self._vocal_start = vocal_start
         self._registered_liners = registered_liners
         self._path_decoder = path_decoder or decode_liner_path
+        self.play_dates = play_dates
         self._registered_cursor = 0
         self._prepared: _Prepared | None = None
         # Rendered audio due at this song change instead of an automatic
@@ -350,6 +356,10 @@ class LinerScheduler:
             if match is not None:
                 return (*match, None)
         if name is None and registered:
+            # Automatic picks pass over liners outside their play dates.
+            registered = [(key, path) for key, path in registered if self.refusal(key) is None]
+            if not registered:
+                return None
             with self._state():
                 mode = self._cfg.liners_pick_mode
                 if mode == "sequential":
@@ -364,7 +374,9 @@ class LinerScheduler:
             self._refresh_library()
             with self._state():
                 mode = self._cfg.liners_pick_mode
-                picked = self._library.pick(mode, rng=self._rng)
+                picked = self._library.pick(
+                    mode, rng=self._rng, allowed=lambda path: self.refusal(path.name) is None
+                )
                 rotation = ("folder", len(self._library.files)) if mode == "sequential" else None
             if picked is None:
                 return None
@@ -412,6 +424,16 @@ class LinerScheduler:
             self._registered_cursor = (self._registered_cursor - 1) % size
         elif source == "folder":
             self._library.cursor = (self._library.cursor - 1) % size
+
+    def refusal(self, name: str) -> str | None:
+        """Why liner *name* (catalog ID or file name) may not play now, or ``None``."""
+        if self.play_dates is None:
+            return None
+        try:
+            return self.play_dates(name)
+        except Exception:
+            logger.warning("Could not read the play dates of liner %s", name, exc_info=True)
+            return None
 
     def _registered_entries(self) -> list[tuple[str, Path]]:
         """Return current active catalog liner ids and their paths."""

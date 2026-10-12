@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import random
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -163,6 +164,7 @@ class LinerLibrary:
         mode: str = "random",
         *,
         rng: random.Random | None = None,
+        allowed: Callable[[Path], bool] | None = None,
     ) -> Path | None:
         """Return the next liner path under *mode* rotation.
 
@@ -170,19 +172,26 @@ class LinerLibrary:
             mode: One of ``"random"``, ``"sequential"``.
                 Unknown modes fall back to ``"random"``.
             rng: Inject a deterministic RNG for testing.
+            allowed: Leaves out the clips it refuses, such as expired
+                ones; sequential rotation passes over them.
 
         Returns:
-            Selected path, or ``None`` when the library is empty.
+            Selected path, or ``None`` when the library is empty or every
+            clip is refused.
         """
         if not self.files:
             return None
         r = rng if rng is not None else random
         if mode == "sequential":
-            pick = self.files[self.cursor % len(self.files)]
-            self.cursor = (self.cursor + 1) % len(self.files)
-            return pick
+            for _ in range(len(self.files)):
+                pick = self.files[self.cursor % len(self.files)]
+                self.cursor = (self.cursor + 1) % len(self.files)
+                if allowed is None or allowed(pick):
+                    return pick
+            return None
         # Default: random
-        return r.choice(self.files)
+        choices = self.files if allowed is None else [f for f in self.files if allowed(f)]
+        return r.choice(choices) if choices else None
 
 
 __all__ = [
