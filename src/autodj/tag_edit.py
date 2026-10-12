@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import glob
 import logging
 import os
 import re
@@ -21,6 +22,7 @@ import shutil
 import sqlite3
 import threading
 import time
+import uuid
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
@@ -47,9 +49,15 @@ _REPLACE_WAIT_S = 0.2
 _BEETS_TIMEOUT_S = 5.0
 #: The end of a write's working copy (see :func:`temp_path`).
 TEMP_SUFFIX = ".autodj-tags.tmp"
+# A working copy older than this is a crashed write's, not one in progress.
+_STALE_COPY_S = 3600.0
 
 # One write at a time: two edits of one file must not race their renames.
 _write_lock = threading.Lock()
+
+
+#: Wraps each try of the final rename; see :func:`write_tags`.
+Guard = Callable[[Path], AbstractContextManager[Any]]
 
 
 class TagError(Exception):
@@ -319,20 +327,27 @@ def _verify(tags: Any, family: str, values: TagValues) -> None:
             raise TagError("The tags did not read back as written, so the file was not changed.")
 
 
-def _replace(source: Path, target: Path) -> None:
+def _replace(source: Path, target: Path, guard: Guard | None) -> None:
+    """Rename *source* over *target*, one try at a time inside *guard*.
+
+    Windows refuses to replace a file another reader has open, such as a
+    browser still fetching it; that reader lets go soon, so the rename is
+    tried again.  The guard is entered for each single try and left before
+    the wait, so stations are never held still while it sleeps.
+    """
     for attempt in range(_REPLACE_ATTEMPTS):
-        try:
-            os.replace(source, target)
-            return
-        except PermissionError:
-            # Windows refuses to replace a file another reader has open,
-            # such as a browser still fetching it; that reader lets go soon.
-            if attempt == _REPLACE_ATTEMPTS - 1:
-                raise TagFileBusyError(
-                    "This file is open in another program, so its tags were not changed. "
-                    "Try again in a moment."
-                ) from None
-            time.sleep(_REPLACE_WAIT_S)
+        with guard(target) if guard is not None else contextlib.nullcontext():
+            try:
+                os.replace(source, target)
+                return
+            except PermissionError:
+                pass
+        if attempt == _REPLACE_ATTEMPTS - 1:
+            raise TagFileBusyError(
+                "This file is open in another program, so its tags were not changed. "
+                "Try again in a moment."
+            )
+        time.sleep(_REPLACE_WAIT_S)
 
 
 def _os_message(exc: OSError) -> str:
@@ -347,13 +362,25 @@ def _os_message(exc: OSError) -> str:
 
 
 def temp_path(target: Path) -> Path:
-    """The one working copy a write of *target* uses, beside it.
+    """A new working copy's name for a write of *target*, beside it.
 
-    Fixed per file, so a copy left by a crash is replaced by the next write
-    of that file instead of piling up; not a music suffix, so a library scan
-    never lists it.
+    Unique per write, so two servers sharing one library never write into
+    the same copy; not a music suffix, so a library scan never lists it.
     """
-    return target.with_name(f".{target.name}{TEMP_SUFFIX}")
+    return target.with_name(f".{target.name}.{uuid.uuid4().hex}{TEMP_SUFFIX}")
+
+
+def _sweep(target: Path) -> None:
+    """Remove copies of *target* left by a crashed write.
+
+    Only copies older than :data:`_STALE_COPY_S` go: a younger one may be
+    another server's write in progress.
+    """
+    cutoff = time.time() - _STALE_COPY_S
+    for leftover in target.parent.glob(f".{glob.escape(target.name)}.*{TEMP_SUFFIX}"):
+        with contextlib.suppress(OSError):
+            if leftover.stat().st_mtime < cutoff:
+                leftover.unlink()
 
 
 def inside_roots(path: str | Path, roots: Iterable[str | Path]) -> bool:
@@ -393,13 +420,14 @@ def write_tags(
     values: TagValues,
     *,
     roots: Iterable[str | Path] | None = None,
-    guard: Callable[[Path], AbstractContextManager[Any]] | None = None,
+    guard: Guard | None = None,
 ) -> Path:
     """Write *values* into the file at *path*, or leave it exactly as it was.
 
     The tags are written to a copy beside the file, flushed to disk and read
     back field by field, and the copy then replaces the original in one
-    rename, after which the folder is flushed too.  A reader sees either the
+    rename, after which the folder is flushed too (Windows has no folder
+    flush; there the rename is as durable as the file system makes it).  A reader sees either the
     old file or the new one, never half of each.  An ID3 tag keeps its
     version (2.3 stays 2.3).  The copy keeps the original's permissions and,
     where allowed, its owner; the modification time is the time of the
@@ -411,9 +439,10 @@ def write_tags(
         values: What to write.
         roots: When given, the real path must lie inside one of these
             folders; a link pointing out of them is refused.
-        guard: Called with the real path; the rename runs inside the
-            context it returns, which may raise :class:`TagError` on entry
-            to stop the write (a last check that the file is not on air).
+        guard: Called with the real path for each try of the rename,
+            which runs inside the context it returns; that context may
+            raise :class:`TagError` on entry to stop the write (a last
+            check that the file is not on air).
 
     Returns:
         The real path written.
@@ -435,10 +464,10 @@ def write_tags(
         family = _family(original)
         kind = type(original)
         id3_version = 3 if family == "id3" and original.tags.version[1] == 3 else 4
+        _sweep(target)
         temp = temp_path(target)
         try:
             try:
-                temp.unlink(missing_ok=True)
                 shutil.copy2(target, temp)
                 _keep_owner(target.stat(), temp)
                 audio = _open(temp, kind)
@@ -459,11 +488,15 @@ def write_tags(
                     f"The tags could not be written, so the file was not changed: {exc}"
                 ) from exc
             try:
-                with guard(target) if guard is not None else contextlib.nullcontext():
-                    _replace(temp, target)
-                fsync_directory(target.parent)
+                _replace(temp, target, guard)
             except OSError as exc:
                 raise TagError(_os_message(exc)) from exc
+            # The file is changed now: a failed folder flush (some network
+            # shares refuse it) must not be reported as an unchanged file.
+            try:
+                fsync_directory(target.parent)
+            except OSError:
+                logger.warning("Could not flush the folder of %s", target, exc_info=True)
         finally:
             temp.unlink(missing_ok=True)
     return target
@@ -496,14 +529,17 @@ _BEETS_COLUMNS = {
 }
 
 
-def update_beets(db_path: Path, track_path: str, music_dir: Path | None, values: TagValues) -> bool:
+def update_beets(db_path: Path, track_path: str, music_dir: Path | None, values: TagValues) -> str:
     """Copy the changed fields into the beets item for *track_path*.
 
     Only columns the beets database has are changed, and its ``mtime`` is
-    set to the file's, so ``beet update`` finds nothing new to read.
+    set to the file's, so ``beet update`` finds nothing new to read.  When
+    beets has a column for none of the changed fields, nothing is written,
+    not even ``mtime``, so ``beet update`` still reads the new file.
 
     Returns:
-        ``False`` when beets has no item for this file.
+        ``"updated"``; ``"not_found"`` when beets has no item for this file;
+        ``"unchanged"`` when beets keeps none of the changed fields.
 
     Raises:
         sqlite3.Error: The database could not be written, for example while
@@ -527,10 +563,10 @@ def update_beets(db_path: Path, track_path: str, music_dir: Path | None, values:
             for field in TAG_FIELDS
             if field in values.changed and _BEETS_COLUMNS[field] in present
         }
+        if not fields:
+            return "unchanged"
         if "mtime" in present:
             fields["mtime"] = os.stat(track_path).st_mtime
-        if not fields:
-            return False
         assignments = ", ".join(f'"{column}"=?' for column in fields)
         sql = f"UPDATE items SET {assignments} WHERE path=?"  # nosec B608 -- columns from the fixed map above
         # The catalog keeps paths case-folded on Windows; beets keeps them
@@ -543,8 +579,8 @@ def update_beets(db_path: Path, track_path: str, music_dir: Path | None, values:
             for candidate in candidates:
                 for stored in (candidate.encode("utf-8"), candidate):
                     if conn.execute(sql, (*fields.values(), stored)).rowcount:
-                        return True
-        return False
+                        return "updated"
+        return "not_found"
     finally:
         conn.close()
 
