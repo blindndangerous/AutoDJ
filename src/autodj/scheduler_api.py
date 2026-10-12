@@ -96,6 +96,9 @@ def _builtin_actions(
             raise ValueError("Scheduled liners need server audio or stream mode")
         if bridge.station is not None and bridge.station.state != "playing":
             raise ValueError("The stream must be playing to air a liner")
+        refusal = await asyncio.to_thread(worker.refusal, params["name"])
+        if refusal is not None:
+            raise ValueError(f"Liner {params['name']} was skipped: it is {refusal}")
         try:
             audio = await asyncio.to_thread(worker.decode, params["name"])
         except LinerDecodeError as exc:

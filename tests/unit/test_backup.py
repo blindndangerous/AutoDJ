@@ -404,3 +404,18 @@ def test_categories_are_backed_up_but_their_playlists_are_not(tmp_path: Path) ->
     state.unlink()
     restore_backup(cfg, archive, force=True)
     assert json.loads(state.read_text(encoding="utf-8"))["schema_version"] == 1
+
+
+def test_liner_play_dates_are_backed_up_and_restored(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    state = cfg.index.active_dir / "liner_dates.json"
+    state.write_text(
+        '{"schema_version": 1, "liners": {"promo.mp3": {"not_after": "2026-12-26"}}}',
+        encoding="utf-8",
+    )
+    archive = create_backup(cfg, tmp_path / "dates.zip", force=False)
+    with zipfile.ZipFile(archive) as backup:
+        assert backup.read("index/liner_dates.json") == state.read_bytes()
+    state.unlink()
+    restore_backup(cfg, archive, force=True)
+    assert "promo.mp3" in json.loads(state.read_text(encoding="utf-8"))["liners"]

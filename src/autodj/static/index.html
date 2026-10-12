@@ -1737,6 +1737,28 @@
     <h2 id="browse-liners-heading">Browse voice liners</h2>
     <div id="ln-browse-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     <ul id="ln-file-list" role="list" aria-label="Voice liner files" tabindex="-1"></ul>
+    <!-- Play dates opens this form for one liner (liners.js).  Save and
+         Cancel go back to that liner's Play dates button; a refused date is
+         named in #ln-dates-error, linked to its field and focused. -->
+    <form id="ln-dates-form" novalidate hidden>
+      <fieldset>
+        <legend id="ln-dates-legend">Play dates</legend>
+        <p id="ln-dates-error" class="field-error" hidden></p>
+        <div class="settings-row">
+          <label for="ln-not-before">Not before</label>
+          <input type="date" id="ln-not-before" aria-describedby="ln-dates-desc">
+        </div>
+        <div class="settings-row">
+          <label for="ln-not-after">Do not play after</label>
+          <input type="date" id="ln-not-after" aria-describedby="ln-dates-desc">
+        </div>
+        <span class="setting-desc" id="ln-dates-desc">
+          Optional. Both days are included, in the station time zone. Outside them, automatic liners, clockwheel liner steps and scheduled liner events skip this liner; Test and carts still play it. Leave both empty to play it on any day.
+        </span>
+        <button type="submit" id="ln-dates-save">Save dates</button>
+        <button type="button" id="ln-dates-cancel">Cancel</button>
+      </fieldset>
+    </form>
   </section>
 
   </section>
@@ -1769,6 +1791,8 @@
 
       <section class="card" aria-labelledby="cart-editor-heading">
         <h3 id="cart-editor-heading">Edit a cart</h3>
+        <!-- A refused field is named here, linked to the field and focused. -->
+        <p id="cart-edit-error" class="field-error" hidden></p>
         <div class="settings-row">
           <label for="cart-edit-slot">Cart to edit</label>
           <select id="cart-edit-slot"></select>
@@ -1799,6 +1823,17 @@
         <span class="setting-desc" id="cart-mode-desc">
           Duck lowers the music by the voice liner duck depth. Over leaves the music at full volume.
           Replace fades the music out; the song keeps playing silently and fades back in when the cart ends.
+        </span>
+        <div class="settings-row">
+          <label for="cart-not-before">Not before</label>
+          <input type="date" id="cart-not-before" aria-describedby="cart-dates-desc">
+        </div>
+        <div class="settings-row">
+          <label for="cart-not-after">Do not play after</label>
+          <input type="date" id="cart-not-after" aria-describedby="cart-dates-desc">
+        </div>
+        <span class="setting-desc" id="cart-dates-desc">
+          Optional play dates, both days included, in the station time zone. Outside them the cart is skipped and its button says so. Leave both empty to play it on any day.
         </span>
         <div>
           <button type="button" id="cart-save">Save cart</button>

@@ -1,0 +1,200 @@
+"""Play dates for voice liners and carts: stored, described, and skipped outside them."""
+
+from __future__ import annotations
+
+import json
+import random
+from datetime import date
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+from zoneinfo import ZoneInfo
+
+import numpy as np
+import pytest
+import soundfile as sf
+
+from autodj.clip_dates import (
+    ClipDates,
+    ClipDatesError,
+    LinerDates,
+    LinerGate,
+    parse_dates,
+    station_today,
+)
+from autodj.clockwheel import ClockSlot
+from autodj.liner_scheduler import LinerScheduler
+from autodj.liners import LinerLibrary
+from tests.unit.test_dmca import _player, _with_library
+from tests.unit.test_liner_scheduler import _cfg
+
+CHRISTMAS = ClipDates(not_before=date(2026, 12, 1), not_after=date(2026, 12, 26))
+
+
+def test_dates_are_both_included() -> None:
+    assert CHRISTMAS.refusal(date(2026, 12, 1)) is None
+    assert CHRISTMAS.refusal(date(2026, 12, 26)) is None
+    assert CHRISTMAS.refusal(date(2026, 12, 27)) == "expired after 26 December 2026"
+    assert CHRISTMAS.refusal(date(2026, 11, 30)) == "not playable before 1 December 2026"
+    assert ClipDates().refusal(date(1999, 1, 1)) is None
+
+
+def test_dates_in_words() -> None:
+    assert CHRISTMAS.describe() == "Plays from 1 December 2026 until 26 December 2026"
+    assert ClipDates(not_after=date(2026, 12, 26)).describe() == "Plays until 26 December 2026"
+    assert ClipDates(not_before=date(2026, 12, 1)).describe() == "Plays from 1 December 2026"
+    assert ClipDates().describe() == ""
+    assert CHRISTMAS.view(date(2026, 12, 27)) == {
+        "not_before": "2026-12-01",
+        "not_after": "2026-12-26",
+        "dates_text": "Plays from 1 December 2026 until 26 December 2026",
+        "playable": False,
+        "unplayable_text": "expired after 26 December 2026",
+    }
+
+
+@pytest.mark.parametrize(
+    ("body", "field", "message"),
+    [
+        (
+            {"not_before": "2026-12-26", "not_after": "2026-12-01"},
+            "not_after",
+            "Do not play after must be on or after the Not before date",
+        ),
+        ({"not_after": "26/12/2026"}, "not_after", None),
+        ({"until": "2026-12-26"}, "until", "Unknown field until"),
+    ],
+)
+def test_bad_dates_name_the_field(body: dict, field: str, message: str | None) -> None:
+    with pytest.raises(ClipDatesError) as caught:
+        parse_dates(body)
+    assert caught.value.field == field
+    if message is not None:
+        assert caught.value.message == message
+    else:
+        assert caught.value.message.startswith("Do not play after: ")
+
+
+def test_station_today_reads_the_station_time_zone() -> None:
+    cfg = SimpleNamespace(server=SimpleNamespace(station_timezone="Pacific/Kiritimati"))
+    from datetime import datetime
+
+    assert station_today(cfg) == datetime.now(ZoneInfo("Pacific/Kiritimati")).date()
+
+
+def test_liner_dates_are_saved_shared_and_removed(tmp_path: Path) -> None:
+    path = tmp_path / "liner_dates.json"
+    first, second = LinerDates(path), LinerDates(path)
+    assert first.all() == {}
+    first.set("promo.mp3", CHRISTMAS)
+    # Another instance on the same file sees the change.
+    assert second.get("promo.mp3") == CHRISTMAS
+    assert second.refusal("promo.mp3", date(2027, 1, 1)) == "expired after 26 December 2026"
+    assert second.refusal("other.mp3", date(2027, 1, 1)) is None
+    assert json.loads(path.read_text(encoding="utf-8"))["liners"]["promo.mp3"] == {
+        "not_before": "2026-12-01",
+        "not_after": "2026-12-26",
+    }
+    first.set("promo.mp3", ClipDates())
+    assert second.all() == {}
+
+
+def test_a_bad_liner_dates_file_is_set_aside(tmp_path: Path) -> None:
+    path = tmp_path / "liner_dates.json"
+    path.write_text('{"schema_version": 1, "liners": {"a": {"when": 1}}}', encoding="utf-8")
+    assert LinerDates(path).all() == {}
+    assert len(list(tmp_path.glob("liner_dates.json.bad-*"))) == 1
+    assert not path.exists()
+
+
+def test_liner_gate_passes_every_liner_when_none_has_dates(tmp_path: Path) -> None:
+    entries = (SimpleNamespace(path="/l/a.wav"), SimpleNamespace(path="/l/b.wav"))
+    gate = LinerGate(LinerDates(tmp_path / "d.json"), lambda: date(2027, 1, 1))
+    assert gate.playable(entries) is entries
+    gate.store.set("a.wav", CHRISTMAS)
+    assert gate.playable(entries) == (entries[1],)
+    assert gate.refusal("a.wav") == "expired after 26 December 2026"
+
+
+# -- liner picking ------------------------------------------------------------
+
+
+def _folder(tmp_path: Path) -> Path:
+    for name in ("a.wav", "b.wav", "c.wav"):
+        sf.write(tmp_path / name, np.zeros(441, np.float32), 44100)
+    return tmp_path
+
+
+def test_library_picks_pass_over_refused_clips(tmp_path: Path) -> None:
+    library = LinerLibrary.from_folder(_folder(tmp_path))
+    allowed = lambda path: path.name != "b.wav"  # noqa: E731
+    picks = [library.pick("sequential", allowed=allowed).name for _ in range(4)]
+    assert picks == ["a.wav", "c.wav", "a.wav", "c.wav"]
+    rng = random.Random(3)
+    assert {library.pick("random", rng=rng, allowed=allowed).name for _ in range(20)} == {
+        "a.wav",
+        "c.wav",
+    }
+    assert library.pick("sequential", allowed=lambda _path: False) is None
+    assert library.pick("random", allowed=lambda _path: False) is None
+
+
+def test_automatic_liners_pass_over_expired_ones_but_a_named_one_is_told(tmp_path: Path) -> None:
+    bus = MagicMock()
+    expired = {"b.wav": "expired after 26 December 2026"}
+    scheduler = LinerScheduler(
+        _cfg(), _folder(tmp_path), bus, clock=lambda: 0.0, play_dates=expired.get
+    )
+    assert [scheduler.fire() for _ in range(4)] == ["a.wav", "c.wav", "a.wav", "c.wav"]
+    assert scheduler.refusal("b.wav") == "expired after 26 December 2026"
+    assert scheduler.refusal("a.wav") is None
+
+
+def test_registered_liners_pass_over_expired_ones(tmp_path: Path) -> None:
+    first, second = tmp_path / "one.wav", tmp_path / "two.wav"
+    scheduler = LinerScheduler(
+        _cfg(liners_pick_mode="random"),
+        tmp_path / "flat",
+        MagicMock(),
+        registered_liners=lambda: [("rec-1", first), ("rec-2", second)],
+        path_decoder=lambda _path: np.zeros((100, 2), np.float32),
+        play_dates={"rec-1": "expired after 26 December 2026"}.get,
+    )
+    assert {scheduler.fire() for _ in range(10)} == {"rec-2"}
+    scheduler.play_dates = lambda _name: "expired after 26 December 2026"
+    assert scheduler.fire() is None
+
+
+def test_unreadable_dates_never_stop_the_liners(tmp_path: Path) -> None:
+    def broken(_name: str) -> str | None:
+        raise OSError("disk gone")
+
+    scheduler = LinerScheduler(
+        _cfg(), _folder(tmp_path), MagicMock(), clock=lambda: 0.0, play_dates=broken
+    )
+    assert scheduler.fire() == "a.wav"
+
+
+def test_clockwheel_liner_steps_pass_over_expired_liners(tmp_path: Path) -> None:
+    player = _with_library(_player("clock", dmca=False))
+    liners = tuple(
+        SimpleNamespace(path=f"Z:/Liners/{name}.wav", is_silent=False, length=5.0)
+        for name in ("Old promo", "Station ID")
+    )
+    music = player._sim.entries_snapshot()
+    player._library.entries_snapshot = lambda kind="music": liners if kind == "liner" else music
+    player._clock = {"cursor": 0}
+    player._clock_slots = [
+        ClockSlot(kind="liner", folder="Z:/Liners", selection="random"),
+        ClockSlot(folder="Z:/Music", recursive=True, selection="random"),
+    ]
+    gate = LinerGate(LinerDates(tmp_path / "d.json"), lambda: date(2027, 1, 1))
+    gate.store.set("Old promo.wav", CHRISTMAS)
+    player.liner_filter = gate.playable
+    for _ in range(8):
+        picked = player._clock_pick(player._pick_context(), 0)
+        assert picked.liner.path == "Z:/Liners/Station ID.wav"
+    gate.store.set("Station ID.wav", CHRISTMAS)
+    picked = player._clock_pick(player._pick_context(), 0)
+    assert picked.liner is None
+    assert picked.entry is not None  # the music still plays

@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 afterEach(() => {
@@ -629,5 +632,125 @@ describe("liner settings and upload", () => {
 
     await vi.waitFor(() => expect(fetchImpl.mock.calls
       .some(([url]) => url === "/api/liners/upload?replace=true")).toBe(true));
+  });
+});
+
+
+describe("liner play dates", () => {
+  const json = (body, status = 200) => new globalThis.Response(JSON.stringify(body), {
+    status, headers: { "Content-Type": "application/json" },
+  });
+  const PROMO = {
+    id: "promo.mp3", name: "promo.mp3", kind: "liner", editable: false,
+    not_before: null, not_after: "2026-12-26", dates_text: "Plays until 26 December 2026",
+    playable: false, unplayable_text: "expired after 26 December 2026",
+  };
+  const ID = {
+    id: "id.wav", name: "id.wav", kind: "liner", editable: false,
+    not_before: null, not_after: null, dates_text: "", playable: true, unplayable_text: "",
+  };
+
+  async function install(onPut = () => json({ ...ID, not_after: "2027-01-31", dates_text: "Plays until 31 January 2027" })) {
+    vi.resetModules();
+    const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
+    const template = document.createElement("template");
+    template.innerHTML = html;
+    template.content.querySelectorAll("script, link").forEach((node) => node.remove());
+    document.body.replaceChildren(template.content.cloneNode(true));
+    let items = [PROMO, ID];
+    const fetchImpl = vi.fn((url, options = {}) => {
+      if (url === "/api/liners") return Promise.resolve(json({ config: { duck_db: -12 }, files: ["id.wav", "promo.mp3"], items }));
+      if (url.startsWith("/api/liners/dates/")) {
+        const reply = onPut(JSON.parse(options.body));
+        if (reply.status === 200) items = [PROMO, { ...ID, not_after: "2027-01-31", dates_text: "Plays until 31 January 2027" }];
+        return Promise.resolve(reply);
+      }
+      if (url === "/api/liners/test") return Promise.resolve(json({ played: JSON.parse(options.body).name }));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchImpl);
+    const { installLiners } = await import("../../src/autodj/static/modules/liners.js");
+    const list = document.getElementById("ln-file-list");
+    installLiners({
+      lnFileList: list,
+      lnStatus: document.getElementById("ln-status"),
+      lnBrowseStatus: document.getElementById("ln-browse-status"),
+      lnTestBtn: document.getElementById("ln-test"),
+    }, { canPlay: () => false, prepareTest: () => null, playLiner: vi.fn(), postSettings: vi.fn(), testOnServer: () => true });
+    await vi.waitFor(() => expect(list.querySelectorAll("li")).toHaveLength(2));
+    return { list, fetchImpl, status: document.getElementById("ln-browse-status") };
+  }
+
+  const datesButton = (list, name) => list.querySelector(`button[aria-label="Play dates for ${name}"]`);
+
+  it("says each liner's dates in words and that an expired one is skipped", async () => {
+    const { list } = await install();
+    expect(list.querySelectorAll("li > span")[0].textContent).toBe(
+      "promo.mp3. Plays until 26 December 2026. Skipped now: expired after 26 December 2026");
+    expect(list.querySelectorAll("li > span")[1].textContent).toBe("id.wav");
+    expect(datesButton(list, "id.wav").textContent).toBe("Play dates");
+  });
+
+  it("never picks an expired liner, even for Test", async () => {
+    const { fetchImpl } = await install();
+    const test = document.getElementById("ln-test");
+    for (let press = 0; press < 6; press += 1) {
+      await vi.waitFor(() => expect(test.disabled).toBe(false));
+      test.click();
+      await vi.waitFor(() => expect(fetchImpl.mock.calls.filter(([url]) => url === "/api/liners/test")).toHaveLength(press + 1));
+    }
+    const names = fetchImpl.mock.calls.filter(([url]) => url === "/api/liners/test")
+      .map(([, options]) => JSON.parse(options.body).name);
+    expect(new Set(names)).toEqual(new Set(["id.wav"]));
+  });
+
+  it("edits a liner's dates and returns focus to its Play dates button", async () => {
+    const { list, fetchImpl, status } = await install();
+    datesButton(list, "id.wav").click();
+    const form = document.getElementById("ln-dates-form");
+    expect(form.hidden).toBe(false);
+    expect(document.getElementById("ln-dates-legend").textContent).toBe("Play dates for id.wav");
+    expect(document.activeElement).toBe(document.getElementById("ln-not-before"));
+    document.getElementById("ln-not-after").value = "2027-01-31";
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(form.hidden).toBe(true));
+    const [url, options] = fetchImpl.mock.calls.find(([called]) => called.startsWith("/api/liners/dates/"));
+    expect(url).toBe("/api/liners/dates/id.wav");
+    expect(JSON.parse(options.body)).toEqual({ not_before: null, not_after: "2027-01-31" });
+    expect(document.activeElement).toBe(datesButton(list, "id.wav"));
+    await vi.waitFor(() => expect(status.textContent).toBe("Saved: id.wav. Plays until 31 January 2027."));
+    expect(list.querySelectorAll("li > span")[1].textContent).toBe("id.wav. Plays until 31 January 2027");
+
+    datesButton(list, "promo.mp3").click();
+    expect(document.getElementById("ln-not-after").value).toBe("2026-12-26");
+    document.getElementById("ln-dates-cancel").click();
+    expect(form.hidden).toBe(true);
+    expect(document.activeElement).toBe(datesButton(list, "promo.mp3"));
+  });
+
+  it("names a refused date, links it to the field and keeps the form open", async () => {
+    const { list } = await install(() => json(
+      { detail: "Do not play after: Input should be a valid date", field: "not_after" }, 400));
+    datesButton(list, "id.wav").click();
+    const form = document.getElementById("ln-dates-form");
+    const before = document.getElementById("ln-not-before");
+    const after = document.getElementById("ln-not-after");
+    before.value = "2026-12-26";
+    after.value = "2026-12-01";
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(document.activeElement).toBe(after);
+    expect(after.getAttribute("aria-invalid")).toBe("true");
+    expect(after.getAttribute("aria-describedby")).toBe("ln-dates-desc ln-dates-error");
+    expect(document.getElementById("ln-dates-error").textContent)
+      .toBe("Do not play after must be on or after the Not before date");
+    after.dispatchEvent(new Event("input"));
+    expect(after.getAttribute("aria-describedby")).toBe("ln-dates-desc");
+
+    after.value = "2027-01-01";
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(document.getElementById("ln-dates-error").textContent)
+      .toBe("Do not play after: Input should be a valid date"));
+    expect(document.activeElement).toBe(after);
+    expect(form.hidden).toBe(false);
   });
 });

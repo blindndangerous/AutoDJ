@@ -251,6 +251,12 @@ def test_builtin_actions_report_failures_in_words(
     assert run("discovery", {"state": "on"})["result"] == "ok"
     assert bridge.player._state.discovery_enabled is True
     bridge.liner_scheduler = MagicMock()
+    bridge.liner_scheduler.refusal.return_value = "expired after 1 January 2026"
+    assert run("liner", {"name": "station-id.wav"})["message"] == (
+        "Liner station-id.wav was skipped: it is expired after 1 January 2026"
+    )
+    bridge.liner_scheduler.decode.assert_not_called()
+    bridge.liner_scheduler.refusal.return_value = None
     bridge.liner_scheduler.decode.side_effect = LinerDecodeError("Missing clip")
     assert run("liner", {"name": "station-id.wav"})["message"] == (
         "Liner station-id.wav could not be played"
@@ -351,6 +357,7 @@ def test_scheduled_liner_prepares_before_interrupting(rig, timing) -> None:
     calls = []
     audio = object()
     worker = MagicMock()
+    worker.refusal.return_value = None
     bridge.liner_scheduler = worker
     bridge.skip = MagicMock(side_effect=lambda: calls.append("skip"))
 

@@ -10,6 +10,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Play dates for voice liners and carts: a **Not before** date, a **Do not play after** date, or
+  both, in the station time zone. Outside them, automatic liners, clockwheel liner steps and
+  scheduled liner events skip the liner, and a cart plays nothing and says why. Browse voice
+  liners has a Play dates button on each liner and says each liner's dates in words, with
+  "Skipped now: expired after ..." when it is outside them; cart buttons end with "expired" or
+  "not playable yet". Liner dates are kept in `liner_dates.json` and backed up; cart dates are
+  kept in `carts.json`. Clips without dates are saved as before. The cart editor now shows a
+  refused field's error on the page as well as saying it.
+
 - Groundwork for running several stations on one server (#70). Every control address also answers
   under `/api/stations/default/...`, and the play log, last-played times and active clockwheel are
   kept per station in `library.db`. Existing plays belong to the default station, so nothing

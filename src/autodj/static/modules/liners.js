@@ -59,9 +59,21 @@ function _setStatus(els, msg, { force = false, tone = "info", region = els.lnSta
   announceStatus(region, msg, { dwellMs: tone === "error" ? 6000 : 4000, force, tone });
 }
 
+// One liner in words: its name, its play dates, and why it is skipped now.
+function linerText(liner) {
+  const parts = [liner.name];
+  if (liner.dates_text) parts.push(liner.dates_text);
+  if (liner.playable === false) parts.push(`Skipped now: ${liner.unplayable_text}`);
+  return parts.join(". ");
+}
+
 export function renderLinerFileList(fileList, files, onDelete, onEdit = (path, kind, opener) => {
   fileList.ownerDocument.dispatchEvent(new CustomEvent("autodj:edit-points", {
     detail: { path, kind, opener },
+  }));
+}, onDates = (liner, opener) => {
+  fileList.ownerDocument.dispatchEvent(new CustomEvent("autodj:liner-dates", {
+    detail: { liner, opener },
   }));
 }) {
   if (!fileList) return;
@@ -78,7 +90,12 @@ export function renderLinerFileList(fileList, files, onDelete, onEdit = (path, k
     const buttons = [rowButton(document, "Delete", `Delete ${liner.name}`, (button) =>
       legacyName ? onDelete(liner.id, button) : onDelete(liner.id, button, liner.name))];
     if (liner.path && liner.editable !== false) buttons.push(rowButton(document, "Track info", `Track info for ${liner.name}`, (button) => onEdit(liner.path, "liner", button)));
-    return listRow(document, liner.name, "", ...buttons);
+    if (!legacyName) {
+      const dates = rowButton(document, "Play dates", `Play dates for ${liner.name}`, (button) => onDates(liner, button));
+      dates.dataset.linerDates = liner.id;
+      buttons.push(dates);
+    }
+    return listRow(document, legacyName ? liner.name : linerText(liner), "", ...buttons);
   }));
 }
 
@@ -180,8 +197,9 @@ function _postConfig(els, postSettings, control) {
 }
 
 function _pickLiner() {
+  // A liner outside its play dates is skipped, as the server skips it.
   const items = state.lib.items?.length
-    ? state.lib.items
+    ? state.lib.items.filter((item) => item.playable !== false)
     : (state.lib.files || []).map((name) => ({ id: name, name }));
   if (items.length === 0) return null;
   const mode = (state.lib.config && state.lib.config.pick_mode) || "random";
@@ -258,9 +276,125 @@ async function _testOnServer(els, name) {
   }
 }
 
+// The Play dates form: one liner's "not before" and "do not play after".
+function _installDatesForm(els, doc = document) {
+  const form = doc.getElementById("ln-dates-form");
+  if (!form) return;
+  const legend = doc.getElementById("ln-dates-legend");
+  const errorText = doc.getElementById("ln-dates-error");
+  const notBefore = doc.getElementById("ln-not-before");
+  const notAfter = doc.getElementById("ln-not-after");
+  const fields = { not_before: notBefore, not_after: notAfter };
+  let editing = null;
+  let opener = null;
+  const region = () => els.lnBrowseStatus || els.lnStatus;
+  const say = (message, tone = "info") => _setStatus(els, message, { force: true, tone, region: region() });
+
+  // The error text joins or leaves a field's own description.
+  function linkError(control, linked) {
+    const ids = (control.getAttribute("aria-describedby") || "").split(/\s+/)
+      .filter((id) => id && id !== errorText.id);
+    if (linked) ids.push(errorText.id);
+    control.setAttribute("aria-describedby", ids.join(" "));
+  }
+
+  function clearError() {
+    errorText.hidden = true;
+    errorText.textContent = "";
+    for (const control of Object.values(fields)) {
+      control.removeAttribute("aria-invalid");
+      linkError(control, false);
+    }
+  }
+
+  function showError(field, message) {
+    clearError();
+    const control = fields[field] || notBefore;
+    errorText.textContent = message;
+    errorText.hidden = false;
+    control.setAttribute("aria-invalid", "true");
+    linkError(control, true);
+    control.focus();
+    say(message, "error");
+  }
+
+  function datesButton(id) {
+    return [...els.lnFileList.querySelectorAll("[data-liner-dates]")]
+      .find((button) => button.dataset.linerDates === id) || null;
+  }
+
+  function close(focusId) {
+    form.hidden = true;
+    editing = null;
+    clearError();
+    const back = (focusId && datesButton(focusId)) || (opener?.isConnected ? opener : els.lnFileList);
+    back?.focus();
+  }
+
+  doc.addEventListener("autodj:liner-dates", (event) => {
+    const { liner, opener: from } = event.detail;
+    editing = liner;
+    opener = from;
+    clearError();
+    legend.textContent = `Play dates for ${liner.name}`;
+    notBefore.value = liner.not_before || "";
+    notAfter.value = liner.not_after || "";
+    form.hidden = false;
+    notBefore.focus();
+  });
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!editing) return;
+    clearError();
+    if (notBefore.value && notAfter.value && notAfter.value < notBefore.value) {
+      showError("not_after", "Do not play after must be on or after the Not before date");
+      return;
+    }
+    const liner = editing;
+    const epoch = captureAuthenticatedRequestEpoch();
+    let saved;
+    try {
+      saved = await requestJson(`/api/liners/dates/${encodeURIComponent(liner.id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ not_before: notBefore.value || null, not_after: notAfter.value || null }),
+      });
+    } catch (err) {
+      if (!isAuthenticatedRequestCurrent(epoch)) return;
+      if (err.field && fields[err.field]) showError(err.field, err.message);
+      else say(`Could not save the play dates of ${liner.name}: ${err.message}`, "error");
+      return;
+    }
+    if (!isAuthenticatedRequestCurrent(epoch)) return;
+    try {
+      await _loadLibrary(els, epoch);
+    } catch (err) {
+      dbg("liner refresh failed:", err);
+    }
+    close(liner.id);
+    say(saved.dates_text
+      ? `Saved: ${linerText({ ...saved, name: liner.name })}.`
+      : `Saved: ${liner.name} plays on any day.`);
+  });
+
+  doc.getElementById("ln-dates-cancel")?.addEventListener("click", () => {
+    const id = editing?.id;
+    close(id);
+    say("Cancelled. The play dates did not change.");
+  });
+  for (const control of Object.values(fields)) {
+    control.addEventListener("input", () => {
+      control.removeAttribute("aria-invalid");
+      linkError(control, false);
+    });
+  }
+}
+
 export function installLiners(els, deps) {
   state.lastFireAt = performance.now();
   let scheduledPlayback = null;
+  if (els.lnFileList) _installDatesForm(els, els.lnFileList.ownerDocument);
 
   if (els.lnUploadSubmit) {
     els.lnUploadSubmit.addEventListener("click", async (event) => {

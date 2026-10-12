@@ -354,6 +354,50 @@ describe("cart editor", () => {
     expect(cart(3).textContent).toBe("Cart 3, News ID, 0:03");
   });
 
+  it("saves play dates and says in words when a cart is outside them", async () => {
+    const { server, controls } = await install();
+    server.today = "2026-12-27";
+    server.wall.pages[0].slots[2].not_after = "2026-12-26";
+    server.wall.pages[0].slots[0] = { name: "Advent", source: "liner", clip: "rec-1", mode: "duck", not_before: "2026-12-28" };
+    await controls.refresh();
+    expect(cart(3).textContent).toBe("Cart 3, Station ID, 0:07, expired");
+    expect(cart(1).textContent).toBe("Cart 1, Advent, not playable yet");
+    expect([...byId("cart-edit-slot").options][2].textContent).toBe("Cart 3, Station ID, 0:07, expired");
+
+    byId("cart-edit-slot").value = "3";
+    byId("cart-edit-slot").dispatchEvent(new Event("change"));
+    expect(byId("cart-not-after").value).toBe("2026-12-26");
+    expect(byId("cart-not-before").value).toBe("");
+    byId("cart-not-before").value = "2026-12-01";
+    byId("cart-save").click();
+    await vi.waitFor(() => expect(byId("cart-status").textContent).toBe("Saved. Cart 3, Station ID, 0:03, expired."));
+    expect(server.calls.find((call) => call.method === "PUT" && call.url.includes("/slots/")).body).toEqual({
+      name: "Station ID", source: "liner", clip: "rec-1", mode: "duck",
+      not_before: "2026-12-01", not_after: "2026-12-26",
+    });
+  });
+
+  it("names a backwards date range in the editor and links it to the field", async () => {
+    const { server } = await install();
+    byId("cart-edit-slot").value = "3";
+    byId("cart-edit-slot").dispatchEvent(new Event("change"));
+    const until = byId("cart-not-after");
+    byId("cart-not-before").value = "2026-12-26";
+    until.value = "2026-11-27";
+    byId("cart-save").click();
+    const message = "Do not play after must be on or after the Not before date.";
+    expect(document.activeElement).toBe(until);
+    expect(until.getAttribute("aria-invalid")).toBe("true");
+    expect(until.getAttribute("aria-describedby")).toBe("cart-dates-desc cart-edit-error");
+    expect(byId("cart-edit-error").textContent).toBe(message);
+    expect(byId("cart-edit-error").hidden).toBe(false);
+    await vi.waitFor(() => expect(byId("cart-status").textContent).toBe(message));
+    until.value = "2026-12-31";
+    until.dispatchEvent(new Event("input"));
+    expect(until.getAttribute("aria-describedby")).toBe("cart-dates-desc");
+    expect(server.calls.some((call) => call.method === "PUT")).toBe(false);
+  });
+
   it("clears a cart", async () => {
     const { server } = await install();
     byId("cart-edit-slot").value = "3";

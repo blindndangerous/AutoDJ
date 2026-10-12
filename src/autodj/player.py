@@ -1211,6 +1211,10 @@ class Player:
         ledger = self._ledger
         last_played = ledger.last_played() if ledger is not None else {}
         liners = self._library.entries_snapshot("liner")
+        # Liner steps pass over liners outside their play dates; the step
+        # conditions are still worked out from every liner, so they stay cached.
+        liner_filter = getattr(self, "liner_filter", None)
+        playable_liners = liner_filter(liners) if liner_filter is not None else liners
         categories = self._category_members()
         beets_items: Mapping[str, Mapping[str, Any]] | None = None
         condition_errors = {}
@@ -1269,7 +1273,7 @@ class Player:
                 pool,
                 last_played,
                 allowed,
-                liners=liners,
+                liners=playable_liners,
                 categories=categories,
                 beets=beets_items,
                 condition_errors=condition_errors,

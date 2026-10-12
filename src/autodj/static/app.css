@@ -270,6 +270,8 @@
     input[type="text"],
     input[type="search"],
     input[type="number"],
+    input[type="date"],
+    input[type="time"],
     input[type="file"] {
       padding: 0.4rem 0.6rem;
       color: var(--text);
