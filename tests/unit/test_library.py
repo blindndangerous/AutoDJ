@@ -154,6 +154,132 @@ def test_seeds_legacy_records_and_vectors_without_touching_faiss_generation(tmp_
         manager.close()
 
 
+def test_tick_refreshes_only_for_catalog_content_changes(manager_factory, monkeypatch, tmp_path):
+    manager = manager_factory()
+    other = LibraryCatalog(manager.catalog.path)
+    played = tmp_path / "played.flac"
+    played.write_bytes(b"track")
+    other.put_entry(make_entry(played))
+    manager.refresh()
+    calls = []
+    manager.sim.replace_catalog_index = lambda entries, vectors: calls.append((entries, vectors))
+    monkeypatch.setattr(manager, "schedule_analysis", lambda: None)
+    try:
+        other.set_setting("unrelated", True)
+        other.remember_play(str(played), 42.0)
+        other.write_history(
+            [
+                {
+                    "event_id": "external-play",
+                    "path": str(played),
+                    "title": "Track",
+                    "artist": "Artist",
+                    "duration": 12.0,
+                    "played_at": "2026-01-01T00:00:00+00:00",
+                }
+            ]
+        )
+        manager.tick()
+        assert calls == []
+        assert manager.last_played()[os.path.normcase(str(played))] == 42.0
+
+        song = manager.cfg.library.music_dir / "external.flac"
+        song.write_bytes(b"track")
+        other.put_entry(make_entry(song, title="Before"))
+        manager.tick()
+        assert len(calls) == 1
+        assert manager.entry_for_path(song).title == "Before"
+
+        other.put_entry(make_entry(song, title="After"))
+        manager.tick()
+        assert len(calls) == 2
+        assert manager.entry_for_path(song).title == "After"
+    finally:
+        other.close()
+
+
+@pytest.mark.parametrize(
+    "change", ["vector_add", "vector_update", "vector_delete", "cue", "source"]
+)
+def test_tick_refreshes_for_related_external_catalog_changes(
+    manager_factory, monkeypatch, tmp_path, change
+):
+    manager = manager_factory()
+    other = LibraryCatalog(manager.catalog.path)
+    song = manager.cfg.library.music_dir / "song.flac"
+    song.write_bytes(b"track")
+    other.put_entry(make_entry(song))
+    if change in {"vector_update", "vector_delete"}:
+        other.set_vector(song, np.zeros(FEATURE_DIM, dtype=np.float32))
+    manager.refresh()
+    replaced = []
+    manager.sim.replace_catalog_index = lambda entries, vectors: replaced.append(
+        (tuple(entries), vectors.copy())
+    )
+    monkeypatch.setattr(manager, "schedule_analysis", lambda: None)
+    try:
+        if change in {"vector_add", "vector_update"}:
+            vector = np.ones(FEATURE_DIM, dtype=np.float32)
+            other.set_vector(song, vector)
+        elif change == "vector_delete":
+            other._db().execute(
+                "DELETE FROM catalog_vectors WHERE entry_id=(SELECT id FROM catalog_entries WHERE path=?)",
+                (os.path.normcase(str(song)),),
+            )
+            other._db().commit()
+        elif change == "cue":
+            other.set_points(song, {"intro": 12.0})
+        else:
+            source_id = other.sources("music")[0]["id"]
+            assert other.remove_source(source_id)
+
+        manager.tick()
+        assert len(replaced) == 1
+        if change in {"vector_add", "vector_update"}:
+            assert manager.snapshot()["tracks_indexed"] == 1
+            np.testing.assert_array_equal(replaced[0][1][0], vector)
+        elif change == "vector_delete":
+            assert manager.snapshot()["tracks_indexed"] == 0
+            assert replaced[0][1].shape == (0, FEATURE_DIM)
+        elif change == "cue":
+            assert manager.catalog.points(song)["intro"] == 12.0
+            assert manager.snapshot()["tracks_ready"] == 1
+        else:
+            assert manager.snapshot()["tracks_ready"] == 0
+            assert manager.snapshot()["tracks_indexed"] == 0
+            assert replaced[0][1].shape == (0, FEATURE_DIM)
+    finally:
+        other.close()
+
+
+def test_tick_does_not_miss_change_during_refresh(manager_factory, monkeypatch):
+    manager = manager_factory()
+    other = LibraryCatalog(manager.catalog.path)
+    monkeypatch.setattr(manager, "schedule_analysis", lambda: None)
+    original_snapshot = manager.catalog.entries_snapshot
+    injected = False
+
+    def mutate_after_snapshot(kind="music"):
+        nonlocal injected
+        rows = original_snapshot(kind)
+        if not injected:
+            injected = True
+            song = Path(manager.cfg.library.music_dir) / "during-refresh.flac"
+            song.write_bytes(b"track")
+            other.put_entry(make_entry(song))
+        return rows
+
+    monkeypatch.setattr(manager.catalog, "entries_snapshot", mutate_after_snapshot)
+    try:
+        manager.refresh()
+        assert manager.snapshot()["tracks_ready"] == 0
+        manager.tick()
+        assert manager.snapshot()["tracks_ready"] == 1
+        assert manager.entry_for_path(Path(manager.cfg.library.music_dir) / "during-refresh.flac")
+    finally:
+        other.close()
+
+
 def test_constructor_closes_catalog_when_legacy_vectors_are_invalid(tmp_path, monkeypatch):
     music = tmp_path / "Music"
     music.mkdir()

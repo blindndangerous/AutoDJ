@@ -74,6 +74,32 @@ _SCHEMA = """
         entry_id TEXT PRIMARY KEY REFERENCES catalog_entries(id) ON DELETE CASCADE,
         vector BLOB NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS catalog_revision (id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL);
+    INSERT OR IGNORE INTO catalog_revision VALUES (1, 0);
+    CREATE TRIGGER IF NOT EXISTS catalog_sources_revision_insert AFTER INSERT ON catalog_sources BEGIN
+        UPDATE catalog_revision SET value=value+1 WHERE id=1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS catalog_sources_revision_update AFTER UPDATE ON catalog_sources BEGIN
+        UPDATE catalog_revision SET value=value+1 WHERE id=1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS catalog_sources_revision_delete AFTER DELETE ON catalog_sources BEGIN
+        UPDATE catalog_revision SET value=value+1 WHERE id=1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS catalog_entries_revision_insert AFTER INSERT ON catalog_entries BEGIN
+        UPDATE catalog_revision SET value=value+1 WHERE id=1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS catalog_entries_revision_delete AFTER DELETE ON catalog_entries BEGIN
+        UPDATE catalog_revision SET value=value+1 WHERE id=1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS catalog_vectors_revision_insert AFTER INSERT ON catalog_vectors BEGIN
+        UPDATE catalog_revision SET value=value+1 WHERE id=1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS catalog_vectors_revision_update AFTER UPDATE ON catalog_vectors BEGIN
+        UPDATE catalog_revision SET value=value+1 WHERE id=1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS catalog_vectors_revision_delete AFTER DELETE ON catalog_vectors BEGIN
+        UPDATE catalog_revision SET value=value+1 WHERE id=1;
+    END;
 """
 
 
@@ -139,6 +165,13 @@ class LibraryCatalog:
             have = {row[1] for row in db.execute("PRAGMA table_info(play_history)")}
             if "performances" not in have:
                 db.execute("ALTER TABLE play_history ADD COLUMN performances INTEGER")
+            db.execute(
+                "CREATE TRIGGER IF NOT EXISTS catalog_entries_revision_update "
+                "AFTER UPDATE OF path,kind,allow_outro,title,artist,album,genre,bpm,year,length,"
+                "energy,key,mode,tempo_confidence,embedded_at,size,fingerprint,points,point_sources,"
+                "prepared_path,intro_lift_db,loudness ON catalog_entries BEGIN "
+                "UPDATE catalog_revision SET value=value+1 WHERE id=1; END"
+            )
             db.commit()
         except BaseException:
             db.rollback()
@@ -355,6 +388,12 @@ class LibraryCatalog:
         if self._conn is None:
             raise RuntimeError("catalog is closed")
         return self._conn
+
+    def content_revision(self) -> int:
+        with self._lock:
+            return int(
+                self._db().execute("SELECT value FROM catalog_revision WHERE id=1").fetchone()[0]
+            )
 
     def close(self) -> None:
         with self._lock:

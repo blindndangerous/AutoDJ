@@ -42,7 +42,9 @@ def test_intro_lift_column_migrates_and_persists(tmp_path: Path) -> None:
     with LibraryCatalog(db) as catalog:
         catalog.put_entry(entry(song))
         assert catalog.record_for_path(song)["intro_lift_db"] is None
+        revision = catalog.content_revision()
         catalog.set_intro_lift(song, 3.25)
+        assert catalog.content_revision() > revision
     with LibraryCatalog(db) as catalog:
         assert catalog.record_for_path(song)["intro_lift_db"] == 3.25
 

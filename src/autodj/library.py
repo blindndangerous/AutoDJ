@@ -73,7 +73,7 @@ class LibraryManager:
         self._interrupted_plays: set[str] = set()
         self._pending_settings: dict[str, Any] = {}
         self._last_played: dict[str, float] = {}
-        self._catalog_mtime = 0
+        self._catalog_revision = -1
         self._entries: tuple[IndexEntry, ...] = ()
         self._liner_entries: tuple[IndexEntry, ...] = ()
         self._by_path: dict[str, IndexEntry] = {}
@@ -106,29 +106,25 @@ class LibraryManager:
         self.catalog.seed_vectors(items, matrix)
         self.refresh()
 
-    def _mtime(self) -> int:
-        try:
-            return self.catalog.path.stat().st_mtime_ns
-        except OSError:
-            return 0
-
     def refresh(self) -> tuple[IndexEntry, ...]:
         with self._refresh_lock:
+            revision = self.catalog.content_revision()
             entries = self.catalog.entries_snapshot("music")
             liner_entries = self.catalog.entries_snapshot("liner")
             vector_entries, vectors = self.catalog.vectors_snapshot()
             replace = getattr(self.sim, "replace_catalog_index", None)
             if replace is not None:
                 replace(vector_entries, vectors)
+            last_played = self.catalog.last_played()
             with self._lock:
                 self._entries = entries
                 self._liner_entries = liner_entries
                 self._by_path = {_path(entry.path): entry for entry in (*entries, *liner_entries)}
                 self._tracks_ready = len(entries)
                 self._tracks_indexed = len(vector_entries)
-                self._last_played.update(self.catalog.last_played())
+                self._last_played.update(last_played)
                 self._last_played.update(self._pending_plays)
-                self._catalog_mtime = self._mtime()
+                self._catalog_revision = revision
                 return self._entries
 
     def entries_snapshot(self, kind: str = "music") -> tuple[IndexEntry, ...]:
@@ -231,8 +227,12 @@ class LibraryManager:
         self._flush_plays()
         self._flush_history()
         self._flush_settings()
-        if self._mtime() != self._catalog_mtime:
+        if self.catalog.content_revision() != self._catalog_revision:
             self.refresh()
+        last_played = self.catalog.last_played()
+        with self._lock:
+            self._last_played.update(last_played)
+            self._last_played.update(self._pending_plays)
         self.schedule_analysis()
 
     def snapshot(self) -> dict:

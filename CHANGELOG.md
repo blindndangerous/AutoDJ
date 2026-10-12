@@ -183,6 +183,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The ReplayGain target loudness setting shows again when ReplayGain is chosen; it was always hidden.
 - A setting with two descriptions now hides both when it does not apply, not just the first.
 
+- Library catalog writes for play history, last-played times and settings no longer rebuild the
+  similarity index. Changes to tracks, vectors and library folders still refresh it across processes.
+
 ### Changed
 
 - The included Stereo Tool preset recovers more slowly after drum hits, keeping snare tails
