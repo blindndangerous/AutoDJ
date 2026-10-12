@@ -458,6 +458,7 @@
     <button type="button" role="tab" id="stab-schedule" data-subview="schedule" data-panel="spanel-schedule" aria-selected="false" tabindex="-1">Schedule</button>
     <button type="button" role="tab" id="stab-stream" data-subview="stream" data-panel="spanel-stream" aria-selected="false" tabindex="-1" hidden>Stream</button>
     <button type="button" role="tab" id="stab-access" data-subview="access" data-panel="spanel-access" aria-selected="false" tabindex="-1">Profiles and access</button>
+    <button type="button" role="tab" id="stab-workers" data-subview="workers" data-panel="spanel-workers" aria-selected="false" tabindex="-1">Analysis workers</button>
   </div>
 
   <div class="card" role="tabpanel" id="spanel-transitions" aria-labelledby="stab-transitions" hidden>
@@ -1608,6 +1609,50 @@
         <button type="button" id="pair-refresh">Refresh code</button>
       </div>
     </div>
+  </div>
+
+  <div class="card" role="tabpanel" id="spanel-workers" aria-labelledby="stab-workers" hidden>
+    <h3>Analysis workers</h3>
+    <!-- analysis-workers.js loads this panel when it is seen and refreshes
+         the workers every ten seconds while it stays seen; only Refresh
+         workers and the token buttons speak, through #workers-status. -->
+    <p class="card-desc">
+      A computer with a graphics card can analyse new songs for this server far faster than the server can.  Create a token below, then run <code>autodj worker</code> on that computer with this server's address and the token.  The worker downloads each song from this server, so it needs no copy of the music.  While a worker is connected, this server pauses its own analysis.
+    </p>
+    <div id="workers-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+    <h4 id="workers-heading">Workers</h4>
+    <p id="workers-queue">Loading…</p>
+    <ul id="workers-list" aria-labelledby="workers-heading"></ul>
+    <button type="button" id="workers-refresh">Refresh workers</button>
+
+    <h4>Worker tokens</h4>
+    <fieldset>
+      <legend>Create a token</legend>
+      <div class="settings-row">
+        <label for="token-name">Token name</label>
+        <input type="text" id="token-name" maxlength="64" autocomplete="off"
+               aria-describedby="token-name-desc">
+        <button type="button" id="token-create">Create token</button>
+      </div>
+      <span class="setting-desc" id="token-name-desc">
+        Name the computer that will use it, such as Alienware.  A worker token can only analyse songs: it cannot play, change settings or read anything else.
+      </span>
+    </fieldset>
+    <!-- The token is shown once.  Creating it moves focus here and
+         #workers-status says it will not be shown again. -->
+    <div id="token-new" hidden>
+      <label for="token-secret">New token for <span id="token-new-name"></span></label>
+      <input type="text" id="token-secret" readonly autocomplete="off" spellcheck="false"
+             aria-describedby="token-secret-warning">
+      <button type="button" id="token-copy">Copy token</button>
+      <button type="button" id="token-done">Done</button>
+      <p id="token-secret-warning" class="setting-desc">
+        This token is shown only now and cannot be shown again.  Copy it before you leave this page.  If it is lost, revoke it and create another.
+      </p>
+    </div>
+    <h5 id="token-list-heading">Tokens</h5>
+    <p id="token-list-empty">No tokens yet.</p>
+    <ul id="token-list" aria-labelledby="token-list-heading"></ul>
   </div>
 
   </section>

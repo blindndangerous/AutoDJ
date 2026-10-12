@@ -39,6 +39,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 
+from autodj.machine_tokens import KNOWN_SCOPES
 from autodj.secret_files import paired_devices_path
 
 if TYPE_CHECKING:
@@ -47,6 +48,7 @@ if TYPE_CHECKING:
     from autodj.doctor import DoctorReport
     from autodj.indexer import IndexEntry
     from autodj.library import LibraryManager
+    from autodj.machine_tokens import MachineTokenStore
     from autodj.pairing import DeviceRegistry
     from autodj.similarity import SimilarityIndex
 
@@ -700,6 +702,94 @@ def cmd_devices_reset(ctx: click.Context) -> None:
     click.echo(f"Revoked {registry.reset()} paired browser(s).")
 
 
+@cli.group("tokens")
+def tokens_group() -> None:
+    """List, create and revoke machine tokens, such as analysis worker tokens.
+
+    The same tokens as Settings, Analysis workers, for a server without a
+    browser at hand (for example through `docker exec`).
+    """
+
+
+def _token_store(ctx: click.Context) -> tuple[AutoDJConfig, MachineTokenStore]:
+    from autodj.machine_tokens import MachineTokenStore
+    from autodj.secret_files import machine_tokens_path
+
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    return cfg, MachineTokenStore(machine_tokens_path(cfg))
+
+
+@tokens_group.command("list")
+@click.pass_context
+def cmd_tokens_list(ctx: click.Context) -> None:
+    """List active machine tokens (never their secrets)."""
+    from datetime import datetime
+
+    _cfg, store = _token_store(ctx)
+    tokens = store.list_tokens()
+    if not tokens:
+        click.echo("No machine tokens.")
+        return
+
+    def when(seconds: int | None) -> str:
+        if seconds is None:
+            return "never"
+        return datetime.fromtimestamp(seconds).strftime("%Y-%m-%d %H:%M")
+
+    for token in tokens:
+        click.echo(
+            f"{token.token_id}  {token.name}  scopes: {', '.join(token.scopes)}  "
+            f"created {when(token.created_at)}  last used {when(token.last_used_at)}"
+        )
+
+
+@tokens_group.command("create")
+@click.argument("name")
+@click.option(
+    "--scope",
+    "scopes",
+    multiple=True,
+    required=True,
+    type=click.Choice(sorted(KNOWN_SCOPES)),
+    help="What the token may do; give it once per scope.",
+)
+@click.pass_context
+def cmd_tokens_create(ctx: click.Context, name: str, scopes: tuple[str, ...]) -> None:
+    """Create a token NAME and print it once."""
+    _cfg, store = _token_store(ctx)
+    try:
+        token, secret = store.create(name, scopes)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    # stdout carries only the token, for scripts; the rest goes to stderr.
+    click.echo(secret)
+    click.echo(
+        f"Created token {token.token_id} for {token.name} ({', '.join(token.scopes)}).  "
+        "This token is shown only now and cannot be shown again: copy it now.",
+        err=True,
+    )
+
+
+@tokens_group.command("revoke")
+@click.argument("token_id")
+@click.pass_context
+def cmd_tokens_revoke(ctx: click.Context, token_id: str) -> None:
+    """Revoke one token at once; a worker using it stops at its next request."""
+    from autodj.analysis_queue import AnalysisQueue
+
+    cfg, store = _token_store(ctx)
+    if not store.revoke(token_id):
+        raise click.ClickException("Active machine token was not found.")
+    library_db = cfg.index.active_dir / "library.db"
+    if library_db.is_file():
+        queue = AnalysisQueue(library_db)
+        try:
+            queue.forget_worker(token_id)
+        finally:
+            queue.close()
+    click.echo(f"Revoked token {token_id}.")
+
+
 def _server_with_saved_token(cfg: AutoDJConfig) -> ServerConfig:
     """Return ``cfg.server``, using the token ``serve --lan`` saved when none is configured.
 
@@ -1134,6 +1224,152 @@ def cmd_analyse_library(ctx: click.Context, index_name: str | None) -> None:
         click.echo(f"[AutoDJ] Advanced analysis embedded {completed} tracks.")
     except Exception as exc:
         raise click.ClickException(f"Library analysis failed: {exc}") from exc
+
+
+@cli.command("worker")
+@click.option(
+    "--server",
+    required=True,
+    help="Address of the AutoDJ server, such as https://nas.local:8765.",
+)
+@click.option(
+    "--token",
+    required=True,
+    envvar="AUTODJ_WORKER_TOKEN",
+    help=(
+        "Machine token from the server's Settings, Analysis workers.  Or set "
+        "AUTODJ_WORKER_TOKEN, which keeps it out of the shell history."
+    ),
+)
+@click.option("--once", is_flag=True, help="Stop when the server has nothing left to analyse.")
+@click.option(
+    "--batch",
+    default=4,
+    show_default=True,
+    type=click.IntRange(1, 16),
+    help="Songs to claim at a time.",
+)
+@click.option(
+    "--device",
+    type=click.Choice(["auto", "cuda", "cpu"]),
+    default="auto",
+    show_default=True,
+    help="Where the model runs: the GPU when PyTorch sees one (auto), or force one.",
+)
+@click.option(
+    "--ca-cert",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="PEM certificate to trust for the server, for a self-signed certificate.",
+)
+@click.option(
+    "--before-command",
+    default=None,
+    help=(
+        "Program to run once before the model is loaded, such as "
+        "'podman stop qwen3-tts' to free the GPU.  Run without a shell."
+    ),
+)
+@click.option(
+    "--after-command",
+    default=None,
+    help=(
+        "Program to run when the worker stops, after Ctrl+C or an error too, such as "
+        "'podman start qwen3-tts'.  Run without a shell."
+    ),
+)
+@click.pass_context
+def cmd_worker(
+    ctx: click.Context,
+    server: str,
+    token: str,
+    once: bool,
+    batch: int,
+    device: str,
+    ca_cert: Path | None,
+    before_command: str | None,
+    after_command: str | None,
+) -> None:
+    """Analyse new songs for an AutoDJ server, on this machine's GPU.
+
+    Claims songs from the server, downloads their audio, analyses them exactly
+    as `autodj index` would and sends the results back.  The server's music
+    folder is never read directly.  Ctrl+C stops after the current song.
+
+    
+    Examples:
+      autodj worker --server https://nas.local:8765 --token adj1.…
+      autodj worker --server https://nas.local:8765 --once \
+        --before-command "podman stop qwen3-tts" --after-command "podman start qwen3-tts"
+    """
+    import signal
+    import threading
+
+    from autodj.indexer import TrackAnalysis, analyse_file, analysis_identity
+    from autodj.model import ModelLoadError, MuqWrapper
+    from autodj.worker import (
+        HttpTransport,
+        ServerApi,
+        Worker,
+        WorkerError,
+        choose_device,
+        release_gpu,
+        run_hook,
+    )
+
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    stop = threading.Event()
+
+    def interrupted(_signum: int, _frame: object) -> None:
+        stop.set()
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+        console.print(
+            "[yellow]Stopping after the current song.  Press Ctrl+C again to quit now.[/]"
+        )
+
+    try:
+        api = ServerApi(HttpTransport(server, token, ca_cert=ca_cert))
+        chosen = choose_device(device)
+    except WorkerError as exc:
+        raise click.ClickException(str(exc)) from exc
+    from autodj.compute import device_description
+
+    label = device_description(chosen)
+    identity = analysis_identity(cfg.model.name, None)
+    wrapper: MuqWrapper | None = None
+
+    def analyse(path: Path) -> TrackAnalysis:
+        assert wrapper is not None  # loaded before the worker runs
+        return analyse_file(path, wrapper)
+
+    worker = Worker(api, analyse, identity, batch=batch, once=once, device=label, stop=stop)
+    previous = signal.signal(signal.SIGINT, interrupted)
+    try:
+        # The token, the model and its weights are checked before anything is
+        # stopped or loaded.
+        server_identity = worker.connect()
+        from autodj.model import download_model_if_needed, load_model
+        from autodj.model_identity import folder_commit
+
+        model_path = download_model_if_needed(cfg.model, cfg.index, hf_token=cfg.huggingface.token)
+        worker.identity = analysis_identity(cfg.model.name, folder_commit(model_path))
+        worker.check_identity(server_identity)
+        run_hook(before_command, "Before-command")
+        try:
+            console.print(f"Analysing on {escape(label)}.")
+            wrapper = load_model(model_path, device=chosen)
+            worker.run()
+        finally:
+            if wrapper is not None:
+                release_gpu(wrapper)
+                wrapper = None
+            run_hook(after_command, "After-command")
+    except (WorkerError, ModelLoadError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    except KeyboardInterrupt:
+        console.print("[yellow]Worker stopped.[/]")
+    finally:
+        signal.signal(signal.SIGINT, previous)
 
 
 @cli.command("analyse")

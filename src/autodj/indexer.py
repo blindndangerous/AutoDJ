@@ -635,6 +635,91 @@ def _extract_librosa_features(
     return features, audio, sr, extra_meta
 
 
+#: Names how a song's vector is made: MuQ mean-pooled over 30-second chunks
+#: at 24 kHz, then the 16 librosa features, each part and the whole
+#: L2-normalized.  A change to any of that changes this, and the server then
+#: refuses results from workers still running the old code.
+ANALYSIS_VERSION = "muq-mean-30s-24k+librosa16/1"
+
+
+def analysis_identity(model_name: str, model_commit: str | None) -> dict[str, object]:
+    """What a remote analysis result must have been made with to be accepted here.
+
+    Args:
+        model_name: ``[model] name``, the HuggingFace model id.
+        model_commit: The weights in use, from
+            :func:`autodj.model_identity.local_model_commit`: the snapshot
+            commit, or a digest of the files.  ``None`` when this machine has
+            no copy of the model.
+
+    Returns:
+        The model, its weights, :data:`ANALYSIS_VERSION` and the vector size.
+    """
+    return {
+        "model": model_name,
+        "model_commit": model_commit,
+        "analysis_version": ANALYSIS_VERSION,
+        "dimension": FEATURE_DIM,
+    }
+
+
+@dataclass(frozen=True)
+class TrackAnalysis:
+    """One song's advanced analysis: its search vector and the measured fields.
+
+    ``bpm`` is librosa's estimate, used only when the song has no BPM tag.
+    """
+
+    vector: np.ndarray
+    energy: float
+    key: int
+    mode: int
+    bpm: float
+    tempo_confidence: float
+
+    def metadata(self) -> dict[str, float | int]:
+        """The measured fields, as :func:`_apply_analysis_metadata` takes them."""
+        return {
+            "energy": self.energy,
+            "key": self.key,
+            "mode": self.mode,
+            "bpm": self.bpm,
+            "tempo_confidence": self.tempo_confidence,
+        }
+
+
+def finish_analysis(
+    wrapper: MuqWrapper, features: tuple[np.ndarray, np.ndarray, int, dict]
+) -> TrackAnalysis:
+    """Embed a decoded song and combine it with its librosa features.
+
+    *features* is what :func:`_extract_librosa_features` returned for the
+    song.  ``autodj index``, the server's analysis job and ``autodj
+    worker`` all finish every song here, so their vectors are the same.
+
+    Raises:
+        ValueError: The vector is not finite (a silent or corrupt file).
+    """
+    librosa_vec, audio, sr, extra_meta = features
+    embedding_vec = wrapper.embed_array(audio, sample_rate=sr)
+    combined = _combine_features(embedding_vec, librosa_vec)
+    if not np.isfinite(combined).all():
+        raise ValueError("embedding contains NaN or Inf — track may be silent or corrupted")
+    return TrackAnalysis(
+        vector=combined,
+        energy=float(extra_meta["energy"]),
+        key=int(extra_meta["key"]),
+        mode=int(extra_meta["mode"]),
+        bpm=float(extra_meta["bpm"]),
+        tempo_confidence=float(extra_meta["tempo_confidence"]),
+    )
+
+
+def analyse_file(path: Path, wrapper: MuqWrapper) -> TrackAnalysis:
+    """Decode one audio file and analyse it the way ``autodj index`` does."""
+    return finish_analysis(wrapper, _extract_librosa_features(path))
+
+
 def _combine_features(
     embedding_vec: np.ndarray,
     librosa_vec: np.ndarray,
@@ -1604,8 +1689,14 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
     checkpoint: Callable[[list[IndexEntry], list[np.ndarray]], None],
     throttle_ms: float,
     report: Any,
+    gate: Callable[[Track], bool | None] | None = None,
 ) -> tuple[list[IndexEntry], list[np.ndarray]]:
-    """Embed *new_tracks*, decoding the next ones on a prefetch pool meanwhile."""
+    """Embed *new_tracks*, decoding the next ones on a prefetch pool meanwhile.
+
+    *gate*, when given, is asked before each track is decoded: ``True``
+    analyses it, ``False`` skips it, and ``None`` stops taking tracks (those
+    already decoding still finish).
+    """
     new_entries: list[IndexEntry] = []
     new_vectors: list[np.ndarray] = []
 
@@ -1621,8 +1712,19 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
 
     with ThreadPoolExecutor(max_workers=prefetch) as pool:
 
+        def _next_track() -> Track | None:
+            nonlocal track_iter
+            for t in track_iter:
+                decision = True if gate is None else gate(t)
+                if decision is None:
+                    track_iter = iter(())
+                    return None
+                if decision:
+                    return t
+            return None
+
         def _submit_next() -> None:
-            t = next(track_iter, None)
+            t = _next_track()
             if t is None:
                 return
             if throttle_s:
@@ -1648,17 +1750,11 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
                 _submit_next()
                 done += 1
                 try:
-                    librosa_vec, audio, sr, extra_meta = future.result()
-                    embedding_vec = wrapper.embed_array(audio, sample_rate=sr)
-                    combined = _combine_features(embedding_vec, librosa_vec)
-                    if not np.isfinite(combined).all():
-                        raise ValueError(
-                            "embedding contains NaN or Inf — track may be silent or corrupted"
-                        )
+                    analysis = finish_analysis(wrapper, future.result())
                     entry = IndexEntry.from_track(
                         track, embedded_at=mtime, size=size, fingerprint=fingerprint
                     )
-                    _apply_analysis_metadata(entry, extra_meta)
+                    _apply_analysis_metadata(entry, analysis.metadata())
 
                     from autodj.beets import parse_initial_key as _parse_key
 
@@ -1667,7 +1763,7 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
                         if parsed is not None:
                             entry.key, entry.mode = parsed
                     new_entries.append(entry)
-                    new_vectors.append(combined)
+                    new_vectors.append(analysis.vector)
                 except Exception as exc:
                     logger.warning("Could not index %s, skipped: %s", track.path, exc)
                     report.skip(track.path, exc)
