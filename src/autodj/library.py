@@ -659,8 +659,12 @@ class LibraryManager:
                     with self._lock:
                         self._state["done"] += 1
             self.refresh()
-            self._set_state(phase="measuring loudness", done=0, total=len(found), current="")
-            for kind, path in found:
+            # Only Smooth and Stereo Tool use the stored measurement (and
+            # measure a track themselves when it has none).
+            measure = self.cfg.playback.loudness_processing in {"smooth", "stereotool"}
+            if measure:
+                self._set_state(phase="measuring loudness", done=0, total=len(found), current="")
+            for kind, path in found if measure else ():
                 if self._stop.is_set():
                     break
                 self._set_state(current=str(path))

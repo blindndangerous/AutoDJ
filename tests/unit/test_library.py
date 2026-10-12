@@ -6,7 +6,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from autodj.catalog import LibraryCatalog
+from autodj.catalog import LibraryCatalog, _path
 from autodj.config import (
     AutoDJConfig,
     HuggingFaceConfig,
@@ -51,14 +51,22 @@ class Similarity:
         return True
 
 
-def make_config(root: Path, *, music: Path | None = None, liners: Path | None = None):
+def make_config(
+    root: Path,
+    *,
+    music: Path | None = None,
+    liners: Path | None = None,
+    processing: str | None = None,
+):
     music = root / "Music" if music is None else music
     music.mkdir(parents=True, exist_ok=True)
     index = root / "index" / "default"
     return AutoDJConfig(
         library=LibraryConfig(music_dir=music, supported_formats=["flac"]),
         index=IndexConfig(index_dir=index.parent, model_dir=root / "models"),
-        playback=PlaybackConfig(liners_folder=str(liners) if liners else None),
+        playback=PlaybackConfig(
+            liners_folder=str(liners) if liners else None, loudness_processing=processing
+        ),
         model=ModelConfig(),
         huggingface=HuggingFaceConfig(),
         config_path=root / "config.toml",
@@ -193,7 +201,7 @@ def test_scan_imports_recursive_music_and_liners_and_reuses_loudness(manager_fac
     song, liner = nested / "song.flac", liner_dir / "liner.wav"
     song.write_bytes(b"music")
     liner.write_bytes(b"voice")
-    manager = manager_factory(music=music, liners=liner_dir)
+    manager = manager_factory(music=music, liners=liner_dir, processing="smooth")
     analyze = patch("autodj.library.analyze_basic", side_effect=fake_basic)
     loudness = patch("autodj.library.analyze_loudness", side_effect=fake_loudness)
     with analyze as analyzed, loudness as measured:
@@ -311,7 +319,7 @@ def test_basic_entry_is_playable_while_loudness_runs_and_analysis_can_start(
     music.mkdir()
     song = music / "song.flac"
     song.write_bytes(b"music")
-    manager = manager_factory(music=music)
+    manager = manager_factory(music=music, processing="stereotool")
     entered = threading.Event()
     release = threading.Event()
     captured = {}
@@ -1018,3 +1026,41 @@ def test_scan_drops_deleted_tracks_but_not_an_unmounted_share(manager_factory, t
         "kept.flac",
         "remote.flac",
     }
+
+
+@pytest.mark.parametrize("processing", [None, "off", "replaygain"])
+def test_scan_measures_loudness_only_for_smooth_and_stereo_tool(
+    manager_factory, tmp_path, processing
+):
+    music = tmp_path / "Music"
+    music.mkdir()
+    (music / "song.flac").write_bytes(b"music")
+    manager = manager_factory(music=music, processing=processing)
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic) as analyzed,
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness) as measured,
+    ):
+        manager.scan()
+    assert analyzed.call_count == 1
+    measured.assert_not_called()
+    state = manager.snapshot()["import"]
+    assert (state["phase"], state["done"], state["total"]) == ("complete", 1, 1)
+
+
+def test_publishing_scanned_tracks_does_not_scan_the_library(manager_factory, tmp_path):
+    music = tmp_path / "Music"
+    music.mkdir()
+    manager = manager_factory(music=music)
+    for number in range(3):
+        song = music / f"{number}.flac"
+        song.write_bytes(song.name.encode())
+        manager.catalog.put_entry(make_entry(song))
+    manager.refresh()
+    first = Path(manager.entries_snapshot()[0].path)
+    with patch("autodj.library._path", wraps=_path) as norm:
+        manager._publish_entry(make_entry(first, title="Retagged"), "music")
+        manager._publish_entry(make_entry(music / "new.flac"), "music")
+    assert norm.call_count == 2  # one per published track, none per library entry
+    assert [entry.title for entry in manager.entries_snapshot()] == ["Retagged", "1", "2", "new"]
+    assert manager.entry_for_path(music / "new.flac").title == "new"
+    assert manager.snapshot()["tracks_ready"] == 4
