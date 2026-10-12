@@ -635,3 +635,66 @@ def test_a_switch_saved_while_dates_are_saved_keeps_both(tmp_path: Path) -> None
     saved = json.loads(checks.state_path.read_text(encoding="utf-8"))
     assert saved["settings"]["hour_format"] == "24"
     assert saved["pack_dates"] == {"Studio": {"not_after": "2026-12-26"}}
+
+
+def test_a_time_checks_file_unreadable_at_start_is_never_saved_over(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import date
+
+    from autodj import time_checks
+    from autodj.clip_dates import ClipDates
+
+    pack = _write_pack(tmp_path / "Studio", [3], [5])
+    checks = _pack_checks(tmp_path, pack)
+    checks.save_pack_dates("Studio", ClipDates(not_after=date(2026, 12, 26)))
+    before = checks.state_path.read_text(encoding="utf-8")
+    real_read = Path.read_text
+
+    def busy(path: Path, *args: object, **kwargs: object) -> str:
+        if path == checks.state_path:
+            raise PermissionError(13, "Permission denied")
+        return real_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", busy)
+    monkeypatch.setattr(time_checks, "load_settings", lambda cfg, paths=None: _settings())
+    started = _pack_checks(tmp_path, pack)
+    assert started.pack_dates == {}
+    with pytest.raises(time_checks.TimeChecksUnreadable, match="nothing was saved"):
+        started.save(_settings(hour_format="24"))
+    with pytest.raises(time_checks.TimeChecksUnreadable):
+        started.save_pack_dates("Studio", ClipDates())
+    monkeypatch.setattr(Path, "read_text", real_read)
+    assert checks.state_path.read_text(encoding="utf-8") == before
+    # Readable again: the save starts from the file, so the dates stay.
+    started.save(_settings(hour_format="24"))
+    saved = json.loads(checks.state_path.read_text(encoding="utf-8"))
+    assert saved["pack_dates"] == {"Studio": {"not_after": "2026-12-26"}}
+    assert saved["settings"]["hour_format"] == "24"
+
+
+def test_a_save_keeps_what_another_process_wrote_and_sets_a_damaged_file_aside(
+    tmp_path: Path,
+) -> None:
+    from datetime import date
+
+    from autodj.clip_dates import ClipDates
+
+    pack = _write_pack(tmp_path / "Studio", [3], [5])
+    checks = _pack_checks(tmp_path, pack)
+    checks.save(_settings(enabled_packs=["Studio"]))
+    # Another AutoDJ (or an editor) adds dates and a key of its own.
+    state = json.loads(checks.state_path.read_text(encoding="utf-8"))
+    state["pack_dates"] = {"Night": {"not_before": "2026-12-01"}}
+    state["newer"] = True
+    checks.state_path.write_text(json.dumps(state), encoding="utf-8")
+    checks.save(_settings(hour_format="24"))
+    saved = json.loads(checks.state_path.read_text(encoding="utf-8"))
+    assert saved["pack_dates"] == {"Night": {"not_before": "2026-12-01"}}
+    assert saved["newer"] is True
+    checks.state_path.write_text("{not json", encoding="utf-8")
+    checks.save_pack_dates("Studio", ClipDates(not_after=date(2026, 12, 26)))
+    [bad] = list(checks.state_path.parent.glob("time_checks.json.bad-*"))
+    assert bad.read_text(encoding="utf-8") == "{not json"
+    saved = json.loads(checks.state_path.read_text(encoding="utf-8"))
+    assert saved["pack_dates"]["Studio"] == {"not_after": "2026-12-26"}

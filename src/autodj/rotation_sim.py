@@ -876,7 +876,8 @@ def _simulate(
         player._seed_clock_cursor = None
         player._seed_clock_name = None
         try:
-            context = player._pick_context()
+            # A first song starts as it is picked, as the live start pick does.
+            context = player._pick_context(at=now)
             entry = player._random_start_entry()
         except Exception:
             return None

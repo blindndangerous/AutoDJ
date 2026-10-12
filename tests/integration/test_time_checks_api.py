@@ -296,3 +296,28 @@ def test_a_voice_pack_that_cannot_say_the_minute_keeps_the_song_on_a_hard_event(
     assert ran["message"] == "No voice pack, recorded clip or working TTS command for this minute"
     bridge.skip.assert_not_called()
     bridge.liner_scheduler.play_audio.assert_not_called()
+
+
+def test_settings_are_refused_in_words_while_the_file_cannot_be_read(
+    bridge, tmp_path, monkeypatch
+) -> None:
+    from autodj import time_checks
+
+    bridge.player._cfg.index.active_dir = tmp_path
+    bridge.player._cfg.index.index_dir = tmp_path
+    client = TestClient(create_app(bridge))
+
+    def unreadable(_path: object) -> None:
+        raise time_checks.TimeChecksUnreadable("The time checks file could not be read just now")
+
+    monkeypatch.setattr(time_checks, "_read_state", unreadable)
+    body = {
+        "enabled": True,
+        "hour_format": "24",
+        "rule": "off",
+        "enabled_packs": [],
+        "pack_order": "rotate",
+    }
+    refused = client.put("/api/time-checks", json=body)
+    assert refused.status_code == 503
+    assert "could not be read just now" in refused.json()["detail"]

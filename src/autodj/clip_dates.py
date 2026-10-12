@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from autodj.fsutil import atomic_write
+from autodj.fsutil import atomic_write, confirm_missing
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
@@ -164,6 +164,10 @@ class LinerDates:
         self._lock = threading.Lock()
         self._stamp: tuple[int, int, int] | None = None
         self._dates: dict[str, ClipDates] = {}
+        # Whether this store has ever seen its file.  Until it has, a folder
+        # that is not there yet is made on the first save; after, a missing
+        # folder means the disk or share is away, and saves are refused.
+        self._seen = False
 
     def _stat(self) -> tuple[int, int, int] | None:
         """The file's time, size and ID; ``None`` when there is no file.
@@ -175,7 +179,9 @@ class LinerDates:
         # same size written within one tick of the clock is still noticed.
         try:
             found = self.path.stat()
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
+            # Only when its folder is there: a dropped share also says "not found".
+            confirm_missing(self.path, exc)
             return None
         return found.st_mtime_ns, found.st_size, found.st_ino
 
@@ -200,6 +206,8 @@ class LinerDates:
             OSError: The file could not be looked at or read.
         """
         stamp = self._stat()
+        if stamp is not None:
+            self._seen = True
         if stamp == self._stamp:
             return dict(self._dates)
         dates: dict[str, ClipDates] = {}
@@ -241,6 +249,7 @@ class LinerDates:
         # Read, change and write under one lock, so two saves at once (two
         # requests, or a save and a delete) never lose each other's change.
         with self._lock:
+            self._first_folder_locked()
             current = self._load_locked()
             if dates.empty:
                 if liner_id not in current:
@@ -253,7 +262,25 @@ class LinerDates:
             document = _LinerDatesFile(schema_version=SCHEMA_VERSION, liners=current)
             self.path.parent.mkdir(parents=True, exist_ok=True)
             atomic_write(self.path, document.model_dump_json(indent=2) + "\n")
-            self._stamp, self._dates = self._stat(), current
+            self._written_locked(current)
+
+    def _first_folder_locked(self) -> None:
+        """Make the folder for a store that has never had a file.  Caller holds ``_lock``."""
+        if not self._seen and not self.path.parent.exists():
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _written_locked(self, dates: dict[str, ClipDates]) -> None:
+        """Remember *dates*, just written.  Caller holds ``_lock``.
+
+        The write is done, so a file that cannot be looked at just after it
+        is not a failed save: the dates are read again next time.
+        """
+        self._seen = True
+        try:
+            stamp = self._stat()
+        except OSError:
+            stamp = None
+        self._stamp, self._dates = stamp, dates
 
     def refusal(self, liner_id: str, today: Date) -> str | None:
         """Why *liner_id* may not play on *today*, or ``None`` when it may."""
@@ -268,6 +295,7 @@ class LinerDates:
             OSError: The file could not be read, so nothing is written.
         """
         with self._lock:
+            self._first_folder_locked()
             current = self._load_locked()
             gone = sorted({liner_id for liner_id in liner_ids if liner_id in current})
             if not gone:
@@ -276,7 +304,7 @@ class LinerDates:
                 del current[liner_id]
             document = _LinerDatesFile(schema_version=SCHEMA_VERSION, liners=current)
             atomic_write(self.path, document.model_dump_json(indent=2) + "\n")
-            self._stamp, self._dates = self._stat(), current
+            self._written_locked(current)
         return gone
 
 

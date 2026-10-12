@@ -16,7 +16,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   speak; a test of that pack still plays it. Each pack's description says its dates and when it
   is skipped now. The dates are kept in `time_checks.json` under `pack_dates`, only when a pack
   has some, so an older AutoDJ still reads the file. Keys this version does not know and dates
-  it cannot read are kept as written, and a switch saved while dates are saved keeps both.
+  it cannot read are kept as written, each save reads the file again first, a file that cannot
+  be read refuses saves rather than lose what it holds, and a switch saved while dates are saved
+  keeps both.
 
 - A rotation tester (#125): Settings > Song picking > **Test rotation**, or
   `autodj simulate --days 7`, plays a span of time (up to 30 days) or a number of songs (up to
@@ -348,8 +350,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   under a free name starts without dates, so a new file no longer inherits an old one's (#140).
   A scan that could not read a folder marks no track gone and forgets nothing, a liner folder
   that cannot be listed keeps its dates, and so does a library ID no longer in the library. A
-  `liner_dates.json` that cannot be read just now is no longer set aside as damaged; saves are
-  refused until it can be read.
+  `liner_dates.json` that cannot be read just now, or whose folder is away, is no longer set aside
+  or written over; saves are refused until it can be read, a new upload waits rather than take
+  an old liner's dates, and a delete says when the dates could not be forgotten. An empty liner
+  folder forgets dates only after two scans in a row, names compare without case on Windows, and
+  a file listed but not reachable is not marked gone.
 - Liner play dates are judged by the day the liner airs: a talk-up planned before midnight for a
   song after it, and a clockwheel liner step for the next song. **Test** on the server refuses a
   liner outside its dates and says why (#140).

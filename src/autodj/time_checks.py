@@ -37,6 +37,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr, field_validator
 
 from autodj.clip_dates import ClipDates, ClipDatesError, parse_dates
+from autodj.fsutil import confirm_missing
 from autodj.liner_scheduler import LinerDecodeError, decode_liner_path
 from autodj.scheduler import Action
 from autodj.station_routes import StationDep, StationRouter
@@ -192,6 +193,10 @@ class PackDatesState:
     dates: dict[str, ClipDates] = field(default_factory=dict)
     unread: dict[str, Any] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
+    #: The file could not be read just now: saves are refused until it can.
+    unreadable: bool = False
+    #: The file is not valid JSON: it is set aside before the next save.
+    damaged: bool = False
 
 
 def read_pack_dates(cfg: AutoDJConfig, paths: StationPaths | None = None) -> PackDatesState:
@@ -206,13 +211,50 @@ def read_pack_dates(cfg: AutoDJConfig, paths: StationPaths | None = None) -> Pac
     """
     path = state_path(cfg, paths)
     try:
-        state = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return PackDatesState()
-    except (OSError, ValueError) as exc:
+        return pack_dates_from(_read_state(path), path)
+    except FileNotFoundError as exc:
+        if not path.parent.exists():
+            # A station folder not made yet: nothing saved, and the first
+            # save makes it.  (A share away at start looks the same; its
+            # file is not written over, as the save makes a folder of its own
+            # or fails.)
+            return PackDatesState()
         logger.warning("Time checks: could not read the voice pack dates in %s: %s", path, exc)
-        return PackDatesState()
+        return PackDatesState(unreadable=True)
+    except OSError as exc:
+        logger.warning("Time checks: could not read the voice pack dates in %s: %s", path, exc)
+        return PackDatesState(unreadable=True)
+    except ValueError as exc:
+        logger.warning("Time checks: the voice pack dates in %s are not valid: %s", path, exc)
+        return PackDatesState(damaged=True)
+
+
+class TimeChecksUnreadable(OSError):
+    """``time_checks.json`` could not be read just now, so nothing was saved over it."""
+
+
+def _read_state(path: Path) -> dict[str, Any] | None:
+    """``time_checks.json`` as read, or ``None`` when there is none.
+
+    Raises:
+        OSError: It could not be read, or its folder is away (a dropped
+            share also says "not found"; see :func:`confirm_missing`).
+        ValueError: It is not a JSON object.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        confirm_missing(path, exc)
+        return None
+    state = json.loads(text)
     if not isinstance(state, dict):
+        raise ValueError("time_checks.json is not a JSON object")
+    return state
+
+
+def pack_dates_from(state: dict[str, Any] | None, path: Path) -> PackDatesState:
+    """The voice pack dates and kept keys of a read ``time_checks.json`` (see above)."""
+    if state is None:
         return PackDatesState()
     found = PackDatesState(extra={key: state[key] for key in state if key not in _STATE_KEYS})
     for key in sorted(found.extra):
@@ -299,6 +341,14 @@ class TimeChecks:
         # finished write, so a switch saved while dates are saved (or the
         # other way round) never writes over the other.
         self._save_lock = threading.Lock()
+        # Whether the file has been seen (read at start, or written since):
+        # until then a folder that is not there yet is made on the first save.
+        self._seen = self.state_path.exists() or kept.unreadable
+        if kept.unreadable:
+            logger.warning(
+                "Time checks: %s could not be read; settings are not saved until it can",
+                self.state_path,
+            )
         self.packs = pack_folders(cfg)
         self._joined = JoinCache()
         self._rotation = 0
@@ -310,8 +360,14 @@ class TimeChecks:
         self._warned_unavailable = False
 
     def save(self, settings: SettingsBody) -> None:
-        """Write operator switches atomically; clips and commands remain in TOML."""
+        """Write operator switches atomically; clips and commands remain in TOML.
+
+        Raises:
+            TimeChecksUnreadable: The file could not be read; nothing was saved.
+        """
         with self._save_lock:
+            self._first_folder_locked()
+            self._reread_locked()
             with self._lock:
                 pack_dates = dict(self.pack_dates)
                 unread = dict(self._unread_pack_dates)
@@ -322,10 +378,16 @@ class TimeChecks:
                     self._pending = False
 
     def save_pack_dates(self, name: str, dates: ClipDates) -> None:
-        """Save voice pack *name*'s play dates; empty dates remove them."""
+        """Save voice pack *name*'s play dates; empty dates remove them.
+
+        Raises:
+            TimeChecksUnreadable: The file could not be read; nothing was saved.
+        """
         with self._save_lock:
+            self._first_folder_locked()
+            settings = self._reread_locked()
             with self._lock:
-                settings = self.settings
+                settings = settings or self.settings
                 changed = dict(self.pack_dates)
                 unread = dict(self._unread_pack_dates)
             # New dates replace any that could not be read.
@@ -336,8 +398,66 @@ class TimeChecks:
                 changed[name] = dates
             self._write(settings, changed, unread)
             with self._lock:
+                self.settings = settings
                 self.pack_dates = changed
                 self._unread_pack_dates = unread
+
+    def _reread_locked(self) -> SettingsBody | None:
+        """Read ``time_checks.json`` again before a save; its switches, if valid.
+
+        Another process (a second AutoDJ, an editor) may have changed it, so
+        a save starts from what is on disk: its pack dates and the keys this
+        version does not know are kept.  A file that is not valid JSON is
+        set aside as ``time_checks.json.bad-<id>`` first.  Caller holds
+        ``_save_lock``.
+
+        Raises:
+            TimeChecksUnreadable: The file could not be read; nothing is saved.
+        """
+        try:
+            state = _read_state(self.state_path)
+        except OSError as exc:
+            raise TimeChecksUnreadable(
+                f"The time checks file could not be read just now ({exc}); nothing was saved"
+            ) from exc
+        except ValueError as exc:
+            # Set aside, and saved again from what this process last read.
+            self._keep_bad_copy(str(exc).splitlines()[0])
+            return None
+        kept = pack_dates_from(state, self.state_path)
+        settings = None
+        if state is not None and isinstance(state.get("settings"), dict):
+            try:
+                settings = SettingsBody.model_validate(
+                    {**self.settings.model_dump(), **state["settings"]}
+                )
+            except ValueError:
+                settings = None
+        with self._lock:
+            self.pack_dates = kept.dates
+            self._unread_pack_dates = kept.unread
+            self._extra_state = kept.extra
+        return settings
+
+    def _first_folder_locked(self) -> None:
+        """Make the state folder before the first save ever.  Caller holds ``_save_lock``."""
+        if not self._seen and not self.state_path.parent.exists():
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _keep_bad_copy(self, reason: str) -> None:
+        """Set a damaged ``time_checks.json`` aside as ``time_checks.json.bad-<id>``."""
+        bad = self.state_path.with_name(f"{self.state_path.name}.bad-{secrets.token_hex(4)}")
+        try:
+            os.replace(self.state_path, bad)
+        except OSError:
+            logger.exception("Could not set aside the damaged %s", self.state_path)
+            raise
+        logger.error(
+            "Time checks file %s is not valid (%s); set it aside as %s",
+            self.state_path,
+            reason,
+            bad,
+        )
 
     def _write(
         self,
@@ -379,6 +499,7 @@ class TimeChecks:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp, self.state_path)
+        self._seen = True
 
     def pack_refusal(self, name: str, today: date) -> str | None:
         """Why voice pack *name* may not speak on the station's *today*, or ``None``."""
@@ -661,7 +782,10 @@ def install_time_checks(router: StationRouter) -> None:
         checks = station.time_checks
         for name in body.enabled_packs:
             _known_pack(checks, name)
-        await asyncio.to_thread(checks.save, body)
+        try:
+            await asyncio.to_thread(checks.save, body)
+        except TimeChecksUnreadable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         return await asyncio.to_thread(checks.status)
 
     @router.put("/time-checks/packs/{name}/dates", response_model=None)
@@ -677,7 +801,10 @@ def install_time_checks(router: StationRouter) -> None:
             return JSONResponse(
                 status_code=400, content={"detail": exc.message, "field": exc.field}
             )
-        await asyncio.to_thread(checks.save_pack_dates, name, dates)
+        try:
+            await asyncio.to_thread(checks.save_pack_dates, name, dates)
+        except TimeChecksUnreadable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         return await asyncio.to_thread(checks.status)
 
     @router.post("/time-checks/test")

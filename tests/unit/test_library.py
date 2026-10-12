@@ -1546,3 +1546,51 @@ def test_a_folder_the_scan_cannot_read_marks_nothing_gone_and_skips_the_tidy_up(
         manager.scan()
     assert manager.is_gone(deleted)
     assert tidied == [True, True]
+
+
+def test_a_file_listed_but_not_resolvable_is_not_marked_gone(manager_factory, tmp_path):
+    music = tmp_path / "Music"
+    music.mkdir()
+    flapping = music / "flapping.flac"
+    flapping.write_bytes(b"x")
+    (music / "kept.flac").write_bytes(b"y")
+    manager = manager_factory(music=music)
+    tidied = []
+    manager.on_scan_done = lambda: tidied.append(True)
+    real_resolve = Path.resolve
+
+    def flap(self: Path, strict: bool = False) -> Path:
+        if self.name == "flapping.flac" and strict:
+            raise OSError(64, "The specified network name is no longer available")
+        return real_resolve(self, strict=strict)
+
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+    ):
+        manager.scan()
+        with patch.object(Path, "resolve", flap), patch("os.path.isfile", return_value=False):
+            manager.scan()
+    assert not manager.is_gone(flapping)
+    assert tidied == [True, True]
+
+
+def test_a_scan_that_fails_part_way_runs_no_tidy_up(manager_factory, tmp_path):
+    music = tmp_path / "Music"
+    music.mkdir()
+    (music / "one.flac").write_bytes(b"one")
+    manager = manager_factory(music=music)
+    tidied = []
+    manager.on_scan_done = lambda: tidied.append(True)
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("catalog locked")
+
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+        patch.object(manager, "_reconcile_moves", broken),
+        pytest.raises(RuntimeError),
+    ):
+        manager.scan()
+    assert tidied == []
