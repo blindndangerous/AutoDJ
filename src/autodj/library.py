@@ -632,6 +632,14 @@ class LibraryManager:
                     found.setdefault(normalized, (source["kind"], path))
         return list(found.values())
 
+    def _max_analysis_seconds(self) -> float:
+        """Longest track the scan analyses: the playout limit, ``server_max_track_minutes``.
+
+        Server playout refuses longer tracks, and analysing one holds it in
+        memory several times over, so the scan refuses it too.
+        """
+        return float(self.cfg.playback.server_max_track_minutes) * 60.0
+
     def _same_identity(self, record: dict[str, Any], path: Path) -> bool:
         size, fingerprint = file_fingerprint(path)
         return bool(
@@ -766,7 +774,9 @@ class LibraryManager:
                         and 0 <= old_start < old_end <= old["length"]
                     )
                     if valid_existing_points and needs_liner_segue and old is not None:
-                        _, liner_points = analyze_basic(path, kind="liner")
+                        _, liner_points = analyze_basic(
+                            path, kind="liner", max_seconds=self._max_analysis_seconds()
+                        )
                         segue = liner_points.get("segue")
                         if segue is not None:
                             segue = min(max(segue, cast(float, old_start)), cast(float, old_end))
@@ -774,7 +784,9 @@ class LibraryManager:
                     elif valid_existing_points:
                         pass
                     else:
-                        fresh, points = analyze_basic(path, kind=kind)
+                        fresh, points = analyze_basic(
+                            path, kind=kind, max_seconds=self._max_analysis_seconds()
+                        )
                         fresh = self._basic_entry(fresh, old, path)
                         suggestions = self._legacy_point_suggestions(path)
                         for name, value in suggestions.items():
