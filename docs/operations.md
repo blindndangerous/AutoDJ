@@ -1757,6 +1757,29 @@ says so once and the clockwheel moves on to its next step. When no step of a clo
 category steps has a song to play, the station plays a song from the whole library, as the other
 pick modes do when they cannot pick, rather than going silent; the clockwheel keeps its place.
 
+**Dayparting.** Under **When the songs may play**, a category can allow its songs only on chosen
+days, only between two times (**Allowed from** and **Allowed until**), or both, such as Friday and
+Saturday from 22:00 until 02:00. Leave every day unchecked for every day and both times empty for
+all day. The times are wall-clock times in the station time zone (`[server] station_timezone`);
+the start time is included and the end time is not. A window that crosses midnight belongs to the
+day it starts, so Friday 22:00 until 02:00 still allows the songs at 01:00 on Saturday. On the
+night the clocks go back, a window inside the repeated hour is open for both passes; on the night
+they go forward, one inside the skipped hour does not open.
+
+Outside its days and hours, a category's songs are left out of every pick mode: similar songs,
+discovery, random, least recently played and every clockwheel step, and a clockwheel step for
+that category is skipped with "outside its hours" in the clockwheel status and the server log. A
+song in several categories plays only while every one of them allows it. Relaxing the repeat rules
+or the DMCA limits never brings such a song back. When nothing else at all can play, the station
+plays one anyway rather than going silent, and the server log says so. A song you queue yourself
+plays at any time. The list says each category's days and hours in words and when it is outside
+them now. The hours are checked when a song is picked, which in server audio and stream modes
+can be a few minutes before it plays.
+
+For dayparting single songs, make a category from a beets query on a field you set, such as
+`beet modify daypart=night` and the query `daypart:night`, and give it the hours. Categories that
+have no days or hours are saved as before, so an older AutoDJ still reads the file.
+
 The categories are kept in `categories.json` in the active index folder, written atomically and
 included in `autodj backup`; a damaged file is set aside as `categories.json.bad-<id>` and the
 station starts with no categories. The playlist files are not backed up: they come from a script

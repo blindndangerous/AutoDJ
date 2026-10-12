@@ -331,6 +331,7 @@ def pick_slot(
     beets: Mapping[str, Mapping[str, Any]] | None = None,
     condition_errors: Mapping[int, str] | None = None,
     condition_cache: ConditionPaths | None = None,
+    closed_categories: Mapping[str, str] | None = None,
 ) -> ClockPick:
     """Scan one clock cycle and select its next eligible music entry.
 
@@ -341,6 +342,8 @@ def pick_slot(
     ``categories`` maps a category ID to its name and the paths of its
     songs; a category slot picks from the entries with those paths, and
     one whose category is missing or empty is skipped like an empty folder.
+    ``closed_categories`` maps the ID of a category outside its allowed
+    days and hours to the reason, and its step is skipped the same way.
     ``condition_cache``, built from these *slots* and the entries the
     pools were drawn from, saves working out a conditions step again.
     Nothing is written to playback history by this pure selection helper.
@@ -419,6 +422,10 @@ def pick_slot(
                 skipped.append(f"category step {slot.category}: the category no longer exists")
                 continue
             name, members = found
+            closed = (closed_categories or {}).get(slot.category)
+            if closed:
+                skipped.append(f"category {name}: {closed}")
+                continue
             if not members:
                 skipped.append(f"category {name}: the category has no songs")
                 continue

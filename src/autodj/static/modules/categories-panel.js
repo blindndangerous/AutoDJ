@@ -9,7 +9,8 @@
 // Focus: Add and Edit move it to Name; Save moves it to the saved
 // category's Edit button, Cancel back to the button that opened the form,
 // and Delete to the next category (or Add category).  A refused field gets
-// aria-invalid and focus, and the words stay visible in the form.
+// aria-invalid, the error text as part of its description, and focus; the
+// words stay visible in the form.
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
@@ -17,7 +18,11 @@ import { announceStatus } from "./live-region.js";
 const JSON_HEADERS = { "Content-Type": "application/json" };
 const POLL_MS = 15000;
 const EXAMPLES_SHOWN = 5;
-const FIELD_IDS = { name: "categories-name", query: "categories-query", playlist: "categories-playlist", source: "categories-source-query" };
+const FIELD_IDS = {
+  name: "categories-name", query: "categories-query", playlist: "categories-playlist", source: "categories-source-query",
+  days: "categories-day-0", hours_from: "categories-hours-from", hours_until: "categories-hours-until",
+};
+const DAY_IDS = [0, 1, 2, 3, 4, 5, 6].map((day) => `categories-day-${day}`);
 
 const number = (n) => Number(n || 0).toLocaleString("en-US");
 const plural = (n, one, many) => `${number(n)} ${n === 1 ? one : many}`;
@@ -37,6 +42,10 @@ export function countsText(counts) {
 export function describeCategory(category) {
   const source = category.source === "m3u" ? `playlist ${category.playlist}` : `query ${category.query}`;
   const sentences = [`${category.name}: ${countsText(category)}.`, `From ${source}.`];
+  // Dayparting, in words; "outside its hours now" is said, not only shown.
+  if (category.daypart_text) {
+    sentences.push(`${category.daypart_text}.${category.allowed_now === false ? " Outside its hours now." : ""}`);
+  }
   const examples = (category.missing_examples || []).slice(0, EXAMPLES_SHOWN);
   if (category.missing && examples.length) {
     const more = category.missing - examples.length;
@@ -154,8 +163,23 @@ export function installCategoriesPanel({ document: doc = document, request = req
     el("categories-playlist-field")?.toggleAttribute("hidden", kind !== "m3u");
   }
 
+  // The error text joins or leaves a control's own description.
+  function linkError(control, linked) {
+    if (!control || !errorText) return;
+    const ids = (control.getAttribute("aria-describedby") || "").split(/\s+/)
+      .filter((id) => id && id !== errorText.id);
+    if (linked) ids.push(errorText.id);
+    if (ids.length) control.setAttribute("aria-describedby", ids.join(" "));
+    else control.removeAttribute("aria-describedby");
+  }
+
+  function unmark(control) {
+    control?.removeAttribute("aria-invalid");
+    linkError(control, false);
+  }
+
   function clearErrors() {
-    for (const id of Object.values(FIELD_IDS)) el(id)?.removeAttribute("aria-invalid");
+    for (const id of new Set([...Object.values(FIELD_IDS), ...DAY_IDS])) unmark(el(id));
     if (errorText) { errorText.textContent = ""; errorText.hidden = true; }
   }
 
@@ -167,7 +191,10 @@ export function installCategoriesPanel({ document: doc = document, request = req
       else if (field === "query") el("categories-source-query").checked = true;
       showSource();
     }
-    target?.setAttribute("aria-invalid", "true");
+    for (const control of field === "days" ? DAY_IDS.map(el) : [target]) {
+      control?.setAttribute("aria-invalid", "true");
+      linkError(control, true);
+    }
     if (errorText) { errorText.textContent = message; errorText.hidden = false; }
     target?.focus();
     say(message, true);
@@ -175,12 +202,20 @@ export function installCategoriesPanel({ document: doc = document, request = req
 
   function body() {
     const kind = source();
-    return {
+    const value = {
       name: nameInput.value.trim(),
       source: kind,
       query: kind === "query" ? queryInput.value.trim() : "",
       playlist: kind === "m3u" ? playlistSelect.value : "",
     };
+    // Sent only when set: none means every day, all day.
+    const days = DAY_IDS.map(el).filter((box) => box?.checked).map((box) => Number(box.value));
+    if (days.length) value.days = days;
+    const from = el("categories-hours-from")?.value;
+    const until = el("categories-hours-until")?.value;
+    if (from) value.hours_from = from;
+    if (until) value.hours_until = until;
+    return value;
   }
 
   // Checks in the page what the server would refuse first; true when fine.
@@ -194,6 +229,14 @@ export function installCategoriesPanel({ document: doc = document, request = req
       showError("playlist", `Put an M3U or M3U8 file in ${data.playlists_folder || "the playlists folder"} first.`);
       return false;
     }
+    if (Boolean(value.hours_from) !== Boolean(value.hours_until)) {
+      showError(value.hours_from ? "hours_until" : "hours_from", "Enter both Allowed from and Allowed until, or leave both empty.");
+      return false;
+    }
+    if (value.hours_from && value.hours_from === value.hours_until) {
+      showError("hours_until", "Allowed until must differ from Allowed from.");
+      return false;
+    }
     return true;
   }
 
@@ -203,6 +246,14 @@ export function installCategoriesPanel({ document: doc = document, request = req
     clearErrors();
     nameInput.value = category?.name || "";
     queryInput.value = category?.query || "";
+    for (const id of DAY_IDS) {
+      const box = el(id);
+      if (box) box.checked = Boolean(category?.days?.includes(Number(box.value)));
+    }
+    for (const [id, key] of [["categories-hours-from", "hours_from"], ["categories-hours-until", "hours_until"]]) {
+      const input = el(id);
+      if (input) input.value = category?.[key]?.slice(0, 5) || "";
+    }
     el(category?.source === "m3u" ? "categories-source-m3u" : "categories-source-query").checked = true;
     renderPlaylists();
     if (category?.playlist) playlistSelect.value = category.playlist;
@@ -318,9 +369,11 @@ export function installCategoriesPanel({ document: doc = document, request = req
       match.textContent = "Not checked yet.";
     });
   }
-  for (const field of [nameInput, queryInput, playlistSelect]) {
-    field.addEventListener("input", () => field.removeAttribute("aria-invalid"));
+  for (const field of [nameInput, queryInput, playlistSelect, el("categories-hours-from"), el("categories-hours-until")]) {
+    field?.addEventListener("input", () => unmark(field));
   }
+  // The days are marked as one group, so changing any one clears them all.
+  for (const id of DAY_IDS) el(id)?.addEventListener("input", () => DAY_IDS.forEach((day) => unmark(el(day))));
 
   // ---- Loading and polling ---------------------------------------------
   async function refresh() {

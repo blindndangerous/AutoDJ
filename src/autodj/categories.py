@@ -22,10 +22,17 @@ A year filter reads beets' first-release year (``original_year``), falling
 back to ``year`` when beets has none; songs with neither are left out, and
 the songs that used the fallback are counted so Settings and ``autodj
 doctor`` can say how many.
+
+A category may have allowed hours and days (dayparting): outside them its
+songs are not picked in any pick mode, and a clockwheel step for it is
+skipped.  The hours are wall-clock times in the station time zone; a
+window that crosses midnight belongs to the day it starts.  A song in
+several categories plays only while every one of them allows it.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sqlite3
@@ -34,6 +41,8 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from datetime import time as Time
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
@@ -41,6 +50,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StrictInt,
     StringConstraints,
     ValidationError,
     field_validator,
@@ -112,6 +122,11 @@ class CategorySpec(BaseModel):
     source: Literal["query", "m3u"]
     query: str = Field(default="", max_length=500)
     playlist: str = Field(default="", max_length=1024)
+    # Dayparting: the weekdays (0 is Monday) and the hours the songs may
+    # play.  No days means every day; no hours means all day.
+    days: list[StrictInt] = Field(default_factory=list, max_length=7)
+    hours_from: Time | None = None
+    hours_until: Time | None = None
 
     @field_validator("name")
     @classmethod
@@ -133,6 +148,46 @@ class CategorySpec(BaseModel):
                 raise ValueError("A playlist category has no query")
             _playlist_path(self.playlist)
         return self
+
+    @model_validator(mode="after")
+    def _daypart(self) -> Self:
+        if any(type(day) is not int or day not in range(7) for day in self.days):
+            raise CategoryError("days", "Days must be numbered 0 (Monday) to 6 (Sunday)")
+        self.days = sorted(set(self.days))
+        for name in ("hours_from", "hours_until"):
+            value = getattr(self, name)
+            if value is not None and (
+                value.tzinfo is not None or value.second or value.microsecond
+            ):
+                raise CategoryError(name, f"{_FIELD_NAMES[name]} must be a whole minute")
+        if (self.hours_from is None) != (self.hours_until is None):
+            missing = "hours_until" if self.hours_until is None else "hours_from"
+            raise CategoryError(
+                missing, "Enter both Allowed from and Allowed until, or leave both empty"
+            )
+        if self.hours_from is not None and self.hours_from == self.hours_until:
+            raise CategoryError("hours_until", "Allowed until must differ from Allowed from")
+        return self
+
+    @property
+    def dayparted(self) -> bool:
+        """Whether the category limits its songs to some days or hours."""
+        return bool(self.days) or self.hours_from is not None
+
+    def allows(self, wall: datetime) -> bool:
+        """Whether the songs may play at the station's local wall time *wall*."""
+        if self.hours_from is None or self.hours_until is None:
+            return not self.days or wall.weekday() in self.days
+        at = wall.time()
+        day = wall.date()
+        if self.hours_from < self.hours_until:
+            if not self.hours_from <= at < self.hours_until:
+                return False
+        elif at < self.hours_until:
+            day -= timedelta(days=1)  # the window that began yesterday
+        elif at < self.hours_from:
+            return False
+        return not self.days or day.weekday() in self.days
 
     def parsed_query(self) -> Query:
         """The query, parsed (an empty query for a playlist category)."""
@@ -169,7 +224,41 @@ _FIELD_NAMES = {
     "source": "Source",
     "query": "Beets query",
     "playlist": "Playlist file",
+    "days": "Days",
+    "hours_from": "Allowed from",
+    "hours_until": "Allowed until",
 }
+
+_DAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
+def station_now(cfg: AutoDJConfig) -> datetime:
+    """The station's local wall time, naive: ``[server] station_timezone`` or the system's."""
+    from zoneinfo import ZoneInfo
+
+    from autodj.scheduler import system_timezone
+
+    zone = ZoneInfo(cfg.server.station_timezone or system_timezone())
+    return datetime.now(zone).replace(tzinfo=None)
+
+
+def describe_daypart(spec: CategorySpec) -> str:
+    """Say a category's allowed days and hours in words; empty when it has none."""
+    if not spec.dayparted:
+        return ""
+    if spec.days == [0, 1, 2, 3, 4]:
+        days = "on weekdays"
+    elif spec.days == [5, 6]:
+        days = "at weekends"
+    elif spec.days and len(spec.days) < 7:
+        names = [_DAY_NAMES[day] for day in spec.days]
+        days = "on " + (names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}")
+    else:
+        days = "every day"
+    if spec.hours_from is None or spec.hours_until is None:
+        return f"Plays only {days}"
+    start, end = spec.hours_from.strftime("%H:%M"), spec.hours_until.strftime("%H:%M")
+    return f"Plays only {days} from {start} until {end}"
 
 
 def spec_error(exc: ValidationError) -> CategoryError:
@@ -180,6 +269,8 @@ def spec_error(exc: ValidationError) -> CategoryError:
     message = str(error.get("msg", "is not valid"))
     message = message.removeprefix("Value error, ")
     cause = (error.get("ctx") or {}).get("error")
+    if isinstance(cause, CategoryError):
+        return CategoryError(cause.field, cause.message)
     if isinstance(cause, QueryError):
         name, message = "query", str(cause)
     elif not name and isinstance(cause, ValueError):
@@ -253,9 +344,17 @@ class CategoryStore:
 
     def save(self, categories: Sequence[Category]) -> None:
         """Write *categories* atomically."""
-        document = CategoriesFile(schema_version=SCHEMA_VERSION, categories=list(categories))
+        document = CategoriesFile(
+            schema_version=SCHEMA_VERSION, categories=list(categories)
+        ).model_dump(mode="json")
+        # A category without days or hours is written without the three keys,
+        # so an older AutoDJ, which refuses unknown keys, still reads the file.
+        for category in document["categories"]:
+            for key, empty in (("days", []), ("hours_from", None), ("hours_until", None)):
+                if category[key] == empty:
+                    del category[key]
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write(self.path, document.model_dump_json(indent=2) + "\n")
+        atomic_write(self.path, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
 
 
 def store_path(cfg: AutoDJConfig) -> Path:
@@ -710,6 +809,23 @@ class CategoryIndex:
         """Each category's ID mapped to its name and the paths of its songs."""
         categories, results = self.resolutions()
         return {category.id: (category.name, results[category.id].paths) for category in categories}
+
+    def closed_now(self, wall: datetime) -> tuple[frozenset[str], dict[str, str]]:
+        """The songs that may not play at local wall time *wall*, and why.
+
+        Returns the paths of every song in a category whose days and hours
+        leave *wall* out, and each such category's ID mapped to the reason
+        in words.
+        """
+        categories, results = self.resolutions()
+        paths: set[str] = set()
+        reasons: dict[str, str] = {}
+        for category in categories:
+            if category.dayparted and not category.allows(wall):
+                paths |= results[category.id].paths
+                text = describe_daypart(category)
+                reasons[category.id] = f"outside its hours: {text[0].lower()}{text[1:]}"
+        return frozenset(paths), reasons
 
     def check(self, spec: CategorySpec) -> Resolution:
         """Work out an unsaved category, for the Check button."""
