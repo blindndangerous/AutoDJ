@@ -80,6 +80,8 @@ from autodj.stereo import (
 )
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from autodj.audio_meta import LyricLine
     from autodj.config import AutoDJConfig
     from autodj.dj_meta import Cue, DjMeta
@@ -577,6 +579,11 @@ class _PickContext:
             next (see :mod:`autodj.dmca`); ``None`` when the mode is off.
         follows: The path of the track the pick follows (the one playing
             at the handoff), which no pick returns.
+        closed: Paths of the songs in a category outside its allowed days
+            and hours now (dayparting).  No relaxation picks them; only
+            when nothing else at all can play does one play, with a warning.
+        closed_categories: The ID of each such category and the reason, in
+            words, for the clockwheel to skip its steps.
     """
 
     recent: deque
@@ -587,6 +594,8 @@ class _PickContext:
     protected: frozenset[str] = frozenset()
     complement: Complement | None = None
     follows: str | None = None
+    closed: frozenset[str] = frozenset()
+    closed_categories: Mapping[str, str] = field(default_factory=dict)
 
     def allows(self, entry: IndexEntry) -> bool:
         """True when *entry* keeps the DMCA complement (always, with the mode off)."""
@@ -1196,10 +1205,13 @@ class Player:
 
         recent = set(context.recent)
         entries = self.playable_entries()
+        closed = context.closed
         eligible = tuple(
             entry
             for entry in entries
-            if not entry.is_silent and entry.path not in context.protected
+            if not entry.is_silent
+            and entry.path not in context.protected
+            and entry.path not in closed
         )
         # DMCA mode holds every slot to the complement, even one that does
         # not enforce the repeat rules.
@@ -1254,16 +1266,20 @@ class Player:
             use_recent: bool,
             use_dmca: bool = True,
             protected: frozenset[str] = context.protected,
+            hours: bool = True,
         ) -> Any:
+            shut = closed if hours else frozenset()
+
             def allowed(entry: IndexEntry) -> bool:
                 return (
                     not entry.is_silent
                     and entry.path not in protected
+                    and entry.path not in shut
                     and not (use_recent and entry.path in recent)
                     and (not use_rules or context.repeat(entry))
                 )
 
-            if protected is context.protected:
+            if protected is context.protected and hours:
                 pool = complying if use_dmca else eligible
             else:
                 pool = tuple(entry for entry in entries if allowed(entry))
@@ -1278,6 +1294,7 @@ class Player:
                 beets=beets_items,
                 condition_errors=condition_errors,
                 condition_cache=cache,
+                closed_categories=context.closed_categories if hours else None,
             )
 
         # Like the other pick modes, relax rather than stop the music: first
@@ -1304,12 +1321,12 @@ class Player:
                 "looking further for this pick"
             )
             picked = pick(False, False, use_dmca=False)
+        follows_only = frozenset({context.follows} if context.follows else ())
         if picked.entry is None and context.protected:
             # Last resort: a slot whose only songs are protected (a small
             # folder, or a track step for a song just played) would leave
             # the station silent, so allow them, except the one playing.
-            follows = frozenset({context.follows} if context.follows else ())
-            picked = pick(False, False, use_dmca=False, protected=follows)
+            picked = pick(False, False, use_dmca=False, protected=follows_only)
             if picked.entry is not None and not getattr(self, "_clock_protected_warned", False):
                 logger.warning(
                     "Clock: every matching track is playing or about to play; "
@@ -1319,7 +1336,20 @@ class Player:
             self._clock_protected_warned = picked.entry is not None
         elif picked.entry is not None:
             self._clock_protected_warned = False
+        # Whether only dayparting left the clock with nothing: a pick that
+        # ignored the hours would find a song.  The caller then plays an
+        # allowed song from the whole library rather than stopping the music
+        # (see _empty_category_fallback); pick_slot is pure, so this changes
+        # nothing else.
+        self._clock_closed_only = (
+            picked.entry is None
+            and bool(closed or context.closed_categories)
+            and pick(False, False, use_dmca=False, protected=follows_only, hours=False).entry
+            is not None
+        )
         self._clock_status = "; ".join(picked.skipped) or "Ready"
+        if self._clock_closed_only:
+            self._clock_status += "; every song this clockwheel can play is outside its hours"
         self._log_category_skips(picked.skipped)
         if picked.entry is not None and picked.preset:
             from autodj.presets import get_preset
@@ -1357,13 +1387,18 @@ class Player:
         A category emptied by a failed playlist script or a deleted category
         must not silence a clockwheel made of category steps, so the pick
         falls back as the other pick modes do (the clock keeps its place).
-        A clock of folder and track steps only is left as it was.
+        A clock of folder and track steps only, or with conditions, is left
+        as it was, unless its songs are there and only their categories'
+        days and hours (dayparting) hold them back.
         """
         slots = getattr(self, "_clock_slots", None) or ()
-        if any(getattr(slot, "conditions", ()) for slot in slots):
-            return None  # Explicit conditions must not fall back to unfiltered music.
-        if not any(getattr(slot, "kind", None) == "category" for slot in slots):
-            return None
+        # Dayparting alone emptied the clock: its songs exist but are outside
+        # their hours, so an allowed song plays, whatever the steps are.
+        if not getattr(self, "_clock_closed_only", False):
+            if any(getattr(slot, "conditions", ()) for slot in slots):
+                return None  # Explicit conditions must not fall back to unfiltered music.
+            if not any(getattr(slot, "kind", None) == "category" for slot in slots):
+                return None
         reason = ValueError(f"the clockwheel has no song to play: {self._clock_status}")
         try:
             chosen = self._fallback_pick(current, context, reason)
@@ -1405,6 +1440,8 @@ class Player:
         """
         import random as _rnd
 
+        if not queued and entry.path in context.closed:
+            entry = self._daypart_replacement(entry, context)
         limits = context.complement
         if limits is None or not (broken := limits.broken(entry)):
             return entry
@@ -1418,7 +1455,9 @@ class Player:
         audible = [
             other
             for other in self.playable_entries()
-            if not other.is_silent and other.path not in context.protected
+            if not other.is_silent
+            and other.path not in context.protected
+            and other.path not in context.closed
         ]
         recent = set(context.recent)
         fresh = [other for other in audible if other.path not in recent]
@@ -1447,6 +1486,40 @@ class Player:
                 chosen.display_name,
             )
         return chosen
+
+    def _daypart_replacement(self, entry: IndexEntry, context: _PickContext) -> IndexEntry:
+        """A song to play instead of *entry*, whose category is outside its hours.
+
+        Relaxes as little as possible, as the DMCA check does: a song the
+        repeat rules allow, then any not played recently, then any but the
+        protected ones; never one outside its own hours.  When every song is
+        outside its hours, *entry* plays and a warning says so.
+        """
+        import random as _rnd
+
+        audible = [
+            other
+            for other in self.playable_entries()
+            if not other.is_silent
+            and other.path not in context.protected
+            and other.path not in context.closed
+        ]
+        recent = set(context.recent)
+        fresh = [other for other in audible if other.path not in recent]
+        for pool in ([other for other in fresh if context.repeat(other)], fresh, audible):
+            if pool:
+                chosen = _rnd.choice(pool)  # nosec B311 -- music selection
+                logger.info(
+                    "Dayparting: %s is outside its category's hours; %s plays instead",
+                    entry.display_name,
+                    chosen.display_name,
+                )
+                return chosen
+        logger.warning(
+            "Dayparting: %s plays outside its category's hours: no other song can play",
+            entry.display_name,
+        )
+        return entry
 
     def _station_queue(
         self,
@@ -2392,6 +2465,7 @@ class Player:
         protected = {e.path for e in (pending, starting, playing) if e is not None}
         if latest is not None:
             protected.add(latest)
+        closed, closed_categories = self._dayparts()
         return _PickContext(
             paths,
             repeat,
@@ -2401,7 +2475,30 @@ class Player:
             frozenset(protected),
             complement(history, now, self._track_keys()) if self._state.dmca_enabled else None,
             follows.path if (follows := pending or playing) is not None else None,
+            closed,
+            closed_categories,
         )
+
+    def _station_now(self) -> datetime:
+        """The station's local wall time, naive (``[server] station_timezone``)."""
+        from autodj.categories import station_now
+
+        return station_now(self._cfg)
+
+    def _dayparts(self) -> tuple[frozenset[str], dict[str, str]]:
+        """The songs whose categories are outside their days and hours now, and why.
+
+        Categories that cannot be read limit nothing; the failure is logged.
+        """
+        index = getattr(self._library, "categories", None)
+        if index is None:
+            return frozenset(), {}
+        try:
+            closed: tuple[frozenset[str], dict[str, str]] = index.closed_now(self._station_now())
+        except Exception:
+            logger.exception("Dayparting: the rotation categories could not be read")
+            return frozenset(), {}
+        return closed
 
     def _recent_exclusions(
         self, pending: IndexEntry | None = None, starting: IndexEntry | None = None
@@ -2525,6 +2622,7 @@ class Player:
             def allowed(entry: IndexEntry) -> bool:
                 return (
                     entry.path not in blocked
+                    and entry.path not in context.closed
                     and eligible(entry)
                     and (not use_rules or repeat(entry))
                     and context.allows(entry)
@@ -2567,7 +2665,7 @@ class Player:
         ):
             return None
         try:
-            protected = context.protected | {current.path}
+            protected = context.protected | {current.path} | context.closed
             recent = deque([*context.recent, *sorted(protected - set(context.recent))])
             entry = self._sim.find_distant(
                 current.path, recent, allowed=self._candidate_filter(context)
@@ -2682,7 +2780,7 @@ class Player:
 
         # --- Normal similarity search ---
         try:
-            protected = context.protected | {current.path}
+            protected = context.protected | {current.path} | context.closed
             recent = deque([*context.recent, *sorted(protected - set(context.recent))])
             picked = self._sim.find_next_for_path(recently_played=recent, **search)
             _log_repeat_blocks(context.repeat, picked)
@@ -2699,7 +2797,7 @@ class Player:
                 len(protected),
             )
             relaxed = self._sim.find_next_for_path(
-                recently_played=deque(sorted(protected)), **search
+                recently_played=deque(sorted(protected | context.closed)), **search
             )
             return relaxed, mode
 
@@ -2729,7 +2827,14 @@ class Player:
 
         from autodj.similarity import SimilarityError
 
-        audible = [entry for entry in self.playable_entries() if not entry.is_silent]
+        everything = [entry for entry in self.playable_entries() if not entry.is_silent]
+        # Songs outside their category's hours only when nothing else can play.
+        audible = [entry for entry in everything if entry.path not in context.closed] or everything
+        if audible is everything and context.closed:
+            logger.warning(
+                "Dayparting: every song is outside its category's hours; "
+                "playing one anyway rather than stopping the music"
+            )
         bpm_range = self._bpm_range
         in_range = audible
         if bpm_range is not None:

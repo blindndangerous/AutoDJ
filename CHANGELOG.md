@@ -18,11 +18,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   "not playable yet". Liner dates are kept in `liner_dates.json` and backed up; cart dates are
   kept in `carts.json`. Clips without dates are saved as before. The cart editor now shows a
   refused field's error on the page as well as saying it.
+- Dayparting for rotation categories: a category can allow its songs only on chosen days, only
+  between two times, or both, such as Friday and Saturday from 22:00 until 02:00, in the station
+  time zone. Outside those hours its songs are left out of every pick mode (similar songs,
+  discovery, random, least recently played and clockwheels), and a clockwheel step for it is
+  skipped with the reason in the clockwheel status and the server log. Relaxing the repeat rules
+  or the DMCA limits never brings them back; only when nothing else can play does one play, with a
+  warning. A song you queue yourself plays at any time. A category from a beets query on a field
+  such as `daypart` gives single songs their own hours. The categories list says the hours in
+  words and when a category is outside them now. Categories without hours are saved as before.
 
 - Groundwork for running several stations on one server (#70). Every control address also answers
   under `/api/stations/default/...`, and the play log, last-played times and active clockwheel are
   kept per station in `library.db`. Existing plays belong to the default station, so nothing
   changes for a single station. `autodj export-plays --station NAME` exports one station's plays.
+
+- Schedule events can have a date range: an optional start date and end date, both included, in
+  the station time zone. Outside the range an event does not run, and Next events skips it. An
+  active window that crosses midnight belongs to the day it starts, so a Friday 18:00 until 02:00
+  window still runs to 02:00 after its end date. Every-few-minutes events can also keep to chosen
+  days. The events list says the range in words ("Every day at 00:00, from 27 November to 26
+  December 2026") and says when an event has no runs left, and Next events gives the year when it
+  is not this one. The date fields are native, labelled date inputs, and a form error is now
+  linked to the field it names. Existing schedule files load unchanged. Operations describes a
+  holiday clockwheel season as an example.
 
 - `autodj worker --idle-exit MINUTES` keeps asking for new songs every half minute and stops only
   once the queue has stayed empty for that long, so a worker started alongside a Rescan does not

@@ -307,7 +307,14 @@ def test_station_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
 class Rig:
     """A scheduler with a settable clock that records what it does."""
 
-    def __init__(self, path: Path, *, playing: bool = False, now: str = "2026-10-11 12:00") -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        playing: bool = False,
+        now: str = "2026-10-11 12:00",
+        timezone: str = "UTC",
+    ) -> None:
         self.now = utc(now)
         self.calls: list[str] = []
         self.messages: list[dict[str, Any]] = []
@@ -315,7 +322,7 @@ class Rig:
         self.fail: Exception | None = None
         self.schedule = Scheduler(
             path,
-            "UTC",
+            timezone,
             self.publish,
             interrupt=lambda: self.calls.append("skip"),
             song_playing=lambda: self.playing,

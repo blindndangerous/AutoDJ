@@ -199,6 +199,59 @@ def test_invalid_events_are_refused_naming_the_field(
     assert not (active / "schedule.json").exists()
 
 
+def test_date_ranges_are_saved_described_and_skipped_until_they_start(
+    rig: tuple[TestClient, PlayerBridge, Path],
+) -> None:
+    client, _bridge, active = rig
+    season = event(time="00:00", start_date="2099-11-27", end_date="2099-12-26")
+    created = client.post("/api/schedule", json=season)
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["repeat_text"] == "Every day at 00:00, from 27 November to 26 December 2099"
+    assert (body["start_date"], body["end_date"], body["ended"]) == (
+        "2099-11-27",
+        "2099-12-26",
+        False,
+    )
+    saved = json.loads((active / "schedule.json").read_text(encoding="utf-8"))["events"][0]
+    assert saved["start_date"] == "2099-11-27"
+    hourly = client.post("/api/schedule", json=event(repeat="interval", interval_minutes=60))
+    events = json.loads((active / "schedule.json").read_text(encoding="utf-8"))["events"]
+    assert "start_date" not in events[1]
+    upcoming = client.get("/api/schedule/upcoming?count=50").json()["upcoming"]
+    assert {row["id"] for row in upcoming} == {hourly.json()["id"]}
+
+    # With the hourly event gone, the first run is the season's first day.
+    client.delete(f"/api/schedule/{hourly.json()['id']}")
+    first = client.get("/api/schedule").json()["upcoming"][0]
+    assert first["time"] == "2099-11-27T00:00:00+00:00"
+    assert first["repeat_text"].endswith("from 27 November to 26 December 2099")
+
+
+def test_dates_with_no_run_left_are_refused_in_words(
+    rig: tuple[TestClient, PlayerBridge, Path],
+) -> None:
+    client, _bridge, _active = rig
+    over = client.post("/api/schedule", json=event(end_date="2000-01-01"))
+    assert over.status_code == 400
+    assert over.json() == {
+        "detail": "The event has no run left before its end date",
+        "field": "end_date",
+    }
+    backwards = client.post(
+        "/api/schedule", json=event(start_date="2099-12-26", end_date="2099-11-27")
+    )
+    assert backwards.json()["field"] == "end_date"
+    kept = client.post("/api/schedule", json=event(end_date="2000-01-01", enabled=False))
+    assert kept.status_code == 201
+    assert kept.json()["ended"] is True
+    refused = client.post(f"/api/schedule/{kept.json()['id']}/enable", json={"enabled": True})
+    assert refused.json() == {
+        "detail": "This event's end date has passed; edit its dates first",
+        "field": "enabled",
+    }
+
+
 def test_strict_bodies_and_limits(rig: tuple[TestClient, PlayerBridge, Path]) -> None:
     client, _bridge, _active = rig
     assert client.post("/api/schedule", json=["not", "an", "object"]).status_code == 422

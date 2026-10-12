@@ -242,6 +242,8 @@ def _event_view(scheduler: Scheduler, event: ScheduledEvent) -> dict[str, Any]:
         **event.model_dump(mode="json"),
         "repeat_text": describe_repeat(event),
         "action_text": scheduler.summary(event),
+        # No run left: a one-time event that ran, or one past its end date.
+        "ended": scheduler.next_time(event) is None,
     }
 
 

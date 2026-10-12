@@ -2017,6 +2017,58 @@ describe("static accessibility contracts", () => {
     expect(rule).toContain('input[type="date"]');
   });
 
+  it("gives category dayparting labelled native day and time controls", () => {
+    installDocument({ html: htmlSource });
+    const group = document.querySelector("#categories-daypart");
+    expect(group.tagName).toBe("FIELDSET");
+    expect(group.querySelector(":scope > legend").textContent.trim()).toBe("When the songs may play");
+    const help = document.getElementById(group.getAttribute("aria-describedby"));
+    expect(help.textContent).toMatch(/^\s*Optional\./);
+    expect(help.hidden).toBe(false);
+    const days = group.querySelector("#categories-days");
+    expect(days.querySelector(":scope > legend").textContent).toBe("Days");
+    const boxes = [...days.querySelectorAll('input[type="checkbox"]')];
+    expect(boxes.map((box) => document.querySelector(`label[for="${box.id}"]`).textContent))
+      .toEqual(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]);
+    for (const [id, label] of [["categories-hours-from", "Allowed from"], ["categories-hours-until", "Allowed until"]]) {
+      const input = document.getElementById(id);
+      expect(input.getAttribute("type")).toBe("time");
+      expect(input.hasAttribute("required")).toBe(false);
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+    }
+    // Time inputs share the 44 px native control height (2.5.8).
+    const rule = stripCssComments(cssSource).match(/([^{}]*)\{[^{}]*min-height:\s*44px[^{}]*\}/g)
+      .find((block) => block.includes('input[type="text"]') && block.includes("padding"));
+    expect(rule).toContain('input[type="time"]');
+  });
+
+  it("gives the schedule date range native labelled date inputs and a target-size rule", () => {
+    installDocument({ html: htmlSource });
+    const group = document.querySelector("#schedule-range");
+    expect(group.tagName).toBe("FIELDSET");
+    expect(group.querySelector("legend").textContent.trim()).toBe("Date range");
+    for (const [id, label] of [["schedule-start-date", "Start date"], ["schedule-end-date", "End date"]]) {
+      const input = document.getElementById(id);
+      expect(input.getAttribute("type")).toBe("date");
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+      // Optional: no required attribute, and the description says so in words.
+      expect(input.hasAttribute("required")).toBe(false);
+      const desc = document.getElementById(input.getAttribute("aria-describedby"));
+      expect(desc.textContent).toMatch(/^\s*Optional\./);
+    }
+    // The form's error text has an ID to be linked from the field it names.
+    expect(document.querySelector("#schedule-form-error").classList.contains("field-error")).toBe(true);
+    // The days description is not linked in the markup: the script links it
+    // only while it is shown, because a hidden description is still read.
+    expect(document.querySelector("#schedule-days").hasAttribute("aria-describedby")).toBe(false);
+    expect(document.querySelector("#schedule-days-desc").dataset.repeat).toBe("interval");
+    // Date and time inputs share the 44 px native control height (2.5.8).
+    const rule = stripCssComments(cssSource).match(/([^{}]*)\{[^{}]*min-height:\s*44px[^{}]*\}/g)
+      .find((block) => block.includes('input[type="text"]') && block.includes("padding"));
+    expect(rule).toContain('input[type="date"]');
+    expect(rule).toContain('input[type="time"]');
+  });
+
   it("keeps the transition effect description to one sentence", () => {
     // The per-effect list, about 450 words, was read on every focus.
     installDocument({ html: htmlSource });
