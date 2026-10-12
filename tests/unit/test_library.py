@@ -1064,3 +1064,40 @@ def test_publishing_scanned_tracks_does_not_scan_the_library(manager_factory, tm
     assert [entry.title for entry in manager.entries_snapshot()] == ["Retagged", "1", "2", "new"]
     assert manager.entry_for_path(music / "new.flac").title == "new"
     assert manager.snapshot()["tracks_ready"] == 4
+
+
+def test_idle_analysis_check_runs_once_until_the_catalog_changes(manager_factory, tmp_path):
+    music = tmp_path / "Music"
+    music.mkdir()
+    song = music / "song.flac"
+    song.write_bytes(b"music")
+    manager = manager_factory(music=music)
+    manager.catalog.put_entry(make_entry(song))
+    manager.catalog.set_vector(song, np.ones(FEATURE_DIM, dtype=np.float32))
+    started = []
+
+    class Jobs:
+        def configure(self, **kwargs):
+            pass
+
+        def start(self, command):
+            started.append(command)
+            return True
+
+    unembedded = manager.catalog.unembedded_music
+    with (
+        patch.object(manager.catalog, "unembedded_music", wraps=unembedded) as check,
+        patch("autodj.jobs.get_manager", return_value=Jobs()),
+    ):
+        for _ in range(3):
+            assert not manager.schedule_analysis()
+        manager.remember_play(song, 1.0)
+        manager.tick()
+        assert check.call_count == 1
+        other = music / "other.flac"
+        other.write_bytes(b"other")
+        manager.catalog.put_entry(make_entry(other))
+        assert manager.schedule_analysis()
+        assert check.call_count == 2
+    assert started == ["analyse-library"]
+    assert [Path(record["path"]) for record in manager.analysis_pending()] == [other]

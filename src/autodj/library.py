@@ -60,6 +60,7 @@ class LibraryManager:
         self._closed = False
         self._scan_generation = 0
         self._analysis_started_generation: int | None = None
+        self._analysis_idle: tuple[int, dict[str, int]] | None = None
         self._state: _ImportState = {
             "running": False,
             "phase": "idle",
@@ -688,16 +689,7 @@ class LibraryManager:
             self._set_state(running=False, current="")
 
     def analysis_pending(self) -> list[dict[str, Any]]:
-        pending = []
-        for record in self.catalog.all_entries("music"):
-            if not Path(record["path"]).is_file() or self.catalog.has_vector(record["path"]):
-                continue
-            if any(
-                source["advanced"]
-                for source in self.catalog.sources_for_path(record["path"], "music")
-            ) and not self.catalog.sources_for_path(record["path"], "liner"):
-                pending.append(record)
-        return pending
+        return self.catalog.unembedded_music()
 
     def schedule_analysis(self) -> bool:
         with self._lock:
@@ -707,7 +699,15 @@ class LibraryManager:
             generation = self._scan_generation
             if self._analysis_started_generation == generation:
                 return False
+        # Nothing to embed stays so until a scan or a change to the records,
+        # vectors or sources: remember that instead of checking every tick.
+        state = (generation, self.catalog.change_versions())
+        with self._lock:
+            if self._analysis_idle == state:
+                return False
         if not self.analysis_pending():
+            with self._lock:
+                self._analysis_idle = state
             return False
         from autodj.jobs import get_manager
 

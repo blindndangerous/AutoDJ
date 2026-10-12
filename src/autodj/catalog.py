@@ -150,6 +150,20 @@ def _under(path: str, root: str, recursive: bool) -> bool:
     return recursive or os.sep not in relative
 
 
+def _prefix(root: str) -> str:
+    return root if root.endswith(os.sep) else root + os.sep
+
+
+def _covered_by(path: str, roots: Iterable[tuple[str, bool]]) -> bool:
+    """:func:`_under` for normalized paths against ``(prefix, recursive)`` roots."""
+    for prefix, recursive in roots:
+        if path.startswith(prefix):
+            rest = path[len(prefix) :]
+            if rest and (recursive or os.sep not in rest):
+                return True
+    return False
+
+
 class Coverage:
     """The registered sources, read once, deciding which records are playable.
 
@@ -167,33 +181,23 @@ class Coverage:
         self.liner: list[tuple[str, bool]] = []
         self.liner_owned: list[tuple[str, bool]] = []
         for root, kind, recursive in sources:
-            prefix = root if root.endswith(os.sep) else root + os.sep
-            item = (prefix, bool(recursive))
+            item = (_prefix(root), bool(recursive))
             if kind == "liner":
                 self.liner_owned.append(item)
             if not os.path.isdir(root):
                 continue
             (self.liner if kind == "liner" else self.music).append(item)
 
-    @staticmethod
-    def _under(path: str, roots: list[tuple[str, bool]]) -> bool:
-        for prefix, recursive in roots:
-            if path.startswith(prefix):
-                rest = path[len(prefix) :]
-                if rest and (recursive or os.sep not in rest):
-                    return True
-        return False
-
     def covered(self, path: str, kind: str | None = None) -> bool:
         """Whether a present source folder (of *kind*, or of either) holds *path*."""
         if kind is None:
-            return self._under(path, self.music) or self._under(path, self.liner)
-        return self._under(path, self.liner if kind == "liner" else self.music)
+            return _covered_by(path, self.music) or _covered_by(path, self.liner)
+        return _covered_by(path, self.liner if kind == "liner" else self.music)
 
     def active(self, path: str, kind: str) -> bool:
         if kind == "liner":
-            return self._under(path, self.liner)
-        return self._under(path, self.music) and not self._under(path, self.liner_owned)
+            return _covered_by(path, self.liner)
+        return _covered_by(path, self.music) and not _covered_by(path, self.liner_owned)
 
 
 class CatalogReader:
@@ -1096,6 +1100,41 @@ class LibraryCatalog:
                 f"SELECT kind,path,{','.join(_ENTRY_FIELDS)} FROM catalog_entries"  # nosec B608 -- constant field names
             )
             return [(row[0], IndexEntry(*tuple(row)[1:])) for row in rows]
+
+    def unembedded_music(self) -> list[dict]:
+        """Records the analysis job should embed, in path order.
+
+        Music records with no vector, under an advanced music source and
+        not owned by a liner source, whose file exists.  One query, and a
+        file check only for those.
+        """
+        with self._lock:
+            db = self._db()
+            sources = db.execute("SELECT path,kind,recursive,advanced FROM catalog_sources")
+            advanced, liner = [], []
+            for root, kind, recursive, is_advanced in sources:
+                if kind == "liner":
+                    liner.append((_prefix(root), bool(recursive)))
+                elif is_advanced:
+                    advanced.append((_prefix(root), bool(recursive)))
+            if not advanced:
+                return []
+            paths = [
+                row[0]
+                for row in db.execute(
+                    "SELECT e.path FROM catalog_entries e LEFT JOIN catalog_vectors v "
+                    "ON v.entry_id=e.id WHERE e.kind='music' AND v.entry_id IS NULL "
+                    "ORDER BY e.path"
+                )
+            ]
+            return [
+                record
+                for path in paths
+                if _covered_by(path, advanced)
+                and not _covered_by(path, liner)
+                and Path(path).is_file()
+                and (record := self.record_for_path(path)) is not None
+            ]
 
     def all_entries(self, kind: str | None = None) -> tuple[dict, ...]:
         """Return every stored record, including currently uncovered/missing files."""
