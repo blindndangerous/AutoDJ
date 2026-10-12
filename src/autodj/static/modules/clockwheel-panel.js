@@ -4,9 +4,9 @@
 // opens one into a working copy, edits its steps in the page, and sends it
 // back only when Save clockwheel is pressed; nothing is saved on its own.
 //
-// Steps are an <ol>.  Each item says its position ("Step 3 of 12, music
-// from Rock") and has native buttons: Edit, Move up, Move down, Duplicate
-// and Delete.  Alt+Up and Alt+Down move the step that holds focus.  After
+// The <ol> is a layout grid with a row header and a cell for each native
+// button. The step name is the Edit button; Up/Down moves between names,
+// Left/Right moves among row actions, and Alt+Up/Down moves the focused step. After
 // every change focus stays with the step that moved, or the nearest one,
 // and the result is said once through #clock-status.
 //
@@ -25,12 +25,12 @@ const FOLDER_TYPES = new Set(["music", "liner"]);
 // Field wrappers shown for each step type; the rest are hidden.
 const FIELDS_FOR = {
   music: ["source", "folder", "recursive", "selection", "enforce-rules"],
-  liner: ["source", "folder", "recursive", "selection", "enforce-rules"],
+  liner: ["source", "folder", "recursive", "selection", "enforce-rules", "require-following"],
   track: ["source", "path"],
   settings: ["preset"],
   category: ["category", "selection", "enforce-rules"],
 };
-const ALL_FIELDS = ["source", "folder", "path", "preset", "category", "recursive", "selection", "enforce-rules"];
+const ALL_FIELDS = ["source", "folder", "path", "preset", "category", "recursive", "selection", "enforce-rules", "require-following"];
 // Row buttons, in tab order.
 const ROW_ACTIONS = [["edit", "Edit"], ["move-up", "Move up"], ["move-down", "Move down"], ["duplicate", "Duplicate"], ["delete", "Delete"]];
 
@@ -65,8 +65,12 @@ export function describeStep(step, sources = [], categories = []) {
   if (FOLDER_TYPES.has(step.type)) {
     const source = sources.find((item) => item.id === step.source);
     const where = step.folder || (source ? lastPart(source.path) : "a folder that is no longer registered");
-    const extras = step.recursive ? ["with subfolders"] : [];
-    return [`${step.type} from ${where}`, ...extras, ...selectionExtras(step)].join(", ");
+    const extras = [];
+    if (step.recursive) extras.push("with subfolders");
+    if (step.selection === "random") extras.push("at random");
+    if (step.enforce_rules === false) extras.push("ignoring repeat rules");
+    if (step.type === "liner" && step.require_following) extras.push("only if the following track fits before the next reset");
+    return [`${step.type} from ${where}`, ...extras].join(", ");
   }
   if (step.type === "track") return `track ${step.path}`;
   if (step.type === "settings") return `switch to preset ${step.preset}`;
@@ -197,26 +201,46 @@ export function installClockwheelPanel({ document: doc = document, request = req
   function renderSteps(focusIndex = null, action = "edit") {
     if (!clock || !clock.steps.length) {
       const none = doc.createElement("li");
-      none.textContent = clock ? "No steps yet. Add one with the form below." : "Open or create a clockwheel to see its steps.";
+      none.setAttribute("role", "row");
+      const cell = doc.createElement("div");
+      cell.setAttribute("role", "gridcell");
+      cell.textContent = clock ? "No steps yet. Add one with the form below." : "Open or create a clockwheel to see its steps.";
+      none.append(cell);
       steps.replaceChildren(none);
     } else {
       steps.replaceChildren(...clock.steps.map((step, index) => {
         const item = doc.createElement("li");
         item.dataset.index = String(index);
-        const text = doc.createElement("span");
-        text.textContent = position(index);
-        item.append(text);
+        item.setAttribute("role", "row");
+        const number = doc.createElement("span");
+        number.setAttribute("role", "rowheader");
+        number.textContent = String(index + 1);
+        item.append(number);
         for (const [key, title] of ROW_ACTIONS) {
+          const cell = doc.createElement("span");
+          cell.setAttribute("role", "gridcell");
+          if (key === "edit") {
+            const button = doc.createElement("button");
+            button.type = "button";
+            button.dataset.action = key;
+            button.tabIndex = index === 0 ? 0 : -1;
+            button.textContent = describe(step);
+            cell.append(button);
+            item.append(cell);
+            continue;
+          }
           const button = doc.createElement("button");
           button.type = "button";
           button.dataset.action = key;
+          button.tabIndex = -1;
           // The visible words start the name; the hidden number says which step.
           const hidden = doc.createElement("span");
           hidden.className = "visually-hidden";
           hidden.textContent = ` step ${index + 1}`;
           button.append(title, hidden);
           button.disabled = (key === "move-up" && index === 0) || (key === "move-down" && index === clock.steps.length - 1);
-          item.append(" ", button);
+          cell.append(button);
+          item.append(" ", cell);
         }
         return item;
       }));
@@ -233,6 +257,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     const other = { "move-up": "move-down", "move-down": "move-up" }[action] || "edit";
     const target = wanted && !wanted.disabled ? wanted : row.querySelector(`button[data-action="${other}"]:not([disabled])`)
       || row.querySelector('button[data-action="edit"]');
+    steps.querySelectorAll("button[data-action]").forEach((button) => { button.tabIndex = button === target ? 0 : -1; });
     target?.focus();
   }
 
@@ -283,15 +308,45 @@ export function installClockwheelPanel({ document: doc = document, request = req
   steps.addEventListener("click", (event) => {
     const button = event.target.closest?.("button[data-action]");
     const row = button?.closest("li[data-index]");
-    if (row) rowAction(button.dataset.action, Number(row.dataset.index));
+    if (row) {
+      steps.querySelectorAll("button[data-action]").forEach((item) => { item.tabIndex = item === button ? 0 : -1; });
+      rowAction(button.dataset.action, Number(row.dataset.index));
+    }
   });
   steps.addEventListener("keydown", (event) => {
-    if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
     const row = event.target.closest?.("li[data-index]");
     if (!row || !clock) return;
-    event.preventDefault();
-    move(Number(row.dataset.index), event.key === "ArrowUp" ? -1 : 1, event.target.dataset?.action || "edit");
+    if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+        && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+      event.preventDefault();
+      move(Number(row.dataset.index), event.key === "ArrowUp" ? -1 : 1, event.target.dataset?.action || "edit");
+    } else if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+        && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+      const next = Number(row.dataset.index) + (event.key === "ArrowUp" ? -1 : 1);
+      event.preventDefault();
+      if (next >= 0 && next < clock.steps.length) {
+        focusRow(next, "edit");
+      }
+    } else if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+        && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+      const buttons = [...row.querySelectorAll('button[data-action]:not([disabled])')];
+      const at = buttons.indexOf(event.target.closest?.("button[data-action]"));
+      const next = at + (event.key === "ArrowLeft" ? -1 : 1);
+      event.preventDefault();
+      if (next >= 0 && next < buttons.length) focusRow(Number(row.dataset.index), buttons[next].dataset.action);
+    } else if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+        && (event.key === "Home" || event.key === "End")) {
+      const buttons = [...row.querySelectorAll('button[data-action]:not([disabled])')];
+      event.preventDefault();
+      focusRow(Number(row.dataset.index), buttons[event.key === "Home" ? 0 : buttons.length - 1].dataset.action);
+    } else if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key === "Delete") {
+      event.preventDefault();
+      if (!event.repeat) rowAction("delete", Number(row.dataset.index));
+    } else if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+        && event.key === "Enter" && event.target.dataset?.action === "edit") {
+      event.preventDefault();
+      rowAction("edit", Number(row.dataset.index));
+    }
   });
 
   // ---- Step form ------------------------------------------------------
@@ -303,6 +358,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
 
   function resetForm() {
     editing = null;
+    el("clock-step-require-following").checked = false;
     if (legend) legend.textContent = "Add a step";
     addButton.textContent = "Add step";
     if (cancelEdit) cancelEdit.hidden = true;
@@ -323,6 +379,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     const check = (id, value) => { const field = el(id); if (field) field.checked = value; };
     check("clock-step-recursive", Boolean(step.recursive));
     check("clock-step-enforce-rules", step.enforce_rules !== false);
+    check("clock-step-require-following", Boolean(step.require_following));
     if (legend) legend.textContent = `Edit step ${index + 1}`;
     addButton.textContent = `Update step ${index + 1}`;
     if (cancelEdit) cancelEdit.hidden = false;
@@ -352,12 +409,14 @@ export function installClockwheelPanel({ document: doc = document, request = req
         throw new Error(`Add a ${type === "liner" ? "voice liner" : "music"} folder under Music folders and Voice liner folders first.`);
       }
       if (type === "track") return { type, source, path: relative("clock-step-path", "The track", false) };
-      return {
+      const step = {
         type, source, folder: relative("clock-step-folder", "The subfolder", true),
         recursive: el("clock-step-recursive").checked,
         selection: el("clock-step-selection").value,
         enforce_rules: el("clock-step-enforce-rules").checked,
       };
+      if (type === "liner") step.require_following = el("clock-step-require-following").checked;
+      return step;
     }
     if (type === "category") {
       const category = el("clock-step-category")?.value || "";
@@ -391,6 +450,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       changed(`Updated ${position(index)}.`, index, "edit");
     } else {
       clock.steps.push(step);
+      resetForm();
       dirty = true;
       renderSteps();
       say(`Added ${position(clock.steps.length - 1)}. Not saved yet.`);

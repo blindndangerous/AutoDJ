@@ -59,8 +59,16 @@ def test_parse_rejects_unsupported_executable_statements(source):
 def test_clock_slot_json_validation():
     slot = ClockSlot("music", recursive=True)
     assert ClockSlot.from_json(slot.to_json()) == slot
+    assert not ClockSlot("music").require_following
+    liner = ClockSlot("liners", kind="liner", require_following=True)
+    assert ClockSlot.from_json(liner.to_json()) == liner
     with pytest.raises(ValueError, match="selection"):
         ClockSlot("music", selection="weighted")
+    with pytest.raises(ValueError, match="only valid for liner"):
+        ClockSlot("music", require_following=True)
+    for invalid in (1, "true", None):
+        with pytest.raises(ValueError, match="must be a boolean"):
+            ClockSlot.from_json({"folder": "liners", "kind": "liner", "require_following": invalid})
     with pytest.raises(ValueError, match="unknown"):
         ClockSlot.from_json({"folder": "music", "code": "run"})
 
@@ -157,8 +165,52 @@ def test_runtime_picker_applies_rules_and_returns_liner_with_music_cursor():
     )
     assert pick.entry.artist == "allowed"
     assert pick.liner == liner
+    assert not pick.liner_requires_following
     assert pick.next_cursor == 2
     assert not pick.skipped
+
+
+def test_runtime_picker_preserves_liner_flag_through_skips_settings_and_fixed_track():
+    liner = Track(r"C:\liners\id.wav")
+    entry = Track(r"C:\music\fixed.flac")
+    slots = [
+        ClockSlot(r"C:\liners", kind="liner", require_following=True),
+        ClockSlot(r"C:\missing"),
+        ClockSlot(kind="settings", preset="winddown"),
+        ClockSlot(kind="track", path=entry.path),
+    ]
+    pick = pick_slot(slots, 0, [entry], {}, lambda _: True, liners=[liner])
+    assert (pick.entry, pick.liner, pick.preset, pick.liner_requires_following) == (
+        entry,
+        liner,
+        "winddown",
+        True,
+    )
+    assert pick.skipped == [r"music slot C:\missing: no matching entries"]
+
+    no_liner = pick_slot(slots, 0, [entry], {}, lambda _: True, liners=[])
+    assert no_liner.liner is None and no_liner.liner_requires_following is False
+
+
+def test_runtime_picker_preserves_liner_flag_through_category_step():
+    entry = Track(r"C:\Music\song.flac")
+    liner = Track(r"C:\liners\id.wav")
+    slots = [
+        ClockSlot(r"C:\liners", kind="liner", require_following=True),
+        ClockSlot(kind="category", category="favorites"),
+    ]
+    pick = pick_slot(
+        slots,
+        0,
+        [entry],
+        {},
+        lambda _: True,
+        liners=[liner],
+        categories={"favorites": ("Favorites", frozenset({entry.path}))},
+    )
+    assert pick.entry is entry
+    assert pick.liner is liner
+    assert pick.liner_requires_following is True
 
 
 def test_runtime_picker_checks_rules_in_least_recent_order():
