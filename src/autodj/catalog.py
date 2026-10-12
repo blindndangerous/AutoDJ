@@ -9,6 +9,7 @@ import sqlite3
 import threading
 import uuid
 from collections.abc import Iterable, Sequence
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from typing import Any
 import numpy as np
 
 from autodj.indexer import IndexEntry, file_fingerprint
+from autodj.sqlite_utils import readonly_uri
 
 _connect = sqlite3.connect
 
@@ -93,6 +95,16 @@ def _under(path: str, root: str, recursive: bool) -> bool:
     if relative == os.pardir or relative.startswith(os.pardir + os.sep) or os.path.isabs(relative):
         return False
     return recursive or os.sep not in relative
+
+
+def catalog_counts(path: Path) -> tuple[int, int]:
+    """Read stored music and analysis counts without modifying the catalog."""
+    with closing(_connect(readonly_uri(path), uri=True)) as db:
+        ready, analyzed = db.execute(
+            "SELECT COUNT(*), COUNT(v.entry_id) FROM catalog_entries e "
+            "LEFT JOIN catalog_vectors v ON v.entry_id=e.id WHERE e.kind='music'"
+        ).fetchone()
+        return ready, analyzed
 
 
 class LibraryCatalog:

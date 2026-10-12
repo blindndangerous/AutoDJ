@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from autodj.config import AutoDJConfig, ServerConfig
     from autodj.doctor import DoctorReport
     from autodj.indexer import IndexEntry
+    from autodj.library import LibraryManager
     from autodj.pairing import DeviceRegistry
     from autodj.similarity import SimilarityIndex
 
@@ -58,14 +59,14 @@ console = Console()
 
 
 def _resolve_seed(
-    sim: SimilarityIndex,
+    sim: SimilarityIndex | LibraryManager,
     cfg: AutoDJConfig,
     seed: str | None,
     console_: Console,
 ) -> IndexEntry | None:
     """Resolve a seed string to an :class:`~autodj.indexer.IndexEntry`.
 
-    When several indexed tracks match, the first one is used.
+    When several library tracks match, the first one is used.
 
     Args:
         sim: Loaded :class:`~autodj.similarity.SimilarityIndex`.
@@ -96,7 +97,7 @@ def _resolve_seed(
         candidates = [e for e in entries if q in e.title.lower() or q in e.artist.lower()]
 
     if not candidates:
-        console_.print(f"[yellow]No indexed tracks match '{seed}'. Starting random.[/yellow]")
+        console_.print(f"[yellow]No library tracks match '{seed}'. Starting random.[/yellow]")
         return None
 
     chosen = candidates[0]
@@ -149,11 +150,13 @@ def _apply_index_name(cfg: AutoDJConfig, index_name: str | None) -> bool:  # pra
 def _load_index_for_serve(
     cfg: AutoDJConfig, *, active_dir: Path | None = None
 ) -> SimilarityIndex:  # pragma: no cover
-    """Load an index for web serving; a directory without one serves an empty index."""
+    """Import a legacy index only when this library has no catalog yet."""
     from autodj.index_manifest import UnsupportedIndexError
     from autodj.similarity import SimilarityIndex as _SI
 
     index_dir = cfg.index.active_dir if active_dir is None else active_dir
+    if (Path(index_dir) / "library.db").is_file():
+        return _SI.empty()
 
     try:
         return _SI.from_index_dir(
@@ -174,7 +177,7 @@ def _load_index_for_serve(
         return _SI.from_index_dir(index_dir, music_dir=cfg.library.music_dir)
     except FileNotFoundError:
         console.print(
-            "[yellow]Index is empty; the web UI will stay ready while you run autodj index.[/]"
+            "[yellow]Library is empty; add music folders in Library tools to get started.[/]"
         )
         return _SI.empty()
 
@@ -184,9 +187,9 @@ def _scan_index_rows(
 ) -> list[tuple[str, str, str]]:  # pragma: no cover
     """Walk *base* for index directories; return (name, track count, path) rows.
 
-    The track count comes from each index's ``index-manifest.json``.  An
-    index from before the manifest format shows as needing a rebuild.
+    Prefer the current catalog; report a legacy index only before its first import.
     """
+    from autodj.catalog import catalog_counts
     from autodj.index_manifest import (
         IndexConsistencyError,
         UnsupportedIndexError,
@@ -196,6 +199,16 @@ def _scan_index_rows(
     rows: list[tuple[str, str, str]] = []
     for entry in sorted(base.iterdir()):
         if not entry.is_dir():
+            continue
+        catalog_path = entry / "library.db"
+        if catalog_path.is_file():
+            try:
+                ready, analyzed = catalog_counts(catalog_path)
+                status = f"{ready} songs; {analyzed} analyzed"
+            except (OSError, sqlite3.Error):
+                status = "[red]corrupt library[/red]"
+            active_marker = "  *" if entry.name == active_name else "   "
+            rows.append((active_marker + entry.name, status, str(entry)))
             continue
         try:
             manifest = read_manifest(entry)
@@ -341,10 +354,17 @@ def _stage_serve_server(
 
 
 def _print_serve_banner(
-    console_: Console, sim: SimilarityIndex
+    console_: Console, library: LibraryManager
 ) -> None:  # pragma: no cover -- terminal banner
-    """Print the index summary banner."""
-    console_.print(Panel(f"[bold green]AutoDJ[/] — {sim.ntotal} tracks indexed", expand=False))
+    """Print the current library counts."""
+    state = library.snapshot()
+    console_.print(
+        Panel(
+            f"[bold green]AutoDJ[/] - {state['tracks_ready']} songs; "
+            f"{state['tracks_indexed']} analyzed",
+            expand=False,
+        )
+    )
 
 
 def _serve_url(server: ServerConfig) -> str:
@@ -1484,13 +1504,17 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         and not is_loopback_bind(staged_server.host)
     ):
         console.print("[yellow]WARNING: LAN access is unauthenticated (--insecure-lan).[/]")
-    _print_serve_banner(console, sim)
-    seed_entry = _resolve_seed(sim, cfg, seed, console)
+    from autodj.library import LibraryManager
+
+    _apply_index_name(cfg, index_name)
+    library = LibraryManager(cfg, sim)
+    ctx.call_on_close(library.close)
+    _print_serve_banner(console, library)
+    seed_entry = _resolve_seed(library, cfg, seed, console)
     url = _print_serve_url_banner(console, staged_server)
     cfg.server = staged_server
     if stream is not None:
         cfg.stream.enabled = stream
-    _apply_index_name(cfg, index_name)
     if stream is not None or server_cli_override:
         _append_cli_source(cfg)
     _require_ffmpeg_for_stream(cfg)
@@ -1505,6 +1529,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         serve(
             cfg=cfg,
             sim=sim,
+            library=library,
             seed_entry=seed_entry,
             host=host,
             port=port,

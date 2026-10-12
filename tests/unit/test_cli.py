@@ -36,6 +36,19 @@ def clear_autodj_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(variable, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def mock_library_startup():
+    # CLI option tests use fake configs; catalog startup has separate integration tests.
+    def create(cfg, sim):
+        library = MagicMock()
+        library.entries_snapshot.side_effect = sim.entries_snapshot
+        library.snapshot.return_value = {"tracks_ready": sim.ntotal, "tracks_indexed": sim.ntotal}
+        return library
+
+    with patch("autodj.library.LibraryManager", side_effect=create):
+        yield
+
+
 def _make_entry(i: int = 0) -> IndexEntry:
     return IndexEntry(
         path=f"Z:/Music/song_{i}.flac",

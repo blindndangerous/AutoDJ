@@ -168,6 +168,12 @@ when nobody listens to AutoDJ directly. Settings, Stream shows each relay's stat
 [Relaying to Icecast and Shoutcast](docs/operations.md#relaying-to-icecast-and-shoutcast) for
 every option.
 
+`autodj serve` loads the current library from `library.db` and shows its song and analysis
+counts. Add music in Library tools; songs become available before advanced analysis finishes.
+The older `autodj index` files are imported only when a library has no catalog yet. Once the
+catalog exists, serving no longer reads or watches `index-manifest.json`. Use Library folders
+and their background analysis to update that library.
+
 ## Commands
 
 Every command takes `--help`, for example `uv run autodj serve --help`. The global options
@@ -277,7 +283,7 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Six tabs:
   - **Profiles and access**: **Profiles** saves the current settings under a name to apply later.  **Browser access** (with `--lan`) signs this browser out, renames or revokes paired devices, and shows the pairing code for adding another.
 
   A setting that has no effect right now is hidden.  For example, the effect level is hidden while no transition effect is chosen, and the DJ-mix options are hidden with saved segue points.  Changes are saved on the server and survive a restart.  Paths, server and security options, and the model stay in `config.toml`.
-- **Library tools.**  Add and remove music and voice liner folders and rescan them, keep clockwheels, and run index, enrich, analyse, prune and stats jobs without leaving the page.  Browsing the library and the voice liners is in Queue & Search.  One job runs at a time; the index stats and the full job log refresh when it finishes.
+- **Library tools.**  Add and remove music and voice liner folders and rescan them, and keep clockwheels without leaving the page. Older index commands are listed separately; they do not update the current catalog.  Browsing the library and the voice liners is in Queue & Search.  One job runs at a time; the index stats and the full job log refresh when it finishes.
 
 ### Keyboard shortcuts
 
@@ -431,9 +437,9 @@ uv run autodj serve --lan --insecure-lan
 The server does not expose FastAPI's generated API documentation pages (`/docs`, `/redoc`, and
 `/openapi.json`).
 
-Index generation manifests are the only publication signal used by live reload. A partially
-written generation is not activated. Incomplete model directories are ignored instead of being
-treated as usable caches.
+The running server reads library changes from `library.db`, including new songs and completed
+background analysis. It does not watch legacy index generations. Incomplete model directories
+are ignored instead of being treated as usable caches.
 
 Common things to set:
 

@@ -1800,10 +1800,8 @@
       <p>Browse your library and voice liners in Queue &amp; Search.</p>
 
       <p>
-        Run library-maintenance commands without dropping to a terminal.
-        One job runs at a time.  Pressing a Run button while a job is
-        running starts nothing and tells you which job is running.  Index
-        stats refresh by themselves when a job finishes.
+        Add folders below to update the current library. Songs become available before
+        advanced analysis finishes. One advanced analysis job runs at a time.
       </p>
 
       <section aria-labelledby="source-folders-heading">
@@ -1822,9 +1820,9 @@
       </section>
 
       <!-- Stats card -->
-      <h3 id="library-stats-heading">Index stats</h3>
+      <h3 id="library-stats-heading">Library stats</h3>
       <dl id="library-stats" aria-labelledby="library-stats-heading">
-        <dt>Tracks indexed</dt>     <dd id="lib-stat-count"><span aria-hidden="true">—</span><span class="visually-hidden">Not loaded</span></dd>
+        <dt>Songs in library</dt>     <dd id="lib-stat-count"><span aria-hidden="true">—</span><span class="visually-hidden">Not loaded</span></dd>
         <dt>Average BPM</dt>        <dd id="lib-stat-avg-bpm"><span aria-hidden="true">—</span><span class="visually-hidden">Not loaded</span></dd>
         <dt>Tracks with key</dt>    <dd id="lib-stat-with-key"><span aria-hidden="true">—</span><span class="visually-hidden">Not loaded</span></dd>
         <dt>Tracks with genre</dt>  <dd id="lib-stat-with-genre"><span aria-hidden="true">—</span><span class="visually-hidden">Not loaded</span></dd>
@@ -1833,7 +1831,9 @@
       <button type="button" id="lib-stats-refresh">Refresh stats</button>
 
       <!-- Run buttons -->
-      <h3 id="library-run-heading">Run a job</h3>
+      <h3 id="library-run-heading">Older index commands</h3>
+      <p>These commands work on the separate index files made by <code>autodj index</code>.
+        They do not update the current library. Use Add folder or Rescan above for that.</p>
       <div role="group" aria-labelledby="library-run-heading">
         <div class="settings-row">
           <label for="lib-index-limit">Index — limit (optional)</label>

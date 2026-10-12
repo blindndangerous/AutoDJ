@@ -164,6 +164,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Startup now loads the current library and shows its song and analysis counts, rather than
+  the count from an older index. Doctor and list-indexes also use the current catalog. Existing
+  catalogs no longer depend on the old index manifest; legacy indexes are imported on first use.
+
 - Unknown or removed configuration settings now produce warnings and are ignored instead of
   blocking startup. Saved browser settings follow the same rule, preserving valid repeat limits
   alongside obsolete keys. Invalid values for supported configuration settings still fail validation.

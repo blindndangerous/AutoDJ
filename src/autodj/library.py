@@ -79,11 +79,16 @@ class LibraryManager:
         self._by_path: dict[str, IndexEntry] = {}
         self._tracks_ready = 0
         self._tracks_indexed = 0
-        self.catalog = LibraryCatalog(cfg.index.active_dir / "library.db")
+        catalog_path = cfg.index.active_dir / "library.db"
+        existing_catalog = catalog_path.is_file()
+        self.catalog = LibraryCatalog(catalog_path)
         liner_root = cfg.playback.liners_folder or str(cfg.index.active_dir / "liners")
         try:
             self.catalog.seed_sources(cfg.library.music_dir, liner_root)
-            self.seed_index(sim.entries_snapshot(), self._legacy_vectors())
+            if existing_catalog:
+                self.refresh()
+            else:
+                self.seed_index(sim.entries_snapshot(), self._legacy_vectors())
         except BaseException:
             self.catalog.close()
             raise

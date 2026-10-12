@@ -260,6 +260,7 @@ def _invoke_serve(cfg: MagicMock, *args: str) -> tuple[click.testing.Result, Mag
         patch("autodj.config.load_config", return_value=cfg),
         patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim),
         patch("autodj.server.serve") as serve_mock,
+        patch("autodj.library.LibraryManager"),
     ):
         result = CliRunner().invoke(cli, ["serve", *args])
     return result, serve_mock

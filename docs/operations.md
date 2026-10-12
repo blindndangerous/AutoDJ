@@ -98,9 +98,11 @@ directory that lists each file and its messages: `decode-indexing.log` for embed
 report removes it. FFmpeg's routine note that an MP3's duration is estimated from its bitrate is
 left out, because the decode itself is complete.
 
-Each run publishes the tracks embedded so far as a new index generation every 100 tracks and at
-the end, so an interrupted run resumes where it stopped. `autodj analyse` saves its results every
-25 tracks.
+The older `autodj index` command publishes its separate index files every 100 tracks and at the
+end, so an interrupted run resumes where it stopped. `autodj analyse` saves its results every
+25 tracks. These files are imported on the first startup of a library without `library.db`.
+After that, add or rescan folders in Library tools; the current library saves each completed
+advanced analysis result in `library.db` and the running server picks it up automatically.
 
 To give network drives a rest during a long run, set a pause before each track, in milliseconds,
 in `config.toml`:

@@ -265,26 +265,6 @@ class TestRelaxedPicksKeepTheirHistory:
         assert rendered is not None and rendered.next_entry is not None
         assert rendered.next_entry.path not in {pending.path, starting.path}
 
-    def test_index_reload_recomputes_the_no_repeat_window(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from autodj._bridge import PlayerBridge
-
-        player = Player(make_cfg_mock(), SimilarityIndex.empty(), dry_run=True)
-        assert player._state.no_repeat_window == 50  # empty library: unclamped
-        grown = make_sim_index(10)
-
-        def reload(self: SimilarityIndex, _index_dir: Path, music_dir: Path | None = None) -> int:
-            self.entries = grown.entries
-            return len(self.entries)
-
-        monkeypatch.setattr(SimilarityIndex, "reload_from_disk", reload)
-        bridge = PlayerBridge(player=player, sim=player._sim)
-
-        assert bridge.reload_index_from_disk() == 10
-        assert player._state.no_repeat_window == 6
-        assert player._state.recently_played.maxlen == 6
-
 
 # ---------------------------------------------------------------------------
 # Cursor moves keep the track the bus is starting
