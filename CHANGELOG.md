@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Public now-playing history and its webhooks include only artist, title, duration and play time;
+  local file paths and internal event IDs remain available in operator history.
+
 ### Added
 
 - Several named clockwheels (Library tools, Clockwheels): create, duplicate, rename, delete,
@@ -167,6 +172,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Startup now loads the current library and shows its song and analysis counts, rather than
   the count from an older index. Doctor and list-indexes also use the current catalog. Existing
   catalogs no longer depend on the old index manifest; legacy indexes are imported on first use.
+
+- Automatically chosen first songs now follow repeat rules and protected-track checks, including
+  restored play history. When the rules leave no choice, they relax without stopping playback.
 
 - Unknown or removed configuration settings now produce warnings and are ignored instead of
   blocking startup. Saved browser settings follow the same rule, preserving valid repeat limits
