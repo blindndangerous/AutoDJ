@@ -4472,3 +4472,57 @@ class TestBroadcastStateOnce:
         bridge.get_state = MagicMock()
         self._push(bridge, set(), _BroadcastFailureLog())
         bridge.get_state.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Blocking work stays off the event loop
+# ---------------------------------------------------------------------------
+
+
+def _on_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+class TestStateIsBuiltOffTheEventLoop:
+    def test_the_broadcast_builds_state_on_a_worker_thread(self, bridge, monkeypatch) -> None:
+        from autodj.server import _broadcast_state_once, _BroadcastFailureLog
+
+        monkeypatch.setattr("autodj.server._broadcast_and_prune", AsyncMock())
+        seen = []
+        real = bridge.get_state
+
+        def get_state():
+            seen.append(_on_event_loop())
+            return real()
+
+        bridge.get_state = get_state
+        asyncio.run(
+            _broadcast_state_once(bridge, {object()}, asyncio.Lock(), _BroadcastFailureLog())
+        )
+        assert seen == [False]
+
+    def test_status_actions_and_search_run_off_the_loop(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        seen = []
+        real_state, real_search = bridge.get_state, bridge.search
+
+        def get_state():
+            seen.append(("state", _on_event_loop()))
+            return real_state()
+
+        def search(query, limit=100):
+            seen.append(("search", _on_event_loop()))
+            return real_search(query, limit)
+
+        bridge.get_state, bridge.search = get_state, search
+        tc = TestClient(create_app(bridge))
+        assert tc.get("/api/status").status_code == 200
+        assert tc.post("/api/skip").status_code == 200
+        assert tc.post("/api/advance").status_code == 200
+        assert tc.get("/api/search", params={"q": "song"}).status_code == 200
+        assert seen == [("state", False)] * 3 + [("search", False)]

@@ -433,3 +433,55 @@ class TestNextTransitionFx:
     def test_no_next_track_no_effect(self, bridge) -> None:
         bridge.player._state.next_track = None
         assert bridge.get_state()["next_transition_fx"] is None
+
+
+class TestTrackDictCache:
+    """get_state reuses each track's dict until its catalog data changes."""
+
+    @staticmethod
+    def _bridge_with_catalog(bridge):
+        from types import SimpleNamespace
+
+        versions = {"records": 1}
+        reads: list[str] = []
+
+        def record_for_path(path):
+            reads.append(path)
+            return {
+                "kind": "music",
+                "points": {"start": 0.0, "intro": 8.0},
+                "point_sources": {},
+                "intro_lift_db": None,
+            }
+
+        catalog = SimpleNamespace(
+            change_versions=lambda: dict(versions),
+            record_for_path=record_for_path,
+        )
+        bridge.library = SimpleNamespace(catalog=catalog, entries_snapshot=lambda kind="music": ())
+        bridge.player.saved_points = lambda entry: {"start": 0.0, "end": entry.length}
+        _attach_cache(bridge, None)
+        return versions, reads
+
+    def test_unchanged_tracks_do_not_read_the_catalog_again(self, bridge) -> None:
+        versions, reads = self._bridge_with_catalog(bridge)
+        first = bridge.get_state()
+        assert len(reads) == 4  # cues and intro lift, for current and next
+        second = bridge.get_state()
+        assert len(reads) == 4
+        assert second["current_track"] == first["current_track"]
+        assert second["current_track"] is not first["current_track"]
+
+        versions["records"] += 1  # e.g. a cue point was saved
+        bridge.get_state()
+        assert len(reads) == 8
+
+    def test_a_new_entry_or_setting_rebuilds_the_dict(self, bridge) -> None:
+        _versions, reads = self._bridge_with_catalog(bridge)
+        bridge.get_state()
+        bridge.player._state.current_track = _entry(path="Z:/m/x.flac", title="Retitled")
+        assert bridge.get_state()["current_track"]["title"] == "Retitled"
+        assert len(reads) == 6
+        bridge.player._cfg.playback.key_notation = "musical"
+        bridge.get_state()
+        assert len(reads) == 10

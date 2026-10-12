@@ -391,7 +391,9 @@ async def _broadcast_state_once(
     if not clients:
         return
     try:
-        state = bridge.get_state()
+        # Off the event loop: it reads the catalog, and pages, the stream and
+        # API calls must not wait on that.
+        state = await asyncio.to_thread(bridge.get_state)
         if listener_revision is not None:
             state["stream_listener_revision"] = listener_revision
         if recording_status is not None:
@@ -1355,11 +1357,14 @@ def create_app(
                 )
 
     async def _tick_library() -> None:
-        while True:
-            await asyncio.to_thread(bridge.library.tick)
-            from autodj.player import apply_repeat_windows
+        from autodj.player import apply_repeat_windows
 
+        def tick() -> None:
+            bridge.library.tick()
             apply_repeat_windows(bridge.player)
+
+        while True:
+            await asyncio.to_thread(tick)
             await asyncio.sleep(2)
 
     async def _tick_schedule() -> None:
@@ -1515,7 +1520,7 @@ def create_app(
     @app.get("/api/status")
     async def api_status() -> JSONResponse:
         """Return the current player state snapshot."""
-        state = bridge.get_state()
+        state = await asyncio.to_thread(bridge.get_state)
         if recorder is not None:
             state["recording"] = recorder.status()
         return JSONResponse(state)
@@ -1829,7 +1834,7 @@ def create_app(
         bridge.skip()
         # Return fresh state so the browser updates its now-playing UI
         # without waiting up to 1 s for the next WS broadcast tick.
-        return JSONResponse(bridge.get_state())
+        return JSONResponse(await asyncio.to_thread(bridge.get_state))
 
     @app.post("/api/seek")
     async def api_seek(body: SeekBody) -> dict[str, float]:
@@ -2504,7 +2509,7 @@ def create_app(
     @app.get("/api/search")
     async def api_search(q: str = "", limit: int = 100) -> dict[str, list]:
         """Search the indexed library by title / artist / album."""
-        results = bridge.search(q, limit=max(1, min(500, int(limit))))
+        results = await asyncio.to_thread(bridge.search, q, max(1, min(500, int(limit))))
         return {"results": results}
 
     # ------------------------------------------------------------------
@@ -2612,7 +2617,7 @@ def create_app(
         if isinstance(body, dict) and isinstance(body.get("from_path"), str):
             from_path = body["from_path"]
         bridge.advance(from_path)
-        return JSONResponse(bridge.get_state())
+        return JSONResponse(await asyncio.to_thread(bridge.get_state))
 
     @app.post("/api/repick-next")
     async def api_repick_next(request: Request) -> JSONResponse:
@@ -2636,7 +2641,7 @@ def create_app(
             logger.debug("repick_next: no JSON body, blacklist not set")
         bridge.repick_next(blacklist_path=blacklist)
         nowplaying.refresh()
-        return JSONResponse(bridge.get_state())
+        return JSONResponse(await asyncio.to_thread(bridge.get_state))
 
     @app.post("/api/random-track")
     async def api_random_track() -> JSONResponse:
@@ -2650,7 +2655,7 @@ def create_app(
             raise HTTPException(
                 status_code=409, detail="The index has no tracks that are not silent"
             )
-        return JSONResponse(bridge.get_state())
+        return JSONResponse(await asyncio.to_thread(bridge.get_state))
 
     # ------------------------------------------------------------------
     # Settings (mirror of CLI flags)
