@@ -1138,12 +1138,8 @@ class LibraryCatalog:
             )
             return [(row[0], IndexEntry(*tuple(row)[1:])) for row in rows]
 
-    def unembedded_paths(self) -> list[str]:
-        """Paths of music records with no vector under an advanced, non-liner source.
-
-        One query and no file-system call, so it is cheap enough to count
-        the analysis queue with.  A path may name a file that is gone.
-        """
+    def _unembedded_paths(self, *, ordered: bool) -> Iterator[str]:
+        """Yield music paths with no vector under an advanced, non-liner source."""
         with self._lock:
             db = self._db()
             sources = db.execute("SELECT path,kind,recursive,advanced FROM catalog_sources")
@@ -1154,37 +1150,22 @@ class LibraryCatalog:
                 elif is_advanced:
                     advanced.append((_prefix(root), bool(recursive)))
             if not advanced:
-                return []
-            return [
-                row[0]
-                for row in db.execute(
-                    "SELECT e.path FROM catalog_entries e LEFT JOIN catalog_vectors v "
-                    "ON v.entry_id=e.id WHERE e.kind='music' AND v.entry_id IS NULL "
-                    "ORDER BY e.path"
-                )
-                if _covered_by(row[0], advanced) and not _covered_by(row[0], liner)
-            ]
+                return
+            order = " ORDER BY e.path" if ordered else ""
+            for (path,) in db.execute(
+                "SELECT e.path FROM catalog_entries e LEFT JOIN catalog_vectors v "
+                "ON v.entry_id=e.id WHERE e.kind='music' AND v.entry_id IS NULL" + order
+            ):
+                if _covered_by(path, advanced) and not _covered_by(path, liner):
+                    yield path
+
+    def unembedded_paths(self) -> list[str]:
+        """Paths of music records with no vector under an advanced, non-liner source."""
+        return list(self._unembedded_paths(ordered=True))
 
     def unembedded_count(self) -> int:
         """Count pending music without sorting or materializing its paths."""
-        with self._lock:
-            db = self._db()
-            sources = db.execute("SELECT path,kind,recursive,advanced FROM catalog_sources")
-            advanced, liner = [], []
-            for root, kind, recursive, is_advanced in sources:
-                if kind == "liner":
-                    liner.append((_prefix(root), bool(recursive)))
-                elif is_advanced:
-                    advanced.append((_prefix(root), bool(recursive)))
-            if not advanced:
-                return 0
-            return sum(
-                _covered_by(path, advanced) and not _covered_by(path, liner)
-                for (path,) in db.execute(
-                    "SELECT e.path FROM catalog_entries e LEFT JOIN catalog_vectors v "
-                    "ON v.entry_id=e.id WHERE e.kind='music' AND v.entry_id IS NULL"
-                )
-            )
+        return sum(1 for _ in self._unembedded_paths(ordered=False))
 
     def unembedded_music(
         self, *, limit: int | None = None, exclude: Collection[str] = ()
