@@ -1976,7 +1976,7 @@ def cmd_export_plays(
       uv run autodj export-plays --from 2026-09-01 --to 2026-09-30 --out september.csv
       uv run autodj export-plays --from 2026-09-01 --to 2026-09-30 --missing
       uv run autodj export-plays --from 2026-09-01 --to 2026-09-30 --format soundexchange --service "My Station"
-      uv run autodj export-plays --from 2026-09-01 --to 2026-09-30 --station icecold
+      uv run autodj export-plays --from 2026-09-01 --to 2026-09-30 --station nightowl
     """
     from autodj.catalog import LibraryCatalog
     from autodj.playlog import (

@@ -457,7 +457,7 @@ class TestExportPlaysCli:
         song = tmp_path / "Music" / "song.flac"
         with LibraryCatalog(tmp_path / "index" / "default" / "library.db") as catalog:
             played = datetime(2026, 9, 1, 13).astimezone()
-            catalog.write_history([_row("ice", song, "Ice play", played)], station="icecold")
+            catalog.write_history([_row("owl", song, "Owl play", played)], station="nightowl")
         dates = ("--from", "2026-09-01", "--to", "2026-09-01")
 
         def titles(*args: str) -> list[str]:
@@ -467,7 +467,7 @@ class TestExportPlaysCli:
 
         assert titles() == ["'=cmd"]
         assert titles("--station", "default") == ["'=cmd"]
-        assert titles("--station", "icecold") == ["Ice play"]
+        assert titles("--station", "nightowl") == ["Owl play"]
         assert titles("--station", "nobody") == []
         refused = self._run(config, *dates, "--station", "../x")
         assert refused.exit_code == 2

@@ -86,7 +86,7 @@ def test_the_app_registers_exactly_the_default_station() -> None:
     assert registry.default.player is bridge.player
     assert registry.default.cfg is bridge.player._cfg
     with pytest.raises(KeyError):
-        registry.get("icecold")
+        registry.get("nightowl")
 
 
 class _Player:

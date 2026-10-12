@@ -280,14 +280,14 @@ def test_each_station_has_its_own_socket_address() -> None:
 
 
 def test_station_relative_maps_only_configured_stations() -> None:
-    slugs = frozenset({"default", "icecold"})
-    assert station_relative("/api/stations/icecold/skip", slugs) == "/api/skip"
+    slugs = frozenset({"default", "nightowl"})
+    assert station_relative("/api/stations/nightowl/skip", slugs) == "/api/skip"
     assert station_relative("/api/stations/default/carts/upload", slugs) == "/api/carts/upload"
     assert station_relative("/api/stations/other/skip", slugs) is None
-    assert station_relative("/api/stations/icecold", slugs) is None
+    assert station_relative("/api/stations/nightowl", slugs) is None
     assert station_relative("/api/stations//skip", slugs) is None
     assert station_relative("/api/skip", slugs) is None
-    assert station_relative("/stations/icecold/skip", slugs) is None
+    assert station_relative("/stations/nightowl/skip", slugs) is None
 
 
 @pytest.mark.parametrize(
