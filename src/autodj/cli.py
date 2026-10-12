@@ -255,12 +255,20 @@ def _require_ffmpeg_for_stream(cfg: AutoDJConfig) -> None:
         cfg: Staged application configuration.
 
     Raises:
-        click.ClickException: If ``cfg.stream.enabled`` and ffmpeg is missing.
+        click.ClickException: If ``cfg.stream.enabled``, or another station
+            is configured (``[stations.<slug>]`` always streams), and ffmpeg
+            is missing.
     """
-    if cfg.stream.enabled and shutil.which("ffmpeg") is None:
+    if not (cfg.stream.enabled or cfg.stations) or shutil.which("ffmpeg") is not None:
+        return
+    if cfg.stream.enabled:
         raise click.ClickException(
             "Stream mode needs ffmpeg on the PATH. Install ffmpeg, or start without --stream."
         )
+    raise click.ClickException(
+        "The stations in [stations.<slug>] stream, so they need ffmpeg on the PATH. "
+        "Install ffmpeg, or remove those tables."
+    )
 
 
 def _configured_allowed_hosts(

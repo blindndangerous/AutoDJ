@@ -35,6 +35,7 @@ def _cfg(tmp_path: Path, server: ServerConfig | None = None) -> MagicMock:
     cfg.time_checks = TimeChecksConfig()
     cfg.server = server or ServerConfig()
     cfg.stream = StreamConfig()
+    cfg.stations = ()  # one station: no [stations.<slug>] tables
     cfg.config_sources = ("defaults",)
     return cfg
 

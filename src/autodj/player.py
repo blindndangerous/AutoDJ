@@ -69,6 +69,7 @@ from autodj.repeat_rules import (
     prune_history,
     records_from_plays,
 )
+from autodj.station_log import station_thread
 from autodj.stereo import (
     SAMPLE_RATE,
     TrackTooLongError,
@@ -725,6 +726,9 @@ class Player:
     # into the library's default-station ledger.
     _library: Any = None
     _station_ledger: Any = None
+    # Where this station keeps its state (a StationPaths); the default
+    # station's folders when not set.
+    station_paths: Any = None
     # A queue pick the bus has taken (which removed it from the queue) and
     # not yet started: it goes back if its set stops first.  Only the bus
     # thread touches it (_take_render, then _on_track_start).
@@ -1171,7 +1175,8 @@ class Player:
         library = self._library
         if library is None:
             raise ValueError("the library is not attached")
-        clock = ClockwheelStore(StationPaths.default(self._cfg).clockwheels).load(name)
+        paths = getattr(self, "station_paths", None) or StationPaths.default(self._cfg)
+        clock = ClockwheelStore(paths.clockwheels).load(name)
         sources = {source["id"]: source for source in library.catalog.sources()}
         slots = []
         for number, step in enumerate(clock["steps"], 1):
@@ -1786,7 +1791,7 @@ class Player:
             output = SoundDeviceOutput(self._state, self._cfg.playback.audio_device or None)
             bus.add_output(output)
         stop = threading.Event()
-        watcher = threading.Thread(
+        watcher = station_thread(
             target=self._stop_when_requested, args=(stop,), name="autodj-bus-stop", daemon=True
         )
         self._render_ahead.start()
@@ -1814,7 +1819,7 @@ class Player:
         output = SoundDeviceOutput(self._state, self._cfg.playback.audio_device or None)
         self.bus.add_output(output)
         stop = threading.Event()
-        watcher = threading.Thread(
+        watcher = station_thread(
             target=self._stop_when_requested, args=(stop,), name="autodj-bus-stop", daemon=True
         )
         try:
@@ -3064,7 +3069,7 @@ class Player:
 
         with self._playout_lock:
             self._playout_slot = (entry.path, future)
-        threading.Thread(target=decode, name="autodj-decode-next", daemon=True).start()
+        station_thread(target=decode, name="autodj-decode-next", daemon=True).start()
         return future
 
     def _take_prefetched(self, entry: IndexEntry) -> Future[tuple[tuple | None, np.ndarray]] | None:
@@ -3504,7 +3509,7 @@ class Player:
                 with self._bg_lyrics_lock:
                     self._bg_lyrics_inflight.discard(path)
 
-        thread = threading.Thread(
+        thread = station_thread(
             target=_worker,
             name="autodj-lyrics",
             daemon=True,
@@ -3746,7 +3751,7 @@ class Player:
         with self._bg_analysis_lock:
             if path in self._bg_analysis_inflight:
                 return
-            thread = threading.Thread(
+            thread = station_thread(
                 target=_worker,
                 name=f"autodj-analyse-{Path(path).name}",
                 daemon=True,
