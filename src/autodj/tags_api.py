@@ -13,9 +13,12 @@ The library is shared by every station, so this is a shared route.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
 import sqlite3
-from collections.abc import Awaitable, Callable
+import threading
+from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +39,10 @@ from autodj.tag_edit import (
 )
 
 logger = logging.getLogger(__name__)
+
+# The largest body the route reads: eight fields of at most 500 characters,
+# even with every character escaped, plus the path.
+TAG_BODY_MAX_BYTES = 32 * 1024
 
 
 class TagEditBody(BaseModel):
@@ -96,23 +103,111 @@ def _catalog_fields(values: TagValues) -> dict[str, Any]:
     return fields
 
 
-def playing_on(stations: Any, path: str) -> str | None:
+def _same_file(first: str | Path, second: str | Path) -> bool:
+    """Whether two paths name one file, through links and letter case."""
+    try:
+        return os.path.samefile(first, second)
+    except OSError:
+        return normalize_path(os.path.realpath(first)) == normalize_path(os.path.realpath(second))
+
+
+def _on_air(player: Any) -> Iterator[tuple[str, Any]]:
+    """Each track a station is playing or about to read, with how to say it.
+
+    Browser playback reads ``current_track`` and ``next_track`` while they
+    play.  The mix bus also reads the render cursor (``_pending_entry``),
+    the render playing and the renders waiting in the render-ahead worker.
+    """
+    state = getattr(player, "_state", None)
+    playing = getattr(player, "_playing_render", None)
+    yield "playing now", getattr(state, "current_track", None)
+    yield "playing now", getattr(playing, "entry", None)
+    yield "up next", getattr(state, "next_track", None)
+    yield "up next", getattr(playing, "next_entry", None)
+    yield "up next", getattr(player, "_pending_entry", None)
+    ahead = getattr(player, "_render_ahead", None)
+    for name in ("_ready", "_fallback"):
+        render = getattr(ahead, name, None)
+        yield "up next", getattr(render, "entry", None)
+        yield "up next", getattr(render, "next_entry", None)
+
+
+def playing_on(stations: Any, path: str | Path) -> str | None:
     """Why *path* cannot be rewritten now, or ``None`` when it can.
 
     A song playing or up next on any station is refused: in browser
     playback the page reads the file while it plays, and a rewritten file
-    would shift the audio under it.
+    would shift the audio under it.  Paths are compared as files, so a link
+    or a different letter case names the same song.
     """
-    wanted = normalize_path(path)
     for runtime in stations.all():
-        state = getattr(runtime.player, "_state", None)
-        for attribute, words in (("current_track", "playing now"), ("next_track", "up next")):
-            track = getattr(state, attribute, None)
+        for words, track in _on_air(runtime.player):
             track_path = getattr(track, "path", None)
-            if isinstance(track_path, str | Path) and normalize_path(track_path) == wanted:
+            if isinstance(track_path, str | Path) and _same_file(track_path, path):
                 where = "" if runtime.slug == DEFAULT_SLUG else f" on {runtime.slug}"
                 return f"This song is {words}{where}. Save its tags once it has played."
     return None
+
+
+@contextlib.contextmanager
+def _held_still(stations: Any, target: Path) -> Iterator[None]:
+    """Keep every station from moving on while *target* is checked and renamed.
+
+    Browser playback promotes the next song under ``Player._advance_lock``;
+    holding each station's lock (in station order, never two at once
+    anywhere else) closes the gap between the last check and the rename.
+    A song that becomes current or next after the rename reads the new file
+    whole, which is safe.
+    """
+    with contextlib.ExitStack() as stack:
+        for runtime in stations.all():
+            lock = getattr(runtime.player, "_advance_lock", None)
+            if lock is not None:
+                stack.enter_context(lock)
+        busy = playing_on(stations, target)
+        if busy is not None:
+            raise TagError(busy)
+        yield
+
+
+_path_locks: dict[str, threading.Lock] = {}
+_path_locks_guard = threading.Lock()
+
+
+def _lock_for(path: str | Path) -> threading.Lock:
+    """One lock per file, held across its write and its catalog update."""
+    key = normalize_path(os.path.realpath(path))
+    with _path_locks_guard:
+        return _path_locks.setdefault(key, threading.Lock())
+
+
+def _save(library: Any, stations: Any, path: str, values: TagValues) -> str:
+    """Write the file, then the catalog; the warning to show, or ``""``.
+
+    Raises:
+        TagError: The file was not changed.
+    """
+    roots = [source["path"] for source in library.catalog.sources()]
+    with _lock_for(path):
+        write_tags(path, values, roots=roots, guard=lambda target: _held_still(stations, target))
+        warning = ""
+        try:
+            library.catalog.retag(path, _catalog_fields(values))
+        except Exception as exc:  # the file is written: say so, do not fail
+            logger.exception("Tags of %s were written but the catalog was not updated", path)
+            warning = (
+                f"The tags were saved in the file, but AutoDJ could not update its library "
+                f"({exc}). A rescan reads the new tags and analyses the song again."
+            )
+    try:
+        library.refresh()
+    except Exception as exc:
+        logger.exception("Library reload after a tag edit of %s failed", path)
+        warning = warning or (
+            f"The tags were saved, but the library did not reload ({exc}). "
+            "They show after the next reload or rescan."
+        )
+    return warning
 
 
 def install_tag_editor(
@@ -136,15 +231,14 @@ def install_tag_editor(
             values = validate_tags(body.tags)
         except TagError as exc:
             return JSONResponse(status_code=400, content={"detail": str(exc), "field": exc.field})
-        busy = playing_on(app.state.stations, path)
+        stations = app.state.stations
+        busy = playing_on(stations, path)
         if busy is not None:
             raise HTTPException(status_code=409, detail=busy)
         try:
-            await asyncio.to_thread(write_tags, path, values)
+            warning = await asyncio.to_thread(_save, library, stations, path, values)
         except TagError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        await asyncio.to_thread(library.catalog.retag, path, _catalog_fields(values))
-        await asyncio.to_thread(library.refresh)
         beets = "off"
         beets_error = ""
         beets_db = library.cfg.library.beets_db
@@ -160,7 +254,14 @@ def install_tag_editor(
         record = await describe(library, path)
         record["beets"] = beets
         record["beets_error"] = beets_error
+        record["warning"] = warning
         return record
 
 
-__all__ = ["TagEditBody", "install_tag_editor", "playing_on", "tag_form"]
+__all__ = [
+    "TAG_BODY_MAX_BYTES",
+    "TagEditBody",
+    "install_tag_editor",
+    "playing_on",
+    "tag_form",
+]

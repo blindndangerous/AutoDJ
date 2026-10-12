@@ -122,7 +122,7 @@ from autodj.stations import (
 from autodj.status_page import STATUS_PAGE_CSP, render_status_page
 from autodj.stereotool_presets import MAX_PRESET_BYTES
 from autodj.stream import EncoderUnavailableError, ListenerLimitError
-from autodj.tags_api import install_tag_editor, tag_form
+from autodj.tags_api import TAG_BODY_MAX_BYTES, install_tag_editor, tag_form
 from autodj.tls import CertificateReloader
 from autodj.version import current_version
 from autodj.worker_api import (
@@ -895,6 +895,7 @@ def create_app(
         "/api/stereo-tool-presets/upload": lambda: MAX_PRESET_BYTES + _MULTIPART_OVERHEAD_BYTES,
         "/api/schedule": lambda: _SCHEDULE_BODY_MAX_BYTES,
         "/api/machine-tokens": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/library/tags": lambda: TAG_BODY_MAX_BYTES,
         WORKER_PREFIX + "result": lambda: RESULT_BODY_MAX_BYTES,
         **{
             WORKER_PREFIX + name: (lambda: SMALL_BODY_MAX_BYTES)

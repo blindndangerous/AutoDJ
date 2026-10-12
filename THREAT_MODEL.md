@@ -195,8 +195,10 @@ next starts.
 
 `POST /api/library/tags` rewrites the tags of one recording, under the same session, Host and
 Origin policy as every other `/api` route. It is the one route that changes a music file. The
-path must name a recording the catalog holds under a registered, present source folder, so no
-browser input reaches any other file. The body may carry only the eight known tag names, each a
+path must name a recording the catalog holds under a registered, present source folder, and its
+real path (after following links) must still lie inside a registered folder, so a link swapped in
+after a scan cannot point the write elsewhere. The body is capped at 32 KiB before the route
+reads it and may carry only the eight known tag names, each a
 string that is checked (length, no control characters, year, BPM, key and ISRC shapes) before
 anything is written; tag values go into mutagen frames, never a path, command or SQL text. The
 file is tagged as a hidden copy in its own folder, read back, and renamed over the original, so a
