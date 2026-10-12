@@ -1,7 +1,7 @@
 """Tiny real audio files, made in a test's temporary folder, for tag tests.
 
 Nothing here is committed as a binary: soundfile writes a tenth of a second
-of silence as FLAC, MP3, Ogg Vorbis, Ogg Opus or WAV, and the M4A is a
+of silence as FLAC, MP3, Ogg Vorbis, Ogg Opus, WAV or AIFF, and the M4A is a
 hand-built MP4 holding only the atoms mutagen needs.
 """
 
@@ -21,8 +21,9 @@ _SOUNDFILE = {
     ".ogg": ("OGG", "VORBIS", 44100),
     ".opus": ("OGG", "OPUS", 48000),
     ".wav": ("WAV", "PCM_16", 44100),
+    ".aiff": ("AIFF", "PCM_16", 44100),
 }
-SUFFIXES = (".mp3", ".flac", ".m4a", ".ogg", ".opus", ".wav")
+SUFFIXES = (".mp3", ".flac", ".m4a", ".ogg", ".opus", ".wav", ".aiff")
 
 
 def _atom(name: bytes, payload: bytes) -> bytes:

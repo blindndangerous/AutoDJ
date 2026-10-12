@@ -12,6 +12,7 @@ when the library is managed by beets and the page asked for it.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import logging
 import os
@@ -20,8 +21,8 @@ import shutil
 import sqlite3
 import threading
 import time
-import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ from typing import Any
 from autodj.audio_meta import normalize_isrc, read_reporting_tags
 from autodj.beets import _path_candidates, parse_initial_key
 from autodj.dj_meta import musical_label
+from autodj.fsutil import fsync_directory
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,8 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _REPLACE_ATTEMPTS = 10
 _REPLACE_WAIT_S = 0.2
 _BEETS_TIMEOUT_S = 5.0
+#: The end of a write's working copy (see :func:`temp_path`).
+TEMP_SUFFIX = ".autodj-tags.tmp"
 
 # One write at a time: two edits of one file must not race their renames.
 _write_lock = threading.Lock()
@@ -187,10 +191,15 @@ def _family(audio: Any) -> str:
 
 
 def tags_writable(path: str | Path) -> bool:
-    """Whether :func:`write_tags` knows this file's kind of tags."""
+    """Whether :func:`write_tags` knows this file's kind of tags.
+
+    Any failure to read the file, including a parser error mutagen does not
+    wrap, counts as not writable: a damaged file must never break Track info.
+    """
     try:
         _family(_open(Path(path)))
-    except (TagError, OSError):
+    except Exception:  # any reader failure means "cannot edit"
+        logger.debug("Tags of %s are not editable", path, exc_info=True)
         return False
     return True
 
@@ -199,57 +208,30 @@ def _key_text(values: TagValues) -> str:
     return "" if values.key is None else musical_label(*values.key)
 
 
-def _apply_id3(tags: Any, values: TagValues) -> None:
-    from mutagen.id3 import TALB, TBPM, TCON, TDRC, TIT2, TKEY, TPE1, TSRC
-
-    frames = {
-        "title": (TIT2, values.title),
-        "artist": (TPE1, values.artist),
-        "album": (TALB, values.album),
-        "genre": (TCON, values.genre),
-        "year": (TDRC, str(values.year) if values.year else ""),
-        "bpm": (TBPM, _bpm_text(values.bpm) if values.bpm else ""),
-        "key": (TKEY, _key_text(values)),
-        "isrc": (TSRC, values.isrc),
-    }
-    for field, (frame, text) in frames.items():
-        if field not in values.changed:
-            continue
-        tags.delall(frame.__name__)
-        if field == "year":
-            tags.delall("TYER")
-        if field == "isrc":
-            tags.delall("TXXX:ISRC")
-        if text:
-            tags.add(frame(encoding=3, text=[text]))
-
-
-def _apply_vorbis(tags: Any, values: TagValues) -> None:
-    names = {
-        "title": ("title", values.title),
-        "artist": ("artist", values.artist),
-        "album": ("album", values.album),
-        "genre": ("genre", values.genre),
-        "year": ("date", str(values.year) if values.year else ""),
-        "bpm": ("bpm", _bpm_text(values.bpm) if values.bpm else ""),
-        "key": ("initialkey", _key_text(values)),
-        "isrc": ("isrc", values.isrc),
-    }
-    for field, (name, text) in names.items():
-        if field not in values.changed:
-            continue
-        stale = [name, "year"] if field == "year" else [name]
-        for key in stale:
-            if key in tags:
-                del tags[key]
-        if text:
-            tags[name] = [text]
-
-
-def _apply_mp4(tags: Any, values: TagValues) -> None:
-    from mutagen.mp4 import MP4FreeForm
-
-    names = {
+# Where each family keeps each field, and the older keys a write removes so
+# a stale value cannot shadow the new one.
+_KEYS = {
+    "id3": {
+        "title": "TIT2",
+        "artist": "TPE1",
+        "album": "TALB",
+        "genre": "TCON",
+        "year": "TDRC",
+        "bpm": "TBPM",
+        "key": "TKEY",
+        "isrc": "TSRC",
+    },
+    "vorbis": {
+        "title": "title",
+        "artist": "artist",
+        "album": "album",
+        "genre": "genre",
+        "year": "date",
+        "bpm": "bpm",
+        "key": "initialkey",
+        "isrc": "isrc",
+    },
+    "mp4": {
         "title": "\xa9nam",
         "artist": "\xa9ART",
         "album": "\xa9alb",
@@ -258,25 +240,83 @@ def _apply_mp4(tags: Any, values: TagValues) -> None:
         "bpm": "tmpo",
         "key": "----:com.apple.iTunes:initialkey",
         "isrc": "----:com.apple.iTunes:ISRC",
-    }
-    for field, name in names.items():
+    },
+}
+_STALE_KEYS: dict[str, dict[str, tuple[str, ...]]] = {
+    "id3": {"year": ("TYER", "TDAT"), "isrc": ("TXXX:ISRC",)},
+    "vorbis": {"year": ("year",)},
+    "mp4": {},
+}
+
+
+def _text(values: TagValues, field: str, family: str) -> str:
+    """The text *field* is written as in *family*; ``""`` removes the tag."""
+    if field == "year":
+        return str(values.year) if values.year else ""
+    if field == "bpm":
+        if not values.bpm:
+            return ""
+        # MP4 keeps BPM as a whole number.
+        return str(round(values.bpm)) if family == "mp4" else _bpm_text(values.bpm)
+    if field == "key":
+        return _key_text(values)
+    return str(getattr(values, field))
+
+
+def _delete(tags: Any, family: str, key: str) -> None:
+    if family == "id3":
+        tags.delall(key)
+    elif key in tags:
+        del tags[key]
+
+
+def _set(tags: Any, family: str, key: str, text: str) -> None:
+    if family == "id3":
+        import mutagen.id3
+
+        tags.add(getattr(mutagen.id3, key)(encoding=3, text=[text]))
+    elif family == "mp4" and key == "tmpo":
+        tags[key] = [int(text)]
+    elif family == "mp4" and key.startswith("----:"):
+        from mutagen.mp4 import MP4FreeForm
+
+        tags[key] = [MP4FreeForm(text.encode("utf-8"))]
+    else:
+        tags[key] = [text]
+
+
+def _read(tags: Any, family: str, key: str) -> str:
+    """The first value of *key* as text, read the way :func:`_set` wrote it."""
+    if family == "id3":
+        frames = tags.getall(key)
+        items = list(getattr(frames[0], "text", [])) if frames else []
+    else:
+        items = list(tags.get(key) or [])
+    if not items:
+        return ""
+    item = items[0]
+    return item.decode("utf-8", "replace") if isinstance(item, bytes) else str(item)
+
+
+def _apply(tags: Any, family: str, values: TagValues) -> None:
+    for field in TAG_FIELDS:
         if field not in values.changed:
             continue
-        if name in tags:
-            del tags[name]
-        if field == "year":
-            value: Any = [str(values.year)] if values.year else None
-        elif field == "bpm":
-            value = [round(values.bpm)] if values.bpm else None
-        elif field == "key":
-            value = [MP4FreeForm(_key_text(values).encode())] if values.key else None
-        elif field == "isrc":
-            value = [MP4FreeForm(values.isrc.encode())] if values.isrc else None
-        else:
-            text = getattr(values, field)
-            value = [text] if text else None
-        if value is not None:
-            tags[name] = value
+        key = _KEYS[family][field]
+        for stale in (key, *_STALE_KEYS[family].get(field, ())):
+            _delete(tags, family, stale)
+        text = _text(values, field, family)
+        if text:
+            _set(tags, family, key, text)
+
+
+def _verify(tags: Any, family: str, values: TagValues) -> None:
+    """Refuse a copy whose changed fields do not read back as written."""
+    for field in TAG_FIELDS:
+        if field not in values.changed:
+            continue
+        if _read(tags, family, _KEYS[family][field]) != _text(values, field, family):
+            raise TagError("The tags did not read back as written, so the file was not changed.")
 
 
 def _replace(source: Path, target: Path) -> None:
@@ -306,65 +346,136 @@ def _os_message(exc: OSError) -> str:
     return f"The tags could not be written, so the file was not changed: {exc.strerror or exc}"
 
 
-def write_tags(path: str | Path, values: TagValues) -> None:
+def temp_path(target: Path) -> Path:
+    """The one working copy a write of *target* uses, beside it.
+
+    Fixed per file, so a copy left by a crash is replaced by the next write
+    of that file instead of piling up; not a music suffix, so a library scan
+    never lists it.
+    """
+    return target.with_name(f".{target.name}{TEMP_SUFFIX}")
+
+
+def inside_roots(path: str | Path, roots: Iterable[str | Path]) -> bool:
+    """Whether the real *path* lies inside one of the real *roots*."""
+    real = os.path.normcase(os.path.realpath(path))
+    for root in roots:
+        real_root = os.path.normcase(os.path.realpath(root))
+        try:
+            if os.path.commonpath([real_root, real]) == real_root:
+                return True
+        except ValueError:  # different drives on Windows
+            continue
+    return False
+
+
+def _flush(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDWR | getattr(os, "O_BINARY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _keep_owner(source: os.stat_result, temp: Path) -> None:
+    """Give the copy the original's owner and group where the system allows it."""
+    chown = getattr(os, "chown", None)
+    if chown is None:
+        return
+    try:
+        chown(temp, source.st_uid, source.st_gid)
+    except OSError:
+        logger.debug("Could not keep the owner of %s", temp, exc_info=True)
+
+
+def write_tags(
+    path: str | Path,
+    values: TagValues,
+    *,
+    roots: Iterable[str | Path] | None = None,
+    guard: Callable[[Path], AbstractContextManager[Any]] | None = None,
+) -> Path:
     """Write *values* into the file at *path*, or leave it exactly as it was.
 
-    The tags are written to a copy beside the file, read back, and the copy
-    then replaces the original in one rename, so a reader sees either the
-    old file or the new one, never half of each.
+    The tags are written to a copy beside the file, flushed to disk and read
+    back field by field, and the copy then replaces the original in one
+    rename, after which the folder is flushed too.  A reader sees either the
+    old file or the new one, never half of each.  An ID3 tag keeps its
+    version (2.3 stays 2.3).  The copy keeps the original's permissions and,
+    where allowed, its owner; the modification time is the time of the
+    write, and a hard link to the old file keeps the old file.
+
+    Args:
+        path: The recording.  Its real path is written, so a link stays a
+            link and the file keeps the letter case of its name.
+        values: What to write.
+        roots: When given, the real path must lie inside one of these
+            folders; a link pointing out of them is refused.
+        guard: Called with the real path; the rename runs inside the
+            context it returns, which may raise :class:`TagError` on entry
+            to stop the write (a last check that the file is not on air).
+
+    Returns:
+        The real path written.
 
     Raises:
-        TagError: The file's kind of tags is not supported, or the write
-            failed; the original is unchanged.
+        TagError: The file's kind of tags is not supported, it is outside
+            *roots*, or the write failed; the original is unchanged.
         TagFileBusyError: The file stayed open in another program.
     """
     import mutagen
 
-    # The real path keeps the file name as it is on disk (the catalog folds
-    # case on Windows) and rewrites a linked file rather than the link.
     target = Path(os.path.realpath(path))
+    if roots is not None and not inside_roots(target, roots):
+        raise TagError(
+            "This file is outside the library folders, so AutoDJ will not change its tags."
+        )
     with _write_lock:
-        family = _family(_open(target))
-        kind = type(mutagen.File(str(target)))
-        # Not a music suffix, so a library scan running now never lists it.
-        temp = target.with_name(f".{target.name}.{uuid.uuid4().hex[:8]}.autodj-tags.tmp")
+        original = _open(target)
+        family = _family(original)
+        kind = type(original)
+        id3_version = 3 if family == "id3" and original.tags.version[1] == 3 else 4
+        temp = temp_path(target)
         try:
             try:
+                temp.unlink(missing_ok=True)
                 shutil.copy2(target, temp)
+                _keep_owner(target.stat(), temp)
                 audio = _open(temp, kind)
-                {"id3": _apply_id3, "vorbis": _apply_vorbis, "mp4": _apply_mp4}[family](
-                    audio.tags, values
-                )
-                audio.save()
-                check = _open(temp, kind)
+                _apply(audio.tags, family, values)
+                if family == "id3":
+                    if id3_version == 3:
+                        # 2.3 has no TDRC: the year goes back to TYER.
+                        audio.tags.update_to_v23()
+                    audio.save(v2_version=id3_version)
+                else:
+                    audio.save()
+                _flush(temp)
+                _verify(_open(temp, kind).tags, family, values)
             except OSError as exc:
                 raise TagError(_os_message(exc)) from exc
             except mutagen.MutagenError as exc:
                 raise TagError(
                     f"The tags could not be written, so the file was not changed: {exc}"
                 ) from exc
-            if "title" in values.changed and _first_text(check, family, "title") != values.title:
-                raise TagError(
-                    "The tags did not read back as written, so the file was not changed."
-                )
             try:
-                _replace(temp, target)
+                with guard(target) if guard is not None else contextlib.nullcontext():
+                    _replace(temp, target)
+                fsync_directory(target.parent)
             except OSError as exc:
                 raise TagError(_os_message(exc)) from exc
         finally:
             temp.unlink(missing_ok=True)
-
-
-def _first_text(audio: Any, family: str, field: str) -> str:
-    key = {"id3": "TIT2", "vorbis": "title", "mp4": "\xa9nam"}[family]
-    value = audio.tags.get(key)
-    items = getattr(value, "text", value) or [""]
-    return str(items[0])
+    return target
 
 
 def read_isrc(path: str | Path) -> str:
-    """The file's ISRC, or ``""``."""
-    return read_reporting_tags(path)[0]
+    """The file's ISRC, or ``""``, also when the file cannot be parsed."""
+    try:
+        return read_reporting_tags(path)[0]
+    except Exception:  # a damaged file must never break Track info
+        logger.debug("Could not read the ISRC of %s", path, exc_info=True)
+        return ""
 
 
 # ---------------------------------------------------------------------------
