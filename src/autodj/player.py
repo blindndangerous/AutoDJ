@@ -375,10 +375,11 @@ _OUTSIDE_ITS = re.compile(r"outside its (hours|days|dates)\b")
 
 
 def _closure_words(context: _PickContext) -> str:
-    """What holds the closed categories back, in words: "hours", "days and dates" and so on.
+    """What holds the closed categories back, in words, such as "hours" or "days or dates".
 
-    Read from the reasons the category index gives (``"outside its dates: ..."``);
-    "hours" when none says.
+    Read from the reasons the category index gives (``"outside its dates: ..."``),
+    in the order days, hours, dates, joined with commas and a final "or";
+    "hours" when no reason says.
     """
     found = sorted(
         {

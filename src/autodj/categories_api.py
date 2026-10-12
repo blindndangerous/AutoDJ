@@ -108,7 +108,7 @@ def install_categories(
         return {
             "daypart_text": describe_daypart(category),
             "allowed_now": refused is None,
-            # "hours" or "dates": what holds the songs back now.
+            # "hours", "days" or "dates": what holds the songs back now; None when nothing does.
             "outside_now": refused,
         }
 
