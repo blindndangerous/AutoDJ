@@ -31,6 +31,7 @@ from autodj.categories import (
     summary,
 )
 from autodj.clockwheel_store import ClockwheelStore
+from autodj.stations import StationPaths
 
 
 def _rejected(field: str, message: str, status: int = 400) -> JSONResponse:
@@ -78,7 +79,7 @@ def install_categories(app: FastAPI, bridge: Any) -> None:
         return found
 
     def clock_root() -> Path:
-        return Path(bridge.player._cfg.index.active_dir) / "clockwheels"
+        return StationPaths.default(bridge.player._cfg).clockwheels
 
     def listing(categories: CategoryIndex) -> dict[str, Any]:
         saved, results = categories.resolutions()

@@ -86,7 +86,9 @@ def relay_status_path(cfg: AutoDJConfig) -> Path:
     The running server rewrites it whenever a relay changes state, and
     ``autodj doctor`` reads it.
     """
-    return Path(cfg.index.index_dir) / "relay-status.json"
+    from autodj.stations import StationPaths
+
+    return StationPaths.default(cfg).relay_status
 
 
 def describe_error(exc: BaseException) -> str:

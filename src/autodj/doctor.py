@@ -194,7 +194,9 @@ def _beets_db_check(cfg: AutoDJConfig) -> DoctorCheck:
 
 def _saved_settings_check(cfg: AutoDJConfig) -> DoctorCheck:
     """Report obsolete saved settings and offer optional cleanup."""
-    path = cfg.index.active_dir / "web_state.json"
+    from autodj.stations import StationPaths
+
+    path = StationPaths.default(cfg).web_state
     if not path.exists():
         return DoctorCheck("saved-settings", CheckStatus.PASS, "no saved settings")
     try:

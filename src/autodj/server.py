@@ -48,7 +48,7 @@ import threading
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
 from dataclasses import dataclass, field, fields
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, BinaryIO, Literal
 
@@ -106,7 +106,6 @@ from autodj.listener_access import (
 )
 from autodj.machine_tokens import MachineTokenStore
 from autodj.model_identity import CachedModelCommit
-from autodj.nowplaying import NowPlaying
 from autodj.pairing import DeviceRegistry
 from autodj.playlog import (
     missing_fields,
@@ -144,12 +143,18 @@ from autodj.settings_bodies import (
     VolumeBody,
     validate_playback_choices,
 )
+from autodj.stations import (
+    SharedLibrary,
+    StationRegistry,
+    StationRuntime,
+    quiesce_cache_writers,
+    tick_stream_workers,
+)
 from autodj.status_page import STATUS_PAGE_CSP, render_status_page
 from autodj.stereotool_presets import MAX_PRESET_BYTES
 from autodj.stream import EncoderUnavailableError, ListenerLimitError
 from autodj.tls import CertificateReloader
 from autodj.version import current_version
-from autodj.webhooks import WebhookWorker
 from autodj.worker_api import (
     MACHINE_SCOPES,
     RESULT_BODY_MAX_BYTES,
@@ -163,7 +168,6 @@ if TYPE_CHECKING:
     from autodj.indexer import IndexEntry
     from autodj.library import LibraryManager
     from autodj.similarity import SimilarityIndex
-    from autodj.stream import StreamOutput
 
 logger = logging.getLogger(__name__)
 
@@ -417,24 +421,9 @@ async def _broadcast_state_once(
         failures.succeeded()
 
 
-def _quiesce_cache_writers(
-    bridge: PlayerBridge,
-    player_thread: threading.Thread | None,
-    timeout_s: float,
-) -> bool:
-    """Wait up to one shared deadline for every possible cache writer."""
-    deadline = time.monotonic() + timeout_s
-    if player_thread is not None:
-        player_thread.join(max(0.0, deadline - time.monotonic()))
-        if player_thread.is_alive():
-            return False
-
-    wait_for_analysis = None
-    if hasattr(type(bridge.player), "wait_for_background_analysis"):
-        wait_for_analysis = bridge.player.wait_for_background_analysis
-    if not callable(wait_for_analysis):
-        return True
-    return bool(wait_for_analysis(timeout=max(0.0, deadline - time.monotonic())))
+# Moved to autodj.stations; still importable from here.
+_quiesce_cache_writers = quiesce_cache_writers
+_tick_stream_workers = tick_stream_workers
 
 
 def _advertised_server_origin(policy: SecurityPolicy) -> str:
@@ -924,210 +913,6 @@ def _header_text(value: str) -> str:
     return value.encode("utf-8").decode("latin-1")
 
 
-def _start_stream_station(
-    bridge: PlayerBridge,
-    liner_folder: Path,
-    loop: asyncio.AbstractEventLoop,
-    first_track: IndexEntry | None = None,
-    recorder: Recorder | None = None,
-) -> StreamOutput:
-    """Build the stream output, liner scheduler and station; attach them.
-
-    Starts the MP3 encoder, registers the stream as an output of the
-    player's mix bus, and hands the stream to the station, which reads its
-    listener count and starts a set on the first listener.  Configured
-    relays (``[stream.relays.<name>]``) start connecting too; while any is
-    enabled the station plays as if it always had a listener, because the
-    relay's own listeners are invisible to AutoDJ.
-
-    Args:
-        bridge: The bridge whose player was built in stream mode.
-        liner_folder: Where liners are read from.
-        loop: The event loop listeners are served on.
-        first_track: The first set's first track (``--seed``), if given.
-
-    Returns:
-        The stream output (closed by :func:`_stop_stream_station`).
-    """
-    from autodj import stream as stream_module
-    from autodj.liner_scheduler import LinerScheduler
-    from autodj.station import Station
-
-    player = bridge.player
-    cfg = player._cfg
-    bus = player.bus
-    stream_out = stream_module.StreamOutput(
-        cfg.stream.bitrate,
-        cfg.stream.max_listeners,
-        encoder_factory=stream_module.FfmpegEncoder,
-        loop=loop,
-    )
-    relays = None
-    if cfg.stream.relays:
-        from autodj.relay import RelayManager, relay_status_path
-
-        relays = RelayManager(
-            cfg.stream.relays.values(),
-            stream_out,
-            make_output=lambda bitrate: stream_module.StreamOutput(
-                bitrate, 0, encoder_factory=stream_module.FfmpegEncoder, loop=loop
-            ),
-            station_name=lambda: cfg.stream.station_name,
-            status_path=relay_status_path(cfg),
-        )
-    relays_active = relays is not None and relays.active
-    station = Station(
-        bus,
-        stream_out,
-        player,
-        cfg.stream.idle_grace_seconds,
-        on_event=bridge.announce_station_event,
-        forget_track=bridge.forget_track,
-        continuous=lambda: (
-            cfg.stream.continuous or relays_active or bool(recorder and recorder.wanted)
-        ),
-    )
-    scheduler = LinerScheduler(
-        cfg.playback,
-        liner_folder,
-        bus,
-        can_fire=lambda: station.state == "playing",
-        vocal_start=player.vocal_start_s,
-        registered_liners=functools.partial(_registered_liners, bridge)
-        if bridge.library is not None
-        else None,
-        path_decoder=functools.partial(_processed_liner, bridge)
-        if bridge.library is not None
-        else None,
-    )
-    if first_track is not None:
-        station.start_with(first_track, "seed")
-    bridge.attach_stream(stream=stream_out, station=station, relays=relays)
-    bridge.attach_liner_scheduler(scheduler)
-    if recorder is not None:
-        stream_out.add_sink(recorder)
-    bus.add_output(stream_out)
-    if relays is not None:
-        for output in relays.outputs:
-            bus.add_output(output)
-        relays.start()
-    return stream_out
-
-
-def _start_server_audio_liners(bridge: PlayerBridge, liner_folder: Path) -> None:
-    """Fire voice liners into the plain ``--server-audio`` mix bus.
-
-    Same triggers, rotation and ducking as stream mode; automatic
-    liners fire only while a set is playing and not paused, like the
-    station's "playing" state.
-
-    Args:
-        bridge: The bridge whose player mixes on the server.
-        liner_folder: Where liners are read from.
-    """
-    from autodj.liner_scheduler import LinerScheduler
-
-    player = bridge.player
-    bus = player.bus
-    scheduler = LinerScheduler(
-        player._cfg.playback,
-        liner_folder,
-        bus,
-        can_fire=lambda: bus.playing and not player._state.is_paused,
-        vocal_start=player.vocal_start_s,
-        registered_liners=functools.partial(_registered_liners, bridge)
-        if bridge.library is not None
-        else None,
-        path_decoder=functools.partial(_processed_liner, bridge)
-        if bridge.library is not None
-        else None,
-    )
-    bridge.attach_liner_scheduler(scheduler)
-
-
-def _registered_liners(bridge: PlayerBridge) -> list[tuple[str, Path]]:
-    return [
-        (record["id"], Path(entry.path))
-        for entry in bridge.library.entries_snapshot("liner")
-        if (record := bridge.library.catalog.record_for_path(entry.path)) is not None
-    ]
-
-
-def _processed_liner(bridge: PlayerBridge, path: Path) -> Any:
-    from autodj.stereo import SAMPLE_RATE
-
-    entry = bridge.library.entry_for_path(path)
-    if entry is None:
-        raise ValueError("The liner is no longer registered")
-    audio = bridge.player._load_playout_audio(entry)
-    points = bridge.player.saved_points(entry)
-    first = round((points.get("start") or 0.0) * SAMPLE_RATE)
-    last = round((points.get("end") or entry.length) * SAMPLE_RATE)
-    return audio[first:last]
-
-
-async def _stop_stream_station(bridge: PlayerBridge, stream_out: StreamOutput) -> None:
-    """Disconnect listeners, stop the encoder and the liner worker.
-
-    Each step is attempted even if an earlier one fails, and nothing is
-    raised: the rest of shutdown (player stop, cache flush) must still run.
-    """
-    remove_output = bridge.player.bus.remove_output
-    relay_steps: list[tuple[str, Callable[[], None]]] = []
-    if bridge.relays is not None:
-        relay_steps = [
-            ("detaching a relay encoder", functools.partial(remove_output, output))
-            for output in bridge.relays.outputs
-        ]
-        relay_steps.append(("stopping the relays", bridge.relays.close))
-    steps: tuple[tuple[str, Callable[[], None]], ...] = (
-        *relay_steps,
-        ("detaching", functools.partial(bridge.player.bus.remove_output, stream_out)),
-        ("closing", stream_out.close),
-        ("stopping the liner worker for", bridge.shutdown_liner_worker),
-    )
-    for what, step in steps:
-        try:
-            await asyncio.to_thread(step)
-        except Exception:
-            logger.exception("Stopping the stream: %s it failed", what)
-
-
-async def _tick_every_second(
-    name: str, worker: Any, sleep: Callable[[float], Awaitable[None]]
-) -> None:
-    """Call ``worker.tick`` off the event loop about once a second, forever.
-
-    A failed tick is logged and the next one still runs.
-    """
-    while True:
-        await sleep(1)
-        try:
-            await asyncio.to_thread(worker.tick)
-        except Exception:
-            logger.exception("Stream %s tick failed", name)
-
-
-async def _tick_stream_workers(
-    bridge: PlayerBridge, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
-) -> None:
-    """Tick the station and the liner scheduler once a second, independently.
-
-    Each has its own loop, so a slow liner decode (up to 30 s through
-    ffmpeg) never holds up the station's idle check, and a failure in one
-    never stops the other.  Runs until cancelled.
-
-    Args:
-        bridge: The bridge holding the station and liner scheduler.
-        sleep: ``asyncio.sleep`` replacement for tests.
-    """
-    workers = (("station", bridge.station), ("liner scheduler", bridge.liner_scheduler))
-    async with asyncio.TaskGroup() as group:
-        for name, worker in workers:
-            if worker is not None:
-                group.create_task(_tick_every_second(name, worker, sleep))
-
-
 # A schedule event is a few hundred bytes; this leaves ample room.
 _SCHEDULE_BODY_MAX_BYTES = 16 * 1024
 
@@ -1157,40 +942,23 @@ def create_app(
     Returns:
         A configured :class:`fastapi.FastAPI` instance.
     """
-    # Connected WebSocket clients — populated at runtime
-    _ws_clients: set[_WebSocketClient] = set()
-    _ws_lock = asyncio.Lock()
     _lyrics_read_gate = asyncio.Semaphore(1)
     # The station time zone: scheduled events and the feed's daily peak.
     station_timezone = bridge.player._cfg.server.station_timezone or system_timezone()
-    nowplaying = NowPlaying(bridge, timezone=station_timezone)
-    webhooks = WebhookWorker(getattr(bridge.player._cfg, "webhooks", ()))
-
-    # Both run on playout threads (mix bus, station), so a fault here is
-    # logged and never reaches playback.
-    def _track_started() -> None:
-        try:
-            webhooks.submit(nowplaying.refresh())
-        except Exception:
-            logger.exception("Could not publish now-playing state")
-
-    def _public_state_changed() -> None:
-        try:
-            nowplaying.refresh()
-        except Exception:
-            logger.exception("Could not refresh now-playing state")
-
-    cfg = bridge.player._cfg
-    stream_cfg = cfg.stream
-    recorder: Recorder | None = None
-    listener_access = (
-        ListenerAccess(
-            Path(cfg.index.active_dir) / "listener_bans.json",
-            stream_cfg.max_listeners_per_address,
-        )
-        if stream_mode or (isinstance(bridge, PlayerBridge) and bridge.stream_mode)
-        else None
+    # The one station this server plays; its state lives in StationPaths.default.
+    runtime = StationRuntime(
+        bridge,
+        timezone=station_timezone,
+        player_thread=player_thread,
+        stream_mode=stream_mode,
+        server_audio=server_audio,
+        first_track=stream_first_track,
     )
+    stations = StationRegistry(runtime)
+    nowplaying = runtime.nowplaying
+    webhooks = runtime.webhooks
+    listener_access = runtime.listener_access
+    stream_cfg = bridge.player._cfg.stream
     listener_auth_limiter = ListenerAuthLimiter()
 
     async def _read_lyrics_owned(path: str) -> list[dict[str, object]]:
@@ -1217,128 +985,25 @@ def create_app(
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-        """FastAPI lifespan: start/stop background tasks."""
-        nonlocal recorder
-        station_schedule.start()
-        loop = asyncio.get_running_loop()
-
-        def schedule_track_changed() -> None:
-            # The mix-bus thread calls this; it only hands over to the loop.
-            with contextlib.suppress(RuntimeError):  # the loop closed at shutdown
-                loop.call_soon_threadsafe(station_schedule.track_changed)
-
-        bridge.scheduler_track_changed = schedule_track_changed
-        schedule_ticker = asyncio.create_task(_tick_schedule())
-        stream_out: StreamOutput | None = None
-        stream_ticker: asyncio.Task[None] | None = None
-        if stream_mode:
-            recorder = await asyncio.to_thread(
-                Recorder,
-                cfg.recording,
-                Path(cfg.index.active_dir) / "recording.json",
-                lambda: cfg.stream.station_name,
-                station_timezone,
-            )
-            stream_out = await asyncio.to_thread(
-                _start_stream_station,
-                bridge,
-                _resolve_liner_folder(),
-                asyncio.get_running_loop(),
-                stream_first_track,
-                recorder,
-            )
-            stream_ticker = asyncio.create_task(_tick_stream_workers(bridge))
-        elif server_audio:
-            await asyncio.to_thread(_start_server_audio_liners, bridge, _resolve_liner_folder())
-            stream_ticker = asyncio.create_task(_tick_stream_workers(bridge))
-        if bridge.liner_scheduler is not None:
-            # The time check after the hour plays where an automatic liner would.
-            bridge.liner_scheduler.announcement = time_checks.due_audio
-        broadcast = asyncio.create_task(_broadcast_loop())
-        library_ticker = None
-        if bridge.library is not None:
-            bridge.library.start_scan()
-            library_ticker = asyncio.create_task(_tick_library())
-        webhooks.start()
+        """FastAPI lifespan: start and stop the station and the shared library."""
+        library = SharedLibrary(bridge.library, stations)
+        for station in stations.all():
+            await station.start()
+        await library.start()
         STARTUP_COMPLETE.set()
         try:
             yield
         finally:
-            bridge.scheduler_track_changed = None
-            schedule_ticker.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await schedule_ticker
-            webhooks.close()
-            # Graceful teardown.  Order matters:
-            #   1. Tell the Player thread to leave its wait-loop.  It is
-            #      a daemon thread so the process can exit either way,
-            #      but a clean stop lets sounddevice release
-            #      OS handles instead of being torn down mid-call.
-            #   2. Join the main Player thread, then every registered
-            #      background analysis worker before closing their cache.
-            #   3. Flush and close the DJ-meta sidecar after all writers exit.
-            #   4. Cancel the broadcast + watcher tasks last and await
-            #      them with CancelledError suppressed so asyncio does
-            #      not log "Task was destroyed but it is pending" on
-            #      Ctrl+C exit.
             logger.info("Shutting down...")
-            # Stream first: disconnect listeners and stop the encoder, then
-            # the station's ticks and the liner worker, then the player.
-            if stream_out is not None:
-                await _stop_stream_station(bridge, stream_out)
-            if recorder is not None:
-                await asyncio.to_thread(recorder.close)
-                recorder = None
-            if stream_ticker is not None:
-                stream_ticker.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await stream_ticker
-            if server_audio:
-                bridge.shutdown_liner_worker()
-            try:
-                bridge.player._state.should_stop = True
-                bridge.player._skip_event.set()
-            except Exception:  # pragma: no cover -- defensive log-only path
-                logger.debug("shutdown: player stop signal failed", exc_info=True)
-            has_background_writers = hasattr(type(bridge.player), "wait_for_background_analysis")
-            if player_thread is None and not has_background_writers:
-                writers_quiesced = True
-            else:
-                writers_quiesced = await asyncio.to_thread(
-                    _quiesce_cache_writers,
-                    bridge,
-                    player_thread,
-                    _SHUTDOWN_TIMEOUT_S,
-                )
-            cache_closed = False
-            if writers_quiesced:
-                try:
-                    from autodj.dj_meta import close_cache
-
-                    close_cache()
-                    cache_closed = True
-                except Exception:  # pragma: no cover -- defensive shutdown logging
-                    logger.debug("shutdown: DJ-meta close failed", exc_info=True)
-            else:
+            writers_quiesced, cache_closed = await stations.shutdown(library, _SHUTDOWN_TIMEOUT_S)
+            if writers_quiesced and cache_closed:
+                logger.info("Server stopped cleanly.")
+            elif not writers_quiesced:
                 logger.warning(
                     "Degraded shutdown: DJ-meta cache remains open because writers "
                     "did not stop within %.2f seconds",
                     _SHUTDOWN_TIMEOUT_S,
                 )
-            if library_ticker is not None:
-                library_ticker.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await library_ticker
-                await asyncio.to_thread(bridge.library.close)
-            master = getattr(bridge.player, "_continuous_master", None)
-            if master is not None:
-                await asyncio.to_thread(master.close)
-            broadcast.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await broadcast
-            if writers_quiesced and cache_closed:
-                logger.info("Server stopped cleanly.")
-            elif not writers_quiesced:
                 logger.warning(
                     "Server shutdown completed in degraded mode: active cache writers "
                     "remain; DJ-meta cache left open."
@@ -1347,32 +1012,6 @@ def create_app(
                 logger.warning(
                     "Server shutdown completed in degraded mode: DJ-meta cache could not be closed."
                 )
-
-    async def _tick_library() -> None:
-        from autodj.player import apply_repeat_windows
-
-        def tick() -> None:
-            bridge.library.tick()
-            apply_repeat_windows(bridge.player)
-
-        while True:
-            await asyncio.to_thread(tick)
-            await asyncio.sleep(2)
-
-    async def _tick_schedule() -> None:
-        """Run due scheduled events once a second; a failure never stops the timer."""
-        while True:
-            await asyncio.sleep(1)
-            try:
-                await station_schedule.tick()
-            except Exception:
-                logger.exception("Scheduler tick failed")
-            try:
-                time_checks.tick(
-                    datetime.now(time_checks.zone), bridge.player._state.current_track is not None
-                )
-            except Exception:
-                logger.exception("Time check tick failed")
 
     # No /docs, /redoc or /openapi.json: the web UI does not use them, and
     # a full map of every route and body schema is reconnaissance material
@@ -1386,6 +1025,7 @@ def create_app(
         openapi_url=None,
     )
     app.state.listener_access = listener_access
+    app.state.stations = stations
 
     @app.exception_handler(RequestValidationError)
     async def _validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
@@ -1418,8 +1058,8 @@ def create_app(
         secure_cookie=secure_cookie,
         device_is_active=(device_registry.is_active if device_registry is not None else None),
     )
-    bridge.public_state_changed = _public_state_changed
-    bridge.track_started_callback = _track_started
+    bridge.public_state_changed = runtime.public_state_changed
+    bridge.track_started_callback = runtime.track_started
     # Read-only handles for serve()'s startup banner and for tests; the
     # routes and the middleware use these same objects directly.
     app.state.security_policy = policy
@@ -1545,8 +1185,8 @@ def create_app(
     async def api_status() -> JSONResponse:
         """Return the current player state snapshot."""
         state = await asyncio.to_thread(bridge.get_state)
-        if recorder is not None:
-            state["recording"] = recorder.status()
+        if runtime.recorder is not None:
+            state["recording"] = runtime.recorder.status()
         return JSONResponse(state)
 
     @app.get("/api/auth/status")
@@ -1998,6 +1638,7 @@ def create_app(
             ValueError: Not in stream mode, or the call is not possible now.
             OSError: The change was made but its state file could not be saved.
         """
+        recorder = runtime.recorder
         if recorder is None:
             raise ValueError("Recording requires stream mode")
         return await asyncio.to_thread(call, recorder)
@@ -2135,10 +1776,7 @@ def create_app(
         """Return the ProfileStore in ``<index_dir>/profiles``."""
         from autodj.profiles import ProfileStore
 
-        cfg = bridge.player._cfg
-        # <index_dir>/profiles: shared by every named index.
-        root = Path(cfg.index.active_dir).parent / "profiles"
-        return ProfileStore(root)
+        return ProfileStore(runtime.paths.profiles)
 
     @app.get("/api/profiles")
     async def api_profiles() -> dict:
@@ -2264,8 +1902,8 @@ def create_app(
             await _publish_schedule({"type": "cart_changed"})
             applied.append("cart_page")
         bridge.save_persistent_state()
-        if recorder is not None:
-            recorder.show_changed()
+        if runtime.recorder is not None:
+            runtime.recorder.show_changed()
         return {"applied": applied, "name": name}
 
     @app.get("/api/liners")
@@ -2338,11 +1976,7 @@ def create_app(
 
     def _resolve_liner_folder() -> Path:
         """Return the configured liner folder, defaulting under index_dir."""
-        cfg = bridge.player._cfg
-        folder_str = cfg.playback.liners_folder
-        if not folder_str:
-            folder_str = str(Path(cfg.index.active_dir) / "liners")
-        return Path(folder_str)
+        return runtime.paths.liners
 
     @app.post("/api/liners/upload")
     async def api_liner_upload(
@@ -2878,7 +2512,7 @@ def create_app(
         return library.snapshot()
 
     def _clock_store() -> ClockwheelStore:
-        return ClockwheelStore(Path(bridge.player._cfg.index.active_dir) / "clockwheels")
+        return ClockwheelStore(runtime.paths.clockwheels)
 
     def _clock_setting(library: Any) -> dict:
         setting = library.catalog.get_setting("clock", {})
@@ -3299,9 +2933,9 @@ def create_app(
             handler_task=asyncio.current_task(),
         )
         client_host = getattr(getattr(websocket, "client", None), "host", "unknown")
-        async with _ws_lock:
-            _ws_clients.add(client)
-            client_count = len(_ws_clients)
+        async with runtime.ws_lock:
+            runtime.ws_clients.add(client)
+            client_count = len(runtime.ws_clients)
         logger.info(
             "WebSocket connected: %s (%d active client%s)",
             client_host,
@@ -3329,9 +2963,9 @@ def create_app(
                 raise
             disconnect_code = client.failure_code
         finally:
-            async with _ws_lock:
-                _ws_clients.discard(client)
-                remaining = len(_ws_clients)
+            async with runtime.ws_lock:
+                runtime.ws_clients.discard(client)
+                remaining = len(runtime.ws_clients)
             logger.info(
                 "WebSocket disconnected: %s (%d active client%s remain)",
                 client_host,
@@ -3356,21 +2990,25 @@ def create_app(
                 # One revision per tick covers churn, encoder resets and expired bans.
                 await asyncio.to_thread(listener_access.listeners)
                 await asyncio.to_thread(listener_access.prune_expired)
+            recorder = runtime.recorder
             await _broadcast_state_once(
                 bridge,
-                _ws_clients,
-                _ws_lock,
+                runtime.ws_clients,
+                runtime.ws_lock,
                 failures,
                 listener_access.revision if listener_access is not None else None,
                 recorder.status if recorder is not None else None,
             )
 
+    runtime.broadcast = _broadcast_loop
+
     async def _publish_schedule(message: dict[str, Any]) -> None:
-        await _broadcast_and_prune(_ws_clients, _ws_lock, json.dumps(message))
+        await _broadcast_and_prune(runtime.ws_clients, runtime.ws_lock, json.dumps(message))
 
     from autodj.carts import install_carts
 
     cart_store, cart_action = install_carts(app, bridge, _publish_schedule, _resolve_liner_folder)
+    runtime.carts = cart_store
 
     def _liner_names() -> list[str]:
         from autodj.liners import LinerLibrary
@@ -3390,6 +3028,7 @@ def create_app(
         select_clock=lambda name: _select_clock(_catalog_library(), name),
         publish=_publish_schedule,
     )
+    runtime.schedule = station_schedule
     station_schedule.register(cart_action)
 
     for name, description, call in (
@@ -3414,7 +3053,7 @@ def create_app(
 
     from autodj.time_checks import install_time_checks
 
-    time_checks = install_time_checks(app, bridge, station_schedule, station_timezone)
+    runtime.time_checks = install_time_checks(app, bridge, station_schedule, station_timezone)
     install_categories(app, bridge)
     return app
 
