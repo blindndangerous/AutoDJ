@@ -11,11 +11,13 @@
     "deadcode": "knip",
     "audit:transitions": "node tests/playwright/transition_audit.mjs",
     "audit:health": "node tests/playwright/health_audit.mjs",
-    "audit:ci": "npm run audit:health && npm run audit:transitions"
+    "audit:visual": "node tests/playwright/visual_audit.mjs",
+    "audit:ci": "npm run audit:health && npm run audit:transitions && npm run audit:visual"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
     "@playwright/test": "1.63.0",
+    "axe-core": "4.13.0",
     "eslint": "10.10.0",
     "happy-dom": "20.14.0",
     "knip": "6.34.0",
