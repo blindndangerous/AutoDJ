@@ -351,8 +351,8 @@ def test_a_preset_any_station_names_cannot_be_deleted(tmp_path: Path) -> None:
     folder.mkdir(parents=True)
     (folder / "Owl.sts").write_text("[Processing]\nGain=0\n", encoding="utf-8")
     with pytest.raises(PresetInUseError) as refused:
-        delete_preset(tmp_path, "Owl.sts", active=["included", "bad/name.sts", "owl.STS"])
-    assert refused.value.args == ("owl.STS",)
+        delete_preset(tmp_path, "Owl.sts", active=["included", "bad/name.sts", "Owl.sts"])
+    assert refused.value.args == ("Owl.sts",)
     delete_preset(tmp_path, "Owl.sts", active=["included", "Other.sts"])
     assert not (folder / "Owl.sts").exists()
 

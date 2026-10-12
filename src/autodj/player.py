@@ -1138,7 +1138,7 @@ class Player:
         library = self._library
         if library is None:
             raise ValueError("the library is not attached")
-        paths = self.station_paths or StationPaths.default(self._cfg)
+        paths = getattr(self, "station_paths", None) or StationPaths.default(self._cfg)
         clock = ClockwheelStore(paths.clockwheels).load(name)
         sources = {source["id"]: source for source in library.catalog.sources()}
         slots = []
