@@ -180,6 +180,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Startup now loads the current library and shows its song and analysis counts, rather than
+  the count from an older index. Doctor and list-indexes also use the current catalog. Existing
+  catalogs no longer depend on the old index manifest; legacy indexes are imported on first use.
+
 - Public now-playing history and its webhooks include only artist, title, duration and play time;
   local file paths and internal event IDs remain available in operator history.
 - Hard scheduled liners and time checks prepare their audio before skipping the current song.
@@ -234,13 +238,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `autodj index` now adds songs from registered folders and saves analysis in the current
+  library, matching Library tools. Limits apply to advanced analysis; songs are added first.
+  Force replaces analysis without clearing cues or history, and Enrich updates the current
+  catalog. The old published-index format is deprecated; first-use imports and migration
+  tools remain available, and original index files are kept for recovery.
 - Large libraries stay responsive. Plays, the play log, settings, cue edits and loudness
   measurements no longer make the server reload the whole library and rebuild its similarity
   index, which took minutes per song on a 77,000-track library and held up the web page, the
   stream and the API. The library now reloads only when tracks, vectors or folders change,
   including changes from the analysis job or the command line. Starting the server no longer
-  re-imports an index generation it has already imported, so a restart takes seconds instead of
-  minutes. Browse library, Search, the check for tracks to analyse and the state pushed to web
+  re-imports the index generation into an existing library, so a restart takes seconds instead
+  of minutes. Browse library, Search, the check for tracks to analyse and the state pushed to web
   pages are fast at that size, and the state is built off the server's main loop.
 - A file deleted while AutoDJ runs leaves the library at the next scan (every start, or Rescan)
   rather than within seconds; if it is picked first, playback skips it as before. A library

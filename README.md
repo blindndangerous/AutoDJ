@@ -172,13 +172,26 @@ when nobody listens to AutoDJ directly. Settings, Stream shows each relay's stat
 [Relaying to Icecast and Shoutcast](docs/operations.md#relaying-to-icecast-and-shoutcast) for
 every option.
 
+`autodj serve` loads the current library from `library.db` and shows its song and analysis
+counts. Add music in Library tools; songs become available before advanced analysis finishes.
+The published-index format (`index-manifest.json` and its generation files) is deprecated.
+`serve` and `index` import it when a library has no catalog yet, keeping the original files for
+recovery. Once the catalog exists, neither command reads or watches the old manifest. Use
+Library folders or `autodj index` to update the current library. Migration tools remain available
+for older indexes during this transition.
+
 ## Commands
 
 Every command takes `--help`, for example `uv run autodj serve --help`. The global options
 `--config FILE` and `-v` go before the command name.
 
-- `autodj index` builds or updates the index from your music folder, then runs the enrich and
-  analyse passes unless you skip them.
+- `autodj index` rescans the registered library folders, adds songs, and saves advanced analysis
+  directly in `library.db`. On first use it registers `[library] music_dir`. The folder list controls
+  what is imported; beets supplies metadata when configured. Folder advanced-analysis switches
+  are respected. `--limit N` caps the advanced pass, while all songs are added first. `--force`
+  replaces analysis without clearing cues, history or settings; failed songs retain their previous
+  vectors. `--workers N` controls audio prefetch. `--no-enrich` skips the beets refresh and
+  `--no-analyse` skips the extra beat/cue backfill for the configured music root.
 - `autodj analyse` fills in intro, outro, beat grid, and cue points for indexed tracks.
 - `autodj analyse-library` runs advanced analysis for tracks added through Library folders.
   The web interface starts this job in the background when requested.
@@ -257,9 +270,11 @@ library, set `AUTODJ_BEETS_PATH` to the folder that holds `library.db`, and set
 more.
 
 Put your audio files in `music/` before running the indexing command. This setup needs no host
-Python installation. The image ships the CPU-only PyTorch build, so the container indexes on CPU,
-and it does not index automatically when the server starts. For a large library, you can instead build the index on a GPU-equipped host
-and copy it to the mounted index directory before starting Compose.
+Python installation. The image ships the CPU-only PyTorch build, so analysis runs on the CPU. The
+container does not index automatically when the server starts. Its catalog stores absolute paths
+as seen inside the container; copying a populated catalog from a host with different paths does
+not relocate those records. Older manifest-based indexes can still be imported before a catalog
+exists.
 
 ## How to use the web UI
 
@@ -281,7 +296,7 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Six tabs:
   - **Profiles and access**: **Profiles** saves the current settings under a name to apply later.  **Browser access** (with `--lan`) signs this browser out, renames or revokes paired devices, and shows the pairing code for adding another.
 
   A setting that has no effect right now is hidden.  For example, the effect level is hidden while no transition effect is chosen, and the DJ-mix options are hidden with saved segue points.  Changes are saved on the server and survive a restart.  Paths, server and security options, and the model stay in `config.toml`.
-- **Library tools.**  Add and remove music and voice liner folders and rescan them, keep clockwheels, and run index, enrich, analyse, prune and stats jobs without leaving the page.  Browsing the library and the voice liners is in Queue & Search.  One job runs at a time; the index stats and the full job log refresh when it finishes.
+- **Library tools.**  Add and remove music and voice liner folders and rescan them, and keep clockwheels without leaving the page. Index and Enrich update the current catalog. Legacy Analyse, Prune and Stats commands remain listed separately.  Browsing the library and the voice liners is in Queue & Search.  One job runs at a time; the index stats and the full job log refresh when it finishes.
 
 ### Keyboard shortcuts
 
@@ -435,9 +450,9 @@ uv run autodj serve --lan --insecure-lan
 The server does not expose FastAPI's generated API documentation pages (`/docs`, `/redoc`, and
 `/openapi.json`).
 
-Index generation manifests are the only publication signal used by live reload. A partially
-written generation is not activated. Incomplete model directories are ignored instead of being
-treated as usable caches.
+The running server reads library changes from `library.db`, including new songs and completed
+background analysis. It does not watch legacy index generations. Incomplete model directories
+are ignored instead of being treated as usable caches.
 
 Common things to set:
 
@@ -471,17 +486,11 @@ file, save the repeat settings to reload it. See [repeat rules](docs/track-selec
 
 ### Multi-machine / NAS setups
 
-AutoDJ stores track paths relative to `music_dir`, so an index works on Windows, Linux and macOS
-as long as `music_dir` points at the library on each machine. Only tracks under `music_dir` are
-indexed.
-
-The simplest setup gives each machine its own index. After you add tracks to the library, run
-`uv run autodj index` on each machine; it only embeds the new and changed tracks.
-
-You can also build an index on a fast machine (one with a GPU is best) and copy it to another, but
-do not copy the whole `index/` folder. It also holds that machine's web settings, liners,
-profiles, pairing secret and paired browsers, and copying them would overwrite the other machine's
-own. [Operations](docs/operations.md#more-than-one-machine) lists which files are safe to copy.
+Keep a separate catalog on each machine and register the folders using paths visible there. The
+current catalog stores absolute paths, so an existing catalog does not follow a library mounted
+at a different path. Older manifest-based indexes store paths relative to `music_dir` and can be
+copied for one-time import when the destination has no catalog. See
+[Operations](docs/operations.md#more-than-one-machine) for that legacy migration procedure.
 
 Per-machine file overrides go in `config.local.toml` next to loaded base configuration. Environment
 variables and CLI flags still take precedence.
@@ -515,7 +524,7 @@ src/autodj/
     cli.py              # the autodj command
     server.py           # FastAPI web server + WebSocket
     player.py           # crossfade + audio output
-    indexer.py          # builds the FAISS index
+    indexer.py          # legacy index compatibility and audio analysis helpers
     similarity.py       # picks the next track
     static/             # web UI source files
         app.js              # bootstrap

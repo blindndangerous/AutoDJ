@@ -838,7 +838,7 @@ def _find_beets_row(
 ) -> dict | None:
     """Look up *entry_path* in the bulk-loaded beets row map (try every candidate)."""
     for candidate in _path_candidates(entry_path, music_dir):
-        row = all_rows.get(candidate.encode("utf-8"))
+        row = all_rows.get(os.path.normcase(candidate.encode("utf-8")))
         if row is not None:
             return row
     return None
@@ -898,9 +898,9 @@ def enrich_from_beets(
     music_dir: Path | None,
     beets_db: Path,
 ) -> tuple[int, int]:
-    """Refresh existing index entries with whatever beets has on each track.
+    """Refresh catalog entries, or legacy index entries when no catalog exists.
 
-    Walks the index, looks up each track in *beets_db* by path, and
+    Walks the music entries, looks up each track in *beets_db* by path, and
     overwrites a curated set of fields when beets has values for them.
     This is the upgrade path for users who indexed without beets and
     later add a ``library.db`` — they get title / artist / album /
@@ -933,23 +933,43 @@ def enrich_from_beets(
     Raises:
         BeetsNotFoundError: If *beets_db* does not exist.
     """
-    from autodj.beets import (
-        _items_columns,
-        _open_db,
-        _path_candidates,
-        parse_initial_key,
-    )
+    from autodj.catalog import LibraryCatalog
 
+    catalog_path = index_dir / "library.db"
+    if catalog_path.is_file():
+        with LibraryCatalog(catalog_path) as catalog:
+            entries = list(catalog.entries_snapshot())
+            changed = _enrich_entries(entries, music_dir, beets_db)
+            for entry in changed:
+                catalog.put_entry(entry)
+            return len(changed), len(entries)
     try:
         entries, loaded, manifest = load_index(index_dir, music_dir=music_dir)
     except FileNotFoundError:
         return (0, 0)
+    changed = _enrich_entries(entries, music_dir, beets_db)
+    if changed:
+        save_index(
+            entries,
+            loaded.reconstruct_n(0, loaded.ntotal),
+            index_dir,
+            music_dir,
+            base_generation=manifest.generation,
+        )
+    return len(changed), len(entries)
+
+
+def _enrich_entries(
+    entries: list[IndexEntry], music_dir: Path | None, beets_db: Path
+) -> list[IndexEntry]:
+    """Apply beets metadata to entries from either storage format."""
+    from autodj.beets import _items_columns, _open_db, _path_candidates, parse_initial_key
 
     conn = _open_db(beets_db)
     text_cols: tuple[str, ...] = ("title", "artist", "album", "genre")
     num_cols: tuple[str, ...] = ("bpm", "year", "length")
     has_initial_key = False
-    updated = 0
+    changed = []
     try:
         cols = _items_columns(conn)
         select_cols: list[str] = []
@@ -967,7 +987,7 @@ def enrich_from_beets(
         all_rows: dict[bytes, dict] = {}
         bulk_sql = f"SELECT path, {select_sql} FROM items"  # nosec B608
         for row in conn.execute(bulk_sql):
-            all_rows[bytes(row["path"])] = {col: row[col] for col in select_cols}
+            all_rows[os.path.normcase(bytes(row["path"]))] = {col: row[col] for col in select_cols}
         logger.info("Loaded %d beets items", len(all_rows))
 
         print(
@@ -979,23 +999,11 @@ def enrich_from_beets(
             if row is None:
                 continue
             if _apply_beets_row(e, row, text_cols, has_initial_key, parse_initial_key):
-                updated += 1
+                changed.append(e)
     finally:
         conn.close()
 
-    if updated == 0:
-        logger.info("Enrich: no changes from beets")
-        return (0, len(entries))
-
-    save_index(
-        entries,
-        loaded.reconstruct_n(0, loaded.ntotal),
-        index_dir,
-        music_dir,
-        base_generation=manifest.generation,
-    )
-    logger.info("Enrich: updated %d/%d tracks", updated, len(entries))
-    return (updated, len(entries))
+    return changed
 
 
 def _check_prune_safety(removed: int, total: int, allow_mass_prune: bool) -> None:
@@ -1159,6 +1167,7 @@ def backfill_dj_meta(
     entries: list[IndexEntry],
     *,
     limit: int | None = None,
+    prune: bool = True,
 ) -> None:
     """Analyse DJ metadata (intro/outro, beats, cues) for tracks that lack it.
 
@@ -1174,13 +1183,14 @@ def backfill_dj_meta(
         cfg: Configuration naming the index, the library and the settings above.
         entries: Every track in the index, with absolute paths.
         limit: Analyse at most this many of the tracks that need it.
+        prune: Remove rows outside entries; disable when passing only eligible folders.
     """
     from autodj.dj_meta import get_cache
 
     cache = get_cache(cfg.index.active_dir, music_dir=cfg.library.music_dir)
     if cache is None:  # pragma: no cover - get_cache with an index_dir always builds one
         return
-    removed_stale = cache.prune_to_paths({e.path for e in entries})
+    removed_stale = cache.prune_to_paths({e.path for e in entries}) if prune else 0
     if removed_stale:
         print(f"[AutoDJ] DJ-meta cache pruned {removed_stale} stale entries.", flush=True)
     pending = [e.path for e in entries if not cache.get(e.path).analysed]

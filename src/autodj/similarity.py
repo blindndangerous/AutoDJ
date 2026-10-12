@@ -253,9 +253,8 @@ class SimilarityIndex:
     def reload_from_disk(self, index_dir: Path, music_dir: Path | None = None) -> int:
         """Load the live generation from disk, replacing in-memory state in place.
 
-        Used by the server's background watcher so a long-running
-        ``autodj serve`` picks up each generation that ``autodj index``
-        publishes, or that is copied in from another machine.
+        Loads files published by ``autodj index``. The running server uses
+        the library catalog instead.
 
         Args:
             index_dir: The index directory.
@@ -281,7 +280,7 @@ class SimilarityIndex:
     ) -> SimilarityIndex:
         """Load a :class:`SimilarityIndex` from the index directory on disk.
 
-        This is the loader ``autodj serve`` and ``autodj doctor`` use.  When
+        Used for legacy indexes before their first catalog import. When
         *music_dir* is provided, the relative paths stored in the index are
         resolved against it, so one index works on any machine that mounts
         the library at a different location.

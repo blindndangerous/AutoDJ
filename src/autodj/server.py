@@ -93,7 +93,6 @@ from autodj.clockwheel_store import (
     validate_name,
 )
 from autodj.icy import METAINT
-from autodj.index_manifest import IndexConsistencyError, read_manifest
 from autodj.lan import PAIRING_ON_REQUEST_HINT, format_lan_banner, lan_urls, running_in_container
 from autodj.listener_access import (
     AddressLimitError,
@@ -151,6 +150,7 @@ from autodj.webhooks import WebhookWorker
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
     from autodj.indexer import IndexEntry
+    from autodj.library import LibraryManager
     from autodj.similarity import SimilarityIndex
     from autodj.stream import StreamOutput
 
@@ -404,23 +404,6 @@ async def _broadcast_state_once(
         failures.failed(exc)
     else:
         failures.succeeded()
-
-
-async def reload_published_generation_once(bridge: PlayerBridge) -> bool:
-    """Reload the index when its manifest differs from the loaded one.
-
-    Returns:
-        Whether a new generation was loaded.  A missing manifest keeps the
-        loaded index.
-    """
-    cfg = getattr(bridge.player, "_cfg", None)
-    if cfg is None:
-        return False
-    manifest = await asyncio.to_thread(read_manifest, cfg.index.active_dir)
-    if manifest is None or manifest == bridge.sim.manifest:
-        return False
-    await asyncio.to_thread(bridge.reload_index_from_disk)
-    return True
 
 
 def _quiesce_cache_writers(
@@ -1278,7 +1261,6 @@ def create_app(
             # The station starts without the show rather than not at all.
             logger.exception("Could not carry on with the show on air")
         broadcast = asyncio.create_task(_broadcast_loop())
-        watcher = asyncio.create_task(_index_watcher_loop())
         library_ticker = None
         if bridge.library is not None:
             bridge.library.start_scan()
@@ -1357,10 +1339,9 @@ def create_app(
             master = getattr(bridge.player, "_continuous_master", None)
             if master is not None:
                 await asyncio.to_thread(master.close)
-            for task in (broadcast, watcher):
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await task
+            broadcast.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await broadcast
             if writers_quiesced and cache_closed:
                 logger.info("Server stopped cleanly.")
             elif not writers_quiesced:
@@ -2586,12 +2567,11 @@ def create_app(
     @app.get("/api/lyrics")
     async def api_lyrics(path: str) -> dict[str, object]:
         """Return timed lyric lines for one exact indexed track path."""
-        similarity = bridge.sim
-        authorized_manifest = similarity.manifest
-        if bridge.entry_for_path(path) is None:
+        authorized_entry = bridge.entry_for_path(path)
+        if authorized_entry is None:
             raise HTTPException(status_code=404, detail="Track not in index")
         lyrics = await _read_lyrics_owned(path)
-        if similarity.manifest != authorized_manifest:
+        if bridge.entry_for_path(path) != authorized_entry:
             raise HTTPException(status_code=409, detail="Track index changed")
         return {"path": path, "lyrics": lyrics}
 
@@ -3308,16 +3288,6 @@ def create_app(
                 recorder.status if recorder is not None else None,
             )
 
-    async def _index_watcher_loop() -> None:  # pragma: no cover — long-running task
-        """Reload each newly published index generation every 10 seconds."""
-        while True:
-            try:
-                if await reload_published_generation_once(bridge):
-                    logger.info("Index reloaded — %d tracks now available", bridge.sim.ntotal)
-            except (IndexConsistencyError, OSError, ValueError) as exc:
-                logger.warning("Index watcher: %s", exc)
-            await asyncio.sleep(10)
-
     async def _publish_schedule(message: dict[str, Any]) -> None:
         await _broadcast_and_prune(_ws_clients, _ws_lock, json.dumps(message))
 
@@ -3548,6 +3518,7 @@ def serve(
     no_playback: bool = False,
     stream: bool = False,
     lan_configured_hosts: list[str] | None = None,
+    library: LibraryManager | None = None,
 ) -> None:
     """Start the Player thread and the FastAPI/uvicorn web server.
 
@@ -3627,7 +3598,8 @@ def serve(
     )
     from autodj.library import LibraryManager
 
-    library = LibraryManager(cfg, sim)
+    if library is None:
+        library = LibraryManager(cfg, sim)
     player._library = library
     bridge = PlayerBridge(player=player, sim=sim, library=library)
     # The mix bus announces every track it starts: play history, the

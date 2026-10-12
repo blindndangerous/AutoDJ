@@ -128,22 +128,26 @@ class LibraryManager:
         ] = {}
         self._tracks_ready = 0
         self._tracks_indexed = 0
-        self.catalog = LibraryCatalog(cfg.index.active_dir / "library.db")
+        catalog_path = cfg.index.active_dir / "library.db"
+        existing_catalog = catalog_path.is_file()
+        self.catalog = LibraryCatalog(catalog_path)
         liner_root = cfg.playback.liners_folder or str(cfg.index.active_dir / "liners")
         try:
             self.catalog.seed_sources(cfg.library.music_dir, liner_root)
-            self.import_legacy()
+            if existing_catalog:
+                self.refresh()
+            else:
+                self.import_legacy()
         except BaseException:
             self.catalog.close()
             raise
 
     def import_legacy(self) -> None:
-        """Seed the loaded legacy generation into the catalog, once per generation.
+        """Seed the loaded legacy generation into a new catalog, a chunk at a time.
 
-        The generation files are never changed.  A generation already
-        imported (by its manifest) is not read again, so a restart does not
-        re-import 77k tracks; the catalog's vectors are handed back to
-        ``sim`` either way, because loading a generation replaces them.
+        Runs only when the library has no catalog yet.  The generation files
+        are never changed, and the manifest of the imported generation is
+        recorded.  The catalog's vectors are handed back to ``sim``.
         """
         manifest = getattr(self.sim, "manifest", None)
         key = (
@@ -874,8 +878,20 @@ class LibraryManager:
             self.refresh()
             self._set_state(running=False, current="")
 
-    def analysis_pending(self) -> list[dict[str, Any]]:
-        return self.catalog.unembedded_music()
+    def analysis_pending(self, force: bool = False) -> list[dict[str, Any]]:
+        if not force:
+            return self.catalog.unembedded_music()
+        # Force re-embeds songs that already have a vector, so it lists every eligible song.
+        pending = []
+        for record in self.catalog.all_entries("music"):
+            if not Path(record["path"]).is_file():
+                continue
+            if any(
+                source["advanced"]
+                for source in self.catalog.sources_for_path(record["path"], "music")
+            ) and not self.catalog.sources_for_path(record["path"], "liner"):
+                pending.append(record)
+        return pending
 
     def schedule_analysis(self) -> bool:
         with self._lock:
@@ -926,20 +942,24 @@ class LibraryManager:
         self.catalog.close()
 
 
-def analyse_library(cfg: AutoDJConfig, wrapper: MuqWrapper) -> int:
+def analyse_library(
+    cfg: AutoDJConfig,
+    wrapper: MuqWrapper,
+    *,
+    limit: int | None = None,
+    force: bool = False,
+    workers: int | None = None,
+) -> int:
     """Embed pending catalog tracks without publishing a FAISS generation."""
     manager = LibraryManager(cfg, _EmptySimilarity())
     report = DecodeReport()
     try:
-        pending = manager.analysis_pending()
+        pending = manager.analysis_pending(force=force)
+        if limit is not None:
+            pending = pending[: max(0, limit)]
         completed = 0
-        for record in pending:
-            if not any(
-                source["advanced"]
-                for source in manager.catalog.sources_for_path(record["path"], "music")
-            ):
-                continue
-            track = Track(
+        tracks = [
+            Track(
                 Path(record["path"]),
                 record["title"],
                 record["artist"],
@@ -949,26 +969,29 @@ def analyse_library(cfg: AutoDJConfig, wrapper: MuqWrapper) -> int:
                 record["year"],
                 record["length"],
             )
+            for record in pending
+        ]
 
-            def checkpoint(entries: list[IndexEntry], vectors: list[np.ndarray]) -> None:
-                nonlocal completed
-                if not entries:
-                    return
-                entry = entries[-1]
-                if not any(
-                    source["advanced"]
-                    for source in manager.catalog.sources_for_path(entry.path, "music")
-                ):
-                    return
-                manager.catalog.put_entry(entry)
-                manager.catalog.set_vector(entry.path, vectors[-1])
-                completed += 1
+        def checkpoint(entries: list[IndexEntry], vectors: list[np.ndarray]) -> None:
+            nonlocal completed
+            if not entries:
+                return
+            entry = entries[-1]
+            if not any(
+                source["advanced"]
+                for source in manager.catalog.sources_for_path(entry.path, "music")
+            ) or manager.catalog.sources_for_path(entry.path, "liner"):
+                return
+            manager.catalog.put_entry(entry)
+            manager.catalog.set_vector(entry.path, vectors[-1])
+            completed += 1
 
+        if tracks:
             with report:
                 _embed_new_tracks(
-                    [track],
+                    tracks,
                     wrapper,
-                    workers=1,
+                    workers=workers,
                     checkpoint=checkpoint,
                     throttle_ms=cfg.index.throttle_ms,
                     report=report,
