@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 import numpy as np
 
+from autodj.analysis_queue import SERVER_HOLDER, SERVER_LEASE_SECONDS, AnalysisQueue
 from autodj.beets import Track
 from autodj.catalog import (
     VECTOR_CHUNK,
@@ -134,7 +135,15 @@ class LibraryManager:
         catalog_path = cfg.index.active_dir / "library.db"
         existing_catalog = catalog_path.is_file()
         self.catalog = LibraryCatalog(catalog_path)
+        # Set while a remote analysis worker is connected, so the CPU job,
+        # which waited for it, runs again once it has gone.
+        self._yielded_to_worker = False
         liner_root = cfg.playback.liners_folder or str(cfg.index.active_dir / "liners")
+        try:
+            self.analysis_queue = AnalysisQueue(catalog_path)
+        except BaseException:
+            self.catalog.close()
+            raise
         try:
             self.catalog.seed_sources(cfg.library.music_dir, liner_root)
             if existing_catalog:
@@ -142,6 +151,7 @@ class LibraryManager:
             else:
                 self.import_legacy()
         except BaseException:
+            self.analysis_queue.close()
             self.catalog.close()
             raise
 
@@ -797,6 +807,9 @@ class LibraryManager:
                     points = self._valid_basic_points(points, fresh)
                     self.catalog.put_entry(fresh, kind, points=points, point_source="analysis")
                     self._publish_entry(fresh, kind)
+                    # New bytes are a new chance for a song held back after a
+                    # failed or stale analysis.
+                    self.analysis_queue.clear_holds(_path(path), fresh.size, fresh.fingerprint)
                 if kind == "music":
                     record = self.catalog.record_for_path(path)
                     if record is not None and record["intro_lift_db"] is None:
@@ -901,6 +914,17 @@ class LibraryManager:
             phase = self._state["phase"]
             if self._scan_lock.locked() and phase != "measuring loudness":
                 return False
+        # A connected analysis worker takes the whole queue; the CPU job
+        # waits, and runs again for whatever is left once it has gone.
+        if self.analysis_queue.worker_active():
+            with self._lock:
+                self._yielded_to_worker = True
+            return False
+        with self._lock:
+            if self._yielded_to_worker:
+                self._yielded_to_worker = False
+                self._analysis_started_generation = None
+                self._analysis_idle = None
             generation = self._scan_generation
             if self._analysis_started_generation == generation:
                 return False
@@ -942,6 +966,7 @@ class LibraryManager:
         self._flush_plays()
         self._flush_history()
         self._flush_settings()
+        self.analysis_queue.close()
         self.catalog.close()
 
 
@@ -953,9 +978,36 @@ def analyse_library(
     force: bool = False,
     workers: int | None = None,
 ) -> int:
-    """Embed pending catalog tracks without publishing a FAISS generation."""
+    """Embed pending catalog tracks without publishing a FAISS generation.
+
+    Each song is leased (see :mod:`autodj.analysis_queue`) before it is
+    decoded, so a remote worker never gets a song this run is analysing.
+    Unless *force* is set, the run stops taking songs once a remote worker
+    connects and leaves the rest to it.
+    """
     manager = LibraryManager(cfg, _EmptySimilarity())
     report = DecodeReport()
+    queue = manager.analysis_queue
+    yielded = False
+
+    def gate(track: Track) -> bool | None:
+        nonlocal yielded
+        if not force and queue.worker_active():
+            if not yielded:
+                yielded = True
+                logger.info("An analysis worker is connected; leaving the remaining songs to it.")
+            return None
+        record = manager.catalog.record_for_path(track.path)
+        if record is None:
+            return False
+        return bool(
+            queue.claim(
+                SERVER_HOLDER,
+                [(record["path"], record["size"], record["fingerprint"])],
+                SERVER_LEASE_SECONDS,
+            )
+        )
+
     try:
         pending = manager.analysis_pending(force=force)
         if limit is not None:
@@ -987,6 +1039,7 @@ def analyse_library(
                 return
             manager.catalog.put_entry(entry)
             manager.catalog.set_vector(entry.path, vectors[-1])
+            queue.release_path(SERVER_HOLDER, _path(entry.path))
             completed += 1
 
         if tracks:
@@ -998,6 +1051,7 @@ def analyse_library(
                     checkpoint=checkpoint,
                     throttle_ms=cfg.index.throttle_ms,
                     report=report,
+                    gate=gate,
                 )
         _finish_decode_report(report, cfg.index.active_dir / LIBRARY_DECODE_LOG)
         return completed

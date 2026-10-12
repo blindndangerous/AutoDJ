@@ -1183,6 +1183,12 @@ installAccess(_accessEls, {
   },
 });
 
+// Settings > Analysis workers -- ./modules/analysis-workers.js loads when
+// its subtab is shown.
+import { installAnalysisWorkers } from "./modules/analysis-workers.js";
+
+installAnalysisWorkers();
+
 // ----------------------------------------------------------------
 // WebSocket
 // ----------------------------------------------------------------

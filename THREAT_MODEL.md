@@ -1,6 +1,6 @@
 # Threat model: AutoDJ
 
-Last reviewed: 2026-09-07. Re-review every major release.
+Last reviewed: 2026-10-11. Re-review every major release.
 
 ## Scope and trust boundaries
 
@@ -34,6 +34,9 @@ AutoDJ is a single-user local music player with these exposed surfaces:
   expressions are refused, so a query costs at most one pass over the library, and playlist
   files larger than 8 MB are not read. `categories.json` is written atomically and a damaged one
   is set aside, not used.
+- Machine tokens let a program on another computer use one narrow API without a browser. The
+  only scope so far is "analysis worker" (`autodj worker`); see "Machine tokens and analysis
+  workers" below.
 - Broadcast recordings contain listener-facing encoded audio only. The recording folder is
   chosen in `config.toml` or `config.local.toml` and is never accepted as an API parameter or
   sent to the browser.
@@ -242,6 +245,65 @@ skipped. Inside a container with its own network the start-up block prints only 
 configured hosts, because container addresses are not reachable from the network; they are still
 allowed. The Compose service uses the host network and sets `AUTODJ_HOST_NETWORK=1`, so it prints
 the detected addresses as a bare-metal server does.
+
+## Machine tokens and analysis workers
+
+A machine token is a bearer secret for a program, not a person. Settings, Analysis workers
+creates, lists and revokes them; those routes (`/api/machine-tokens`) are ordinary paired-browser
+routes and need a session when pairing is on. `autodj tokens list|create|revoke` does the same
+from a shell on the server (it can read and write the token database anyway). The same store is
+meant for radiodj's upload tokens (#88), which add their own scopes.
+
+- A token reads `adj1.<id>.<secret>`: 32 hex digits naming the row and 256 random bits. It is
+  shown once, in the reply to the request that created it (sent with `Cache-Control: no-store`),
+  and never again. `.machine-tokens.sqlite3` in `[index] index_dir` keeps its name, scopes,
+  creation and last-use times and the SHA-256 of the secret, never the secret. The secret has
+  full entropy, so a plain digest is enough; a copy of the database grants nothing. Backups leave
+  the file out, like the paired-devices database.
+- Every check compares digests in constant time and answers a wrong secret, an unknown id, a
+  revoked token and a missing scope with the same 401. Revoking takes effect on the next request
+  and gives back any songs the worker had claimed.
+- Each token carries scopes, and each machine route names the one scope it needs. A machine token
+  opens only the routes under `/api/worker/`; it is no session and opens no browser route. A
+  browser session opens no worker route: they need `Authorization: Bearer`, and the middleware
+  refuses any request to them that carries an `Origin` header, which every browser page sends.
+- A bearer token is refused over plain HTTP unless the client is on this machine (loopback): the
+  server answers 403 "Machine tokens need HTTPS". `autodj worker` itself refuses to send its token
+  to `http://` on another host, and never follows a redirect, which would hand the token to the
+  new address. Use AutoDJ's own TLS (`[server] ssl_certfile`); a self-signed certificate works
+  with `autodj worker --ca-cert`. The token can come from `AUTODJ_WORKER_TOKEN` instead of the
+  command line, which keeps it out of shell history and process lists.
+- Host allowlists still apply to worker requests.
+
+What a worker can do with a valid token:
+
+- Claim up to 16 songs at a time that wait for analysis. Each claim is a lease kept in
+  `library.db` that runs out ten minutes after the worker last reported in, so a dead worker
+  strands nothing. The claim reply describes songs by lease id, extension, size, fingerprint,
+  title, artist and length; it never sends a server path.
+- Read the original bytes of a song it holds a live claim on (`GET /api/worker/audio?lease=`),
+  and nothing else. The lease id must match the token, and the file must still have the size and
+  fingerprint it was claimed with.
+- Post one result per claimed song. The server refuses it unless the model id, the model weights
+  (the snapshot commit of the server's downloaded copy, or a SHA-256 digest of the weight files
+  of a `manual_path` folder; never the branch name, which two machines can resolve to different
+  weights), the analysis version and the vector size equal its own, the vector is exactly 1040 finite float32 values
+  of unit length, the analysed fields are in range, and the record and the file on disk still have
+  the claimed size and fingerprint. A result for a changed file is refused as stale. A result can
+  change only a song's energy, key, mode, BPM estimate (when the song has no BPM tag), tempo
+  confidence, stale-check time and vector; it cannot touch paths, tags, cues, plays or settings.
+- Report a song it could not analyse (held back for six hours) and give unanalysed claims back.
+
+Limits: each token may make 600 requests a minute (429 with `Retry-After` past that); a result
+body may be 64 KiB and the other worker bodies 8 KiB (413 past that). A worker's failure reason is
+cut to 300 printable characters before it is logged. A malicious worker holding a valid token can
+still post wrong but well-formed vectors for the songs it claims, which would make those songs
+match badly in search; revoke the token and re-analyse them with `autodj index --force`. Give
+tokens only to machines you trust with that.
+
+`autodj worker --before-command` and `--after-command` run a program the operator typed, split
+like a shell would but without a shell, with a two-minute limit. They come from the worker's own
+command line, never from the server.
 
 ## Radio stream listening
 

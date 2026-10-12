@@ -17,9 +17,12 @@ def device_string() -> str:
     return "cuda" if os.environ.get("AUTODJ_GPU") != "0" and torch.cuda.is_available() else "cpu"
 
 
-def device_description() -> str:
-    """Name the selected GPU and runtime so AMD is not mislabeled as NVIDIA."""
-    if device_string() == "cpu":
+def device_description(device: str | None = None) -> str:
+    """Name the selected GPU and runtime so AMD is not mislabeled as NVIDIA.
+
+    *device* is the device in use, or ``None`` for :func:`device_string`.
+    """
+    if (device or device_string()) == "cpu":
         return "CPU"
     runtime = "ROCm" if torch.version.hip else "CUDA"
     return f"{torch.cuda.get_device_name(0)} ({runtime} GPU)"

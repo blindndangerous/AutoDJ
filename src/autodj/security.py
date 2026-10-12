@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import hashlib
 import hmac
@@ -490,6 +491,35 @@ def _raw_header_values(scope: Scope, name: bytes) -> list[str]:
     ]
 
 
+def _is_loopback(address: str) -> bool:
+    """Return whether *address* is a loopback IP address."""
+    try:
+        return ipaddress.ip_address(address).is_loopback
+    except ValueError:
+        return False
+
+
+def machine_transport_allowed(scope: Scope) -> bool:
+    """Whether a machine token may travel on this connection: HTTPS, or loopback.
+
+    A bearer token sent over plain HTTP can be read by anyone on the network
+    path, so it is refused unless the client is this machine.
+    """
+    return scope.get("scheme") in {"https", "wss"} or _is_loopback(peer_address(scope))
+
+
+def bearer_token(scope: Scope) -> str | None:
+    """The token of a single ``Authorization: Bearer`` header, or ``None``."""
+    values = _raw_header_values(scope, b"authorization")
+    if len(values) != 1:
+        return None
+    scheme, _, token = values[0].partition(" ")
+    token = token.strip()
+    if scheme.lower() != "bearer" or not token or len(token) > 256:
+        return None
+    return token
+
+
 def peer_address(scope: Scope) -> str:
     """Return a bounded client address string for pairing attempt tracking."""
     client = scope.get("client")
@@ -506,11 +536,47 @@ class SecurityMiddleware:
         app: ASGIApp,
         policy: SecurityPolicy,
         body_limits: Mapping[str, Callable[[], int]],
+        machine_scopes: Mapping[str, str] | None = None,
+        machine_auth: Callable[[str, str], object | None] | None = None,
     ) -> None:
-        """Wrap *app*; *body_limits* maps a POST path to its request-body cap in bytes."""
+        """Wrap *app*; *body_limits* maps a POST path to its request-body cap in bytes.
+
+        *machine_scopes* maps a path prefix to the machine-token scope its
+        routes need.  Those routes take only ``Authorization: Bearer``
+        tokens, checked by *machine_auth(token, scope)*, which returns who
+        the token belongs to or ``None``; a browser session does not work
+        there, and a machine token works nowhere else.
+        """
         self.app = app
         self._policy = policy
         self._body_limits = body_limits
+        self._machine_scopes = dict(machine_scopes or {})
+        self._machine_auth = machine_auth
+
+    def _machine_scope(self, path: str) -> str | None:
+        """The token scope *path* needs, or ``None`` for a browser route."""
+        for prefix, scope_name in self._machine_scopes.items():
+            if path.startswith(prefix):
+                return scope_name
+        return None
+
+    async def _machine_rejection(
+        self, scope: Scope, needed: str, origin_values: list[str]
+    ) -> tuple[int, str] | None:
+        """Check a machine request; store its token's owner in the request state."""
+        if origin_values:
+            # Programs send no Origin; a page in a browser always does.
+            return (403, "Machine routes do not accept browser requests")
+        if not machine_transport_allowed(scope):
+            return (403, "Machine tokens need HTTPS")
+        token = bearer_token(scope)
+        if token is None or self._machine_auth is None:
+            return (401, "Machine token required")
+        owner = await asyncio.to_thread(self._machine_auth, token, needed)
+        if owner is None:
+            return (401, "Invalid machine token")
+        scope.setdefault("state", {})["machine_token"] = owner
+        return None
 
     @staticmethod
     def _declared_body_too_large(scope: Scope, cap: int) -> bool:
@@ -565,8 +631,11 @@ class SecurityMiddleware:
         origin_values = _raw_header_values(scope, b"origin")
 
         rejection: tuple[int, str] | None = None
+        machine_scope = self._machine_scope(path)
         if len(host_values) != 1 or not policy.host_allowed(host_values[0]):
             rejection = (403, "Disallowed Host")
+        elif machine_scope is not None:
+            rejection = await self._machine_rejection(scope, machine_scope, origin_values)
         elif len(origin_values) > 1 or (
             method in _UNSAFE_METHODS
             and (len(origin_values) != 1 or not policy.origin_allowed(origin_values[0]))
@@ -579,11 +648,10 @@ class SecurityMiddleware:
 
         if rejection is not None:
             status, detail = rejection
-            response = JSONResponse(
-                {"detail": detail},
-                status_code=status,
-                headers={"X-Request-ID": request_id},
-            )
+            headers = {"X-Request-ID": request_id}
+            if status == 401 and machine_scope is not None:
+                headers["WWW-Authenticate"] = "Bearer"
+            response = JSONResponse({"detail": detail}, status_code=status, headers=headers)
             await response(scope, receive, send)
             emit_audit(
                 request_id,

@@ -1,6 +1,7 @@
 """Private files under ``<index_dir>`` that LAN pairing keeps.
 
-Holds the paths of the paired-devices database and the saved access token,
+Holds the paths of the paired-devices database, the machine-token database
+and the saved access token,
 and the private-file helpers :mod:`autodj.lan` uses for the token.
 """
 
@@ -21,6 +22,11 @@ if TYPE_CHECKING:
 def paired_devices_path(cfg: AutoDJConfig) -> Path:
     """Return the paired-devices database path."""
     return Path(cfg.index.index_dir) / ".paired-devices.sqlite3"
+
+
+def machine_tokens_path(cfg: AutoDJConfig) -> Path:
+    """Return the machine-token database path, beside the paired-devices database."""
+    return Path(cfg.index.index_dir) / ".machine-tokens.sqlite3"
 
 
 def access_token_path(cfg: AutoDJConfig) -> Path:

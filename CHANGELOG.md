@@ -26,6 +26,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   logged and skipped, and a clockwheel whose category steps all come up empty plays a song from
   the whole library instead of going silent. Categories are kept in `categories.json` and in
   backups; `autodj doctor` names the empty ones and the missing playlist tracks.
+- Remote analysis workers: a computer with a graphics card can analyse new music for a server
+  that has none. Create a token in Settings, Analysis workers, then run
+  `autodj worker --server https://HOST:PORT` on that computer with the token. The worker claims
+  songs, downloads each one from the server, analyses it with the same model and code as
+  `autodj index` and sends the result back; nothing is copied by hand and paths need not match.
+  The server checks every result against its own model weights (the downloaded snapshot's commit,
+  not the branch name) and analysis version and refuses one for a song that changed, then stores it in the live library, which picks it up within seconds.
+  Claims run out ten minutes after a worker stops reporting, so a worker that dies strands no
+  songs, and the server's own processor analysis pauses while a worker is connected and resumes
+  after it leaves. `--once` stops when the queue is empty, Ctrl+C stops after the current song,
+  and `--before-command` and `--after-command` run a program around the work, such as stopping a
+  text-to-speech container that shares the GPU. Settings shows each worker, its rate and the
+  queue, and creates and revokes tokens; a token is shown once, with a Copy button and a spoken
+  warning. See "Using a GPU machine" in the operations guide.
+
+- Machine tokens: named, scoped bearer tokens for programs, stored as a SHA-256 digest, shown
+  once, revocable, with the time each was last used. They work only over HTTPS or from the server
+  machine, and only on the routes their scope allows. The analysis worker is the first scope.
+  `autodj tokens list|create|revoke` manages them on a server without a browser.
 
 - Several named clockwheels (Library tools, Clockwheels): create, duplicate, rename, delete,
   activate one or turn the clockwheel off. Each is a versioned JSON file in `clockwheels/` in the
