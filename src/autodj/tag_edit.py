@@ -320,7 +320,9 @@ def write_tags(path: str | Path, values: TagValues) -> None:
     """
     import mutagen
 
-    target = Path(path)
+    # The real path keeps the file name as it is on disk (the catalog folds
+    # case on Windows) and rewrites a linked file rather than the link.
+    target = Path(os.path.realpath(path))
     with _write_lock:
         family = _family(_open(target))
         kind = type(mutagen.File(str(target)))

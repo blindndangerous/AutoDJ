@@ -407,3 +407,17 @@ def test_catalog_retag_keeps_vector_points_and_loudness(tmp_path: Path) -> None:
             catalog.retag(song, {"points": "{}"})
     finally:
         catalog.close()
+
+
+def test_the_file_keeps_its_name_and_a_link_stays_a_link(tmp_path: Path) -> None:
+    song = make_audio(tmp_path, ".flac", stem="MixedCase")
+    write_tags(os.path.normcase(str(song)), validate_tags({"title": "Cased"}))
+    assert [p.name for p in tmp_path.iterdir()] == ["MixedCase.flac"]
+    link = tmp_path / "link.flac"
+    try:
+        link.symlink_to(song)
+    except OSError:
+        pytest.skip("symbolic links are not available here")
+    write_tags(link, validate_tags({"title": "Through the link"}))
+    assert link.is_symlink()
+    assert read_file_tags(song).title == "Through the link"
