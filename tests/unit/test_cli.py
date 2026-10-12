@@ -101,6 +101,7 @@ def _make_cfg(beets_db=None) -> MagicMock:
     cfg.index.name = "default"
     cfg.server = ServerConfig()
     cfg.stream = StreamConfig()
+    cfg.stations = ()
     cfg.config_sources = ("defaults",)
     return cfg
 
@@ -493,6 +494,16 @@ class TestRequireFfmpegForStream:
         monkeypatch.setattr(cli_module.shutil, "which", lambda _n: "/usr/bin/ffmpeg")
 
         _require_ffmpeg_for_stream(cfg)  # must not raise
+
+    def test_raises_for_another_station_without_ffmpeg(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _make_cfg()
+        cfg.stations = (MagicMock(),)
+        monkeypatch.setattr(cli_module.shutil, "which", lambda _n: None)
+
+        with pytest.raises(click.ClickException, match=r"stations.*ffmpeg"):
+            _require_ffmpeg_for_stream(cfg)
 
 
 # ---------------------------------------------------------------------------

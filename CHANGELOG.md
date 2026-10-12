@@ -24,6 +24,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   errors name the station. See "Several stations" in `docs/operations.md`. A configuration
   without these tables behaves exactly as before.
 
+- More than one station can run on one server (#70). Each `[stations.<slug>]` station has its own
+  player, mix bus, mastering, encoder, relays, recorder, schedule, carts, time checks,
+  clockwheels, liners, profiles and saved settings, under `stations/<slug>/` in the index folder.
+  It streams at `/stations/<slug>.mp3` (and `.m3u`), its controls answer under
+  `/api/stations/<slug>/`, and `GET /api/stations` lists every station. `POST
+  /api/stations/<slug>/start` and `/stop` start and stop one; `autostart = false` leaves a station
+  stopped until then. Its log lines start with `[<slug>]`. Only one station can use Stereo Tool
+  at a time (one licence), and a Stereo Tool preset any station uses cannot be deleted. The web
+  page's station switcher comes later.
+
 - `autodj worker --idle-exit MINUTES` keeps asking for new songs every half minute and stops only
   once the queue has stayed empty for that long, so a worker started alongside a Rescan does not
   exit before the scan has found the new music. The before- and after-commands still run once

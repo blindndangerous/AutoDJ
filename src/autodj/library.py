@@ -419,6 +419,28 @@ class LibraryManager:
             self._ledgers.append(ledger)
         return ledger
 
+    def station_ledger(self, station: str) -> StationLedger:
+        """*station*'s ledger, added the first time it is asked for.
+
+        A station that is stopped and started again keeps the same ledger,
+        so plays it buffered before the stop are still written once.
+        """
+        with self._lock:
+            for ledger in self._ledgers:
+                if ledger.station == station:
+                    return ledger
+        return self.add_ledger(station)
+
+    def seed_station_liners(self, station: str, root: Path | str) -> None:
+        """Make *station*'s liner folder a liner source the first time the station runs.
+
+        Like the default station's folder, it is added once: a folder the
+        user later removes from Library folders stays removed.
+        """
+        source = self.catalog.seed_station_liner_source(station, root)
+        if source is not None:
+            self.start_scan({source})
+
     def _flush_ledgers(self) -> None:
         with self._lock:
             ledgers = list(self._ledgers)

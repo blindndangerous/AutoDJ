@@ -348,6 +348,15 @@ What a listener can and cannot do:
 - `/stream.` followed by anything else, and any path under `/stream/`, is not public: it needs
   a session like any other path, and then returns 404. Optional HTTP Basic credentials protect
   only `/stream.mp3` and `/stream.m3u`; the playlist never includes them.
+- With more than one station (`[stations.<slug>]`), each station's stream is also public at
+  `/stations/<slug>.mp3` and `/stations/<slug>.m3u`, but only for a configured slug
+  (`default` included); any other `/stations/...` path needs a session and then returns 404. A
+  stopped station answers 503, which shows that the slug exists; this is accepted. Each
+  station's listener credentials, bans and listener limits are its own: a ban on one station
+  does not cover another, and the listener slots of all stations add up. Starting and stopping
+  a station (`POST /api/stations/<slug>/start` and `/stop`) and the station list
+  (`/api/stations`) need pairing, which is still server-wide: a paired browser controls every
+  station. Slugs are checked against a strict pattern before they name a folder.
 
 What the operator should know:
 

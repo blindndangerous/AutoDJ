@@ -35,6 +35,7 @@ from urllib.parse import urlencode
 
 from autodj.fsutil import atomic_write
 from autodj.icy import mp3_frame_offset
+from autodj.station_log import station_thread
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig, RelayConfig
@@ -424,8 +425,8 @@ class Relay:
         self._failures = 0
         self._logged_error: str | None = None
         self._threads = [
-            threading.Thread(target=self._send_loop, name=f"autodj-relay-{cfg.name}", daemon=True),
-            threading.Thread(
+            station_thread(target=self._send_loop, name=f"autodj-relay-{cfg.name}", daemon=True),
+            station_thread(
                 target=self._title_loop, name=f"autodj-relay-title-{cfg.name}", daemon=True
             ),
         ]
