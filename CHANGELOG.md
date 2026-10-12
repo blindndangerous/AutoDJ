@@ -154,6 +154,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Play now and every song change start sooner on server audio and the stream. Each song is now
+  decoded once instead of twice (the render that mixes a song in keeps its audio for the render
+  that plays it), the outgoing and incoming songs decode side by side when neither is ready, and a
+  song's first loudness measurement happens in the same FFmpeg run as its decode. Saved-point
+  renders also build the track in one buffer instead of copying it again. The audio is identical.
+
 - Server audio and the stream no longer drop out while the library scan, a track pick or another
   busy task runs. The mix bus, its EQ and duck, and the Smooth and Stereo Tool processor feeds no
   longer give up Python's interpreter lock in the middle of a block, and a block that comes out late

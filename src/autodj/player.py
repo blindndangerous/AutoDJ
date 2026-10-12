@@ -12,12 +12,14 @@ or the stream encoder in 20 ms blocks.
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 import threading
 import time
 from collections import deque
 from collections.abc import Callable
 from collections.abc import Set as AbstractSet
+from concurrent.futures import Future, wait
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -904,6 +906,8 @@ class Player:
             rewind=self._rewind_render_cursor,
             skip_past=self._skip_past_render,
         )
+        self._playout_slot = None
+        self._playout_lock = threading.Lock()
         # The render the bus is playing (set when it starts).
         self._playing_render: RenderedTrack | None = None
         # _pick_lock (PlayerState.history_lock) guards the recently-played
@@ -2525,18 +2529,116 @@ class Player:
         if self._cfg.playback.loudness_processing not in {"smooth", "stereotool"}:
             audio = load_stereo(entry.path, SAMPLE_RATE, self._max_render_seconds())
             return self._lift_intro(self._apply_replaygain(audio, entry.path), entry)
-        from autodj.processing import analyze_loudness, load_processed_audio, loudness_matches
+        from autodj.processing import load_and_measure_audio, load_processed_audio, loudness_matches
 
         record = self._library.catalog.record_for_path(entry.path) if self._library else None
         kind = record["kind"] if record else "music"
         source = Path(entry.path)
         measurement = record.get("loudness", {}) if record else {}
-        if not loudness_matches(measurement, source, kind):
-            measurement = analyze_loudness(source, kind)
-            if record:
-                self._library.catalog.set_loudness(source, measurement)
         # The continuous master handles quiet passages; don't stack an intro-only lift.
-        return load_processed_audio(source, measurement, kind, self._max_render_seconds())
+        if loudness_matches(measurement, source, kind):
+            return load_processed_audio(source, measurement, kind, self._max_render_seconds())
+        # First play: measure in the same FFmpeg run as the decode.
+        audio, measurement = load_and_measure_audio(source, kind, self._max_render_seconds())
+        if record:
+            self._library.catalog.set_loudness(source, measurement)
+        return audio
+
+    # One-slot cache of the incoming track's decode: each render decodes the
+    # track it mixes in, and the next render plays that track, so it takes
+    # the decode from here instead of running FFmpeg again.
+    # ``(path, future of (key, audio))``; see _playout_audio.  Class-level
+    # defaults so a Player made without __init__ (tests) still renders.
+    _playout_slot: tuple[str, Future[tuple[tuple | None, np.ndarray]]] | None = None
+    _playout_lock: threading.Lock = threading.Lock()
+
+    def _playout_key(self, entry: IndexEntry) -> tuple | None:
+        """Everything :meth:`_load_playout_audio`'s result depends on, or ``None``.
+
+        The file's size and modification time, the catalog values it reads
+        (kind, loudness measurement, intro lift) and the settings it uses.
+        ``None`` when the file cannot be read: such a decode is never reused.
+        """
+        try:
+            stat = os.stat(entry.path)
+        except OSError:
+            return None
+        record = self._library.catalog.record_for_path(entry.path) if self._library else None
+        playback, replaygain = self._cfg.playback, self._cfg.replaygain
+        return (
+            entry.path,
+            stat.st_size,
+            stat.st_mtime_ns,
+            repr(
+                (record.get("kind"), record.get("loudness"), record.get("intro_lift_db"))
+                if record
+                else None
+            ),
+            playback.loudness_processing,
+            playback.intro_lift_max_db,
+            self._max_render_seconds(),
+            replaygain.enabled,
+            replaygain.target_db,
+            replaygain.max_clip_safe_gain,
+        )
+
+    def _prefetch_playout_audio(self, entry: IndexEntry) -> Future[tuple[tuple | None, np.ndarray]]:
+        """Start decoding *entry* on its own thread and keep it for its render.
+
+        The render that mixes *entry* in takes the audio from the returned
+        future; the render that plays it next finds it in the one-slot
+        cache (:meth:`_take_prefetched`), so the track is decoded once.
+        Started before the outgoing track's own decode, the two decodes
+        run side by side (two FFmpeg processes) when neither is cached,
+        as on "Play now".
+        """
+        future: Future[tuple[tuple | None, np.ndarray]] = Future()
+
+        def decode() -> None:
+            try:
+                audio = self._load_playout_audio(entry)
+                # After the decode: a first play stores its loudness measurement.
+                future.set_result((self._playout_key(entry), audio))
+            except BaseException as exc:
+                future.set_exception(exc)
+
+        with self._playout_lock:
+            self._playout_slot = (entry.path, future)
+        threading.Thread(target=decode, name="autodj-decode-next", daemon=True).start()
+        return future
+
+    def _take_prefetched(self, entry: IndexEntry) -> Future[tuple[tuple | None, np.ndarray]] | None:
+        """Take *entry*'s decode out of the cache, if it is the one there.
+
+        Taken, not copied: the render that takes it owns the samples (a
+        tempo glide writes into them), and nothing else holds them.
+        """
+        with self._playout_lock:
+            slot = self._playout_slot
+            if slot is None or slot[0] != entry.path:
+                return None
+            self._playout_slot = None
+        return slot[1]
+
+    def _playout_audio(
+        self,
+        entry: IndexEntry,
+        prefetched: Future[tuple[tuple | None, np.ndarray]] | None,
+    ) -> np.ndarray:
+        """*entry*'s audio from its *prefetched* decode, or a fresh decode.
+
+        The prefetched samples are used only when nothing they depend on
+        changed since (:meth:`_playout_key`), so they are the samples a
+        fresh decode would give.
+        """
+        if prefetched is not None:
+            try:
+                key, audio = prefetched.result()
+            except Exception:  # the fresh decode below reports the failure
+                key = None
+            if key is not None and key == self._playout_key(entry):
+                return audio
+        return self._load_playout_audio(entry)
 
     def _lift_intro(self, audio: np.ndarray, entry: IndexEntry) -> np.ndarray:
         mode = self._cfg.playback.loudness_processing or (
@@ -2566,10 +2668,13 @@ class Player:
         next_entry: IndexEntry | None,
         start_offset: int,
         liners: tuple[tuple[IndexEntry, bool], ...] = (),
+        *,
+        source_decode: Future[tuple[tuple | None, np.ndarray]] | None = None,
+        incoming_decode: Future[tuple[tuple | None, np.ndarray]] | None = None,
     ) -> RenderedTrack | None:
         from autodj.playout import render_handoff
 
-        source = self._load_playout_audio(current)
+        source = self._playout_audio(current, source_decode)
         points = self.saved_points(current)
         source_start = round((points.get("start") or 0.0) * SAMPLE_RATE)
         start = max(start_offset, source_start)
@@ -2680,11 +2785,16 @@ class Player:
             outro_lead_limit=outro_lead_limit,
         )
         overlap = len(handoff.next_overlay)
-        tail = handoff.next_overlay.copy()
+        # A view of handoff.full_audio: adding the head here completes the render.
+        tail = handoff.next_overlay
         next_offset = handoff.next_start_offset + overlap
         if overlap:
             try:
-                incoming = self._load_playout_audio(next_entry)
+                incoming = (
+                    incoming_decode.result()[1]
+                    if incoming_decode is not None
+                    else self._load_playout_audio(next_entry)
+                )
                 incoming_end = min(
                     len(incoming),
                     round((incoming_points.get("end") or next_entry.length) * SAMPLE_RATE),
@@ -2694,7 +2804,7 @@ class Player:
                 next_offset = handoff.next_start_offset + len(head)
             except (OSError, ValueError, RuntimeError):
                 logger.exception("Cannot prepare incoming track %s", next_entry.path)
-        full_audio = np.concatenate((handoff.audio, tail))
+        full_audio = handoff.full_audio
         audio = full_audio[start - source_start :]
         liner_start = (
             source_start if is_liner else round((handoff.liner_s or 0.0) * SAMPLE_RATE)
@@ -3337,13 +3447,17 @@ class Player:
         next_entry: IndexEntry,
         sr_a: int,
         crossfade_samples: int,
+        prefetched: Future[tuple[tuple | None, np.ndarray]] | None = None,
     ) -> np.ndarray | None:
         """Load incoming track, resample to sr_a, ReplayGain — silence on failure.
 
-        Returns ``None`` when the track is too long to mix: it is skipped
-        (and logged) when its own render comes round.
+        Uses the *prefetched* decode when given.  Returns ``None`` when the
+        track is too long to mix: it is skipped (and logged) when its own
+        render comes round.
         """
         try:
+            if prefetched is not None:
+                return prefetched.result()[1]
             return self._load_playout_audio(next_entry)
         except TrackTooLongError:
             return None
@@ -4062,10 +4176,50 @@ class Player:
             held in memory while it plays), or has no audio left after
             *start_offset*.
         """
+        # This track's decode, when the previous render mixed it in, and the
+        # next track's, started now so it runs alongside this one's.
+        source_decode = self._take_prefetched(current)
+        incoming_decode = (
+            self._prefetch_playout_audio(next_entry) if next_entry is not None else None
+        )
+        try:
+            return self._render_decoded(
+                current,
+                next_entry,
+                start_offset,
+                glide_in=glide_in,
+                liners=liners,
+                source_decode=source_decode,
+                incoming_decode=incoming_decode,
+            )
+        finally:
+            # The next render takes this decode; never leave it running on.
+            if incoming_decode is not None:
+                wait([incoming_decode])
+
+    def _render_decoded(
+        self,
+        current: IndexEntry,
+        next_entry: IndexEntry | None,
+        start_offset: int,
+        *,
+        glide_in: Glide | None,
+        liners: tuple[tuple[IndexEntry, bool], ...],
+        source_decode: Future[tuple[tuple | None, np.ndarray]] | None,
+        incoming_decode: Future[tuple[tuple | None, np.ndarray]] | None,
+    ) -> RenderedTrack | None:
+        """:meth:`_render_track` with the two decodes under way."""
         try:
             if self._cfg.playback.transition_mode == "saved_points":
-                return self._render_saved_track(current, next_entry, start_offset, liners)
-            audio_a_full = self._load_playout_audio(current)
+                return self._render_saved_track(
+                    current,
+                    next_entry,
+                    start_offset,
+                    liners,
+                    source_decode=source_decode,
+                    incoming_decode=incoming_decode,
+                )
+            audio_a_full = self._playout_audio(current, source_decode)
         except TrackTooLongError as exc:
             logger.warning(
                 "Skipping %s: it is %.0f minutes long, and [playback] "
@@ -4115,7 +4269,7 @@ class Player:
         # audio_a, which already had start_offset samples cut off the
         # front.  Re-express the result in audio_a's own coordinates after.
         a_start_full = self._crossfade_start_in_a(audio_a_full, SAMPLE_RATE, meta_a, crossfade)
-        audio_b_loaded = self._load_incoming(next_entry, SAMPLE_RATE, crossfade)
+        audio_b_loaded = self._load_incoming(next_entry, SAMPLE_RATE, crossfade, incoming_decode)
         if audio_b_loaded is None:
             # Too long to mix in: play this track out; the next render skips it.
             return RenderedTrack(

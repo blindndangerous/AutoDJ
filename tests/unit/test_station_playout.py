@@ -1,5 +1,6 @@
 """Station timing through the real player, including queue reservations."""
 
+import threading
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -203,9 +204,10 @@ def test_master_processing_uses_originals_and_cached_measurements(
 
 
 @pytest.mark.parametrize("record_exists", [True, False])
-def test_missing_or_stale_measurement_is_computed_before_decode(
+def test_missing_or_stale_measurement_is_measured_in_the_decode(
     station, record_exists, monkeypatch
 ):
+    """A first play decodes and measures in one FFmpeg run, then caches the measurement."""
     player, (entry, *_), _points = station
     player._cfg.playback.loudness_processing = "smooth"
     player._library.catalog.record_for_path = lambda _path: (
@@ -214,14 +216,15 @@ def test_missing_or_stale_measurement_is_computed_before_decode(
     update = MagicMock()
     player._library.catalog.set_loudness = update
     measurement = {"lufs": -20}
-    measure = MagicMock(return_value=measurement)
+    audio = np.ones((100, 2), dtype=np.float32)
+    measure = MagicMock(return_value=(audio, measurement))
     monkeypatch.setattr("autodj.processing.loudness_matches", lambda *args: False)
-    monkeypatch.setattr("autodj.processing.analyze_loudness", measure)
-    load = MagicMock(return_value=np.ones((100, 2), dtype=np.float32))
+    monkeypatch.setattr("autodj.processing.analyze_loudness", MagicMock(side_effect=AssertionError))
+    monkeypatch.setattr("autodj.processing.load_and_measure_audio", measure)
+    load = MagicMock(side_effect=AssertionError("second decode"))
     monkeypatch.setattr("autodj.processing.load_processed_audio", load)
-    Player._load_playout_audio(player, entry)
-    measure.assert_called_once_with(Path(entry.path), "music")
-    assert load.call_args.args[:3] == (Path(entry.path), measurement, "music")
+    assert Player._load_playout_audio(player, entry) is audio
+    measure.assert_called_once_with(Path(entry.path), "music", player._max_render_seconds())
     if record_exists:
         update.assert_called_once_with(Path(entry.path), measurement)
     else:
@@ -335,3 +338,74 @@ def test_voice_followed_by_id_never_starts_id_before_song_segue(station):
     result = player._render_track(a, b, 0, liners=((voice, True), (jingle, True)))
     assert result.liner_events == ((6 * SR, voice, True), (10 * SR, jingle, True))
     assert len(result.audio) - result.overlap_frames == 12 * SR
+
+
+@pytest.fixture
+def decoded(station, tmp_path, monkeypatch):
+    """The station on real files, counting each decode."""
+    player, entries, points = station
+    audio, loads = {}, []
+    for index, entry in enumerate(entries):
+        old = entry.path
+        path = tmp_path / f"{index}.flac"
+        path.write_bytes(b"x")
+        entry.path = str(path)
+        points[entry.path] = points[old]
+        array = np.zeros((round(entry.length * SR), 2), dtype=np.float32)
+        array[:, 0] = (index + 1) / 8
+        audio[entry.path] = array
+
+    def load(entry):
+        loads.append(entry.path)
+        return audio[entry.path].copy()
+
+    monkeypatch.setattr(player, "_load_playout_audio", load)
+    return player, entries, loads
+
+
+@pytest.mark.parametrize("mode", ["saved_points", "full_intro_outro"])
+def test_the_incoming_decode_is_reused_by_the_next_render(decoded, mode):
+    """Each track is decoded once: the render mixing it in decodes it for the next one."""
+    player, (a, b, *_), loads = decoded
+    player._cfg.playback.transition_mode = mode
+    first = player._render_track(a, b, 0)
+    following = player._render_track(b, a, first.next_start_offset)
+    assert sorted(loads) == sorted([a.path, b.path, a.path])
+
+    player._playout_slot = None  # the same render from a fresh decode
+    fresh = player._render_track(b, a, first.next_start_offset)
+    np.testing.assert_array_equal(following.audio, fresh.audio)
+    assert loads.count(b.path) == 2
+
+
+def test_a_changed_file_is_decoded_again(decoded):
+    player, (a, b, *_), loads = decoded
+    first = player._render_track(a, b, 0)
+    Path(b.path).write_bytes(b"replaced")
+    player._render_track(b, a, first.next_start_offset)
+    assert loads.count(b.path) == 2
+
+
+def test_play_now_decodes_both_tracks_side_by_side(decoded, monkeypatch):
+    """Neither track is cached on a jump, so both decodes run at once."""
+    player, (a, b, *_), _loads = decoded
+    load = player._load_playout_audio
+    started = {a.path: threading.Event(), b.path: threading.Event()}
+
+    def overlapping(entry):
+        started[entry.path].set()
+        other = b.path if entry.path == a.path else a.path
+        assert started[other].wait(10), "the decodes ran one after the other"
+        return load(entry)
+
+    monkeypatch.setattr(player, "_load_playout_audio", overlapping)
+    assert player._render_track(a, b, 0) is not None
+
+
+def test_saved_render_is_built_in_one_buffer(decoded):
+    """The incoming head is added into the handoff's buffer, not into a new copy."""
+    player, (a, b, *_), _loads = decoded
+    result = player._render_track(a, b, 0)
+    assert result.full_audio is not None
+    assert np.shares_memory(result.audio, result.full_audio)
+    assert result.audio[-1, 0] == pytest.approx(2 / 8)  # the incoming head, in place

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import re
 import shutil
 import subprocess  # nosec B404 -- audio processing uses fixed FFmpeg argv, no shell
@@ -113,9 +114,7 @@ def analyze_loudness(source: Path, kind: str = "music") -> dict[str, object]:
     _kind(kind)
     source = Path(source)
     before = source.stat()
-    filters = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo"
-    if kind == "liner":
-        filters += f",{VOICE_FILTER}"
+    filters = _processing_filters(kind)
     result = _run_ffmpeg(
         [
             shutil.which("ffmpeg") or "ffmpeg",
@@ -146,17 +145,7 @@ def analyze_loudness(source: Path, kind: str = "music") -> dict[str, object]:
     after = source.stat()
     if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
         raise RuntimeError(f"source changed during loudness measurement: {source}")
-    gain_db = _kind(kind) - lufs
-    if not MIN_GAIN_DB <= gain_db <= MAX_GAIN_DB:
-        raise ValueError(f"required gain outside safe range: {source}")
-    return {
-        "version": PREPARATION_VERSION,
-        "kind": kind,
-        "size": before.st_size,
-        "mtime_ns": before.st_mtime_ns,
-        "lufs": lufs,
-        "gain_db": gain_db,
-    }
+    return _measurement(source, kind, lufs, before)
 
 
 def loudness_matches(measurement: dict | None, source: Path, kind: str = "music") -> bool:
@@ -191,10 +180,7 @@ def load_processed_audio(
         raise ValueError("stale or invalid loudness measurement")
     source = Path(source)
     gain_db = float(measurement["gain_db"])
-    filters = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo"
-    if kind == "liner":
-        filters += f",{VOICE_FILTER}"
-    filters += f",volume={gain_db:.9f}dB"
+    filters = f"{_processing_filters(kind)},volume={gain_db:.9f}dB"
     command = [
         shutil.which("ffmpeg") or "ffmpeg",
         "-hide_banner",
@@ -234,6 +220,103 @@ def load_processed_audio(
     if not len(audio) or not np.isfinite(audio).all() or not np.any(audio):
         raise ValueError("empty, silent or invalid processed audio")
     return audio
+
+
+def _processing_filters(kind: str) -> str:
+    filters = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo"
+    if kind == "liner":
+        filters += f",{VOICE_FILTER}"
+    return filters
+
+
+def _measurement(source: Path, kind: str, lufs: float, before: os.stat_result) -> dict:
+    """Validate an integrated loudness and return the cacheable measurement."""
+    if not math.isfinite(lufs) or lufs <= -65:
+        raise ValueError(f"silent or invalid audio: {source}")
+    gain_db = _kind(kind) - lufs
+    if not MIN_GAIN_DB <= gain_db <= MAX_GAIN_DB:
+        raise ValueError(f"required gain outside safe range: {source}")
+    return {
+        "version": PREPARATION_VERSION,
+        "kind": kind,
+        "size": before.st_size,
+        "mtime_ns": before.st_mtime_ns,
+        "lufs": lufs,
+        "gain_db": gain_db,
+    }
+
+
+def load_and_measure_audio(
+    source: Path, kind: str = "music", max_seconds: float | None = None
+) -> tuple[np.ndarray, dict[str, object]]:
+    """Decode and measure *source* in one FFmpeg run, for a loudness cache miss.
+
+    The same as :func:`analyze_loudness` followed by
+    :func:`load_processed_audio`, with one decode instead of two: the
+    ``ebur128`` filter passes the audio through unchanged while it
+    measures, and the gain is applied here once the integrated loudness
+    is known.  FFmpeg's ``volume`` filter multiplies float samples by the
+    float32 gain too, so the samples are the same.
+
+    Returns:
+        ``(audio, measurement)``: the processed audio and the measurement
+        :func:`load_processed_audio` takes, for the caller to cache.
+    """
+    _kind(kind)
+    source = Path(source)
+    before = source.stat()
+    # metadata=1 moves ebur128's per-frame lines to verbose; its summary stays at info.
+    filters = f"{_processing_filters(kind)},ebur128=peak=none:metadata=1"
+    command = [
+        shutil.which("ffmpeg") or "ffmpeg",
+        "-hide_banner",
+        "-nostats",
+        "-nostdin",
+        "-loglevel",
+        "level+info",
+        "-i",
+        str(source),
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-af",
+        filters,
+        "-ar",
+        str(SAMPLE_RATE),
+        "-ac",
+        "2",
+    ]
+    if max_seconds is not None:
+        command += ["-t", str(max_seconds + 1.0)]
+    command += ["-f", "f32le", "pipe:1"]
+    returncode, output, stderr = _stream_ffmpeg(command)
+    log = stderr.decode(errors="replace")
+    # What load_processed_audio's "-v error" would have shown.
+    detail = "\n".join(
+        line for line in log.splitlines() if re.search(r"\[(error|fatal|panic)\]", line)
+    ).strip()
+    if returncode:
+        raise RuntimeError(f"ffmpeg audio processing failed for {source}: {detail[-1000:]}")
+    values = _LUFS.findall(log)
+    if not values:
+        raise ValueError(f"silent or invalid audio: {source}")
+    measurement = _measurement(source, kind, float(values[-1]), before)
+    if detail:
+        logger.warning(
+            "Decoded %s with warnings:\n%s", source, detail, extra={"track": str(source)}
+        )
+    audio = np.frombuffer(output, dtype="<f4").reshape(-1, 2)
+    if max_seconds is not None and len(audio) > max_seconds * SAMPLE_RATE:
+        raise TrackTooLongError(str(source), len(audio) / SAMPLE_RATE)
+    after = source.stat()
+    if (after.st_size, after.st_mtime_ns) != (before.st_size, before.st_mtime_ns):
+        raise RuntimeError(f"source changed during audio decode: {source}")
+    # The gain load_processed_audio hands FFmpeg (to nine decimals), as float32.
+    gain = np.float32(10 ** (float(f"{float(measurement['gain_db']):.9f}") / 20))
+    audio *= gain
+    if not len(audio) or not np.isfinite(audio).all() or not np.any(audio):
+        raise ValueError("empty, silent or invalid processed audio")
+    return audio, measurement
 
 
 def analyze_basic(source: Path, kind: str = "music") -> tuple[IndexEntry, dict[str, float | None]]:
