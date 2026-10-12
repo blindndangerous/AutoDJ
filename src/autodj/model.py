@@ -358,7 +358,7 @@ def _prepare_muq_conformer(model: torch.nn.Module) -> None:
         inner.conformer = _MuqConformerAdapter(encoder)
 
 
-def load_model(model_path: Path) -> MuqWrapper:
+def load_model(model_path: Path, device: str | None = None) -> MuqWrapper:
     """Load the MuQ model from a local directory and return a :class:`MuqWrapper`.
 
     Automatically selects CUDA if available, falls back to CPU otherwise.
@@ -367,6 +367,8 @@ def load_model(model_path: Path) -> MuqWrapper:
     Args:
         model_path: Path to the local HuggingFace MuQ model directory
             containing ``config.json`` and model weights.
+        device: ``"cuda"`` or ``"cpu"`` to choose, or ``None`` for
+            :func:`autodj.compute.device_string`.
 
     Returns:
         A :class:`MuqWrapper` ready for embedding.
@@ -392,7 +394,8 @@ def load_model(model_path: Path) -> MuqWrapper:
     # below is exercised only on the indexing host.
     from autodj.compute import device_string  # pragma: no cover
 
-    device = device_string()  # pragma: no cover
+    if device is None:  # pragma: no cover
+        device = device_string()
     logger.info("Loading MuQ model from %s on device=%s", model_path, device)  # pragma: no cover
 
     try:  # pragma: no cover

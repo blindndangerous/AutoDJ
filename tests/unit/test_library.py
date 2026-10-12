@@ -977,7 +977,7 @@ def test_advanced_worker_adds_vector_without_publishing_legacy_index(tmp_path: P
 
     vector = np.full(FEATURE_DIM, 0.5, dtype=np.float32)
 
-    def embed(tracks, wrapper, workers, checkpoint, throttle_ms, report):
+    def embed(tracks, wrapper, workers, checkpoint, throttle_ms, report, gate=None):
         del wrapper, workers, throttle_ms, report
         advanced = make_entry(tracks[0].path)
         advanced.bpm, advanced.key, advanced.mode = 121.0, 7, 1

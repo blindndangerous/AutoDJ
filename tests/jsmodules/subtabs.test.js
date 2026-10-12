@@ -54,6 +54,7 @@ describe("Settings subtabs markup", () => {
     expect(tabs.map((tab) => tab.textContent)).toEqual([
       "Transitions", "DJ mixing", "Song picking", "Sound", "Display and keys",
       "Voice liners", "Time checks", "Schedule", "Stream", "Profiles and access",
+      "Analysis workers",
     ]);
     for (const tab of tabs) {
       expect(tab.hasAttribute("aria-controls")).toBe(false);
@@ -110,6 +111,8 @@ describe("initSubtabs", () => {
 
     // Stream is hidden outside stream mode, so End lands on the last one shown.
     press(document.activeElement, "End");
+    expect(document.activeElement).toBe(byId("stab-workers"));
+    press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-access"));
     press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-schedule"));

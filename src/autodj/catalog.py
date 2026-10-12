@@ -1045,12 +1045,11 @@ class LibraryCatalog:
             )
             return [(row[0], IndexEntry(*tuple(row)[1:])) for row in rows]
 
-    def unembedded_music(self) -> list[dict]:
-        """Records the analysis job should embed, in path order.
+    def unembedded_paths(self) -> list[str]:
+        """Paths of music records with no vector under an advanced, non-liner source.
 
-        Music records with no vector, under an advanced music source and
-        not owned by a liner source, whose file exists.  One query, and a
-        file check only for those.
+        One query and no file-system call, so it is cheap enough to count
+        the analysis queue with.  A path may name a file that is gone.
         """
         with self._lock:
             db = self._db()
@@ -1063,22 +1062,115 @@ class LibraryCatalog:
                     advanced.append((_prefix(root), bool(recursive)))
             if not advanced:
                 return []
-            paths = [
+            return [
                 row[0]
                 for row in db.execute(
                     "SELECT e.path FROM catalog_entries e LEFT JOIN catalog_vectors v "
                     "ON v.entry_id=e.id WHERE e.kind='music' AND v.entry_id IS NULL "
                     "ORDER BY e.path"
                 )
+                if _covered_by(row[0], advanced) and not _covered_by(row[0], liner)
             ]
-            return [
-                record
-                for path in paths
-                if _covered_by(path, advanced)
-                and not _covered_by(path, liner)
-                and Path(path).is_file()
-                and (record := self.record_for_path(path)) is not None
-            ]
+
+    def unembedded_music(
+        self, *, limit: int | None = None, exclude: Collection[str] = ()
+    ) -> list[dict]:
+        """Records the analysis job should embed, in path order.
+
+        :meth:`unembedded_paths` whose file exists, leaving out *exclude*
+        (normalized paths), at most *limit* of them.  A file check only for
+        the records returned.
+        """
+        records: list[dict] = []
+        for path in self.unembedded_paths():
+            if limit is not None and len(records) >= limit:
+                break
+            if path in exclude or not Path(path).is_file():
+                continue
+            record = self.record_for_path(path)
+            if record is not None:
+                records.append(record)
+        return records
+
+    def store_analysis(
+        self,
+        path: str | Path,
+        size: int,
+        fingerprint: str,
+        analysis: dict[str, float | int],
+        vector: np.ndarray,
+    ) -> bool:
+        """Save a song's advanced analysis if it is still the file it was made from.
+
+        The record must still be music with this *size* and *fingerprint*,
+        and so must the file on disk.  The analysed fields, the stale-check
+        stamp and the vector change in one transaction, so the change
+        counters show the server a complete result.
+
+        Args:
+            path: The song.
+            size: File size the analysis was made from.
+            fingerprint: :func:`~autodj.indexer.file_fingerprint` it was made from.
+            analysis: ``energy``, ``key``, ``mode``, ``bpm`` and
+                ``tempo_confidence``, as ``autodj index`` measures them.
+            vector: The combined vector.
+
+        Returns:
+            ``False`` when the song is gone or its file changed (a stale
+            result), ``True`` once stored.
+
+        Raises:
+            ValueError: The vector is not a finite ``FEATURE_DIM`` vector.
+        """
+        from autodj.indexer import FEATURE_DIM, _apply_analysis_metadata, source_mtime
+
+        value = np.asarray(vector, dtype=np.float32)
+        if value.shape != (FEATURE_DIM,) or not np.isfinite(value).all():
+            raise ValueError(f"vector must be a finite float32 array of shape ({FEATURE_DIM},)")
+        normalized = _path(path)
+        if not size or not fingerprint or file_fingerprint(normalized) != (size, fingerprint):
+            return False
+        mtime = source_mtime(normalized)
+        with self._lock:
+            db = self._db()
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    "SELECT * FROM catalog_entries WHERE path=?", (normalized,)
+                ).fetchone()
+                if (
+                    row is None
+                    or row["kind"] != "music"
+                    or row["size"] != size
+                    or row["fingerprint"] != fingerprint
+                ):
+                    db.rollback()
+                    return False
+                entry = self._entry(row)
+                _apply_analysis_metadata(entry, analysis)
+                db.execute(
+                    "UPDATE catalog_entries SET energy=?, key=?, mode=?, bpm=?, "
+                    "tempo_confidence=?, embedded_at=? WHERE id=?",
+                    (
+                        entry.energy,
+                        entry.key,
+                        entry.mode,
+                        entry.bpm,
+                        entry.tempo_confidence,
+                        mtime,
+                        row["id"],
+                    ),
+                )
+                db.execute(
+                    "INSERT INTO catalog_vectors VALUES (?,?) ON CONFLICT(entry_id) "
+                    "DO UPDATE SET vector=excluded.vector",
+                    (row["id"], value.tobytes()),
+                )
+                db.commit()
+            except BaseException:
+                db.rollback()
+                raise
+        return True
 
     def all_entries(self, kind: str | None = None) -> tuple[dict, ...]:
         """Return every stored record, including currently uncovered/missing files."""

@@ -75,7 +75,7 @@ def test_limit_and_workers_use_one_batch_and_force_reembeds_existing_vector(tmp_
 
     seen = {}
 
-    def embed(tracks, wrapper, workers, checkpoint, throttle_ms, report):
+    def embed(tracks, wrapper, workers, checkpoint, throttle_ms, report, gate=None):
         del wrapper, throttle_ms, report
         seen.update(paths=[t.path for t in tracks], workers=workers)
         entries = [_entry(t.path) for t in tracks]
@@ -139,7 +139,7 @@ def test_analysis_keeps_existing_vector_and_skips_disabled_and_liner_sources_on_
 def test_each_successful_result_is_checkpointed_durably(tmp_path):
     cfg, songs, _ = _catalog(tmp_path, count=2)
 
-    def embed(tracks, wrapper, workers, checkpoint, throttle_ms, report):
+    def embed(tracks, wrapper, workers, checkpoint, throttle_ms, report, gate=None):
         del wrapper, workers, throttle_ms, report
         entries = [_entry(track.path) for track in tracks]
         vectors = [np.full(FEATURE_DIM, i + 1, dtype=np.float32) for i in range(len(entries))]

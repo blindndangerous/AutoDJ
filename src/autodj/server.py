@@ -93,6 +93,7 @@ from autodj.clockwheel_store import (
     validate_name,
 )
 from autodj.icy import METAINT
+from autodj.indexer import analysis_identity
 from autodj.lan import PAIRING_ON_REQUEST_HINT, format_lan_banner, lan_urls, running_in_container
 from autodj.listener_access import (
     AddressLimitError,
@@ -102,6 +103,8 @@ from autodj.listener_access import (
     normalize_address,
     proxy_allowlist,
 )
+from autodj.machine_tokens import MachineTokenStore
+from autodj.model_identity import CachedModelCommit
 from autodj.nowplaying import NowPlaying
 from autodj.pairing import DeviceRegistry
 from autodj.playlog import (
@@ -115,7 +118,7 @@ from autodj.playlog import (
 from autodj.recorder import Recorder
 from autodj.scheduler import Action, system_timezone
 from autodj.scheduler_api import install_scheduler
-from autodj.secret_files import paired_devices_path
+from autodj.secret_files import machine_tokens_path, paired_devices_path
 from autodj.security import (
     COOKIE_NAME,
     PAIRING_BODY_MAX_BYTES,
@@ -146,6 +149,13 @@ from autodj.stream import EncoderUnavailableError, ListenerLimitError
 from autodj.tls import CertificateReloader
 from autodj.version import current_version
 from autodj.webhooks import WebhookWorker
+from autodj.worker_api import (
+    MACHINE_SCOPES,
+    RESULT_BODY_MAX_BYTES,
+    SMALL_BODY_MAX_BYTES,
+    WORKER_PREFIX,
+    install_worker_api,
+)
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
@@ -1438,8 +1448,40 @@ def create_app(
         "/api/carts/upload": lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
         "/api/stereo-tool-presets/upload": lambda: MAX_PRESET_BYTES + _MULTIPART_OVERHEAD_BYTES,
         "/api/schedule": lambda: _SCHEDULE_BODY_MAX_BYTES,
+        "/api/machine-tokens": lambda: SMALL_BODY_MAX_BYTES,
+        WORKER_PREFIX + "result": lambda: RESULT_BODY_MAX_BYTES,
+        **{
+            WORKER_PREFIX + name: (lambda: SMALL_BODY_MAX_BYTES)
+            for name in ("claim", "failed", "heartbeat", "release")
+        },
     }
-    app.add_middleware(SecurityMiddleware, policy=policy, body_limits=body_limits)
+    # Machine tokens (analysis workers) open their database on first use.
+    machine_token_lock = threading.Lock()
+    machine_token_store: list[MachineTokenStore] = []
+
+    def machine_tokens() -> MachineTokenStore:
+        with machine_token_lock:
+            if not machine_token_store:
+                machine_token_store.append(
+                    MachineTokenStore(machine_tokens_path(bridge.player._cfg))
+                )
+            return machine_token_store[0]
+
+    app.state.machine_tokens = machine_tokens
+    app.add_middleware(
+        SecurityMiddleware,
+        policy=policy,
+        body_limits=body_limits,
+        machine_scopes=MACHINE_SCOPES,
+        machine_auth=lambda token, scope: machine_tokens().authenticate(token, scope),
+    )
+    model_commit = CachedModelCommit(lambda: (bridge.player._cfg.model, bridge.player._cfg.index))
+    install_worker_api(
+        app,
+        tokens=machine_tokens,
+        library=lambda: getattr(bridge, "library", None),
+        identity=lambda: analysis_identity(bridge.player._cfg.model.name, model_commit()),
+    )
     # Compresses the page, scripts and JSON; audio, cover art and Range
     # replies pass through as is.
     app.add_middleware(_GZipExceptStream, minimum_size=1024, compresslevel=6)

@@ -70,6 +70,26 @@ function validForWords(seconds) {
   return `${minutes} minute${minutes === 1 ? "" : "s"}`;
 }
 
+// Plain http is not a secure context, so it has no clipboard API; the
+// older copy command still works there through a one-off copy listener.
+export function copyByCommand(text, doc = globalThis.document) {
+  let wrote = false;
+  const onCopy = (event) => {
+    if (!event.clipboardData) return;
+    event.clipboardData.setData("text/plain", text);
+    event.preventDefault();
+    wrote = true;
+  };
+  doc.addEventListener("copy", onCopy);
+  try {
+    return typeof doc.execCommand === "function" && doc.execCommand("copy") === true && wrote;
+  } catch (_) {
+    return false;
+  } finally {
+    doc.removeEventListener("copy", onCopy);
+  }
+}
+
 export function installAccess(els, { onSignedOut }) {
   const {
     card, note, controls, signOut, refresh, list, status,
@@ -407,33 +427,13 @@ export function installAccess(els, { onSignedOut }) {
     }
   }
 
-  // Plain http is not a secure context, so it has no clipboard API; the
-  // older copy command still works there through a one-off copy listener.
-  function copyByCommand(text) {
-    let wrote = false;
-    const onCopy = (event) => {
-      if (!event.clipboardData) return;
-      event.clipboardData.setData("text/plain", text);
-      event.preventDefault();
-      wrote = true;
-    };
-    doc.addEventListener("copy", onCopy);
-    try {
-      return typeof doc.execCommand === "function" && doc.execCommand("copy") === true && wrote;
-    } catch (_) {
-      return false;
-    } finally {
-      doc.removeEventListener("copy", onCopy);
-    }
-  }
-
   async function copyCode() {
     const code = pairing.code;
     if (!code) return;
     try {
       await navigator.clipboard.writeText(code);
     } catch (_) {
-      if (!copyByCommand(code)) {
+      if (!copyByCommand(code, doc)) {
         say(`Could not copy.  The code is ${spokenCode(code)}.`, "error");
         return;
       }
