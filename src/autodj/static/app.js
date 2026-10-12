@@ -447,9 +447,11 @@ function setButtonContent(button, html) {
 // The name is the button's aria-label (index.html) and all of its text
 // is hidden: built from the visible words and a hidden " or ", browse
 // mode read "PlayorPause" in Chrome and three lines in Firefox (D16).
+// The visible words are the name itself, so a speech-input user who says
+// what they see ("click Play or Pause") reaches it (WCAG 2.5.3).
 function renderPlayPause(playing) {
   setButtonContent(btnPause,
-    `<span aria-hidden="true">${playing ? "\u23F8" : "\u25B6"} Play/Pause</span>`);
+    `<span aria-hidden="true">${playing ? "\u23F8" : "\u25B6"} Play or Pause</span>`);
 }
 
 function setAttributeIfChanged(element, name, value) {

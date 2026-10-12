@@ -4,6 +4,7 @@
 // each <section>.  Tablist arrow / Home / End navigation follows
 // the ARIA APG roving-tabindex pattern (tablist.js).
 
+import { showVisibleStatus } from "./live-region.js";
 import { markSelected, tabForKey } from "./tablist.js";
 
 const VIEW_NAMES = ["now", "queue", "carts", "track-info", "history", "settings", "library"];
@@ -29,6 +30,7 @@ export function initViewRouter() {
   for (const lnk of _viewLinks.values()) {
     lnk.addEventListener("click", () => {
       const target = lnk.dataset.view;
+      clearStaleStatus(target);
       if (location.hash !== "#" + target) location.hash = target;
       else applyView(target, true);
     });
@@ -84,6 +86,7 @@ function _onTabKeydown(e) {
   if (!next) return;
   const nextName = next.dataset.view;
   e.preventDefault();
+  clearStaleStatus(nextName);
   // Select first, then focus, as the APG tabs example does, so focus
   // lands on a tab that is already selected.  The hashchange that
   // follows finds the state already set and changes nothing.  The tabs
@@ -93,6 +96,15 @@ function _onTabKeydown(e) {
   const nextTab = _viewLinks.get(nextName);
   if (nextTab) nextTab.focus();
   if (location.hash !== "#" + nextName) location.hash = nextName;
+}
+
+// The visible status mirror reports what was just done in the view being
+// left ("Token created", a form error).  Left showing for its full dwell
+// over the new view it covered that view's content and read as if it
+// were about it.  Only a user's own tab change clears it; the live
+// region and its single announcement are untouched.
+function clearStaleStatus(target) {
+  if (target !== _currentView) showVisibleStatus("", document);
 }
 
 function applyView(name, userInitiated) {

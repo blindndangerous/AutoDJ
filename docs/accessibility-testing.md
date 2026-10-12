@@ -32,6 +32,8 @@ releases.
 
 CI includes selected static accessibility contracts and JavaScript behavior checks. These checks cover live-region markup, durable descriptions, keyboard interactions, color boundaries, reduced-motion styles, and forced-colors styles. Passing CI does not establish WCAG conformance and does not prove what a screen reader will speak.
 
+The visual audit (`npm run audit:visual`, part of `audit:ci`) loads every view and every Settings subtab the server shows, with every card opened, in Chromium and Firefox. It runs axe-core's WCAG 2.2 A and AA rules at 1280 px (text contrast, target size, label in name and the rest), fails if the page scrolls sideways at 320 px wide or with 200 % text at 1280 px, requires every checkbox and radio button to be at least 24 by 24 px, and tabs through each view requiring a solid focus outline at least 2 px wide on a control scrolled fully into the window. It runs on the empty-library server, so lists that only fill with music, listeners or saved items are not covered, and Stream is covered only when the server runs in stream mode. It does not check forced colours, which the static contracts cover.
+
 Checkboxes and radio buttons are a deliberate exception to the authored control-boundary rule. In the default color mode they keep the browser and operating system's native appearance; AutoDJ does not replace that appearance or draw a custom border. The forced-colors rules may apply system colors such as `CanvasText` and `Highlight`, but they do not disable the native appearance. Test both checked and unchecked states during release sampling when a sampled flow contains these controls.
 
 ## Announcement contract

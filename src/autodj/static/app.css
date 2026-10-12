@@ -24,7 +24,14 @@
       --green:     #27ae60;
       --radius:    6px;
       --badge-border: #4d7eb5;   /* 3.76:1 on --bg-card; meets 1.4.11 3:1 minimum */
+      --range-track: #5a7bb0;    /* 3.7:1 on --bg-card; slider track (1.4.11) */
     }
+
+    /* Keyboard focus that lands on a control near the top or bottom edge
+       of the window scrolls it in far enough for the whole focus ring and
+       a little context to show; flush against the edge the ring was cut
+       in half (WCAG 2.4.11). */
+    html { scroll-padding-block: 3rem; }
 
     body {
       background: var(--bg);
@@ -33,7 +40,12 @@
       font-size: 1rem;
       line-height: 1.5;
       min-height: 100vh;
+      /* Folder paths, file names and tokens are single long words: at
+         320 px they ran past the card and scrolled the page sideways
+         (WCAG 1.4.10).  They break only where they would overflow. */
+      overflow-wrap: break-word;
     }
+    code { overflow-wrap: anywhere; }
 
     /* Skip-to-content link (WCAG 2.4.1) */
     .skip-link {
@@ -107,7 +119,11 @@
     #conn-status.error       { background: var(--danger);  color: #fff; }
 
     main {
-      max-width: 780px;
+      /* In rem, so the column widens with the reader's text size: at
+         780 px, 200 % text squeezed every label and field into a column
+         half as wide as their content and pushed them off the right edge
+         (WCAG 1.4.4). */
+      max-width: 48.75rem;
       margin: 0 auto;
       padding: 1.5rem 1rem 3rem;
       display: flex;
@@ -126,8 +142,11 @@
       margin-bottom: 1.25rem;
     }
     .card:last-child { margin-bottom: 0; }
+    /* The same size as the collapsible cards' titles: at 0.75rem the
+       Browse library, Categories and Clockwheels titles were smaller than
+       the body text under them, beside 1.1rem titles on the same page. */
     .card h2 {
-      font-size: 0.75rem;
+      font-size: 1.1rem;
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.1em;
@@ -233,7 +252,9 @@
       cursor: pointer;
       min-width: 44px;   /* WCAG 2.5.5 touch target */
       min-height: 44px;
-      transition: background 0.15s;
+      /* No background transition: the text colour changes at once, so a
+         tab just left drew #e0e0e0 on the fading --accent fill (1.7:1)
+         for the length of the fade, and a pressed toggle did the same. */
     }
     button:hover  { background: var(--btn-hover); }
     button:active { background: var(--accent); color: #000; }
@@ -241,6 +262,15 @@
     button[aria-pressed="true"] {
       background: #e67e22;
       color: #000;
+    }
+    /* On and off must not differ only in colour (WCAG 1.4.1): orange
+       against the blue button is 2.5:1, under the 3:1 a colour-blind
+       reader needs to tell them apart.  A tick before the label says
+       "on" in shape too.  The alt text after the slash is empty, so the
+       tick is not spoken: aria-pressed already says the state. */
+    button[aria-pressed="true"]::before {
+      content: "\2713" / "";
+      font-weight: 700;
     }
     /* .is-pending: a focused button busy with a request keeps focus and
        stays enabled (see withDisabled in modules/api-client.js) but must
@@ -265,13 +295,33 @@
        white 18 px widgets punched into the dark card -- a quarter of the
        height of their neighbours.  Types are listed explicitly so range,
        checkbox and radio keep their own geometry. */
+    /* No field may be wider than the column it sits in: one long folder
+       path in a <select> made the whole Queue & Search page scroll
+       sideways, even on a desktop window (WCAG 1.4.10). */
+    input,
+    select,
+    textarea {
+      max-width: 100%;
+    }
+    /* A fieldset is as wide as its widest content by default, so one long
+       path or a 200 % text size pushed whole groups past the card. */
+    fieldset { min-width: 0; }
+
+    /* Typeless inputs (the address-ban fields), time and date fields were
+       left out of this list and rendered as 20 px grey OS boxes. */
     select,
     textarea,
+    input:not([type]),
     input[type="text"],
     input[type="search"],
     input[type="number"],
-    input[type="date"],
+    input[type="url"],
+    input[type="email"],
+    input[type="password"],
+    input[type="tel"],
     input[type="time"],
+    input[type="date"],
+    input[type="datetime-local"],
     input[type="file"] {
       padding: 0.4rem 0.6rem;
       color: var(--text);
@@ -562,6 +612,24 @@
       border-radius: 1px;
       box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
     }
+    /* The ticks still differ only by hue, which a colour-blind reader
+       cannot match to the key (WCAG 1.4.1).  While there are cues, the
+       text that screen readers already browse (#cue-details: "3 cue
+       points, drop at 1:05, ...") is shown under the key as well.  Only
+       its visual clipping is lifted; it stays the same node, with the same
+       name and place in the reading order.  With no cues it stays hidden,
+       as before. */
+    #cue-legend:not([hidden]) ~ #cue-details.visually-hidden {
+      position: static;
+      width: auto;
+      height: auto;
+      margin: 0.25rem 0 0;
+      overflow: visible;
+      clip: auto;
+      white-space: normal;
+      font-size: 0.75rem;
+      color: var(--text-dim);
+    }
 
     /* ---- Lyrics ---- */
     #lyrics-list {
@@ -617,6 +685,8 @@
       grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
       gap: 0.5rem;
     }
+    /* Stop carts sat flush on the Edit a cart card's border. */
+    #cart-stop { margin-bottom: 1.25rem; }
     #cart-slots button {
       width: 100%;
       min-height: 3rem;
@@ -726,6 +796,7 @@
     }
     .settings-row {
       display: flex;
+      flex-wrap: wrap;   /* the control moves under its label, not off the card */
       align-items: center;
       gap: 0.75rem;
       margin: 0.4rem 0;
@@ -746,18 +817,22 @@
       gap: 0.5rem;
       margin: 0.3rem 0;
     }
-    .settings-check input[type="checkbox"],
-    .settings-check input[type="radio"],
-    .settings-row input[type="checkbox"] {
-      width: 1.1rem;
-      height: 1.1rem;
+    /* Every checkbox and radio button is at least 24 x 24 px (WCAG
+       2.5.8), the size the phone layout already used: the desktop ones
+       were 18 px, and those outside a .settings-check (Library tools,
+       clockwheel steps) the browser's 13 px. */
+    input[type="checkbox"],
+    input[type="radio"] {
+      width: 1.5rem;
+      height: 1.5rem;
       flex: none;
+      vertical-align: middle;
     }
     /* Inline help text — sighted readers see grey description below
        each control; screen readers receive it via aria-describedby. */
     .setting-desc {
       display: block;
-      margin: 0.15rem 0 0.55rem 1.7rem;
+      margin: 0.15rem 0 0.55rem 2rem;
       font-size: 0.83rem;
       color: #b8c5d8;             /* ≥ 4.5:1 vs --bg */
       line-height: 1.35;
@@ -765,9 +840,16 @@
     .settings-row + .setting-desc {
       margin-left: 10rem;
     }
-    /* On-demand help under a control's one-sentence description. */
+    /* Help under a button lines up with the button, not with a checkbox
+       label that is not there. */
+    button + .setting-desc {
+      margin-left: 0;
+    }
+    /* On-demand help under a control's one-sentence description.  The
+       padding makes the one-line summary a 24 px target (WCAG 2.5.8). */
     .setting-help > summary {
       cursor: pointer;
+      padding-block: 0.2rem;
     }
     .setting-help > ul {
       margin: 0.3rem 0 0;
@@ -957,6 +1039,118 @@
       border: 0;
     }
 
+    /* ---- Lists with bullets or numbers ----
+       `* { padding: 0 }` took away the UA indent, so the bullets of the
+       folder, worker, token, category, clockwheel and ban lists hung
+       outside the card's left edge.  Lists that draw no marker set their
+       own padding back to 0 below.  Both rules use :where(), so they
+       weigh nothing: a list that is itself a card's content keeps the
+       card's own padding (details.card > *), as before. */
+    :where(main) :where(ul, ol) {
+      padding-inline-start: 1.5rem;
+    }
+    :where(#search-results, #queue-list, #profile-list, #device-list,
+      #ln-file-list, #lyrics-list, #why-list, #library-browse-results,
+      #clock-slots),
+    :where(main) :where(ul, ol):where(:has(> li.no-results:only-child)) {
+      padding-inline-start: 0;
+    }
+
+    /* Rows that end in a button (Revoke, Remove folder, Unban) touched the
+       next row's button: 44 px targets with no space between them. */
+    :where(#token-list, #workers-list, #listener-ban-list, #listener-control-list,
+      #source-folders, #clock-list, #categories-list) > li + li {
+      margin-top: 0.4rem;
+    }
+    /* Links: the card colour scheme's own link blue, underlined, so a link
+       reads as one in every browser instead of each engine's default. */
+    main a:link,
+    main a:visited {
+      color: var(--accent);
+      text-underline-offset: 0.15em;
+    }
+
+    /* ---- Forms laid out by source order ----
+       Library tools' folder form, Browse library, Clockwheels, the
+       clockwheel step form, the address-ban form and the new worker token
+       were bare label, field and button siblings.  In inline flow they ran
+       together ("Search text (optional)[field]"), split labels from their
+       fields across lines (".PAL" / "file to import") and let a long
+       folder path push the step form past the card.  Each label now starts
+       its own line with its field after it; buttons sit side by side with
+       a gap; text blocks take the full width.  Source order, and so the
+       reading and tab order, is unchanged. */
+    .flow-form,
+    .clock-step-field,
+    .clock-condition {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem 0.75rem;
+    }
+    :is(.flow-form, .clock-step-field, .clock-condition) > * {
+      flex: 1 1 100%;
+      min-width: 0;
+    }
+    :is(.flow-form, .clock-step-field, .clock-condition) > :is(button, input, select, textarea) {
+      flex: 0 1 auto;
+    }
+    :is(.flow-form, .clock-step-field, .clock-condition) > :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
+      flex: 0 1 24rem;
+    }
+    /* A label that wraps its checkbox, and the label next to a checkbox,
+       stay on the checkbox's line.  A hidden checkbox still counts as a
+       sibling, hence :not([hidden]). */
+    :is(.flow-form, .clock-step-field, .clock-condition) > label:has(input),
+    :is(.flow-form, .clock-step-field, .clock-condition) > label:has(+ :is(input[type="checkbox"], input[type="radio"]):not([hidden])),
+    :is(.flow-form, .clock-step-field, .clock-condition) > :is(input[type="checkbox"], input[type="radio"]):not([hidden]) + label {
+      flex: 0 1 auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    :is(.flow-form, .clock-step-field, .clock-condition) > :is(input[type="checkbox"], input[type="radio"]):not([hidden]) + label {
+      flex-grow: 1;
+    }
+    :is(.flow-form, .clock-step-field, .clock-condition) > .setting-desc {
+      margin: 0;
+    }
+    .clock-condition {
+      margin: 0.5rem 0;
+    }
+
+    /* ---- Clockwheel steps grid ----
+       Each step was an <ol> number, then its own step number, then five
+       buttons in inline flow: "1. 1", and a long step name wrapped its
+       row's buttons under the next row's.  One row per step now: the
+       step number, then the buttons wrapping inside that row. */
+    #clock-slots {
+      list-style: none;
+      display: grid;
+      gap: 0.5rem;
+      margin: 0.5rem 0;
+    }
+    #clock-slots > li {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.4rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    #clock-slots > li:last-child { border-bottom: none; }
+    #clock-slots [role="rowheader"] {
+      min-width: 2ch;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+    /* The focusable cell wraps its button; its focus ring hugs the button
+       rather than an inline box that cut through the label. */
+    #clock-slots [role="gridcell"] {
+      display: inline-flex;
+      border-radius: var(--radius);
+    }
+
     /* ----------------------------------------------------------------
        Mobile / narrow-screen layout (≤ 720 px) — phone & narrow tablet.
        WCAG 2.5.5 Target Size: interactive elements ≥ 44 × 44 CSS px.
@@ -964,7 +1158,8 @@
     @media (max-width: 720px) {
       body { font-size: 0.95rem; }
       header { padding: 0.5rem 0.75rem; }
-      main { padding: 0 0.75rem; }
+      /* Top padding keeps the first card off the section tabs. */
+      main { padding: 0.75rem 0.75rem 2rem; }
       .card { padding: 0.75rem; margin-bottom: 0.75rem; }
 
       /* Stack horizontal control rows on narrow screens */
@@ -997,30 +1192,20 @@
       }
       /* Vendor track pseudo-elements need their own rules: an unknown
          pseudo-element invalidates the whole selector list. */
+      /* The track takes --range-track, 3.7:1 on the card: in --border it
+         was 1.3:1 and the slider read as a floating dot (WCAG 1.4.11). */
       input[type="range"]::-webkit-slider-runnable-track {
         height: 6px;
-        background: var(--border);
+        background: var(--range-track);
         border-radius: 3px;
       }
       input[type="range"]::-moz-range-track {
         height: 6px;
-        background: var(--border);
+        background: var(--range-track);
         border-radius: 3px;
       }
       input[type="range"]::-webkit-slider-thumb {
         margin-top: -9px;   /* centre the 24 px thumb on the 6 px track */
-      }
-
-      /* WCAG 2.5.8 floor is 24 px; these measured 18 x 18.  Includes the
-         checkboxes that live in a .settings-row rather than a
-         .settings-check, which the first pass missed -- and which the
-         `.settings-row > * { width: 100% }` rule below would otherwise
-         stretch across the whole screen. */
-      .settings-check input[type="checkbox"],
-      .settings-row input[type="checkbox"] {
-        width: 1.5rem;
-        height: 1.5rem;
-        flex: none;
       }
 
       /* The time and duration columns stop refusing to wrap once there is
@@ -1156,9 +1341,13 @@
       transition: fill 0.18s ease;
     }
     #camelot-wheel .sector.compat {
-      /* Mid-tone fill — distinguishes 'mixable' from idle (~3:1 contrast
-         vs the card background) without competing with the active cell. */
+      /* Mid-tone fill marks 'mixable' without competing with the active
+         cell.  The fill alone is only 1.8:1 against an idle wedge, so the
+         wedge also gets an accent edge (7:1 on the card), and the numbers
+         on it stay above 4.5:1 (WCAG 1.4.11, 1.4.1). */
       fill: rgba(126, 179, 232, 0.30);  /* var(--accent) at 30% */
+      stroke: var(--accent);
+      stroke-width: 1.2;
     }
     #camelot-wheel .sector.active {
       fill: var(--accent);
@@ -1265,6 +1454,16 @@
         background: Highlight;
         color: HighlightText;
         border: 3px solid CanvasText;
+        /* Without this Chromium paints its forced-colours backplate, a
+           Canvas box, behind the label: HighlightText on Canvas, so the
+           selected tab's name was invisible in High Contrast Black. */
+        forced-color-adjust: none;
+      }
+      /* Cue ticks and their key swatches keep their own colours; forced
+         colours flattened them to nothing on the bar. */
+      #cue-strip .cue-mark,
+      #cue-legend .cue-swatch {
+        forced-color-adjust: none;
       }
     }
 
@@ -1334,8 +1533,11 @@
 
 /* Settings > Stream ------------------------------------------------- */
 
+/* The status page link was left out, so its address showed cut short
+   ("http://127.0.0.1:8765/statu") beside its two siblings at full width. */
 #stream-url,
-#np-url {
+#np-url,
+#np-status-url {
   flex: 1;
   min-width: 0;
 }
