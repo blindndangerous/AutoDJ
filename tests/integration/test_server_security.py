@@ -12,7 +12,7 @@ import logging
 import time
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, sentinel
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1150,23 +1150,20 @@ class TestLinerUploadDelete:
 
 
 @pytest.mark.parametrize(
-    ("manifests", "entries", "status"),
+    ("entries", "status"),
     [
-        (["generation 1", "generation 2"], [object()], 409),
-        (["generation 1"], [None], 404),
-        (["generation 1", "generation 1"], [object()], 200),
+        ([sentinel.before, sentinel.after], 409),
+        ([sentinel.before, None], 409),
+        ([None], 404),
+        ([sentinel.track, sentinel.track], 200),
     ],
 )
-def test_lyrics_refuses_a_result_from_a_replaced_index(
-    manifests: list[str],
+def test_lyrics_refuses_a_result_after_the_catalog_track_changes(
     entries: list[object | None],
     status: int,
 ) -> None:
-    from unittest.mock import PropertyMock
-
     player = _make_player_mock()
     sim = _make_sim_mock()
-    type(sim).manifest = PropertyMock(side_effect=manifests)
     sim.entry_for_path.side_effect = entries
     bridge = PlayerBridge(player=player, sim=sim)
     bridge.lyrics_for = MagicMock(return_value=[])
@@ -1182,7 +1179,7 @@ def test_lyrics_refuses_a_result_from_a_replaced_index(
 
 class TestLibraryJobRunSnapshot:
     def test_run_starts_the_job_off_the_event_loop(self, client, monkeypatch) -> None:
-        from unittest.mock import MagicMock
+        from unittest.mock import MagicMock, sentinel
 
         mgr = MagicMock()
         mgr.start.return_value = True
