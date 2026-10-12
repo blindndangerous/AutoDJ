@@ -598,6 +598,11 @@ class StationRuntime:
         self._schedule_ticker: asyncio.Task[None] | None = None
         self._stream_ticker: asyncio.Task[None] | None = None
         self._broadcast_task: asyncio.Task[None] | None = None
+        # The station's one stop and one close: a second call (shutdown
+        # after a stop, or a stop queued behind shutdown) waits for the
+        # first and does nothing more.
+        self._stop_task: asyncio.Future[bool] | None = None
+        self._close_task: asyncio.Future[None] | None = None
         # Set while the station is stopped; its routes then answer 409.
         self.stopped = False
         # Whether a liner registered in the shared library is this station's
@@ -739,6 +744,16 @@ class StationRuntime:
         self.webhooks.start()
 
     async def stop(self, timeout_s: float) -> bool:
+        """Stop the station once; a later call waits for that stop and returns its result.
+
+        See :meth:`_stop`.  The stop runs to its end even if the caller is
+        cancelled, so it never leaves a half-stopped station.
+        """
+        if self._stop_task is None:
+            self._stop_task = asyncio.ensure_future(self._stop(timeout_s))
+        return await asyncio.shield(self._stop_task)
+
+    async def _stop(self, timeout_s: float) -> bool:
         """Stop the schedule, stream, recorder, liners and player, in that order.
 
         Listeners are disconnected and the encoder stopped first, then the
@@ -785,7 +800,12 @@ class StationRuntime:
         return await asyncio.to_thread(quiesce_cache_writers, bridge, self.player_thread, timeout_s)
 
     async def close(self) -> None:
-        """Close the mastering process and stop the WebSocket push; after :meth:`stop`."""
+        """Close the mastering process and stop the WebSocket push, once; after :meth:`stop`."""
+        if self._close_task is None:
+            self._close_task = asyncio.ensure_future(self._close())
+        await asyncio.shield(self._close_task)
+
+    async def _close(self) -> None:
         master = getattr(self.bridge.player, "_continuous_master", None)
         if master is not None:
             await asyncio.to_thread(master.close)
@@ -889,8 +909,17 @@ async def _shielded[T](coro: Coroutine[Any, Any, T]) -> T:
     return await asyncio.shield(task)
 
 
+@functools.lru_cache(maxsize=4096)
 def _normalized(path: str | Path) -> str:
-    return os.path.normcase(os.path.normpath(os.path.abspath(os.path.expanduser(path))))
+    """*path* as the file system resolves it: symbolic links and Windows short (8.3) names
+    followed, case-folded on Windows.
+
+    The catalog keeps a path as it was spelled when its folder was added,
+    so a liner folder reached through a link or a short name must be
+    resolved before two paths are compared.  Cached: a liner check runs
+    for every liner at each pick.
+    """
+    return os.path.normcase(os.path.realpath(os.path.expanduser(path)))
 
 
 def _inside(path: str, root: str) -> bool:
@@ -928,9 +957,11 @@ class StationRegistry:
         self._default = default
         self._extras = {extra.slug: extra for extra in extras}
         self._running: dict[str, StationRuntime] = {default.slug: default}
-        # One start or stop at a time, so two starts cannot both find
-        # Stereo Tool free.
-        self._lock = asyncio.Lock()
+        # One start or stop of a station at a time.  Each station has its
+        # own lock, held for the whole start or stop, so one station's
+        # slow stop never holds up another station's start.  Stereo Tool
+        # is guarded by the claim below, not by these locks.
+        self._locks: dict[str, asyncio.Lock] = {slug: asyncio.Lock() for slug in self._extras}
         # Set once shutdown begins: no station starts after that.
         self._closing = False
         # Stations being stopped.  From the moment a stop is asked for,
@@ -938,6 +969,9 @@ class StationRegistry:
         # instead of waiting while the player finishes (up to
         # stop_timeout_s).
         self._stopping: set[str] = set()
+        # A station being torn down, out of _running: it still holds
+        # Stereo Tool until its mastering process has closed.
+        self._stopping_runtimes: dict[str, StationRuntime] = {}
         # Held while a station checks that Stereo Tool is free and takes
         # it: a station being built (in a worker thread) or one switching
         # to it in its settings (also in a worker thread).
@@ -1008,9 +1042,13 @@ class StationRegistry:
         return roots.get(slug) == max(holding, key=len)
 
     def stereo_tool_user(self, exclude: str) -> str | None:
-        """The name of a station other than *exclude* that uses Stereo Tool.
+        """The station other than *exclude* that uses Stereo Tool, in words, or ``None``.
 
-        A running station, or one being started whose settings choose it.
+        A running station, one being started whose settings choose it, or
+        one still stopping (its Stereo Tool runs until it has stopped);
+        for that last, the words say it is stopping and to try again
+        shortly.  Every station moves into the next of these before it
+        leaves the last, so a check from another thread always sees it.
         """
         for station in self.all():
             if station.slug != exclude and station.uses_stereo_tool():
@@ -1018,6 +1056,12 @@ class StationRegistry:
         for slug, cfg in list(self._starting.items()):
             if slug != exclude and cfg.playback.loudness_processing == "stereotool":
                 return str(cfg.stream.station_name)
+        for slug, station in list(self._stopping_runtimes.items()):
+            if slug != exclude and station.uses_stereo_tool():
+                return (
+                    f"{station.name}, which is still stopping (try again in a few seconds, "
+                    "once it has stopped)"
+                )
         return None
 
     def claim_stereo_tool(self, slug: str, cfg: AutoDJConfig) -> str | None:
@@ -1088,7 +1132,7 @@ class StationRegistry:
 
     async def _start_locked(self, extra: ExtraStation) -> StationRuntime:
         slug = extra.slug
-        async with self._lock:
+        async with self._locks[slug]:
             running = self._running.get(slug)
             if running is not None:
                 return running
@@ -1096,6 +1140,8 @@ class StationRegistry:
                 raise StationControlError("The server is shutting down.")
             try:
                 running = await _run_as(slug, self._start_extra(extra))
+                # Running before it stops counting as starting, so a
+                # Stereo Tool check never finds it in neither.
                 self._running[slug] = running
             finally:
                 self._starting.pop(slug, None)
@@ -1137,13 +1183,25 @@ class StationRegistry:
         await _shielded(self._stop_locked(extra))
 
     async def _stop_locked(self, extra: ExtraStation) -> None:
+        slug = extra.slug
         try:
-            async with self._lock:
-                runtime = self._running.pop(extra.slug, None)
+            # Its pages learn at once (4409), not after the player has
+            # finished; the station refuses new sockets from now on.
+            current = self._running.get(slug)
+            if current is not None:
+                current.stopped = True
+                await self._disconnect(current)
+            async with self._locks[slug]:
+                runtime = self._running.get(slug)
                 if runtime is not None:
-                    await _run_as(extra.slug, self._stop_extra(runtime, extra))
+                    # Stopping before it stops running, so a Stereo Tool
+                    # check never finds it in neither.
+                    self._stopping_runtimes[slug] = runtime
+                    del self._running[slug]
+                    await _run_as(slug, self._stop_extra(runtime, extra))
         finally:
-            self._stopping.discard(extra.slug)
+            self._stopping_runtimes.pop(slug, None)
+            self._stopping.discard(slug)
 
     async def _stop_extra(self, runtime: StationRuntime, extra: ExtraStation) -> None:
         await self._teardown(runtime)
@@ -1158,6 +1216,10 @@ class StationRegistry:
                 self.stop_timeout_s,
             )
         await runtime.close()
+        await self._disconnect(runtime)
+
+    async def _disconnect(self, runtime: StationRuntime) -> None:
+        """Close the sockets of *runtime*'s pages (4409); never raises."""
         if self.disconnect is not None:
             try:
                 await self.disconnect(runtime)
@@ -1173,8 +1235,12 @@ class StationRegistry:
         """
         # After any start or stop under way, so a station starting now is
         # stopped too and one stopping now has finished; none starts later.
-        async with self._lock:
-            self._closing = True
+        # A stop asked for after this finds the station already stopped
+        # (a runtime stops and closes once).
+        self._closing = True
+        async with contextlib.AsyncExitStack() as held:
+            for lock in self._locks.values():
+                await held.enter_async_context(lock)
             writers_quiesced = True
             for station in self.all():
                 quiet = await _run_as(station.slug, station.stop(timeout_s))

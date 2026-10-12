@@ -271,7 +271,9 @@ def test_start_and_stop_build_and_tear_down_a_station(tmp_path: Path) -> None:
         "nightowl started",
     ]
     assert prepared == ["nightowl", "nightowl"]
-    assert disconnected == ["nightowl"]
+    # Once as the stop is asked for, and again after the teardown in case
+    # a page connected in between.
+    assert disconnected == ["nightowl", "nightowl"]
 
 
 def test_a_station_that_fails_to_start_is_torn_down_and_left_stopped(
@@ -641,3 +643,238 @@ def test_a_stopping_station_answers_at_once(tmp_path: Path) -> None:
 
     asyncio.run(scenario())
     assert log == ["nightowl started", "nightowl stopped", "nightowl closed", "nightowl started"]
+
+
+def test_a_stopping_stations_pages_are_closed_before_its_player_finishes(tmp_path: Path) -> None:
+    log: list[str] = []
+    registry = StationRegistry(
+        _Runtime("default", log),  # type: ignore[arg-type]
+        [
+            _extra("nightowl", lambda _r: _Runtime("nightowl", log), tmp_path, autostart=False),
+            _extra("daybreak", lambda _r: _Runtime("daybreak", log), tmp_path, autostart=False),
+        ],
+    )
+
+    async def disconnect(station: Any) -> None:
+        log.append(f"{station.slug} pages closed")
+
+    registry.disconnect = disconnect
+
+    async def scenario() -> None:
+        owl = await registry.start("nightowl")
+        gate = asyncio.Event()
+        stop = owl.stop
+
+        async def slow_stop(timeout: float) -> bool:
+            await gate.wait()
+            return await stop(timeout)
+
+        owl.stop = slow_stop  # type: ignore[method-assign]
+        stopping = asyncio.create_task(registry.stop("nightowl"))
+        await asyncio.sleep(0.05)
+        # Its pages are told at once, and it refuses new ones.
+        assert log[-1] == "nightowl pages closed"
+        assert owl.stopped
+        # Another station starts and stops meanwhile: each station has its own lock.
+        day = await asyncio.wait_for(registry.start("daybreak"), 0.5)
+        assert day.slug == "daybreak"
+        await asyncio.wait_for(registry.stop("daybreak"), 0.5)
+        assert not stopping.done()
+        gate.set()
+        await stopping
+
+    asyncio.run(scenario())
+    assert log == [
+        "nightowl started",
+        "nightowl pages closed",
+        "daybreak started",
+        "daybreak pages closed",
+        "daybreak stopped",
+        "daybreak closed",
+        "daybreak pages closed",
+        "nightowl stopped",
+        "nightowl closed",
+        "nightowl pages closed",
+    ]
+
+
+def test_stereo_tool_held_by_a_stopping_station_says_so(tmp_path: Path) -> None:
+    log: list[str] = []
+    registry = StationRegistry(
+        _Runtime("default", log),  # type: ignore[arg-type]
+        [
+            _extra(
+                "nightowl",
+                lambda _r: _Runtime("nightowl", log, stereo=True),
+                tmp_path,
+                autostart=False,
+            )
+        ],
+    )
+
+    async def scenario() -> None:
+        owl = await registry.start("nightowl")
+        assert registry.stereo_tool_user(exclude="default") == "Nightowl"
+        gate = asyncio.Event()
+        stop = owl.stop
+
+        async def slow_stop(timeout: float) -> bool:
+            await gate.wait()
+            return await stop(timeout)
+
+        owl.stop = slow_stop  # type: ignore[method-assign]
+        stopping = asyncio.create_task(registry.stop("nightowl"))
+        await asyncio.sleep(0.05)
+        # Its Stereo Tool runs until it has stopped: still taken, and said so.
+        held = registry.stereo_tool_user(exclude="default")
+        assert held == (
+            "Nightowl, which is still stopping (try again in a few seconds, once it has stopped)"
+        )
+        assert registry.claim_stereo_tool("default", _playback("stereotool", "AutoDJ")) == held
+        gate.set()
+        await stopping
+        assert registry.stereo_tool_user(exclude="default") is None
+
+    asyncio.run(scenario())
+
+
+def test_a_runtime_stops_and_closes_once(tmp_path: Path) -> None:
+    from autodj.stations import StationRuntime
+
+    calls: list[str] = []
+    runtime = StationRuntime.__new__(StationRuntime)
+    runtime._stop_task = None
+    runtime._close_task = None
+
+    async def stop(_timeout: float) -> bool:
+        calls.append("stop")
+        await asyncio.sleep(0.01)
+        return True
+
+    async def close() -> None:
+        calls.append("close")
+
+    runtime._stop = stop  # type: ignore[method-assign]
+    runtime._close = close  # type: ignore[method-assign]
+
+    async def scenario() -> None:
+        # Shutdown and a queued stop at once, then again: one stop, one close.
+        assert await asyncio.gather(runtime.stop(1.0), runtime.stop(1.0)) == [True, True]
+        assert await runtime.stop(1.0)
+        await asyncio.gather(runtime.close(), runtime.close())
+
+    asyncio.run(scenario())
+    assert calls == ["stop", "close"]
+
+
+def test_a_shutdown_then_a_queued_stop_tears_down_once(tmp_path: Path) -> None:
+    log: list[str] = []
+
+    class _Once(_Runtime):
+        """Stops and closes once, as StationRuntime does."""
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self._done: set[str] = set()
+
+        async def stop(self, timeout: float) -> bool:
+            if "stop" not in self._done:
+                self._done.add("stop")
+                await super().stop(timeout)
+            return True
+
+        async def close(self) -> None:
+            if "close" not in self._done:
+                self._done.add("close")
+                await super().close()
+
+    registry = StationRegistry(
+        _Once("default", log),  # type: ignore[arg-type]
+        [_extra("nightowl", lambda _r: _Once("nightowl", log), tmp_path, autostart=False)],
+    )
+
+    async def scenario() -> None:
+        await registry.start("nightowl")
+        shutdown = asyncio.create_task(registry.shutdown(_Library(log), 1.0))  # type: ignore[arg-type]
+        await asyncio.sleep(0)
+        await registry.stop("nightowl")  # queued behind the shutdown
+        await shutdown
+
+    asyncio.run(scenario())
+    assert log.count("nightowl stopped") == 1
+    assert log.count("nightowl closed") == 1
+
+
+def test_liner_folders_are_compared_as_the_file_system_resolves_them(tmp_path: Path) -> None:
+    import os
+
+    real = tmp_path / "voice"
+    (real / "owl").mkdir(parents=True)
+    link = tmp_path / "voice-link"
+    try:
+        os.symlink(real, link, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("this system cannot make a symbolic link")
+    log: list[str] = []
+    default = _Runtime("default", log)
+    default.paths = SimpleNamespace(liners=real)
+    owl = _extra("nightowl", lambda _r: _Runtime("nightowl", log), tmp_path)
+    # Night Owl's folder is configured through the link; the library spelled it directly.
+    object.__setattr__(owl, "paths", SimpleNamespace(liners=link / "owl"))
+    registry = StationRegistry(default, [owl])  # type: ignore[arg-type]
+    liner = str(real / "owl" / "id.mp3")
+    assert registry.owns_liner("nightowl", liner)
+    assert not registry.owns_liner("default", liner)
+    via_link = str(link / "id.mp3")
+    assert registry.owns_liner("default", via_link)
+    assert not registry.owns_liner("nightowl", via_link)
+
+
+def test_a_failed_build_leaves_a_player_that_will_not_stop_and_its_master(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from autodj.server import _abandon_player
+
+    release = threading.Event()
+    closed: list[str] = []
+    player = SimpleNamespace(
+        _state=SimpleNamespace(should_stop=False),
+        _skip_event=threading.Event(),
+        _continuous_master=SimpleNamespace(close=lambda: closed.append("master")),
+    )
+    stuck = threading.Thread(target=release.wait, args=(5,), daemon=True)
+    stuck.start()
+    try:
+        with caplog.at_level(logging.WARNING, logger="autodj.server"):
+            _abandon_player(player, stuck, 0.05)
+        # Still running: it may still write to the master, so both are left.
+        assert closed == []
+        assert "left running" in caplog.records[-1].getMessage()
+    finally:
+        release.set()
+        stuck.join(5)
+    _abandon_player(player, stuck, 0.05)  # finished: the master is closed
+    assert closed == ["master"]
+    assert player._state.should_stop and player._skip_event.is_set()
+
+
+@pytest.mark.skipif(not hasattr(__import__("ctypes"), "windll"), reason="Windows short names")
+def test_liner_folders_given_by_a_windows_short_name_match(tmp_path: Path) -> None:
+    import ctypes
+
+    long_folder = tmp_path / "Night Owl voice liners"
+    (long_folder / "owl").mkdir(parents=True)
+    buffer = ctypes.create_unicode_buffer(1024)
+    ctypes.windll.kernel32.GetShortPathNameW(str(long_folder), buffer, 1024)
+    short = Path(buffer.value)
+    if not buffer.value or short.name == long_folder.name:
+        pytest.skip("short (8.3) names are off on this drive")
+    log: list[str] = []
+    default = _Runtime("default", log)
+    default.paths = SimpleNamespace(liners=long_folder)
+    owl = _extra("nightowl", lambda _r: _Runtime("nightowl", log), tmp_path)
+    object.__setattr__(owl, "paths", SimpleNamespace(liners=short / "owl"))
+    registry = StationRegistry(default, [owl])  # type: ignore[arg-type]
+    liner = str(long_folder / "owl" / "id.mp3")
+    assert registry.owns_liner("nightowl", liner)
+    assert not registry.owns_liner("default", liner)

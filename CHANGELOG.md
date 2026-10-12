@@ -304,20 +304,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Several stations on one server (#70, #141):
   - Stopping a station takes effect at once. While its player finishes, the station is listed
-    as "stopping", its controls answer 409 straight away, and starting it again is refused at
-    once instead of waiting up to 30 seconds.
+    as "stopping", its controls answer 409 straight away, its open pages are told at once, and
+    starting it again is refused at once instead of waiting up to 30 seconds. Other stations can
+    start and stop meanwhile. If the stopping station still holds Stereo Tool, a station asking
+    for it is told that the other station is stopping and to try again in a few seconds.
+  - A station stops and closes only once, even when a stop request arrives during server
+    shutdown.
   - A station that fails part of the way through starting now stops everything it had started:
-    its encoders, relays, liner worker, mastering process and player.
+    its encoders, relays, liner worker, mastering process and player. If its player does not
+    finish in time, the player and its mastering process are left running and the log says so.
   - A station with no `stream.station_name` is called by its slug, such as `nightowl`, instead of
     "AutoDJ", so it no longer shares the default station's name in stream metadata. Two stations
     given the same name are warned about at startup.
   - When one station's liner folder is inside another's, each station keeps to its own liners.
     The outer station no longer plays the inner station's liners in clockwheel liner steps or
-    offers them as cart clips.
+    offers them as cart clips. Folders reached through a symbolic link or a Windows short name
+    are matched too.
   - Stopping a station cancels a cart's end timer, so a cart can no longer announce its end
     after the station has stopped.
   - The multi-station soak test now runs for a few seconds in every test run, stops and starts
-    the second station while both render, and checks that nothing is left behind. It can run for
+    the second station while both render, and checks that nothing is left behind (the bus timing
+    is judged only in a long run). It can run for
     hours and write memory and processor samples to a file. See "Soak test" in
     `docs/operations.md`.
 

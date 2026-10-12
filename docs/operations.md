@@ -1129,8 +1129,10 @@ need a paired browser, like the default station's.
   no memory or processor time. Its routes then answer 409 and its stream answers 503, "off air".
   This starts as soon as the stop is asked for: while the player finishes its work, which can
   take several seconds, the station is listed as `stopping`, its routes already answer 409, a
-  start request is refused at once with 409, and a second stop request returns at once. The
-  default station cannot be stopped.
+  start request is refused at once with 409, and a second stop request returns at once. Its
+  open pages are told at once. Other stations can be started and stopped meanwhile. If the
+  stopping station used Stereo Tool, it keeps it until it has stopped, and another station asking
+  for it is told to try again in a few seconds. The default station cannot be stopped.
 
 A station that cannot start, with the server or when asked, says why: in the log at startup, and
 in the reply to a start request. Whatever it had already started (its player, mastering process,
@@ -1186,9 +1188,9 @@ Each running station is a complete playout chain in the same process:
 `tests/integration/test_multi_station.py` has a soak test with two stations, the default one and
 Night Owl Radio. Both mix buses run while two threads do song-sized time-stretches back to back,
 standing in for each station's render-ahead work, and Night Owl is stopped and started again
-every cycle. The test counts the 20 ms blocks each bus sends out. It fails if either bus falls
-short (an underrun), or if a stop leaves any of the station's threads, encoders or mastering
-process behind. ffmpeg and Stereo Tool are replaced by stand-ins, so it measures AutoDJ's own
+every cycle. The test counts the 20 ms blocks each bus sends out. It fails if a stop leaves any
+of the station's threads, encoders or mastering process behind, and, in a long run, if either bus
+falls short (an underrun). ffmpeg and Stereo Tool are replaced by stand-ins, so it measures AutoDJ's own
 work.
 
 Every test run, including CI, runs it for 4 seconds with one restart. To run it for longer, on the
@@ -1203,8 +1205,9 @@ AUTODJ_SOAK_SECONDS=14400 AUTODJ_SOAK_REPORT=soak.jsonl \
 The settings, all optional:
 
 - `AUTODJ_SOAK_SECONDS`: how long to run. A long run uses four-minute songs for the render
-  stand-ins and expects at least 99% of the blocks; the short default run uses 20-second songs and
-  expects 90%.
+  stand-ins and fails if a bus sends fewer than 99% of the blocks it should. The short default
+  run uses 20-second songs and only reports the block counts: a few seconds on a shared CI
+  machine is too short to judge underruns, so there it checks the restart and leaks only.
 - `AUTODJ_SOAK_CYCLE_SECONDS`: how often Night Owl is stopped and started (default 600 in a long
   run).
 - `AUTODJ_SOAK_SAMPLE_SECONDS`: how often memory and processor use are sampled (default 30 in a
