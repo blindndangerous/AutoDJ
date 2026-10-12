@@ -16,9 +16,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from autodj.carts import CartError, install_carts
+from autodj.carts import CartError, StationCarts, install_carts
 from autodj.scheduler import Action
 from autodj.server import PlayerBridge, create_app
+from autodj.station_routes import StationRouter, current_station
 
 from ._helpers import _make_player_mock, _make_sim_mock
 
@@ -34,7 +35,7 @@ def _wav(seconds: float = 0.1) -> bytes:
 
 
 class Rig:
-    """install_carts on a bare app, with a fake bridge and the events it publishes."""
+    """The cart routes on a bare app, with a fake station and the events it publishes."""
 
     def __init__(self, root: Path, **bridge: Any) -> None:
         self.root = root
@@ -60,8 +61,11 @@ class Rig:
         async def publish(message: dict[str, Any]) -> None:
             self.events.append(message)
 
+        carts = StationCarts(self.bridge, publish, lambda: root / "liners", root)
+        self.store, self.action = carts.store, carts.action
         app = FastAPI()
-        self.store, self.action = install_carts(app, self.bridge, publish, lambda: root / "liners")
+        install_carts(StationRouter(app.router, ("/api",)))
+        app.dependency_overrides[current_station] = lambda: SimpleNamespace(carts=carts, cfg=cfg)
         self.client = TestClient(app)
 
     def upload(self, name: str = "id.wav", content: bytes | None = None) -> Any:

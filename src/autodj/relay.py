@@ -38,6 +38,7 @@ from autodj.icy import mp3_frame_offset
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig, RelayConfig
+    from autodj.stations import StationPaths
 
 logger = logging.getLogger(__name__)
 
@@ -80,15 +81,15 @@ class Connection(Protocol):
         """Close the connection; safe to call from another thread."""
 
 
-def relay_status_path(cfg: AutoDJConfig) -> Path:
-    """Return the relay status file, in the index folder.
+def relay_status_path(cfg: AutoDJConfig, paths: StationPaths | None = None) -> Path:
+    """Return the station's relay status file; the default station's is in the index folder.
 
     The running server rewrites it whenever a relay changes state, and
     ``autodj doctor`` reads it.
     """
     from autodj.stations import StationPaths
 
-    return StationPaths.default(cfg).relay_status
+    return (paths or StationPaths.default(cfg)).relay_status
 
 
 def describe_error(exc: BaseException) -> str:

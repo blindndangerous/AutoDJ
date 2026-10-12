@@ -32,12 +32,13 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import soundfile as sf
-from fastapi import FastAPI, HTTPException
+from fastapi import HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr, field_validator
 
 from autodj.liner_scheduler import LinerDecodeError, decode_liner_path
-from autodj.scheduler import Action, Scheduler
+from autodj.scheduler import Action
+from autodj.station_routes import StationDep, StationRouter
 from autodj.stations import StationPaths
 from autodj.stereo import SAMPLE_RATE
 from autodj.voice_packs import JoinCache, coverage, join_voice, pieces_for, scan_pack, signature
@@ -61,9 +62,9 @@ def spoken_text(now: datetime, hour_format: str) -> str:
     return f"It's {hour} o'clock" if hour_format == "12" else f"It's {hour} hundred"
 
 
-def clips_folder(cfg: AutoDJConfig) -> Path:
-    """The recorded clips folder: ``clips_folder``, or ``time_checks`` in the index."""
-    return StationPaths.default(cfg).time_check_clips
+def clips_folder(cfg: AutoDJConfig, paths: StationPaths | None = None) -> Path:
+    """The recorded clips folder: ``clips_folder``, or ``time_checks`` in the station folder."""
+    return (paths or StationPaths.default(cfg)).time_check_clips
 
 
 def clip_path(folder: Path, now: datetime) -> Path | None:
@@ -140,12 +141,12 @@ class PlayNowBody(BaseModel):
     pack: StrictStr | None = None
 
 
-def state_path(cfg: AutoDJConfig) -> Path:
+def state_path(cfg: AutoDJConfig, paths: StationPaths | None = None) -> Path:
     """Where the switches saved from Settings live."""
-    return StationPaths.default(cfg).time_checks
+    return (paths or StationPaths.default(cfg)).time_checks
 
 
-def load_settings(cfg: AutoDJConfig) -> SettingsBody:
+def load_settings(cfg: AutoDJConfig, paths: StationPaths | None = None) -> SettingsBody:
     """The switches saved from Settings over the config file's.
 
     A key the saved file lacks takes the config value; with no saved
@@ -162,7 +163,7 @@ def load_settings(cfg: AutoDJConfig) -> SettingsBody:
         "enabled_packs": list(pack_folders(cfg)),
         "pack_order": tc.pack_order,
     }
-    path = state_path(cfg)
+    path = state_path(cfg, paths)
     if not path.is_file():
         return SettingsBody.model_validate(defaults)
     state = json.loads(path.read_text(encoding="utf-8"))
@@ -210,14 +211,16 @@ class TimeChecks:
     lock covers the settings, the pending flag and the hour that last aired.
     """
 
-    def __init__(self, cfg: AutoDJConfig, timezone: str) -> None:
+    def __init__(self, cfg: AutoDJConfig, timezone: str, paths: StationPaths | None = None) -> None:
+        """Load the station's saved switches; *paths* defaults to the default station's."""
+        paths = paths or StationPaths.default(cfg)
         self.cfg = cfg
         self.config = cfg.time_checks
         self.zone = ZoneInfo(timezone)
-        self.folder = clips_folder(cfg)
-        self.cache = StationPaths.default(cfg).time_checks_cache
-        self.state_path = state_path(cfg)
-        self.settings = load_settings(cfg)
+        self.folder = clips_folder(cfg, paths)
+        self.cache = paths.time_checks_cache
+        self.state_path = state_path(cfg, paths)
+        self.settings = load_settings(cfg, paths)
         self.packs = pack_folders(cfg)
         self._joined = JoinCache()
         self._rotation = 0
@@ -488,11 +491,8 @@ class TimeChecks:
         return source
 
 
-def install_time_checks(
-    app: FastAPI, bridge: Any, scheduler: Scheduler, timezone: str
-) -> TimeChecks:
-    """Register paired routes and the scheduler's fieldless Time check action."""
-    checks = TimeChecks(bridge.player._cfg, timezone)
+def time_check_action(checks: TimeChecks, bridge: Any) -> Action:
+    """The scheduler's fieldless Time check action for one station."""
 
     async def scheduled(_params: dict[str, str]) -> Callable[[], None]:
         if not checks.settings.enabled:
@@ -500,40 +500,46 @@ def install_time_checks(
         play, _source = await asyncio.to_thread(checks.prepare, bridge)
         return play
 
-    scheduler.register(Action("time_check", "Time check", scheduled, interrupt="before"))
+    return Action("time_check", "Time check", scheduled, interrupt="before")
 
-    @app.get("/api/time-checks")
-    async def get_settings() -> dict[str, Any]:
-        return await asyncio.to_thread(checks.status)
 
-    def known_pack(pack: str | None) -> str | None:
-        if pack is not None and pack not in checks.packs:
-            raise HTTPException(status_code=404, detail=f"No voice pack named {pack}")
-        return pack
+def _known_pack(checks: TimeChecks, pack: str | None) -> str | None:
+    if pack is not None and pack not in checks.packs:
+        raise HTTPException(status_code=404, detail=f"No voice pack named {pack}")
+    return pack
 
-    @app.put("/api/time-checks")
-    async def put_settings(body: SettingsBody) -> dict[str, Any]:
+
+def install_time_checks(router: StationRouter) -> None:
+    """Register the paired time check routes; each acts on the station its URL names."""
+
+    @router.get("/time-checks")
+    async def get_settings(station: StationDep) -> dict[str, Any]:
+        return await asyncio.to_thread(station.time_checks.status)
+
+    @router.put("/time-checks")
+    async def put_settings(station: StationDep, body: SettingsBody) -> dict[str, Any]:
+        checks = station.time_checks
         for name in body.enabled_packs:
-            known_pack(name)
+            _known_pack(checks, name)
         await asyncio.to_thread(checks.save, body)
         return await asyncio.to_thread(checks.status)
 
-    @app.post("/api/time-checks/test")
-    async def test_now(body: PlayNowBody | None = None) -> dict[str, str]:
-        pack = known_pack(body.pack if body else None)
+    @router.post("/time-checks/test")
+    async def test_now(station: StationDep, body: PlayNowBody | None = None) -> dict[str, str]:
+        checks = station.time_checks
+        pack = _known_pack(checks, body.pack if body else None)
         try:
-            source = await asyncio.to_thread(checks.fire, bridge, pack)
+            source = await asyncio.to_thread(checks.fire, station.bridge, pack)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from None
         if pack is not None and source != f"voice pack {pack}":
             return {"message": f"Voice pack {pack} cannot say this minute; played the {source}"}
         return {"message": f"Time check played from the {source}"}
 
-    @app.get("/api/time-checks/preview")
-    async def preview(pack: str | None = None) -> Response:
-        rendered = await asyncio.to_thread(checks.wav, known_pack(pack))
+    @router.get("/time-checks/preview")
+    async def preview(station: StationDep, pack: str | None = None) -> Response:
+        checks = station.time_checks
+        rendered = await asyncio.to_thread(checks.wav, _known_pack(checks, pack))
         if rendered is None:
             raise HTTPException(status_code=409, detail="No time check audio is available")
         return Response(rendered, media_type="audio/wav")
-
-    return checks

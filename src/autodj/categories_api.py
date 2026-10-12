@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -67,8 +68,15 @@ def clockwheel_uses(root: Path) -> dict[str, list[str]]:
     return uses
 
 
-def install_categories(app: FastAPI, bridge: Any) -> None:
-    """Register the paired category routes; the library owns the category index."""
+def install_categories(
+    app: FastAPI, bridge: Any, clock_roots: Callable[[], Iterable[Path]] | None = None
+) -> None:
+    """Register the paired category routes; the library owns the category index.
+
+    Categories are shared by every station.  *clock_roots* lists each
+    station's clockwheel folder, so a category shows every clockwheel that
+    uses it; without it, the default station's folder is the only one.
+    """
     write_lock = threading.Lock()
 
     def index() -> CategoryIndex:
@@ -78,12 +86,21 @@ def install_categories(app: FastAPI, bridge: Any) -> None:
             raise HTTPException(status_code=503, detail="Folder library is not attached")
         return found
 
-    def clock_root() -> Path:
-        return StationPaths.default(bridge.player._cfg).clockwheels
+    def roots() -> Iterable[Path]:
+        if clock_roots is not None:
+            return clock_roots()
+        return (StationPaths.default(bridge.player._cfg).clockwheels,)
+
+    def all_uses() -> dict[str, list[str]]:
+        uses: dict[str, list[str]] = {}
+        for root in roots():
+            for category, names in clockwheel_uses(root).items():
+                uses.setdefault(category, []).extend(names)
+        return uses
 
     def listing(categories: CategoryIndex) -> dict[str, Any]:
         saved, results = categories.resolutions()
-        uses = clockwheel_uses(clock_root())
+        uses = all_uses()
         folder = categories.folder
         return {
             "categories": [

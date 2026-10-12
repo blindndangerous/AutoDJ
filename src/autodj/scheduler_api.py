@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi import Body, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, StrictBool, ValidationError
 
@@ -23,7 +23,7 @@ from autodj.scheduler import (
     field_error,
 )
 from autodj.settings_bodies import PlaybackSettingsBody
-from autodj.stations import StationPaths
+from autodj.station_routes import StationDep, StationRouter
 
 # Runs the Schedule panel lists, newest first.
 RUNS_SHOWN = 50
@@ -203,10 +203,10 @@ def _builtin_actions(
     ]
 
 
-def install_scheduler(
-    app: FastAPI,
+def build_scheduler(
     bridge: Any,
     *,
+    path: Path,
     timezone: str,
     apply_profile: Callable[[str], Awaitable[Any]],
     profile_names: Callable[[], Sequence[str]],
@@ -215,14 +215,13 @@ def install_scheduler(
     select_clock: Callable[[str], Awaitable[Any]],
     publish: Callable[[dict[str, Any]], Awaitable[None]],
 ) -> Scheduler:
-    """Create the scheduler with the built-in actions and add its paired routes.
+    """Create one station's scheduler, keeping its events in *path*, with the built-in actions.
 
     Later features register more actions on the returned scheduler before
-    the app starts; the app's lifespan calls :meth:`Scheduler.start`.
+    the station starts it.
     """
-    cfg = bridge.player._cfg
     scheduler = Scheduler(
-        StationPaths.default(cfg).schedule,
+        path,
         timezone,
         publish,
         interrupt=lambda: bridge.skip(),
@@ -232,103 +231,123 @@ def install_scheduler(
         bridge, apply_profile, profile_names, liner_names, clock_names, select_clock
     ):
         scheduler.register(action)
+    return scheduler
 
-    def event_view(event: ScheduledEvent) -> dict[str, Any]:
-        return {
-            **event.model_dump(mode="json"),
+
+def _event_view(scheduler: Scheduler, event: ScheduledEvent) -> dict[str, Any]:
+    return {
+        **event.model_dump(mode="json"),
+        "repeat_text": describe_repeat(event),
+        "action_text": scheduler.summary(event),
+    }
+
+
+def _upcoming_view(scheduler: Scheduler, count: int) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": event.id,
+            "name": event.name,
+            "time": when.isoformat(),
             "repeat_text": describe_repeat(event),
             "action_text": scheduler.summary(event),
         }
+        for when, event in scheduler.upcoming(count)
+    ]
 
-    def upcoming_view(count: int) -> list[dict[str, Any]]:
-        return [
-            {
-                "id": event.id,
-                "name": event.name,
-                "time": when.isoformat(),
-                "repeat_text": describe_repeat(event),
-                "action_text": scheduler.summary(event),
-            }
-            for when, event in scheduler.upcoming(count)
-        ]
 
-    def parse(body: dict[str, Any]) -> EventSpec:
-        try:
-            return EventSpec.model_validate(body)
-        except ValidationError as exc:
-            raise EventError(*field_error(exc)) from exc
+def _parse(body: dict[str, Any]) -> EventSpec:
+    try:
+        return EventSpec.model_validate(body)
+    except ValidationError as exc:
+        raise EventError(*field_error(exc)) from exc
 
-    def unknown() -> HTTPException:
-        return HTTPException(status_code=404, detail="That event no longer exists")
 
-    @app.get("/api/schedule")
-    async def schedule_list() -> dict[str, Any]:
+def _unknown() -> HTTPException:
+    return HTTPException(status_code=404, detail="That event no longer exists")
+
+
+def install_scheduler(router: StationRouter) -> None:
+    """Add the paired schedule routes; each acts on the station its URL names."""
+
+    @router.get("/schedule")
+    async def schedule_list(station: StationDep) -> dict[str, Any]:
         """Return the actions, events, next runs and recent runs."""
+        scheduler = station.schedule
         actions = await asyncio.to_thread(
             lambda: [action.metadata() for action in scheduler.actions.values()]
         )
         return {
             "timezone": scheduler.timezone,
             "actions": actions,
-            "events": [event_view(event) for event in scheduler.events.values()],
-            "upcoming": upcoming_view(5),
+            "events": [_event_view(scheduler, event) for event in scheduler.events.values()],
+            "upcoming": _upcoming_view(scheduler, 5),
             "runs": [run.model_dump(mode="json") for run in scheduler.runs[::-1][:RUNS_SHOWN]],
         }
 
-    @app.get("/api/schedule/upcoming")
-    async def schedule_upcoming(count: int = Query(default=5, ge=1, le=50)) -> dict[str, Any]:
+    @router.get("/schedule/upcoming")
+    async def schedule_upcoming(
+        station: StationDep, count: int = Query(default=5, ge=1, le=50)
+    ) -> dict[str, Any]:
         """Return the next *count* runs, soonest first."""
-        return {"timezone": scheduler.timezone, "upcoming": upcoming_view(count)}
+        scheduler = station.schedule
+        return {"timezone": scheduler.timezone, "upcoming": _upcoming_view(scheduler, count)}
 
-    @app.post("/api/schedule", status_code=201, response_model=None)
-    async def schedule_create(body: dict[str, Any] = Body(...)) -> dict[str, Any] | JSONResponse:
+    @router.post("/schedule", status_code=201, response_model=None)
+    async def schedule_create(
+        station: StationDep, body: dict[str, Any] = Body(...)
+    ) -> dict[str, Any] | JSONResponse:
         """Add an event."""
+        scheduler = station.schedule
         try:
-            event = await scheduler.add(parse(body))
+            event = await scheduler.add(_parse(body))
         except EventError as exc:
             return _rejected(exc.field, str(exc))
-        return event_view(event)
+        return _event_view(scheduler, event)
 
-    @app.put("/api/schedule/{event_id}", response_model=None)
+    @router.put("/schedule/{event_id}", response_model=None)
     async def schedule_update(
-        event_id: str, body: dict[str, Any] = Body(...)
+        station: StationDep, event_id: str, body: dict[str, Any] = Body(...)
     ) -> dict[str, Any] | JSONResponse:
         """Replace an event."""
+        scheduler = station.schedule
         try:
-            event = await scheduler.replace(event_id, parse(body))
+            event = await scheduler.replace(event_id, _parse(body))
         except KeyError:
-            raise unknown() from None
+            raise _unknown() from None
         except EventError as exc:
             return _rejected(exc.field, str(exc))
-        return event_view(event)
+        return _event_view(scheduler, event)
 
-    @app.delete("/api/schedule/{event_id}")
-    async def schedule_delete(event_id: str) -> dict[str, str]:
+    @router.delete("/schedule/{event_id}")
+    async def schedule_delete(station: StationDep, event_id: str) -> dict[str, str]:
         """Delete an event."""
+        scheduler = station.schedule
         try:
             event = await scheduler.remove(event_id)
         except KeyError:
-            raise unknown() from None
+            raise _unknown() from None
         return {"deleted": event.id, "name": event.name}
 
-    @app.post("/api/schedule/{event_id}/enable", response_model=None)
-    async def schedule_enable(event_id: str, body: EnableBody) -> dict[str, Any] | JSONResponse:
+    @router.post("/schedule/{event_id}/enable", response_model=None)
+    async def schedule_enable(
+        station: StationDep, event_id: str, body: EnableBody
+    ) -> dict[str, Any] | JSONResponse:
         """Enable or disable an event."""
+        scheduler = station.schedule
         try:
             event = await scheduler.set_enabled(event_id, body.enabled)
         except KeyError:
-            raise unknown() from None
+            raise _unknown() from None
         except EventError as exc:
             return _rejected(exc.field, str(exc))
-        return event_view(event)
+        return _event_view(scheduler, event)
 
-    @app.post("/api/schedule/{event_id}/run")
-    async def schedule_run_now(event_id: str) -> dict[str, Any]:
+    @router.post("/schedule/{event_id}/run")
+    async def schedule_run_now(station: StationDep, event_id: str) -> dict[str, Any]:
         """Run an event's action now, to test it."""
+        scheduler = station.schedule
         event = scheduler.events.get(event_id)
         if event is None:
-            raise unknown()
+            raise _unknown()
         record = await scheduler.run(event)
         return record.model_dump(mode="json")
-
-    return scheduler

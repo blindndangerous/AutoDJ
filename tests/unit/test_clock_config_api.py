@@ -1,6 +1,7 @@
 """The paired clockwheel routes store native files and select one clockwheel."""
 
 import asyncio
+import functools
 import json
 import os
 from types import SimpleNamespace
@@ -12,7 +13,8 @@ from fastapi import HTTPException
 from autodj.catalog import LibraryCatalog
 from autodj.clockwheel_store import OLD_CLOCK_MESSAGE
 from autodj.config import ServerConfig, StreamConfig, TimeChecksConfig
-from autodj.server import ClockBody, ClockNameBody, NewClockNameBody, PalImportBody, create_app
+from autodj.server import create_app
+from autodj.station_routes import ClockBody, ClockNameBody, NewClockNameBody, PalImportBody
 
 PAL = """Queue.Clear;
 Dir['{music}/top'].QueueBottom(smLRP, EnforceRules);
@@ -38,8 +40,10 @@ def app_for(catalog, root):
     )
     bridge = SimpleNamespace(player=player, library=library)
     app = create_app(bridge)
+    # Each clockwheel route acts on the station it is called for: the default one.
+    station = app.state.stations.default
     routes = {
-        (method, route.path): route.endpoint
+        (method, route.path): functools.partial(route.endpoint, station)
         for route in app.routes
         if "/api/library/clock" in route.path
         for method in (route.methods or set())
