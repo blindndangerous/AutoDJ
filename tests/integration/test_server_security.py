@@ -1179,7 +1179,7 @@ def test_lyrics_refuses_a_result_after_the_catalog_track_changes(
 
 class TestLibraryJobRunSnapshot:
     def test_run_starts_the_job_off_the_event_loop(self, client, monkeypatch) -> None:
-        from unittest.mock import MagicMock, sentinel
+        from unittest.mock import MagicMock
 
         mgr = MagicMock()
         mgr.start.return_value = True
