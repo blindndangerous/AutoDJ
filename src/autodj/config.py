@@ -21,7 +21,7 @@ import tomllib
 from collections.abc import Callable, Iterable, Mapping
 from contextvars import ContextVar
 from copy import deepcopy
-from dataclasses import MISSING, dataclass, field, fields
+from dataclasses import MISSING, dataclass, field, fields, replace
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Self
@@ -1933,6 +1933,22 @@ def _build_station(slug: str, table: Mapping[str, Any], root: AutoDJConfig) -> S
         config_sources=root.config_sources,
     )
     return StationSpec(slug=slug, autostart=autostart, cfg=cfg)
+
+
+def station_config(station: AutoDJConfig, root: AutoDJConfig) -> AutoDJConfig:
+    """A fresh copy of a station's configuration, for one run of the station.
+
+    Its own sections are copies, so what one run changes at runtime is
+    gone when the station starts again (its saved settings come back from
+    its ``web_state.json``).  The shared sections are the root's current
+    objects, so command-line overrides made after loading apply too.
+    """
+    return replace(
+        station,
+        **{t.SECTION: deepcopy(getattr(station, t.SECTION)) for t in STATION_SECTION_TYPES},
+        **{name: getattr(root, name) for name in SHARED_SECTIONS},
+        presets=deepcopy(station.presets),
+    )
 
 
 def _check_station_conflicts(root: AutoDJConfig, specs: Iterable[StationSpec]) -> None:

@@ -361,7 +361,18 @@ What a listener can and cannot do:
   so the name typed into the player must be one this AutoDJ instance is configured to accept.
 - `/stream.` followed by anything else, and any path under `/stream/`, is not public: it needs
   a session like any other path, and then returns 404. Optional HTTP Basic credentials protect
-  only `/stream.mp3` and `/stream.m3u`; the playlist never includes them.
+  only `/stream.mp3` and `/stream.m3u` (and the `/stations/` stream paths below); the playlist
+  never includes them.
+- Each station's stream is also public at `/stations/<slug>.mp3` and `/stations/<slug>.m3u`,
+  but only for a configured slug (`[stations.<slug>]`). The default station's is
+  `/stations/default.mp3`, public with the same credentials as `/stream.mp3` even on a server
+  with one station. Any other `/stations/...` path needs a session and then returns 404. A
+  stopped station answers 503, which shows that the slug exists; this is accepted. Each
+  station's listener credentials, bans and listener limits are its own: a ban on one station
+  does not cover another, and the listener slots of all stations add up. Starting and stopping
+  a station (`POST /api/stations/<slug>/start` and `/stop`) and the station list
+  (`/api/stations`) need pairing, which is still server-wide: a paired browser controls every
+  station. Slugs are checked against a strict pattern before they name a folder.
 
 What the operator should know:
 

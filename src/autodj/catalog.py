@@ -686,6 +686,18 @@ class LibraryCatalog:
             self.set_setting("sources_seeded", True)
             return True
 
+    def seed_station_liner_source(self, station: str, root: Path | str) -> str | None:
+        """Add *station*'s liner folder as a liner source once; return its id when added."""
+        key = f"sources_seeded:{station}"
+        with self._lock:
+            self._db()
+            if self.get_setting(key, False):
+                return None
+            Path(root).mkdir(parents=True, exist_ok=True)
+            source = self._add_source(root, "liner", False, False, validate=False)
+            self.set_setting(key, True)
+            return str(source["id"])
+
     def _add_source(
         self, path: Path | str, kind: str, recursive: bool, advanced: bool, *, validate: bool = True
     ) -> dict:

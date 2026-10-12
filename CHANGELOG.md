@@ -22,6 +22,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is marked invalid with its reason linked to it and focused; a save is said once and focus stays
   on Save tags. The dialog that asks to save before switching tracks now reads its explanation when
   it opens and has a Keep editing button, which does what Escape does.
+
+- A separate output device for previews (#54). In Settings, Sound, **Preview output device**
+  sends the cue point preview in Track info, which Queue & Search, History and the library open,
+  to a device of its own, such as headphones, while the browser mix stays on the speakers.
+  Previews never go through the station's mix, so they are never on the stream or in a
+  recording. On a device of its own the preview keeps its own volume, and the page's volume and
+  Mute leave it alone. The choice is saved in this browser. If the device is unplugged, it stays
+  in the list as "not connected", previews move to the system default output and the page says so
+  once, then they go back when it returns. Browsers that cannot choose a device, such as Chrome on
+  Android, say so on the page and keep previews on the system default output. This is the first
+  step toward headphone cueing.
 - Play dates for voice liners and carts: a **Not before** date, a **Do not play after** date, or
   both, in the station time zone. Outside them, automatic liners, clockwheel liner steps and
   scheduled liner events skip the liner, and a cart plays nothing and says why. Browse voice
@@ -53,6 +64,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `default` is reserved, two stations cannot share a recording folder or a relay target, and
   errors name the station. See "Several stations" in `docs/operations.md`. A configuration
   without these tables behaves exactly as before.
+
+- More than one station can run on one server (#70). Each `[stations.<slug>]` station has its own
+  player, mix bus, mastering, encoder, relays, recorder, schedule, carts, time checks,
+  clockwheels, liners, profiles and saved settings, under `stations/<slug>/` in the index folder.
+  It streams at `/stations/<slug>.mp3` (and `.m3u`), its controls answer under
+  `/api/stations/<slug>/`, and `GET /api/stations` lists every station. `POST
+  /api/stations/<slug>/start` and `/stop` start and stop one; `autostart = false` leaves a station
+  stopped until then. Its log lines start with `[<slug>]`. Only one station can use Stereo Tool
+  at a time (one licence), and a Stereo Tool preset any station uses cannot be deleted. The web
+  page's station switcher comes later.
+
 - Schedule events can have a date range: an optional start date and end date, both included, in
   the station time zone. Outside the range an event does not run, and Next events skips it. An
   active window that crosses midnight belongs to the day it starts, so a Friday 18:00 until 02:00

@@ -12,6 +12,7 @@ server stack.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import secrets
 import threading
@@ -104,6 +105,16 @@ class PlayerBridge:
     # This station's plays and settings (a StationLedger); the library's
     # default-station ledger when not given.
     ledger: Any = None
+    # Where this station keeps web_state.json (a StationPaths); the active
+    # index folder, as always, when not given.
+    paths: Any = None
+    # The station's public stream address; the m3u playlist is beside it.
+    stream_path: str = "/stream.mp3"
+    # Names another running station whose mix Stereo Tool processes, or
+    # returns None.  AutoDJ runs one Stereo Tool at a time (one licence).
+    stereo_tool_elsewhere: Callable[[], str | None] | None = None
+    # Held across that check and the change it allows (the registry's).
+    stereo_tool_lock: Any = None
     # The viewer keeps 500 rows; the catalog retains the full play log.
     _play_history: deque = field(
         default_factory=lambda: deque(maxlen=500),
@@ -185,7 +196,15 @@ class PlayerBridge:
         """
         self.liner_scheduler = scheduler
         self.player.liner_scheduler = scheduler
-        self._liner_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="autodj-liner")
+        from autodj.station_log import CURRENT_STATION, enter_station, thread_name
+
+        # Its thread works for this station, so its log lines name it.
+        self._liner_worker = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix=thread_name("autodj-liner"),
+            initializer=enter_station,
+            initargs=(CURRENT_STATION.get(),),
+        )
 
     def shutdown_liner_worker(self) -> None:
         """Stop the liner worker without waiting for a check in progress.
@@ -214,11 +233,16 @@ class PlayerBridge:
         if self.public_state_changed is not None:
             self.public_state_changed()
 
+    @property
+    def m3u_path(self) -> str:
+        """The address of the one-line playlist that names :attr:`stream_path`."""
+        return self.stream_path.removesuffix(".mp3") + ".m3u"
+
     def stream_info(self) -> dict:
         """Return the stream's paths, bitrate, listener count and state."""
         return {
-            "path": "/stream.mp3",
-            "m3u_path": "/stream.m3u",
+            "path": self.stream_path,
+            "m3u_path": self.m3u_path,
             "bitrate": int(self.player._cfg.stream.bitrate),
             "continuous": bool(self.player._cfg.stream.continuous),
             "station_name": self.player._cfg.stream.station_name,
@@ -1453,7 +1477,7 @@ class PlayerBridge:
         """Restore settings and recent history before playback starts."""
         from autodj.runtime_state import load_into_bridge
 
-        load_into_bridge(self, self.player._cfg.index.active_dir)
+        load_into_bridge(self, self._state_dir())
         ledger = self._ledger()
         if ledger is None:
             return
@@ -1472,7 +1496,13 @@ class PlayerBridge:
         """Write current settings to web_state.json (atomic)."""
         from autodj.runtime_state import save_from_player
 
-        save_from_player(self.get_settings(), self.player._cfg.index.active_dir)
+        save_from_player(self.get_settings(), self._state_dir())
+
+    def _state_dir(self) -> Any:
+        """The folder holding this station's ``web_state.json``."""
+        if self.paths is not None:
+            return self.paths.state_dir
+        return self.player._cfg.index.active_dir
 
     def get_settings(self) -> dict:
         """Return a snapshot of every adjustable setting + available presets."""
@@ -1631,7 +1661,31 @@ class PlayerBridge:
                 setattr(cfg.djmix, k, bool(v))
 
     def set_playback_settings(self, body: PlaybackSettingsBody, *, restoring: bool = False) -> None:
-        """Apply the fields set in *body*, which pydantic has already validated."""
+        """Apply the fields set in *body*, which pydantic has already validated.
+
+        Choosing Stereo Tool while another station uses it is refused
+        before any setting changes.  The check and the change hold
+        :attr:`stereo_tool_lock`, so two stations switching to it at once
+        cannot both find it free.  A restored setting is checked when the
+        station starts instead.
+        """
+        if (
+            body.loudness_processing == "stereotool"
+            and not restoring
+            and self.stereo_tool_elsewhere is not None
+        ):
+            with self.stereo_tool_lock or contextlib.nullcontext():
+                if (other := self.stereo_tool_elsewhere()) is not None:
+                    raise ValueError(
+                        f"Stereo Tool is already processing {other}, and AutoDJ runs one "
+                        "Stereo Tool at a time. Choose Smooth for this station, or move the "
+                        "other station off Stereo Tool first."
+                    )
+                self._apply_playback_settings(body, restoring=restoring)
+            return
+        self._apply_playback_settings(body, restoring=restoring)
+
+    def _apply_playback_settings(self, body: PlaybackSettingsBody, *, restoring: bool) -> None:
         values = body.model_dump(exclude_none=True)
         player = self.player
         cfg = player._cfg

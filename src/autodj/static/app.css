@@ -929,7 +929,8 @@
       color: var(--text-desc);    /* ≥ 4.5:1 vs --bg and --bg-card */
       line-height: 1.35;
     }
-    .settings-row + .setting-desc {
+    .settings-row + .setting-desc,
+    .settings-row + .setting-desc + .setting-desc {
       margin-left: 10rem;
     }
     /* Help under a button lines up with the button, not with a checkbox
@@ -1349,7 +1350,8 @@
          width and turned the 38-effect transition description into a
          1 901 px ribbon three words wide. */
       .setting-desc,
-      .settings-row + .setting-desc {
+      .settings-row + .setting-desc,
+      .settings-row + .setting-desc + .setting-desc {
         margin-left: 0;
       }
 

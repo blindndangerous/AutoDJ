@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 
 from autodj.config import RecordingConfig
 from autodj.fsutil import atomic_write
+from autodj.station_log import station_thread
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ class Recorder:
         self._closed = False
         self._overflow = False
         self._load()
-        self._thread = threading.Thread(target=self._run, name="autodj-recorder", daemon=True)
+        self._thread = station_thread(target=self._run, name="autodj-recorder", daemon=True)
         self._thread.start()
 
     def _load(self) -> None:

@@ -2291,6 +2291,53 @@ describe("static accessibility contracts", () => {
     expect(height).toBeTruthy();
   });
 
+  it("gives the preview output device a labelled native select and silent help", () => {
+    installDocument({ html: htmlSource });
+    const select = document.getElementById("preview-device");
+    expect(select.tagName).toBe("SELECT");
+    expect(document.querySelector('label[for="preview-device"]').textContent.trim())
+      .toBe("Preview output device");
+    expect(select.querySelector("option").textContent).toBe("System default");
+    // The help is linked and says, in words, where previews never go.
+    expect(select.getAttribute("aria-describedby")).toBe("preview-device-desc");
+    const help = document.getElementById("preview-device-desc");
+    expect(help.hidden).toBe(false);
+    expect(help.textContent).toMatch(/never on the stream/);
+    expect(help.textContent).toMatch(/saved in this browser/);
+    // The unsupported or permission note starts hidden and unlinked: the
+    // script links it only while it is shown.
+    const note = document.getElementById("preview-device-note");
+    expect(note.hidden).toBe(true);
+    expect(note.classList.contains("setting-desc")).toBe(true);
+    expect(note.hasAttribute("aria-live")).toBe(false);
+    const button = document.getElementById("preview-device-choose");
+    expect(button.getAttribute("type")).toBe("button");
+    // Its own visible name, distinct from the main output's button in the
+    // same group (2.4.6, 2.5.3).
+    expect(button.textContent.trim()).toBe("Show preview device names");
+    expect(button.hasAttribute("aria-label")).toBe(false);
+    // What the button does is said with it, and is part of the help text.
+    const buttonDesc = document.getElementById(button.getAttribute("aria-describedby"));
+    expect(buttonDesc.id).toBe("preview-device-choose-desc");
+    expect(buttonDesc.textContent).toMatch(/microphone once/);
+    expect(buttonDesc.closest("#preview-device-desc")).not.toBeNull();
+    expect(document.getElementById("audio-device-refresh").textContent.trim())
+      .not.toBe(button.textContent.trim());
+    // Changes are said through the polite Settings status region.
+    const status = document.getElementById("settings-status");
+    expect(status.getAttribute("role")).toBe("status");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(appSource).toMatch(/installPreviewOutput\(\{\s*announce: \(message, options\) => announceStatus\(settingsStatus/);
+    // Only the cue point player is a preview; the decks and Listen here are not.
+    expect([...document.querySelectorAll("audio[data-preview-output]")].map((audio) => audio.id))
+      .toEqual(["points-preview"]);
+    // The module never moves focus, and the note lines up under the select.
+    const moduleSource = readFileSync(staticPath("modules", "preview-output.js"), "utf8");
+    expect(moduleSource).not.toMatch(/\.focus\(/);
+    expect(stripCssComments(cssSource))
+      .toMatch(/\.settings-row \+ \.setting-desc \+ \.setting-desc\s*\{\s*margin-left: 10rem;/);
+  });
+
   it("keeps the transition effect description to one sentence", () => {
     // The per-effect list, about 450 words, was read on every focus.
     installDocument({ html: htmlSource });
