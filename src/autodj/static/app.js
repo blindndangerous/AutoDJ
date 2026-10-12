@@ -37,6 +37,7 @@ import { createRecordingControls } from "./modules/recording-controls.js";
 import { installNowPlayingSettings } from "./modules/nowplaying-settings.js";
 import { createListenerControls } from "./modules/listener-controls.js";
 import { initSubtabs } from "./modules/subtabs.js";
+import { installThemeSetting } from "./modules/theme.js";
 
 if (isDebug()) {
   console.log("[autodj] debug logging ENABLED " +
@@ -119,6 +120,9 @@ const streamAudio     = document.getElementById("stream-audio");
 // The browser gives an AudioWorklet only to an HTTPS or localhost page;
 // without one the audio engine skips the four effects built on it.
 document.getElementById("fx-https-note").hidden = "AudioWorkletNode" in window;
+
+// Settings > Display and keys > Theme.  Kept per browser.
+installThemeSetting();
 
 // Settings > Announcements.  Kept per browser, like the shortcut switch;
 // off (the default) speaks a new track only while Now Playing shows.

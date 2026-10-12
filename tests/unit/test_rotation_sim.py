@@ -846,6 +846,7 @@ def test_a_run_matches_the_live_player_pick_for_pick(tmp_path: Path, monkeypatch
     live.activate_clock("Main", 0)
     current = live._random_start_entry()
     live._pending_clock_cursor = live._seed_clock_cursor
+    live._pending_clock_name = live._seed_clock_name
     by_hand = []
     starts = NOON
     for number in range(25):
@@ -1133,3 +1134,22 @@ def test_an_unreadable_library_stops_simulate_in_words(tmp_path: Path, content: 
     assert message.startswith(f"The music library {database} cannot be read (")
     assert message.endswith("start autodj serve once to check it.")
     assert database.read_bytes() == content
+
+
+def test_the_first_pick_after_a_fresh_start_takes_the_next_clock_step(tmp_path: Path) -> None:
+    """The start's clock place, and the clockwheel it is in, carry into the next pick."""
+    first, second = _songs(0, 10), _songs(100, 10)
+    source = make_station(
+        tmp_path,
+        [*first, *second],
+        categories=[
+            {"id": "one", "name": "One", "members": first},
+            {"id": "two", "name": "Two", "members": second},
+        ],
+        clockwheels=[{"name": "Main", "steps": [category_step("one"), category_step("two")]}],
+        active_clock="Main",
+        playback={"pick_mode": "clock"},
+    )
+    played = [path for _, path in _sequence(source, 4, picks=6)]
+    ones = {entry.path for entry in first}
+    assert [path in ones for path in played] == [True, False, True, False, True, False]

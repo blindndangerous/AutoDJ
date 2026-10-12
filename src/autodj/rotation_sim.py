@@ -463,6 +463,7 @@ class _SimLedger:
 
         self._normalize = normalize_path
         self.station = station
+        self._real = real
         played = real.last_played() if real is not None else {}
         self._played: dict[str, float] = {
             path: stamp for path, stamp in played.items() if stamp <= start
@@ -486,6 +487,10 @@ class _SimLedger:
 
     def pending_history(self) -> list[dict]:
         return []
+
+    def get_setting(self, name: str, default: Any = None) -> Any:
+        """The station's saved setting; the dry run keeps its own clock place in memory."""
+        return self._real.get_setting(name, default) if self._real is not None else default
 
 
 class _SimPlayer(Player):
@@ -648,6 +653,8 @@ _EVENT_STATE = (
     "_clock_next_boundary",
     "_seed_clock_following",
     "_pending_clock_cursor",
+    "_pending_clock_name",
+    "_seed_clock_name",
     "_pending_clock_boundary",
     "_pure_shuffle",
     "_preset",
@@ -850,7 +857,10 @@ def _simulate(
             entry = player._random_start_entry()
         except Exception:
             return None
+        # As the render cursor takes a set's first song: its clock place and
+        # the clockwheel that place is in (#133).
         player._pending_clock_cursor = getattr(player, "_seed_clock_cursor", None)
+        player._pending_clock_name = player._seed_clock_name
         return entry
 
     def record(entry: Any, now: float) -> None:

@@ -102,9 +102,15 @@ class FakeCatalog:
 class FakeLedger:
     """A station's last-played times; counts any write so a test can say there was none."""
 
-    def __init__(self, played: dict[str, float] | None = None) -> None:
+    def __init__(self, catalog: Any = None, played: dict[str, float] | None = None) -> None:
+        self._catalog = catalog
         self.played = dict(played or {})
         self.writes = 0
+
+    def get_setting(self, name: str, default: Any = None) -> Any:
+        if self._catalog is None:
+            return default
+        return self._catalog.get_setting(self.setting_key(name), default)
 
     def setting_key(self, name: str) -> str:
         return name
@@ -134,7 +140,7 @@ class FakeLibrary:
         self._by_path = {entry.path: entry for entry in (*self._music, *self._liners)}
         self.catalog = FakeCatalog()
         self.categories = CategoryIndex(cfg, lambda: self._music)
-        self.ledger = FakeLedger()
+        self.ledger = FakeLedger(self.catalog)
 
     def entries_snapshot(self, kind: str = "music") -> tuple[IndexEntry, ...]:
         if kind == "music":

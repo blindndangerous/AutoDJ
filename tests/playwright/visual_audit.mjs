@@ -2,27 +2,75 @@
 // user meets in every view and Settings subtab.  Per browser engine it
 // checks, with every card opened:
 //
-//   - axe-core's WCAG 2.2 A/AA rules at 1280 px: text contrast (1.4.3),
-//     target size (2.5.8), label in name (2.5.3) and the rest;
-//   - reflow at 320 CSS px, the width of 400 % zoom on a 1280 px window,
-//     and 200 % text at 1280 px: the page must not scroll sideways
-//     (1.4.10, 1.4.4);
-//   - every native checkbox and radio button is at least 24 x 24 px (2.5.8);
-//   - Tab through the view: each stop draws a solid focus outline at least
-//     2 px wide, scrolled fully into the window (2.4.7, 2.4.11).
+//   - in each theme mode -- Light and Dark chosen in Settings (each
+//     against the opposite system preference, so the choice must win),
+//     and System under a light and a dark system preference:
+//       - the stored choice is on <html> before any module script runs,
+//         so nothing is painted in the other theme first, and the page
+//         and the Theme radio buttons show that theme;
+//       - axe-core's WCAG 2.2 A/AA rules at 1280 px: text contrast
+//         (1.4.3), target size (2.5.8), label in name (2.5.3) and the rest;
+//       - non-text contrast (1.4.11): every control's border or fill 3:1
+//         against what is behind it, focus rings 3:1 (every stop in Dark,
+//         the first stops in the other modes), the
+//         progress fill 3:1 against its rail, each kind of cue tick 3:1
+//         against the bar, and the Camelot wheel lit for 8A: every wedge
+//         edge, the compatible outline and the current wedge 3:1 against
+//         their neighbours, its numbers 4.5:1;
+//       - the status message with its Dismiss button, as a confirmation
+//         and as an error, through axe-core as well;
+//   - in the System light mode only (layout does not change with colour):
+//       - reflow at 320 CSS px, the width of 400 % zoom on a 1280 px
+//         window, and 200 % text at 1280 px: the page must not scroll
+//         sideways (1.4.10, 1.4.4);
+//       - every native checkbox and radio button is at least 24 x 24 px
+//         (2.5.8);
+//       - Tab through the view: each stop draws a solid focus outline at
+//         least 2 px wide, 3:1 against what is behind it, scrolled fully
+//         into the window (2.4.7, 2.4.11, 1.4.11), so with the Dark mode
+//         every focus ring in both themes is measured;
+//       - choosing Dark in Settings, Display and keys switches the page at
+//         once, says nothing, and survives a reload;
+//       - the status message stays while the pointer is over it, goes
+//         after the pointer leaves, lets a click on its frame (outside the
+//         message and the button) through to the page underneath, and its
+//         Dismiss button works by mouse and by keyboard, putting focus
+//         back where it was.
 //
 // Set AUTODJ_URL=http://host:port before running, e.g.:
 //   AUTODJ_URL=http://localhost:8080 node tests/playwright/visual_audit.mjs
+// Set AUTODJ_CPU_THROTTLE=<rate>, e.g. 6, to slow Chromium's CPU that many
+// times, as on a loaded CI runner (Firefox has no such control).
+// Set AUTODJ_SCREENSHOTS=<folder> to also save a full-page screenshot of
+// every target in every theme mode, for review by eye.
 
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { runAudit } from "./audit_helpers.mjs";
 
 const BASE = process.env.AUTODJ_URL || "http://localhost:8080";
+const SHOTS = process.env.AUTODJ_SCREENSHOTS || "";
+const CPU_THROTTLE = Number(process.env.AUTODJ_CPU_THROTTLE || 0);
 const AXE = fileURLToPath(import.meta.resolve("axe-core/axe.min.js"));
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
 const VIEWS = ["now", "queue", "carts", "track-info", "history", "settings", "library"];
 const MAX_TAB_STOPS = 80;
+// Focus rings measured per target in the Light and System modes.  Every
+// stop is measured in the Dark mode (fullFocus) and in the layout pass,
+// which runs in System light, so each theme has one full pass without
+// tabbing through every view four times.
+const THEME_TAB_STOPS = 12;
+const THEME_KEY = "autodj.theme";
+// Body background per theme, as app.css sets --bg.
+const THEME_BG = { light: "rgb(238, 241, 246)", dark: "rgb(26, 26, 46)" };
+const THEME_MODES = [
+  { name: "light", stored: "light", colorScheme: "dark", theme: "light" },
+  { name: "dark", stored: "dark", colorScheme: "light", theme: "dark", fullFocus: true },
+  { name: "system-light", stored: null, colorScheme: "light", theme: "light" },
+  { name: "system-dark", stored: null, colorScheme: "dark", theme: "dark" },
+];
 
 // Settings > Song picking > Test rotation, opened: the server's answers
 // are stood in for, so the running and finished states look the same on
@@ -89,6 +137,30 @@ async function openEveryCard(page) {
   });
 }
 
+// Under reduced motion app.css gives every property a 0.01 ms transition,
+// so a change of focus, view or class shows its old colour, outline and
+// width until the next frame.  On a loaded CI runner that frame can come
+// well after a fixed wait: a focus ring was measured in the button's own
+// white text colour (1.00:1).  Every measurement waits for the running
+// transitions to end, so it reads the colours a person sees.
+function settle(page) {
+  return page.evaluate(() => {
+    const running = document.getAnimations()
+      .filter((animation) => animation instanceof window.CSSTransition);
+    const ended = Promise.all(running.map((animation) => animation.finished.catch(() => null)));
+    return Promise.race([ended, new Promise((resolve) => setTimeout(resolve, 2000))]);
+  });
+}
+
+async function newPage(context) {
+  const page = await context.newPage();
+  if (CPU_THROTTLE > 1 && context.browser()?.browserType().name() === "chromium") {
+    const session = await context.newCDPSession(page);
+    await session.send("Emulation.setCPUThrottlingRate", { rate: CPU_THROTTLE });
+  }
+  return page;
+}
+
 // Every view, and with Settings every subtab this server shows (Stream only
 // in stream mode).  `visit` runs once per target with that target shown.
 async function eachTarget(page, visit) {
@@ -102,6 +174,7 @@ async function eachTarget(page, visit) {
     await page.waitForTimeout(100);
     if (view !== "settings") {
       await openEveryCard(page);
+      await settle(page);
       await visit(view);
       continue;
     }
@@ -111,6 +184,7 @@ async function eachTarget(page, visit) {
       await page.locator(`#${id}`).click();
       await page.waitForTimeout(150);
       await openEveryCard(page);
+      await settle(page);
       await visit(`settings/${id.replace(/^stab-/, "")}`);
       if (id === "stab-picking") await openRotationTest(page, visit);
     }
@@ -154,60 +228,509 @@ async function axeViolations(page) {
   }, AXE_TAGS);
 }
 
+// Colour arithmetic for the page, installed once per document as
+// window.__contrast.  Computed colours come back as rgb()/rgba(); a
+// translucent layer is laid over what is behind it.
+async function installContrastHelpers(page) {
+  await page.evaluate(() => {
+    if (window.__contrast) return;
+    const parse = (value) => {
+      const parts = String(value).match(/[\d.]+/g)?.map(Number) || [0, 0, 0, 0];
+      return [parts[0], parts[1], parts[2], parts.length > 3 ? parts[3] : 1];
+    };
+    const over = (top, bottom) => {
+      const a = top[3];
+      return [0, 1, 2].map((i) => top[i] * a + bottom[i] * (1 - a)).concat(1);
+    };
+    const luminance = ([r, g, b]) => [r, g, b].map((v) => {
+      const c = v / 255;
+      return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    }).reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i], 0);
+    const ratio = (a, b) => {
+      const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+      return (hi + 0.05) / (lo + 0.05);
+    };
+    // What shows behind an element: every ancestor's background, laid in
+    // order over white.
+    const behind = (element) => {
+      const layers = [];
+      for (let node = element; node && node.nodeType === 1; node = node.parentElement) {
+        layers.push(parse(window.getComputedStyle(node).backgroundColor));
+      }
+      return layers.reverse().reduce((below, layer) => over(layer, below), [255, 255, 255, 1]);
+    };
+    window.__contrast = { parse, over, ratio, behind };
+  });
+}
+
+// WCAG 1.4.11 for the controls on show: the border, or failing that the
+// control's own fill, 3:1 against what is behind it.  Disabled controls
+// are exempt, as WCAG exempts inactive components; native checkboxes and
+// radio buttons keep the system's own drawing (docs/accessibility-testing.md).
+function controlBoundaryProblems(page) {
+  return page.evaluate(() => {
+    const { parse, over, ratio, behind } = window.__contrast;
+    const problems = [];
+    const controls = document.querySelectorAll([
+      "button", "select", "textarea", '[role="tab"]',
+      'input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"])',
+    ].join(", "));
+    for (const control of controls) {
+      if (!control.getClientRects().length || control.closest("[hidden], [aria-hidden='true']")) continue;
+      if (control.disabled || control.getAttribute("aria-disabled") === "true"
+        || control.classList.contains("is-pending")) continue;
+      const style = window.getComputedStyle(control);
+      if (style.visibility === "hidden" || Number(style.opacity) === 0) continue;
+      const back = behind(control.parentElement);
+      const fill = over(parse(style.backgroundColor), back);
+      const border = style.borderTopStyle !== "none" && parseFloat(style.borderTopWidth) >= 1
+        ? over(parse(style.borderTopColor), back) : back;
+      const best = Math.max(ratio(border, back), ratio(fill, back));
+      if (best < 3) {
+        problems.push(`${control.id ? `#${control.id}` : control.tagName.toLowerCase()} boundary ${best.toFixed(2)}:1`);
+      }
+    }
+    return problems.slice(0, 10);
+  });
+}
+
+// Meters and marks: the progress fill against its rail, and one cue tick
+// of each kind against the bar, drawn for this check and cleared at once
+// (the empty library has no track to give them).
+function meterProblems(page) {
+  return page.evaluate(async () => {
+    const { parse, over, ratio, behind } = window.__contrast;
+    const problems = [];
+    const track = document.getElementById("progress-track");
+    const fill = document.getElementById("progress-fill");
+    const strip = document.getElementById("cue-strip");
+    if (!track || !track.getClientRects().length) return problems;
+    const back = behind(track);
+    const rail = over(parse(window.getComputedStyle(track, "::before").backgroundColor), back);
+    const fillColour = over(parse(window.getComputedStyle(fill).backgroundColor), back);
+    if (ratio(fillColour, rail) < 3) problems.push(`progress fill on rail ${ratio(fillColour, rail).toFixed(2)}:1`);
+    const { renderCueStrip, CUE_COLORS } = await import(`${window.location.origin}/modules/cues.js`);
+    const types = Object.keys(CUE_COLORS);
+    renderCueStrip(strip, {
+      path: "__audit__", length: 100,
+      cues: types.map((type, index) => ({ type, time_s: 5 + index * 8 })),
+    });
+    for (const mark of strip.querySelectorAll(".cue-mark")) {
+      const colour = over(parse(window.getComputedStyle(mark).backgroundColor), back);
+      if (ratio(colour, back) < 3) problems.push(`cue tick ${mark.title} ${ratio(colour, back).toFixed(2)}:1`);
+    }
+    renderCueStrip(strip, { path: "", length: 0, cues: [] });
+    return problems;
+  });
+}
+
+// The Camelot wheel lit for 8A in compatible mode, measured in the same
+// task so the page's own state push cannot repaint it first.
+function wheelProblems(page) {
+  return page.evaluate(async () => {
+    const { parse, over, ratio, behind } = window.__contrast;
+    const sectorsEl = document.getElementById("camelot-sectors");
+    const labelsEl = document.getElementById("camelot-labels");
+    if (!sectorsEl || !sectorsEl.getClientRects().length) return [];
+    const { applyCamelotWheel } = await import(`${window.location.origin}/modules/camelot-wheel.js`);
+    // The reduced-motion rule gives every property a 0.01 ms transition,
+    // so a class change shows its old colour for a frame; measure the end.
+    const still = document.createElement("style");
+    still.textContent = "#camelot-wheel * { transition: none !important; }";
+    document.head.append(still);
+    applyCamelotWheel("8A", "compatible", { sectorsEl, labelsEl });
+    const back = behind(sectorsEl.closest("svg"));
+    const style = (cell) => window.getComputedStyle(sectorsEl.querySelector(`.sector[data-cell="${cell}"]`));
+    const fillOf = (cell) => over(parse(style(cell).fill), back);
+    const strokeOf = (cell) => over(parse(style(cell).stroke), back);
+    const labelFill = (cell) => parse(window.getComputedStyle(
+      labelsEl.querySelector(`.label[data-cell="${cell}"]`)).fill);
+    // 8A current; 7A, 9A, 8B compatible; 3B and 6A idle.
+    const checks = [
+      ["idle edge on idle wedge", ratio(strokeOf("3B"), fillOf("3B")), 3],
+      ["compatible outline on its wedge", ratio(strokeOf("7A"), fillOf("7A")), 3],
+      ["compatible outline on idle wedge", ratio(strokeOf("7A"), fillOf("6A")), 3],
+      ["current wedge on compatible wedge", ratio(fillOf("8A"), fillOf("8B")), 3],
+      ["current edge on compatible wedge", ratio(strokeOf("8A"), fillOf("8B")), 3],
+      ["current edge on idle wedge", ratio(strokeOf("8A"), fillOf("3B")), 3],
+      ["number on idle wedge", ratio(labelFill("3B"), fillOf("3B")), 4.5],
+      ["number on compatible wedge", ratio(labelFill("7A"), fillOf("7A")), 4.5],
+      ["current number on its wedge", ratio(labelFill("8A"), fillOf("8A")), 4.5],
+    ];
+    const widths = ["3B", "7A", "8A"].map((cell) => parseFloat(style(cell).strokeWidth));
+    const problems = checks.filter(([, measured, minimum]) => measured < minimum)
+      .map(([label, measured]) => `wheel ${label} ${measured.toFixed(2)}:1`);
+    if (!(widths[0] < widths[1] && widths[1] < widths[2])) {
+      problems.push(`wheel edge widths not idle < compatible < current: ${widths.join(", ")}`);
+    }
+    applyCamelotWheel(null, "compatible", { sectorsEl, labelsEl });
+    still.remove();
+    return problems;
+  });
+}
+
+function showToast(page, message, tone = "info") {
+  return page.evaluate(async ([text, toneName]) => {
+    const { showVisibleStatus } = await import(`${window.location.origin}/modules/live-region.js`);
+    showVisibleStatus(text, document, { tone: toneName });
+  }, [message, tone]);
+}
+
+// The status message and its Dismiss button: axe-core over the page with
+// the toast showing, the frame's edge on the page, and the button's size.
+async function toastProblems(page) {
+  const problems = [];
+  for (const tone of ["info", "error"]) {
+    await showToast(page, tone === "error" ? "Could not save: the server refused." : "Settings saved.", tone);
+    await settle(page);
+    const found = await page.evaluate(() => {
+      const { parse, over, ratio, behind } = window.__contrast;
+      const box = document.getElementById("status-toast-box");
+      const button = document.getElementById("status-toast-dismiss");
+      const style = window.getComputedStyle(box);
+      const back = behind(box.parentElement);
+      const issues = [];
+      const edge = ratio(over(parse(style.borderTopColor), back), back);
+      if (edge < 3) issues.push(`toast edge ${edge.toFixed(2)}:1`);
+      const rect = button.getBoundingClientRect();
+      if (rect.width < 24 || rect.height < 24) issues.push(`Dismiss ${rect.width}x${rect.height}`);
+      return issues;
+    });
+    problems.push(...found.map((issue) => `${tone}: ${issue}`));
+    const violations = await axeViolations(page);
+    problems.push(...violations.map((violation) => `${tone}: axe ${violation.id} ${violation.targets.join(", ")}`));
+  }
+  await showToast(page, "");
+  return problems;
+}
+
 // Tab from the panel's own tab through the view.  Stops at the first
-// element met twice (focus wrapped) or after MAX_TAB_STOPS.
-async function focusProblems(page, startSelector) {
+// element met twice (focus wrapped) or after `maxStops`.  With
+// `measureColour`, each ring's colour must reach 3:1 against what is
+// behind it: the parent's background for a ring drawn outside the
+// control, the control's own for one drawn inside it.
+async function focusProblems(page, startSelector, { maxStops = MAX_TAB_STOPS, measureColour = false } = {}) {
   await page.locator(startSelector).focus();
   const problems = [];
   // The start counts as met: focus coming back to it means the view is done.
   const seen = new Set([await page.evaluate(
     () => [...document.querySelectorAll("*")].indexOf(document.activeElement),
   )]);
-  for (let stop = 0; stop < MAX_TAB_STOPS; stop += 1) {
+  for (let stop = 0; stop < maxStops; stop += 1) {
     await page.keyboard.press("Tab");
     await page.waitForTimeout(30);
-    const info = await page.evaluate(() => {
+    await settle(page);
+    const info = await page.evaluate((colour) => {
       const element = document.activeElement;
       if (!element || element === document.body) return null;
       const all = [...document.querySelectorAll("*")];
       const style = window.getComputedStyle(element);
       const rect = element.getBoundingClientRect();
+      let ringRatio = null;
+      if (colour && style.outlineStyle !== "none") {
+        const { parse, over, ratio, behind } = window.__contrast;
+        const inside = parseFloat(style.outlineOffset) < 0;
+        const back = behind(inside ? element : element.parentElement);
+        ringRatio = ratio(over(parse(style.outlineColor), back), back);
+      }
       return {
         key: all.indexOf(element),
         name: element.id ? `#${element.id}` : element.tagName.toLowerCase(),
         outline: style.outlineStyle !== "none" && parseFloat(style.outlineWidth) >= 2,
+        ringRatio,
         inView: rect.top >= -1 && rect.bottom <= window.innerHeight + 1
           && rect.left >= -1 && rect.right <= window.innerWidth + 1,
       };
-    });
+    }, measureColour);
     // Focus left the page (past the last control): the view is done.
     if (!info) { if (seen.size) break; continue; }
     if (seen.has(info.key)) break;
     seen.add(info.key);
     if (!info.outline) problems.push(`${info.name} has no focus outline`);
     if (!info.inView) problems.push(`${info.name} not scrolled into view`);
+    if (info.ringRatio !== null && info.ringRatio < 3) {
+      problems.push(`${info.name} focus ring ${info.ringRatio.toFixed(2)}:1`);
+    }
   }
+  return problems;
+}
+
+function startOf(target) {
+  const [view, sub] = target.split("/");
+  return sub ? `#stab-${sub}` : `#tab-${view}`;
+}
+
+async function themeContext(browser, mode) {
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 800 },
+    reducedMotion: "reduce",
+    colorScheme: mode.colorScheme,
+    bypassCSP: true,
+  });
+  // Before any page script, as a returning visitor's stored choice is.
+  await context.addInitScript(([key, stored]) => {
+    try {
+      if (stored) window.localStorage.setItem(key, stored);
+      else window.localStorage.removeItem(key);
+    } catch { /* storage blocked: System */ }
+    // The theme on <html> when parsing ended, before app.js ran: set by
+    // the head script alone, ahead of the stylesheet.
+    document.addEventListener("readystatechange", () => {
+      if (document.readyState !== "interactive" || window.__beforeModules) return;
+      window.__beforeModules = { theme: document.documentElement.getAttribute("data-theme") };
+    });
+  }, [THEME_KEY, mode.stored]);
+  return context;
+}
+
+// One theme mode: colours only.
+async function auditTheme(browser, mode, out) {
+  const context = await themeContext(browser, mode);
+  const page = await newPage(context);
+  page.on("pageerror", (error) => out.pageerrors.push(`${mode.name}: ${error.message}`));
+  const record = (key, target, problems) => {
+    if (!problems.length) return;
+    out[key][`${mode.name} ${target}`] = problems;
+  };
+  try {
+    await eachTarget(page, async (target) => {
+      await installContrastHelpers(page);
+      record("axe", target, await axeViolations(page));
+      record("nonText", target, await controlBoundaryProblems(page));
+      record("focusColour", target, await focusProblems(page, startOf(target),
+        { maxStops: mode.fullFocus ? MAX_TAB_STOPS : THEME_TAB_STOPS, measureColour: true }));
+      if (target === "now") {
+        record("nonText", "meters", await meterProblems(page));
+        record("nonText", "camelot", await wheelProblems(page));
+        record("toast", target, await toastProblems(page));
+      }
+      if (target === "settings/display") record("toast", target, await toastProblems(page));
+      if (SHOTS) {
+        // A message showing in every shot, so the toast is seen in both
+        // themes; on Now Playing the wheel lit as well.
+        await showToast(page, "Settings saved.");
+        if (target === "now") {
+          await page.evaluate(async () => {
+            const { applyCamelotWheel } = await import(`${window.location.origin}/modules/camelot-wheel.js`);
+            applyCamelotWheel("8A", "compatible", {
+              sectorsEl: document.getElementById("camelot-sectors"),
+              labelsEl: document.getElementById("camelot-labels"),
+            });
+          });
+        }
+        await page.screenshot({
+          path: join(SHOTS, `${out.browser}-${mode.name}-${target.replaceAll("/", "-")}.png`),
+          fullPage: true,
+        });
+        await showToast(page, "");
+      }
+    });
+    await settle(page);
+    const state = await page.evaluate(() => ({
+      before: window.__beforeModules,
+      theme: document.documentElement.getAttribute("data-theme"),
+      background: window.getComputedStyle(document.body).backgroundColor,
+      checked: document.querySelector('input[name="theme"]:checked')?.value,
+    }));
+    const expected = {
+      theme: mode.stored,
+      background: THEME_BG[mode.theme],
+      checked: mode.stored || "system",
+    };
+    const problems = [];
+    if (state.before?.theme !== expected.theme) problems.push(`data-theme before modules ${state.before?.theme}`);
+    if (state.theme !== expected.theme) problems.push(`data-theme ${state.theme}`);
+    if (state.background !== expected.background) problems.push(`background ${state.background}`);
+    if (state.checked !== expected.checked) problems.push(`checked ${state.checked}`);
+    if (problems.length) out.themeState[mode.name] = problems;
+  } finally {
+    await context.close();
+  }
+}
+
+// Choosing Dark in Settings, Display and keys: the page changes at once,
+// nothing is announced, and a reload keeps it.
+async function themeSettingProblems(page) {
+  const problems = [];
+  await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
+  await page.locator("#tab-settings").click();
+  await page.locator("#stab-display").click();
+  const regions = () => page.evaluate(() => [...document.querySelectorAll(
+    '[aria-live]:not([aria-live="off"]), [role="status"], [role="alert"]',
+  )].map((node) => node.textContent.trim()).join("|"));
+  const before = await regions();
+  await page.locator("#theme-dark").click();
+  await settle(page);
+  const after = await page.evaluate(() => ({
+    theme: document.documentElement.getAttribute("data-theme"),
+    background: window.getComputedStyle(document.body).backgroundColor,
+    stored: window.localStorage.getItem("autodj.theme"),
+    toast: document.getElementById("status-toast-box")?.hidden,
+  }));
+  if (after.theme !== "dark" || after.background !== THEME_BG.dark) {
+    problems.push(`after choosing Dark: ${JSON.stringify(after)}`);
+  }
+  if (after.stored !== "dark") problems.push(`Dark not stored: ${after.stored}`);
+  if (after.toast === false) problems.push("choosing a theme showed a status message");
+  if (await regions() !== before) problems.push("choosing a theme wrote a live region");
+  await page.reload({ waitUntil: "networkidle" });
+  const reloaded = await page.evaluate(() => ({
+    theme: document.documentElement.getAttribute("data-theme"),
+    checked: document.querySelector('input[name="theme"]:checked')?.value,
+  }));
+  if (reloaded.theme !== "dark" || reloaded.checked !== "dark") {
+    problems.push(`after reload: ${JSON.stringify(reloaded)}`);
+  }
+  await page.locator("#tab-settings").click();
+  await page.locator("#stab-display").click();
+  await page.locator("#theme-system").click();
+  const system = await page.evaluate(() => ({
+    theme: document.documentElement.getAttribute("data-theme"),
+    stored: window.localStorage.getItem("autodj.theme"),
+  }));
+  if (system.theme !== null || system.stored !== "system") {
+    problems.push(`after choosing System: ${JSON.stringify(system)}`);
+  }
+  return problems;
+}
+
+// The status message held by the pointer, dismissed by mouse and by
+// keyboard, with focus put back where it was.
+async function toastBehaviourProblems(page) {
+  const problems = [];
+  await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
+  const visible = () => page.evaluate(() => !document.getElementById("status-toast-box").hidden);
+  const focused = () => page.evaluate(() => {
+    const element = document.activeElement;
+    if (!element || element === document.body) return "body";
+    return element.id || element.tagName.toLowerCase();
+  });
+  await page.mouse.move(5, 5);
+  await showToast(page, "Settings saved.");
+  // Hovered 6.5 s in, then held past the 8 s it would last unattended.
+  await page.waitForTimeout(6500);
+  await page.locator("#status-toast").hover();
+  await page.waitForTimeout(3000);
+  if (!await visible()) problems.push("gone while the pointer was over it");
+  await page.mouse.move(5, 5);
+  await page.waitForTimeout(3000);
+  if (await visible()) problems.push("still showing 3 s after the pointer left");
+
+  // The frame's padding and the gap between the message and the button
+  // take no pointer: a control underneath still gets the click.  A probe
+  // button under the whole strip stands in for one, whatever the view.
+  await page.evaluate(() => {
+    const probe = document.createElement("button");
+    probe.type = "button";
+    probe.id = "audit-under-toast";
+    probe.textContent = "under";
+    probe.style.cssText = "position:fixed;left:0;right:0;bottom:0;height:6rem;z-index:9000";
+    window.__underClicks = 0;
+    probe.addEventListener("click", () => { window.__underClicks += 1; });
+    // Focus on a control under the toast sends the toast to the top of the
+    // window (WCAG 2.4.11), away from the next spot clicked; the probe
+    // keeps the click and leaves focus alone.
+    probe.addEventListener("mousedown", (event) => event.preventDefault());
+    document.body.append(probe);
+  });
+  await showToast(page, "Settings saved.");
+  await settle(page);
+  const spotOf = (where) => page.evaluate((name) => {
+    const frame = document.getElementById("status-toast-box").getBoundingClientRect();
+    const message = document.getElementById("status-toast").getBoundingClientRect();
+    const button = document.getElementById("status-toast-dismiss").getBoundingClientRect();
+    const middle = frame.top + frame.height / 2;
+    return {
+      padding: { x: (frame.left + message.left) / 2, y: middle },
+      gap: { x: (message.right + button.left) / 2, y: middle },
+      message: { x: message.left + message.width / 2, y: message.top + message.height / 2 },
+    }[name];
+  }, where);
+  for (const where of ["padding", "gap", "message"]) {
+    const spot = await spotOf(where);
+    const clicks = await page.evaluate(() => window.__underClicks);
+    await page.mouse.click(spot.x, spot.y);
+    const got = await page.evaluate(() => window.__underClicks) - clicks;
+    // The message itself takes the pointer: hovering it holds the toast.
+    const wanted = where === "message" ? 0 : 1;
+    if (got !== wanted) problems.push(`a click on the toast's ${where} reached the page ${got} times, not ${wanted}`);
+  }
+  if (!await visible()) problems.push("a click through the frame hid the message");
+  await page.mouse.move(5, 5);
+  await showToast(page, "");
+  await page.evaluate(() => document.getElementById("audit-under-toast").remove());
+
+  await page.locator("#tab-queue").focus();
+  await showToast(page, "Settings saved.");
+  if (await focused() !== "tab-queue") problems.push(`showing the message moved focus to ${await focused()}`);
+  await page.locator("#status-toast-dismiss").click();
+  if (await visible()) problems.push("Dismiss by mouse did not hide it");
+  if (await focused() !== "tab-queue") problems.push(`focus after a click on Dismiss: ${await focused()}`);
+
+  // By keyboard: focus the last tab stop before the toast, show the
+  // message, Tab once to Dismiss (so the ring is the keyboard one), then
+  // Enter.  Focus must go back to that stop.
+  const start = await page.evaluate(() => {
+    const box = document.getElementById("status-toast-box");
+    const stops = [...document.querySelectorAll(
+      "a[href], button, input, select, textarea, summary, [tabindex]",
+    )].filter((element) => element.tabIndex >= 0 && !element.disabled
+      && !box.contains(element) && element.getClientRects().length
+      && !(element.type === "radio" && !element.checked)
+      && (box.compareDocumentPosition(element) & window.Node.DOCUMENT_POSITION_PRECEDING));
+    const last = stops.at(-1);
+    if (!last) return null;
+    last.setAttribute("data-audit-start", "");
+    return last.id || last.tagName.toLowerCase();
+  });
+  if (!start) {
+    problems.push("no tab stop before the status message");
+    return problems;
+  }
+  await page.locator("[data-audit-start]").focus();
+  const before = await focused();
+  await showToast(page, "Settings saved.");
+  if (await focused() !== before) problems.push(`showing the message moved focus from ${before} to ${await focused()}`);
+  await page.keyboard.press("Tab");
+  if (await focused() !== "status-toast-dismiss") problems.push(`Tab from ${start} reached ${await focused()}, not Dismiss`);
+  await settle(page);
+  const ring = await page.evaluate(() => {
+    const style = window.getComputedStyle(document.activeElement);
+    return style.outlineStyle !== "none" && parseFloat(style.outlineWidth) >= 2;
+  });
+  if (!ring) problems.push("Dismiss has no visible focus ring");
+  await page.keyboard.press("Enter");
+  if (await visible()) problems.push("Dismiss by keyboard did not hide it");
+  if (await focused() !== before) problems.push(`focus after Enter on Dismiss: ${await focused()}, not ${before}`);
+  await page.evaluate(() => document.querySelector("[data-audit-start]")?.removeAttribute("data-audit-start"));
   return problems;
 }
 
 export async function audit(name, launcher) {
   const browser = await launcher.launch();
-  const out = { axe: {}, reflow320: {}, text200: {}, smallChoices: {}, focus: {}, pageerrors: [] };
+  const out = {
+    browser: name, axe: {}, nonText: {}, focusColour: {}, toast: {}, themeState: {},
+    reflow320: {}, text200: {}, smallChoices: {}, focus: {}, behaviour: {}, pageerrors: [],
+  };
+  if (SHOTS) mkdirSync(SHOTS, { recursive: true });
   try {
+    for (const mode of THEME_MODES) await auditTheme(browser, mode, out);
+
     const wide = await browser.newContext({ viewport: { width: 1280, height: 800 },
-      reducedMotion: "reduce", bypassCSP: true });
-    const page = await wide.newPage();
+      reducedMotion: "reduce", colorScheme: "light", bypassCSP: true });
+    const page = await newPage(wide);
     page.on("pageerror", (error) => out.pageerrors.push(error.message));
     await eachTarget(page, async (target) => {
-      const violations = await axeViolations(page);
-      if (violations.length) out.axe[target] = violations;
       const small = await smallChoiceControls(page);
       if (small.length) out.smallChoices[target] = small;
-      const view = target.split("/")[0];
-      const sub = target.split("/")[1];
-      const problems = await focusProblems(page, sub ? `#stab-${sub}` : `#tab-${view}`);
+      await installContrastHelpers(page);
+      const problems = await focusProblems(page, startOf(target), { measureColour: true });
       if (problems.length) out.focus[target] = problems;
     });
+    const setting = await themeSettingProblems(page);
+    if (setting.length) out.behaviour.theme = setting;
+    const toast = await toastBehaviourProblems(page);
+    if (toast.length) out.behaviour.toast = toast;
     // 200 % text at the same window width.
     await wide.addInitScript(() => {
       document.addEventListener("DOMContentLoaded", () => {
@@ -221,8 +744,8 @@ export async function audit(name, launcher) {
     await wide.close();
 
     const narrow = await browser.newContext({ viewport: { width: 320, height: 640 },
-      reducedMotion: "reduce" });
-    const phone = await narrow.newPage();
+      reducedMotion: "reduce", colorScheme: "light" });
+    const phone = await newPage(narrow);
     phone.on("pageerror", (error) => out.pageerrors.push(error.message));
     await eachTarget(phone, async (target) => {
       const overflow = await horizontalOverflow(phone);
@@ -237,7 +760,10 @@ export async function audit(name, launcher) {
 
 export function validateVisualAudit(name, result) {
   const failures = [];
-  for (const key of ["axe", "reflow320", "text200", "smallChoices", "focus"]) {
+  for (const key of [
+    "axe", "nonText", "focusColour", "toast", "themeState",
+    "reflow320", "text200", "smallChoices", "focus", "behaviour",
+  ]) {
     const entries = Object.entries(result[key]);
     if (entries.length) failures.push(`${key}: ${JSON.stringify(Object.fromEntries(entries))}`);
   }
