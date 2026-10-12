@@ -898,10 +898,10 @@
     </fieldset>
 
     <!-- The rules' shared help is the outer group's description, read once
-         when focus enters Repeats, not repeated on all eight boxes. -->
+         when focus enters Repeats, not repeated on all twelve boxes. -->
     <fieldset aria-describedby="repeat-rules-desc">
       <legend>Repeats</legend>
-      <p class="setting-desc" id="repeat-rules-desc">Each rule has a Tracks limit and a Minutes limit; when both are set, a repeat waits for both. 0 turns a limit off. Tracks are whole numbers, up to 100000 for the same track and up to 5000 for artist, album and title. Minutes go up to 10080 (one week) and can have decimals.</p>
+      <p class="setting-desc" id="repeat-rules-desc">Each rule has a Tracks limit and a Minutes limit; when both are set, a repeat waits for both. 0 turns a limit off. Tracks are whole numbers, up to 100000 for the same track and up to 5000 for the others. Minutes go up to 10080 (one week) and can have decimals.</p>
       <fieldset>
         <legend>Prevent the same artist from repeating within</legend>
         <div class="settings-row">
@@ -919,10 +919,18 @@
           <input type="checkbox" id="repeat-use-related-artists" aria-describedby="repeat-related-desc repeat-related-status">
           <label for="repeat-use-related-artists">Use related artists</label>
         </div>
-        <p class="setting-desc" id="repeat-related-desc">The artist rule also holds back the artists linked in related-artists.toml in the index folder: <code id="repeat-related-default">index/&lt;name&gt;/related-artists.toml</code>. Edit that file, then save repeat settings to reload it.</p>
+        <p class="setting-desc" id="repeat-related-desc">Also holds back the artists linked in related-artists.toml in the index folder to an artist that played within the limits below: <code id="repeat-related-default">index/&lt;name&gt;/related-artists.toml</code>. Edit that file, then save repeat settings to reload it.</p>
         <!-- A problem found in the file at startup or on save; empty and
              hidden while there is none. -->
         <p class="setting-desc" id="repeat-related-status" hidden></p>
+        <div class="settings-row">
+          <label for="repeat-related-artist-tracks">Tracks</label>
+          <input type="number" id="repeat-related-artist-tracks" min="0" max="5000" step="1" value="8" inputmode="numeric">
+        </div>
+        <div class="settings-row">
+          <label for="repeat-related-artist-minutes">Minutes</label>
+          <input type="number" id="repeat-related-artist-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
+        </div>
       </fieldset>
       <fieldset>
         <legend>Prevent the same album from repeating within</legend>
@@ -955,6 +963,25 @@
         <div class="settings-row">
           <label for="repeat-title-minutes">Minutes</label>
           <input type="number" id="repeat-title-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Related tracks</legend>
+        <div class="settings-check">
+          <input type="checkbox" id="repeat-use-related-tracks" aria-describedby="repeat-related-tracks-desc repeat-related-tracks-status">
+          <label for="repeat-use-related-tracks">Use related tracks</label>
+        </div>
+        <p class="setting-desc" id="repeat-related-tracks-desc">Holds back tracks that sound alike, such as a song and one that samples it, when one of them played within the limits below. Each group in related-tracks.toml in the index folder lists tracks as Artist - Title: <code id="repeat-related-tracks-default">index/&lt;name&gt;/related-tracks.toml</code>. Edit that file, then save repeat settings to reload it.</p>
+        <!-- A problem found in the file at startup or on save; empty and
+             hidden while there is none. -->
+        <p class="setting-desc" id="repeat-related-tracks-status" hidden></p>
+        <div class="settings-row">
+          <label for="repeat-related-track-tracks">Tracks</label>
+          <input type="number" id="repeat-related-track-tracks" min="0" max="5000" step="1" value="20" inputmode="numeric">
+        </div>
+        <div class="settings-row">
+          <label for="repeat-related-track-minutes">Minutes</label>
+          <input type="number" id="repeat-related-track-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
         </div>
       </fieldset>
       <button type="button" id="repeat-save">Save repeat settings</button>

@@ -1157,9 +1157,16 @@ const _repeatEls = {
   trackMinutes: document.getElementById("repeat-track-minutes"),
   titleTracks: document.getElementById("repeat-title-tracks"),
   titleMinutes: document.getElementById("repeat-title-minutes"),
+  relatedArtistTracks: document.getElementById("repeat-related-artist-tracks"),
+  relatedArtistMinutes: document.getElementById("repeat-related-artist-minutes"),
+  relatedTrackTracks: document.getElementById("repeat-related-track-tracks"),
+  relatedTrackMinutes: document.getElementById("repeat-related-track-minutes"),
   useRelatedArtists: document.getElementById("repeat-use-related-artists"),
+  useRelatedTracks: document.getElementById("repeat-use-related-tracks"),
   defaultFile: document.getElementById("repeat-related-default"),
   fileStatus: document.getElementById("repeat-related-status"),
+  tracksDefaultFile: document.getElementById("repeat-related-tracks-default"),
+  tracksFileStatus: document.getElementById("repeat-related-tracks-status"),
   save: document.getElementById("repeat-save"),
 };
 installRepeatSettings(_repeatEls, { postSettings, settingsStatus });

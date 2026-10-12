@@ -10,6 +10,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Related tracks (#101). Settings > Picking > Repeats has a **Use related tracks** checkbox, off
+  by default, with its own Tracks and Minutes limits (20 tracks to start with). It holds back
+  tracks that sound alike on air, such as a song and one that samples it, listed as
+  "Artist - Title" groups in `index/<name>/related-tracks.toml`. Every track in a group holds
+  back the others in both directions. AutoDJ copies a small sample there on first use and never
+  replaces your copy; an invalid file is refused on save and skipped with a warning at startup.
+  The rotation tester, `autodj doctor` and `autodj backup` include the file.
+- Related artists have their own Tracks and Minutes limits under **Use related artists**.
+  Settings saved before this keep using the artist limits.
+
 - A rotation tester (#125): Settings > Song picking > **Test rotation**, or
   `autodj simulate --days 7`, plays a span of time (up to 30 days) or a number of songs (up to
   20,000) through the station's own song picker, with its clockwheel, categories and their hours,

@@ -62,6 +62,7 @@ from autodj.repeat_rules import (
     ArtistSplitter,
     PlayRecord,
     RelatedArtists,
+    RelatedTracks,
     RepeatFilter,
     RepeatRules,
     TrackKeyCache,
@@ -365,6 +366,7 @@ def apply_repeat_windows(player: Any) -> None:
             pb,
             track_window=effective_no_repeat_window(pb.repeat_rules.track.tracks, library_size),
             related=getattr(player, "_related_artists", None),
+            related_tracks=getattr(player, "_related_tracks", None),
         )
     )
 
@@ -904,6 +906,7 @@ class Player:
         )
         from autodj.related_artist_file import (
             load_configured_related_artists,
+            load_configured_related_tracks,
             unused_related_artists_message,
         )
 
@@ -918,6 +921,17 @@ class Player:
             self._related_artists = RelatedArtists()
             self.related_artists_problem = unused_related_artists_message(exc)
             logger.warning("Related artists file was not used: %s", exc)
+        try:
+            self._related_tracks = (
+                load_configured_related_tracks(cfg.index.active_dir)
+                if cfg.playback.repeat_rules.use_related_tracks
+                else RelatedTracks()
+            )
+            self.related_tracks_problem = None
+        except (OSError, ValueError) as exc:
+            self._related_tracks = RelatedTracks()
+            self.related_tracks_problem = unused_related_artists_message(exc, "tracks")
+            logger.warning("Related tracks file was not used: %s", exc)
         # (library entries, their keys), rebuilt when the library changes;
         # see _track_keys.  Its own lock: the build can take a while on a
         # large library, and _pick_lock must never make a track start wait.
@@ -926,7 +940,10 @@ class Player:
         self._state = PlayerState(
             dmca_enabled=cfg.dmca.enabled,
             repeat_rules=RepeatRules.from_playback(
-                cfg.playback, track_window=effective, related=self._related_artists
+                cfg.playback,
+                track_window=effective,
+                related=self._related_artists,
+                related_tracks=self._related_tracks,
             ),
         )
         self._skip_event = threading.Event()

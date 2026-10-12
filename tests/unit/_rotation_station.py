@@ -185,6 +185,7 @@ def make_station(
     timezone: str = "UTC",
     similarity: bool = False,
     related: dict[str, list[str]] | None = None,
+    related_tracks: dict[str, list[str]] | None = None,
 ) -> SimulationSource:
     """A station in *root*: config, categories (each with ``members``), clockwheels.
 
@@ -210,6 +211,11 @@ def make_station(
     config_file.write_text(text, encoding="utf-8")
     cfg = load_config(config_file, environ={})
     cfg.index.active_dir.mkdir(parents=True, exist_ok=True)
+    if related_tracks is not None:
+        groups = [f"{json.dumps(name)} = {json.dumps(to)}" for name, to in related_tracks.items()]
+        (cfg.index.active_dir / "related-tracks.toml").write_text(
+            "\n".join(["[related]", *groups, ""]), encoding="utf-8"
+        )
     if related is not None:
         links = [f"{json.dumps(name)} = {json.dumps(to)}" for name, to in related.items()]
         (cfg.index.active_dir / "related-artists.toml").write_text(

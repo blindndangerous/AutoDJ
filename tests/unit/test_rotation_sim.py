@@ -257,6 +257,29 @@ def test_related_artists_count_as_their_own_rule(tmp_path: Path) -> None:
     assert report["relaxed"]["related artist"] == 9
 
 
+def test_related_tracks_count_as_their_own_rule(tmp_path: Path) -> None:
+    pair = [song(1, "Alpha Group", title="Original"), song(2, "Beta Duo", title="Sampler")]
+    source = make_station(
+        tmp_path,
+        pair,
+        categories=[{"id": "pair", "name": "Pair", "members": pair}],
+        clockwheels=[{"name": "Only", "steps": [category_step("pair")]}],
+        active_clock="Only",
+        playback={
+            "pick_mode": "clock",
+            "repeat_rules": {
+                "track": {"tracks": 1},
+                "artist": {"tracks": 0},
+                "related_track": {"tracks": 1},
+                "use_related_tracks": True,
+            },
+        },
+        related_tracks={"Alpha Group - Original": ["Beta Duo - Sampler"]},
+    )
+    report = simulate(source, SimulationRequest(picks=10, start=NOON, seed=2))
+    assert report["relaxed"]["related track"] == 9
+
+
 def test_a_step_that_ignores_the_rules_is_not_counted_as_relaxing_them(tmp_path: Path) -> None:
     trio, rest = _songs(0, 3), _songs(100, 100)
     source = make_station(
