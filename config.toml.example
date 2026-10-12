@@ -583,4 +583,4 @@ history_limit = 5
 # [[webhooks]]
 # url = "https://example.com/your-secret-endpoint"
 # format = "generic" # or "discord"
-# events = ["track_change"]
+# events = ["track_change", "show_started"] # the default; either one alone also works

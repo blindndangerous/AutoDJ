@@ -100,6 +100,6 @@ def test_status_page_is_public_plain_html_without_private_details(bridge) -> Non
     assert client.get("/modules/status-page.css").headers["content-type"].startswith("text/css")
     assert client.get("/api/status").status_code == 401
     feed = client.get("/api/nowplaying").json()
-    assert feed["schema"] == 2
+    assert feed["schema"] == 3
     assert feed["peak_listeners_today"] >= feed["listener_count"]
     assert feed["uptime_seconds"] >= 0

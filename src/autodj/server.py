@@ -1049,12 +1049,23 @@ def _start_server_audio_liners(bridge: PlayerBridge, liner_folder: Path) -> None
     bridge.attach_liner_scheduler(scheduler)
 
 
-def _registered_liners(bridge: PlayerBridge) -> list[tuple[str, Path]]:
+def _catalog_liners(bridge: PlayerBridge) -> list[tuple[str, Path]]:
+    """Every registered voice liner, as ``(catalog id, path)``."""
+    if bridge.library is None:
+        return []
     return [
         (record["id"], Path(entry.path))
         for entry in bridge.library.entries_snapshot("liner")
         if (record := bridge.library.catalog.record_for_path(entry.path)) is not None
     ]
+
+
+def _registered_liners(bridge: PlayerBridge) -> list[tuple[str, Path]]:
+    liners = _catalog_liners(bridge)
+    # A themed show's liner folder replaces the automatic liners while it
+    # runs, and is kept out of them otherwise (see autodj.show_runtime).
+    shows = getattr(bridge, "show_liners", None)
+    return shows(liners) if shows is not None else liners
 
 
 def _processed_liner(bridge: PlayerBridge, path: Path) -> Any:
@@ -1256,8 +1267,14 @@ def create_app(
             await asyncio.to_thread(_start_server_audio_liners, bridge, _resolve_liner_folder())
             stream_ticker = asyncio.create_task(_tick_stream_workers(bridge))
         if bridge.liner_scheduler is not None:
-            # The time check after the hour plays where an automatic liner would.
-            bridge.liner_scheduler.announcement = time_checks.due_audio
+            # A show's intro or outro, else the time check after the hour,
+            # plays where an automatic liner would.
+            bridge.liner_scheduler.announcement = _due_announcement
+        try:
+            await shows.start_up()
+        except Exception:
+            # The station starts without the show rather than not at all.
+            logger.exception("Could not carry on with the show on air")
         broadcast = asyncio.create_task(_broadcast_loop())
         watcher = asyncio.create_task(_index_watcher_loop())
         library_ticker = None
@@ -1376,6 +1393,10 @@ def create_app(
                 )
             except Exception:
                 logger.exception("Time check tick failed")
+            try:
+                await shows.tick()
+            except Exception:
+                logger.exception("Show tick failed")
 
     # No /docs, /redoc or /openapi.json: the web UI does not use them, and
     # a full map of every route and body schema is reconnaissance material
@@ -1452,6 +1473,8 @@ def create_app(
         "/api/carts/upload": lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
         "/api/stereo-tool-presets/upload": lambda: MAX_PRESET_BYTES + _MULTIPART_OVERHEAD_BYTES,
         "/api/schedule": lambda: _SCHEDULE_BODY_MAX_BYTES,
+        "/api/shows": lambda: _SCHEDULE_BODY_MAX_BYTES,
+        "/api/shows/check": lambda: _SCHEDULE_BODY_MAX_BYTES,
     }
     app.add_middleware(SecurityMiddleware, policy=policy, body_limits=body_limits)
     # Compresses the page, scripts and JSON; audio, cover art and Range
@@ -3342,7 +3365,154 @@ def create_app(
     from autodj.time_checks import install_time_checks
 
     time_checks = install_time_checks(app, bridge, station_schedule, station_timezone)
+    shows = _install_shows(
+        app,
+        bridge,
+        station_schedule,
+        station_timezone,
+        catalog_library=_catalog_library,
+        clock_setting=_clock_setting,
+        clock_store=_clock_store,
+        select_clock=_select_clock,
+        publish=_publish_schedule,
+        nowplaying=nowplaying,
+        webhooks=webhooks,
+    )
+
+    def _due_announcement() -> Any:
+        audio = shows.due_audio()
+        return audio if audio is not None else time_checks.due_audio()
+
     return app
+
+
+def _install_shows(
+    app: FastAPI,
+    bridge: PlayerBridge,
+    schedule: Any,
+    timezone: str,
+    *,
+    catalog_library: Callable[[], Any],
+    clock_setting: Callable[[Any], dict],
+    clock_store: Callable[[], Any],
+    select_clock: Callable[..., Awaitable[Any]],
+    publish: Callable[[dict[str, Any]], Awaitable[None]],
+    nowplaying: NowPlaying,
+    webhooks: WebhookWorker,
+) -> Any:
+    """Wire themed shows (autodj.show_runtime) to the player, library and feed."""
+    from autodj.show_runtime import RENDER_WAIT_S, ShowHooks, install_shows
+    from autodj.shows import FILE_NAME, BeetsSource, ClockState, Resume, ShowError
+
+    cfg = bridge.player._cfg
+    player = bridge.player
+
+    def beets() -> BeetsSource | None:
+        db = cfg.library.beets_db
+        return BeetsSource(Path(db), cfg.library.music_dir) if db else None
+
+    def apply_theme(theme: Any) -> None:
+        player.show = theme
+        if getattr(player, "_dry_run", False):
+            bridge.repick_next()
+        elif getattr(player, "bus", None) is not None:
+            player.refresh_render_ahead()
+
+    def interrupt() -> None:
+        bus = getattr(player, "bus", None)
+        if not getattr(player, "_dry_run", False) and bus is not None and bus.playing:
+            # Fade only once the next song has been picked again.
+            player.wait_for_render(RENDER_WAIT_S)
+        bridge.skip()
+
+    def picking() -> Resume:
+        clock = None
+        if bridge.library is not None:
+            setting = clock_setting(bridge.library)
+            name, cursor = setting.get("name"), setting.get("cursor")
+            clock = ClockState(
+                name=name if isinstance(name, str) else None,
+                cursor=cursor if type(cursor) is int else 0,
+            )
+        return Resume(
+            pick_mode=str(cfg.playback.pick_mode),
+            transition_mode=str(cfg.playback.transition_mode),
+            clock=clock,
+        )
+
+    async def use_clock(name: str) -> None:
+        try:
+            library = catalog_library()
+        except HTTPException as exc:
+            raise ShowError("clockwheel", str(exc.detail)) from None
+        await select_clock(library, name, 0)
+        if getattr(player, "_clock", None) is None:
+            status = getattr(player, "_clock_status", None) or "No clockwheel is active"
+            raise ShowError("clockwheel", f"The clockwheel cannot play: {status}")
+        bridge.set_playback_settings(PlaybackSettingsBody.model_validate({"pick_mode": "clock"}))
+        bridge.save_persistent_state()
+
+    async def restore(resume: Resume) -> None:
+        if resume.clock is not None and bridge.library is not None:
+            try:
+                await select_clock(bridge.library, resume.clock.name, resume.clock.cursor)
+            except (ValueError, OSError):
+                logger.warning(
+                    "The clockwheel from before the show could not come back", exc_info=True
+                )
+        bridge.set_playback_settings(
+            PlaybackSettingsBody.model_validate(
+                {"pick_mode": resume.pick_mode, "transition_mode": resume.transition_mode}
+            )
+        )
+        bridge.save_persistent_state()
+
+    def liner_sources() -> list[dict[str, Any]]:
+        library = bridge.library
+        return library.catalog.sources("liner") if library is not None else []
+
+    def decode(liner_id: str) -> Any:
+        library = bridge.library
+        record = library.catalog.record_for_id(liner_id) if library is not None else None
+        if record is None or record.get("kind") != "liner":
+            raise ValueError("The liner is no longer registered")
+        return _processed_liner(bridge, Path(record["path"]))
+
+    def started() -> None:
+        try:
+            webhooks.submit({**nowplaying.refresh(), "event": "show_started"})
+        except Exception:
+            logger.exception("Could not publish the show start")
+
+    def changed() -> None:
+        try:
+            nowplaying.refresh()
+        except Exception:
+            logger.exception("Could not refresh now-playing state")
+
+    hooks = ShowHooks(
+        entries=lambda: player.playable_entries(),
+        beets=beets,
+        rules=lambda: player._state.rules,
+        keys=lambda: player._track_keys(),
+        dmca=lambda: bool(player._state.dmca_enabled),
+        apply_theme=apply_theme,
+        interrupt=interrupt,
+        picking=picking,
+        use_clock=use_clock,
+        restore=restore,
+        liner_sources=liner_sources,
+        liners=lambda: _catalog_liners(bridge),
+        clock_names=lambda: clock_store().list_names(),
+        decode=decode,
+        on_started=started,
+        on_changed=changed,
+        publish=publish,
+    )
+    manager = install_shows(app, schedule, Path(cfg.index.active_dir) / FILE_NAME, timezone, hooks)
+    bridge.show_state = manager.state
+    bridge.show_liners = manager.liners_for_now
+    return manager
 
 
 # ---------------------------------------------------------------------------

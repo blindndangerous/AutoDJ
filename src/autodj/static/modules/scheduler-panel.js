@@ -294,6 +294,9 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
           control.append(option(value, `${value} (not found)`));
         }
         if (!control.options.length) control.append(option("", `No ${field.label.toLowerCase()} to choose yet`));
+      } else if (field.type === "time") {
+        control = doc.createElement("input");
+        control.type = "time";
       } else {
         control = doc.createElement("input");
         control.type = "text";
@@ -308,6 +311,17 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
       return row;
     });
     paramsBox.replaceChildren(...rows);
+    // An action with its own timing (Start show) runs on time; the
+    // show's own Start setting says whether the song playing finishes.
+    const own = Boolean(action?.own_timing);
+    const timing = get("timing");
+    const timingRow = timing.closest(".settings-row");
+    if (timingRow) timingRow.hidden = own;
+    get("timing-desc").hidden = own;
+    get("own-timing").hidden = !own;
+    // Said with the action, since the Timing field it replaces is gone.
+    if (own) actionSelect.setAttribute("aria-describedby", "schedule-own-timing");
+    else actionSelect.removeAttribute("aria-describedby");
   }
 
   // Only the parts the repeat choice uses are shown.  The Repeat select

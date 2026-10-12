@@ -15,6 +15,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Themed shows such as "Remembering the 2000s" (Settings, Shows). A show's songs are those that
+  match a first-release year range, genres to include or leave out, and an optional beets query
+  (`field:value`, ranges such as `original_year:1990..1999`, `^` to leave out, quoted phrases; any
+  beets field, flexible attributes included). The year is beets' `original_year`, falling back to
+  `year` when it is missing; Check and Save count the songs and the fallbacks, Save warns when the
+  show is too long for its songs under the repeat rules, and `autodj doctor` lists the fallbacks.
+  While a show runs every pick mode plays only its songs, relaxing the repeat rules inside the show
+  but never the DMCA limits, and plays a song from the whole library only when no show song can
+  play. A show can switch to its own clockwheel, play an intro and an outro liner, and use its own
+  liner folder for the automatic liners. Start one now for its length, or from a new Schedule
+  action, Start show, with an end time; soft or hard start and end per show, and a new show takes
+  over from a running one. `/api/nowplaying` (schema 3) and `/status` say "On air: <show>, until
+  <time>", webhooks get a `show_started` event (`events` in `[[webhooks]]` now accepts it, and
+  sends both by default), the Now Playing card shows the show, and its start and end are said
+  once. Shows are kept in `shows.json` and in backups.
+
 - Several named clockwheels (Library tools, Clockwheels): create, duplicate, rename, delete,
   activate one or turn the clockwheel off. Each is a versioned JSON file in `clockwheels/` in the
   active index folder, included in backups. A step editor lists steps as "Step 3 of 12, music from
