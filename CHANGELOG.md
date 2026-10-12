@@ -43,6 +43,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   linked to the field it names. Existing schedule files load unchanged. Operations describes a
   holiday clockwheel season as an example.
 
+- A light theme. **Theme** under Settings, Display and keys offers System (the default, which
+  follows the device's light or dark setting), Light and Dark. The choice is saved in this
+  browser, applied before the page is drawn so the other theme never flashes, and used by the
+  public `/status` page too. Every text, control edge, focus ring, meter, cue tick and Camelot
+  wheel edge meets WCAG 2.2 AA contrast in both themes, and Windows High Contrast still uses the
+  system colours.
+
+- The status message at the foot of the window has a **Dismiss** button that works by mouse,
+  touch and keyboard, and stays on screen while the pointer is over it or focus is on its button.
+  Escape still closes it. What screen readers hear is unchanged: the button is not part of the
+  message, and the message never takes focus.
+
 - `autodj worker --idle-exit MINUTES` keeps asking for new songs every half minute and stops only
   once the queue has stayed empty for that long, so a worker started alongside a Rescan does not
   exit before the scan has found the new music. The before- and after-commands still run once
@@ -264,6 +276,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   scrolled fully into view.
 - Voice pack exact-hour files may have a space, `_` or `-` before the `o`, as in `hrs05_o.mp3`,
   so packs named that way say "it's 5 o'clock" on the hour instead of skipping the top of the hour.
+
+- The Camelot wheel's wedge edges were faint (1.9:1). Every edge now reaches 3:1 against the
+  wedges beside it in both themes, the compatible keys' outline is heavier and drawn on top, and
+  the current key has the heaviest edge as well as its fill and its name in the middle. In
+  Windows High Contrast the wheel uses system colours. Cue ticks keep a high-contrast ring there.
 
 - Startup now loads the current library and shows its song and analysis counts, rather than
   the count from an older index. Doctor and list-indexes also use the current catalog. Existing

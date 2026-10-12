@@ -637,8 +637,10 @@ plain text, so it works without JavaScript; with JavaScript, `/modules/status-pa
 text. Only the now-playing line is a live region: screen readers hear it, politely, when the
 song changes, and nothing else on a poll. A **Pause updates** toggle stops the polling until
 pressed again. In stream mode the page also links to the stream and
-its playlist file. It sends a Content-Security-Policy that allows only its own script,
-stylesheet and feed requests.
+its playlist file. It sends a Content-Security-Policy that allows only its own scripts,
+stylesheet and feed requests. It uses the system's light or dark colours, or the Light or Dark
+theme chosen under Settings, Display and keys, Theme in a browser that opened the web page at the
+same address (`/modules/theme-init.js` reads that choice before the page is drawn).
 
 ### Settings
 
