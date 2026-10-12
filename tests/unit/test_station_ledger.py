@@ -262,3 +262,16 @@ def test_reselecting_reads_and_writes_the_place_under_one_lock(catalog, monkeypa
     assert waited
     # ... and the player's newer place in the same clockwheel is kept.
     assert library.get_setting("clock") == {"name": "Morning", "cursor": 5}
+
+
+def test_renaming_keeps_the_place_and_drops_the_old_names_later_places(catalog) -> None:
+    library, _songs = catalog
+    ledger = StationLedger(library)
+    library.set_setting("clock", {"name": "Morning", "cursor": 1})
+    ledger.remember_setting("clock", {"name": "Morning", "cursor": 4})
+    assert ledger.select_clock("Day", renamed_from="Morning") == {"name": "Day", "cursor": 4}
+    ledger.remember_setting("clock", {"name": "Morning", "cursor": 5})
+    ledger.flush()
+    assert library.get_setting("clock") == {"name": "Day", "cursor": 4}
+    # Without the old name, it is another clockwheel and starts at its top.
+    assert ledger.select_clock("Night") == {"name": "Night", "cursor": 0}

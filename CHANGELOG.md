@@ -322,9 +322,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A setting with two descriptions now hides both when it does not apply, not just the first.
 - A clockwheel you select stays selected. The player could save its place in the old
   clockwheel just after the selection, so the clockwheel page and the next restart went back
-  to the old one. The new clockwheel also starts from its own place: a song already lined up
-  when you switch no longer gives it the old clockwheel's place. Reselecting the active
-  clockwheel keeps the place it reached most recently.
+  to the old one. The new clockwheel also starts from its own place and restarts at its own
+  times: a song already lined up when you switch no longer gives it the old clockwheel's
+  place or restart time. Reselecting, renaming or editing the active clockwheel keeps the
+  place it reached most recently.
 
 ### Changed
 

@@ -311,6 +311,54 @@ def test_render_cursor_from_another_clockwheel_is_not_carried(
     assert picked.call_args.args[1] == cursor
 
 
+@pytest.mark.parametrize("pending_in, picks", [("Night", [4, 0]), ("Morning", [None])])
+def test_resync_time_from_another_clockwheel_is_not_used(station, monkeypatch, pending_in, picks):
+    # #133: Morning's next handoff must not restart Night.
+    from autodj.clockwheel import ClockPick
+
+    player, (a, b, *_), _points = station
+    player._cfg.playback.pick_mode = "clock"
+    now = 1_791_621_000.0
+    player._clock = {"name": "Night", "cursor": 0, "resync_minutes": [0]}
+    player._clock_next_boundary = now + 3600
+    player._set_render_cursor(
+        a, 0, "clock", clock_cursor=4, clock_boundary=now + 14, clock_name=pending_in
+    )
+    monkeypatch.setattr("autodj.player.time.time", lambda: now)
+    picked = MagicMock(side_effect=[ClockPick(b, None, 5, []), ClockPick(b, None, 1, [])])
+    monkeypatch.setattr(player, "_clock_pick", picked)
+    player._choose_station_next(a, player._pick_context(pending=a, peek_queue=True))
+    assert [call.args[1] for call in picked.call_args_list] == picks
+
+
+@pytest.mark.parametrize("path", ["reset", "worker"])
+@pytest.mark.parametrize("seeded_in, cursor", [("Night", 3), ("Morning", None)])
+def test_seed_place_from_another_clockwheel_is_not_carried(
+    station, monkeypatch, path, seeded_in, cursor
+):
+    # #133: a seed picked in Morning must not label its place as Night's.
+    from autodj.clockwheel import ClockPick
+
+    player, (a, b, *_), _points = station
+    player._cfg.playback.pick_mode = "clock"
+    player._clock = {"name": seeded_in, "cursor": 0}
+    monkeypatch.setattr(player, "_clock_pick", MagicMock(return_value=ClockPick(a, None, 3, [])))
+    assert player._random_start_entry() is a
+    assert (player._seed_clock_cursor, player._seed_clock_name) == (3, seeded_in)
+    player._clock = {"name": "Night", "cursor": 0}
+    player._cfg.playback.pick_mode = "random"
+    player._state.queue[:] = [b]
+    if path == "reset":
+        player.reset_render_ahead(a, 0, "seed")
+    else:
+        # The render worker seeds a playing bus with nothing to render.
+        player.bus = MagicMock(playing=True)
+        player._pending_entry = None
+        monkeypatch.setattr(player, "_random_start_entry", lambda: a)
+    result = player._next_rendered()
+    assert (result.clock_cursor, result.clock_name) == (cursor, "Night")
+
+
 def test_clock_resync_drops_unheard_pick_without_recording_it(station, monkeypatch):
     from autodj.clockwheel import ClockPick
 

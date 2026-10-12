@@ -109,15 +109,17 @@ class StationLedger:
                 return
             self._pending_settings[self.setting_key(name)] = value
 
-    def select_clock(self, name: str | None, cursor: int | None = None) -> dict:
+    def select_clock(
+        self, name: str | None, cursor: int | None = None, renamed_from: str | None = None
+    ) -> dict:
         """Make clockwheel *name* the station's active one and return the setting.
 
         Without a *cursor*, reselecting the active clockwheel keeps its
-        latest place, including one the player has not written yet; any
-        other clockwheel starts at its first step.  The read, the write and
-        the choice the player's later updates are checked against happen
-        under one lock, so neither a flush nor the player can put the old
-        clockwheel back (#133).
+        latest place, including one the player has not written yet; so does
+        renaming it, from *renamed_from*.  Any other clockwheel starts at its
+        first step.  The read, the write and the choice the player's later
+        updates are checked against happen under one lock, so neither a
+        flush nor the player can put the old clockwheel back (#133).
         """
         key = self.setting_key("clock")
         with self._settings_lock:
@@ -127,8 +129,9 @@ class StationLedger:
             setting = setting if isinstance(setting, dict) else {}
             if cursor is None:
                 kept = setting.get("cursor")
-                same = name is not None and setting.get("name") == name and type(kept) is int
-                cursor = kept if same else 0
+                was = setting.get("name")
+                same = was is not None and was in (name, renamed_from)
+                cursor = kept if same and type(kept) is int else 0
             value = {"name": name, "cursor": cursor}
             self.catalog.set_setting(key, value)
             with self._lock:

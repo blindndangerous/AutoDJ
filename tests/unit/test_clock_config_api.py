@@ -194,6 +194,26 @@ def test_select_is_not_undone_by_the_player_saving_before_it_reloads(tmp_path):
         assert catalog.get_setting("clock") == {"name": "Night", "cursor": 0}
 
 
+def test_renaming_the_active_clockwheel_keeps_a_place_not_yet_written(tmp_path):
+    with LibraryCatalog(tmp_path / "library.sqlite") as catalog:
+        music, _liners = add_sources(catalog, tmp_path)
+        bridge, routes = app_for(catalog, tmp_path)
+        steps = [{"type": "music", "source": music["id"]}]
+        call(routes, "POST", "/api/library/clock", body(steps=steps))
+        call(routes, "POST", "/api/library/clock/active", ClockNameBody(name="Morning"))
+        ledger = bridge.library.ledger
+        ledger.remember_setting("clock", {"name": "Morning", "cursor": 4, "resync_minutes": [0]})
+        call(
+            routes,
+            "POST",
+            "/api/library/clock/{name}/rename",
+            "Morning",
+            NewClockNameBody(name="Day"),
+        )
+        ledger.flush()
+        assert catalog.get_setting("clock") == {"name": "Day", "cursor": 4}
+
+
 def test_create_edit_duplicate_rename_delete(tmp_path):
     with LibraryCatalog(tmp_path / "library.sqlite") as catalog:
         music, liners = add_sources(catalog, tmp_path)

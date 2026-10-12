@@ -741,6 +741,8 @@ class Player:
     _pending_clock_name: str | None = None
     _pending_clock_boundary: float | None = None
     _clock: dict[str, Any] | None = None
+    # The clockwheel _seed_clock_cursor is a place in (#133).
+    _seed_clock_name: str | None = None
     _seed_clock_following: tuple[IndexEntry, IndexEntry, int] | None = None
     liner_scheduler: Any = None
     _skip_next_intro: bool = False
@@ -1034,6 +1036,9 @@ class Player:
                 return None
             if self._cfg.playback.pick_mode == "clock":
                 context = dmca or self._pick_context()
+                # Taken before the pick, so a clockwheel selected meanwhile
+                # leaves the seed's place out rather than mislabelled.
+                self._seed_clock_name = self._clock_name()
                 picked = self._clock_pick(context, None)
                 if picked.entry is None:
                     return self._empty_category_fallback(None, context)
@@ -1086,15 +1091,19 @@ class Player:
         """The name of the loaded clockwheel, or ``None`` without one."""
         return (self._clock or {}).get("name")
 
-    def _render_clock_cursor(self) -> int | None:
-        """The render cursor's clock place, or ``None`` when it is another clockwheel's.
+    def _forget_other_clock_place(self) -> None:
+        """Drop the render cursor's clock place and resync time if another clockwheel's.
 
-        A place picked before a different clockwheel was selected means
-        nothing in the new one, which starts from its own saved place (#133).
+        Both were worked out in the clockwheel selected before, so they mean
+        nothing in the one loaded now, which starts from its own saved place
+        and resync times (#133).  Runs on the render worker, which owns the
+        render cursor.
         """
-        if self._pending_clock_name != self._clock_name():
-            return None
-        return self._pending_clock_cursor
+        clock = self._clock_name()
+        if self._pending_clock_name != clock:
+            self._pending_clock_cursor = None
+            self._pending_clock_boundary = None
+            self._pending_clock_name = clock
 
     def configure_clock(self) -> None:
         """Load the active clockwheel without marking any selected music played.
@@ -1110,8 +1119,11 @@ class Player:
             return
         # The station's own key ("clock" for the default station).
         ledger = getattr(self, "_ledger", None)
-        key = ledger.setting_key("clock") if ledger is not None else "clock"
-        setting = self._library.catalog.get_setting(key, {})
+        # Through the ledger: a place it has not written yet is the latest.
+        if ledger is not None:
+            setting = ledger.get_setting("clock", {})
+        else:
+            setting = self._library.catalog.get_setting("clock", {})
         if not isinstance(setting, dict):
             setting = {}
         if "slots" in setting:
@@ -1616,7 +1628,8 @@ class Player:
         context: _PickContext,
     ) -> tuple[IndexEntry, str, tuple[tuple[IndexEntry, bool], ...], int | None, str]:
         liners, queued = self._station_queue(context.queue_reserved, self._pending_reserved_liners)
-        cursor = self._render_clock_cursor()
+        self._forget_other_clock_place()
+        cursor = self._pending_clock_cursor
         seed = self._seed_clock_following
         if seed is not None and seed[0].path != current.path:
             self._seed_clock_following = seed = None
@@ -1890,7 +1903,7 @@ class Player:
                             0,
                             "seed",
                             clock_cursor=getattr(self, "_seed_clock_cursor", None),
-                            clock_name=self._clock_name(),
+                            clock_name=self._seed_clock_name,
                         )
                 if current is None:
                     return None
@@ -1901,8 +1914,9 @@ class Player:
             glide = self._pending_glide
             reserved_liners = self._pending_reserved_liners
             # The clockwheel this render's places belong to.
-            clock_name = self._clock_name()
-            clock_cursor = self._render_clock_cursor()
+            self._forget_other_clock_place()
+            clock_name = self._pending_clock_name
+            clock_cursor = self._pending_clock_cursor
             clock_boundary = self._pending_clock_boundary or getattr(
                 self, "_clock_next_boundary", None
             )
@@ -2085,7 +2099,7 @@ class Player:
             self._skip_next_intro = False
             cursor = getattr(self, "_seed_clock_cursor", None)
             self._seed_clock_cursor = None
-            clock = self._clock_name()
+            clock = self._seed_clock_name
             self._render_ahead.reset(
                 lambda: self._set_render_cursor(
                     entry, offset, pick_mode, clock_cursor=cursor, clock_name=clock
