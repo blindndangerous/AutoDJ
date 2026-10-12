@@ -108,6 +108,15 @@ if sys.platform == "win32":
             raise ctypes.WinError(ctypes.get_last_error())
 
 
+else:  # pragma: no cover -- other systems never call these
+
+    def _create_job() -> int:
+        raise OSError("job objects are Windows only")
+
+    def _assign(job: int, proc: subprocess.Popen[bytes]) -> None:
+        raise OSError("job objects are Windows only")
+
+
 def bind_to_autodj(proc: subprocess.Popen[bytes]) -> bool:
     """Make *proc* die when AutoDJ's process ends, however it ends (Windows only).
 
