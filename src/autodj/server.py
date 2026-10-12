@@ -1495,8 +1495,9 @@ def create_app(
         from autodj.stereotool_presets import PresetInUseError, delete_preset
 
         cfg = bridge.player._cfg
-        # Every station's preset: the running ones' and the stopped ones' saved choice.
-        in_use = stations.stereo_tool_presets()
+        # Every station's preset: the running ones' and the stopped ones' saved
+        # choice, read off the event loop (web_state.json may be on a NAS).
+        in_use = await asyncio.to_thread(stations.stereo_tool_presets)
         try:
             await asyncio.to_thread(
                 delete_preset,
