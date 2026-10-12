@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -321,7 +322,7 @@ class Rig:
             clock=lambda: self.now,
         )
         self.schedule.register(Action("noop", "Do nothing", self.handle))
-        self.schedule.register(Action("liner", "Air a liner", self.handle, interrupt="before"))
+        self.schedule.register(Action("liner", "Air a liner", self.prepare, interrupt="before"))
 
     async def publish(self, message: dict[str, Any]) -> None:
         self.messages.append(message)
@@ -330,6 +331,12 @@ class Rig:
         self.calls.append("action")
         if self.fail is not None:
             raise self.fail
+
+    async def prepare(self, _params: dict[str, str]) -> Callable[[], None]:
+        self.calls.append("prepare")
+        if self.fail is not None:
+            raise self.fail
+        return lambda: self.calls.append("action")
 
     def add(self, **changes: Any) -> ScheduledEvent:
         return asyncio.run(self.schedule.add(spec(**changes)))
@@ -491,7 +498,7 @@ def test_hard_timing_fades_through_the_skip_path(tmp_path: Path) -> None:
     rig.calls.clear()
     liner = rig.add(action="liner", time="12:05", timing="hard")
     asyncio.run(rig.schedule.run(liner))
-    assert rig.calls == ["skip", "action"]
+    assert rig.calls == ["prepare", "skip", "action"]
 
 
 def test_a_failing_action_is_recorded_and_the_scheduler_continues(tmp_path: Path) -> None:
@@ -571,3 +578,15 @@ def test_upcoming_merges_events_in_time_order(tmp_path: Path) -> None:
         ("14:00", "Hourly"),
     ]
     assert rows[0][0] - rig.now == timedelta(minutes=30)
+
+
+def test_failed_audio_preparation_does_not_interrupt(tmp_path: Path) -> None:
+    rig = Rig(tmp_path / "schedule.json", playing=True)
+    item = rig.add(action="liner", timing="hard")
+    rig.fail = RuntimeError("The selected liner is gone")
+
+    result = asyncio.run(rig.schedule.run(item))
+
+    assert result.result == "error"
+    assert result.message == "The selected liner is gone"
+    assert rig.calls == ["prepare"]

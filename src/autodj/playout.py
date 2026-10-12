@@ -17,6 +17,9 @@ class Handoff:
 
     ``segue_s``, ``incoming_s``, ``liner_s``, and ``fade_start_s`` use the
     outgoing file's time axis. ``next_overlay[0]`` aligns with ``incoming_s``.
+    *audio* and *next_overlay* are consecutive views of *full_audio*, so a
+    caller that adds the incoming track into *next_overlay* in place has
+    the whole render without copying the track again.
     """
 
     audio: np.ndarray
@@ -27,6 +30,7 @@ class Handoff:
     incoming_s: float
     liner_s: float | None
     fade_start_s: float
+    full_audio: np.ndarray
 
 
 def _point(points: dict[str, Any], name: str) -> float | None:
@@ -194,36 +198,30 @@ def render_handoff(
             )
         return result
 
-    current = outgoing_segment(chunk_start, incoming_frame)
-    if liner is not None and liner_start is not None:
-        first = max(chunk_start, liner_start)
-        last = min(incoming_frame, liner_start + liner_frames)
-        if last > first:
-            current[first - chunk_start : last - chunk_start] += liner[
-                first - liner_start : last - liner_start
-            ]
-
     overlay_end = max(
         incoming_frame,
         fade_end,
         (liner_start + liner_frames) if liner_start is not None else incoming_frame,
     )
-    tail = outgoing_segment(incoming_frame, overlay_end)
+    # One buffer for the chunk and the overlay, split at the incoming frame.
+    full = outgoing_segment(chunk_start, overlay_end)
     if liner is not None and liner_start is not None:
-        first = max(incoming_frame, liner_start)
+        first = max(chunk_start, liner_start)
         last = min(overlay_end, liner_start + liner_frames)
         if last > first:
-            tail[first - incoming_frame : last - incoming_frame] += liner[
+            full[first - chunk_start : last - chunk_start] += liner[
                 first - liner_start : last - liner_start
             ]
+    split = max(0, incoming_frame - chunk_start)
 
     return Handoff(
-        audio=current,
-        next_overlay=tail,
+        audio=full[:split],
+        next_overlay=full[split:],
         next_start_offset=next_start_offset,
         start_offset=chunk_start,
         segue_s=segue_frame / SAMPLE_RATE,
         incoming_s=incoming_frame / SAMPLE_RATE,
         liner_s=None if liner_start is None else liner_start / SAMPLE_RATE,
         fade_start_s=fade_start_s,
+        full_audio=full,
     )

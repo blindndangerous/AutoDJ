@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from collections.abc import Callable
@@ -11,7 +12,8 @@ from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 
-from autodj.eq import apply_eq, make_eq_filters, make_eq_state, reset_eq_state
+from autodj.eq import apply_eq, make_eq_filters, make_eq_state, ramp_eq, reset_eq_state
+from autodj.kernels import duck_and_mix_in_place, nan_to_num_in_place
 from autodj.stereo import SAMPLE_RATE
 
 if TYPE_CHECKING:
@@ -24,6 +26,11 @@ _SKIP_FADE_FRAMES = int(0.15 * SAMPLE_RATE)
 _DUCK_RAMP_FRAMES = int(0.04 * SAMPLE_RATE)
 # Frames over which a skip effect that is installed late takes over.
 _TAIL_BLEND_FRAMES = int(0.01 * SAMPLE_RATE)
+# Blocks :meth:`MixBus.run` may render back to back to make up for a late
+# block.  Kept well under the master processors' 16-18 block output cushion
+# (see :mod:`autodj.mastering`), so a catch-up burst never drains it.
+CATCH_UP_BLOCKS = 8
+_NO_LINER = np.zeros((0, 2), np.float32)
 
 
 @dataclass(frozen=True)
@@ -515,7 +522,28 @@ class MixBus:
             pending.append(lambda: self._events.on_track_start(track))
 
     def _music(self, frames: int, pending: list[Callable[[], None]]) -> np.ndarray:
-        """Fill *frames* of music from the current (and subsequent) tracks."""
+        """Fill *frames* of music from the current (and subsequent) tracks.
+
+        A block that lies wholly inside the playing track, with no skip
+        fade or effect, is returned as a read-only view of the track's
+        audio: copying it would give up the GIL (NumPy releases it for
+        copies this size), which costs a whole switch interval while
+        another thread is busy.  Callers must not write to the result.
+        """
+        current = self._current
+        if (
+            self._playing
+            and current is not None
+            and self._tail is None
+            and not self._skip_fade
+            and self._pos + frames <= len(current.audio)
+        ):
+            chunk = current.audio[self._pos : self._pos + frames]
+            self._pos += frames
+            self._check_cue(current, self._pos)
+            if self._pos >= len(current.audio):
+                self._current = None
+            return chunk
         out = np.zeros((frames, 2), np.float32)
         filled = 0
         while filled < frames and self._playing:
@@ -583,24 +611,40 @@ class MixBus:
         self._duck_step = (target - self._duck_gain) / _DUCK_RAMP_FRAMES
         self._duck_remaining = _DUCK_RAMP_FRAMES
 
-    def _duck_ramp(self, frames: int) -> np.ndarray:
-        """Return the next ``(frames,)`` samples of the duck-gain ramp.
+    def _duck_and_mix(self, block: np.ndarray) -> None:
+        """Apply the duck gain and add the liner to *block*, in place (lock held).
 
-        Moves linearly at the fixed rate :meth:`_start_duck_ramp` set, then
-        holds at the target once the ramp is spent — never stepping
-        instantly and clicking. Assumes *frames* never exceeds the ramp
-        frames remaining while the ramp is still in progress, which holds
-        here because ``_DUCK_RAMP_FRAMES`` is a whole multiple of
-        ``MixBus.BLOCK`` and every call passes exactly one block.
+        The duck moves linearly at the fixed rate :meth:`_start_duck_ramp`
+        set, then holds at the target once the ramp is spent — never
+        stepping instantly and clicking.  Done in one compiled pass (see
+        :mod:`autodj.kernels`); at full level with no liner it is skipped.
+        Assumes a block never runs past the ramp frames remaining while the
+        ramp is in progress, which holds because ``_DUCK_RAMP_FRAMES`` is a
+        whole multiple of ``MixBus.BLOCK``.
         """
-        if self._duck_remaining <= 0:
-            return np.full(frames, self._duck_target, np.float32)
-        steps = self._duck_gain + self._duck_step * np.arange(1, frames + 1, dtype=np.float64)
-        self._duck_gain = float(steps[-1])
-        self._duck_remaining -= frames
-        if self._duck_remaining <= 0:
-            self._duck_gain = self._duck_target  # ramp complete: eliminate float drift
-        return steps.astype(np.float32)
+        ramp_frames = max(0, min(self._duck_remaining, len(block)))
+        if not ramp_frames and self._duck_target == 1.0 and self._liner is None:
+            return
+        liner = self._liner if self._liner is not None else _NO_LINER
+        duck_and_mix_in_place(
+            block,
+            self._duck_gain,
+            self._duck_step,
+            ramp_frames,
+            self._duck_target,
+            liner,
+            self._liner_pos,
+        )
+        if ramp_frames:
+            self._duck_gain = self._duck_gain + self._duck_step * ramp_frames
+            self._duck_remaining -= ramp_frames
+            if self._duck_remaining <= 0:
+                self._duck_gain = self._duck_target  # ramp complete: eliminate float drift
+        if self._liner is not None:
+            self._liner_pos += self.BLOCK
+            if self._liner_pos >= len(self._liner):
+                self._liner = None
+                self._start_duck_ramp(1.0)
 
     def render_block(self, master_enabled: bool | None = None) -> np.ndarray:
         """Return the next ``(882, 2)`` block without pacing.
@@ -616,23 +660,17 @@ class MixBus:
                 return np.zeros((self.BLOCK, 2), np.float32)
             block = self._music(self.BLOCK, pending)
             gains = self._eq_gains()
-            low, mid, high = gains
+            # Keep filter memory current even at unity gain.  Both EQ calls
+            # return a new array, so the music view is never written to.
             if gains != self._eq_previous_gains:
                 # Ramp slider changes over this 20 ms block to avoid clicks.
-                ramp = np.linspace(self._eq_previous_gains, gains, self.BLOCK + 1)[1:]
-                low, mid, high = ramp.T[:, :, None]
-            # Keep filter memory current even at unity gain.
-            block = apply_eq(block, self._eq_filters, low, mid, high, state=self._eq_state)
+                block = ramp_eq(
+                    block, self._eq_filters, self._eq_previous_gains, gains, self._eq_state
+                )
+            else:
+                block = apply_eq(block, self._eq_filters, *gains, state=self._eq_state)
             self._eq_previous_gains = gains
-            duck = self._duck_ramp(len(block))
-            block = block * duck[:, None]
-            if self._liner is not None:
-                piece = self._liner[self._liner_pos : self._liner_pos + self.BLOCK]
-                block[: len(piece)] += piece
-                self._liner_pos += self.BLOCK
-                if self._liner_pos >= len(self._liner):
-                    self._liner = None
-                    self._start_duck_ramp(1.0)
+            self._duck_and_mix(block)
             if not master_enabled:
                 np.clip(block, -1.0, 1.0, out=block)
             if self._current is not None:
@@ -648,6 +686,10 @@ class MixBus:
 
         Calls :meth:`render_block` once per 20 ms period, paced by the
         bus's clock, and writes the result to every registered output.
+        A block that comes out late (another thread held the GIL, say) is
+        made up by rendering the next ones back to back, up to
+        :data:`CATCH_UP_BLOCKS` of them; a longer stall drops the rest of
+        the backlog, so a burst never drains a master processor's cushion.
         If ``render_block`` itself raises — from a callback,
         ``on_need_track``, or the EQ path — the failure is logged and a
         silent block is substituted so pacing continues. An output whose
@@ -676,7 +718,7 @@ class MixBus:
                     block = processed
                 except Exception:
                     logger.exception("Mix bus master failed; emitting bounded dry audio")
-                block = np.nan_to_num(block, copy=False)
+                nan_to_num_in_place(block)
                 np.clip(block, -1.0, 1.0, out=block)
             with self._lock:
                 outputs = list(self._outputs)
@@ -690,6 +732,8 @@ class MixBus:
             delay = next_due - self._clock.now()
             if delay > 0:
                 self._clock.sleep(delay)
-            elif delay < -period:
-                # A catch-up burst can drain a healthy processor's output buffer.
-                next_due = self._clock.now()
+            elif delay < -CATCH_UP_BLOCKS * period:
+                # Make up at most CATCH_UP_BLOCKS: a longer burst could drain
+                # a healthy processor's output cushion.  Whole periods are
+                # dropped, so the schedule keeps its phase.
+                next_due += (math.ceil(-delay / period) - CATCH_UP_BLOCKS) * period
