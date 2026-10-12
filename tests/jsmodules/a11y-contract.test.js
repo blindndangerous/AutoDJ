@@ -3,12 +3,16 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { THEMES, cssForTheme, themeTokens } from "./theme-css.js";
+
 const staticPath = (...parts) => join(
   process.cwd(), "src", "autodj", "static", ...parts,
 );
 const cssSource = readFileSync(staticPath("app.css"), "utf8");
 const htmlSource = readFileSync(staticPath("index.html"), "utf8");
 const appSource = readFileSync(staticPath("app.js"), "utf8");
+const tokensByTheme = new Map(THEMES.map((theme) => [theme, themeTokens(cssSource, theme)]));
+const token = (theme, name) => tokensByTheme.get(theme).get(name);
 
 function stripCssComments(source) {
   let result = "";
@@ -933,23 +937,34 @@ function onlyMatching(elements, only) {
   return only ? elements.filter((element) => element.matches(only)) : elements;
 }
 
-function boundariesMeetContract({ extraCss = "", only = null } = {}) {
-  installDocument({ extraCss });
+// app.css resolved once per theme (light-dark() picked), for the contracts
+// that read colours through happy-dom.
+const cssByTheme = new Map(THEMES.map((theme) => [theme, cssForTheme(cssSource, theme)]));
+
+function boundariesMeetContract({ extraCss = "", only = null, theme = "dark" } = {}) {
+  installDocument({ css: cssByTheme.get(theme), extraCss: cssForTheme(extraCss, theme) });
+  const expected = token(theme, "--control-border");
   const controls = onlyMatching(contractControls(), only);
   if (controls.length === 0) throw new Error(`No control matches ${only}`);
   return controls.every((control) => {
     const computed = window.getComputedStyle(control);
     return Number.parseFloat(computed.borderTopWidth) >= 1
       && computed.borderTopStyle === "solid"
-      && indicatorColorMeetsContract(control, computed.borderTopColor, "#8aa4d6");
+      && indicatorColorMeetsContract(control, computed.borderTopColor, expected);
   });
 }
 
 const focusVisibleAsClass = (css) => css.replaceAll(":focus-visible", ".a11y-focus-visible");
-const focusCssSource = focusVisibleAsClass(cssSource);
+const focusCssByTheme = new Map(
+  THEMES.map((theme) => [theme, focusVisibleAsClass(cssByTheme.get(theme))]),
+);
 
-function focusOutlinesMeetContract({ extraCss = "", only = null } = {}) {
-  installDocument({ css: focusCssSource, extraCss: focusVisibleAsClass(extraCss) });
+function focusOutlinesMeetContract({ extraCss = "", only = null, theme = "dark" } = {}) {
+  installDocument({
+    css: focusCssByTheme.get(theme),
+    extraCss: focusVisibleAsClass(cssForTheme(extraCss, theme)),
+  });
+  const accent = token(theme, "--accent");
   const controls = focusContractControls().filter((control) => !control.disabled);
   const expectedOutlines = new Map([
     ["details.card > summary", 3],
@@ -964,7 +979,7 @@ function focusOutlinesMeetContract({ extraCss = "", only = null } = {}) {
     const computed = window.getComputedStyle(control);
     return Number.parseFloat(computed.outlineWidth) === 2
       && computed.outlineStyle === "solid"
-      && indicatorColorMeetsContract(control, computed.outlineColor, "#7eb3e8");
+      && indicatorColorMeetsContract(control, computed.outlineColor, accent);
   });
   const specialFocusPass = [...expectedOutlines].every(([selector, width]) => {
     const element = document.querySelector(selector);
@@ -972,7 +987,7 @@ function focusOutlinesMeetContract({ extraCss = "", only = null } = {}) {
     const computed = window.getComputedStyle(element);
     return Number.parseFloat(computed.outlineWidth) === width
       && computed.outlineStyle === "solid"
-      && indicatorColorMeetsContract(element, computed.outlineColor, "#7eb3e8");
+      && indicatorColorMeetsContract(element, computed.outlineColor, accent);
   });
   return controlsPass && specialFocusPass;
 }
@@ -1022,8 +1037,22 @@ describe("static accessibility contracts", () => {
     const dialog = document.querySelector("#track-info-dialog");
     expect(dialog.tagName).toBe("DIALOG");
     expect(dialog.getAttribute("aria-labelledby")).toBe("track-info-dialog-title");
-    expect([...dialog.querySelectorAll("button")].map(button => button.textContent)).toEqual(["Save", "Discard"]);
+    expect([...dialog.querySelectorAll("button")].map(button => button.textContent)).toEqual(["Save", "Discard", "Keep editing"]);
+    expect([...dialog.querySelectorAll("button")].every((button) => button.getAttribute("type") === "button")).toBe(true);
     expect(dialog.querySelector("#track-info-error").getAttribute("role")).toBe("status");
+    // The explanation is read when the dialog opens, after its name.
+    const description = document.getElementById(dialog.getAttribute("aria-describedby"));
+    expect(description.tagName).toBe("P");
+    expect(description.textContent).toBe("Save your changes before choosing another track, or discard them to switch.");
+    expect(dialog.contains(description)).toBe(true);
+    // Keep editing takes the shared button size (44 px, above the 24 px floor)
+    // and no colour of its own.
+    const css = stripCssComments(cssSource);
+    expect(css).not.toMatch(/#track-info-keep/);
+    expect(css.match(/(^|[\s,}])button\s*\{[^{}]*min-height:\s*44px/)).not.toBeNull();
+    // Three buttons wrap rather than run off a narrow window.
+    expect(lastValue("#track-info-dialog .dialog-actions", "flex-wrap")).toBe("wrap");
+    expect(lastValue("#track-info-dialog", "max-width")).toBe("min(32rem, calc(100vw - 2rem))");
   });
   it("keeps connected status text visible without relying on color alone", () => {
     const background = lastValue("#conn-status.connected", "background");
@@ -1239,7 +1268,7 @@ describe("static accessibility contracts", () => {
     expect(normalizedColor("rgba(170, 187, 204, 1)")).toBe("#aabbcc");
     expect(normalizedColor("rgba(255, 255, 255, 0.5)", "#000"))
       .toBe("#808080");
-    const expectedBoundary = "1px solid #8aa4d6";
+    const expectedBoundary = "1px solid var(--control-border)";
     for (const selector of [
       "button",
       "#progress-track",
@@ -1253,23 +1282,29 @@ describe("static accessibility contracts", () => {
     ]) {
       expect(lastValue(selector, "border"), selector).toBe(expectedBoundary);
     }
-    expect(contrast("#8aa4d6", "#16213e")).toBeGreaterThanOrEqual(3);
+    for (const theme of THEMES) {
+      for (const surface of ["--bg-card", "--bg"]) {
+        expect(contrast(token(theme, "--control-border"), token(theme, surface)),
+          `${theme} boundary on ${surface}`).toBeGreaterThanOrEqual(3);
+        expect(contrast(token(theme, "--accent"), token(theme, surface)),
+          `${theme} focus ring on ${surface}`).toBeGreaterThanOrEqual(3);
+      }
+    }
     expect(lastValue(":focus-visible", "outline")).toBe(
       "2px solid var(--accent)",
     );
-    expect(contrast("#7eb3e8", "#16213e")).toBeGreaterThanOrEqual(3);
   });
 
-  it("draws a solid high-contrast boundary on every control", () => {
-    expect(boundariesMeetContract()).toBe(true);
+  it.each(THEMES)("draws a solid high-contrast boundary on every control, %s theme", (theme) => {
+    expect(boundariesMeetContract({ theme })).toBe(true);
   });
 
   it("leaves checkboxes and radio buttons native", () => {
     expect(nativeChoiceControlsRemainNative()).toBe(true);
   });
 
-  it("draws a high-contrast focus outline on every control", () => {
-    expect(focusOutlinesMeetContract()).toBe(true);
+  it.each(THEMES)("draws a high-contrast focus outline on every control, %s theme", (theme) => {
+    expect(focusOutlinesMeetContract({ theme })).toBe(true);
   });
 
   it.each([
@@ -1288,14 +1323,26 @@ describe("static accessibility contracts", () => {
     expect(nativeChoiceControlsRemainNative(rule)).toBe(expected);
   });
 
-  it.each([
-    ["opaque border color", "#btn-skip { border-color: #8aa4d6ff; }", true],
-    ["transparent border color", "#btn-skip { border-color: rgba(138, 164, 214, 0); }", false],
-  ])("checks %s", (_label, rule, expected) => {
-    expect(boundariesMeetContract({ extraCss: rule, only: "#btn-skip" })).toBe(expected);
+  // Each theme's own colour, written with an alpha channel: opaque passes,
+  // fully transparent fails.  The dark theme's colour in the light theme
+  // fails as well: it is not the light theme's colour, and it is under 3:1
+  // on the light card.
+  const themeCases = (name, selector, property) => THEMES.flatMap((theme) => {
+    const hex = token(theme, name);
+    return [
+      [theme, "opaque", `${selector} { ${property}: ${hex}ff; }`, true],
+      [theme, "transparent", `${selector} { ${property}: ${hex}00; }`, false],
+    ];
   });
 
   it.each([
+    ...themeCases("--control-border", "#btn-skip", "border-color"),
+    ["light", "dark-theme", "#btn-skip { border-color: #8aa4d6; }", false],
+  ])("checks the %s theme's %s border colour", (theme, _label, rule, expected) => {
+    expect(boundariesMeetContract({ extraCss: rule, only: "#btn-skip", theme })).toBe(expected);
+  });
+
+  it.each(THEMES.flatMap((theme) => [
     ["button", "#btn-skip"],
     ["range", "#eq-mid"],
     ["number", "#bpm-hi"],
@@ -1303,19 +1350,19 @@ describe("static accessibility contracts", () => {
     ["select", "#transition-select"],
     ["textarea", "#a11y-textarea-fixture"],
     ["tab", "#view-nav #tab-queue"],
-  ])("rejects missing boundary on %s", (_label, selector) => {
-    expect(boundariesMeetContract({ extraCss: `${selector} { border: none; }`, only: selector }))
+  ].map((row) => [theme, ...row])))("rejects, in the %s theme, missing boundary on %s", (theme, _label, selector) => {
+    expect(boundariesMeetContract({ extraCss: `${selector} { border: none; }`, only: selector, theme }))
       .toBe(false);
   });
 
   it.each([
-    ["opaque outline color", "#btn-skip:focus-visible { outline-color: #7eb3e8ff; }", true],
-    ["transparent outline color", "#btn-skip:focus-visible { outline-color: rgba(126, 179, 232, 0); }", false],
-  ])("checks %s", (_label, rule, expected) => {
-    expect(focusOutlinesMeetContract({ extraCss: rule, only: "#btn-skip" })).toBe(expected);
+    ...themeCases("--accent", "#btn-skip:focus-visible", "outline-color"),
+    ["light", "dark-theme", "#btn-skip:focus-visible { outline-color: #7eb3e8; }", false],
+  ])("checks the %s theme's %s outline colour", (theme, _label, rule, expected) => {
+    expect(focusOutlinesMeetContract({ extraCss: rule, only: "#btn-skip", theme })).toBe(expected);
   });
 
-  it.each([
+  it.each(THEMES.flatMap((theme) => [
     ["button", "#btn-skip"],
     ["tab", "#tab-queue"],
     ["auth token", "#auth-token"],
@@ -1324,10 +1371,11 @@ describe("static accessibility contracts", () => {
     ["textarea", "#a11y-textarea-fixture"],
     ["equalizer", "#eq-mid"],
     ["phrase alignment", "#dj-phrase-align"],
-  ])("rejects missing focus outline on %s", (_label, selector) => {
+  ].map((row) => [theme, ...row])))("rejects, in the %s theme, missing focus outline on %s", (theme, _label, selector) => {
     expect(focusOutlinesMeetContract({
       extraCss: `${selector}:focus-visible { outline: none; }`,
       only: selector,
+      theme,
     })).toBe(false);
   });
 
@@ -1541,10 +1589,132 @@ describe("static accessibility contracts", () => {
       "#cue-legend:not([hidden]) ~ #cue-details.visually-hidden", "clip",
     )).toBe("auto");
     // The phone layout's slider track meets 3:1 against the card.
-    expect(lastValue(":root", "--range-track")).toBe("#5a7bb0");
-    expect(contrast("#5a7bb0", "#16213e")).toBeGreaterThanOrEqual(3);
+    for (const theme of THEMES) {
+      expect(contrast(token(theme, "--range-track"), token(theme, "--bg-card")), theme)
+        .toBeGreaterThanOrEqual(3);
+    }
     // Compatible Camelot wedges carry an accent edge, not just a 1.8:1 fill.
     expect(lastValue("#camelot-wheel .sector.compat", "stroke")).toBe("var(--accent)");
+  });
+
+  // WCAG 2.2 AA in the light and the dark theme alike: text 4.5:1,
+  // boundaries, focus rings, meters, ticks and wheel edges 3:1.  A pair is
+  // [foreground, background, minimum]; "a over b" lays a translucent token
+  // on an opaque one, as the page does.
+  it.each(THEMES)("meets WCAG 2.2 AA contrast with every %s theme token", (theme) => {
+    const layered = (spec) => colorToHex(spec.split(" over ").reverse()
+      .map((part) => parseCssColor(part.startsWith("--") ? token(theme, part) : part))
+      .reduce((below, above) => (below ? compositeColor(above, below) : above), null));
+    const text = [
+      ["--text", "--bg"], ["--text", "--bg-card"],
+      ["--text-dim", "--bg"], ["--text-dim", "--bg-card"],
+      ["--text-desc", "--bg"], ["--text-desc", "--bg-card"],
+      ["--accent", "--bg-card"], ["--accent", "--bg"],
+      ["--on-accent", "--accent"],
+      ["--btn-text", "--btn-bg"], ["--btn-text", "--btn-hover"],
+      ["--tab-hover-text", "--tab-hover-bg"],
+      ["--error-text", "--bg-card"], ["--error-text", "--bg"],
+      ["--log-text", "--log-bg"], ["--text-dim", "--log-bg"],
+      ["--text", "--toast-error-bg"],
+      ["--stretch", "--tint-3 over --bg-card"],
+      ["--text-dim", "--tint-3 over --bg-card"],
+      ["--accent", "--tint-3 over --bg-card"],
+      ["--text-dim", "--border"],
+      ["--text", "--tint-2 over --bg-card"],
+      ["--text-dim", "--tint over --bg-card"],
+      ["--text", "--notice-bg over --bg-card"],
+      ["--text", "--wheel-fill over --bg-card"],
+      ["--text", "--wheel-compat over --bg-card"],
+      ["#ffffff", "--danger"],
+    ];
+    const nonText = [
+      ["--control-border", "--bg-card"], ["--control-border", "--bg"],
+      ["--accent", "--bg-card"], ["--accent", "--bg"],
+      ["--badge-border", "--bg-card"], ["--range-track", "--bg-card"],
+      ["--danger-edge", "--bg-card"], ["--danger-edge", "--toast-error-bg"],
+      ["--accent", "--border"],
+      ["--wheel-edge", "--wheel-fill over --bg-card"],
+      ["--accent", "--wheel-compat over --bg-card"],
+      ["--accent", "--wheel-fill over --bg-card"],
+      ["--text", "--wheel-compat over --bg-card"],
+      ...["--cue-drop", "--cue-breakdown", "--cue-downbeat", "--cue-outro",
+        "--cue-user"].map((cue) => [cue, "--bg-card"]),
+      ["--cue-phrase over --bg-card", "--bg-card"],
+    ];
+    for (const [pairs, minimum] of [[text, 4.5], [nonText, 3]]) {
+      for (const [foreground, background] of pairs) {
+        const measured = contrast(layered(foreground), layered(background));
+        expect(measured, `${theme}: ${foreground} on ${background}`)
+          .toBeGreaterThanOrEqual(minimum);
+      }
+    }
+  });
+
+  it("offers System, Light and Dark, System first and checked", () => {
+    installDocument();
+    const group = document.querySelector("#spanel-display fieldset#theme-choice");
+    expect(group).not.toBeNull();
+    expect(group.querySelector("legend").textContent.trim()).toBe("Theme");
+    const radios = [...group.querySelectorAll('input[type="radio"][name="theme"]')];
+    expect(radios.map((radio) => radio.value)).toEqual(["system", "light", "dark"]);
+    expect(radios.map((radio) => document.querySelector(`label[for="${radio.id}"]`)
+      .textContent.trim())).toEqual(["System", "Light", "Dark"]);
+    expect(radios.filter((radio) => radio.hasAttribute("checked"))
+      .map((radio) => radio.value)).toEqual(["system"]);
+    const description = document.getElementById(group.getAttribute("aria-describedby"));
+    expect(description.textContent).toMatch(/System follows/);
+    // The stored theme is applied by a blocking classic script ahead of
+    // the stylesheet, so nothing is painted in the other theme first.
+    const head = htmlSource.slice(0, htmlSource.indexOf("</head>"));
+    const script = head.indexOf('<script src="/modules/theme-init.js"></script>');
+    expect(script).toBeGreaterThan(-1);
+    expect(script).toBeLessThan(head.indexOf('href="/app.css"'));
+    expect(htmlSource).not.toMatch(/<html[^>]*data-theme/);
+    // System is the root's "light dark"; a choice pins one scheme.
+    expect(lastValue(":root", "color-scheme")).toBe("light dark");
+    expect(lastValue(':root[data-theme="light"]', "color-scheme")).toBe("light");
+    expect(lastValue(':root[data-theme="dark"]', "color-scheme")).toBe("dark");
+  });
+
+  it("gives the status message a Dismiss button that is never announced with it", () => {
+    installDocument();
+    const toast = document.querySelector("#status-toast");
+    const box = document.querySelector("#status-toast-box");
+    const dismiss = document.querySelector("#status-toast-dismiss");
+    expect(toast.parentElement).toBe(box);
+    expect(dismiss.parentElement).toBe(box);
+    expect(toast.contains(dismiss)).toBe(false);
+    expect(dismiss.getAttribute("type")).toBe("button");
+    expect(dismiss.textContent.replace(/\s+/g, " ").trim()).toBe("Dismiss message");
+    expect(dismiss.querySelector(".visually-hidden").textContent.trim()).toBe("message");
+    expect(dismiss.hasAttribute("aria-label")).toBe(false);
+    // Reachable, and outside every live region and aria-hidden subtree.
+    for (let node = dismiss; node; node = node.parentElement) {
+      expect(node.getAttribute("aria-hidden"), node.id).not.toBe("true");
+      expect(node.hasAttribute("aria-live"), node.id).toBe(false);
+      expect(["status", "alert", "log"]).not.toContain(node.getAttribute("role"));
+    }
+    expect(box.hasAttribute("hidden")).toBe(true);
+    // 24 px minimum target (WCAG 2.5.8).
+    expect(lastValue("#status-toast-dismiss", "min-width")).toBe("2rem");
+    expect(lastValue("#status-toast-dismiss", "min-height")).toBe("2rem");
+    // Only the message and the button take the pointer (hover holds the
+    // toast, WCAG 1.4.13); the frame round them passes clicks through to
+    // the page, so it never blocks the controls underneath.
+    expect(lastValue("#status-toast-box", "pointer-events")).toBe("none");
+    expect(lastValue("#status-toast", "pointer-events")).toBe("auto");
+    expect(lastValue("#status-toast-dismiss", "pointer-events")).toBe("auto");
+  });
+
+  it("draws the Camelot wheel in system colours under forced colours", () => {
+    const forced = "(forced-colors: active)";
+    expect(lastValue("#camelot-wheel", "forced-color-adjust", forced)).toBe("none");
+    expect(lastValue("#camelot-wheel .sector", "stroke", forced)).toBe("CanvasText");
+    expect(lastValue("#camelot-wheel .sector.compat", "stroke", forced)).toBe("Highlight");
+    expect(lastValue("#camelot-wheel .sector.active", "fill", forced)).toBe("Highlight");
+    expect(lastValue("#camelot-wheel .label.active", "fill", forced)).toBe("HighlightText");
+    expect(lastValue("#cue-strip .cue-mark", "box-shadow", forced))
+      .toBe("0 0 0 1px CanvasText");
   });
 
   it("keeps targets, fields and text inside the column", () => {
@@ -2067,6 +2237,157 @@ describe("static accessibility contracts", () => {
       .find((block) => block.includes('input[type="text"]') && block.includes("padding"));
     expect(rule).toContain('input[type="date"]');
     expect(rule).toContain('input[type="time"]');
+  });
+
+  it("gives the rotation test labelled native controls, one polite status and list results", () => {
+    installDocument({ html: htmlSource });
+    const group = document.querySelector("#rotation-test");
+    expect(group.tagName).toBe("FIELDSET");
+    expect(group.closest("#spanel-picking")).not.toBeNull();
+    expect(group.querySelector(":scope > legend").textContent.trim()).toBe("Test rotation");
+    const help = document.getElementById(group.getAttribute("aria-describedby"));
+    expect(help.textContent).toContain("Nothing on air changes.");
+    for (const [id, label, type] of [
+      ["rotation-span", "Simulate", "SELECT"],
+      ["rotation-start", "Start", "datetime-local"],
+      ["rotation-seed", "Seed", "text"],
+    ]) {
+      const control = document.getElementById(id);
+      expect(control.tagName === "SELECT" ? "SELECT" : control.getAttribute("type")).toBe(type);
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+      expect(control.hasAttribute("required")).toBe(false);
+    }
+    // The spans are said in words, not abbreviations.
+    expect([...document.querySelectorAll("#rotation-span option")].map((option) => option.textContent))
+      .toEqual(["24 hours", "3 days", "7 days", "14 days", "30 days", "100 songs", "1,000 songs"]);
+    for (const id of ["rotation-start", "rotation-seed"]) {
+      const desc = document.getElementById(document.getElementById(id).getAttribute("aria-describedby"));
+      expect(desc.textContent).toMatch(/^\s*Optional\./);
+    }
+    for (const [id, name] of [["rotation-run", "Test rotation"], ["rotation-cancel", "Cancel test"]]) {
+      const button = document.getElementById(id);
+      expect(button.getAttribute("type")).toBe("button");
+      expect(button.textContent.trim()).toBe(name);
+      expect(button.disabled).toBe(false);
+    }
+    // One polite status for the start and the end; progress is a labelled
+    // native bar and plain text, never live.
+    const live = [...group.querySelectorAll("[aria-live], [role='status'], [role='alert']")];
+    expect(live.map((node) => node.id)).toEqual(["rotation-status"]);
+    expect(live[0].getAttribute("aria-live")).toBe("polite");
+    const bar = document.getElementById("rotation-progress");
+    expect(bar.tagName).toBe("PROGRESS");
+    expect(document.querySelector('label[for="rotation-progress"]').textContent.trim()).toBe("Progress");
+    // Results: a section named by its heading, hidden until a run ends, no table.
+    const results = document.getElementById("rotation-results");
+    expect(results.tagName).toBe("SECTION");
+    expect(results.hidden).toBe(true);
+    expect(document.getElementById(results.getAttribute("aria-labelledby")).tagName).toBe("H4");
+    expect(results.querySelector("table")).toBeNull();
+    // Colours come from the theme tokens only, so the light theme follows.
+    const rules = stripCssComments(cssSource).match(/#rotation-[^{]*\{[^}]*\}/g);
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgb|hsl/i);
+    expect(rules.join("\n")).toContain("accent-color: var(--accent)");
+  });
+
+  it("gives Track info's tag editor labelled native fields, linkable errors and one status", () => {
+    installDocument({ html: htmlSource });
+    const section = document.querySelector("#panel-track-info #tags-editor");
+    expect(section.getAttribute("aria-labelledby")).toBe("tags-heading");
+    expect(document.getElementById("tags-heading").tagName).toBe("H3");
+    const form = section.querySelector("form#tags-form");
+    expect(form.hasAttribute("novalidate")).toBe(true);
+    const fields = [
+      ["title", "Title"], ["artist", "Artist"], ["album", "Album"], ["genre", "Genre"],
+      ["year", "Year"], ["bpm", "BPM"], ["key", "Key"], ["isrc", "ISRC"],
+    ];
+    for (const [name, label] of fields) {
+      const input = document.getElementById(`tag-${name}`);
+      expect(input.getAttribute("type")).toBe("text");
+      expect(input.dataset.tag).toBe(name);
+      expect(input.hasAttribute("aria-label")).toBe(false);
+      expect(form.querySelector(`label[for="tag-${name}"]`).textContent.trim()).toBe(label);
+      // The error is words on the page, hidden until there is one, with an
+      // ID the script adds to the field's aria-describedby.
+      const error = document.getElementById(`tag-${name}-error`);
+      expect(error.classList.contains("field-error")).toBe(true);
+      expect(error.hidden).toBe(true);
+      expect(error.hasAttribute("role")).toBe(false);
+      expect(error.closest("[aria-live]")).toBeNull();
+      const described = (input.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean);
+      expect(described).not.toContain(error.id);
+      for (const id of described) expect(document.getElementById(id).textContent).toMatch(/^\s*Optional\./);
+    }
+    // Title is the one required field, and says so natively.
+    expect(document.getElementById("tag-title").hasAttribute("required")).toBe(true);
+    expect(fields.filter(([name]) => document.getElementById(`tag-${name}`).hasAttribute("required"))).toHaveLength(1);
+    const beets = document.getElementById("tags-beets");
+    expect(beets.getAttribute("type")).toBe("checkbox");
+    expect(beets.closest("label").textContent.trim()).toBe("Also update the beets library");
+    const save = document.getElementById("tags-save");
+    expect(save.getAttribute("type")).toBe("submit");
+    expect(save.textContent).toBe("Save tags");
+    // One polite status, not nested in another live region.
+    const status = document.getElementById("tags-status");
+    expect(status.getAttribute("role")).toBe("status");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(status.parentElement.closest("[aria-live], [role=status]")).toBeNull();
+    // The layout uses the shared tokens and controls only: no colour of its own.
+    const rules = stripCssComments(cssSource).match(/[^{}]*\.tag-field[^{}]*\{[^{}]*\}/g);
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|color\s*:/i);
+    // Text inputs keep the 44 px control height (2.5.8).
+    const height = stripCssComments(cssSource).match(/([^{}]*)\{[^{}]*min-height:\s*44px[^{}]*\}/g)
+      .find((block) => block.includes('input[type="text"]') && block.includes("padding"));
+    expect(height).toBeTruthy();
+  });
+
+  it("gives the preview output device a labelled native select and silent help", () => {
+    installDocument({ html: htmlSource });
+    const select = document.getElementById("preview-device");
+    expect(select.tagName).toBe("SELECT");
+    expect(document.querySelector('label[for="preview-device"]').textContent.trim())
+      .toBe("Preview output device");
+    expect(select.querySelector("option").textContent).toBe("System default");
+    // The help is linked and says, in words, where previews never go.
+    expect(select.getAttribute("aria-describedby")).toBe("preview-device-desc");
+    const help = document.getElementById("preview-device-desc");
+    expect(help.hidden).toBe(false);
+    expect(help.textContent).toMatch(/never on the stream/);
+    expect(help.textContent).toMatch(/saved in this browser/);
+    // The unsupported or permission note starts hidden and unlinked: the
+    // script links it only while it is shown.
+    const note = document.getElementById("preview-device-note");
+    expect(note.hidden).toBe(true);
+    expect(note.classList.contains("setting-desc")).toBe(true);
+    expect(note.hasAttribute("aria-live")).toBe(false);
+    const button = document.getElementById("preview-device-choose");
+    expect(button.getAttribute("type")).toBe("button");
+    // Its own visible name, distinct from the main output's button in the
+    // same group (2.4.6, 2.5.3).
+    expect(button.textContent.trim()).toBe("Show preview device names");
+    expect(button.hasAttribute("aria-label")).toBe(false);
+    // What the button does is said with it, and is part of the help text.
+    const buttonDesc = document.getElementById(button.getAttribute("aria-describedby"));
+    expect(buttonDesc.id).toBe("preview-device-choose-desc");
+    expect(buttonDesc.textContent).toMatch(/microphone once/);
+    expect(buttonDesc.closest("#preview-device-desc")).not.toBeNull();
+    expect(document.getElementById("audio-device-refresh").textContent.trim())
+      .not.toBe(button.textContent.trim());
+    // Changes are said through the polite Settings status region.
+    const status = document.getElementById("settings-status");
+    expect(status.getAttribute("role")).toBe("status");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(appSource).toMatch(/installPreviewOutput\(\{\s*announce: \(message, options\) => announceStatus\(settingsStatus/);
+    // Only the cue point player is a preview; the decks and Listen here are not.
+    expect([...document.querySelectorAll("audio[data-preview-output]")].map((audio) => audio.id))
+      .toEqual(["points-preview"]);
+    // The module never moves focus, and the note lines up under the select.
+    const moduleSource = readFileSync(staticPath("modules", "preview-output.js"), "utf8");
+    expect(moduleSource).not.toMatch(/\.focus\(/);
+    expect(stripCssComments(cssSource))
+      .toMatch(/\.settings-row \+ \.setting-desc \+ \.setting-desc\s*\{\s*margin-left: 10rem;/);
   });
 
   it("keeps the transition effect description to one sentence", () => {

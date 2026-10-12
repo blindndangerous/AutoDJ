@@ -51,6 +51,7 @@ SHARED = frozenset(
         "/api/library/folders/{source_id}",
         "/api/library/rescan",
         "/api/library/points",
+        "/api/library/tags",
         "/api/library/job",
         "/api/library/run",
         "/api/library/stop",
@@ -67,11 +68,15 @@ SHARED = frozenset(
         "/api/worker/failed",
         "/api/worker/heartbeat",
         "/api/worker/release",
+        # The station list, and starting and stopping a station by name.
+        "/api/stations",
+        "/api/stations/{slug}/start",
+        "/api/stations/{slug}/stop",
     }
 )
-# The default station's public listening addresses; other stations get
-# their own when they can run.
-DEFAULT_STATION_PUBLIC = frozenset({"/status", "/stream.{ext}"})
+# Public listening addresses: the default station's, and any station's
+# stream and playlist by name (/stations/<slug>.mp3 and .m3u).
+DEFAULT_STATION_PUBLIC = frozenset({"/status", "/stream.{ext}", "/stations/{station_file}"})
 # Routes that act on one station, relative to the API root.  Each answers
 # at /api<route> for the default station (/ws for the socket) and at
 # /api/stations/{slug}<route>.
@@ -132,6 +137,7 @@ STATION = frozenset(
         "/schedule/{event_id}",
         "/schedule/{event_id}/enable",
         "/schedule/{event_id}/run",
+        "/rotation-test",
         "/carts",
         "/carts/pages/{page}/slots/{slot}",
         "/carts/pages/{page}/slots/{slot}/play",
@@ -307,6 +313,19 @@ def test_station_relative_maps_only_configured_stations() -> None:
         ("post", "/api/stations/default/pair", 401),
         ("get", "/api/stations/default/auth/status", 401),
         ("get", "/api/stations/default/nowplaying/x", 401),
+        # A configured station's stream and playlist are public (this
+        # default station is browser-driven, so they are not found) ...
+        ("get", "/stations/default.mp3", 404),
+        ("head", "/stations/default.m3u", 404),
+        # ... any other name or extension needs a session first,
+        ("get", "/stations/nope.mp3", 401),
+        ("get", "/stations/default.ogg", 401),
+        ("get", "/stations/default", 401),
+        ("get", "/stations/default.mp3/x", 401),
+        # and so do the station list and starting or stopping a station.
+        ("get", "/api/stations", 401),
+        ("post", "/api/stations/default/start", 401),
+        ("post", "/api/stations/default/stop", 401),
     ],
 )
 def test_station_paths_security_matrix(method: str, path: str, status: int) -> None:

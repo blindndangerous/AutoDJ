@@ -234,12 +234,19 @@ _DAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"
 
 def station_now(cfg: AutoDJConfig) -> datetime:
     """The station's local wall time, naive: ``[server] station_timezone`` or the system's."""
+    import time
+
+    return station_wall(cfg, time.time())
+
+
+def station_wall(cfg: AutoDJConfig, timestamp: float) -> datetime:
+    """The station's local wall time at Unix *timestamp*, naive (see :func:`station_now`)."""
     from zoneinfo import ZoneInfo
 
     from autodj.scheduler import system_timezone
 
     zone = ZoneInfo(cfg.server.station_timezone or system_timezone())
-    return datetime.now(zone).replace(tzinfo=None)
+    return datetime.fromtimestamp(timestamp, zone).replace(tzinfo=None)
 
 
 def describe_daypart(spec: CategorySpec) -> str:

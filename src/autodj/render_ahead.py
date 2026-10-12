@@ -8,6 +8,7 @@ import threading
 from collections.abc import Callable
 
 from autodj.mixbus import RenderedTrack
+from autodj.station_log import station_thread
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ class RenderAhead:
             self._stopped = False
             if self._thread is not None and self._thread.is_alive():
                 return
-            self._thread = threading.Thread(
+            self._thread = station_thread(
                 target=self._loop, name="autodj-render-ahead", daemon=True
             )
             self._thread.start()

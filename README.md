@@ -289,14 +289,14 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Six tabs:
 
 - **Now Playing.**  What is playing, the next track, album art, lyrics, the cue strip on the progress bar.
 - **Queue & Search.**  Find any track in your library and choose Play now, Play next (straight after the current track) or Add to queue (at the end).  Move queued tracks up, down or to the top, remove them, or clear the whole queue; each move says the new position, such as "Moved Alpha to position 2 of 5".  After Search come **Browse library**, which lists the whole library or one music or voice liner folder 100 tracks a page, and **Browse voice liners**, the liner files with Delete and Track info.
-- **Track info.**  View a recording's details and edit its cue points. Open it from Now Playing, History, or the Queue, Search results, Browse library and Browse voice liners lists in Queue & Search. Use the Return to History, Return to Queue & Search or other view-specific button to return to the source item.
+- **Track info.**  View a recording's details, edit its tags (title, artist, album, genre, year, BPM, key and ISRC, written into the file without analysing it again) and edit its cue points. Open it from Now Playing, History, or the Queue, Search results, Browse library and Browse voice liners lists in Queue & Search. Use the Return to History, Return to Queue & Search or other view-specific button to return to the source item.
 - **History.**  What has played, newest first, one page at a time.  Times get a date when the page holds tracks from before today.  While page 1 is shown, each new song is added to the top on its own.  Refresh history reloads the page you are on.  Export play log saves every play between two dates, for royalty reports: a CSV with one row per play (times, seconds played, artist, title, album, ISRC, label, kind, file and performances, meaning listeners who heard it) or a SoundExchange Report of Use.  `autodj export-plays` does the same from the command line; see [Play log export](docs/operations.md#play-log-export).
 - **Settings.**  Split into subtabs, so each screen holds one group.  Move between them with the arrow keys, Home and End, as with the section tabs; the page remembers the last one you used.
   - **Transitions**: the transition mode, crossfade and fade-in length, EQ ducking and its cutoff, the transition effect and its level, and how Skip ends a track.
   - **DJ mixing**: beatmatching with its stretch limit and glide back, drop mixing, key shift, phrase and outro alignment, keeping vocals apart, and the filter sweep with its floor.
   - **Song picking**: preset, pick mode, how widely similarity picks spread, harmonic mixing, repeat windows, BPM range and discovery.
-  - **Sound**: output processing, upload and select Stereo Tool presets, Stereo Tool input trim and AGC drive boost, a peak-safe quiet intro lift for ReplayGain playback, the ReplayGain target and peak limit, the browser's audio output device, early loading of the next song and the crossfade on silence.
-  - **Display and keys**: lyrics, key notation, announcements and keyboard shortcuts.
+  - **Sound**: output processing, upload and select Stereo Tool presets, Stereo Tool input trim and AGC drive boost, a peak-safe quiet intro lift for ReplayGain playback, the ReplayGain target and peak limit, the browser's audio output device, a separate preview output device, early loading of the next song and the crossfade on silence.
+  - **Display and keys**: theme, lyrics, key notation, announcements and keyboard shortcuts.
   - **Voice liners**.
   - **Schedule**: timed events, the next few runs, and recent results.
   - **Stream**: only in stream mode.  It holds the station name, the address, quality and continuous play.
@@ -344,11 +344,40 @@ single-key shortcut fires; buttons, sliders, tabs and dialogs keep their normal 
 Keyboard shortcuts button still opens the list. If the browser blocks site storage, shortcuts stay
 on and the choice lasts only until the page is reloaded.
 
+### Theme and status messages
+
+The page has a light and a dark theme. **Theme** under Settings, Display and keys offers
+**System** (the default), **Light** and **Dark**. System follows the light or dark setting of the
+device and changes with it; Light and Dark keep that theme whatever the device says. The choice
+takes effect at once, is saved in this browser only, and is applied before the page is drawn, so
+a reload never flashes the other theme. The public `/status` page on the same address uses the
+same choice. If the browser blocks site storage, the page follows System. Both themes meet WCAG
+2.2 AA contrast, and Windows High Contrast (forced colours) still replaces them with the system's
+own colours. Changing the theme announces nothing beyond the radio button you chose.
+
+A short message such as "Settings saved" or an error also appears at the foot of the window for
+8 seconds. Screen readers hear it once, from the part of the page that owns it, not from the
+message box. The box stays while the mouse pointer is over it or keyboard focus is on its
+**Dismiss** button, and runs out a few seconds after both leave. **Dismiss** (by mouse, touch or
+Enter) or Escape closes it at once; when focus was on Dismiss it goes back where it was before.
+The message never takes focus when it appears.
+
 ### Browser and server audio
 
 The default `serve` mode is browser-driven: the server picks tracks; the browser plays them.  Switching audio output devices in the browser only affects the browser.
 
 To play on the machine's own speakers instead (for example to send sound to a Bluetooth speaker through ALSA on Linux), run `autodj serve --server-audio` and control it from the web page. It needs the `play` extra. Pick the output device with `[playback] audio_device` in `config.toml`; `autodj list-devices` shows the choices.
+
+#### Preview output device
+
+The cue point preview in Track info can play on a device of its own, such as headphones, while the browser mix plays on the speakers. Choose it in Settings, Sound, **Preview output device**. Previews from Queue & Search, History and the library all play there, because they all open Track info. The choice is saved in this browser only.
+
+- A preview never goes through the station's mix. It is not part of the stream, a recording, the server's speakers (`--server-audio`), or the browser mix chosen in **Audio output device**. "Main output" here means that browser mix. If both settings are the system default, previews and the browser mix come out of the same speakers.
+- Liner, time check and cart **Test** are not previews: they test what listeners hear, so they play through the mix as before.
+- On a device of its own, the preview starts at full volume and unmuted, and the page's volume slider and Mute leave it alone; set its level with the volume control in the preview player. On the system default it follows the page's volume and Mute, as before.
+- Browsers hide device names until the page has a media permission. Firefox 116 and later shows **Choose preview device**, which opens its own device picker. Chrome, Edge and Safari have no such picker, so they show **Show preview device names**, which asks for the microphone once and stops it at once; AutoDJ never records sound. Without permission the devices are listed as Output device 1, Output device 2 and so on, and they still work. If the microphone prompt fails, the page says why: permission refused, no microphone found, or the microphone busy in another program.
+- Choosing an output device for a page needs desktop Chrome or Edge, Firefox 116 or later, or Safari 18.4 or later. Chrome and Firefox on Android cannot do it. There the setting is unavailable, the page says so, and previews play on the system default output.
+- If the chosen device is unplugged, it stays in the list as "not connected", previews move to the system default output, and the page says so once. They go back to that device when it is connected again. Choose System default to forget it. If the browser cannot list its devices, AutoDJ does not treat the saved device as gone and still tries it.
 
 ## Voice liners
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import heapq
 import ntpath
 import posixpath
@@ -113,6 +114,7 @@ _CALL = re.compile(
 _CLEAR = re.compile(r"(?i)^Queue\.Clear\s*;\s*$")
 
 
+@functools.lru_cache(maxsize=1 << 18)
 def _normalized(path: str) -> str:
     if path.startswith("/") and not path.startswith("//") and "\\" not in path:
         normalized = posixpath.normpath(path)
@@ -359,18 +361,23 @@ def pick_slot(
     pending_liner = None
     pending_liner_requires_following = False
     preset = None
+    # Last-played times by normalized path, worked out once per scan.
+    played: dict[str, Any] | None = None
 
     def choose(
         slot: ClockSlot, matches: Sequence[Any], label: str
     ) -> tuple[Any | None, str | None]:
+        nonlocal played
         if not matches:
             return None, f"{label}: no matching entries"
         if slot.selection == "least_recent":
-            played_by_path = {
-                _normalized(path): played
-                for path, played in last_played.items()
-                if isinstance(path, str)
-            }
+            if played is None:
+                played = {
+                    _normalized(path): stamp
+                    for path, stamp in last_played.items()
+                    if isinstance(path, str)
+                }
+            played_by_path = played
             history = {entry.path: played_by_path.get(_normalized(entry.path)) for entry in matches}
             selected = least_recent(
                 matches,

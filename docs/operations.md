@@ -637,8 +637,10 @@ plain text, so it works without JavaScript; with JavaScript, `/modules/status-pa
 text. Only the now-playing line is a live region: screen readers hear it, politely, when the
 song changes, and nothing else on a poll. A **Pause updates** toggle stops the polling until
 pressed again. In stream mode the page also links to the stream and
-its playlist file. It sends a Content-Security-Policy that allows only its own script,
-stylesheet and feed requests.
+its playlist file. It sends a Content-Security-Policy that allows only its own scripts,
+stylesheet and feed requests. It uses the system's light or dark colours, or the Light or Dark
+theme chosen under Settings, Display and keys, Theme in a browser that opened the web page at the
+same address (`/modules/theme-init.js` reads that choice before the page is drawn).
 
 ### Settings
 
@@ -974,6 +976,172 @@ client for a running server.
   a minute) and the encoder is cooling down for 60 seconds before it tries again. Check that
   ffmpeg is present and working (`ffmpeg -version`), then try the address again after a minute.
 
+## Several stations
+
+One AutoDJ server can play more than one station from the same music library. The root sections
+of `config.toml` (`[playback]`, `[stream]` and the rest) are the default station, exactly as
+before: a server with one station needs no change. Each other station is a `[stations.<slug>]`
+table. Each station has its own player, mix bus, mastering process, encoder, relays, recorder,
+schedule, carts, time checks, clockwheels, liners, profiles and saved settings; the library, the
+similarity index, pairing and the web server are shared.
+
+The station switcher in the web page is still to come. Until then, a station other than the
+default one is controlled through its API addresses, described below.
+
+### Configuration
+
+The slug names the station in addresses, folders and log lines. It uses lower-case letters,
+digits and inner hyphens, at most 32 characters, such as `nightowl`. `default` is reserved for the
+root sections. A server can have at most 8 stations besides the default one.
+
+This example adds a station called Night Owl Radio. In `config.toml`:
+
+```toml
+[stations.nightowl]
+autostart = true
+
+[stations.nightowl.stream]
+station_name = "Night Owl Radio"
+bitrate = 192
+continuous = true
+max_listeners = 20
+
+[stations.nightowl.playback]
+loudness_processing = "smooth"
+
+[stations.nightowl.recording]
+folder = "recordings/nightowl"
+```
+
+In `config.local.toml`, beside the default station's secrets:
+
+```toml
+[stations.nightowl.stream]
+listener_user = "owl"
+listener_password = "choose another strong password"
+
+[stations.nightowl.stream.relays.main]
+password = "that station's source password"
+
+[[stations.nightowl.webhooks]]
+url = "https://example.com/your-secret-endpoint"
+```
+
+The rules:
+
+- **A station starts from the defaults, not from the root sections.** Nothing is copied from the
+  default station. Copying would quietly give the new station the default station's relays,
+  webhooks, listener password and recording folder. Set everything the station needs in its own
+  tables, including machine settings such as `playback.stereotool_path`.
+- **A station's own sections** are `playback`, `djmix`, `transitions`, `replaygain`, `stream`,
+  `recording`, `nowplaying`, `time_checks`, `dmca` and `presets.<name>`, plus `webhooks` in
+  `config.local.toml`. They take the same keys as the root sections.
+- **Shared sections:** `library`, `index`, `model`, `huggingface` and `server` belong to the whole
+  server and are read only from the root. So are `stream.trusted_proxies` (from the root
+  `[stream]`) and `server.station_timezone`.
+- **Another station always streams.** It mixes on the server and never opens the sound card, so
+  its `stream.enabled` is ignored with a warning, and so is its `stream.trusted_proxies`.
+- **`autostart`** (default `true`) starts the station with the server. With `false` it is
+  configured but stays stopped until it is started.
+- **Secrets stay out of `config.toml`.** Listener credentials, relay passwords and webhooks go in
+  `config.local.toml` under the same table names; the two files are merged key by key.
+  `config.toml` refuses a station's `webhooks`, as it does the root ones, and a station named
+  in `config.local.toml` but not in `config.toml` is refused, so a misspelled name cannot start
+  a station of its own. A relay password can
+  also come from `AUTODJ_STATION_<SLUG>_RELAY_<NAME>_PASSWORD`, upper-cased, with `-` written as
+  `_`: for the example above, `AUTODJ_STATION_NIGHTOWL_RELAY_MAIN_PASSWORD`. Only relays named in
+  the TOML are looked up. The other `AUTODJ_STREAM_*` variables apply to the default station only.
+- **Each station needs its own recording folder.** A recorder deletes old recordings from its
+  folder, so two stations sharing one could delete each other's. Leaving `recording.folder`
+  unset in a station uses the default `recordings`, which the default station already uses, so
+  set it.
+- **Each relay target belongs to one station.** Two stations pushing to the same host, port and
+  mount (or Shoutcast stream) are refused.
+- **Unknown keys are warned about and ignored**, as in the root sections; the warning names the
+  station's table. `autodj doctor` offers to remove an unknown key from a station section.
+- **Errors name the station**, for example
+  `[stations.nightowl] playback.crossfade_seconds must be between 0 and 20, got 99.0`.
+
+A station keeps its state in `<index_dir>/<name>/stations/<slug>/`, with the same file names as
+the default station: `web_state.json`, `schedule.json`, `carts.json` and `carts/`,
+`time_checks.json`, `listener_bans.json`, `recording.json`, `relay-status.json`, `clockwheels/`,
+`liners/` (unless `playback.liners_folder` is set) and `profiles/`. Its plays are kept in the
+shared `library.db`. The default station's files stay where they always were.
+
+### Running
+
+`autodj serve` starts the default station as before, then every other station with
+`autostart = true`. Each other station mixes on the server and streams at
+`/stations/<slug>.mp3`, with a one-line playlist at `/stations/<slug>.m3u`; the startup log lists
+the addresses. These are public like `/stream.mp3`, and the station's own `listener_user` and
+`listener_password` protect them. The default station keeps `/stream.mp3`, `/stream.m3u` and
+`/status`, and also answers at `/stations/default.mp3`. A station's stream needs ffmpeg, even when
+the default station is browser-driven.
+
+Every control route of a station answers under `/api/stations/<slug>/`, for example
+`/api/stations/nightowl/status`, `/api/stations/nightowl/skip` or
+`/api/stations/nightowl/queue/add`; the default station keeps its `/api/...` addresses. These
+need a paired browser, like the default station's.
+
+- `GET /api/stations` lists every configured station: its slug, name, state (`stopped`, `idle`,
+  `playing` or `paused`), listener count, current song and stream address.
+- `POST /api/stations/<slug>/start` builds and starts a stopped station. Starting a running
+  station changes nothing.
+- `POST /api/stations/<slug>/stop` stops a station completely: its listeners are disconnected,
+  its encoder, relays, recorder and mastering process are closed and its player ends, so it uses
+  no memory or processor time. Its routes then answer 409 and its stream answers 503, "off air".
+  The default station cannot be stopped.
+
+A station that cannot start, with the server or when asked, says why: in the log at startup, and
+in the reply to a start request. The default station and the other stations keep running.
+
+Each station starts with its saved settings (its `web_state.json`), its active clockwheel and its
+own play history. The first time a station runs, its liner folder is added to Library folders as
+a liner source. A station plays only the liners in its own folder; the default station plays every
+other registered liner, as before.
+
+### Stereo Tool: one station at a time
+
+One Stereo Tool licence covers one running copy, so AutoDJ lets only one station use Stereo Tool
+at a time. A second station set to `loudness_processing = "stereotool"` does not start while
+another station uses it, and choosing Stereo Tool in a station's settings, or applying a profile
+that does, is refused with a message naming the station that has it. A station that has just
+left Stereo Tool still counts until its current song ends. Use `"smooth"` for the other
+stations; with a second licence, a later version can lift this limit.
+
+Stereo Tool presets are shared by every station, and each station chooses its own. A preset that
+any station uses, running or stopped, cannot be deleted; the message names the station.
+
+### Logs
+
+A log line from a station other than the default one starts with its slug, such as
+`[nightowl] Stream station tick failed`, and that station's threads carry the slug in their
+names (`autodj-player-nightowl`, `autodj-stream-writer-nightowl`). The default station's lines
+and thread names are unchanged.
+
+### Cost of each running station
+
+Each running station is a complete playout chain in the same process:
+
+- **Threads, about 10 or more:** the player, the render-ahead worker (decoding, time-stretching
+  and effects, in heavy bursts at each song change), the mix bus, the mastering process's reader
+  and writer, the encoder's reader and writer, the recorder, the liner worker, one per webhook
+  and two per relay.
+- **Subprocesses, 2 to 4:** the ffmpeg MP3 encoder (plus one per relay bitrate that differs) and
+  either the ffmpeg master filter (`smooth`) or Stereo Tool with an ffmpeg limiter.
+- **Memory:** about 21 MB per minute of decoded audio, so roughly 150 to 250 MB per station for
+  the playing song, the next render and the overlap. The similarity index is shared, so another
+  station adds no index memory.
+- **An idle station still runs** its mix bus, mastering and encoder on silence. Stopping a
+  station is the real saving.
+- **One process, one interpreter lock.** A heavy render on one station could make another
+  station's mix bus late. To measure it on your own machine, run the soak test with a duration in
+  seconds; it reports the blocks each station's bus emitted while both render at once:
+
+  ```bash
+  AUTODJ_SOAK_SECONDS=60 uv run pytest tests/integration/test_multi_station.py -k soak -s
+  ```
+
 ## Windows PowerShell setup
 
 For native no-container operation, create paths and run diagnostics as follows:
@@ -993,6 +1161,79 @@ For Docker on Windows, run Compose inside WSL2 (see [Docker](#docker)). Docker D
 bind-mount ownership depends on its WSL2/Linux filesystem mapping, and its host networking must
 be turned on in Docker Desktop's settings. Run `bash scripts/container_smoke.sh` inside WSL2 for
 the authoritative check. Do not use world-writable Windows mounts.
+
+## Editing tags
+
+Track info has a **Tags** section for the song or liner it shows. It has a field each for Title,
+Artist, Album, Genre, Year, BPM, Key and ISRC, filled in with what AutoDJ has for the file.
+Change any of them and choose **Save tags**. AutoDJ writes only the fields you changed, so a tag
+you did not touch stays as it is in the file. Leave a field empty to remove that tag. Title cannot
+be empty.
+
+The fields take:
+
+- Year: four digits, such as 1999.
+- BPM: a number from 1 to 400, such as 128 or 127.5. M4A files keep a whole number.
+- Key: a letter key such as Am, F#m, Db or C major, or a Camelot key such as 8A. AutoDJ writes it
+  as a letter key, and Track info shows it in the key notation set in Settings.
+
+A key or BPM you set here is kept when AutoDJ analyses the song later; the analysis still
+measures energy and the rest. Clear the field to let the analysis set it again.
+- ISRC: 12 characters, such as AB1CD2600001. Hyphens and spaces are ignored.
+
+A field AutoDJ cannot take is marked invalid with the reason under it, and focus moves to the
+first one. When the save works, the page says so once and focus stays on Save tags.
+
+AutoDJ writes MP3, FLAC, M4A, Ogg Vorbis, Opus, WAV and AIFF tags. For any other kind of file,
+or one it cannot read, the Tags section says it cannot edit them. The write is safe to
+interrupt: AutoDJ copies the file to a hidden `.<name>.<random>.autodj-tags.tmp` beside it,
+tags the copy, flushes it to disk, reads every changed field back, and only then puts it in
+place of the original in one step. On Linux and macOS it then flushes the folder too; Windows
+has no folder flush, so there the step is as durable as the file system makes it. If anything
+before that step fails, the original file is left exactly as it was and the page says why. A
+copy left behind by a crash or power cut is removed the next time that file's tags are saved,
+once it is an hour old (a younger one may be another AutoDJ's save in progress); it is safe to
+delete by hand.
+
+Because the file is replaced by a new one:
+
+- Its modification time becomes the time of the save.
+- It keeps its permissions. On Linux and macOS it keeps its owner and group when AutoDJ is
+  allowed to set them (usually only when AutoDJ runs as that user or as root).
+- Access control lists on Windows are not carried over; the new file takes its folder's.
+- A hard link to the file keeps the old tags, because it still points at the old file. A
+  symbolic link stays a link, and the file it points to is the one changed, but only when that
+  file is inside one of the library folders; a link pointing elsewhere is refused.
+- An MP3 tag keeps its ID3 version: a version 2.3 tag stays 2.3.
+
+Saving tags does not analyse the song again. The library and search show the new details at
+once, and the song keeps its advanced analysis, cue points and loudness measurement. A later
+scan sees the same file and leaves it alone.
+
+A song that is playing or up next on any station cannot be saved; save it once it has played.
+That includes the song the server mix is preparing next. AutoDJ checks again at the moment it
+replaces the file, while the stations wait for it, so a song that comes up in between is still
+refused.
+If another program has the file open, AutoDJ waits a few seconds and then says the file is busy
+without changing it.
+
+When `[library] beets_db` names a beets database, the Tags section also has **Also update the
+beets library**, ticked by default. With it ticked, AutoDJ copies the changed fields into the
+song's beets entry (ISRC only when your beets database has an `isrc` field) and sets its
+modification time, so `beet update` has nothing new to read. The file is always written first.
+If beets has no entry for the file, or its database cannot be written (for example while beets
+itself holds it), the file and AutoDJ's library keep the new tags, beets keeps the old ones,
+and the page says so; run `beet update` to read the new tags into beets. When beets has no field
+for any tag you changed (an ISRC, in most beets libraries), beets is left exactly as it was, so
+`beet update` still reads the new file. Beets is never changed when the file could not be saved.
+
+If the file is saved but AutoDJ's own library cannot be updated, the page says the tags were
+saved in the file and what went wrong. A rescan then reads the new tags, and the song is
+analysed again.
+
+In Docker, the music folder is mounted read-only by default, so saving tags fails with a message
+that AutoDJ is not allowed to change the file. Remove `:ro` from the music volume in
+`compose.yaml` to allow it, and from the beets volume to let AutoDJ update beets.
 
 ## Moved files
 
@@ -1392,6 +1633,83 @@ Repeat limits are edited in Settings > Picking > Repeats and stored in
 ignored with a warning; re-enter any limits that still use those keys in that panel. The related
 artists file is `index/<name>/related-artists.toml` and is read only when
 **Use related artists** is enabled. It must be at most 1 MiB.
+
+## Testing the rotation
+
+The rotation tester plays a span of time, or a number of songs, through the station's own song
+picker and reports what would happen, without changing anything on air. It answers questions such
+as "do a 720-minute song rule and a 240-minute artist rule starve my six-song Power category?"
+before the rules go live.
+
+It uses everything the station picks with: the pick mode or the active clockwheel and its place,
+the rotation categories and their days and hours, the schedule's song-picking changes (with their
+date ranges), the repeat rules including related artists, and the DMCA limits. It starts from the
+station's real play history and last-played times. The run picks with a private copy of the
+player, with its own clock and its own random choices, so the on-air player, its history, the
+clockwheel place and the library are never touched.
+
+From the command line:
+
+```bash
+uv run autodj simulate                       # the next 24 hours
+uv run autodj simulate --days 7 --seed 42    # a week, repeatable with the same seed
+uv run autodj simulate --picks 500 --json    # 500 songs, as JSON
+uv run autodj simulate --hours 12 --start 2026-10-16T18:00 --station nightowl
+```
+
+`--station` names the default station or one configured under `[stations.<name>]`; the run uses
+that station's settings, clockwheels, schedule and plays. `--start` is read in the station time
+zone (`[server] station_timezone`) and must fall between
+2000 and 2099. Without `--seed` a run draws a seed and the report gives it, so the same seed repeats
+a run song for song, in every pick mode. Runs are capped at 30 days or 20,000 songs, and at ten
+minutes of work: a run that reaches that limit stops with the songs picked so far, and the report
+says so.
+
+`autodj simulate` can run beside a running server. It opens `library.db` read-only: no write
+lock, no migration, and the file itself is never written, though SQLite may create the
+`library.db-wal` and `library.db-shm` files beside it, as any reader does. A library it cannot
+read (damaged, not an AutoDJ library, or left half written) stops the command with a message. A
+categories or liner dates file it cannot read is skipped, never moved aside.
+
+In the web page: Settings > Song picking > **Test rotation**. Choose a span or a number of songs,
+optionally a start and a seed, and press **Test rotation**. The run works in the background; a
+progress bar and a line of text show how far it has got, **Cancel test** stops it with the results
+so far, and the end is announced once. The results appear under **Rotation test results** as
+headings and lists. One run at a time per server, whichever station it tests. The run's thread
+works below normal priority and sleeps for 2 milliseconds after each song it picks, so the audio
+and the page keep their place; stopping the server cancels a run and waits for it. If the page
+cannot reach the server while a run works, it tries again less and less often, says so once, and
+after six failed tries says it has stopped checking.
+
+The report, in words or JSON, gives:
+
+- plays per song, per category and per artist: the fewest, the most and the average, and the most
+  played;
+- songs never played, with a count and the first ten, overall and per category;
+- how often each rule had to be relaxed, and which: same artist, related artist, same album, same
+  title, the track repeat window, dayparting and back-to-back repeats, plus fallbacks to a random
+  song. A clockwheel step set not to enforce the rules is counted apart;
+- clockwheel steps that were skipped or came up empty, with the reason, such as "all matching
+  entries blocked by rules" or "outside its hours";
+- DMCA conflicts: songs replaced to keep the limits, and limits broken when nothing could keep
+  them, by kind;
+- dead air: picks that found nothing (the station starts afresh) and minutes with nothing
+  playable;
+- the schedule changes it applied.
+
+What it approximates:
+
+- Time moves by each song's length from the catalog: from its saved start to its segue or outro
+  with saved-point transitions, less the crossfade otherwise. A song with no length counts as the
+  library's average.
+- A clockwheel liner adds its full length. Automatic liners, time checks, carts and the queue are
+  left out.
+- A scheduled change applies from the first song after its time; hard events do not cut a song
+  short. Profile switches are not simulated; the report names them.
+
+How long a run takes grows with the library. On a synthetic 77,000-song library with four
+categories and a seven-step clockwheel, an older four-core PC (2018) simulated a week (about 2,500
+songs) in about two minutes, and in a little over three with the DMCA limits on.
 
 ## Backup
 

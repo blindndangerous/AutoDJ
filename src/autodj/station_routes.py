@@ -67,7 +67,8 @@ from autodj.settings_bodies import (
     VolumeBody,
     validate_playback_choices,
 )
-from autodj.station_ledger import setting_key
+from autodj.station_ledger import StationLedger, setting_key
+from autodj.station_log import CURRENT_STATION
 from autodj.stations import DEFAULT_SLUG, StationRuntime
 from autodj.stream import EncoderUnavailableError
 
@@ -131,9 +132,16 @@ def resolve_station(connection: HTTPConnection) -> StationRuntime:
     return station
 
 
-def current_station(request: Request) -> StationRuntime:
-    """The station this request's URL names: the FastAPI dependency."""
-    return resolve_station(request)
+async def current_station(request: Request) -> StationRuntime:
+    """The station this request's URL names: the FastAPI dependency.
+
+    The rest of the request then runs as that station, so its log lines
+    and the threads it starts carry the station's name.  (Async, so it
+    runs in the request's own task rather than a worker thread.)
+    """
+    station = resolve_station(request)
+    CURRENT_STATION.set(station.slug)
+    return station
 
 
 StationDep = Annotated[StationRuntime, Depends(current_station)]
@@ -442,10 +450,14 @@ async def select_clock(
     name: str | None,
     cursor: int | None = None,
     *,
-    renamed: bool = False,
+    renamed_from: str | None = None,
 ) -> dict:
-    """Make *name* the station's active clockwheel.  Reselecting it keeps its place."""
-    if name is not None and not renamed:
+    """Make *name* the station's active clockwheel.
+
+    Reselecting it keeps its place, as does renaming it (*renamed_from*
+    is its old name; a rename does not change its conditions).
+    """
+    if name is not None and renamed_from is None:
         clock = _clock_store(station).load(name)
         sources = {source["id"]: source for source in library.catalog.sources()}
         for number, step in enumerate(clock["steps"], 1):
@@ -453,14 +465,10 @@ async def select_clock(
                 await asyncio.to_thread(
                     _validate_step_conditions, station, library, step, sources, number
                 )
-    setting = _clock_setting(station, library)
-    if cursor is None:
-        kept = setting.get("cursor")
-        same = name is not None and setting.get("name") == name and type(kept) is int
-        cursor = kept if same else 0
-    library.catalog.set_setting(
-        setting_key(station.slug, "clock"), {"name": name, "cursor": cursor}
-    )
+    # Through the station's ledger when it has one: its buffered cursor is
+    # the latest place, and the old clockwheel's must not flush over this choice.
+    ledger = station.ledger or StationLedger(library.catalog, station.slug)
+    await asyncio.to_thread(ledger.select_clock, name, cursor, renamed_from)
     reload_clock = getattr(station.player, "configure_clock", None)
     if callable(reload_clock):
         await asyncio.to_thread(reload_clock)
@@ -549,7 +557,12 @@ async def apply_profile(station: StationRuntime, name: str) -> dict:
                 status_code=400,
                 detail=f"Profile {name} uses cart page {snap.cart_page!r}, which does not exist",
             )
-    bridge.set_playback_settings(playback)
+    try:
+        await asyncio.to_thread(bridge.set_playback_settings, playback)
+    except ValueError as exc:
+        # Refused before anything changed, such as Stereo Tool already
+        # processing another station.
+        raise HTTPException(status_code=400, detail=f"Profile {name}: {exc}") from exc
     if snap.clockwheel is not None:
         await select_clock(station, _catalog_library(station), snap.clockwheel)
         applied.append("clockwheel")
@@ -788,6 +801,7 @@ class StationRouter:
 def install_station_routes(router: StationRouter) -> None:
     """Register every station route, with paths relative to the API root (``/skip``, ...)."""
     from autodj.carts import install_carts
+    from autodj.rotation_api import install_rotation_test
     from autodj.scheduler_api import install_scheduler
     from autodj.time_checks import install_time_checks
 
@@ -1094,6 +1108,8 @@ def install_station_routes(router: StationRouter) -> None:
         library = station.bridge.library
         if library is not None:
             for entry in await asyncio.to_thread(library.entries_snapshot, "liner"):
+                if not station.owns_liner(entry.path):
+                    continue  # another station's liner folder
                 record = await asyncio.to_thread(library.catalog.record_for_path, entry.path)
                 if not record or record.get("kind") != "liner":
                     continue
@@ -1588,11 +1604,7 @@ def install_station_routes(router: StationRouter) -> None:
                 store.save(renamed, overwrite=False)
                 store.delete(name)
             if _active_clock(station, library) == name:
-                cursor = _clock_setting(station, library).get("cursor")
-                # Renaming the active clock does not change its conditions.
-                await select_clock(
-                    station, library, body.name, cursor if type(cursor) is int else 0, renamed=True
-                )
+                await select_clock(station, library, body.name, renamed_from=name)
             return renamed
         except (ValueError, OSError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1612,6 +1624,7 @@ def install_station_routes(router: StationRouter) -> None:
     install_carts(router)
     install_scheduler(router)
     install_time_checks(router)
+    install_rotation_test(router)
 
 
 __all__ = [

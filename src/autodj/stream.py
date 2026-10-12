@@ -28,6 +28,7 @@ from typing import Protocol, cast
 import numpy as np
 
 from autodj.icy import IcyInterleaver, format_stream_title, mp3_frame_offset
+from autodj.station_log import station_thread
 from autodj.stereo import SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
@@ -276,7 +277,7 @@ class StreamOutput:
 
         self._encoder: FfmpegEncoder = self._factory(bitrate)
         self._reader = self._start_reader(self._encoder)
-        self._writer = threading.Thread(
+        self._writer = station_thread(
             target=self._write_loop, name="autodj-stream-writer", daemon=True
         )
         self._writer.start()
@@ -285,7 +286,7 @@ class StreamOutput:
 
     def _start_reader(self, encoder: FfmpegEncoder) -> threading.Thread:
         """Start the daemon thread that drains *encoder*'s output."""
-        thread = threading.Thread(
+        thread = station_thread(
             target=self._read_loop, args=(encoder,), name="autodj-stream-reader", daemon=True
         )
         thread.start()
