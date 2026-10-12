@@ -1070,7 +1070,10 @@ class Player:
                             return upcoming
                         # Keep the song whose length we checked, including on a re-render.
                         self._seed_clock_following = (
-                            picked.liner, upcoming, picked.next_cursor, song_step
+                            picked.liner,
+                            upcoming,
+                            picked.next_cursor,
+                            song_step,
                         )
                     self._seed_clock_cursor = (picked.next_cursor - 1) % len(self._clock_slots)
                     return picked.liner
@@ -1421,21 +1424,29 @@ class Player:
             if condition.get("field") == "folder"
         )
         try:
-            sources = [
-                {"id": source["id"], "path": Path(source["path"]).name}
-                for source in self._library.catalog.sources()
-                if source["id"] in source_ids
-            ] if source_ids else []
+            sources = (
+                [
+                    {"id": source["id"], "path": Path(source["path"]).name}
+                    for source in self._library.catalog.sources()
+                    if source["id"] in source_ids
+                ]
+                if source_ids
+                else []
+            )
         except Exception:
             sources = []
         category_ids = {step["category"]} if step["type"] == "category" else set()
         category_index = getattr(self._library, "categories", None)
         try:
-            categories = [
-                {"id": category.id, "name": category.name}
-                for category in category_index.categories()
-                if category.id in category_ids
-            ] if category_index is not None and category_ids else []
+            categories = (
+                [
+                    {"id": category.id, "name": category.name}
+                    for category in category_index.categories()
+                    if category.id in category_ids
+                ]
+                if category_index is not None and category_ids
+                else []
+            )
         except Exception:
             categories = []
         return {"number": index + 1, "step": step, "sources": sources, "categories": categories}
@@ -1688,7 +1699,9 @@ class Player:
             upcoming, mode = self._dmca_checked(queued, context, queued=True), "queue"
         elif self._cfg.playback.pick_mode == "clock":
             if seed is not None:
-                self._chosen_clock_step = seed[3] if len(seed) > 3 else getattr(self, "_seed_clock_step", None)
+                self._chosen_clock_step = (
+                    seed[3] if len(seed) > 3 else getattr(self, "_seed_clock_step", None)
+                )
                 return (
                     self._dmca_checked(seed[1], context),
                     "clock",
@@ -1958,7 +1971,7 @@ class Player:
                             "seed",
                             clock_cursor=getattr(self, "_seed_clock_cursor", None),
                             clock_name=self._seed_clock_name,
-                        clock_step=self._seed_clock_step,
+                            clock_step=self._seed_clock_step,
                         )
                     self._seed_clock_step = None
                 if current is None:
@@ -2170,7 +2183,11 @@ class Player:
             self._seed_clock_step = None
             self._render_ahead.reset(
                 lambda: self._set_render_cursor(
-                    entry, offset, pick_mode, clock_cursor=cursor, clock_name=clock,
+                    entry,
+                    offset,
+                    pick_mode,
+                    clock_cursor=cursor,
+                    clock_name=clock,
                     clock_step=clock_step,
                 )
             )

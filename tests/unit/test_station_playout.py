@@ -159,10 +159,12 @@ def test_saved_start_survives_next_rendered_metadata(station):
 
 def test_clock_step_provenance_follows_each_rendered_track(station, monkeypatch):
     player, (a, b, voice, _), _points = station
-    steps = iter((
-        {"number": 2, "step": {"type": "music", "selection": "random"}},
-        {"number": 4, "step": {"type": "category", "selection": "least_recent"}},
-    ))
+    steps = iter(
+        (
+            {"number": 2, "step": {"type": "music", "selection": "random"}},
+            {"number": 4, "step": {"type": "category", "selection": "least_recent"}},
+        )
+    )
 
     def choose(_current, _context):
         player._chosen_clock_step = next(steps)
