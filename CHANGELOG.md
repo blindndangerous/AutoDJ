@@ -175,6 +175,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The included Stereo Tool preset recovers more slowly after drum hits, keeping snare tails
+  less prominent while retaining the default 7 dB AGC drive for quiet passages.
+
 - Old repeat keys in `config.toml` and `web_state.json` are ignored with a warning.
   Re-enter any limits that still use those keys in Settings > Picking > Repeats.
 - Random walk, least recently played and clock picks now hold back the same album and the same
