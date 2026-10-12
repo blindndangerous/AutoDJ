@@ -309,7 +309,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     start and stop meanwhile. If the stopping station still holds Stereo Tool, a station asking
     for it is told that the other station is stopping and to try again in a few seconds.
   - A station stops and closes only once, even when a stop request arrives during server
-    shutdown.
+    shutdown. Every step of a stop is tried even if an earlier one fails, so shutdown always
+    stops every station and closes the library.
+  - A station whose player does not finish within 30 seconds of a stop is listed as "stuck
+    stopping". It keeps its mastering process and Stereo Tool until the player ends, instead of
+    closing them under a running player. AutoDJ kills any mastering process still running when it
+    shuts down, so no Stereo Tool outlives the server.
+  - The check that only one station uses Stereo Tool can no longer miss a station that is
+    starting or stopping at that moment.
   - A station that fails part of the way through starting now stops everything it had started:
     its encoders, relays, liner worker, mastering process and player. If its player does not
     finish in time, the player and its mastering process are left running and the log says so.

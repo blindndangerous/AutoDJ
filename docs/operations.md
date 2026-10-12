@@ -1113,9 +1113,10 @@ Every control route of a station answers under `/api/stations/<slug>/`, for exam
 need a paired browser, like the default station's.
 
 - `GET /api/stations` lists every configured station: its slug, name, state (`stopped`,
-  `stopping`, `idle`, `playing` or `paused`), listener count and current song, and its public
-  addresses: `status_path`, `nowplaying_path`, `stream_path` and `m3u_path`. The stream and
-  playlist are `null` for a default station that does not stream. For example:
+  `stopping`, `stuck stopping`, `idle`, `playing` or `paused`), listener count and current
+  song, and its public addresses: `status_path`, `nowplaying_path`, `stream_path` and
+  `m3u_path`. The stream and playlist are `null` for a default station that does not stream. For
+  example:
 
   ```json
   {"slug": "nightowl", "name": "Night Owl Radio", "state": "playing", "listeners": 3,
@@ -1134,6 +1135,12 @@ need a paired browser, like the default station's.
   open pages are told at once. Other stations can be started and stopped meanwhile. If the
   stopping station used Stereo Tool, it keeps it until it has stopped, and another station asking
   for it is told to try again in a few seconds. The default station cannot be stopped.
+- If a station's player has not finished 30 seconds after a stop, the station is listed as
+  `stuck stopping`. Its player and mastering process keep running, because closing the mastering
+  process under a running player is unsafe, so it keeps Stereo Tool, and it cannot be started
+  again. When the player ends, the mastering process is closed and the station is `stopped`. The
+  same holds for a station that failed to start. When AutoDJ shuts down, it kills any mastering
+  process still running, so no Stereo Tool outlives the server.
 
 A station that cannot start, with the server or when asked, says why: in the log at startup, and
 in the reply to a start request. Whatever it had already started (its player, mastering process,
