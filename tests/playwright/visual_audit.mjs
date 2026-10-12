@@ -31,6 +31,10 @@
 //         every focus ring in both themes is measured;
 //       - choosing Dark in Settings, Display and keys switches the page at
 //         once, says nothing, and survives a reload;
+//       - Settings > Sound > Preview output device: a named select with
+//         its help, 24 px targets, a described button, a visible reason
+//         where the browser cannot choose a device, and a change said
+//         politely without moving focus;
 //       - the status message stays while the pointer is over it, goes
 //         after the pointer leaves, lets a click on its frame (outside the
 //         message and the button) through to the page underneath, and its
@@ -706,6 +710,62 @@ async function toastBehaviourProblems(page) {
   return problems;
 }
 
+// The preview output device setting, in whatever this engine supports.
+async function previewOutputProblems(page) {
+  await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
+  await page.locator("#tab-settings").click();
+  await page.locator("#stab-sound").click();
+  const select = page.locator("#preview-device");
+  await select.waitFor({ state: "visible" });
+  // Let the device list load.
+  await page.waitForTimeout(300);
+  const problems = [];
+  const info = await page.evaluate(() => {
+    const element = document.getElementById("preview-device");
+    const button = document.getElementById("preview-device-choose");
+    const note = document.getElementById("preview-device-note");
+    const box = (node) => node && node.getClientRects().length
+      ? node.getBoundingClientRect().toJSON() : null;
+    return {
+      label: element.labels?.[0]?.textContent.trim(),
+      describedBy: element.getAttribute("aria-describedby") || "",
+      disabled: element.disabled,
+      select: box(element),
+      button: box(button),
+      buttonDesc: button && !button.hidden
+        ? (document.getElementById(button.getAttribute("aria-describedby") || "")?.textContent || "").trim()
+        : null,
+      noteShown: Boolean(note && !note.hidden && note.textContent.trim()),
+    };
+  });
+  if (info.label !== "Preview output device") problems.push(`label is ${JSON.stringify(info.label)}`);
+  if (!info.describedBy.split(" ").includes("preview-device-desc")) problems.push("help is not linked");
+  if (info.buttonDesc === "") problems.push("button has no description");
+  for (const [what, rect] of [["select", info.select], ["button", info.button]]) {
+    if (rect && (rect.width < 24 || rect.height < 24)) {
+      problems.push(`${what} is ${Math.round(rect.width)}x${Math.round(rect.height)}`);
+    }
+  }
+  if (info.disabled) {
+    // No setSinkId: the reason is words on the page, linked to the select.
+    if (!info.noteShown) problems.push("unsupported browser shows no reason");
+    if (!info.describedBy.includes("preview-device-note")) problems.push("reason is not linked");
+    return problems;
+  }
+  await select.focus();
+  await select.selectOption("");
+  try {
+    await page.waitForFunction(() => /Previews play on/.test(
+      document.getElementById("settings-status").textContent), null, { timeout: 3000 });
+  } catch {
+    problems.push("a change was not said in the status region");
+  }
+  if (!await page.evaluate(() => document.activeElement?.id === "preview-device")) {
+    problems.push("a change moved focus");
+  }
+  return problems;
+}
+
 export async function audit(name, launcher) {
   const browser = await launcher.launch();
   const out = {
@@ -731,6 +791,8 @@ export async function audit(name, launcher) {
     if (setting.length) out.behaviour.theme = setting;
     const toast = await toastBehaviourProblems(page);
     if (toast.length) out.behaviour.toast = toast;
+    const preview = await previewOutputProblems(page);
+    if (preview.length) out.behaviour.previewOutput = preview;
     // 200 % text at the same window width.
     await wide.addInitScript(() => {
       document.addEventListener("DOMContentLoaded", () => {
