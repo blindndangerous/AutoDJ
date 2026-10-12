@@ -123,17 +123,30 @@ def _source_id(value: Any) -> str:
 def _folder_step(value: Mapping[str, Any]) -> dict[str, Any]:
     _fields(
         value,
-        {"type", "source", "folder", "recursive", "selection", "enforce_rules"},
+        {
+            "type",
+            "source",
+            "folder",
+            "recursive",
+            "selection",
+            "enforce_rules",
+            "require_following",
+        },
         {"type", "source"},
     )
     recursive = value.get("recursive", False)
     enforce_rules = value.get("enforce_rules", True)
+    require_following = value.get("require_following", False)
     if type(recursive) is not bool or type(enforce_rules) is not bool:
         raise ValueError("recursive and enforce_rules must be true or false")
+    if type(require_following) is not bool:
+        raise ValueError("require_following must be true or false")
+    if require_following and value["type"] != "liner":
+        raise ValueError("require_following is only valid for liner steps")
     selection = value.get("selection", "least_recent")
     if selection not in _SELECTIONS:
         raise ValueError("selection must be least_recent or random")
-    return {
+    step = {
         "type": value["type"],
         "source": _source_id(value["source"]),
         "folder": relative_path(value.get("folder", ""), label="folder", allow_empty=True),
@@ -141,6 +154,9 @@ def _folder_step(value: Mapping[str, Any]) -> dict[str, Any]:
         "selection": selection,
         "enforce_rules": enforce_rules,
     }
+    if require_following:
+        step["require_following"] = True
+    return step
 
 
 def _track_step(value: Mapping[str, Any]) -> dict[str, Any]:

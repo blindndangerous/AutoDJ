@@ -22,6 +22,7 @@ class ClockSlot:
     kind: str = "music"
     path: str = ""
     preset: str = ""
+    require_following: bool = False
 
     def __post_init__(self) -> None:
         if self.kind in {"music", "liner"} and (
@@ -30,6 +31,8 @@ class ClockSlot:
             raise ValueError("folder must be a non-empty string")
         if type(self.recursive) is not bool or type(self.enforce_rules) is not bool:
             raise ValueError("recursive and enforce_rules must be booleans")
+        if type(self.require_following) is not bool:
+            raise ValueError("require_following must be a boolean")
         if self.selection not in {"least_recent", "random"}:
             raise ValueError("selection must be 'least_recent' or 'random'")
         if self.kind not in {"music", "liner", "track", "settings"}:
@@ -38,15 +41,29 @@ class ClockSlot:
             raise ValueError("track step needs a path")
         if self.kind == "settings" and not self.preset:
             raise ValueError("settings step needs a preset")
+        if self.require_following and self.kind != "liner":
+            raise ValueError("require_following is only valid for liner slots")
 
     def to_json(self) -> dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        if not self.require_following:
+            value.pop("require_following")
+        return value
 
     @classmethod
     def from_json(cls, value: Mapping[str, Any]) -> ClockSlot:
         if not isinstance(value, Mapping):
             raise ValueError("clock slot JSON must be an object")
-        allowed = {"folder", "recursive", "selection", "enforce_rules", "kind", "path", "preset"}
+        allowed = {
+            "folder",
+            "recursive",
+            "selection",
+            "enforce_rules",
+            "kind",
+            "path",
+            "preset",
+            "require_following",
+        }
         unknown = set(value) - allowed
         if unknown:
             raise ValueError(f"unknown clock slot field(s): {', '.join(sorted(unknown))}")
@@ -149,6 +166,7 @@ class ClockPick:
     next_cursor: int
     skipped: list[str]
     preset: str | None = None
+    liner_requires_following: bool = False
 
 
 def validate_clock(slots: Sequence[ClockSlot]) -> list[ClockSlot]:
@@ -210,6 +228,7 @@ def pick_slot(
     chooser = rng if rng is not None else random
     skipped: list[str] = []
     pending_liner = None
+    pending_liner_requires_following = False
     preset = None
 
     def choose(slot: ClockSlot, pool: Sequence[Any]) -> tuple[Any | None, str | None]:
@@ -252,7 +271,12 @@ def pick_slot(
             candidates = [entry for entry in matches if allowed(entry)]
             if candidates:
                 return ClockPick(
-                    candidates[0], pending_liner, (index + 1) % len(slots), skipped, preset
+                    candidates[0],
+                    pending_liner,
+                    (index + 1) % len(slots),
+                    skipped,
+                    preset,
+                    pending_liner_requires_following if pending_liner is not None else False,
                 )
             skipped.append(f"track step {slot.path}: recording missing or blocked by rules")
             continue
@@ -262,9 +286,19 @@ def pick_slot(
             skipped.append(reason)
         if slot.kind == "liner":
             pending_liner = selected
+            pending_liner_requires_following = (
+                slot.require_following if selected is not None else False
+            )
             continue
         if selected is not None:
-            return ClockPick(selected, pending_liner, (index + 1) % len(slots), skipped, preset)
+            return ClockPick(
+                selected,
+                pending_liner,
+                (index + 1) % len(slots),
+                skipped,
+                preset,
+                pending_liner_requires_following if pending_liner is not None else False,
+            )
 
     return ClockPick(None, None, start, skipped, preset)
 

@@ -289,6 +289,144 @@ def test_clock_resync_drops_unheard_pick_without_recording_it(station, monkeypat
     player._library.remember_setting.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "boundary, required, include",
+    [
+        (30, True, False),
+        (33.05, True, True),
+        (30, False, True),
+        (None, True, True),
+    ],
+)
+def test_clock_omits_only_liner_when_pair_will_not_fit(
+    station, monkeypatch, boundary, required, include
+):
+    from autodj.clockwheel import ClockPick
+
+    player, (a, b, _, jingle), _points = station
+    player._cfg.playback.pick_mode = "clock"
+    player._clock = {"cursor": 4, "resync_minutes": [0]}
+    player._set_render_cursor(a, 0, "clock", clock_cursor=4, clock_boundary=boundary)
+    monkeypatch.setattr("autodj.player.time.time", lambda: 0)
+    pick = MagicMock(return_value=ClockPick(b, jingle, 2, [], liner_requires_following=required))
+    monkeypatch.setattr(player, "_clock_pick", pick)
+    context = player._pick_context(pending=a, peek_queue=True)
+    entry, mode, liners, cursor, _ = player._choose_station_next(a, context)
+    assert (entry, mode, cursor) == (b, "clock", 2)
+    assert liners == (((jingle, False),) if include else ())
+    pick.assert_called_once()
+    player._library.remember_play.assert_not_called()
+    player._library.remember_setting.assert_not_called()
+
+
+@pytest.mark.parametrize("standalone", [False, True])
+@pytest.mark.parametrize(
+    "overlap, intro, allow_outro, liner_segue",
+    [
+        (None, 2.25, False, None),
+        (0, 2.25, False, None),
+        (0, 0.25, True, None),
+        (0, 2.25, True, None),
+        (3, 2.25, True, None),
+        (None, 2.25, False, 2.5),
+        (3, 2.25, False, 2.5),
+    ],
+)
+def test_clock_pair_estimate_matches_saved_point_render(
+    station, standalone, overlap, intro, allow_outro, liner_segue
+):
+    player, (a, b, voice, _), points = station
+    points[voice.path].update(start=0.5, overlap_start=overlap, segue=liner_segue)
+    points[b.path]["intro"] = intro
+    player._library.catalog.record_for_path = lambda _: {"allow_outro": allow_outro}
+    rendered = player._render_track(
+        voice if standalone else a, b, 0, liners=() if standalone else ((voice, False),)
+    )
+    incoming_time = (len(rendered.audio) - rendered.overlap_frames) / SR
+    boundary = incoming_time + 18 - 0.25
+    current, when = (None, 0) if standalone else (a, 10)
+    assert player._clock_liner_fits(current, voice, b, when, boundary)
+    assert not player._clock_liner_fits(current, voice, b, when, boundary - 0.01)
+
+
+def test_clock_checks_the_actual_song_after_dmca_replacement(station, monkeypatch):
+    from autodj.clockwheel import ClockPick
+
+    player, (a, b, voice, jingle), _points = station
+    player._cfg.playback.pick_mode = "clock"
+    player._set_render_cursor(a, 0, "clock", clock_boundary=30)
+    monkeypatch.setattr("autodj.player.time.time", lambda: 0)
+    monkeypatch.setattr(
+        player,
+        "_clock_pick",
+        lambda *_: ClockPick(voice, jingle, 2, [], liner_requires_following=True),
+    )
+    monkeypatch.setattr(player, "_dmca_checked", lambda *_: b)
+    entry, _, liners, _, _ = player._choose_station_next(a, player._pick_context())
+    assert entry is b
+    assert liners == ()
+
+
+def test_clock_new_cycle_liner_uses_next_reset(station, monkeypatch):
+    from autodj.clockwheel import ClockPick
+
+    player, (a, b, _, jingle), _points = station
+    player._cfg.playback.pick_mode = "clock"
+    player._clock = {"cursor": 4, "resync_minutes": [0]}
+    now = 1_791_621_000.0
+    player._set_render_cursor(a, 0, "clock", clock_cursor=4, clock_boundary=now + 14)
+    monkeypatch.setattr("autodj.player.time.time", lambda: now)
+    monkeypatch.setattr(
+        player,
+        "_clock_pick",
+        MagicMock(
+            side_effect=[
+                ClockPick(b, None, 5, []),
+                ClockPick(b, jingle, 2, [], liner_requires_following=True),
+            ]
+        ),
+    )
+    context = player._pick_context(pending=a, peek_queue=True)
+    entry, _, liners, cursor, _ = player._choose_station_next(a, context)
+    assert (entry, liners, cursor) == (b, ((jingle, False),), 2)
+    assert player._pending_clock_boundary > now + 33.05
+
+
+@pytest.mark.parametrize("boundary, include", [(20, False), (23.05, True)])
+def test_clock_start_checks_pair_and_keeps_the_song_it_checked(
+    station, monkeypatch, boundary, include
+):
+    from autodj.clockwheel import ClockPick
+
+    player, (_, b, _, jingle), _points = station
+    player._cfg.playback.pick_mode = "clock"
+    player._clock_slots = [None] * 4
+    player._clock_next_boundary = boundary
+    monkeypatch.setattr("autodj.player.time.time", lambda: 0)
+    pick = MagicMock(return_value=ClockPick(b, jingle, 3, [], liner_requires_following=True))
+    monkeypatch.setattr(player, "_clock_pick", pick)
+    current = player._random_start_entry()
+    assert current is (jingle if include else b)
+    assert player._seed_clock_cursor == (2 if include else 3)
+    if include:
+        player._set_render_cursor(jingle, 0, "clock", clock_cursor=2, clock_boundary=boundary)
+        for _ in range(2):  # A render retry must not choose a different song.
+            entry, _, liners, cursor, _ = player._choose_station_next(
+                jingle, player._pick_context()
+            )
+            assert (entry, liners, cursor) == (b, (), 3)
+    pick.assert_called_once()
+    player._library.remember_play.assert_not_called()
+
+
+def test_clock_music_span_uses_end_without_cues_and_preserves_zero(station):
+    player, (a, *_), points = station
+    points[a.path] = {"start": 2, "end": 5}
+    assert player._clock_music_span(a) == (2, 5)
+    points[a.path] = {"segue": 0, "outro": 10, "end": 15}
+    assert player._clock_music_span(a) == (0, 0)
+
+
 def test_hard_jump_clears_early_skip_flag(station):
     player, (a, *_), _points = station
     player._skip_next_intro = True

@@ -24,11 +24,11 @@ const FOLDER_TYPES = new Set(["music", "liner"]);
 // Field wrappers shown for each step type; the rest are hidden.
 const FIELDS_FOR = {
   music: ["source", "folder", "recursive", "selection", "enforce-rules"],
-  liner: ["source", "folder", "recursive", "selection", "enforce-rules"],
+  liner: ["source", "folder", "recursive", "selection", "enforce-rules", "require-following"],
   track: ["source", "path"],
   settings: ["preset"],
 };
-const ALL_FIELDS = ["source", "folder", "path", "preset", "recursive", "selection", "enforce-rules"];
+const ALL_FIELDS = ["source", "folder", "path", "preset", "recursive", "selection", "enforce-rules", "require-following"];
 // Row buttons, in tab order.
 const ROW_ACTIONS = [["edit", "Edit"], ["move-up", "Move up"], ["move-down", "Move down"], ["duplicate", "Duplicate"], ["delete", "Delete"]];
 
@@ -55,6 +55,7 @@ export function describeStep(step, sources = []) {
     if (step.recursive) extras.push("with subfolders");
     if (step.selection === "random") extras.push("at random");
     if (step.enforce_rules === false) extras.push("ignoring repeat rules");
+    if (step.type === "liner" && step.require_following) extras.push("only if the following track fits before the next reset");
     return [`${step.type} from ${where}`, ...extras].join(", ");
   }
   if (step.type === "track") return `track ${step.path}`;
@@ -341,6 +342,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
 
   function resetForm() {
     editing = null;
+    el("clock-step-require-following").checked = false;
     if (legend) legend.textContent = "Add a step";
     addButton.textContent = "Add step";
     if (cancelEdit) cancelEdit.hidden = true;
@@ -360,6 +362,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     const check = (id, value) => { const field = el(id); if (field) field.checked = value; };
     check("clock-step-recursive", Boolean(step.recursive));
     check("clock-step-enforce-rules", step.enforce_rules !== false);
+    check("clock-step-require-following", Boolean(step.require_following));
     if (legend) legend.textContent = `Edit step ${index + 1}`;
     addButton.textContent = `Update step ${index + 1}`;
     if (cancelEdit) cancelEdit.hidden = false;
@@ -389,12 +392,14 @@ export function installClockwheelPanel({ document: doc = document, request = req
         throw new Error(`Add a ${type === "liner" ? "voice liner" : "music"} folder under Music folders and Voice liner folders first.`);
       }
       if (type === "track") return { type, source, path: relative("clock-step-path", "The track", false) };
-      return {
+      const step = {
         type, source, folder: relative("clock-step-folder", "The subfolder", true),
         recursive: el("clock-step-recursive").checked,
         selection: el("clock-step-selection").value,
         enforce_rules: el("clock-step-enforce-rules").checked,
       };
+      if (type === "liner") step.require_following = el("clock-step-require-following").checked;
+      return step;
     }
     if (type === "settings") {
       const preset = el("clock-step-preset")?.value || "";
@@ -416,6 +421,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       changed(`Updated ${position(index)}.`, index, "edit");
     } else {
       clock.steps.push(step);
+      resetForm();
       dirty = true;
       renderSteps();
       say(`Added ${position(clock.steps.length - 1)}. Not saved yet.`);

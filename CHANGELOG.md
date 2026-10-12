@@ -19,7 +19,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   switch preset. Profiles remember the active clockwheel, and the schedule's
   "Change song picking" action can switch to a clockwheel by name. Import .PAL turns a SAM
   Broadcaster `.PAL` file into a new clockwheel, and now accepts folders inside a registered
-  library folder.
+  library folder. Liner steps have an option to play only when there is room for the following
+  song before the next reset. If the pair will not fit, the liner is skipped and the song follows
+  the usual clock rules. The check uses saved cue points and overlap, and is off by default.
 
 - A cart wall (the Carts tab) with four pages of twelve numbered carts for station IDs, jingles
   and sound effects. Assign a voice liner or an uploaded clip, then play it with its button or,

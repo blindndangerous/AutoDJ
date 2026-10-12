@@ -1459,6 +1459,12 @@ These list keys do not replace the playback or spoken-status shortcuts. Nothing 
 another clockwheel with unsaved changes asks first. **Restart at these minutes past each hour**
 sends the clockwheel back to step 1 at the song change nearest each minute.
 
+For a voice liner step, **Only play if the following track fits before the next reset** is off
+by default. Turn it on to leave out the liner when the liner and the selected song would run
+past the next reset. The check uses their saved cue points and overlap, through the song's
+next handoff. The song still follows the usual clock and repeat rules; skipping the liner does
+not count it as played. With no reset times set, this checkbox has no effect.
+
 Each clockwheel is one JSON file in `clockwheels/` in the active index folder, named after the
 clockwheel and included in `autodj backup`. Names allow letters, digits, spaces, dashes and
 underscores, up to 64. The format is versioned and checked strictly; an unknown field, step type
