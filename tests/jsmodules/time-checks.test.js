@@ -25,7 +25,14 @@ const liveText = () => vi.waitFor(() => {
 
 function server(overrides = {}) {
   const settings = { enabled: true, hour_format: "12", rule: "after_hour_song",
-    timezone: "UTC", duck_db: -12, missing_minutes: 1439, tts_available: true, ...overrides };
+    timezone: "UTC", duck_db: -12, missing_minutes: 1439, tts_available: true,
+    enabled_packs: ["Studio"], pack_order: "rotate",
+    packs: [
+      { name: "Studio", enabled: true, minutes_covered: 1440,
+        summary: "1440 of 1440 minutes covered. Hour files missing: none." },
+      { name: "Night & Day", enabled: false, minutes_covered: 0, summary: "Folder not found." },
+    ],
+    ...overrides };
   return vi.fn(async (url, options = {}) => {
     if (options.method === "PUT") return { ...settings, ...JSON.parse(options.body) };
     if (url.endsWith("/test")) return { message: "Time check played" };
@@ -72,6 +79,108 @@ describe("Time checks panel markup", () => {
     expect(status.getAttribute("aria-live")).toBe("polite");
     expect(status.getAttribute("aria-atomic")).toBe("true");
     expect(byId("tc-clips-status").getAttribute("aria-live")).toBeNull();
+  });
+
+  it("groups the voice packs and labels the order and test choices", () => {
+    const packs = byId("tc-packs");
+    expect(packs.tagName).toBe("FIELDSET");
+    expect(packs.querySelector("legend").textContent).toBe("Voice packs");
+    expect(byId(packs.getAttribute("aria-describedby")).textContent).toContain("RadioBOSS");
+    expect(byId("tc-pack-list").getAttribute("aria-live")).toBeNull();
+    expect([...byId("tc-pack-order").options].map((o) => o.value)).toEqual(["rotate", "random"]);
+    for (const id of ["tc-pack-order", "tc-test-voice"]) {
+      expect(document.querySelector(`label[for="${id}"]`)?.textContent.trim(), id).toBeTruthy();
+      expect(byId(byId(id).getAttribute("aria-describedby"))?.textContent.trim(), id).toBeTruthy();
+    }
+    expect(byId("tc-test-voice").options[0].value).toBe("");
+  });
+});
+
+describe("voice packs", () => {
+  it("lists each pack as a labelled, described native checkbox", async () => {
+    const controls = installTimeChecks({ request: server(), interval: () => {} });
+    await controls.refresh();
+    const boxes = [...byId("tc-pack-list").querySelectorAll("input")];
+    expect(boxes.map((box) => [box.type, box.value, box.checked])).toEqual([
+      ["checkbox", "Studio", true], ["checkbox", "Night & Day", false]]);
+    for (const box of boxes) {
+      expect(document.querySelector(`label[for="${box.id}"]`).textContent).toBe(box.value);
+    }
+    expect(byId(boxes[1].getAttribute("aria-describedby")).textContent).toBe("Folder not found.");
+    expect(byId("tc-packs-empty").hidden).toBe(true);
+    expect([...byId("tc-test-voice").options].map((o) => o.textContent)).toEqual([
+      "The ticked packs, then clips, then text to speech", "Voice pack Studio",
+      "Voice pack Night & Day"]);
+    expect(byId("tc-pack-order").value).toBe("rotate");
+  });
+
+  it("says so when config.toml lists no packs", async () => {
+    const controls = installTimeChecks({ request: server({ packs: [] }), interval: () => {} });
+    await controls.refresh();
+    expect(byId("tc-packs-empty").hidden).toBe(false);
+    expect(byId("tc-pack-list").children).toHaveLength(0);
+  });
+
+  it("saves ticked packs and the order by name, out loud, and keeps focus on refresh", async () => {
+    const request = server();
+    const controls = installTimeChecks({ request, interval: () => {} });
+    await controls.refresh();
+    const night = byId("tc-pack-list").querySelectorAll("input")[1];
+    night.focus();
+    night.checked = true;
+    night.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith("/api/time-checks",
+      expect.objectContaining({ method: "PUT" })));
+    const put = request.mock.calls.find(([, options]) => options?.method === "PUT")[1];
+    expect(JSON.parse(put.body)).toMatchObject({
+      enabled_packs: ["Studio", "Night & Day"], pack_order: "rotate" });
+    expect(await liveText()).toBe("Time check settings saved.");
+    await controls.refresh();
+    expect(document.activeElement).toBe(night);
+    const order = byId("tc-pack-order");
+    order.value = "random";
+    order.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(request.mock.calls.some(([, options]) =>
+      options?.body?.includes('"pack_order":"random"'))).toBe(true));
+  });
+
+  it("puts the ticks back when the save fails", async () => {
+    const base = server();
+    const request = vi.fn((url, options = {}) => options.method === "PUT"
+      ? Promise.reject(new Error("No voice pack named Old")) : base(url, options));
+    const controls = installTimeChecks({ request, interval: () => {} });
+    await controls.refresh();
+    const studio = byId("tc-pack-list").querySelector("input");
+    studio.checked = false;
+    studio.dispatchEvent(new Event("change"));
+    expect(await liveText()).toBe("Could not save time check settings: No voice pack named Old");
+    expect(studio.checked).toBe(true);
+  });
+
+  it("tests a chosen pack on the server and says where the voice came from", async () => {
+    const request = vi.fn(async (url, options = {}) => (url.endsWith("/test")
+      ? { message: "Voice pack Studio cannot say this minute; played the recorded clip" }
+      : server()(url, options)));
+    const controls = installTimeChecks({ request, interval: () => {} });
+    await controls.refresh();
+    byId("tc-test-voice").value = "Studio";
+    byId("tc-test").click();
+    expect(await liveText()).toBe(
+      "Voice pack Studio cannot say this minute; played the recorded clip.");
+    expect(request).toHaveBeenCalledWith("/api/time-checks/test", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pack: "Studio" }) });
+  });
+
+  it("previews a chosen pack in this browser", async () => {
+    const binary = vi.fn(async () => new ArrayBuffer(8));
+    const controls = installTimeChecks({ request: server(), binary,
+      playLiner: async () => true, testOnServer: () => false, interval: () => {} });
+    await controls.refresh();
+    byId("tc-test-voice").value = "Night & Day";
+    byId("tc-test").click();
+    expect(await liveText()).toBe("Time check played.");
+    expect(binary).toHaveBeenCalledWith("/api/time-checks/preview?pack=Night%20%26%20Day");
   });
 });
 

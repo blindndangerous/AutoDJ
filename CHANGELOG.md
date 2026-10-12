@@ -35,6 +35,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   12- or 24-hour speech; doctor reports missing recordings, and backups include the clips and the
   saved switches. `scripts/time_check_sapi.ps1` speaks with a chosen Windows SAPI voice.
 
+- Time checks can speak from voice packs: folders of hour and minute files, named the way
+  RadioBOSS names them (`hr_05.mp3`, `hr_05o.mp3`, `m_56.mp3`, optional intro, outro, am and
+  pm), listed in `[time_checks] voice_packs`. AutoDJ trims each piece's silence, matches their
+  loudness and joins them with a 40 ms equal-power crossfade, so the time sounds like one
+  sentence, then plays it through the voice liner path. Settings, Time checks lists the packs as
+  checkboxes with their coverage, takes turns between ticked packs or picks one at random, and
+  can test one pack. A pack that lacks the minute falls back to the next pack, the recorded
+  clips, then text to speech. Doctor reports each pack's missing hours, exact hours and minutes
+  and the files it does not use; packs kept in the `time_checks` folder are in backups.
+
 - DMCA mode (`[dmca] enabled = true`): every pick mode, the clockwheel included, keeps to the
   US statutory webcasting licence's performance complement (at most 3 songs from one album, 2 in
   a row, and 4 by one artist or from one box set, 3 in a row, in any three hours; featured

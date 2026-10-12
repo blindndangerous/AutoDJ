@@ -1,5 +1,6 @@
-// Settings > Time checks: the three switches a paired browser may change,
-// the recorded-clip coverage, and "Play a time check now".
+// Settings > Time checks: the switches a paired browser may change, which
+// configured voice packs speak (by name; the server keeps the folders), each
+// pack's and the recorded clips' coverage, and "Play a time check now".
 //
 // In browser playback this page also plays the time check after the song
 // that crosses the hour, through the same voice liner path (duck and
@@ -23,8 +24,13 @@ export function installTimeChecks({ doc = document, request = requestJson,
   const clips = get("clips-status");
   const status = get("status");
   const test = get("test");
+  const order = get("pack-order");
+  const packList = get("pack-list");
+  const packsEmpty = get("packs-empty");
+  const testVoice = get("test-voice");
   const panel = doc.getElementById("spanel-time-checks");
-  if (!enabled || !format || !rule || !clips || !status || !test) {
+  if (!enabled || !format || !rule || !clips || !status || !test || !order || !packList
+      || !packsEmpty || !testVoice) {
     return { refresh: async () => {}, noteTrack: () => {} };
   }
   let settings = null;
@@ -45,10 +51,54 @@ export function installTimeChecks({ doc = document, request = requestJson,
     return parts.filter((part) => part.type !== "literal").map((part) => part.value).join(":");
   }
 
+  const packBoxes = () => [...packList.querySelectorAll("input[type=checkbox]")];
+
+  // One native checkbox per pack, its coverage as its description.  The
+  // rows are rebuilt only when the configured packs change, so a refresh
+  // never takes focus away from a checkbox.
+  function showPacks(packs) {
+    const names = packs.map((pack) => pack.name);
+    if (JSON.stringify(packBoxes().map((box) => box.value)) !== JSON.stringify(names)) {
+      packList.replaceChildren(...packs.map((pack, index) => {
+        const row = doc.createElement("div");
+        row.className = "settings-check";
+        const box = doc.createElement("input");
+        box.type = "checkbox";
+        box.id = `tc-pack-${index}`;
+        box.value = pack.name;
+        box.setAttribute("aria-describedby", `tc-pack-${index}-desc`);
+        box.addEventListener("change", save);
+        const label = doc.createElement("label");
+        label.htmlFor = box.id;
+        label.textContent = pack.name;
+        const desc = doc.createElement("span");
+        desc.className = "setting-desc";
+        desc.id = `tc-pack-${index}-desc`;
+        row.append(box, label);
+        return [row, desc];
+      }).flat());
+      const chosen = testVoice.value;
+      testVoice.replaceChildren(testVoice.options[0], ...names.map((name) => {
+        const option = doc.createElement("option");
+        option.value = name;
+        option.textContent = `Voice pack ${name}`;
+        return option;
+      }));
+      testVoice.value = names.includes(chosen) ? chosen : "";
+    }
+    packBoxes().forEach((box, index) => {
+      if (doc.activeElement !== box) box.checked = packs[index].enabled;
+      get(`pack-${index}-desc`).textContent = packs[index].summary;
+    });
+    packsEmpty.hidden = packs.length > 0;
+  }
+
   function showSettings() {
     if (doc.activeElement !== enabled) enabled.checked = settings.enabled;
     if (doc.activeElement !== format) format.value = settings.hour_format;
     if (doc.activeElement !== rule) rule.value = settings.rule;
+    if (doc.activeElement !== order) order.value = settings.pack_order;
+    showPacks(settings.packs || []);
     const recorded = MINUTES - settings.missing_minutes;
     const fallback = settings.tts_available
       ? "Text to speech says the minutes without a clip."
@@ -69,7 +119,9 @@ export function installTimeChecks({ doc = document, request = requestJson,
   }
 
   async function save() {
-    const body = { enabled: enabled.checked, hour_format: format.value, rule: rule.value };
+    const body = { enabled: enabled.checked, hour_format: format.value, rule: rule.value,
+      enabled_packs: packBoxes().filter((box) => box.checked).map((box) => box.value),
+      pack_order: order.value };
     try {
       settings = await request("/api/time-checks", {
         method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -82,21 +134,27 @@ export function installTimeChecks({ doc = document, request = requestJson,
         enabled.checked = settings.enabled;
         format.value = settings.hour_format;
         rule.value = settings.rule;
+        order.value = settings.pack_order;
+        packBoxes().forEach((box, index) => { box.checked = Boolean(settings.packs?.[index]?.enabled); });
       }
       say(`Could not save time check settings: ${error.message}`, "error");
     }
   }
 
-  async function playHere() {
-    const audio = await binary("/api/time-checks/preview");
+  async function playHere(pack = "") {
+    const query = pack ? `?pack=${encodeURIComponent(pack)}` : "";
+    const audio = await binary(`/api/time-checks/preview${query}`);
     return playLiner(audio, settings?.duck_db ?? -12);
   }
 
   async function testNow() {
+    const pack = testVoice.value;
     try {
       if (testOnServer()) {
-        await request("/api/time-checks/test", { method: "POST" });
-        say("Time check played.");
+        const options = pack ? { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pack }) } : { method: "POST" };
+        const result = await request("/api/time-checks/test", options);
+        say(`${result?.message || "Time check played"}.`);
         return;
       }
       const refusal = prepareTest();
@@ -104,7 +162,7 @@ export function installTimeChecks({ doc = document, request = requestJson,
         say(refusal);
         return;
       }
-      if (await playHere()) say("Time check played.");
+      if (await playHere(pack)) say("Time check played.");
       else say("Time check was not played.");
     } catch (error) {
       say(`Time check failed: ${error.message}`, "error");
@@ -120,7 +178,7 @@ export function installTimeChecks({ doc = document, request = requestJson,
     void playHere().catch(() => {}).finally(() => { playing = false; });
   }
 
-  for (const control of [enabled, format, rule]) control.addEventListener("change", save);
+  for (const control of [enabled, format, rule, order]) control.addEventListener("change", save);
   test.addEventListener("click", () => withDisabled(test, testNow));
   panel?.addEventListener("toggle", () => {
     if (panel.open) void refresh();
