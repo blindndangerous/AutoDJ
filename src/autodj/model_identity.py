@@ -28,6 +28,8 @@ from typing import TYPE_CHECKING
 from huggingface_hub import snapshot_download
 from huggingface_hub.errors import LocalEntryNotFoundError
 
+from autodj.model_files import IGNORE_PATTERNS
+
 if TYPE_CHECKING:
     from autodj.config import IndexConfig, ModelConfig
 
@@ -90,6 +92,10 @@ def local_model_folder(model_cfg: ModelConfig, index_cfg: IndexConfig) -> Path |
             repo_id=model_cfg.name,
             revision=model_cfg.revision,
             cache_dir=index_cfg.model_dir,
+            # The same filter the download used; without it huggingface_hub
+            # counts the skipped files as missing and calls the snapshot
+            # incomplete.
+            ignore_patterns=IGNORE_PATTERNS,
             local_files_only=True,
         )
     except (LocalEntryNotFoundError, OSError, ValueError):

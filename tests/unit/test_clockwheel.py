@@ -192,6 +192,27 @@ def test_runtime_picker_preserves_liner_flag_through_skips_settings_and_fixed_tr
     assert no_liner.liner is None and no_liner.liner_requires_following is False
 
 
+def test_runtime_picker_preserves_liner_flag_through_category_step():
+    entry = Track(r"C:\Music\song.flac")
+    liner = Track(r"C:\liners\id.wav")
+    slots = [
+        ClockSlot(r"C:\liners", kind="liner", require_following=True),
+        ClockSlot(kind="category", category="favorites"),
+    ]
+    pick = pick_slot(
+        slots,
+        0,
+        [entry],
+        {},
+        lambda _: True,
+        liners=[liner],
+        categories={"favorites": ("Favorites", frozenset({entry.path}))},
+    )
+    assert pick.entry is entry
+    assert pick.liner is liner
+    assert pick.liner_requires_following is True
+
+
 def test_runtime_picker_checks_rules_in_least_recent_order():
     now = datetime(2025, 1, 2)
     entries = [

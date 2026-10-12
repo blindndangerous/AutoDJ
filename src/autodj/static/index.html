@@ -1937,11 +1937,71 @@
            aria-labelledby="library-log-heading"><p class="lib-log-empty">No job has run yet.</p></div>
     </details>
 
+    <section class="card" aria-labelledby="categories-heading">
+      <h2 id="categories-heading">Categories</h2>
+      <!-- categories-panel.js fills this section.  The list and the match
+           count are plain text, not live regions: each result of a button
+           (Check, Save and Delete included) is said once through
+           #categories-status. -->
+      <p>A category is a set of songs that a clockwheel step picks from, such as rotation A, B, C and D, or Remembering the 2000s. Its songs come from a beets query or from an M3U playlist file. AutoDJ works the songs out again when beets, a playlist file or the library changes.</p>
+      <div id="categories-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+      <h3 id="categories-list-heading">Saved categories</h3>
+      <ul id="categories-list" aria-labelledby="categories-list-heading"><li>No categories loaded.</li></ul>
+      <button type="button" id="categories-add">Add category</button>
+      <!-- Add and Edit share this form.  It checks its own fields: an error
+           is said, the field gets aria-invalid and focus, and the words stay
+           in #categories-form-error. -->
+      <form id="categories-form" novalidate hidden>
+        <fieldset>
+          <legend id="categories-form-legend">Add category</legend>
+          <p id="categories-form-error" class="field-error" hidden></p>
+          <div class="settings-row">
+            <label for="categories-name">Name</label>
+            <input id="categories-name" type="text" maxlength="64" autocomplete="off" spellcheck="false" required>
+          </div>
+          <fieldset>
+            <legend>Songs come from</legend>
+            <div class="settings-check">
+              <input type="radio" name="categories-source" id="categories-source-query" value="query" checked>
+              <label for="categories-source-query">A beets query</label>
+            </div>
+            <div class="settings-check">
+              <input type="radio" name="categories-source" id="categories-source-m3u" value="m3u">
+              <label for="categories-source-m3u">A playlist file</label>
+            </div>
+          </fieldset>
+          <div id="categories-query-field">
+            <div class="settings-row">
+              <label for="categories-query">Beets query</label>
+              <input id="categories-query" type="text" maxlength="500" autocomplete="off" spellcheck="false" aria-describedby="categories-query-help">
+            </div>
+            <p class="setting-desc" id="categories-query-help">
+              Any beets field, including ones plugins add, such as original_year:2000..2009 or genre:rock ^artist:"bon jovi". field:value matches part of the text, a..b is a range of numbers, ^ leaves out what follows it, and quotes keep words together; every part must match. original_year is the first release, and the release year stands in when beets has none. Regular expressions, alternatives with commas and plugin queries are not supported.
+            </p>
+          </div>
+          <div id="categories-playlist-field" hidden>
+            <div class="settings-row">
+              <label for="categories-playlist">Playlist file</label>
+              <select id="categories-playlist" aria-describedby="categories-playlist-help"></select>
+            </div>
+            <p class="setting-desc" id="categories-playlist-help">
+              M3U and M3U8 files in <span id="categories-folder">the playlists folder</span>. Each line is matched to a song in the library, by its full path or by a path from the playlist's folder or the music folder; lines that match none are counted as missing.
+            </p>
+          </div>
+          <button type="button" id="categories-check" aria-describedby="categories-match">Check</button>
+          <!-- The last Check or Save result.  Plain text: Check and Save say it once. -->
+          <p id="categories-match">Not checked yet.</p>
+          <button type="submit" id="categories-save">Save category</button>
+          <button type="button" id="categories-cancel">Cancel</button>
+        </fieldset>
+      </form>
+    </section>
+
     <section class="card" aria-labelledby="clockwheel-heading">
       <h2 id="clockwheel-heading">Clockwheels</h2>
       <!-- clockwheel-panel.js fills this section.  Each result of a button
            is said once through #clock-status; the lists are plain text. -->
-      <p>A clockwheel is a repeating order of steps: music or voice liners from a library folder, a specific track, or a preset change. Keep as many as you like. The active one plays when Pick mode is set to Clockwheel, and the Schedule can switch to another one at set times.</p>
+      <p>A clockwheel is a repeating order of steps: music or voice liners from a library folder, music from a category, a specific track, or a preset change. Keep as many as you like. The active one plays when Pick mode is set to Clockwheel, and the Schedule can switch to another one at set times.</p>
       <p id="clock-notice" class="field-error" hidden></p>
       <div id="clock-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
       <h3 id="clock-list-heading">Saved clockwheels</h3>
@@ -1970,12 +2030,18 @@
         <select id="clock-step-type">
           <option value="music">Music from a folder</option>
           <option value="liner">Voice liner from a folder</option>
+          <option value="category">Music from a category</option>
           <option value="track">A specific track</option>
           <option value="settings">Switch preset</option>
         </select>
         <div class="clock-step-field">
           <label for="clock-step-source">Library folder</label>
           <select id="clock-step-source"></select>
+        </div>
+        <div class="clock-step-field">
+          <label for="clock-step-category">Category</label>
+          <select id="clock-step-category" aria-describedby="clock-step-category-help"></select>
+          <span class="setting-desc" id="clock-step-category-help">Add categories under Categories above.</span>
         </div>
         <div class="clock-step-field">
           <label for="clock-step-folder">Subfolder (optional)</label>

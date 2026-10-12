@@ -24,6 +24,16 @@ AutoDJ is a single-user local music player with these exposed surfaces:
   step must be a track the catalog holds; the browser never sends a full path. Unknown fields and
   step types are refused. PAL import parses a limited declarative subset and never executes
   uploaded text.
+- Rotation category routes (`/api/categories`) require a paired browser and refuse unknown
+  fields. A playlist category names a file inside the configured playlists folder by a relative
+  path with no `..`, drive letter or backslash, and the resolved file must stay inside that
+  folder; the browser never sends a full path and the folder is set only in `config.toml`. The
+  beets query is parsed by AutoDJ itself (`autodj.beets_query`), never by a shell or as SQL:
+  field names select columns only from the beets table's own column list, values are SQL
+  parameters or compared in Python, and the beets database is opened read-only. Regular
+  expressions are refused, so a query costs at most one pass over the library, and playlist
+  files larger than 8 MB are not read. `categories.json` is written atomically and a damaged one
+  is set aside, not used.
 - Machine tokens let a program on another computer use one narrow API without a browser. The
   only scope so far is "analysis worker" (`autodj worker`); see "Machine tokens and analysis
   workers" below.

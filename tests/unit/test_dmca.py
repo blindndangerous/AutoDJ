@@ -419,3 +419,55 @@ def test_with_nothing_else_to_play_the_pick_stands_and_a_warning_names_the_limit
     with caplog.at_level(logging.WARNING, logger="autodj.player"):
         assert player._dmca_checked(second, context) is second
     assert "nothing else can play" in caplog.text
+
+
+def _with_category_clock(player: Player, titles: set[str]) -> Player:
+    """A clock of one category step holding the songs with *titles*."""
+    _with_library(player)
+    entries = player._sim.entries_snapshot()
+    paths = frozenset(entry.path for entry in entries if entry.title in titles)
+    player._library.categories = SimpleNamespace(members=lambda: {"c1": ("Rock gold", paths)})
+    player._clock = {"cursor": 0}
+    player._clock_slots = [ClockSlot(kind="category", category="c1", selection="random")]
+    return player
+
+
+def test_category_steps_keep_the_complement() -> None:
+    player = _with_category_clock(_player("clock"), {"Four", "Five (feat. Alpha Band)", "Fine"})
+    _play_first_three(player)
+    for _ in range(8):
+        assert player._clock_pick(player._pick_context(), 0).entry.title == "Fine"
+
+
+def test_a_category_of_only_breaking_songs_plays_a_safe_one_from_the_library(caplog) -> None:
+    player = _with_category_clock(_player("clock"), {"Four", "Five (feat. Alpha Band)"})
+    current = _play_first_three(player)
+    with caplog.at_level(logging.INFO, logger="autodj.player"):
+        picked, mode, _liners, _cursor, _key = player._choose_station_next(
+            current, player._pick_context()
+        )
+    assert (picked.title, mode) == ("Fine", "clock")
+
+
+def test_an_empty_or_failing_category_never_stops_the_station(caplog) -> None:
+    player = _with_category_clock(_player("clock"), set())
+    current = _play_first_three(player)
+    with caplog.at_level(logging.WARNING, logger="autodj.player"):
+        for _ in range(3):
+            picked, mode, _liners, _cursor, _key = player._choose_station_next(
+                current, player._pick_context()
+            )
+            assert (picked.title, mode) == ("Fine", "fallback")
+        assert player._random_start_entry().title == "Fine"
+    assert caplog.text.count("the clockwheel moved on to its next step") == 1
+    assert "picking one at random" in caplog.text
+    assert "NoneType" not in caplog.text
+
+    def broken():
+        raise OSError("disk gone")
+
+    player._library.categories = SimpleNamespace(members=broken)
+    with caplog.at_level(logging.WARNING, logger="autodj.player"):
+        picked, mode, *_rest = player._choose_station_next(current, player._pick_context())
+    assert (picked.title, mode) == ("Fine", "fallback")
+    assert "rotation categories could not be read" in caplog.text

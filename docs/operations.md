@@ -63,7 +63,10 @@ check runs SQLite's integrity check on `dj_meta.db` without changing it. The `be
 warns when `[library] beets_db` names a file that does not exist: folder scanning still imports
 basic song records, but optional beets enrichment cannot run. The `dependencies` check warns when
 FFmpeg is not on the PATH: advanced analysis cannot process `.mp3`, `.m4a`, `.mp4` and `.aac`
-files, and stream mode cannot start.
+files, and stream mode cannot start. The `categories` check warns about rotation categories with no
+songs, playlist lines that match no library track (naming the first few), and a query or playlist
+that cannot be read; its detail counts each category's songs and the songs placed by their release
+year (see [Rotation categories](#rotation-categories)).
 
 ## Indexing and DJ analysis
 
@@ -1387,6 +1390,8 @@ artists file is `index/<name>/related-artists.toml` and is read only when
   `index/profiles`, plus uploaded presets in `index/stereo-tool-presets`.
 - `time_checks.json` and every recorded clip in `[time_checks] clips_folder` (or the default
   time_checks folder under the active index). Generated TTS cache files are rebuilt when needed.
+- `categories.json`, the rotation categories. Their playlist files are not included; the script
+  that writes them can write them again.
 - `manifest.json`, which records the AutoDJ version that made the archive and lists its files.
 
 Backups do not include `config.toml` or `config.local.toml`. Copy those yourself
@@ -1579,6 +1584,9 @@ Step types:
   choose the least recently played or a random track, and follow or ignore the repeat rules. A
   liner step plays over the start of the next music step; two liner steps cannot be next to each
   other.
+- **Music from a category**: a rotation category such as A, B or "Remembering the 2000s" (see
+  [Rotation categories](#rotation-categories)). It chooses the least recently played or a random
+  song of the category and follows or ignores the repeat rules, like a folder step.
 - **A specific track**, by its path inside a registered music folder. It follows the repeat rules;
   when they hold it back, the clockwheel moves on to the next step.
 - **Switch preset**: the next song is picked and mixed with that preset.
@@ -1614,6 +1622,8 @@ leaves the clock off while the station keeps playing:
     {"type": "liner", "source": "<library folder ID>", "folder": "",
      "recursive": false, "selection": "random", "enforce_rules": false},
     {"type": "track", "source": "<library folder ID>", "path": "Album/Song.flac"},
+    {"type": "category", "category": "<category ID>",
+     "selection": "least_recent", "enforce_rules": true},
     {"type": "settings", "preset": "winddown"}
   ],
   "resync_minutes": [0]
@@ -1634,6 +1644,118 @@ is refused: register the parent folder, or edit that step after the import.
 Upgrading from the single clockwheel: the clock saved by earlier versions is not read. The
 Clockwheels section and the server log say so. Import the `.PAL` file again under a name, then
 press **Activate**.
+
+## Rotation categories
+
+A rotation category is a named set of songs that clockwheel steps pick from, the way professional
+stations schedule music: rotation A for current hits, B and C for recurrents, D for gold, or a
+themed set such as "Remembering the 2000s". There is no separate weighted pick mode; how often a
+category plays is set by how many steps of the clockwheel use it.
+
+Keep them in the **Library tools** tab, **Categories**, next to the clockwheels that use them. The
+list says how many songs each category holds, how many playlist lines match no library track,
+how many songs were placed by their release year (see below), and which clockwheels use it. **Add
+category** and **Edit** open one form; **Check** counts the songs without saving, and **Save**
+refuses a query that cannot run or names a field no song has. **Delete** asks first and names the
+clockwheels with a step for the category.
+
+A category's songs come from one of two sources:
+
+- **A beets query**, such as `original_year:2000..2009` or `genre:rock ^artist:"bon jovi"`. It is
+  read against AutoDJ's library, with the values of the live beets database (`[library] beets_db`,
+  opened read-only) laid over each song, so any beets field works, including flexible attributes
+  that plugins or `beet modify` add, such as `mood` or `rotation`. Without beets the query sees the
+  library's own fields: title, artist, album, genre, year, bpm and length. AutoDJ runs the common
+  part of the beets query language itself, as beets is not needed at run time:
+  - `field:value` matches when the field contains the value, ignoring case; on a number field such
+    as `year` or `bpm` the value must match exactly.
+  - `field:a..b` is a range of numbers, both ends included; either end may be left open, as in
+    `bpm:..100`.
+  - `^` (or `-`) in front of a term leaves out what it matches.
+  - Quotes keep words together: `artist:"the beatles"`.
+  - A bare word matches artist, title, album, album artist, genre or comments.
+  - Every term must match. Regular expressions (`field::re`), exact matches (`field:=x`),
+    alternatives with commas, sorting, date ranges, path queries and plugin queries are refused
+    with a message that names the term; make a category per alternative instead.
+- **An M3U or M3U8 file** in the playlists folder (`[library] playlists_folder`, by default
+  `playlists/` in the active index folder). Each line that is not a comment is matched to a
+  library song by its full path, or by a path from the playlist's own folder or from
+  `[library] music_dir` (where beets keeps relative paths); `file://` addresses work too. Lines
+  that match no song, web addresses included, are counted and the first few are named, so a
+  script that writes paths for another machine is easy to spot. M3U8 files are UTF-8; plain M3U
+  files that are not UTF-8 are read as Windows-1252.
+
+**Years.** A year filter should use `original_year`, the year the song first came out. beets'
+`year` is the year of that particular release, so a 1985 song on a 2005 compilation has `year`
+2005. When beets has no `original_year` for a song (it stores 0), its `year` stands in, and a song
+with neither is left out of year filters. The list, Check and `autodj doctor` count the songs
+that used `year`, so you can fix their tags with beets.
+
+**When the songs are worked out.** AutoDJ works out each category's songs once and keeps the
+answer until the categories, the beets database, a playlist file or the library changes, which a
+few file-time checks before each clockwheel pick tell it; the songs are never read again for
+every pick. When a playlist is being rewritten or beets is busy importing, a category keeps the
+songs it held last time and the server log says why.
+
+**At play time.** A category step picks like a folder step: it follows the repeat rules when the
+step says so, relaxing them rather than going silent, and in DMCA mode it keeps the DMCA limits;
+when no song of the category keeps them, a song from the whole library that does plays instead,
+as for folder steps. When a step's category has no songs or was deleted, the server log
+says so once and the clockwheel moves on to its next step. When no step of a clockwheel with
+category steps has a song to play, the station plays a song from the whole library, as the other
+pick modes do when they cannot pick, rather than going silent; the clockwheel keeps its place.
+
+The categories are kept in `categories.json` in the active index folder, written atomically and
+included in `autodj backup`; a damaged file is set aside as `categories.json.bad-<id>` and the
+station starts with no categories. The playlist files are not backed up: they come from a script
+or a music folder, like the music. `autodj doctor` lists categories with no songs, missing
+playlist tracks, or a query or playlist that cannot be read.
+
+### Example: rotations A to D from playlists
+
+If a script builds rotation playlists from beets (to import them into AzuraCast, for example),
+point it at the playlists folder instead. This `update-playlists.sh` writes one M3U8 per rotation
+from a beets flexible attribute set with `beet modify rotation=A`, through a temporary file so
+AutoDJ never reads half a playlist:
+
+```bash
+#!/usr/bin/env bash
+# update-playlists.sh: write rotation playlists A to D for AutoDJ.
+set -euo pipefail
+out=/srv/autodj/playlists      # [library] playlists_folder in config.toml
+music=/mnt/music/              # beets' directory; stripped so the lines are relative to music_dir
+mkdir -p "$out"
+for rotation in A B C D; do
+  {
+    echo "#EXTM3U"
+    beet ls -f '$path' "rotation:$rotation" | sed "s|^$music||"
+  } > "$out/.$rotation.m3u8.tmp"
+  mv "$out/.$rotation.m3u8.tmp" "$out/$rotation.m3u8"
+done
+```
+
+Run it from cron after each beets import. Then in **Categories** add four categories, A to D,
+each from **A playlist file** with its file, and make a clockwheel such as A, B, A, C, station ID
+liner, A, D. Each new run of the script is used from the next song AutoDJ picks. Writing lines relative to
+the music folder keeps the playlists working when AutoDJ sees the music at another path, such as
+`/music` in the container; with full paths, AutoDJ must see the files at the same paths as beets.
+
+The playlists are optional when beets is on the same machine: a category from the query
+`rotation:A` holds the same songs without a script.
+
+### Example: Remembering the 2000s
+
+1. In **Categories**, add **Remembering the 2000s** from **A beets query** with
+   `original_year:2000..2009`, press **Check**, then **Save**. The list then says, for example,
+   "Remembering the 2000s: 1,284 songs; 12 use the release year because the first-release year is
+   missing".
+2. In **Clockwheels**, create **Throwback** with the steps: voice liner from your station ID
+   folder, music from category Remembering the 2000s, music from category Remembering the 2000s,
+   voice liner, music from category Remembering the 2000s, then save it.
+3. In **Settings**, **Schedule**, add an event at 20:00 on Saturdays that changes song picking to
+   **Throwback**, and one at 21:00 that changes it back to your usual clockwheel.
+
+For a narrower hour, add terms: `original_year:2000..2009 genre:rock ^genre:christmas`.
 
 ## Spoken time checks
 

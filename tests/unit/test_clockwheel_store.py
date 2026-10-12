@@ -89,7 +89,7 @@ def test_unsafe_names_are_refused(name):
         ([{"type": "track", "source": "src1", "path": "C:/x.flac"}], "no '..'"),
         ([{"type": "track", "source": "src1", "path": ""}], "must not be empty"),
         ([{"type": "settings", "preset": ""}, MUSIC], "name of a preset"),
-        ([{"type": "settings", "preset": "x"}], "at least one music or track step"),
+        ([{"type": "settings", "preset": "x"}], "at least one music, category or track step"),
         (
             [{"type": "liner", "source": "l"}, {"type": "liner", "source": "l"}, MUSIC],
             "both liners",
@@ -289,3 +289,66 @@ def test_a_missing_preset_or_unplayable_type_stops_loading(tmp_path):
     player = _player(tmp_path, {"name": "Other"}, sources)
     Player.configure_clock(player)
     assert "which the player cannot play" in player._clock_status
+
+
+CATEGORY = {"type": "category", "category": "c1"}
+
+
+def test_category_steps_validate_through_the_registry():
+    steps = validate_clockwheel(clock([CATEGORY]))["steps"]
+    assert steps == [
+        {"type": "category", "category": "c1", "selection": "least_recent", "enforce_rules": True}
+    ]
+    for step, message in [
+        ({**CATEGORY, "folder": "x"}, "unknown fields: folder"),
+        ({"type": "category"}, "needs: category"),
+        ({**CATEGORY, "category": "../c1"}, "saved category by its ID"),
+        ({**CATEGORY, "selection": "weighted"}, "least_recent or random"),
+        ({**CATEGORY, "enforce_rules": 1}, "true or false"),
+    ]:
+        with pytest.raises(ValueError, match=message):
+            validate_clockwheel(clock([step, MUSIC]))
+    with pytest.raises(ValueError, match="category step needs a category"):
+        ClockSlot(kind="category")
+
+
+def test_category_slots_pick_their_songs_and_skip_an_empty_or_missing_category():
+    songs = [SimpleNamespace(path=f"/music/{n}.flac") for n in range(4)]
+    members = {"a": ("A", frozenset({songs[1].path, songs[2].path})), "e": ("Empty", frozenset())}
+    slots = [
+        ClockSlot(kind="category", category="gone"),
+        ClockSlot(kind="category", category="e"),
+        ClockSlot(kind="category", category="a"),
+    ]
+    played = {songs[1].path: 10.0, songs[2].path: 5.0}
+    picked = pick_slot(slots, 0, songs, played, lambda _: True, categories=members)
+    assert (picked.entry, picked.next_cursor) == (songs[2], 0)
+    assert picked.skipped == [
+        "category step gone: the category no longer exists",
+        "category Empty: the category has no songs",
+    ]
+    blocked = pick_slot(slots, 2, songs, played, lambda _: False, categories=members)
+    assert blocked.entry is None
+    assert "category A: all 2 matching entries blocked by rules" in blocked.skipped
+    free = [ClockSlot(kind="category", category="a", selection="random", enforce_rules=False)]
+    assert pick_slot(free, 0, songs, {}, lambda _: False, categories=members).entry in songs[1:3]
+    # A category whose songs are all outside the pool (DMCA, just played) is skipped too.
+    outside = pick_slot(slots[2:], 0, songs[:1], {}, lambda _: True, categories=members)
+    assert outside.skipped == ["category A: no matching entries"]
+
+
+def test_player_loads_category_steps_even_for_a_category_deleted_since(tmp_path):
+    sources = [{"id": "src1", "kind": "music", "path": str(tmp_path), "recursive": True}]
+    ClockwheelStore(tmp_path / "clockwheels").save(
+        clock([{**CATEGORY, "selection": "random", "enforce_rules": False}, MUSIC])
+    )
+    player = _player(tmp_path, {"name": "Morning"}, sources)
+    Player.configure_clock(player)
+    assert player._clock_status == "Ready"
+    slot = player._clock_slots[0]
+    assert (slot.kind, slot.category, slot.selection, slot.enforce_rules) == (
+        "category",
+        "c1",
+        "random",
+        False,
+    )

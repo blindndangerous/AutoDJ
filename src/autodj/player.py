@@ -1021,7 +1021,7 @@ class Player:
                 context = dmca or self._pick_context()
                 picked = self._clock_pick(context, None)
                 if picked.entry is None:
-                    return None
+                    return self._empty_category_fallback(None, context)
                 upcoming = self._dmca_checked(picked.entry, context)
                 if picked.liner is not None:
                     if picked.liner_requires_following:
@@ -1133,6 +1133,17 @@ class Player:
             elif kind == "settings":
                 get_preset(step["preset"], self._cfg.presets)
                 slots.append(ClockSlot(kind="settings", preset=step["preset"]))
+            elif kind == "category":
+                # A category deleted or emptied later is skipped when it is
+                # reached, like an empty folder, so it never stops loading.
+                slots.append(
+                    ClockSlot(
+                        kind="category",
+                        category=step["category"],
+                        selection=step["selection"],
+                        enforce_rules=step["enforce_rules"],
+                    )
+                )
             else:
                 raise ValueError(f"Step {number} has type {kind!r}, which the player cannot play")
         return clock, validate_clock(slots)
@@ -1162,6 +1173,7 @@ class Player:
         )
         last_played = self._library.last_played()
         liners = self._library.entries_snapshot("liner")
+        categories = self._category_members()
 
         def pick(
             use_rules: bool,
@@ -1181,7 +1193,15 @@ class Player:
                 pool = complying if use_dmca else eligible
             else:
                 pool = tuple(entry for entry in entries if allowed(entry))
-            return pick_slot(self._clock_slots, position, pool, last_played, allowed, liners=liners)
+            return pick_slot(
+                self._clock_slots,
+                position,
+                pool,
+                last_played,
+                allowed,
+                liners=liners,
+                categories=categories,
+            )
 
         # Like the other pick modes, relax rather than stop the music: first
         # the artist, album and title rules, then the track window, then the
@@ -1223,6 +1243,7 @@ class Player:
         elif picked.entry is not None:
             self._clock_protected_warned = False
         self._clock_status = "; ".join(picked.skipped) or "Ready"
+        self._log_category_skips(picked.skipped)
         if picked.entry is not None and picked.preset:
             from autodj.presets import get_preset
 
@@ -1233,6 +1254,52 @@ class Player:
         if picked.entry is not None:
             _log_repeat_blocks(context.repeat, picked.entry)
         return picked
+
+    def _category_members(self) -> dict[str, tuple[str, frozenset[str]]]:
+        """Each rotation category's name and songs, or none when they cannot be read.
+
+        The category index works them out again only when the categories,
+        beets, a playlist file or the library changed.  A failure leaves the
+        category steps empty, so the clock moves on to its other steps.
+        """
+        index = getattr(self._library, "categories", None)
+        if index is None:
+            return {}
+        try:
+            members: dict[str, tuple[str, frozenset[str]]] = index.members()
+        except Exception:
+            logger.exception("Clock: the rotation categories could not be read")
+            return {}
+        return members
+
+    def _empty_category_fallback(
+        self, current: IndexEntry | None, context: _PickContext
+    ) -> IndexEntry | None:
+        """A song from the whole library when a clock with category steps found none.
+
+        A category emptied by a failed playlist script or a deleted category
+        must not silence a clockwheel made of category steps, so the pick
+        falls back as the other pick modes do (the clock keeps its place).
+        A clock of folder and track steps only is left as it was.
+        """
+        slots = getattr(self, "_clock_slots", None) or ()
+        if not any(getattr(slot, "kind", None) == "category" for slot in slots):
+            return None
+        reason = ValueError(f"the clockwheel has no song to play: {self._clock_status}")
+        try:
+            chosen = self._fallback_pick(current, context, reason)
+        except Exception:
+            return None
+        return self._dmca_checked(chosen, context)
+
+    def _log_category_skips(self, skipped: list[str]) -> None:
+        """Log the category steps a pick passed over, once until the reasons change."""
+        reasons = tuple(reason for reason in skipped if reason.startswith("category"))
+        if reasons and reasons != getattr(self, "_category_skips_logged", ()):
+            logger.warning(
+                "Clock: %s; the clockwheel moved on to its next step", "; ".join(reasons)
+            )
+            self._category_skips_logged = reasons
 
     def _candidate_filter(self, context: _PickContext) -> Callable[[IndexEntry], bool]:
         """The repeat rules and, in DMCA mode, the complement, as one filter."""
@@ -1398,54 +1465,61 @@ class Player:
                 )
             picked = self._clock_pick(context, cursor)
             if picked.entry is None:
-                raise ValueError(self._clock_status)
-            boundary = self._pending_clock_boundary or getattr(self, "_clock_next_boundary", None)
-            if boundary is not None:
-                from datetime import datetime
-
-                from autodj.clockwheel import next_boundary, resync_due
-
-                start, segue = self._clock_music_span(current)
-                when = time.time() + max(
-                    0.0, segue - max(start, self._pending_offset / SAMPLE_RATE)
+                # Only empty or deleted categories left nothing to play.
+                rescue = self._empty_category_fallback(current, context)
+                if rescue is None:
+                    raise ValueError(self._clock_status)
+                upcoming, mode = rescue, "fallback"
+            else:
+                boundary = self._pending_clock_boundary or getattr(
+                    self, "_clock_next_boundary", None
                 )
-                playing = self._playing_render
-                if playing is not None and playing.next_entry is current:
-                    when += max(
-                        0.0,
-                        (len(playing.audio) + playing.start_offset - self._playback_pos[0])
-                        / SAMPLE_RATE,
+                if boundary is not None:
+                    from datetime import datetime
+
+                    from autodj.clockwheel import next_boundary, resync_due
+
+                    start, segue = self._clock_music_span(current)
+                    when = time.time() + max(
+                        0.0, segue - max(start, self._pending_offset / SAMPLE_RATE)
                     )
-                track_start, track_segue = self._clock_music_span(picked.entry)
-                duration_s = track_segue - track_start
-                if resync_due(when, duration_s, boundary):
-                    reset = self._clock_pick(context, 0)
-                    if reset.entry is not None:
-                        picked = reset
-                        self._clock_status = "Restarting the clock at the nearest song handoff"
-                        following = next_boundary(
-                            datetime.fromtimestamp(max(boundary, when)).astimezone(),
-                            (self._clock or {}).get("resync_minutes", [0]),
+                    playing = self._playing_render
+                    if playing is not None and playing.next_entry is current:
+                        when += max(
+                            0.0,
+                            (len(playing.audio) + playing.start_offset - self._playback_pos[0])
+                            / SAMPLE_RATE,
                         )
-                        boundary = following.timestamp() if following else None
-                        self._pending_clock_boundary = boundary
-            upcoming = self._dmca_checked(picked.entry, context)
-            mode, cursor = "clock", picked.next_cursor
-            if (
-                picked.liner is not None
-                and not liners
-                and (
-                    not picked.liner_requires_following
-                    or self._clock_liner_fits(
-                        current,
-                        picked.liner,
-                        upcoming,
-                        when if boundary is not None else 0.0,
-                        boundary,
+                    track_start, track_segue = self._clock_music_span(picked.entry)
+                    duration_s = track_segue - track_start
+                    if resync_due(when, duration_s, boundary):
+                        reset = self._clock_pick(context, 0)
+                        if reset.entry is not None:
+                            picked = reset
+                            self._clock_status = "Restarting the clock at the nearest song handoff"
+                            following = next_boundary(
+                                datetime.fromtimestamp(max(boundary, when)).astimezone(),
+                                (self._clock or {}).get("resync_minutes", [0]),
+                            )
+                            boundary = following.timestamp() if following else None
+                            self._pending_clock_boundary = boundary
+                upcoming = self._dmca_checked(picked.entry, context)
+                mode, cursor = "clock", picked.next_cursor
+                if (
+                    picked.liner is not None
+                    and not liners
+                    and (
+                        not picked.liner_requires_following
+                        or self._clock_liner_fits(
+                            current,
+                            picked.liner,
+                            upcoming,
+                            when if boundary is not None else 0.0,
+                            boundary,
+                        )
                     )
-                )
-            ):
-                return upcoming, mode, ((picked.liner, False),), cursor, ""
+                ):
+                    return upcoming, mode, ((picked.liner, False),), cursor, ""
         else:
             try:
                 upcoming, mode = self._choose_by_mode(current, context)
@@ -2612,7 +2686,9 @@ class Player:
                 type(reason).__name__,
                 reason,
                 ignored_note,
-                exc_info=not isinstance(reason, SimilarityError),
+                # A reason that was never raised (an empty clock) has no traceback.
+                exc_info=not isinstance(reason, SimilarityError)
+                and reason.__traceback__ is not None,
             )
         if chosen is None:
             raise SimilarityError("The library has no track that is not silent.")
