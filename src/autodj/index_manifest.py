@@ -1,4 +1,7 @@
-"""Publication of index generations: the manifest, its files and the lock.
+"""Deprecated published-index format, retained for import and migration.
+
+Current serving and indexing use library.db. Existing generations remain readable
+for first-use imports, old backups and the migration commands.
 
 An index directory holds, for its live generation *N*:
 

@@ -7,7 +7,7 @@ Tests verify that commands complete without crashing and produce expected output
 
 import sqlite3
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -147,32 +147,17 @@ class TestIndexCommand:
         result = runner.invoke(cli, ["--config", str(tmp_path / "nope.toml"), "index"])
         assert result.exit_code == 1
 
-    def test_index_limit_runs_without_crash(self, runner: CliRunner, tmp_path: Path) -> None:
-        """Smoke test: 'autodj index --limit 1' completes without crashing.
-
-        Mocks the model loader and build_index so no real audio processing
-        or model download occurs.
-        """
+    def test_index_empty_library_does_not_load_model(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
         config_path = tmp_path / "config.toml"
         _write_config(config_path, tmp_path)
-
-        fake_wrapper = MagicMock()
-
-        with (
-            patch("autodj.model.download_model_if_needed", return_value=tmp_path / "model"),
-            patch("autodj.model.load_model", return_value=fake_wrapper),
-            patch("autodj.indexer.build_index") as mock_build,
-        ):
-            result = runner.invoke(
-                cli,
-                ["--config", str(config_path), "index", "--limit", "1"],
-            )
-
-        assert result.exit_code == 0, f"Unexpected output:\n{result.output}"
-        mock_build.assert_called_once()
-        # Verify --limit was forwarded correctly
-        call_kwargs = mock_build.call_args.kwargs
-        assert call_kwargs.get("limit") == 1
+        with patch("autodj.model.download_model_if_needed") as download:
+            result = runner.invoke(cli, ["--config", str(config_path), "index", "--limit", "1"])
+        assert result.exit_code == 0, result.output
+        download.assert_not_called()
+        assert (tmp_path / "index" / "default" / "library.db").is_file()
+        assert not (tmp_path / "index" / "default" / "index-manifest.json").exists()
 
 
 # ---------------------------------------------------------------------------

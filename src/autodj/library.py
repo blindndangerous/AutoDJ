@@ -593,10 +593,12 @@ class LibraryManager:
             self.refresh()
             self._set_state(running=False, current="")
 
-    def analysis_pending(self) -> list[dict[str, Any]]:
+    def analysis_pending(self, force: bool = False) -> list[dict[str, Any]]:
         pending = []
         for record in self.catalog.all_entries("music"):
-            if not Path(record["path"]).is_file() or self.catalog.has_vector(record["path"]):
+            if not Path(record["path"]).is_file() or (
+                not force and self.catalog.has_vector(record["path"])
+            ):
                 continue
             if any(
                 source["advanced"]
@@ -644,20 +646,24 @@ class LibraryManager:
         self.catalog.close()
 
 
-def analyse_library(cfg: AutoDJConfig, wrapper: MuqWrapper) -> int:
+def analyse_library(
+    cfg: AutoDJConfig,
+    wrapper: MuqWrapper,
+    *,
+    limit: int | None = None,
+    force: bool = False,
+    workers: int | None = None,
+) -> int:
     """Embed pending catalog tracks without publishing a FAISS generation."""
     manager = LibraryManager(cfg, _EmptySimilarity())
     report = DecodeReport()
     try:
-        pending = manager.analysis_pending()
+        pending = manager.analysis_pending(force=force)
+        if limit is not None:
+            pending = pending[: max(0, limit)]
         completed = 0
-        for record in pending:
-            if not any(
-                source["advanced"]
-                for source in manager.catalog.sources_for_path(record["path"], "music")
-            ):
-                continue
-            track = Track(
+        tracks = [
+            Track(
                 Path(record["path"]),
                 record["title"],
                 record["artist"],
@@ -667,26 +673,29 @@ def analyse_library(cfg: AutoDJConfig, wrapper: MuqWrapper) -> int:
                 record["year"],
                 record["length"],
             )
+            for record in pending
+        ]
 
-            def checkpoint(entries: list[IndexEntry], vectors: list[np.ndarray]) -> None:
-                nonlocal completed
-                if not entries:
-                    return
-                entry = entries[-1]
-                if not any(
-                    source["advanced"]
-                    for source in manager.catalog.sources_for_path(entry.path, "music")
-                ):
-                    return
-                manager.catalog.put_entry(entry)
-                manager.catalog.set_vector(entry.path, vectors[-1])
-                completed += 1
+        def checkpoint(entries: list[IndexEntry], vectors: list[np.ndarray]) -> None:
+            nonlocal completed
+            if not entries:
+                return
+            entry = entries[-1]
+            if not any(
+                source["advanced"]
+                for source in manager.catalog.sources_for_path(entry.path, "music")
+            ) or manager.catalog.sources_for_path(entry.path, "liner"):
+                return
+            manager.catalog.put_entry(entry)
+            manager.catalog.set_vector(entry.path, vectors[-1])
+            completed += 1
 
+        if tracks:
             with report:
                 _embed_new_tracks(
-                    [track],
+                    tracks,
                     wrapper,
-                    workers=1,
+                    workers=workers,
                     checkpoint=checkpoint,
                     throttle_ms=cfg.index.throttle_ms,
                     report=report,

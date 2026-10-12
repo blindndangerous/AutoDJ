@@ -42,7 +42,11 @@ def mock_library_startup():
     def create(cfg, sim):
         library = MagicMock()
         library.entries_snapshot.side_effect = sim.entries_snapshot
-        library.snapshot.return_value = {"tracks_ready": sim.ntotal, "tracks_indexed": sim.ntotal}
+        library.snapshot.return_value = {
+            "tracks_ready": sim.ntotal,
+            "tracks_indexed": sim.ntotal,
+            "import": {"errors": []},
+        }
         return library
 
     with patch("autodj.library.LibraryManager", side_effect=create):
@@ -1083,7 +1087,7 @@ class TestNameValidation:
             patch("autodj.config.load_config", return_value=cfg_mock),
             patch("autodj.model.download_model_if_needed"),
             patch("autodj.model.load_model"),
-            patch("autodj.indexer.build_index"),
+            patch("autodj.library.analyse_library"),
         ):
             result = CliRunner().invoke(cli, ["index", "--name", "workout"])
         assert result.exit_code == 0
@@ -1145,7 +1149,7 @@ class TestCmdIndex:
             patch("autodj.config.load_config", return_value=cfg_mock),
             patch("autodj.model.download_model_if_needed"),
             patch("autodj.model.load_model"),
-            patch("autodj.indexer.build_index", side_effect=RuntimeError("model crash")),
+            patch("autodj.library.analyse_library", side_effect=RuntimeError("model crash")),
         ):
             result = CliRunner().invoke(cli, ["index"])
         assert result.exit_code == 1

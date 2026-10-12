@@ -197,6 +197,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `autodj index` now adds songs from registered folders and saves analysis in the current
+  library, matching Library tools. Limits apply to advanced analysis; songs are added first.
+  Force replaces analysis without clearing cues or history, and Enrich updates the current
+  catalog. The old published-index format is deprecated; first-use imports and migration
+  tools remain available, and original index files are kept for recovery.
+
 - The included Stereo Tool preset recovers more slowly after drum hits, keeping snare tails
   less prominent while retaining the default 7 dB AGC drive for quiet passages.
 
