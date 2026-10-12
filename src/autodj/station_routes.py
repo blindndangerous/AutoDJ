@@ -558,7 +558,7 @@ async def apply_profile(station: StationRuntime, name: str) -> dict:
                 detail=f"Profile {name} uses cart page {snap.cart_page!r}, which does not exist",
             )
     try:
-        bridge.set_playback_settings(playback)
+        await asyncio.to_thread(bridge.set_playback_settings, playback)
     except ValueError as exc:
         # Refused before anything changed, such as Stereo Tool already
         # processing another station.
@@ -807,6 +807,7 @@ class StationRouter:
 def install_station_routes(router: StationRouter) -> None:
     """Register every station route, with paths relative to the API root (``/skip``, ...)."""
     from autodj.carts import install_carts
+    from autodj.rotation_api import install_rotation_test
     from autodj.scheduler_api import install_scheduler
     from autodj.time_checks import install_time_checks
 
@@ -1629,6 +1630,7 @@ def install_station_routes(router: StationRouter) -> None:
     install_carts(router)
     install_scheduler(router)
     install_time_checks(router)
+    install_rotation_test(router)
 
 
 __all__ = [
