@@ -2226,14 +2226,18 @@
 <div id="vol-announce" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
 </main>
 
-<dialog id="track-info-dialog" aria-labelledby="track-info-dialog-title">
+<!-- Save, Discard or Keep editing (library-folders.js).  Keep editing does
+     what Escape does: it closes the dialog, keeps the edits and puts focus
+     back on the control that opened it. -->
+<dialog id="track-info-dialog" aria-labelledby="track-info-dialog-title" aria-describedby="track-info-dialog-desc">
   <form method="dialog">
     <h2 id="track-info-dialog-title"></h2>
-    <p>Save your changes before choosing another track, or discard them to switch.</p>
+    <p id="track-info-dialog-desc">Save your changes before choosing another track, or discard them to switch.</p>
     <p id="track-info-error" role="status" aria-live="polite"></p>
     <div class="dialog-actions">
       <button type="button" id="track-info-save" value="save">Save</button>
       <button type="button" id="track-info-discard" value="discard">Discard</button>
+      <button type="button" id="track-info-keep" value="keep">Keep editing</button>
     </div>
   </form>
 </dialog>

@@ -20,7 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   refused until it has played, and only files inside the library folders are changed. When beets
   manages the library, the same fields can be written to the beets database too. A refused field
   is marked invalid with its reason linked to it and focused; a save is said once and focus stays
-  on Save tags.
+  on Save tags. The dialog that asks to save before switching tracks now reads its explanation when
+  it opens and has a Keep editing button, which does what Escape does.
 - Play dates for voice liners and carts: a **Not before** date, a **Do not play after** date, or
   both, in the station time zone. Outside them, automatic liners, clockwheel liner steps and
   scheduled liner events skip the liner, and a cart plays nothing and says why. Browse voice

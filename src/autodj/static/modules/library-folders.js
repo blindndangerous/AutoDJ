@@ -408,7 +408,11 @@ export function installLibraryFolders({ document: doc = document, request = requ
     }
     const save = doc.getElementById("track-info-save");
     const discard = doc.getElementById("track-info-discard");
+    const keep = doc.getElementById("track-info-keep");
     const error = doc.getElementById("track-info-error");
+    // Where Keep editing and Escape put focus back: the control that asked
+    // to switch tracks.
+    const returnFocus = doc.activeElement;
     doc.getElementById("track-info-dialog-title").textContent = `Save changes to ${currentName}?`;
     error.textContent = "";
     dialog.returnValue = "";
@@ -416,22 +420,29 @@ export function installLibraryFolders({ document: doc = document, request = requ
       async function accept() {
         if (saving) return;
         save.disabled = discard.disabled = true;
+        if (keep) keep.disabled = true;
         const saved = (savedFields === fieldSnapshot() || await savePoints(error))
           && (!tags.dirty() || await tags.save(error));
         save.disabled = discard.disabled = false;
+        if (keep) keep.disabled = false;
         if (saved) dialog.close("save");
       }
       function reject() { if (!saving) dialog.close("discard"); }
+      function stay() { if (!saving) dialog.close("keep"); }
       function cancel(event) { if (saving) event.preventDefault(); }
       function closed() {
         save.removeEventListener("click", accept);
         discard.removeEventListener("click", reject);
+        keep?.removeEventListener("click", stay);
         dialog.removeEventListener("cancel", cancel);
         dialog.removeEventListener("close", closed);
-        resolve(dialog.returnValue === "save" || dialog.returnValue === "discard");
+        const switching = dialog.returnValue === "save" || dialog.returnValue === "discard";
+        if (!switching && returnFocus?.isConnected && !returnFocus.disabled) returnFocus.focus();
+        resolve(switching);
       }
       save.addEventListener("click", accept);
       discard.addEventListener("click", reject);
+      keep?.addEventListener("click", stay);
       dialog.addEventListener("cancel", cancel);
       dialog.addEventListener("close", closed);
       dialog.showModal();

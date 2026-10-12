@@ -65,6 +65,15 @@ async function openTrackTags(page, visit) {
   await page.locator("#tags-save").click();
   await page.locator("#tag-year-error").waitFor({ state: "visible" });
   await visit("track-info/tags-errors");
+  // Choosing another song with those edits unsaved opens Save, Discard or
+  // Keep editing; Keep editing closes it again with the edits kept.
+  await page.evaluate((path) => document.dispatchEvent(new CustomEvent("autodj:edit-points",
+    { detail: { path, kind: "music", opener: document.getElementById("tab-track-info") } })),
+  `${TRACK_PATH}.other.flac`);
+  await page.locator("#track-info-dialog").waitFor({ state: "visible" });
+  await visit("track-info/save-dialog");
+  await page.locator("#track-info-keep").click();
+  await page.locator("#track-info-dialog").waitFor({ state: "hidden" });
 }
 
 async function openEveryCard(page) {

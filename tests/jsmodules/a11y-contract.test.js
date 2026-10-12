@@ -1022,8 +1022,22 @@ describe("static accessibility contracts", () => {
     const dialog = document.querySelector("#track-info-dialog");
     expect(dialog.tagName).toBe("DIALOG");
     expect(dialog.getAttribute("aria-labelledby")).toBe("track-info-dialog-title");
-    expect([...dialog.querySelectorAll("button")].map(button => button.textContent)).toEqual(["Save", "Discard"]);
+    expect([...dialog.querySelectorAll("button")].map(button => button.textContent)).toEqual(["Save", "Discard", "Keep editing"]);
+    expect([...dialog.querySelectorAll("button")].every((button) => button.getAttribute("type") === "button")).toBe(true);
     expect(dialog.querySelector("#track-info-error").getAttribute("role")).toBe("status");
+    // The explanation is read when the dialog opens, after its name.
+    const description = document.getElementById(dialog.getAttribute("aria-describedby"));
+    expect(description.tagName).toBe("P");
+    expect(description.textContent).toBe("Save your changes before choosing another track, or discard them to switch.");
+    expect(dialog.contains(description)).toBe(true);
+    // Keep editing takes the shared button size (44 px, above the 24 px floor)
+    // and no colour of its own.
+    const css = stripCssComments(cssSource);
+    expect(css).not.toMatch(/#track-info-keep/);
+    expect(css.match(/(^|[\s,}])button\s*\{[^{}]*min-height:\s*44px/)).not.toBeNull();
+    // Three buttons wrap rather than run off a narrow window.
+    expect(lastValue("#track-info-dialog .dialog-actions", "flex-wrap")).toBe("wrap");
+    expect(lastValue("#track-info-dialog", "max-width")).toBe("min(32rem, calc(100vw - 2rem))");
   });
   it("keeps connected status text visible without relying on color alone", () => {
     const background = lastValue("#conn-status.connected", "background");

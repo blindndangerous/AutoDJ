@@ -34,7 +34,7 @@ function mount() {
     </section>
     <dialog id="track-info-dialog" aria-labelledby="track-info-dialog-title">
       <h2 id="track-info-dialog-title"></h2><p id="track-info-error" role="status"></p>
-      <button id="track-info-save" type="button">Save</button><button id="track-info-discard" type="button">Discard</button>
+      <button id="track-info-save" type="button">Save</button><button id="track-info-discard" type="button">Discard</button><button id="track-info-keep" type="button">Keep editing</button>
     </dialog>`;
   const dialog = document.getElementById("track-info-dialog");
   dialog.showModal = () => { dialog.open = true; };
@@ -431,6 +431,48 @@ describe("clock folder and points controls", () => {
     controls.clearProtectedData();
     expect(document.getElementById("tags-editor").hidden).toBe(true);
     expect(title.value).toBe("");
+  });
+
+  it("keeps editing like Escape: no save, the draft kept and focus back on the opener", async () => {
+    const request = trackRequest();
+    const controls = installLibraryFolders({ document, request });
+    await controls.openEditor("M:/one.flac");
+    document.querySelector('[data-point="intro"]').value = "0:10";
+    const opener = document.createElement("button");
+    opener.textContent = "Track info for Two";
+    document.getElementById("panel-now").append(opener);
+    opener.focus();
+    const switching = controls.openEditor("M:/two.flac", "music", opener);
+    expect(document.getElementById("track-info-dialog").open).toBe(true);
+    document.getElementById("track-info-save").focus();
+    document.getElementById("track-info-keep").click();
+    await switching;
+    expect(document.getElementById("track-info-dialog").open).toBe(false);
+    expect(document.getElementById("track-info-dialog").returnValue).toBe("keep");
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('[data-point="intro"]').value).toBe("0:10");
+    expect(document.getElementById("points-path").value).toBe("M:/one.flac");
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it("holds Keep editing while a save is in flight", async () => {
+    let finish;
+    const request = vi.fn((url, options) => options?.method === "POST"
+      ? new Promise((resolve) => { finish = resolve; })
+      : Promise.resolve({ path: "M:/one.flac", title: "One", kind: "music", points: { end: 180 } }));
+    const controls = installLibraryFolders({ document, request });
+    await controls.openEditor("M:/one.flac");
+    document.querySelector('[data-point="intro"]').value = "0:10";
+    const switching = controls.openEditor("M:/two.flac");
+    document.getElementById("track-info-save").click();
+    const keep = document.getElementById("track-info-keep");
+    expect(keep.disabled).toBe(true);
+    keep.click();
+    expect(document.getElementById("track-info-dialog").open).toBe(true);
+    finish({ points: { intro: 10, end: 180 } });
+    await switching;
+    expect(keep.disabled).toBe(false);
+    expect(document.getElementById("track-info-dialog").returnValue).toBe("save");
   });
 
   it("discards a liner draft without saving, and offers the same liner fields", async () => {
