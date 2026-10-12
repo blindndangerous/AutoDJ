@@ -554,6 +554,20 @@ async def test_close_joins_writer_and_reader_threads() -> None:
     assert not reader.is_alive()
 
 
+async def test_a_second_close_does_nothing() -> None:
+    closes: list[int] = []
+
+    class CountedEncoder(FakeEncoder):
+        def close(self) -> None:
+            closes.append(1)
+            super().close()
+
+    out = StreamOutput(320, 8, encoder_factory=CountedEncoder, loop=asyncio.get_running_loop())
+    out.close()
+    out.close()  # a failed start's clean-up, then a stop
+    assert closes == [1]
+
+
 class ForeverBlockingEncoder(FakeEncoder):
     """Both write() and read() block until released; never notice close()."""
 

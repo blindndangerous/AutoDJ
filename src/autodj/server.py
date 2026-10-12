@@ -2040,7 +2040,9 @@ def _extra_station(
 def _abandon_player(player: Any, player_thread: threading.Thread | None, timeout_s: float) -> None:
     """Stop a player whose station failed to build: its thread, then its master.
 
-    Nothing here raises; the build's own error is the one reported.
+    A player still running after *timeout_s* may still write to its
+    master, so both are then left alone, and logged.  Nothing here
+    raises; the build's own error is the one reported.
     """
     try:
         player._state.should_stop = True
@@ -2049,6 +2051,13 @@ def _abandon_player(player: Any, player_thread: threading.Thread | None, timeout
             player_thread.join(timeout_s)
     except Exception:
         logger.exception("A station that failed to start: stopping its player failed")
+    if player_thread is not None and player_thread.is_alive():
+        logger.warning(
+            "A station that failed to start: its player did not finish within %.0f seconds; "
+            "its player and mastering process are left running",
+            timeout_s,
+        )
+        return
     master = getattr(player, "_continuous_master", None)
     if master is not None:
         try:
