@@ -1175,6 +1175,10 @@ uv run autodj worker --server https://nas.local:8080
 
 - `--once` stops when nothing is left to analyse. Without it the worker keeps running and picks up
   new songs within half a minute.
+- `--idle-exit MINUTES` also stops when nothing is left, but only once the queue has stayed empty
+  for that many minutes, asking again every half minute. Use it when the server may still be
+  scanning new music as the worker starts. New songs during the wait start the count again.
+  `--once` is the same as `--idle-exit 0`; given both, `--idle-exit` sets the wait.
 - `--batch N` claims N songs at a time (default 4, at most 16).
 - `--device cuda` insists on the GPU and stops if PyTorch sees none; `--device cpu` forces the
   processor. The default uses the GPU whenever PyTorch sees one, and the worker says which it uses
@@ -1201,20 +1205,32 @@ On the Alienware the 8 GB graphics card is shared with radiodj's text-to-speech 
 worker can stop it first and start it again when it is done:
 
 ```bash
-uv run autodj worker --server https://nas.local:8080 --once   --before-command "podman stop qwen3-tts"   --after-command "podman start qwen3-tts"
+uv run autodj worker --server https://nas.local:8080 --idle-exit 10 \
+  --before-command "podman stop qwen3-tts" --after-command "podman start qwen3-tts"
 ```
+
+```powershell
+uv run autodj worker --server https://nas.local:8080 --idle-exit 10 `
+  --before-command "podman stop qwen3-tts" --after-command "podman start qwen3-tts"
+```
+
+The worker logs "Queue empty; waiting up to 10 minutes for new songs." when it runs out of work,
+and "Queue empty for 10 minutes; stopping." when it gives up.
 
 - `--before-command` runs once, after the worker has checked the token and the model with the
   server and before it loads the model.
-- `--after-command` runs when the worker stops for any reason: the queue is empty with `--once`,
-  Ctrl+C, a revoked token or another error. The worker moves the model off the graphics card and
+- `--after-command` runs once, when the worker stops for any reason: the queue stayed empty for the
+  `--idle-exit` wait (or was empty with `--once`), Ctrl+C, a revoked token or another error. The
+  container stays stopped while the worker waits for new songs; neither command runs between
+  empty polls. The worker moves the model off the graphics card and
   frees its memory first.
 - Each runs without a shell: the text is split into words as a shell would, but pipes, `&&` and
   variables mean nothing, so put several steps in a script and name the script. Each may run for
   two minutes. The worker logs the command, its output and its exit code, and goes on even if it
   fails.
 
-Without `--once` the worker keeps the text-to-speech container stopped for as long as it runs.
+Without `--once` or `--idle-exit` the worker keeps the text-to-speech container stopped for as long
+as it runs.
 
 ### The new-music routine
 
@@ -1222,8 +1238,9 @@ Without `--once` the worker keeps the text-to-speech container stopped for as lo
 2. In AutoDJ, open Library tools and choose Rescan (or restart the server). The new songs can be
    played at once, before advanced analysis.
 3. The worker catches up: a worker left running analyses them within a minute or so; otherwise run
-   the `--once` command above on the Alienware and it exits when they are done, starting the
-   text-to-speech container again.
+   the `--idle-exit 10` command above on the Alienware. You can start it at the same time as the
+   Rescan: it analyses songs as the scan finds them, and exits once nothing new has turned up for
+   ten minutes, starting the text-to-speech container again.
 
 ## Play log export
 

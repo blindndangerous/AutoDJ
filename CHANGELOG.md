@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `autodj worker --idle-exit MINUTES` keeps asking for new songs every half minute and stops only
+  once the queue has stayed empty for that long, so a worker started alongside a Rescan does not
+  exit before the scan has found the new music. The before- and after-commands still run once
+  each, around the whole wait. `--once` is the same as `--idle-exit 0`.
+
 - Clockwheel music and liner steps can combine conditions with Match all or Match any. Add
   folders, genres, year, BPM, duration, artist, title or album in the step editor; artist, title
   and album also accept simple wildcard patterns. Beets fields, including custom fields, are
