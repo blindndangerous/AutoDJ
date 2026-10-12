@@ -62,3 +62,31 @@ def test_the_server_looks_the_commit_up_at_most_once_a_minute(tmp_path):
     assert cached() is None
     now[0] = 61.0
     assert cached() == "4" * 40
+
+
+def test_a_download_missing_only_ignored_files_still_counts(tmp_path):
+    """The lookup filters like the download, so skipped formats are not "missing".
+
+    huggingface_hub compares a local snapshot with the file list it cached for
+    the commit; a download that skipped the TensorFlow or Flax weights is
+    complete for AutoDJ.
+    """
+    import json
+
+    model, index = _configs(tmp_path)
+    cfg = type("Cfg", (), {"model": model, "index": index})()
+    fake_model_cache(cfg, "3" * 40)
+    repo = next(index.model_dir.glob("models--*"))
+    snapshot = repo / "snapshots" / ("3" * 40)
+    files = {
+        p.name: {"size": p.stat().st_size, "blob_id": "0" * 40}
+        for p in snapshot.iterdir()
+        if p.is_file()
+    }
+    # The repository also holds the old PyTorch weights, which AutoDJ skips.
+    files["pytorch_model.bin"] = {"size": 1, "blob_id": "1" * 40}
+    listed = {"format_version": 1, "files": files}
+    (repo / "trees").mkdir(exist_ok=True)
+    (repo / "trees" / ("3" * 40 + ".json")).write_text(json.dumps(listed), encoding="utf-8")
+    assert local_model_folder(model, index) == snapshot
+    assert local_model_commit(model, index) == "3" * 40
