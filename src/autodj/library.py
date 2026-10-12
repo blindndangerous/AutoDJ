@@ -38,6 +38,7 @@ from autodj.processing import (
     analyze_loudness,
     loudness_matches,
 )
+from autodj.stations import StationPaths
 from autodj.stereo import SAMPLE_RATE, DecodeReport
 
 logger = logging.getLogger(__name__)
@@ -138,7 +139,8 @@ class LibraryManager:
         # Set while a remote analysis worker is connected, so the CPU job,
         # which waited for it, runs again once it has gone.
         self._yielded_to_worker = False
-        liner_root = cfg.playback.liners_folder or str(cfg.index.active_dir / "liners")
+        # The configured folder is kept as written: it names a catalog source.
+        liner_root = cfg.playback.liners_folder or str(StationPaths.default(cfg).liners)
         try:
             self.analysis_queue = AnalysisQueue(catalog_path)
         except BaseException:

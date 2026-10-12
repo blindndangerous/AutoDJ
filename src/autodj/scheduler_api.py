@@ -23,6 +23,7 @@ from autodj.scheduler import (
     field_error,
 )
 from autodj.settings_bodies import PlaybackSettingsBody
+from autodj.stations import StationPaths
 
 # Runs the Schedule panel lists, newest first.
 RUNS_SHOWN = 50
@@ -221,7 +222,7 @@ def install_scheduler(
     """
     cfg = bridge.player._cfg
     scheduler = Scheduler(
-        Path(cfg.index.active_dir) / "schedule.json",
+        StationPaths.default(cfg).schedule,
         timezone,
         publish,
         interrupt=lambda: bridge.skip(),

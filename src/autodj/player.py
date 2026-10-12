@@ -1106,11 +1106,12 @@ class Player:
         from autodj.clockwheel import ClockSlot, validate_clock
         from autodj.clockwheel_store import ClockwheelStore, source_folder, step_source
         from autodj.presets import get_preset
+        from autodj.stations import StationPaths
 
         library = self._library
         if library is None:
             raise ValueError("the library is not attached")
-        clock = ClockwheelStore(Path(self._cfg.index.active_dir) / "clockwheels").load(name)
+        clock = ClockwheelStore(StationPaths.default(self._cfg).clockwheels).load(name)
         sources = {source["id"]: source for source in library.catalog.sources()}
         slots = []
         for number, step in enumerate(clock["steps"], 1):

@@ -38,6 +38,7 @@ from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr, field_validat
 
 from autodj.liner_scheduler import LinerDecodeError, decode_liner_path
 from autodj.scheduler import Action, Scheduler
+from autodj.stations import StationPaths
 from autodj.stereo import SAMPLE_RATE
 from autodj.voice_packs import JoinCache, coverage, join_voice, pieces_for, scan_pack, signature
 
@@ -62,7 +63,7 @@ def spoken_text(now: datetime, hour_format: str) -> str:
 
 def clips_folder(cfg: AutoDJConfig) -> Path:
     """The recorded clips folder: ``clips_folder``, or ``time_checks`` in the index."""
-    return Path(cfg.time_checks.clips_folder or Path(cfg.index.active_dir) / "time_checks")
+    return StationPaths.default(cfg).time_check_clips
 
 
 def clip_path(folder: Path, now: datetime) -> Path | None:
@@ -141,7 +142,7 @@ class PlayNowBody(BaseModel):
 
 def state_path(cfg: AutoDJConfig) -> Path:
     """Where the switches saved from Settings live."""
-    return Path(cfg.index.active_dir) / "time_checks.json"
+    return StationPaths.default(cfg).time_checks
 
 
 def load_settings(cfg: AutoDJConfig) -> SettingsBody:
@@ -214,7 +215,7 @@ class TimeChecks:
         self.config = cfg.time_checks
         self.zone = ZoneInfo(timezone)
         self.folder = clips_folder(cfg)
-        self.cache = Path(cfg.index.active_dir) / "time_checks_cache"
+        self.cache = StationPaths.default(cfg).time_checks_cache
         self.state_path = state_path(cfg)
         self.settings = load_settings(cfg)
         self.packs = pack_folders(cfg)

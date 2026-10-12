@@ -63,14 +63,17 @@ class BackupError(RuntimeError):
 
 def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
     """Map each top-level archive name to where it lives with this configuration."""
+    from autodj.stations import StationPaths
+
     active = cfg.index.active_dir
+    station = StationPaths.default(cfg)
     return {
         "index": active,
-        "liners": Path(cfg.playback.liners_folder or active / "liners"),
-        "carts": active / "carts",
-        "time_checks": Path(cfg.time_checks.clips_folder or active / "time_checks"),
-        "profiles": active.parent / "profiles",
-        "clockwheels": active / "clockwheels",
+        "liners": station.liners,
+        "carts": station.cart_uploads,
+        "time_checks": station.time_check_clips,
+        "profiles": station.profiles,
+        "clockwheels": station.clockwheels,
         "stereo-tool-presets": active.parent / "stereo-tool-presets",
     }
 

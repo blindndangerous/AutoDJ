@@ -40,6 +40,7 @@ from autodj.liner_files import (
 )
 from autodj.liner_scheduler import decode_liner, decode_liner_path
 from autodj.scheduler import Action, ActionField
+from autodj.stations import StationPaths
 from autodj.stereo import SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
@@ -239,7 +240,7 @@ def install_carts(
 ) -> tuple[CartStore, Action]:
     """Add the paired cart routes; return the store and the scheduler's Play cart action."""
     cfg = bridge.player._cfg
-    store = CartStore(Path(cfg.index.active_dir))
+    store = CartStore(StationPaths.default(cfg).state_dir)
     # The cart that is playing, as (page, slot, spoken label), and its end timer.
     playing: dict[str, Any] = {"cart": None, "timer": None}
 
