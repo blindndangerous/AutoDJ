@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 import numpy as np
 
 from autodj.beets import Track
-from autodj.catalog import LibraryCatalog, _path
+from autodj.catalog import Coverage, LibraryCatalog, _path
 from autodj.indexer import (
     FEATURE_DIM,
     LIBRARY_DECODE_LOG,
@@ -73,10 +73,19 @@ class LibraryManager:
         self._interrupted_plays: set[str] = set()
         self._pending_settings: dict[str, Any] = {}
         self._last_played: dict[str, float] = {}
-        self._catalog_mtime = 0
+        # The catalog change counters the loaded snapshot was read at.
+        self._versions: dict[str, int] | None = None
+        # Paths a scan found gone from a present source folder; left out of
+        # the playable library without a file-system call per track.
+        self._missing: frozenset[str] = frozenset()
+        self._loaded_missing: frozenset[str] = frozenset()
+        # The music paths, in FAISS row order, of the vectors handed to sim.
+        self._vector_paths: tuple[str, ...] | None = None
         self._entries: tuple[IndexEntry, ...] = ()
         self._liner_entries: tuple[IndexEntry, ...] = ()
         self._by_path: dict[str, IndexEntry] = {}
+        # Normalized path -> (kind, position in that kind's entries tuple).
+        self._positions: dict[str, tuple[str, int]] = {}
         self._tracks_ready = 0
         self._tracks_indexed = 0
         self.catalog = LibraryCatalog(cfg.index.active_dir / "library.db")
@@ -97,39 +106,123 @@ class LibraryManager:
         )
 
     def seed_index(self, entries: Iterable[IndexEntry], vectors: np.ndarray) -> None:
-        """Seed new legacy generations into the catalog, without changing them."""
+        """Seed new legacy generations into the catalog, without changing them.
+
+        Also hands the catalog's vectors back to ``sim``, which a reload of
+        the legacy generation from disk has just replaced.
+        """
         items = list(entries)
         matrix = np.asarray(vectors, dtype=np.float32)
         if matrix.shape != (len(items), FEATURE_DIM):
             raise ValueError("legacy vectors do not match the index entries")
         self.catalog.seed_entries(items)
         self.catalog.seed_vectors(items, matrix)
-        self.refresh()
+        self.refresh(force_vectors=True)
 
-    def _mtime(self) -> int:
-        try:
-            return self.catalog.path.stat().st_mtime_ns
-        except OSError:
-            return 0
+    def _changed(self) -> bool:
+        """Whether records, vectors or sources changed since the last load."""
+        with self._lock:
+            seen = self._versions
+            if self._missing != self._loaded_missing:
+                return True
+        if seen is None:
+            return True
+        versions = self.catalog.change_versions()
+        return any(versions[kind] != seen[kind] for kind in ("entries", "vectors", "sources"))
 
-    def refresh(self) -> tuple[IndexEntry, ...]:
+    def refresh(self, *, force_vectors: bool = False) -> tuple[IndexEntry, ...]:
+        """Load what changed in the catalog since the last refresh.
+
+        Records are read again only when records or sources changed (or a
+        scan found files gone), and vectors only when vectors changed, the
+        set of playable tracks with a vector changed, or *force_vectors*.
+        Plays, the play log, settings and loudness measurements change
+        neither, so they never cause a reload.
+        """
         with self._refresh_lock:
-            entries = self.catalog.entries_snapshot("music")
-            liner_entries = self.catalog.entries_snapshot("liner")
-            vector_entries, vectors = self.catalog.vectors_snapshot()
-            replace = getattr(self.sim, "replace_catalog_index", None)
-            if replace is not None:
-                replace(vector_entries, vectors)
             with self._lock:
-                self._entries = entries
-                self._liner_entries = liner_entries
-                self._by_path = {_path(entry.path): entry for entry in (*entries, *liner_entries)}
-                self._tracks_ready = len(entries)
-                self._tracks_indexed = len(vector_entries)
-                self._last_played.update(self.catalog.last_played())
-                self._last_played.update(self._pending_plays)
-                self._catalog_mtime = self._mtime()
+                seen = self._versions
+                missing = self._missing
+            with self.catalog.reader() as reader:
+                versions = reader.versions()
+                reload_entries = (
+                    seen is None
+                    or versions["entries"] != seen["entries"]
+                    or versions["sources"] != seen["sources"]
+                    or missing != self._loaded_missing
+                )
+                played: dict[str, float] = {}
+                if reload_entries:
+                    coverage = reader.coverage()
+                    entries = reader.entries("music", coverage, missing)
+                    liner_entries = reader.entries("liner", coverage, missing)
+                    played = reader.last_played()
+                else:
+                    with self._lock:
+                        entries, liner_entries = self._entries, self._liner_entries
+                reload_vectors = (
+                    force_vectors or seen is None or versions["vectors"] != seen["vectors"]
+                )
+                vector_paths = self._vector_paths
+                if reload_entries or reload_vectors:
+                    by_path = {entry.path: entry for entry in entries}
+                    vector_paths = tuple(path for path in reader.vector_paths() if path in by_path)
+                    vector_entries = [by_path[path] for path in vector_paths]
+                    if reload_vectors or vector_paths != self._vector_paths:
+                        self._replace_vectors(vector_entries, reader.vectors(set(vector_paths)))
+                    else:
+                        self._replace_vector_entries(vector_entries)
+            with self._lock:
+                if reload_entries:
+                    self._entries = entries
+                    self._liner_entries = liner_entries
+                    self._index_entries()
+                    self._last_played.update(played)
+                    self._last_played.update(self._pending_plays)
+                self._tracks_ready = len(self._entries)
+                self._tracks_indexed = len(vector_paths or ())
+                self._vector_paths = vector_paths
+                self._versions = versions
+                self._loaded_missing = missing
                 return self._entries
+
+    def _index_entries(self) -> None:
+        """Rebuild the path lookups for the loaded entries; caller holds ``_lock``."""
+        self._by_path = {}
+        self._positions = {}
+        for kind, items in (("music", self._entries), ("liner", self._liner_entries)):
+            for position, entry in enumerate(items):
+                key = _path(entry.path)
+                self._by_path[key] = entry
+                self._positions[key] = (kind, position)
+
+    def _replace_vectors(self, entries: list[IndexEntry], chunks: Iterable[np.ndarray]) -> None:
+        """Build an exact inner-product index from *chunks* and hand it to ``sim``."""
+        import faiss
+
+        index = faiss.IndexFlatIP(FEATURE_DIM)
+        for chunk in chunks:
+            index.add(chunk)
+        replace_index = getattr(self.sim, "replace_catalog_faiss", None)
+        if replace_index is not None:
+            replace_index(entries, index)
+            return
+        replace = getattr(self.sim, "replace_catalog_index", None)
+        if replace is not None:
+            vectors = (
+                index.reconstruct_n(0, index.ntotal)
+                if index.ntotal
+                else np.empty((0, FEATURE_DIM), dtype=np.float32)
+            )
+            replace(entries, vectors)
+
+    def _replace_vector_entries(self, entries: list[IndexEntry]) -> None:
+        """Give ``sim`` re-read metadata for the same vectors, without rebuilding FAISS."""
+        replace = getattr(self.sim, "replace_catalog_entries", None)
+        if replace is not None and replace(entries):
+            return
+        with self.catalog.reader() as reader:
+            self._replace_vectors(entries, reader.vectors({entry.path for entry in entries}))
 
     def entries_snapshot(self, kind: str = "music") -> tuple[IndexEntry, ...]:
         if kind == "music":
@@ -231,7 +324,11 @@ class LibraryManager:
         self._flush_plays()
         self._flush_history()
         self._flush_settings()
-        if self._mtime() != self._catalog_mtime:
+        with self._lock:
+            # A scan publishes its own tracks and reloads when it has read
+            # them; while it measures loudness, analysis may add vectors.
+            scanning = self._scan_lock.locked() and self._state["phase"] != "measuring loudness"
+        if not scanning and self._changed():
             self.refresh()
         self.schedule_analysis()
 
@@ -315,15 +412,14 @@ class LibraryManager:
             key = _path(entry.path)
             self._by_path[key] = entry
             attr = "_liner_entries" if kind == "liner" else "_entries"
-            current = getattr(self, attr)
-            if not any(_path(item.path) == key for item in current):
-                setattr(self, attr, (*current, entry))
+            current: tuple[IndexEntry, ...] = getattr(self, attr)
+            place = self._positions.get(key)
+            if place is not None and place[0] == kind:
+                position = place[1]
+                setattr(self, attr, (*current[:position], entry, *current[position + 1 :]))
             else:
-                setattr(
-                    self,
-                    attr,
-                    tuple(entry if _path(item.path) == key else item for item in current),
-                )
+                self._positions[key] = (kind, len(current))
+                setattr(self, attr, (*current, entry))
             self._tracks_ready = len(self._entries)
 
     @staticmethod
@@ -396,47 +492,37 @@ class LibraryManager:
             size and fingerprint and size == record["size"] and fingerprint == record["fingerprint"]
         )
 
-    @staticmethod
-    def _entry_from_record(record: dict) -> IndexEntry:
-        return IndexEntry(
-            path=record["path"],
-            **{
-                key: record[key]
-                for key in (
-                    "title",
-                    "artist",
-                    "album",
-                    "genre",
-                    "bpm",
-                    "year",
-                    "length",
-                    "energy",
-                    "key",
-                    "mode",
-                    "tempo_confidence",
-                    "embedded_at",
-                    "size",
-                    "fingerprint",
-                )
-            },
-        )
+    def _reconcile_moves(
+        self, found: list[tuple[str, Path]], source_ids: set[str] | None = None
+    ) -> None:
+        """Re-key records whose files moved, and note which tracks are gone.
 
-    def _reconcile_moves(self, found: list[tuple[str, Path]]) -> None:
-        old = list(self.catalog.all_entries())
-        old_paths = {_path(record["path"]) for record in old}
-        missing = {_path(record["path"]) for record in old if not Path(record["path"]).is_file()}
+        A record counts as gone only when a present folder this scan covers
+        holds it, the scan did not find it, and it is not a file: a share
+        that is not mounted marks nothing gone.
+        """
+        coverage = Coverage(
+            (source["path"], source["kind"], source["recursive"])
+            for source in self.catalog.sources()
+            if source_ids is None or source["id"] in source_ids
+        )
+        old = self.catalog.stored_entries()
+        old_paths = {entry.path for _kind, entry in old}
+        found_paths = {_path(path) for _kind, path in found}
+        missing = {
+            entry.path
+            for kind, entry in old
+            if entry.path not in found_paths
+            and coverage.covered(entry.path, kind)
+            and not os.path.isfile(entry.path)
+        }
         candidates_by_kind: dict[str, list[Track]] = {"music": [], "liner": []}
         for kind, path in found:
             if _path(path) not in old_paths:
                 candidates_by_kind[kind].append(Track(path, path.stem, "", "", "", 0.0, 0, 0.0))
         for kind in ("music", "liner"):
-            kind_entries = [self._entry_from_record(row) for row in old if row["kind"] == kind]
-            kind_missing = {
-                path
-                for path in missing
-                if any(row["kind"] == kind and _path(row["path"]) == path for row in old)
-            }
-            moves = _detect_moves(kind_entries, kind_missing, candidates_by_kind[kind])
+            kind_entries = [entry for entry_kind, entry in old if entry_kind == kind]
+            moves = _detect_moves(kind_entries, missing, candidates_by_kind[kind])
             if not moves:
                 continue
             for source, (track, _mtime) in moves.items():
@@ -455,6 +541,15 @@ class LibraryManager:
                 except ValueError:
                     # The legacy cache is rooted at one configured directory.
                     pass
+                finally:
+                    missing.discard(source)
+        with self._lock:
+            kept = {path for path in self._missing if not coverage.covered(path)}
+            self._missing = frozenset(kept | missing)
+            changed = self._missing != self._loaded_missing
+        if changed:
+            # Gone tracks leave the playable library now, not after the scan.
+            self.refresh()
 
     def _basic_entry(self, fresh: IndexEntry, old: dict[str, Any] | None, path: Path) -> IndexEntry:
         size, fingerprint = file_fingerprint(path)
@@ -494,7 +589,7 @@ class LibraryManager:
         try:
             found = self._discover(source_ids)
             self._set_state(total=len(found), phase="reading tracks")
-            self._reconcile_moves(found)
+            self._reconcile_moves(found, source_ids)
             for kind, path in found:
                 if self._stop.is_set():
                     break
