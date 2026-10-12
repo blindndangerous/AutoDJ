@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
 import threading
 import time
 from pathlib import Path
@@ -173,6 +174,9 @@ class _Runtime:
 
     def player_running(self) -> bool:
         return False
+
+    def needs_holding(self) -> bool:
+        return self.player_running()
 
     def summary(self) -> dict[str, Any]:
         return {"slug": self.slug, "state": "idle"}
@@ -420,14 +424,14 @@ def test_two_stations_switching_to_stereo_tool_at_once_cannot_both_get_it(
     # The first station has passed its check and is half-way through
     # applying when the second asks.
     entered, go = threading.Event(), threading.Event()
-    apply = first._apply_playback_settings
+    apply = first._set_playback_settings
 
     def slow_apply(body: Any, *, restoring: bool) -> None:
         entered.set()
         go.wait(5)
         apply(body, restoring=restoring)
 
-    first._apply_playback_settings = slow_apply  # type: ignore[method-assign]
+    first._set_playback_settings = slow_apply  # type: ignore[method-assign]
     body = PlaybackSettingsBody(loudness_processing="stereotool")
     errors: list[Exception] = []
 
@@ -976,8 +980,9 @@ def test_a_station_whose_player_will_not_stop_keeps_its_master_and_licence(
             # As StationRuntime.close: the master stays while the player runs.
             log.append("nightowl closed")
 
-        def close_master(self) -> None:
+        def close_master(self) -> bool:
             closed.append("master")
+            return True
 
     stuck = _Stuck()
     registry = StationRegistry(
@@ -1106,9 +1111,16 @@ def test_every_stop_step_is_tried_and_a_failed_stop_is_not_remembered() -> None:
     runtime.server_audio = True
     runtime.player_thread = None
     runtime._stop_task = None
+    runtime.stop_problems = []
     assert asyncio.run(runtime.stop(1.0)) is True
     # Every later step still ran: the liner worker stopped and the player was told.
     assert stopped_liners == ["liners"]
+    # What failed is said in plain words, for the stop's reply.
+    assert runtime.stop_problems == [
+        "Closing its carts failed; the server log has the details.",
+        "Closing its webhooks failed; the server log has the details.",
+        "Closing its recorder failed; the server log has the details.",
+    ]
     assert player._state.should_stop and player._skip_event.is_set()
 
     calls: list[int] = []
@@ -1132,33 +1144,200 @@ def test_every_stop_step_is_tried_and_a_failed_stop_is_not_remembered() -> None:
     assert calls == [1, 1]
 
 
-def test_leftover_mastering_processes_are_killed_at_shutdown() -> None:
+def test_leftover_mastering_processes_are_killed_and_none_start_after(tmp_path: Path) -> None:
     from autodj import mastering
 
     class _Proc:
-        def __init__(self, running: bool) -> None:
-            self.running = running
-            self.killed = False
+        def __init__(self) -> None:
+            self.running = True
+            self.stdin = self.stdout = None
 
         def poll(self) -> int | None:
             return None if self.running else 0
 
         def kill(self) -> None:
-            self.killed = True
+            self.running = False
+
+        def terminate(self) -> None:
             self.running = False
 
         def wait(self, timeout: float) -> int:
             return 0
 
-    procs = [_Proc(True), _Proc(False)]
-    start = mastering._tracked(lambda *_args, **_kwargs: procs.pop(0))
-    alive, ended = start(), start()
+    started: list[_Proc] = []
+
+    def popen(*_args: Any, **_kwargs: Any) -> _Proc:
+        started.append(_Proc())
+        return started[-1]
+
+    master = mastering.ContinuousMaster(popen_factory=popen)  # type: ignore[arg-type]
     try:
-        assert {alive, ended} <= mastering._LIVE_PROCESSES
-        assert mastering.kill_leftover_processes() == 1
-        assert alive.killed and not ended.killed
-        assert alive not in mastering._LIVE_PROCESSES
-        assert mastering.kill_leftover_processes() == 0
+        deadline = time.monotonic() + 5
+        while not started:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        # As at shutdown with a stuck station: its master is not closed.
+        mastering.kill_leftover_processes()
+        assert not any(proc.running for proc in started)
+        count = len(started)
+        time.sleep(0.7)  # past the worker's restart wait
+        assert len(started) == count  # the worker started nothing after the kill
+        with pytest.raises(OSError, match="shutting down"):
+            master._factory(["anything"])
     finally:
-        mastering._LIVE_PROCESSES.discard(alive)
-        mastering._LIVE_PROCESSES.discard(ended)
+        master.close()
+
+
+def test_a_master_says_whether_its_processes_have_ended() -> None:
+    from autodj import mastering
+
+    class _Stubborn:
+        """A process that ignores terminate and needs a kill."""
+
+        def __init__(self) -> None:
+            self.running = True
+            self.stdin = self.stdout = None
+
+        def poll(self) -> int | None:
+            return None if self.running else 0
+
+        def terminate(self) -> None:
+            pass
+
+        def kill(self) -> None:
+            self.running = False
+
+        def wait(self, timeout: float) -> int:
+            if self.running:
+                raise __import__("subprocess").TimeoutExpired("x", timeout)
+            return 0
+
+    procs: list[_Stubborn] = []
+
+    def popen(*_args: Any, **_kwargs: Any) -> _Stubborn:
+        procs.append(_Stubborn())
+        return procs[-1]
+
+    master = mastering.ContinuousMaster(popen_factory=popen)  # type: ignore[arg-type]
+    deadline = time.monotonic() + 5
+    while not procs:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert master.close() is True  # killed after terminate was ignored
+    assert all(not proc.running for proc in procs)
+    assert master.close() is True  # again: nothing left
+
+
+def test_a_mastering_process_that_outlives_the_close_keeps_the_licence(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    log: list[str] = []
+    release = threading.Event()
+    tries: list[int] = []
+
+    class _Lingering(_Runtime):
+        """A player that ends late, and a master whose process needs three closes."""
+
+        def __init__(self) -> None:
+            super().__init__("nightowl", log, stereo=True)
+            self.player_thread = threading.Thread(target=release.wait, args=(10,), daemon=True)
+            self.player_thread.start()
+
+        async def stop(self, _timeout: float) -> bool:
+            return False
+
+        def player_running(self) -> bool:
+            return self.player_thread.is_alive()
+
+        async def close(self) -> None:
+            pass
+
+        def close_master(self) -> bool:
+            tries.append(1)
+            return len(tries) >= 3
+
+    registry = StationRegistry(
+        _Runtime("default", log),  # type: ignore[arg-type]
+        [_extra("nightowl", lambda _r: _Lingering(), tmp_path, autostart=False)],
+    )
+    registry.stuck_warning_s = 0.05
+    registry.stuck_retry_s = 0.05
+
+    async def scenario() -> None:
+        await registry.start("nightowl")
+        warnings = await registry.stop("nightowl")
+        assert any("listed as stuck stopping" in warning for warning in warnings)
+        await asyncio.sleep(0.2)
+        # Still stuck, and the log keeps saying so.
+        assert registry.get("nightowl").summary()["state"] == "stuck stopping"
+        release.set()
+        for _ in range(200):
+            if registry.get("nightowl").summary()["state"] == "stopped":
+                break
+            # Held while its mastering process has not ended, licence and all.
+            assert registry.stereo_tool_user(exclude="default") is not None
+            await asyncio.sleep(0.02)
+        assert registry.get("nightowl").summary()["state"] == "stopped"
+
+    with caplog.at_level(logging.WARNING, logger="autodj.stations"):
+        asyncio.run(scenario())
+    assert len(tries) == 3
+    assert any(
+        "still stuck stopping: its player has not ended" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_a_hold_that_fails_still_closes_the_pages(tmp_path: Path) -> None:
+    log: list[str] = []
+
+    class _Stuck(_Runtime):
+        def needs_holding(self) -> bool:
+            return True
+
+    registry = StationRegistry(
+        _Runtime("default", log),  # type: ignore[arg-type]
+        [_extra("nightowl", lambda _r: _Stuck("nightowl", log), tmp_path, autostart=False)],
+    )
+
+    def broken_hold(_runtime: Any) -> None:
+        raise RuntimeError("no thread")
+
+    registry.hold_until_player_ends = broken_hold  # type: ignore[method-assign]
+
+    async def disconnect(station: Any) -> None:
+        log.append(f"{station.slug} pages closed")
+
+    registry.disconnect = disconnect
+
+    async def scenario() -> list[str]:
+        await registry.start("nightowl")
+        return await registry.stop("nightowl")
+
+    warnings = asyncio.run(scenario())
+    assert log[-1] == "nightowl pages closed"
+    assert "Keeping it until its player ends failed; restart AutoDJ." in warnings
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows job objects")
+def test_mastering_children_die_with_autodj_on_windows() -> None:
+    import ctypes
+    import subprocess
+
+    from autodj.child_jobs import bind_to_autodj
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        assert bind_to_autodj(child)
+        in_job = ctypes.c_int(0)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        assert kernel32.IsProcessInJob(
+            ctypes.c_void_p(int(child._handle)), None, ctypes.byref(in_job)
+        )
+        assert in_job.value
+        # A stand-in without a Windows handle is left alone, and does not
+        # stop later processes from being bound.
+        assert not bind_to_autodj(SimpleNamespace())  # type: ignore[arg-type]
+    finally:
+        child.kill()
+        child.wait(5)

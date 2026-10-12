@@ -1135,12 +1135,21 @@ need a paired browser, like the default station's.
   open pages are told at once. Other stations can be started and stopped meanwhile. If the
   stopping station used Stereo Tool, it keeps it until it has stopped, and another station asking
   for it is told to try again in a few seconds. The default station cannot be stopped.
+- The stop reply is the station's entry, as in `GET /api/stations`, plus `warnings`: a list of
+  what went wrong, in plain words, such as "Closing its recorder failed; the server log has the
+  details.". It is empty when everything stopped cleanly. The station is stopped either way.
 - If a station's player has not finished 30 seconds after a stop, the station is listed as
-  `stuck stopping`. Its player and mastering process keep running, because closing the mastering
-  process under a running player is unsafe, so it keeps Stereo Tool, and it cannot be started
-  again. When the player ends, the mastering process is closed and the station is `stopped`. The
-  same holds for a station that failed to start. When AutoDJ shuts down, it kills any mastering
-  process still running, so no Stereo Tool outlives the server.
+  `stuck stopping`, and the stop's `warnings` say so. Its player and mastering process keep
+  running, because closing the mastering process under a running player is unsafe, so it keeps
+  Stereo Tool, and it cannot be started again. The log says every minute that it is still stuck;
+  only a restart of AutoDJ frees a player that never ends. When the player ends, the mastering
+  process is closed, and closed again every few seconds until it has really ended; only then is
+  the station `stopped` and Stereo Tool free. The same holds for a station that failed to start.
+- On a normal shutdown, and when Python exits, AutoDJ kills any mastering process still running,
+  after making sure none can start again. On Windows each mastering process (Stereo Tool and its
+  FFmpeg limiter, or the FFmpeg master) is also tied to AutoDJ's own process with a job object,
+  so it ends even when AutoDJ is killed outright or crashes. On Linux and macOS, a hard kill of
+  AutoDJ (such as `kill -9`) can leave one running; stop it by hand.
 
 A station that cannot start, with the server or when asked, says why: in the log at startup, and
 in the reply to a start request. Whatever it had already started (its player, mastering process,
@@ -1250,6 +1259,79 @@ For Docker on Windows, run Compose inside WSL2 (see [Docker](#docker)). Docker D
 bind-mount ownership depends on its WSL2/Linux filesystem mapping, and its host networking must
 be turned on in Docker Desktop's settings. Run `bash scripts/container_smoke.sh` inside WSL2 for
 the authoritative check. Do not use world-writable Windows mounts.
+
+## Editing tags
+
+Track info has a **Tags** section for the song or liner it shows. It has a field each for Title,
+Artist, Album, Genre, Year, BPM, Key and ISRC, filled in with what AutoDJ has for the file.
+Change any of them and choose **Save tags**. AutoDJ writes only the fields you changed, so a tag
+you did not touch stays as it is in the file. Leave a field empty to remove that tag. Title cannot
+be empty.
+
+The fields take:
+
+- Year: four digits, such as 1999.
+- BPM: a number from 1 to 400, such as 128 or 127.5. M4A files keep a whole number.
+- Key: a letter key such as Am, F#m, Db or C major, or a Camelot key such as 8A. AutoDJ writes it
+  as a letter key, and Track info shows it in the key notation set in Settings.
+
+A key or BPM you set here is kept when AutoDJ analyses the song later; the analysis still
+measures energy and the rest. Clear the field to let the analysis set it again.
+- ISRC: 12 characters, such as AB1CD2600001. Hyphens and spaces are ignored.
+
+A field AutoDJ cannot take is marked invalid with the reason under it, and focus moves to the
+first one. When the save works, the page says so once and focus stays on Save tags.
+
+AutoDJ writes MP3, FLAC, M4A, Ogg Vorbis, Opus, WAV and AIFF tags. For any other kind of file,
+or one it cannot read, the Tags section says it cannot edit them. The write is safe to
+interrupt: AutoDJ copies the file to a hidden `.<name>.<random>.autodj-tags.tmp` beside it,
+tags the copy, flushes it to disk, reads every changed field back, and only then puts it in
+place of the original in one step. On Linux and macOS it then flushes the folder too; Windows
+has no folder flush, so there the step is as durable as the file system makes it. If anything
+before that step fails, the original file is left exactly as it was and the page says why. A
+copy left behind by a crash or power cut is removed the next time that file's tags are saved,
+once it is an hour old (a younger one may be another AutoDJ's save in progress); it is safe to
+delete by hand.
+
+Because the file is replaced by a new one:
+
+- Its modification time becomes the time of the save.
+- It keeps its permissions. On Linux and macOS it keeps its owner and group when AutoDJ is
+  allowed to set them (usually only when AutoDJ runs as that user or as root).
+- Access control lists on Windows are not carried over; the new file takes its folder's.
+- A hard link to the file keeps the old tags, because it still points at the old file. A
+  symbolic link stays a link, and the file it points to is the one changed, but only when that
+  file is inside one of the library folders; a link pointing elsewhere is refused.
+- An MP3 tag keeps its ID3 version: a version 2.3 tag stays 2.3.
+
+Saving tags does not analyse the song again. The library and search show the new details at
+once, and the song keeps its advanced analysis, cue points and loudness measurement. A later
+scan sees the same file and leaves it alone.
+
+A song that is playing or up next on any station cannot be saved; save it once it has played.
+That includes the song the server mix is preparing next. AutoDJ checks again at the moment it
+replaces the file, while the stations wait for it, so a song that comes up in between is still
+refused.
+If another program has the file open, AutoDJ waits a few seconds and then says the file is busy
+without changing it.
+
+When `[library] beets_db` names a beets database, the Tags section also has **Also update the
+beets library**, ticked by default. With it ticked, AutoDJ copies the changed fields into the
+song's beets entry (ISRC only when your beets database has an `isrc` field) and sets its
+modification time, so `beet update` has nothing new to read. The file is always written first.
+If beets has no entry for the file, or its database cannot be written (for example while beets
+itself holds it), the file and AutoDJ's library keep the new tags, beets keeps the old ones,
+and the page says so; run `beet update` to read the new tags into beets. When beets has no field
+for any tag you changed (an ISRC, in most beets libraries), beets is left exactly as it was, so
+`beet update` still reads the new file. Beets is never changed when the file could not be saved.
+
+If the file is saved but AutoDJ's own library cannot be updated, the page says the tags were
+saved in the file and what went wrong. A rescan then reads the new tags, and the song is
+analysed again.
+
+In Docker, the music folder is mounted read-only by default, so saving tags fails with a message
+that AutoDJ is not allowed to change the file. Remove `:ro` from the music volume in
+`compose.yaml` to allow it, and from the beets volume to let AutoDJ update beets.
 
 ## Moved files
 
@@ -1649,6 +1731,83 @@ Repeat limits are edited in Settings > Picking > Repeats and stored in
 ignored with a warning; re-enter any limits that still use those keys in that panel. The related
 artists file is `index/<name>/related-artists.toml` and is read only when
 **Use related artists** is enabled. It must be at most 1 MiB.
+
+## Testing the rotation
+
+The rotation tester plays a span of time, or a number of songs, through the station's own song
+picker and reports what would happen, without changing anything on air. It answers questions such
+as "do a 720-minute song rule and a 240-minute artist rule starve my six-song Power category?"
+before the rules go live.
+
+It uses everything the station picks with: the pick mode or the active clockwheel and its place,
+the rotation categories and their days and hours, the schedule's song-picking changes (with their
+date ranges), the repeat rules including related artists, and the DMCA limits. It starts from the
+station's real play history and last-played times. The run picks with a private copy of the
+player, with its own clock and its own random choices, so the on-air player, its history, the
+clockwheel place and the library are never touched.
+
+From the command line:
+
+```bash
+uv run autodj simulate                       # the next 24 hours
+uv run autodj simulate --days 7 --seed 42    # a week, repeatable with the same seed
+uv run autodj simulate --picks 500 --json    # 500 songs, as JSON
+uv run autodj simulate --hours 12 --start 2026-10-16T18:00 --station nightowl
+```
+
+`--station` names the default station or one configured under `[stations.<name>]`; the run uses
+that station's settings, clockwheels, schedule and plays. `--start` is read in the station time
+zone (`[server] station_timezone`) and must fall between
+2000 and 2099. Without `--seed` a run draws a seed and the report gives it, so the same seed repeats
+a run song for song, in every pick mode. Runs are capped at 30 days or 20,000 songs, and at ten
+minutes of work: a run that reaches that limit stops with the songs picked so far, and the report
+says so.
+
+`autodj simulate` can run beside a running server. It opens `library.db` read-only: no write
+lock, no migration, and the file itself is never written, though SQLite may create the
+`library.db-wal` and `library.db-shm` files beside it, as any reader does. A library it cannot
+read (damaged, not an AutoDJ library, or left half written) stops the command with a message. A
+categories or liner dates file it cannot read is skipped, never moved aside.
+
+In the web page: Settings > Song picking > **Test rotation**. Choose a span or a number of songs,
+optionally a start and a seed, and press **Test rotation**. The run works in the background; a
+progress bar and a line of text show how far it has got, **Cancel test** stops it with the results
+so far, and the end is announced once. The results appear under **Rotation test results** as
+headings and lists. One run at a time per server, whichever station it tests. The run's thread
+works below normal priority and sleeps for 2 milliseconds after each song it picks, so the audio
+and the page keep their place; stopping the server cancels a run and waits for it. If the page
+cannot reach the server while a run works, it tries again less and less often, says so once, and
+after six failed tries says it has stopped checking.
+
+The report, in words or JSON, gives:
+
+- plays per song, per category and per artist: the fewest, the most and the average, and the most
+  played;
+- songs never played, with a count and the first ten, overall and per category;
+- how often each rule had to be relaxed, and which: same artist, related artist, same album, same
+  title, the track repeat window, dayparting and back-to-back repeats, plus fallbacks to a random
+  song. A clockwheel step set not to enforce the rules is counted apart;
+- clockwheel steps that were skipped or came up empty, with the reason, such as "all matching
+  entries blocked by rules" or "outside its hours";
+- DMCA conflicts: songs replaced to keep the limits, and limits broken when nothing could keep
+  them, by kind;
+- dead air: picks that found nothing (the station starts afresh) and minutes with nothing
+  playable;
+- the schedule changes it applied.
+
+What it approximates:
+
+- Time moves by each song's length from the catalog: from its saved start to its segue or outro
+  with saved-point transitions, less the crossfade otherwise. A song with no length counts as the
+  library's average.
+- A clockwheel liner adds its full length. Automatic liners, time checks, carts and the queue are
+  left out.
+- A scheduled change applies from the first song after its time; hard events do not cut a song
+  short. Profile switches are not simulated; the report names them.
+
+How long a run takes grows with the library. On a synthetic 77,000-song library with four
+categories and a seven-step clockwheel, an older four-core PC (2018) simulated a week (about 2,500
+songs) in about two minutes, and in a little over three with the DMCA limits on.
 
 ## Backup
 

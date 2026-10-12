@@ -900,3 +900,30 @@ def test_every_public_feed_carries_only_public_fields_to_any_site(rig: Any) -> N
     owl_feed = client.get(f"{OWL}/nowplaying").json()
     assert owl_feed["current_track"]["title"] == song.title
     assert song.path not in client.get(f"{OWL}/nowplaying").text
+
+
+def test_a_stop_that_meets_a_problem_still_stops_and_says_what_failed(
+    rig: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    client, *_ = rig
+    owl = client.app.state.stations.get("nightowl")
+    recorder = owl.recorder
+    real_close = recorder.close
+
+    def broken_close() -> None:
+        real_close()
+        raise OSError("the recording state could not be saved")
+
+    recorder.close = broken_close
+    with caplog.at_level(logging.INFO):
+        response = client.post(f"{OWL}/stop")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["state"] == "stopped"
+    assert body["warnings"] == ["Closing its recorder failed; the server log has the details."]
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("stopped with problems: Closing its recorder failed" in m for m in messages)
+    assert not any(m.endswith("Station nightowl (Night Owl Radio) stopped") for m in messages)
+    # A clean stop has no warnings.
+    assert client.post(f"{OWL}/start").status_code == 200
+    assert client.post(f"{OWL}/stop").json()["warnings"] == []

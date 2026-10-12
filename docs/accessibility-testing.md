@@ -113,6 +113,11 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   and per page, with focus staying on Previous or Next (or moving to the other one when the page
   ends); Delete on a liner saying the result once and focus moving to the next liner or the list;
   and Track info from either list, with Return to Queue & Search putting focus back on its button.
+- Track info, Tags: each field read with its label and, for Year, BPM, Key and ISRC, its help;
+  Save tags with a refused field marking it invalid, focusing the first one and reading its
+  error; a save said once with focus staying on Save tags; and switching tracks with unsaved tags
+  opening the Save, Discard or Keep editing dialog, its explanation read after its name, and Keep
+  editing (like Escape) keeping the edits and putting focus back on the control that was pressed.
 - Library tools, Categories: Add category and Edit landing on Name; the source radio buttons
   showing the query or the playlist field; Check saying the count once while the count line
   stays silent; a missing name or a refused query said once, marked invalid and focused; Save

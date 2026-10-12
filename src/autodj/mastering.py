@@ -10,12 +10,14 @@ import math
 import subprocess  # nosec B404 -- processors use fixed argv pipelines, never a shell
 import tempfile
 import threading
+import weakref
 from collections.abc import Callable
 from pathlib import Path
 from typing import Final
 
 import numpy as np
 
+from autodj.child_jobs import bind_to_autodj
 from autodj.config import DEFAULT_STEREOTOOL_PATH
 from autodj.kernels import nan_to_num_in_place
 from autodj.processing import MASTER_FILTER
@@ -24,47 +26,50 @@ from autodj.stereo import SAMPLE_RATE
 from autodj.stereotool_presets import INCLUDED_PATH, agc_drive_preset_data
 
 # Every mastering child process (Stereo Tool and its limiter, or the FFmpeg
-# master) started and not yet stopped, so none outlives the server: the
-# server kills what is left when it shuts down, and so does Python's exit.
+# master) started and not yet stopped, and every master, so none outlives
+# the server: the server stops them all when it shuts down, and so does
+# Python's exit.  On Windows each child is also in a job object that kills
+# it when AutoDJ's process ends, even on a hard kill (autodj.child_jobs).
 _LIVE_PROCESSES: set[subprocess.Popen[bytes]] = set()
 _LIVE_LOCK = threading.Lock()
+_MASTERS: weakref.WeakSet[ContinuousMaster] = weakref.WeakSet()
 
 
-def _tracked(
-    factory: Callable[..., subprocess.Popen[bytes]],
-) -> Callable[..., subprocess.Popen[bytes]]:
-    """*factory*, remembering each process it starts until it is stopped."""
-
-    def start(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
-        proc = factory(*args, **kwargs)
-        with _LIVE_LOCK:
-            _LIVE_PROCESSES.add(proc)
-        return proc
-
-    return start
+def _end_process(proc: subprocess.Popen[bytes]) -> bool:
+    """Kill *proc* if it still runs and wait up to 2 s; return whether it is gone."""
+    try:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=2)
+    except (OSError, subprocess.TimeoutExpired):
+        logger.warning("A mastering process could not be stopped", exc_info=True)
+    return proc.poll() is not None
 
 
 def kill_leftover_processes() -> int:
-    """Kill every mastering child process still running; return how many there were.
+    """Stop every master from starting another process, then kill every one still running.
 
     A station whose player would not stop keeps its mastering process
     (closing it under a running player is unsafe), so at shutdown this
-    makes sure no Stereo Tool outlives the server.  Each is killed outright
-    (on Windows, ``TerminateProcess``) and waited for briefly.
+    makes sure no Stereo Tool outlives the server.  Each master refuses to
+    start a process first, so its worker cannot start a new one after the
+    kill.  Each is killed outright (on Windows, ``TerminateProcess``) and
+    waited for up to 2 seconds, so this can block for that long per
+    process left.
+
+    Returns:
+        How many processes were still running.
     """
+    for master in list(_MASTERS):
+        master.refuse_new_processes()
     with _LIVE_LOCK:
         leftovers = list(_LIVE_PROCESSES)
         _LIVE_PROCESSES.clear()
     killed = 0
     for proc in leftovers:
-        try:
-            if proc.poll() is not None:
-                continue
-            proc.kill()
+        if proc.poll() is None:
             killed += 1
-            proc.wait(timeout=2)
-        except (OSError, subprocess.TimeoutExpired):
-            logger.warning("A mastering process could not be stopped", exc_info=True)
+            _end_process(proc)
     return killed
 
 
@@ -178,7 +183,15 @@ class ContinuousMaster:
         input_trim_db: Callable[[], float] = lambda: 0.0,
         agc_drive_db: Callable[[], float] = lambda: 7.0,
     ) -> None:
-        self._factory = _tracked(popen_factory)
+        self._popen = popen_factory
+        # Taken around starting a process and around refusing new ones, so
+        # once refused, no process starts.
+        self._spawn_lock = threading.Lock()
+        self._refuse_spawns = False
+        # This master's processes not yet seen to have ended.
+        self._children: set[subprocess.Popen[bytes]] = set()
+        self._closing_waited = False
+        _MASTERS.add(self)
         self._select_mode = mode
         self._mode = mode()
         self._stereotool_path = stereotool_path
@@ -664,10 +677,47 @@ class ContinuousMaster:
             if thread is not None and thread.ident is not None:
                 thread.join(timeout=0.25)
 
-    def close(self) -> None:
+    def _factory(self, *args: object, **kwargs: object) -> subprocess.Popen[bytes]:
+        """Start one mastering process, unless this master refuses new ones."""
+        with self._spawn_lock:
+            if self._refuse_spawns:
+                raise OSError("the mastering process is shutting down")
+            proc = self._popen(*args, **kwargs)
+            self._children.add(proc)
+            with _LIVE_LOCK:
+                _LIVE_PROCESSES.add(proc)
+        bind_to_autodj(proc)
+        return proc
+
+    def refuse_new_processes(self) -> None:
+        """Start no more processes; the worker stops at its next look."""
+        with self._spawn_lock:
+            self._refuse_spawns = True
         with self._lock:
-            if self._closed:
-                return
             self._closed = True
             self._changed.set()
-        self._worker.join(timeout=2.0)
+
+    def processes_gone(self) -> bool:
+        """Whether every process this master started has ended."""
+        with self._spawn_lock:
+            self._children = {proc for proc in self._children if proc.poll() is None}
+            return not self._children
+
+    def close(self) -> bool:
+        """Stop the worker and its processes; return whether every process has ended.
+
+        A second call does not wait for the worker again; it kills any
+        process of this master still running and says whether all ended,
+        so a caller can try again until they have.
+        """
+        self.refuse_new_processes()
+        if not self._closing_waited:
+            self._closing_waited = True
+            self._worker.join(timeout=2.0)
+        if self.processes_gone():
+            return True
+        with self._spawn_lock:
+            alive = list(self._children)
+        for proc in alive:
+            _end_process(proc)
+        return self.processes_gone()

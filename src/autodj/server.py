@@ -133,6 +133,7 @@ from autodj.stations import (
 from autodj.status_page import STATUS_PAGE_CSP, render_off_air_page, render_status_page
 from autodj.stereotool_presets import MAX_PRESET_BYTES
 from autodj.stream import EncoderUnavailableError, ListenerLimitError
+from autodj.tags_api import TAG_BODY_MAX_BYTES, install_tag_editor, tag_form
 from autodj.tls import CertificateReloader
 from autodj.version import current_version
 from autodj.worker_api import (
@@ -821,13 +822,23 @@ def create_app(
             yield
         finally:
             logger.info("Shutting down...")
+            # A rotation test reads the library: stop it before the library closes.
+            rotation_tests = getattr(app.state, "rotation_tests", None)
+            if rotation_tests is not None and not await asyncio.to_thread(
+                rotation_tests.shutdown, _SHUTDOWN_TIMEOUT_S
+            ):
+                logger.warning(
+                    "A rotation test was still running %.2f seconds after it was cancelled",
+                    _SHUTDOWN_TIMEOUT_S,
+                )
             writers_quiesced, cache_closed = await stations.shutdown(library, _SHUTDOWN_TIMEOUT_S)
             from autodj.mastering import kill_leftover_processes
 
             # A player that would not stop kept its mastering process; no
-            # Stereo Tool may outlive the server.  (On the loop: the server
-            # is stopping, and usually there is nothing to kill.)
-            if killed := kill_leftover_processes():
+            # Stereo Tool may outlive the server.  In a worker thread: it
+            # waits up to 2 seconds for each process it kills.
+            loop = asyncio.get_running_loop()
+            if killed := await loop.run_in_executor(None, kill_leftover_processes):
                 logger.warning("Stopped %d mastering process(es) left running", killed)
             if writers_quiesced and cache_closed:
                 logger.info("Server stopped cleanly.")
@@ -924,6 +935,8 @@ def create_app(
         "/api/stereo-tool-presets/upload": lambda: MAX_PRESET_BYTES + _MULTIPART_OVERHEAD_BYTES,
         "/api/schedule": lambda: _SCHEDULE_BODY_MAX_BYTES,
         "/api/machine-tokens": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/rotation-test": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/library/tags": lambda: TAG_BODY_MAX_BYTES,
         WORKER_PREFIX + "result": lambda: RESULT_BODY_MAX_BYTES,
         **{
             WORKER_PREFIX + name: (lambda: SMALL_BODY_MAX_BYTES)
@@ -1448,12 +1461,13 @@ def create_app(
     async def api_station_stop(slug: str) -> dict[str, Any]:
         """Stop a station other than the default: listeners, encoders, relays and player."""
         try:
-            await stations.stop(slug)
+            warnings = await stations.stop(slug)
         except KeyError:
             raise HTTPException(status_code=404, detail="No station has that name") from None
         except StationControlError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return stations.get(slug).summary()
+        # Stopped either way; what went wrong is said beside it.
+        return {**stations.get(slug).summary(), "warnings": warnings}
 
     @app.get("/api/search")
     async def api_search(q: str = "", limit: int = 100) -> dict[str, list]:
@@ -1652,6 +1666,10 @@ def create_app(
         entry = library.entry_for_path(path)
         if entry is None:
             raise HTTPException(status_code=404, detail="Recording not in library")
+        return await _track_info(library, path)
+
+    async def _track_info(library: Any, path: str) -> dict:
+        """The Track info record of *path*: details, cue points and tag form."""
         record = await asyncio.to_thread(library.catalog.record_for_path, path)
         if record is None:
             raise HTTPException(status_code=404, detail="Recording not in library")
@@ -1675,7 +1693,10 @@ def create_app(
             library.cfg.playback.key_notation,
             prefer_flats=library.cfg.playback.key_prefer_flats,
         )
+        record.update(await asyncio.to_thread(tag_form, library, record))
         return record
+
+    install_tag_editor(app, bridge, _track_info)
 
     @app.post("/api/library/points")
     async def api_library_save_points(body: SongPointsBody) -> dict:
@@ -2132,11 +2153,20 @@ def _abandon_player(
                 logger.exception("A station that failed to start: holding its player failed")
         return
     master = getattr(player, "_continuous_master", None)
+    gone = True
     if master is not None:
         try:
-            master.close()
+            gone = master.close() is not False
         except Exception:
             logger.exception("A station that failed to start: closing its master failed")
+            gone = False
+    if not gone and on_stuck is not None:
+        # Its mastering process outlived the close: held, with Stereo Tool,
+        # until it has ended.
+        try:
+            on_stuck()
+        except Exception:
+            logger.exception("A station that failed to start: holding its master failed")
 
 
 def _missing_audio_modules() -> list[str]:
