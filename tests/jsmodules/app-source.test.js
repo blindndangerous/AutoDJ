@@ -1659,7 +1659,7 @@ describe("app request behavior", () => {
     }
   });
 
-  it("returns to Now Playing and the Queue & Search liner button", async () => {
+  it("returns to Now Playing and the Settings liner button", async () => {
     window.location.hash = "#now";
     try {
       await setupApp({
@@ -1688,7 +1688,7 @@ describe("app request behavior", () => {
       expect(document.querySelector("#track-info-return").textContent).toBe("Return to Settings");
       document.querySelector("#track-info-return").click();
       await vi.waitFor(() => expect(document.activeElement).toBe(liner));
-      expect(document.querySelector("#panel-queue").hidden).toBe(false);
+      expect(document.querySelector("#spanel-liners").hidden).toBe(false);
     } finally {
       window.location.hash = "";
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2805,8 +2805,8 @@ describe("stream mode", () => {
         browser_playback: true,
         current_track: { path: "current.mp3", title: "Current" },
       },
-      onRequest: (url) => (url.startsWith("/api/search")
-        ? jsonResponse({ results: [{ path: "song.mp3", title: "Song", artist: "Band" }] })
+      onRequest: (url) => (url.startsWith("/api/library/tracks?")
+        ? jsonResponse({ results: [{ path: "song.mp3", title: "Song", artist: "Band", kind: "music" }], total: 1, offset: 0 })
         : jsonResponse({ ok: true })),
     });
     const mediaSession = await import("../../src/autodj/static/modules/media-session.js");

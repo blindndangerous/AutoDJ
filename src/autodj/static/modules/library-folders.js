@@ -36,7 +36,6 @@ export function formatPointTime(value) {
   return `${minutes}:${whole}${fraction}`;
 }
 
-const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 
 export function installLibraryFolders({ document: doc = document, request = requestJson, getCurrentTrack = () => null, getCurrentPosition = () => null, onFolders }) {
   const panel = doc.getElementById("panel-library");

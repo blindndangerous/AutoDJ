@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { installTableNavigation } from "../../src/autodj/static/modules/table-navigation.js";
 
 describe("native table grid navigation", () => {
