@@ -148,8 +148,11 @@ def test_restored_history_and_browser_seed_advance_do_not_duplicate_seed(
             "Song 1",
         ]
         assert sum(row["title"] == seed.title for row in bridge.history_snapshot()) == 1
-        assert os.path.normcase(os.path.abspath(seed.path)) in bridge.library.last_played()
-        assert os.path.normcase(os.path.abspath(next_track.path)) in bridge.library.last_played()
+        assert os.path.normcase(os.path.abspath(seed.path)) in bridge.library.ledger.last_played()
+        assert (
+            os.path.normcase(os.path.abspath(next_track.path))
+            in bridge.library.ledger.last_played()
+        )
     finally:
         library.close()
 
@@ -170,14 +173,14 @@ def test_old_last_played_survives_unbounded_archive_and_still_wins_least_recent(
         older_time = datetime(2026, 9, 1, tzinfo=UTC)
         newer_time = datetime(2026, 10, 1, tzinfo=UTC)
         for entry, played_at in ((old_entry, older_time), (newer_entry, newer_time)):
-            library.remember_play(entry.path, played_at.timestamp())
-            library.remember_history(
+            library.ledger.remember_play(entry.path, played_at.timestamp())
+            library.ledger.remember_history(
                 _archive_row(entry.path, entry.path, entry.title, played_at.isoformat())
             )
         for i in range(501):
             path = str(tmp_path / "Music" / f"other-{i}.flac")
             played_at = datetime(2026, 10, 2, tzinfo=UTC) + timedelta(seconds=i)
-            library.remember_history(
+            library.ledger.remember_history(
                 _archive_row(f"other-{i}", path, f"Other {i}", played_at.isoformat())
             )
         library.close()
@@ -185,7 +188,7 @@ def test_old_last_played_survives_unbounded_archive_and_still_wins_least_recent(
         restored = LibraryManager(library.cfg, _EmptySimilarity())
         try:
             entries = restored.entries_snapshot()
-            last_played = restored.last_played()
+            last_played = restored.ledger.last_played()
             assert len(restored.catalog.recent_history(limit=1000)) == 503
             old_key = os.path.normcase(os.path.abspath(old_path))
             newer_key = os.path.normcase(os.path.abspath(newer_path))
@@ -202,7 +205,7 @@ def test_startup_loads_saved_plays_into_the_repeat_rules(tmp_path, caplog) -> No
     bridge, library = _bridge_with_library(tmp_path)
     try:
         bridge.load_persistent_state()
-        bridge.player.restore_repeat_history.assert_called_once_with(library.catalog)
+        bridge.player.restore_repeat_history.assert_called_once_with(library.ledger)
 
         # A failure there is logged; the server still starts.
         bridge, library2 = _bridge_with_library(tmp_path / "second")

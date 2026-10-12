@@ -589,7 +589,7 @@ def test_confirmed_move_preserves_points_loudness_vector_and_play_history(
     manager.catalog.set_loudness(old, fake_loudness(old))
     vector = np.ones(FEATURE_DIM, dtype=np.float32)
     manager.catalog.set_vector(old, vector)
-    manager.remember_play(old, 42.0)
+    manager.ledger.remember_play(old, 42.0)
     manager.tick()
     record_id = manager.catalog.record_for_path(old)["id"]
     new.parent.mkdir()
@@ -604,7 +604,7 @@ def test_confirmed_move_preserves_points_loudness_vector_and_play_history(
     assert record["points"]["segue"] == 150
     assert record["prepared_path"] == os.path.normcase(str(prepared))
     assert record["loudness"] == fake_loudness(new)
-    assert manager.last_played()[os.path.normcase(str(new))] == 42.0
+    assert manager.ledger.last_played()[os.path.normcase(str(new))] == 42.0
     assert analyze.call_count == 0
     measure.assert_not_called()
     np.testing.assert_array_equal(manager.catalog.vectors_snapshot()[1][0], vector)
@@ -764,7 +764,7 @@ def test_play_history_and_recent_archive_are_buffered_until_tick_and_close(
     manager = manager_factory(music=music)
     manager.catalog.put_entry(make_entry(song))
     manager.refresh()
-    manager.remember_play(song, 99.5)
+    manager.ledger.remember_play(song, 99.5)
     first = {
         "event_id": "play-1",
         "path": str(song),
@@ -774,9 +774,9 @@ def test_play_history_and_recent_archive_are_buffered_until_tick_and_close(
         "duration": 180.0,
         "played_at": "2026-01-01T00:00:00+00:00",
     }
-    manager.remember_history(first)
+    manager.ledger.remember_history(first)
     assert manager.catalog.last_played()[os.path.normcase(str(song))] == 0
-    assert manager.last_played()[os.path.normcase(str(song))] == 99.5
+    assert manager.ledger.last_played()[os.path.normcase(str(song))] == 99.5
     assert manager.catalog.recent_history() == []
     manager.tick()
     assert manager.catalog.last_played()[os.path.normcase(str(song))] == 99.5
@@ -790,8 +790,8 @@ def test_play_history_and_recent_archive_are_buffered_until_tick_and_close(
     assert stored[0]["entry_id"] is not None
 
     second = {**first, "event_id": "play-2", "title": "Interrupted"}
-    manager.remember_history(second)
-    manager.interrupt_history(second["event_id"])
+    manager.ledger.remember_history(second)
+    manager.ledger.interrupt_history(second["event_id"])
     assert len(manager.catalog.recent_history()) == 1
     manager.close()
 
@@ -826,19 +826,19 @@ def test_pending_history_gives_unwritten_plays_with_album(manager_factory, tmp_p
         "artist": "Artist",
         "played_at": "2026-01-01T00:00:00+00:00",
     }
-    manager.remember_history(row)
-    manager.remember_history({**row, "event_id": "play-2", "path": str(music / "gone.flac")})
-    manager.remember_history({**row, "event_id": "play-3"})
-    manager.interrupt_history("play-3")
-    pending = manager.pending_history()
+    manager.ledger.remember_history(row)
+    manager.ledger.remember_history({**row, "event_id": "play-2", "path": str(music / "gone.flac")})
+    manager.ledger.remember_history({**row, "event_id": "play-3"})
+    manager.ledger.interrupt_history("play-3")
+    pending = manager.ledger.pending_history()
     assert [(item["event_id"], item["album"]) for item in pending] == [
         ("play-1", "Album"),
         ("play-2", ""),
     ]
     pending[0]["album"] = "changed"
-    assert manager.pending_history()[0]["album"] == "Album"
+    assert manager.ledger.pending_history()[0]["album"] == "Album"
     manager.tick()
-    assert manager.pending_history() == []
+    assert manager.ledger.pending_history() == []
     manager.close()
 
 
@@ -854,17 +854,17 @@ def test_history_events_queued_during_flush_are_persisted_next_tick(manager_fact
         "played_at": "2026-01-01T00:00:00+00:00",
     }
     second = {**first, "event_id": "play-2", "title": "Two"}
-    manager.remember_history(first)
+    manager.ledger.remember_history(first)
     write_history = manager.catalog.write_history
     enqueued = False
 
-    def write_during_callback(rows, interrupted=()):
+    def write_during_callback(rows, interrupted=(), station="default"):
         nonlocal enqueued
         if not enqueued:
             enqueued = True
-            manager.remember_history(second)
-            manager.interrupt_history(first["event_id"])
-        write_history(rows, interrupted)
+            manager.ledger.remember_history(second)
+            manager.ledger.interrupt_history(first["event_id"])
+        write_history(rows, interrupted, station)
 
     monkeypatch.setattr(manager.catalog, "write_history", write_during_callback)
     manager.tick()
@@ -885,12 +885,12 @@ def test_history_events_queued_during_flush_are_persisted_next_tick(manager_fact
 
 def test_runtime_settings_are_buffered_until_tick_and_close(manager_factory, tmp_path):
     manager = manager_factory()
-    manager.remember_setting("clock", {"cursor": 3, "enabled": True})
+    manager.ledger.remember_setting("clock", {"cursor": 3, "enabled": True})
     assert manager.catalog.get_setting("clock") is None
     manager.tick()
     assert manager.catalog.get_setting("clock") == {"cursor": 3, "enabled": True}
 
-    manager.remember_setting("clock", {"cursor": 4, "enabled": True})
+    manager.ledger.remember_setting("clock", {"cursor": 4, "enabled": True})
     manager.close()
     reopened = LibraryCatalog(manager.cfg.index.active_dir / "library.db")
     try:
@@ -1044,8 +1044,8 @@ def test_plays_history_settings_cues_and_loudness_do_not_reload_library(
     loaded = manager.sim.replaced
     reads = _count_reads(manager, monkeypatch)
 
-    manager.remember_play(song, 50.0)
-    manager.remember_history(
+    manager.ledger.remember_play(song, 50.0)
+    manager.ledger.remember_history(
         {
             "event_id": "play-1",
             "path": str(song),
@@ -1055,7 +1055,7 @@ def test_plays_history_settings_cues_and_loudness_do_not_reload_library(
             "played_at": "2026-01-01T00:00:00+00:00",
         }
     )
-    manager.remember_setting("clock", {"cursor": 2})
+    manager.ledger.remember_setting("clock", {"cursor": 2})
     manager.catalog.set_loudness(song, fake_loudness(song))
     manager.catalog.set_points(song, {"intro": 12.0})
     manager.catalog.set_intro_lift(song, 1.5)
@@ -1243,7 +1243,7 @@ def test_idle_analysis_check_runs_once_until_the_catalog_changes(manager_factory
     ):
         for _ in range(3):
             assert not manager.schedule_analysis()
-        manager.remember_play(song, 1.0)
+        manager.ledger.remember_play(song, 1.0)
         manager.catalog.set_loudness(song, fake_loudness(song))
         manager.catalog.set_points(song, {"intro": 4.0})
         manager.tick()

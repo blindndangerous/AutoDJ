@@ -50,9 +50,11 @@ def station(monkeypatch):
         entries_snapshot=lambda kind="music": tuple(
             entries[2:] if kind == "liner" else entries[:2]
         ),
-        remember_play=MagicMock(),
-        remember_setting=MagicMock(),
-        last_played=lambda: {},
+        ledger=SimpleNamespace(
+            remember_play=MagicMock(),
+            remember_setting=MagicMock(),
+            last_played=lambda: {},
+        ),
     )
     return player, entries, points
 
@@ -141,7 +143,7 @@ def test_pending_liner_and_music_are_reserved_without_leaving_queue(station):
     assert player._state.queue == [voice, b]
     player._on_position(8 * SR + 882)
     assert player._state.queue == [b]
-    player._library.remember_play.assert_called_once_with(voice.path)
+    player._library.ledger.remember_play.assert_called_once_with(voice.path)
 
 
 def test_saved_start_survives_next_rendered_metadata(station):
@@ -260,11 +262,11 @@ def test_clock_and_history_advance_only_when_incoming_audio_is_heard(station):
     )
     player._start_playing(current)
     player._on_position(10 * SR)
-    player._library.remember_play.assert_not_called()
+    player._library.ledger.remember_play.assert_not_called()
     assert player._clock["cursor"] == 1
     player._on_position(10 * SR + 882)
     player._on_position(10 * SR + 1764)
-    player._library.remember_play.assert_called_once_with(b.path)
+    player._library.ledger.remember_play.assert_called_once_with(b.path)
     assert player._clock["cursor"] == 3
     assert player._clock_next_boundary == 3600.0
 
@@ -285,8 +287,8 @@ def test_clock_resync_drops_unheard_pick_without_recording_it(station, monkeypat
     assert (entry, mode, liners, cursor) == (b, "clock", (), 1)
     assert [call.args[1] for call in picked.call_args_list] == [4, 0]
     assert player._clock["cursor"] == 4
-    player._library.remember_play.assert_not_called()
-    player._library.remember_setting.assert_not_called()
+    player._library.ledger.remember_play.assert_not_called()
+    player._library.ledger.remember_setting.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -315,8 +317,8 @@ def test_clock_omits_only_liner_when_pair_will_not_fit(
     assert (entry, mode, cursor) == (b, "clock", 2)
     assert liners == (((jingle, False),) if include else ())
     pick.assert_called_once()
-    player._library.remember_play.assert_not_called()
-    player._library.remember_setting.assert_not_called()
+    player._library.ledger.remember_play.assert_not_called()
+    player._library.ledger.remember_setting.assert_not_called()
 
 
 @pytest.mark.parametrize("standalone", [False, True])
@@ -416,7 +418,7 @@ def test_clock_start_checks_pair_and_keeps_the_song_it_checked(
             )
             assert (entry, liners, cursor) == (b, (), 3)
     pick.assert_called_once()
-    player._library.remember_play.assert_not_called()
+    player._library.ledger.remember_play.assert_not_called()
 
 
 def test_clock_music_span_uses_end_without_cues_and_preserves_zero(station):

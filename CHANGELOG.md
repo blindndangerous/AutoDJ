@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Groundwork for running several stations on one server (#70). Every control address also answers
+  under `/api/stations/default/...`, and the play log, last-played times and active clockwheel are
+  kept per station in `library.db`. Existing plays belong to the default station, so nothing
+  changes for a single station. `autodj export-plays --station NAME` exports one station's plays.
+
 - `autodj worker --idle-exit MINUTES` keeps asking for new songs every half minute and stops only
   once the queue has stayed empty for that long, so a worker started alongside a Rescan does not
   exit before the scan has found the new music. The before- and after-commands still run once

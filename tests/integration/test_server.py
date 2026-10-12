@@ -26,7 +26,8 @@ import pytest
 
 from autodj.config import ServerConfig, TimeChecksConfig
 from autodj.repeat_settings import RepeatRule, RepeatSettings
-from autodj.server import PlaybackSettingsBody, PlayerBridge, create_app
+from autodj.server import PlayerBridge, create_app
+from autodj.settings_bodies import PlaybackSettingsBody
 
 from ._helpers import NO_INDEX_DIR, _make_entry, _make_player_mock, _make_sim_mock
 

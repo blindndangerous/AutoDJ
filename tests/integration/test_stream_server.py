@@ -283,7 +283,8 @@ async def test_kick_route_ends_open_stream_response(stream_app) -> None:
             for route in client.app.routes
             if route.path == "/api/stream/listeners/{ident}"
         )
-        assert (await kick(ident))["address"] == "192.0.2.4"
+        station = client.app.state.stations.default
+        assert (await kick(station, ident))["address"] == "192.0.2.4"
         await asyncio.wait_for(task, 2)
         assert sent[-1] == {"type": "http.response.body", "body": b"", "more_body": False}
         assert client.app.state.listener_access.listeners() == []

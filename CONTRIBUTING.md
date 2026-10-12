@@ -87,6 +87,10 @@ and 0.17.0, exist only as changelog entries.
 - `src/autodj/server.py` — FastAPI + WebSocket web layer.
 - `src/autodj/stations.py` — a station's runtime (stream, recorder, schedule, start and
   shutdown order) and `StationPaths`, the only code that knows where station state files live.
+- `src/autodj/station_routes.py` — routes that act on one station. Each answers at `/api/...`
+  for the default station and at `/api/stations/<slug>/...` by name. A new route goes either here
+  or, when every station shares it, in `server.py`; `tests/integration/test_station_routes.py`
+  fails until the route is listed as one or the other.
 - `src/autodj/static/` — web UI: HTML, CSS, JS, AudioWorklets.
 - `src/autodj/player.py` — track picking and the server-side mix (the browser's crossfade
   engine is `src/autodj/static/modules/audio-engine.js`).

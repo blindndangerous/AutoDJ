@@ -15,6 +15,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 
 from starlette.exceptions import HTTPException
@@ -458,12 +459,36 @@ def _safe_public_prefix(path: str, prefix: str) -> bool:
     return all(part not in {"", ".", ".."} for part in suffix.split("/"))
 
 
-def _is_public_path(path: str) -> bool:
+# The routes under /api/stations/<slug>/ that need no session, as their
+# default-station paths.  Everything else a station serves is paired.
+_PUBLIC_STATION_ROUTES = frozenset({"/api/nowplaying"})
+_STATION_PATH = re.compile(r"/api/stations/([^/]+)(/.*)\Z", re.DOTALL)
+
+
+def station_relative(path: str, slugs: AbstractSet[str] | None) -> str | None:
+    """Map ``/api/stations/<slug>/X`` to ``/api/X`` when *slug* is a configured station.
+
+    Returns ``None`` for any other path, including one naming a station
+    that is not configured, so an unknown name is never treated as a
+    known route.  With *slugs* ``None`` any name maps: only for limits
+    that must hold whatever the name.
+    """
+    match = _STATION_PATH.match(path)
+    if match is None or (slugs is not None and match.group(1) not in slugs):
+        return None
+    return "/api" + match.group(2)
+
+
+def _is_public_path(path: str, slugs: AbstractSet[str] = frozenset()) -> bool:
     """Return whether a request path is accessible without authentication.
 
     Listening (``/stream.mp3`` and ``/stream.m3u``) does not require
-    pairing; control APIs require a session.
+    pairing; control APIs require a session.  A configured station's
+    public now-playing feed is public under its station path too.
     """
+    relative = station_relative(path, slugs)
+    if relative is not None:
+        return relative in _PUBLIC_STATION_ROUTES
     return (
         path in _PUBLIC_FILES
         or path in {"/stream.mp3", "/stream.m3u"}
@@ -538,8 +563,14 @@ class SecurityMiddleware:
         body_limits: Mapping[str, Callable[[], int]],
         machine_scopes: Mapping[str, str] | None = None,
         machine_auth: Callable[[str, str], object | None] | None = None,
+        station_slugs: Callable[[], AbstractSet[str]] | None = None,
     ) -> None:
         """Wrap *app*; *body_limits* maps a POST path to its request-body cap in bytes.
+
+        *station_slugs* names the configured stations.  A path under
+        ``/api/stations/<slug>/`` for one of them is checked as the default
+        station's path: the same body limit, and public only where the
+        station's feed is.
 
         *machine_scopes* maps a path prefix to the machine-token scope its
         routes need.  Those routes take only ``Authorization: Bearer``
@@ -552,6 +583,7 @@ class SecurityMiddleware:
         self._body_limits = body_limits
         self._machine_scopes = dict(machine_scopes or {})
         self._machine_auth = machine_auth
+        self._station_slugs = station_slugs or frozenset
 
     def _machine_scope(self, path: str) -> str | None:
         """The token scope *path* needs, or ``None`` for a browser route."""
@@ -627,6 +659,7 @@ class SecurityMiddleware:
         path = str(scope.get("path", ""))
         route = _route_template(scope)
         policy = self._policy
+        slugs = self._station_slugs()
         host_values = _raw_header_values(scope, b"host")
         origin_values = _raw_header_values(scope, b"origin")
 
@@ -641,7 +674,7 @@ class SecurityMiddleware:
             and (len(origin_values) != 1 or not policy.origin_allowed(origin_values[0]))
         ):
             rejection = (403, "Disallowed Origin")
-        elif policy.authentication_required and not _is_public_path(path):
+        elif policy.authentication_required and not _is_public_path(path, slugs):
             cookie = Request(scope).cookies.get(COOKIE_NAME)
             if not policy.verify_session(cookie):
                 rejection = (401, "Authentication required")
@@ -664,7 +697,10 @@ class SecurityMiddleware:
             )
             return
 
-        body_limit = self._body_limits.get(path) if method == "POST" else None
+        # Capped like the default station's route even for a name that is no
+        # station: that request answers 404, but only after reading its body.
+        limited = station_relative(path, None) or path
+        body_limit = self._body_limits.get(limited) if method == "POST" else None
         downstream_receive = receive
         if body_limit is not None:
             cap = body_limit()

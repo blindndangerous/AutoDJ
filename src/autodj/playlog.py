@@ -48,7 +48,7 @@ from datetime import date, datetime, time, timedelta
 from pathlib import PurePath
 
 from autodj.audio_meta import read_reporting_tags
-from autodj.catalog import LibraryCatalog, _under
+from autodj.catalog import DEFAULT_STATION, LibraryCatalog, _under
 
 COLUMNS = (
     "start",
@@ -165,8 +165,9 @@ def plays_between(
     end: datetime,
     *,
     read_tags: Callable[[str], tuple[str, str]] = read_reporting_tags,
+    station: str = DEFAULT_STATION,
 ) -> list[Play]:
-    """Return the plays that started at or after *start* and before *end*.
+    """Return *station*'s plays that started at or after *start* and before *end*.
 
     Raises:
         ValueError: *end* is not after *start*.
@@ -175,7 +176,7 @@ def plays_between(
         raise ValueError("The end of the range must be after its start.")
     sources = catalog.sources()
     liner_sources = [source for source in sources if source["kind"] == "liner"]
-    rows = catalog.play_log()
+    rows = catalog.play_log(station)
     starts = [_started(row["played_at"]) for row in rows]
     files: dict[str, tuple[str, str, str]] = {}
     plays = []

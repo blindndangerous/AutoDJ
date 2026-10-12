@@ -9,7 +9,7 @@ import pytest
 from autodj.dj_meta import Cue, DjMeta
 from autodj.indexer import IndexEntry
 from autodj.repeat_settings import RepeatRule, RepeatSettings
-from autodj.server import PlaybackSettingsBody
+from autodj.settings_bodies import PlaybackSettingsBody
 
 
 def _entry(**over) -> IndexEntry:

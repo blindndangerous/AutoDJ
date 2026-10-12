@@ -26,7 +26,7 @@ from typing import Any, Literal
 from urllib.parse import quote
 
 import numpy as np
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -40,7 +40,7 @@ from autodj.liner_files import (
 )
 from autodj.liner_scheduler import decode_liner, decode_liner_path
 from autodj.scheduler import Action, ActionField
-from autodj.stations import StationPaths
+from autodj.station_routes import StationDep, StationRouter
 from autodj.stereo import SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
@@ -232,21 +232,57 @@ class CartStore:
         )
 
 
-def install_carts(
-    app: FastAPI,
-    bridge: Any,
-    publish: Callable[[dict[str, Any]], Awaitable[None]],
-    liner_folder: Callable[[], Path],
-) -> tuple[CartStore, Action]:
-    """Add the paired cart routes; return the store and the scheduler's Play cart action."""
-    cfg = bridge.player._cfg
-    store = CartStore(StationPaths.default(cfg).state_dir)
-    # The cart that is playing, as (page, slot, spoken label), and its end timer.
-    playing: dict[str, Any] = {"cart": None, "timer": None}
+class StationCarts:
+    """One station's cart wall, the cart playing on it and its Play cart action."""
 
-    def liner_file(clip: str) -> Path:
+    def __init__(
+        self,
+        bridge: Any,
+        publish: Callable[[dict[str, Any]], Awaitable[None]],
+        liner_folder: Callable[[], Path],
+        state_dir: Path,
+        api_root: str = "/api",
+    ) -> None:
+        """Load the wall from *state_dir*; *publish* tells the station's pages of changes.
+
+        *api_root* is where the station's routes answer (``/api`` for the
+        default station, ``/api/stations/<slug>`` for another), so a clip
+        URL fetches from this station's carts and liners.
+        """
+        self.bridge = bridge
+        self.publish = publish
+        self.liner_folder = liner_folder
+        self.api_root = api_root
+        self.store = CartStore(state_dir)
+        # The cart that is playing, as (page, slot, spoken label), and its end timer.
+        self._cart: tuple[int, int, str] | None = None
+        self._timer: asyncio.Task[None] | None = None
+        self.action = Action(
+            "play_cart",
+            "Play cart",
+            self._scheduled,
+            (
+                ActionField(
+                    "page",
+                    "Page",
+                    names=lambda: [
+                        str(number) for number in range(1, len(self.store.wall.pages) + 1)
+                    ],
+                ),
+                ActionField(
+                    "slot",
+                    "Cart",
+                    choices=tuple(
+                        (str(number), str(number)) for number in range(1, SLOTS_PER_PAGE + 1)
+                    ),
+                ),
+            ),
+            interrupt="none",
+        )
+
+    def liner_file(self, clip: str) -> Path:
         """The file behind liner *clip*, found the way ``/api/liners/file`` finds it."""
-        library = bridge.library
+        library = self.bridge.library
         record = library.record_for_id(clip) if library is not None else None
         if (
             record is not None
@@ -257,30 +293,33 @@ def install_carts(
             if path.is_symlink() or not path.is_file():
                 raise FileNotFoundError(clip)
             return path
-        folder = liner_folder()
+        folder = self.liner_folder()
         open_liner_file(folder, clip).file.close()
         return folder / clip
 
-    def decode(assigned: CartSlot) -> np.ndarray:
+    def decode(self, assigned: CartSlot) -> np.ndarray:
         """Decode the audio the cart plays (blocking)."""
         if assigned.source == "upload":
-            return decode_liner(store.uploads, assigned.clip)
-        scheduler = bridge.liner_scheduler
+            return decode_liner(self.store.uploads, assigned.clip)
+        scheduler = self.bridge.liner_scheduler
         if scheduler is not None:
             return scheduler.decode(assigned.clip)
-        return decode_liner_path(liner_file(assigned.clip))
+        return decode_liner_path(self.liner_file(assigned.clip))
 
-    def clip_url(assigned: CartSlot) -> str:
-        base = "/api/carts/uploads/" if assigned.source == "upload" else "/api/liners/file/"
-        return base + quote(assigned.clip, safe="")
+    def clip_url(self, assigned: CartSlot) -> str:
+        """Where browser playback fetches the clip, from this station's routes."""
+        base = "/carts/uploads/" if assigned.source == "upload" else "/liners/file/"
+        return self.api_root + base + quote(assigned.clip, safe="")
 
-    def duck_db(mode: str) -> float:
+    def duck_db(self, mode: str) -> float:
+        """The music level under a cart played in *mode*."""
         if mode == "duck":
-            return float(cfg.playback.liners_duck_db)
+            return float(self.bridge.player._cfg.playback.liners_duck_db)
         return 0.0 if mode == "over" else float("-inf")
 
-    def not_on_air() -> str | None:
+    def not_on_air(self) -> str | None:
         """Why the server mix cannot air a cart now, or ``None``."""
+        bridge = self.bridge
         station = bridge.station
         if station is not None and station.state == "idle":
             return "Nobody is listening, so the cart was not played"
@@ -290,67 +329,79 @@ def install_carts(
             return "Start playback before playing a cart"
         return None
 
-    async def finish(event: str) -> bool:
+    async def finish(self, event: str) -> bool:
         """Announce that the cart playing ended or was stopped; ``False`` if none was."""
-        timer = playing["timer"]
+        timer = self._timer
         if timer is not None and timer is not asyncio.current_task():
             timer.cancel()
-        playing["timer"] = None
-        cart = playing["cart"]
-        playing["cart"] = None
+        self._timer = None
+        cart = self._cart
+        self._cart = None
         if cart is None:
             return False
         page, slot, label = cart
-        await publish({"type": "cart", "event": event, "page": page, "slot": slot, "label": label})
+        await self.publish(
+            {"type": "cart", "event": event, "page": page, "slot": slot, "label": label}
+        )
         return True
 
-    async def play(page: int, slot: int) -> dict[str, Any]:
-        assigned = store.slot(page, slot)
-        scheduler = bridge.liner_scheduler
-        if scheduler is not None and (reason := not_on_air()) is not None:
+    async def play(self, page: int, slot: int) -> dict[str, Any]:
+        """Play the cart in *slot* on *page*.
+
+        Raises:
+            CartError: The slot is empty or missing, its clip will not
+                decode, or the server mix cannot air it now.
+        """
+        assigned = self.store.slot(page, slot)
+        scheduler = self.bridge.liner_scheduler
+        if scheduler is not None and (reason := self.not_on_air()) is not None:
             raise CartError(409, reason)
         try:
-            audio = await asyncio.to_thread(decode, assigned)
+            audio = await asyncio.to_thread(self.decode, assigned)
         except Exception as exc:
             logger.warning("Cart %s on page %s could not be decoded", slot, page, exc_info=True)
             raise CartError(404, f"The clip for cart {slot} is missing or unreadable") from exc
         if scheduler is not None:
-            await asyncio.to_thread(scheduler.play_cart, audio, duck_db(assigned.mode))
-        await finish("end")
+            await asyncio.to_thread(scheduler.play_cart, audio, self.duck_db(assigned.mode))
+        await self.finish("end")
         label = f"Cart {slot}, {assigned.name}"
         seconds = len(audio) / SAMPLE_RATE
-        playing["cart"] = (page, slot, label)
+        self._cart = (page, slot, label)
 
         async def ends() -> None:
             await asyncio.sleep(seconds)
-            await finish("end")
+            await self.finish("end")
 
-        playing["timer"] = asyncio.create_task(ends())
-        await publish(
+        self._timer = asyncio.create_task(ends())
+        await self.publish(
             {"type": "cart", "event": "start", "page": page, "slot": slot, "label": label}
         )
         return {
             "label": label,
             "mode": assigned.mode,
-            "duck_db": float(cfg.playback.liners_duck_db),
+            "duck_db": float(self.bridge.player._cfg.playback.liners_duck_db),
             "duration": seconds,
             # Only browser playback plays the clip on the page.
-            "url": None if scheduler is not None else clip_url(assigned),
+            "url": None if scheduler is not None else self.clip_url(assigned),
         }
 
-    def http(exc: CartError) -> HTTPException:
-        return HTTPException(status_code=exc.status, detail=str(exc))
+    async def stop(self) -> bool:
+        """Stop the cart that is playing; ``False`` if none was."""
+        scheduler = self.bridge.liner_scheduler
+        if scheduler is not None and self._cart is not None:
+            await asyncio.to_thread(scheduler.stop_cart)
+        return await self.finish("stop")
 
-    def clip_choices() -> dict[str, Any]:
+    def clip_choices(self) -> dict[str, Any]:
         """Liners and uploads a slot can use (blocking)."""
         liners: list[dict[str, str]] = []
-        library = bridge.library
+        library = self.bridge.library
         if library is not None:
             for entry in library.entries_snapshot("liner"):
                 record = library.catalog.record_for_path(entry.path)
                 if record and record.get("kind") == "liner":
                     liners.append({"id": record["id"], "name": Path(record["path"]).name})
-        folder = liner_folder()
+        folder = self.liner_folder()
         if folder.is_dir():
             listed = {item["name"] for item in liners}
             for path in sorted(folder.iterdir(), key=lambda item: item.name.casefold()):
@@ -360,85 +411,107 @@ def install_carts(
                     continue
                 if path.is_file() and path.name not in listed:
                     liners.append({"id": path.name, "name": path.name})
-        return {"liners": liners, "uploads": store.upload_names()}
+        return {"liners": liners, "uploads": self.store.upload_names()}
 
-    async def changed() -> None:
-        await asyncio.to_thread(store.save)
-        await publish({"type": "cart_changed"})
+    async def changed(self) -> None:
+        """Save the wall and tell the station's pages."""
+        await asyncio.to_thread(self.store.save)
+        await self.publish({"type": "cart_changed"})
 
-    @app.get("/api/carts")
-    async def get_carts() -> dict[str, Any]:
+    async def _scheduled(self, params: dict[str, str]) -> None:
+        if self.bridge.liner_scheduler is None:
+            raise ValueError("Scheduled carts need server audio or stream mode")
+        await self.play(int(params["page"]), int(params["slot"]))
+
+
+def _http(exc: CartError) -> HTTPException:
+    return HTTPException(status_code=exc.status, detail=str(exc))
+
+
+def install_carts(router: StationRouter) -> None:
+    """Add the paired cart routes; each acts on the station its URL names."""
+
+    @router.get("/carts")
+    async def get_carts(station: StationDep) -> dict[str, Any]:
         """The wall, and the clips a slot can use."""
-        return {"wall": store.wall.model_dump(), **await asyncio.to_thread(clip_choices)}
+        carts = station.carts
+        choices = await asyncio.to_thread(carts.clip_choices)
+        return {"wall": carts.store.wall.model_dump(), **choices}
 
-    @app.put("/api/carts/pages/{page}/slots/{slot}")
-    async def set_slot(page: int, slot: int, body: CartSlot) -> dict[str, Any]:
+    @router.put("/carts/pages/{page}/slots/{slot}")
+    async def set_slot(station: StationDep, page: int, slot: int, body: CartSlot) -> dict[str, Any]:
         """Assign a clip to a slot; the clip must decode."""
+        carts = station.carts
         try:
-            target = store.page(page)
-            store.check_slot(slot)
+            target = carts.store.page(page)
+            carts.store.check_slot(slot)
         except CartError as exc:
-            raise http(exc) from exc
+            raise _http(exc) from exc
         try:
-            audio = await asyncio.to_thread(decode, body)
+            audio = await asyncio.to_thread(carts.decode, body)
         except Exception as exc:
             raise HTTPException(
                 status_code=400, detail="That clip is missing or is not audio AutoDJ can play"
             ) from exc
         assigned = body.model_copy(update={"duration": round(len(audio) / SAMPLE_RATE, 3)})
         target.slots[slot - 1] = assigned
-        await changed()
+        await carts.changed()
         return {"slot": assigned.model_dump()}
 
-    @app.delete("/api/carts/pages/{page}/slots/{slot}")
-    async def clear_slot(page: int, slot: int) -> dict[str, bool]:
+    @router.delete("/carts/pages/{page}/slots/{slot}")
+    async def clear_slot(station: StationDep, page: int, slot: int) -> dict[str, bool]:
         """Empty a slot."""
+        carts = station.carts
         try:
-            target = store.page(page)
-            store.check_slot(slot)
+            target = carts.store.page(page)
+            carts.store.check_slot(slot)
         except CartError as exc:
-            raise http(exc) from exc
+            raise _http(exc) from exc
         target.slots[slot - 1] = None
-        await changed()
+        await carts.changed()
         return {"cleared": True}
 
-    @app.put("/api/carts/pages/{page}/name")
-    async def rename_page(page: int, body: PageName) -> dict[str, str]:
+    @router.put("/carts/pages/{page}/name")
+    async def rename_page(station: StationDep, page: int, body: PageName) -> dict[str, str]:
         """Rename a page; names are unique, ignoring case."""
+        carts = station.carts
         try:
-            target = store.page(page)
+            target = carts.store.page(page)
         except CartError as exc:
-            raise http(exc) from exc
+            raise _http(exc) from exc
         if any(
             other is not target and other.name.casefold() == body.name.casefold()
-            for other in store.wall.pages
+            for other in carts.store.wall.pages
         ):
             raise HTTPException(status_code=409, detail=f"Another page is named {body.name}")
         target.name = body.name
-        await changed()
+        await carts.changed()
         return {"name": body.name}
 
-    @app.put("/api/carts/active-page/{page}")
-    async def select_page(page: int) -> dict[str, int]:
+    @router.put("/carts/active-page/{page}")
+    async def select_page(station: StationDep, page: int) -> dict[str, int]:
         """Remember the page shown; every open page follows."""
+        carts = station.carts
         try:
-            store.page(page)
+            carts.store.page(page)
         except CartError as exc:
-            raise http(exc) from exc
-        store.wall.active_page = page
-        await changed()
+            raise _http(exc) from exc
+        carts.store.wall.active_page = page
+        await carts.changed()
         return {"active_page": page}
 
-    @app.post("/api/carts/upload")
-    async def upload(file: UploadFile = File(...)) -> dict[str, Any]:
+    @router.post("/carts/upload")
+    async def upload(station: StationDep, file: UploadFile = File(...)) -> dict[str, Any]:
         """Store an uploaded clip; it must decode, and an existing clip is never replaced."""
+        carts = station.carts
+        uploads = carts.store.uploads
         name = file.filename or ""
         try:
             path, size = await store_liner_upload(
-                store.uploads,
+                uploads,
                 name,
                 file,
-                max_bytes=cfg.server.liner_upload_max_bytes,
+                max_bytes=station.cfg.server.liner_upload_max_bytes,
                 replace=False,
             )
         except InvalidLinerName as exc:
@@ -450,20 +523,21 @@ def install_carts(
         except LinerTooLargeError as exc:
             raise HTTPException(status_code=413, detail=str(exc)) from exc
         try:
-            await asyncio.to_thread(decode_liner, store.uploads, name)
+            await asyncio.to_thread(decode_liner, uploads, name)
         except Exception as exc:
             path.unlink(missing_ok=True)
             raise HTTPException(
                 status_code=400, detail=f"{name} is not audio AutoDJ can play"
             ) from exc
-        await publish({"type": "cart_changed"})
+        await carts.publish({"type": "cart_changed"})
         return {"name": name, "size": size}
 
-    @app.get("/api/carts/uploads/{name}")
-    async def get_upload(name: str) -> FileResponse:
+    @router.get("/carts/uploads/{name}")
+    async def get_upload(station: StationDep, name: str) -> FileResponse:
         """Serve an uploaded clip, for browser playback."""
+        uploads = station.carts.store.uploads
         try:
-            opened = await asyncio.to_thread(open_liner_file, store.uploads, name)
+            opened = await asyncio.to_thread(open_liner_file, uploads, name)
         except InvalidLinerName as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
@@ -472,66 +546,37 @@ def install_carts(
         # The page decodes the bytes itself; a guessed type could be one
         # that requestBinary refuses.
         return FileResponse(
-            store.uploads / name,
+            uploads / name,
             media_type="application/octet-stream",
             stat_result=opened.stat_result,
         )
 
-    @app.delete("/api/carts/uploads/{name}")
-    async def delete_upload(name: str) -> dict[str, str]:
+    @router.delete("/carts/uploads/{name}")
+    async def delete_upload(station: StationDep, name: str) -> dict[str, str]:
         """Delete an uploaded clip that no slot uses."""
+        carts = station.carts
         try:
             validate_liner_name(name)
         except InvalidLinerName as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if store.in_use(name):
+        if carts.store.in_use(name):
             raise HTTPException(status_code=409, detail=f"Clear the carts that play {name} first")
         try:
-            await asyncio.to_thread((store.uploads / name).unlink)
+            await asyncio.to_thread((carts.store.uploads / name).unlink)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Clip not found") from exc
-        await publish({"type": "cart_changed"})
+        await carts.publish({"type": "cart_changed"})
         return {"deleted": name}
 
-    @app.post("/api/carts/pages/{page}/slots/{slot}/play")
-    async def play_slot(page: int, slot: int) -> dict[str, Any]:
+    @router.post("/carts/pages/{page}/slots/{slot}/play")
+    async def play_slot(station: StationDep, page: int, slot: int) -> dict[str, Any]:
         """Play a cart.  In browser playback the reply says where to fetch the clip."""
         try:
-            return await play(page, slot)
+            return await station.carts.play(page, slot)
         except CartError as exc:
-            raise http(exc) from exc
+            raise _http(exc) from exc
 
-    @app.post("/api/carts/stop")
-    async def stop() -> dict[str, bool]:
+    @router.post("/carts/stop")
+    async def stop(station: StationDep) -> dict[str, bool]:
         """Stop the cart that is playing."""
-        scheduler = bridge.liner_scheduler
-        if scheduler is not None and playing["cart"] is not None:
-            await asyncio.to_thread(scheduler.stop_cart)
-        return {"stopped": await finish("stop")}
-
-    async def scheduled(params: dict[str, str]) -> None:
-        if bridge.liner_scheduler is None:
-            raise ValueError("Scheduled carts need server audio or stream mode")
-        await play(int(params["page"]), int(params["slot"]))
-
-    action = Action(
-        "play_cart",
-        "Play cart",
-        scheduled,
-        (
-            ActionField(
-                "page",
-                "Page",
-                names=lambda: [str(number) for number in range(1, len(store.wall.pages) + 1)],
-            ),
-            ActionField(
-                "slot",
-                "Cart",
-                choices=tuple(
-                    (str(number), str(number)) for number in range(1, SLOTS_PER_PAGE + 1)
-                ),
-            ),
-        ),
-        interrupt="none",
-    )
-    return store, action
+        return {"stopped": await station.carts.stop()}
