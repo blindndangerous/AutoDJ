@@ -68,7 +68,9 @@ class _Prepared:
     name: str
     audio: np.ndarray
     cue: LinerCue | None = None
-    rotation: tuple[str, int] | None = None
+    # A sequential pick's list, its size, and how far the cursor moved for it
+    # (more than one when it passed over liners outside their play dates).
+    rotation: tuple[str, int, int] | None = None
 
 
 class LinerDecodeError(Exception):
@@ -296,6 +298,8 @@ class LinerScheduler:
         # At most one future render may own an automatic handoff pick.
         self._planned_key: str | None = None
         self._planned_name: str | None = None
+        # How far the sequential cursor moves when the planned liner airs.
+        self._planned_moves = 1
 
     def _trigger(self) -> LinerTrigger:
         """Build a :class:`LinerTrigger` from the current config values."""
@@ -340,7 +344,9 @@ class LinerScheduler:
             key, at = self._heard.popleft()
             self._commit_planned_locked(key, at)
 
-    def _choose(self, name: str | None) -> tuple[str, Path | None, tuple[str, int] | None] | None:
+    def _choose(
+        self, name: str | None
+    ) -> tuple[str, Path | None, tuple[str, int, int] | None] | None:
         """Pick what to decode: *name*, or the next pick in rotation.
 
         Caller holds ``_work_lock`` but not ``_lock``: the catalog and the
@@ -356,28 +362,42 @@ class LinerScheduler:
             if match is not None:
                 return (*match, None)
         if name is None and registered:
-            # Automatic picks pass over liners outside their play dates.
-            registered = [(key, path) for key, path in registered if self.refusal(key) is None]
-            if not registered:
+            # Automatic picks pass over liners outside their play dates.  The
+            # dates are read before the state lock, and sequential rotation
+            # keeps its place in the full list, so a liner that expires (or
+            # starts) does not shift which liner comes next.
+            playable = [self.refusal(key) is None for key, _path in registered]
+            if not any(playable):
                 return None
             with self._state():
                 mode = self._cfg.liners_pick_mode
                 if mode == "sequential":
-                    key, path = registered[self._registered_cursor % len(registered)]
-                    self._registered_cursor = (self._registered_cursor + 1) % len(registered)
-                    rotation = ("registered", len(registered))
+                    index, moved = self._next_playable_locked(playable)
+                    key, path = registered[index]
+                    self._registered_cursor = (index + 1) % len(registered)
+                    rotation: tuple[str, int, int] | None = ("registered", len(registered), moved)
                 else:
-                    key, path = self._rng.choice(registered)
+                    key, path = self._rng.choice(
+                        [item for item, ok in zip(registered, playable, strict=True) if ok]
+                    )
                     rotation = None
             return key, path, rotation
         if name is None:
             self._refresh_library()
+            files = self._library.files
+            refused = {path.name for path in files if self.refusal(path.name) is not None}
             with self._state():
                 mode = self._cfg.liners_pick_mode
+                before = self._library.cursor
                 picked = self._library.pick(
-                    mode, rng=self._rng, allowed=lambda path: self.refusal(path.name) is None
+                    mode, rng=self._rng, allowed=lambda path: path.name not in refused
                 )
-                rotation = ("folder", len(self._library.files)) if mode == "sequential" else None
+                size = len(self._library.files)
+                rotation = (
+                    ("folder", size, (self._library.cursor - before) % size or size)
+                    if mode == "sequential" and size
+                    else None
+                )
             if picked is None:
                 return None
             name = picked.name
@@ -419,11 +439,22 @@ class LinerScheduler:
         """Undo a sequential pick that was discarded before playback."""
         if liner.rotation is None:
             return
-        source, size = liner.rotation
+        source, size, moved = liner.rotation
         if source == "registered":
-            self._registered_cursor = (self._registered_cursor - 1) % size
+            self._registered_cursor = (self._registered_cursor - moved) % size
         elif source == "folder":
-            self._library.cursor = (self._library.cursor - 1) % size
+            self._library.cursor = (self._library.cursor - moved) % size
+
+    def _next_playable_locked(self, playable: list[bool]) -> tuple[int, int]:
+        """The next playable registered liner from the cursor, and how far the cursor moves.
+
+        Caller holds ``_lock``; *playable* has one flag per registered liner
+        and at least one is true.
+        """
+        size = len(playable)
+        start = self._registered_cursor % size
+        step = next(step for step in range(size) if playable[(start + step) % size])
+        return (start + step) % size, step + 1
 
     def refusal(self, name: str) -> str | None:
         """Why liner *name* (catalog ID or file name) may not play now, or ``None``."""
@@ -718,24 +749,42 @@ class LinerScheduler:
         registered = self._registered_entries()
         if not registered:
             self._refresh_library()
+        # Liners outside their play dates are passed over, as automatic
+        # picks pass over them; the dates are read before the state lock.
+        names = [key for key, _path in registered] or [path.name for path in self._library.files]
+        playable = [self.refusal(name) is None for name in names]
         with self._state():
             answer = check_locked()
             if answer != "":
                 return answer
             if registered:
-                if self._cfg.liners_pick_mode == "sequential":
-                    index = self._registered_cursor % len(registered)
-                    name = registered[index][0]
-                else:
-                    name = self._rng.choice(registered)[0]
-            else:
-                if not self._library.files:
+                if not any(playable):
                     return None
                 if self._cfg.liners_pick_mode == "sequential":
-                    name = self._library.files[self._library.cursor % len(self._library.files)].name
+                    index, moved = self._next_playable_locked(playable)
+                    name = registered[index][0]
                 else:
-                    name = self._rng.choice(self._library.files).name
+                    name = self._rng.choice(
+                        [n for n, ok in zip(names, playable, strict=True) if ok]
+                    )
+                    moved = 1
+            else:
+                refused = {n for n, good in zip(names, playable, strict=True) if not good}
+                files = [path.name for path in self._library.files]
+                ok = [name not in refused for name in files]
+                if not any(ok):
+                    return None
+                if self._cfg.liners_pick_mode == "sequential":
+                    start = self._library.cursor % len(files)
+                    step = next(
+                        step for step in range(len(files)) if ok[(start + step) % len(files)]
+                    )
+                    name, moved = files[(start + step) % len(files)], step + 1
+                else:
+                    name = self._rng.choice([n for n, good in zip(files, ok, strict=True) if good])
+                    moved = 1
             self._planned_key, self._planned_name = key, name
+            self._planned_moves = moved
             return name
 
     def release_plan(self, key: str | None = None) -> bool:
@@ -780,10 +829,12 @@ class LinerScheduler:
         if self._planned_key != key:
             return False
         self._planned_key = self._planned_name = None
+        # Past the planned liner and any outside their dates that it passed over.
+        moved = self._planned_moves
         if self._registered_liners is not None and self._cfg.liners_pick_mode == "sequential":
             # Position callbacks must not perform provider or filesystem I/O.
-            self._registered_cursor += 1
+            self._registered_cursor += moved
         elif self._cfg.liners_pick_mode == "sequential":
-            self._library.cursor += 1
+            self._library.cursor += moved
         self._fired_locked(at)
         return True

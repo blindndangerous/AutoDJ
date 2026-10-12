@@ -936,7 +936,8 @@ def _simulate(
         player._sim_now = now
         apply_schedule(now)
         tally.pending_skips = []
-        context = player._pick_context()
+        # As the station does, dayparting reads the hours at the song's start.
+        context = player._pick_context(at=handoff)
         liners: tuple[tuple[Any, bool], ...] = ()
         try:
             if station_mode():

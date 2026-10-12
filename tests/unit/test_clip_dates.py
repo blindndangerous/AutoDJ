@@ -245,3 +245,81 @@ def test_clockwheel_liner_steps_pass_over_expired_liners(tmp_path: Path) -> None
     picked = player._clock_pick(player._pick_context(), 0)
     assert picked.liner is None
     assert picked.entry is not None  # the music still plays
+
+
+def _registered(tmp_path: Path, mode: str = "sequential", **kwargs: object) -> LinerScheduler:
+    paths = [tmp_path / f"{name}.wav" for name in ("one", "two", "three", "four")]
+    return LinerScheduler(
+        _cfg(liners_pick_mode=mode, **kwargs),
+        tmp_path / "flat",
+        MagicMock(),
+        registered_liners=lambda: [(path.stem, path) for path in paths],
+        path_decoder=lambda _path: np.zeros((100, 2), np.float32),
+    )
+
+
+def test_sequential_rotation_keeps_its_place_when_a_registered_liner_expires(
+    tmp_path: Path,
+) -> None:
+    scheduler = _registered(tmp_path)
+    assert [scheduler.fire() for _ in range(2)] == ["one", "two"]
+    # "two" expires after it played: "three" is still next, not "four".
+    scheduler.play_dates = {"two": "expired after 26 December 2026"}.get
+    assert [scheduler.fire() for _ in range(4)] == ["three", "four", "one", "three"]
+    # It plays again in its own place when its dates allow it once more.
+    scheduler.play_dates = lambda _name: None
+    assert [scheduler.fire() for _ in range(3)] == ["four", "one", "two"]
+
+
+def test_sequential_rotation_passes_over_the_expired_liner_that_would_be_next(
+    tmp_path: Path,
+) -> None:
+    scheduler = _registered(tmp_path)
+    scheduler.play_dates = {"one": "expired", "two": "expired"}.get
+    assert [scheduler.fire() for _ in range(3)] == ["three", "four", "three"]
+
+
+def test_an_undone_sequential_pick_gives_back_every_step_it_passed_over(tmp_path: Path) -> None:
+    scheduler = _registered(tmp_path)
+    scheduler.play_dates = {"one": "expired", "two": "expired"}.get
+    with scheduler._work_lock:
+        liner = scheduler._decode(None)
+    assert liner is not None and liner.name == "three"
+    assert liner.rotation == ("registered", 4, 3)
+    with scheduler._lock:
+        scheduler._undo_pick_locked(liner)
+    assert scheduler._registered_cursor == 0
+    (tmp_path / "f").mkdir()
+    folder = LinerScheduler(
+        _cfg(), _folder(tmp_path / "f"), MagicMock(), play_dates={"a.wav": "expired"}.get
+    )
+    with folder._work_lock:
+        liner = folder._decode(None)
+    assert liner is not None and (liner.name, liner.rotation) == ("b.wav", ("folder", 3, 2))
+    with folder._lock:
+        folder._undo_pick_locked(liner)
+    assert folder._library.cursor == 0
+
+
+@pytest.mark.parametrize("registered", [True, False])
+def test_the_talk_up_planner_passes_over_expired_liners_and_keeps_its_place(
+    tmp_path: Path, registered: bool
+) -> None:
+    cfg = {"liners_every_n_songs": 1, "liners_talk_up": True, "transition_mode": "saved_points"}
+    if registered:
+        scheduler = _registered(tmp_path, **cfg)
+        scheduler._vocal_start = lambda _entry: 0.8
+        names = ["one", "two", "three", "four"]
+    else:
+        scheduler = LinerScheduler(
+            _cfg(**cfg), _folder(tmp_path), MagicMock(), vocal_start=lambda _entry: 0.8
+        )
+        names = ["a.wav", "b.wav", "c.wav"]
+    scheduler.play_dates = {names[0]: "expired after 26 December 2026"}.get
+    planned = scheduler.plan_for_handoff("h1", tracks_ahead=1, seconds_ahead=0)
+    assert planned == names[1]
+    assert scheduler.mark_planned_fired("h1")
+    assert scheduler.plan_for_handoff("h2", tracks_ahead=1, seconds_ahead=0) == names[2]
+    scheduler.play_dates = lambda _name: "expired"
+    scheduler.release_plan("h2")
+    assert scheduler.plan_for_handoff("h3", tracks_ahead=1, seconds_ahead=0) is None
