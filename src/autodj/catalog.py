@@ -1553,4 +1553,25 @@ class LibraryCatalog:
             return True
 
 
-__all__ = ["DEFAULT_STATION", "LibraryCatalog"]
+class ReadOnlyCatalog(LibraryCatalog):
+    """A catalog opened read-only, for a look beside a running server (``autodj simulate``).
+
+    The connection is SQLite's ``mode=ro``: no schema set-up, no column or
+    history migration, no journal-mode switch and no write lock, and any
+    write method fails.  The database file itself is never written, though
+    SQLite may create or touch the ``-wal`` and ``-shm`` files beside a
+    write-ahead-log database, as every reader does.  A file that is not a
+    catalog raises :class:`sqlite3.Error` on its first read.
+    """
+
+    def __init__(self, path: Path | str) -> None:
+        """Open *path* read-only."""
+        self.path = Path(path)
+        self._lock = threading.RLock()
+        self._conn = _connect(
+            readonly_uri(self.path), uri=True, check_same_thread=False, timeout=30
+        )
+        self._conn.row_factory = sqlite3.Row
+
+
+__all__ = ["DEFAULT_STATION", "LibraryCatalog", "ReadOnlyCatalog"]

@@ -614,7 +614,8 @@ class TrackKeyCache:
         """The keys of *track*: anything with ``path``, ``artist``, ``album`` and ``title``."""
         artist, album, title = _text(track.artist), _text(track.album), _text(track.title)
         cached = self._keys.get(track.path)
-        if cached is not None and cached[:3] == (artist, album, title):
+        # Compared one by one: no tuple is built for the lookup a pick makes per track.
+        if cached is not None and cached[0] == artist and cached[1] == album and cached[2] == title:
             return cached[3]
         keys = TrackKeys(
             self.splitter.credited(artist, title),

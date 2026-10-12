@@ -32,6 +32,7 @@ import re
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any
 
 from autodj.repeat_rules import (
@@ -120,9 +121,41 @@ class Complement:
             found.append(f"more than {SET_IN_A_ROW} songs in a row from {part_of}")
         return tuple(found)
 
+    @cached_property
+    def _blocked(self) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
+        """The album, artist and box set keys one more play of would go over a limit."""
+        albums = {album for album, count in self.albums.items() if count >= ALBUM_LIMIT}
+        if self.album_run[1] >= ALBUM_IN_A_ROW:
+            albums.add(self.album_run[0])
+        artists = {artist for artist, count in self.artists.items() if count >= ARTIST_LIMIT}
+        artists |= {artist for artist, run in self.artist_runs.items() if run >= ARTIST_IN_A_ROW}
+        sets = {box for box, count in self.sets.items() if count >= SET_LIMIT}
+        if self.set_run[1] >= SET_IN_A_ROW:
+            sets.add(self.set_run[0])
+        return frozenset(albums), frozenset(artists), frozenset(sets)
+
+    @property
+    def blocks_nothing(self) -> bool:
+        """True when every track keeps every limit, so a pick need not check them."""
+        return not any(self._blocked)
+
     def allows(self, track: Any) -> bool:
-        """True when *track* keeps every limit."""
-        return not self.broken(track)
+        """True when *track* keeps every limit: :meth:`broken` would find none.
+
+        A pick checks every track in the library, so this only looks the
+        track's keys up in the few keys that are at a limit, and not even
+        that while none is.
+        """
+        albums, artists, sets = self._blocked
+        if not (albums or artists or sets):
+            return True
+        keys = self.keys.keys(track)
+        album = keys.album
+        if album and album in albums:
+            return False
+        if not keys.artists.isdisjoint(artists):
+            return False
+        return not (sets and album and set_key(album) in sets)
 
 
 def complement(history: Sequence[PlayRecord], when: float, keys: TrackKeyCache) -> Complement:

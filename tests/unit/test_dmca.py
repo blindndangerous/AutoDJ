@@ -53,6 +53,27 @@ def broken(history, candidate, when=None, keys=None) -> tuple[str, ...]:
     return complement(history, when, keys or TrackKeyCache()).broken(candidate)
 
 
+def test_allows_agrees_with_broken_for_any_history() -> None:
+    """The quick check a pick makes per track says what broken() would (#125)."""
+    import random
+
+    rng = random.Random(3)
+    artists = ["Lead Band", "Other Band", "Lead Band feat. Guest", "Guest", ""]
+    albums = ["Album", "Album (Disc 1)", "Album (Disc 2)", "Other", ""]
+    library = [
+        song(number, rng.choice(artists), rng.choice(albums), f"Song {number % 7}")
+        for number in range(40)
+    ]
+    keys = TrackKeyCache()
+    for _ in range(300):
+        history = plays(*rng.choices(library, k=rng.randrange(0, 9)), gap=60.0)
+        limits = complement(history, len(history) * 60.0, keys)
+        for candidate in library:
+            assert limits.allows(candidate) is not bool(limits.broken(candidate))
+        if limits.blocks_nothing:
+            assert not any(limits.broken(candidate) for candidate in library)
+
+
 def test_a_fourth_album_song_breaks_the_album_limits() -> None:
     history = plays(song(1), song(2), song(3))
     assert broken(history, song(4, "Other Band")) == (
