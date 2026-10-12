@@ -354,3 +354,24 @@ def test_pick_slot_skips_a_closed_category_without_a_player() -> None:
     )
     assert picked.entry is None
     assert picked.skipped == ["category Late night: outside its hours"]
+
+
+def test_the_clock_pool_leaves_out_silent_protected_and_closed_songs_in_order() -> None:
+    """The cached pool a clock pick starts from matches filtering the library each time."""
+    import random
+
+    player = Player.__new__(Player)
+    entries = tuple(SimpleNamespace(path=f"{n}.flac", is_silent=n % 11 == 0) for n in range(60))
+    rng = random.Random(5)
+    for _ in range(50):
+        protected = frozenset(f"{rng.randrange(70)}.flac" for _ in range(rng.randrange(4)))
+        closed = frozenset(f"{n}.flac" for n in range(60) if rng.random() < 0.2)
+        expected = tuple(
+            entry
+            for entry in entries
+            if not entry.is_silent and entry.path not in protected and entry.path not in closed
+        )
+        assert player._eligible_entries(entries, protected, closed) == expected
+    # Two entries with one path: still every copy but the protected one goes.
+    twice = (*entries[:3], SimpleNamespace(path="1.flac", is_silent=False))
+    assert player._eligible_entries(twice, frozenset({"1.flac"}), frozenset()) == (entries[2],)

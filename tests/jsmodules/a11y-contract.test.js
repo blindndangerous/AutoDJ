@@ -2239,6 +2239,58 @@ describe("static accessibility contracts", () => {
     expect(rule).toContain('input[type="time"]');
   });
 
+  it("gives the rotation test labelled native controls, one polite status and list results", () => {
+    installDocument({ html: htmlSource });
+    const group = document.querySelector("#rotation-test");
+    expect(group.tagName).toBe("FIELDSET");
+    expect(group.closest("#spanel-picking")).not.toBeNull();
+    expect(group.querySelector(":scope > legend").textContent.trim()).toBe("Test rotation");
+    const help = document.getElementById(group.getAttribute("aria-describedby"));
+    expect(help.textContent).toContain("Nothing on air changes.");
+    for (const [id, label, type] of [
+      ["rotation-span", "Simulate", "SELECT"],
+      ["rotation-start", "Start", "datetime-local"],
+      ["rotation-seed", "Seed", "text"],
+    ]) {
+      const control = document.getElementById(id);
+      expect(control.tagName === "SELECT" ? "SELECT" : control.getAttribute("type")).toBe(type);
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+      expect(control.hasAttribute("required")).toBe(false);
+    }
+    // The spans are said in words, not abbreviations.
+    expect([...document.querySelectorAll("#rotation-span option")].map((option) => option.textContent))
+      .toEqual(["24 hours", "3 days", "7 days", "14 days", "30 days", "100 songs", "1,000 songs"]);
+    for (const id of ["rotation-start", "rotation-seed"]) {
+      const desc = document.getElementById(document.getElementById(id).getAttribute("aria-describedby"));
+      expect(desc.textContent).toMatch(/^\s*Optional\./);
+    }
+    for (const [id, name] of [["rotation-run", "Test rotation"], ["rotation-cancel", "Cancel test"]]) {
+      const button = document.getElementById(id);
+      expect(button.getAttribute("type")).toBe("button");
+      expect(button.textContent.trim()).toBe(name);
+      expect(button.disabled).toBe(false);
+    }
+    // One polite status for the start and the end; progress is a labelled
+    // native bar and plain text, never live.
+    const live = [...group.querySelectorAll("[aria-live], [role='status'], [role='alert']")];
+    expect(live.map((node) => node.id)).toEqual(["rotation-status"]);
+    expect(live[0].getAttribute("aria-live")).toBe("polite");
+    const bar = document.getElementById("rotation-progress");
+    expect(bar.tagName).toBe("PROGRESS");
+    expect(document.querySelector('label[for="rotation-progress"]').textContent.trim()).toBe("Progress");
+    // Results: a section named by its heading, hidden until a run ends, no table.
+    const results = document.getElementById("rotation-results");
+    expect(results.tagName).toBe("SECTION");
+    expect(results.hidden).toBe(true);
+    expect(document.getElementById(results.getAttribute("aria-labelledby")).tagName).toBe("H4");
+    expect(results.querySelector("table")).toBeNull();
+    // Colours come from the theme tokens only, so the light theme follows.
+    const rules = stripCssComments(cssSource).match(/#rotation-[^{]*\{[^}]*\}/g);
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgb|hsl/i);
+    expect(rules.join("\n")).toContain("accent-color: var(--accent)");
+  });
+
   it("gives Track info's tag editor labelled native fields, linkable errors and one status", () => {
     installDocument({ html: htmlSource });
     const section = document.querySelector("#panel-track-info #tags-editor");

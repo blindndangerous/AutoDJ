@@ -2045,6 +2045,119 @@ def cmd_export_plays(
 
 
 # ---------------------------------------------------------------------------
+# simulate subcommand
+# ---------------------------------------------------------------------------
+
+
+@cli.command("simulate")
+@click.option(
+    "--station",
+    default="default",
+    show_default=True,
+    metavar="NAME",
+    help="Station whose song picking to test; the default station is the one the main config "
+    "describes.",
+)
+@click.option("--hours", type=float, default=None, help="Span to simulate, in hours.")
+@click.option("--days", type=float, default=None, help="Span to simulate, in days.")
+@click.option("--picks", type=int, default=None, help="Number of songs to pick instead of a span.")
+@click.option(
+    "--start",
+    "start_text",
+    default=None,
+    metavar="TIME",
+    help="When the run starts, such as 2026-10-12T06:00 in the station time zone (default: now).",
+)
+@click.option(
+    "--seed", type=int, default=None, help="Seed for the random choices, to repeat a run."
+)
+@click.option("--json", "as_json", is_flag=True, help="Print the report as JSON.")
+@click.option(
+    "--name",
+    "index_name",
+    default=None,
+    type=str,
+    help="Named index to test (default: [index] name).",
+)
+@click.pass_context
+def cmd_simulate(
+    ctx: click.Context,
+    station: str,
+    hours: float | None,
+    days: float | None,
+    picks: int | None,
+    start_text: str | None,
+    seed: int | None,
+    as_json: bool,
+    index_name: str | None,
+) -> None:
+    """Test the rotation: simulate song picking without changing anything on air.
+
+    Plays a span (24 hours unless you say otherwise, at most 30 days) or a
+    number of songs (at most 20,000) through the station's own picker:
+    its clockwheel, categories and their hours, schedule, repeat rules and
+    DMCA limits.  Then reports plays per song, category and artist, songs
+    never played, the rules that had to be relaxed, skipped clockwheel
+    steps, DMCA conflicts and any moment with nothing to play.
+
+    \b
+    Examples:
+      uv run autodj simulate --days 7
+      uv run autodj simulate --picks 500 --seed 42
+      uv run autodj simulate --hours 24 --start 2026-10-16T18:00 --json
+    """
+    import json as _json
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from autodj.rotation_sim import (
+        SimulationError,
+        SimulationRequest,
+        open_station,
+        report_text,
+        simulate,
+    )
+    from autodj.scheduler import system_timezone
+    from autodj.stations import SLUG_PATTERN
+
+    if SLUG_PATTERN.match(station) is None:
+        raise click.BadParameter(
+            "a station name is lower-case letters, digits and hyphens", param_hint="--station"
+        )
+    if sum(value is not None for value in (hours, days, picks)) > 1:
+        raise click.UsageError("Give --hours, --days or --picks, only one of them.")
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    _apply_index_name(cfg, index_name)
+    start = None
+    if start_text is not None:
+        try:
+            moment = datetime.fromisoformat(start_text)
+        except ValueError as exc:
+            raise click.BadParameter(
+                "write the time as 2026-10-12T06:00", param_hint="--start"
+            ) from exc
+        if moment.tzinfo is None:
+            zone = cfg.server.station_timezone or system_timezone()
+            moment = moment.replace(tzinfo=ZoneInfo(zone))
+        start = moment.timestamp()
+    try:
+        request = SimulationRequest(
+            hours=days * 24 if days is not None else hours, picks=picks, start=start, seed=seed
+        )
+        with open_station(cfg, station) as source:
+            if not as_json:
+                click.echo("Simulating; nothing on air changes.", err=True)
+            report = simulate(source, request)
+    except SimulationError as exc:
+        click.echo(str(exc), err=True)
+        raise click.exceptions.Exit(1) from exc
+    if as_json:
+        click.echo(_json.dumps(report, indent=2, ensure_ascii=False))
+    else:
+        click.echo(report_text(report), nl=False)
+
+
+# ---------------------------------------------------------------------------
 # stats subcommand
 # ---------------------------------------------------------------------------
 

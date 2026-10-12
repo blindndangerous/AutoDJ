@@ -1675,6 +1675,12 @@ class PlayerBridge:
         :attr:`stereo_tool_lock`, so two stations switching to it at once
         cannot both find it free.  A restored setting is checked when the
         station starts instead.
+
+        Files are checked and read first; then the new values are swapped in
+        under the player's settings lock (see :func:`~autodj.player.settings_lock`),
+        which a rotation test's copy also holds; the saved plays are read
+        again for new repeat rules only after it is released.  Callers on
+        the event loop run this in a worker thread.
         """
         if (
             body.loudness_processing == "stereotool"
@@ -1688,11 +1694,13 @@ class PlayerBridge:
                         "Stereo Tool at a time. Choose Smooth for this station, or move the "
                         "other station off Stereo Tool first."
                     )
-                self._apply_playback_settings(body, restoring=restoring)
+                self._set_playback_settings(body, restoring=restoring)
             return
-        self._apply_playback_settings(body, restoring=restoring)
+        self._set_playback_settings(body, restoring=restoring)
 
-    def _apply_playback_settings(self, body: PlaybackSettingsBody, *, restoring: bool) -> None:
+    def _set_playback_settings(self, body: PlaybackSettingsBody, *, restoring: bool) -> None:
+        from autodj.player import settings_lock
+
         values = body.model_dump(exclude_none=True)
         player = self.player
         cfg = player._cfg
@@ -1700,6 +1708,25 @@ class PlayerBridge:
             from autodj.stereotool_presets import preset_path
 
             preset_path(cfg.index.active_dir, values["stereotool_preset"])
+        related_artists = self._read_related_artists(body, restoring=restoring)
+        if body.repeat_rules is not None:
+            values["repeat_rules"] = body.repeat_rules
+        with settings_lock(player):
+            self._apply_playback_settings(values, related_artists)
+        if "repeat_rules" in values and (ledger := self._ledger()) is not None:
+            player.restore_repeat_history(ledger, refresh=True)
+
+    def _read_related_artists(
+        self, body: PlaybackSettingsBody, *, restoring: bool
+    ) -> tuple[Any, str | None] | None:
+        """The related artists new repeat rules use, and any problem with the file.
+
+        ``None`` when *body* sets no repeat rules.  A file that cannot be
+        read refuses the change (the old rules stay), except while settings
+        are restored at startup, when the rules apply without it.
+        """
+        player = self.player
+        cfg = player._cfg
         if body.repeat_rules is not None:
             from autodj.related_artist_file import (
                 invalid_related_artists_message,
@@ -1723,9 +1750,17 @@ class PlayerBridge:
                         raise ValueError(message) from exc
                     problem = unused_related_artists_message(exc)
                     logger.warning("Related artists file was not used: %s", exc)
-            values["repeat_rules"] = body.repeat_rules
-            player._related_artists = related
-            player.related_artists_problem = problem
+            return related, problem
+        return None
+
+    def _apply_playback_settings(
+        self, values: dict[str, Any], related_artists: tuple[Any, str | None] | None
+    ) -> None:
+        """Swap *values* in (hold the settings lock); only memory changes here."""
+        player = self.player
+        cfg = player._cfg
+        if related_artists is not None:
+            player._related_artists, player.related_artists_problem = related_artists
             if hasattr(player, "_key_cache_lock"):
                 with player._key_cache_lock:
                     player._key_cache = None
@@ -1776,8 +1811,6 @@ class PlayerBridge:
             from autodj.player import apply_repeat_windows
 
             apply_repeat_windows(player)
-            if (ledger := self._ledger()) is not None:
-                player.restore_repeat_history(ledger, refresh=True)
 
     def set_bpm_range(self, lo: float | None, hi: float | None) -> None:
         """Set the hard BPM filter; pass both null to clear."""

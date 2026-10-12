@@ -30,6 +30,7 @@ import { installLibraryFolders } from "./modules/library-folders.js";
 import { installCategoriesPanel } from "./modules/categories-panel.js";
 import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
 import { describeStep } from "./modules/clockwheel-step.js";
+import { installRotationTest } from "./modules/rotation-test.js";
 import { installSchedulerPanel } from "./modules/scheduler-panel.js";
 import { installCartWall } from "./modules/cart-wall.js";
 import { createStreamMode, createStreamSettings } from "./modules/stream-mode.js";
@@ -216,6 +217,7 @@ let libraryFoldersControls = null;
 let clockwheelPanelControls = null;
 let categoriesPanelControls = null;
 let schedulerPanelControls = null;
+let rotationTestControls = null;
 let cartWallControls = null;
 let reconnectGeneration = 0;
 let reconnectTimer = null;
@@ -315,6 +317,7 @@ function clearProtectedSessionData() {
   clockwheelPanelControls?.clearProtectedData();
   categoriesPanelControls?.clearProtectedData();
   schedulerPanelControls?.clear();
+  rotationTestControls?.clear();
   cartWallControls?.clear();
   const browseFolder = document.getElementById("library-browse-folder");
   if (browseFolder) {
@@ -1354,6 +1357,7 @@ function connectWS() {
           clockwheelPanelControls?.resume();
           categoriesPanelControls?.resume();
           void schedulerPanelControls?.refresh();
+          void rotationTestControls?.refresh();
           connectWS();
         },
       });
@@ -2398,6 +2402,7 @@ clockwheelPanelControls = installClockwheelPanel();
 // A saved or deleted category reaches the clockwheel step form at once.
 categoriesPanelControls = installCategoriesPanel({ onChange: () => clockwheelPanelControls?.refresh() });
 schedulerPanelControls = installSchedulerPanel();
+rotationTestControls = installRotationTest();
 
 import { installLiners, bumpLinerTrackCount } from "./modules/liners.js";
 import { installTimeChecks } from "./modules/time-checks.js";
@@ -2501,6 +2506,7 @@ function startAuthenticatedApp(initialState) {
   clockwheelPanelControls?.resume();
   categoriesPanelControls?.resume();
   void schedulerPanelControls?.refresh();
+  void rotationTestControls?.refresh();
   installLibraryJobs(_libEls);
   // Audio dependencies are owned by the audio engine. Inject closures
   // that read its live bindings and stop liner playback after auth expiry.
