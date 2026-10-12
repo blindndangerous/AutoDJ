@@ -68,6 +68,56 @@
     }
     :root[data-theme="light"] { color-scheme: light; }
     :root[data-theme="dark"] { color-scheme: dark; }
+    /* Browsers without light-dark() (Chromium before 123, Firefox
+       before 120, Safari before 17.5) keep a custom property holding it
+       but find it invalid where it is used, so every colour would drop
+       to its initial value.  They get the dark theme instead, as before
+       the light one existed; the Theme setting cannot change it there.
+       These must equal the dark arguments above:
+       tests/jsmodules/theme.test.js checks they do. */
+    @supports not (color: light-dark(#000, #fff)) {
+      :root,
+      :root[data-theme] {
+        color-scheme: dark;
+        --bg: #1a1a2e;
+        --bg-card: #16213e;
+        --border: #0f3460;
+        --accent: #7eb3e8;
+        --on-accent: #000000;
+        --text: #e0e0e0;
+        --text-dim: #a0a0b0;
+        --text-desc: #b8c5d8;
+        --btn-bg: #2d5a87;
+        --btn-hover: #3a72a8;
+        --btn-text: #ffffff;
+        --tab-hover-bg: #2d5a87;
+        --tab-hover-text: #ffffff;
+        --control-border: #8aa4d6;
+        --danger: #c0392b;
+        --danger-edge: #e5574a;
+        --error-text: #ffaaa0;
+        --radius: 6px;
+        --badge-border: #4d7eb5;
+        --range-track: #5a7bb0;
+        --tint: rgba(255, 255, 255, 0.035);
+        --tint-2: rgba(255, 255, 255, 0.05);
+        --tint-3: rgba(255, 255, 255, 0.07);
+        --log-bg: #0f1626;
+        --log-text: #cce0ff;
+        --toast-error-bg: #221a26;
+        --stretch: #ffb86c;
+        --notice-bg: rgba(192, 57, 43, 0.18);
+        --wheel-fill: rgba(255, 255, 255, 0.04);
+        --wheel-edge: #6f87b4;
+        --wheel-compat: rgba(126, 179, 232, 0.30);
+        --cue-drop: #ff5470;
+        --cue-breakdown: #5a7bff;
+        --cue-downbeat: #69d0ff;
+        --cue-outro: #ffb454;
+        --cue-phrase: rgba(255, 255, 255, 0.45);
+        --cue-user: #a4ff7a;
+      }
+    }
 
     /* Keyboard focus that lands on a control near the top or bottom edge
        of the window scrolls it in far enough for the whole focus ring and
@@ -986,10 +1036,14 @@
     /* ---- Visible status mirror ----
        Same string the live region just announced, shown where a sighted
        user is looking.  The message is aria-hidden in the markup, so it
-       adds no second announcement.  The frame takes the pointer, so it
-       can be hovered (which holds it on screen, WCAG 1.4.13) and
-       dismissed with its own button, by mouse, touch or keyboard. */
+       adds no second announcement.  The message and its Dismiss button
+       take the pointer, so it can be hovered (which holds it on screen,
+       WCAG 1.4.13) and dismissed by mouse, touch or keyboard.  The frame
+       round them does not: its padding and the gap between the two pass
+       clicks through to the page, so the toast never blocks more than
+       its own text and button. */
     #status-toast-box {
+      pointer-events: none;
       position: fixed;
       left: 50%;
       bottom: 1rem;
@@ -1005,14 +1059,16 @@
       color: var(--text);
       border: 1px solid var(--accent);
       border-radius: var(--radius);
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
       box-shadow: 0 6px 24px light-dark(rgba(0, 0, 0, 0.25), rgba(0, 0, 0, 0.55));
       font-size: 0.9rem;
       line-height: 1.4;
     }
-    #status-toast { flex: 1 1 auto; min-width: 0; }
+    #status-toast { flex: 1 1 auto; min-width: 0; pointer-events: auto; }
     /* 32 px tall and wide, over the 24 px minimum (WCAG 2.5.8); the
        global focus ring shows round it on the card colour. */
     #status-toast-dismiss {
+      pointer-events: auto;
       flex: none;
       min-width: 2rem;
       min-height: 2rem;

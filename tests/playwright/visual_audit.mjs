@@ -11,7 +11,8 @@
 //       - axe-core's WCAG 2.2 A/AA rules at 1280 px: text contrast
 //         (1.4.3), target size (2.5.8), label in name (2.5.3) and the rest;
 //       - non-text contrast (1.4.11): every control's border or fill 3:1
-//         against what is behind it, the first focus rings 3:1, the
+//         against what is behind it, focus rings 3:1 (every stop in Dark,
+//         the first stops in the other modes), the
 //         progress fill 3:1 against its rail, each kind of cue tick 3:1
 //         against the bar, and the Camelot wheel lit for 8A: every wedge
 //         edge, the compatible outline and the current wedge 3:1 against
@@ -25,12 +26,16 @@
 //       - every native checkbox and radio button is at least 24 x 24 px
 //         (2.5.8);
 //       - Tab through the view: each stop draws a solid focus outline at
-//         least 2 px wide, scrolled fully into the window (2.4.7, 2.4.11);
+//         least 2 px wide, 3:1 against what is behind it, scrolled fully
+//         into the window (2.4.7, 2.4.11, 1.4.11), so with the Dark mode
+//         every focus ring in both themes is measured;
 //       - choosing Dark in Settings, Display and keys switches the page at
 //         once, says nothing, and survives a reload;
 //       - the status message stays while the pointer is over it, goes
-//         after the pointer leaves, and its Dismiss button works by mouse
-//         and by keyboard, putting focus back where it was.
+//         after the pointer leaves, lets a click on its frame (outside the
+//         message and the button) through to the page underneath, and its
+//         Dismiss button works by mouse and by keyboard, putting focus
+//         back where it was.
 //
 // Set AUTODJ_URL=http://host:port before running, e.g.:
 //   AUTODJ_URL=http://localhost:8080 node tests/playwright/visual_audit.mjs
@@ -52,15 +57,17 @@ const AXE = fileURLToPath(import.meta.resolve("axe-core/axe.min.js"));
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
 const VIEWS = ["now", "queue", "carts", "track-info", "history", "settings", "library"];
 const MAX_TAB_STOPS = 80;
-// Focus rings measured per target in each theme mode; the full tab-through
-// runs once, in the layout pass.
+// Focus rings measured per target in the Light and System modes.  Every
+// stop is measured in the Dark mode (fullFocus) and in the layout pass,
+// which runs in System light, so each theme has one full pass without
+// tabbing through every view four times.
 const THEME_TAB_STOPS = 12;
 const THEME_KEY = "autodj.theme";
 // Body background per theme, as app.css sets --bg.
 const THEME_BG = { light: "rgb(238, 241, 246)", dark: "rgb(26, 26, 46)" };
 const THEME_MODES = [
   { name: "light", stored: "light", colorScheme: "dark", theme: "light" },
-  { name: "dark", stored: "dark", colorScheme: "light", theme: "dark" },
+  { name: "dark", stored: "dark", colorScheme: "light", theme: "dark", fullFocus: true },
   { name: "system-light", stored: null, colorScheme: "light", theme: "light" },
   { name: "system-dark", stored: null, colorScheme: "dark", theme: "dark" },
 ];
@@ -430,7 +437,7 @@ async function auditTheme(browser, mode, out) {
       record("axe", target, await axeViolations(page));
       record("nonText", target, await controlBoundaryProblems(page));
       record("focusColour", target, await focusProblems(page, startOf(target),
-        { maxStops: THEME_TAB_STOPS, measureColour: true }));
+        { maxStops: mode.fullFocus ? MAX_TAB_STOPS : THEME_TAB_STOPS, measureColour: true }));
       if (target === "now") {
         record("nonText", "meters", await meterProblems(page));
         record("nonText", "camelot", await wheelProblems(page));
@@ -548,6 +555,50 @@ async function toastBehaviourProblems(page) {
   await page.waitForTimeout(3000);
   if (await visible()) problems.push("still showing 3 s after the pointer left");
 
+  // The frame's padding and the gap between the message and the button
+  // take no pointer: a control underneath still gets the click.  A probe
+  // button under the whole strip stands in for one, whatever the view.
+  await page.evaluate(() => {
+    const probe = document.createElement("button");
+    probe.type = "button";
+    probe.id = "audit-under-toast";
+    probe.textContent = "under";
+    probe.style.cssText = "position:fixed;left:0;right:0;bottom:0;height:6rem;z-index:9000";
+    window.__underClicks = 0;
+    probe.addEventListener("click", () => { window.__underClicks += 1; });
+    // Focus on a control under the toast sends the toast to the top of the
+    // window (WCAG 2.4.11), away from the next spot clicked; the probe
+    // keeps the click and leaves focus alone.
+    probe.addEventListener("mousedown", (event) => event.preventDefault());
+    document.body.append(probe);
+  });
+  await showToast(page, "Settings saved.");
+  await settle(page);
+  const spotOf = (where) => page.evaluate((name) => {
+    const frame = document.getElementById("status-toast-box").getBoundingClientRect();
+    const message = document.getElementById("status-toast").getBoundingClientRect();
+    const button = document.getElementById("status-toast-dismiss").getBoundingClientRect();
+    const middle = frame.top + frame.height / 2;
+    return {
+      padding: { x: (frame.left + message.left) / 2, y: middle },
+      gap: { x: (message.right + button.left) / 2, y: middle },
+      message: { x: message.left + message.width / 2, y: message.top + message.height / 2 },
+    }[name];
+  }, where);
+  for (const where of ["padding", "gap", "message"]) {
+    const spot = await spotOf(where);
+    const clicks = await page.evaluate(() => window.__underClicks);
+    await page.mouse.click(spot.x, spot.y);
+    const got = await page.evaluate(() => window.__underClicks) - clicks;
+    // The message itself takes the pointer: hovering it holds the toast.
+    const wanted = where === "message" ? 0 : 1;
+    if (got !== wanted) problems.push(`a click on the toast's ${where} reached the page ${got} times, not ${wanted}`);
+  }
+  if (!await visible()) problems.push("a click through the frame hid the message");
+  await page.mouse.move(5, 5);
+  await showToast(page, "");
+  await page.evaluate(() => document.getElementById("audit-under-toast").remove());
+
   await page.locator("#tab-queue").focus();
   await showToast(page, "Settings saved.");
   if (await focused() !== "tab-queue") problems.push(`showing the message moved focus to ${await focused()}`);
@@ -555,14 +606,32 @@ async function toastBehaviourProblems(page) {
   if (await visible()) problems.push("Dismiss by mouse did not hide it");
   if (await focused() !== "tab-queue") problems.push(`focus after a click on Dismiss: ${await focused()}`);
 
-  // By keyboard: Shift+Tab out of the button and Tab back in, so the ring
-  // is the keyboard one, then Enter.
-  await showToast(page, "Settings saved.");
-  await page.locator("#status-toast-dismiss").focus();
-  await page.keyboard.press("Shift+Tab");
+  // By keyboard: focus the last tab stop before the toast, show the
+  // message, Tab once to Dismiss (so the ring is the keyboard one), then
+  // Enter.  Focus must go back to that stop.
+  const start = await page.evaluate(() => {
+    const box = document.getElementById("status-toast-box");
+    const stops = [...document.querySelectorAll(
+      "a[href], button, input, select, textarea, summary, [tabindex]",
+    )].filter((element) => element.tabIndex >= 0 && !element.disabled
+      && !box.contains(element) && element.getClientRects().length
+      && !(element.type === "radio" && !element.checked)
+      && (box.compareDocumentPosition(element) & window.Node.DOCUMENT_POSITION_PRECEDING));
+    const last = stops.at(-1);
+    if (!last) return null;
+    last.setAttribute("data-audit-start", "");
+    return last.id || last.tagName.toLowerCase();
+  });
+  if (!start) {
+    problems.push("no tab stop before the status message");
+    return problems;
+  }
+  await page.locator("[data-audit-start]").focus();
   const before = await focused();
+  await showToast(page, "Settings saved.");
+  if (await focused() !== before) problems.push(`showing the message moved focus from ${before} to ${await focused()}`);
   await page.keyboard.press("Tab");
-  if (await focused() !== "status-toast-dismiss") problems.push(`Tab reached ${await focused()}, not Dismiss`);
+  if (await focused() !== "status-toast-dismiss") problems.push(`Tab from ${start} reached ${await focused()}, not Dismiss`);
   await settle(page);
   const ring = await page.evaluate(() => {
     const style = window.getComputedStyle(document.activeElement);
@@ -572,6 +641,7 @@ async function toastBehaviourProblems(page) {
   await page.keyboard.press("Enter");
   if (await visible()) problems.push("Dismiss by keyboard did not hide it");
   if (await focused() !== before) problems.push(`focus after Enter on Dismiss: ${await focused()}, not ${before}`);
+  await page.evaluate(() => document.querySelector("[data-audit-start]")?.removeAttribute("data-audit-start"));
   return problems;
 }
 
@@ -592,7 +662,8 @@ export async function audit(name, launcher) {
     await eachTarget(page, async (target) => {
       const small = await smallChoiceControls(page);
       if (small.length) out.smallChoices[target] = small;
-      const problems = await focusProblems(page, startOf(target));
+      await installContrastHelpers(page);
+      const problems = await focusProblems(page, startOf(target), { measureColour: true });
       if (problems.length) out.focus[target] = problems;
     });
     const setting = await themeSettingProblems(page);

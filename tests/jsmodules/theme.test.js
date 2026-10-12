@@ -12,9 +12,14 @@ import {
   installThemeSetting,
   readThemeChoice,
 } from "../../src/autodj/static/modules/theme.js";
+import { fallbackTokens, themeTokens } from "./theme-css.js";
 
 const initSource = readFileSync(
   join(process.cwd(), "src", "autodj", "static", "modules", "theme-init.js"), "utf8",
+);
+
+const appCss = readFileSync(
+  join(process.cwd(), "src", "autodj", "static", "app.css"), "utf8",
 );
 
 const RADIOS = ["system", "light", "dark"].map((value) => (
@@ -167,5 +172,21 @@ describe("theme-init.js", () => {
 
   it("uses the same storage key as the setting", () => {
     expect(initSource).toContain(`"${THEME_STORAGE_KEY}"`);
+  });
+});
+
+// Browsers without light-dark() get app.css's static dark token set.
+describe("app.css light-dark() fallback", () => {
+  it("sets every token to its dark value", () => {
+    const dark = themeTokens(appCss, "dark");
+    const fallback = fallbackTokens(appCss);
+    expect([...fallback.keys()].sort()).toEqual([...dark.keys()].sort());
+    for (const [name, value] of dark) expect(fallback.get(name), name).toBe(value);
+  });
+
+  it("applies only where light-dark() is unsupported, and pins the dark scheme", () => {
+    expect(appCss).toMatch(
+      /@supports not \(color: light-dark\(#000, #fff\)\) \{\s*:root,\s*:root\[data-theme\] \{\s*color-scheme: dark;/,
+    );
   });
 });

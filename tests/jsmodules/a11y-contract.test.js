@@ -1681,10 +1681,15 @@ describe("static accessibility contracts", () => {
       expect(["status", "alert", "log"]).not.toContain(node.getAttribute("role"));
     }
     expect(box.hasAttribute("hidden")).toBe(true);
-    // 24 px minimum target (WCAG 2.5.8); the frame takes the pointer.
+    // 24 px minimum target (WCAG 2.5.8).
     expect(lastValue("#status-toast-dismiss", "min-width")).toBe("2rem");
     expect(lastValue("#status-toast-dismiss", "min-height")).toBe("2rem");
-    expect(lastValue("#status-toast-box", "pointer-events")).toBeUndefined();
+    // Only the message and the button take the pointer (hover holds the
+    // toast, WCAG 1.4.13); the frame round them passes clicks through to
+    // the page, so it never blocks the controls underneath.
+    expect(lastValue("#status-toast-box", "pointer-events")).toBe("none");
+    expect(lastValue("#status-toast", "pointer-events")).toBe("auto");
+    expect(lastValue("#status-toast-dismiss", "pointer-events")).toBe("auto");
   });
 
   it("draws the Camelot wheel in system colours under forced colours", () => {

@@ -48,12 +48,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   browser, applied before the page is drawn so the other theme never flashes, and used by the
   public `/status` page too. Every text, control edge, focus ring, meter, cue tick and Camelot
   wheel edge meets WCAG 2.2 AA contrast in both themes, and Windows High Contrast still uses the
-  system colours.
+  system colours. Browsers too old for the CSS `light-dark()` function (before Chrome 123,
+  Firefox 120 and Safari 17.5) keep the dark theme.
 
 - The status message at the foot of the window has a **Dismiss** button that works by mouse,
   touch and keyboard, and stays on screen while the pointer is over it or focus is on its button.
-  Escape still closes it. What screen readers hear is unchanged: the button is not part of the
-  message, and the message never takes focus.
+  Escape still closes it. Only the message and the button take the pointer, so a click on the
+  rest of the strip still reaches the page underneath. What screen readers hear is unchanged: the
+  button is not part of the message, and the message never takes focus.
 
 - `autodj worker --idle-exit MINUTES` keeps asking for new songs every half minute and stops only
   once the queue has stayed empty for that long, so a worker started alongside a Rescan does not

@@ -361,13 +361,26 @@ describe("dismissible, hoverable status message", () => {
     expect($("status-toast-box").hidden).toBe(true);
   });
 
+  // The frame takes no pointer (app.css), so crossing the gap between the
+  // message and the button passes over the page for a moment.
+  it("is still there when the pointer crosses from the message to the button", () => {
+    showVisibleStatus("Saved.", document);
+    pointer("pointerover", $("status-toast"));
+    vi.advanceTimersByTime(60000);
+    pointer("pointerout", $("status-toast"), document.body);
+    vi.advanceTimersByTime(500);
+    pointer("pointerover", $("status-toast-dismiss"));
+    vi.advanceTimersByTime(60000);
+    expect($("status-toast-box").hidden).toBe(false);
+  });
+
   it("holds a new message while hovered, too", () => {
     showVisibleStatus("First.", document);
-    pointer("pointerover", $("status-toast-box"));
+    pointer("pointerover", $("status-toast"));
     showVisibleStatus("Second.", document);
     vi.advanceTimersByTime(60000);
     expect($("status-toast").textContent).toBe("Second.");
-    pointer("pointerout", $("status-toast-box"), document.body);
+    pointer("pointerout", $("status-toast"), document.body);
     vi.advanceTimersByTime(8000);
     expect($("status-toast-box").hidden).toBe(true);
   });

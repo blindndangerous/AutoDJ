@@ -24,8 +24,40 @@ function topLevelComma(source) {
   return -1;
 }
 
+// app.css's dark token set for browsers without light-dark(): the rule
+// inside @supports not (...light-dark(...)) { ... }.
+const FALLBACK_START = "@supports not (color: light-dark(";
+
+function closingBrace(source, open) {
+  let depth = 0;
+  for (let index = open; index < source.length; index += 1) {
+    if (source[index] === "{") depth += 1;
+    else if (source[index] === "}" && --depth === 0) return index;
+  }
+  throw new Error("Unclosed @supports block");
+}
+
+// [start, end) of the fallback block, or null when there is none.
+function fallbackSpan(css) {
+  const at = css.indexOf(FALLBACK_START);
+  if (at === -1) return null;
+  return [at, closingBrace(css, css.indexOf("{", at)) + 1];
+}
+
+// The custom properties the fallback block sets, as written.
+export function fallbackTokens(css) {
+  const span = fallbackSpan(css);
+  if (!span) throw new Error("No light-dark() fallback block");
+  const block = css.slice(...span).replace(/\/\*[\s\S]*?\*\//g, "");
+  return new Map([...block.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)]
+    .map((match) => [match[1], match[2].trim()]));
+}
+
 export function cssForTheme(css, theme) {
   if (!THEMES.includes(theme)) throw new Error(`Unknown theme ${theme}`);
+  // A browser that resolves light-dark() never applies the fallback.
+  const span = fallbackSpan(css);
+  if (span) css = css.slice(0, span[0]) + css.slice(span[1]);
   let out = "";
   let from = 0;
   for (;;) {
