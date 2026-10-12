@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from autodj.config import AutoDJConfig, ServerConfig
     from autodj.doctor import DoctorReport
     from autodj.indexer import IndexEntry
+    from autodj.library import LibraryManager
     from autodj.pairing import DeviceRegistry
     from autodj.similarity import SimilarityIndex
 
@@ -58,14 +59,14 @@ console = Console()
 
 
 def _resolve_seed(
-    sim: SimilarityIndex,
+    sim: SimilarityIndex | LibraryManager,
     cfg: AutoDJConfig,
     seed: str | None,
     console_: Console,
 ) -> IndexEntry | None:
     """Resolve a seed string to an :class:`~autodj.indexer.IndexEntry`.
 
-    When several indexed tracks match, the first one is used.
+    When several library tracks match, the first one is used.
 
     Args:
         sim: Loaded :class:`~autodj.similarity.SimilarityIndex`.
@@ -96,7 +97,7 @@ def _resolve_seed(
         candidates = [e for e in entries if q in e.title.lower() or q in e.artist.lower()]
 
     if not candidates:
-        console_.print(f"[yellow]No indexed tracks match '{seed}'. Starting random.[/yellow]")
+        console_.print(f"[yellow]No library tracks match '{seed}'. Starting random.[/yellow]")
         return None
 
     chosen = candidates[0]
@@ -149,11 +150,18 @@ def _apply_index_name(cfg: AutoDJConfig, index_name: str | None) -> bool:  # pra
 def _load_index_for_serve(
     cfg: AutoDJConfig, *, active_dir: Path | None = None
 ) -> SimilarityIndex:  # pragma: no cover
-    """Load an index for web serving; a directory without one serves an empty index."""
+    """Import a legacy index only when this library has no catalog yet."""
     from autodj.index_manifest import UnsupportedIndexError
     from autodj.similarity import SimilarityIndex as _SI
 
     index_dir = cfg.index.active_dir if active_dir is None else active_dir
+    if (Path(index_dir) / "library.db").is_file():
+        return _SI.empty()
+    if (Path(index_dir) / "index-manifest.json").is_file():
+        console.print(
+            "[yellow]The published-index format is deprecated. Importing it into the library; "
+            "the original files will be kept for recovery.[/]"
+        )
 
     try:
         return _SI.from_index_dir(
@@ -174,7 +182,7 @@ def _load_index_for_serve(
         return _SI.from_index_dir(index_dir, music_dir=cfg.library.music_dir)
     except FileNotFoundError:
         console.print(
-            "[yellow]Index is empty; the web UI will stay ready while you run autodj index.[/]"
+            "[yellow]Library is empty; add music folders in Library tools to get started.[/]"
         )
         return _SI.empty()
 
@@ -184,9 +192,9 @@ def _scan_index_rows(
 ) -> list[tuple[str, str, str]]:  # pragma: no cover
     """Walk *base* for index directories; return (name, track count, path) rows.
 
-    The track count comes from each index's ``index-manifest.json``.  An
-    index from before the manifest format shows as needing a rebuild.
+    Prefer the current catalog; report a legacy index only before its first import.
     """
+    from autodj.catalog import catalog_counts
     from autodj.index_manifest import (
         IndexConsistencyError,
         UnsupportedIndexError,
@@ -196,6 +204,16 @@ def _scan_index_rows(
     rows: list[tuple[str, str, str]] = []
     for entry in sorted(base.iterdir()):
         if not entry.is_dir():
+            continue
+        catalog_path = entry / "library.db"
+        if catalog_path.is_file():
+            try:
+                ready, analyzed = catalog_counts(catalog_path)
+                status = f"{ready} songs; {analyzed} analyzed"
+            except (OSError, sqlite3.Error):
+                status = "[red]corrupt library[/red]"
+            active_marker = "  *" if entry.name == active_name else "   "
+            rows.append((active_marker + entry.name, status, str(entry)))
             continue
         try:
             manifest = read_manifest(entry)
@@ -341,10 +359,17 @@ def _stage_serve_server(
 
 
 def _print_serve_banner(
-    console_: Console, sim: SimilarityIndex
+    console_: Console, library: LibraryManager
 ) -> None:  # pragma: no cover -- terminal banner
-    """Print the index summary banner."""
-    console_.print(Panel(f"[bold green]AutoDJ[/] — {sim.ntotal} tracks indexed", expand=False))
+    """Print the current library counts."""
+    state = library.snapshot()
+    console_.print(
+        Panel(
+            f"[bold green]AutoDJ[/] - {state['tracks_ready']} songs; "
+            f"{state['tracks_indexed']} analyzed",
+            expand=False,
+        )
+    )
 
 
 def _serve_url(server: ServerConfig) -> str:
@@ -787,11 +812,11 @@ def cmd_restore(ctx: click.Context, archive: Path, force: bool) -> None:
 @click.option(
     "--limit",
     default=None,
-    type=int,
+    type=click.IntRange(min=1),
     show_default=True,
     help=(
-        "Maximum number of NEW tracks to embed in this run. "
-        "Omit to process all unindexed tracks. "
+        "Maximum pending songs to analyse in this run; all songs are imported first. "
+        "Omit to analyse all eligible songs. "
         "Use a small number (e.g. --limit 20) to test the pipeline first."
     ),
 )
@@ -799,7 +824,7 @@ def cmd_restore(ctx: click.Context, archive: Path, force: bool) -> None:
     "--force",
     is_flag=True,
     default=False,
-    help="Ignore the existing index and re-embed everything from scratch.",
+    help="Re-analyse eligible songs, keeping cues, history, settings and old results until replaced.",
 )
 @click.option(
     "--name",
@@ -817,7 +842,7 @@ def cmd_restore(ctx: click.Context, archive: Path, force: bool) -> None:
     "--workers",
     "workers",
     default=None,
-    type=int,
+    type=click.IntRange(min=1),
     help=(
         "Audio-loader prefetch threads for the embed pass "
         "(default: 1 to bound full-track analysis memory).  Higher values "
@@ -828,7 +853,7 @@ def cmd_restore(ctx: click.Context, archive: Path, force: bool) -> None:
     "--no-analyse",
     "skip_analyse",
     is_flag=True,
-    help="Skip the DJ-meta backfill that runs after the embed pass.",
+    help="Skip the extra beat/cue backfill for the configured music root; basic cues are still read.",
 )
 @click.option(
     "--no-enrich",
@@ -849,95 +874,72 @@ def cmd_index(
     skip_analyse: bool,
     skip_enrich: bool,
 ) -> None:
-    """Build or update the FAISS index for the music library.
+    """Add registered folders to the library, then analyse pending songs.
 
-    Reads track metadata from the beets database (if configured) or scans
-    the filesystem.  Tracks already in the index are skipped unless --force
-    is passed.
+    On first use, imports an existing legacy index or registers [library] music_dir.
+    Later runs rescan the folders saved in Library tools. Songs become available
+    before advanced analysis; folders with advanced analysis disabled are skipped
+    by that pass. --limit caps advanced analysis, not the basic import.
 
-    ``index`` runs the full maintenance pipeline by default: embed new
-    tracks, enrich from beets when configured, prune stale DJ-meta rows,
-    and analyse missing intro/outro/cue metadata.  For a quick embed-only
-    smoke test, skip the post-passes:
-
-    \b
-        uv run autodj index --limit 20 --no-enrich --no-analyse
-        uv run autodj index           # full library (run overnight on GPU machine)
+    --force replaces existing analysis after each successful result. It keeps
+    manual cues, history, settings and usable old vectors if a song fails.
     """
-    # Indexing requires torch + muq + librosa.  Probe before doing any
-    # other work so users on minimal installs (NAS, Docker) get a clear
-    # message instead of a deep stack trace from inside `model.py`.
-    missing = [name for name in ("torch", "muq", "librosa", "soundfile") if not _can_import(name)]
-    if missing:
-        console.print(
-            f"[bold red]Cannot index — missing packages: {', '.join(missing)}[/]\n"
-            "Install indexing dependencies with:\n"
-            "  [bold]uv sync --extra index[/]\n"
-            "or for the whole kit:\n"
-            "  [bold]uv sync --extra all[/]\n\n"
-            "Indexing runs on CPU automatically when no compatible GPU is available —\n"
-            "fine for small batches (use --limit 50 to try it on a NAS first)."
-        )
-        sys.exit(1)
-
-    # Imported after the probe: indexer imports librosa at module scope.
-    from autodj.indexer import build_index
-    from autodj.model import download_model_if_needed, load_model
+    from autodj.index_manifest import IndexConsistencyError
+    from autodj.library import LibraryManager, analyse_library
+    from autodj.similarity import SimilarityIndex
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
     _apply_index_name(cfg, index_name)
-
-    # Detect compute device + warn about CPU performance for big libraries.
-    from autodj.compute import device_description
-
-    device = device_description()
-
-    console.print(Panel("[bold green]AutoDJ Indexer[/]", expand=False))
-    console.print(f"  Music dir  : {cfg.library.music_dir}")
-    console.print(f"  Beets DB   : {cfg.library.beets_db or '(not configured)'}")
-    console.print(f"  Index name : {cfg.index.name}")
-    console.print(f"  Index dir  : {cfg.index.active_dir}")
-    console.print(f"  Model      : {cfg.model.name}")
-    console.print(f"  Device     : {device}")
-    if device == "CPU" and not limit:
-        console.print(
-            "  [yellow]Note:[/] CPU indexing of a full library can take many hours.  "
-            "Consider --limit 50 to test, then run a full pass on a GPU host."
-        )
+    cfg.library.music_dir = cfg.library.music_dir.resolve()
+    console.print(Panel("[bold green]AutoDJ library import[/]", expand=False))
+    console.print(f"  Library : {cfg.index.active_dir}")
     if limit:
-        console.print(f"  Limit      : {limit} tracks (test mode)")
+        console.print(f"  Advanced analysis limit : {limit} songs")
     if force:
-        console.print("  Mode       : [yellow]FORCE REBUILD[/]")
-    post_passes: list[str] = []
-    if not skip_enrich:
-        post_passes.append("[green]+ enrich[/] (beets key/mode)")
-    if not skip_analyse:
-        post_passes.append("[green]+ analyse[/] (intro/outro/beat/cues)")
-    if post_passes:
-        console.print(f"  Post-pass  : {'; '.join(post_passes)}")
-    else:
-        console.print("  Post-pass  : [yellow]skipped[/]")
-    console.print()
-
+        console.print("  Mode : [yellow]FORCE REBUILD[/] of analysis; saved station data is kept")
     try:
-        model_path = download_model_if_needed(cfg.model, cfg.index, hf_token=cfg.huggingface.token)
-        wrapper = load_model(model_path)
-        build_index(
-            cfg,
-            wrapper=wrapper,
-            limit=limit,
-            force=force,
-            workers=workers,
-        )
+        try:
+            sim = _load_index_for_serve(cfg)
+        except IndexConsistencyError:
+            if not force:
+                raise
+            console.print(
+                "[yellow]The old index could not be imported; rebuilding from folders.[/]"
+            )
+            sim = SimilarityIndex.empty()
+        library = LibraryManager(cfg, sim)
+        ctx.call_on_close(library.close)
+        library.scan()
+        state = library.snapshot()
+        console.print(f"[green]{state['tracks_ready']} songs available.[/]")
+        for error in state["import"]["errors"]:
+            console.print(f"[yellow]{escape(error)}[/]")
+        if library.analysis_pending(force=force):
+            from autodj.model import download_model_if_needed, load_model
+
+            missing = [
+                name for name in ("torch", "muq", "librosa", "soundfile") if not _can_import(name)
+            ]
+            if missing:
+                raise RuntimeError(
+                    f"Advanced analysis needs missing packages: {', '.join(missing)}. "
+                    "Install with uv sync --extra index. Imported songs remain available."
+                )
+            model_path = download_model_if_needed(
+                cfg.model, cfg.index, hf_token=cfg.huggingface.token
+            )
+            completed = analyse_library(
+                cfg, load_model(model_path), limit=limit, force=force, workers=workers
+            )
+            console.print(f"[green]Advanced analysis completed for {completed} songs.[/]")
+        else:
+            console.print("Advanced analysis is up to date; nothing to do.")
     except Exception as exc:
-        console.print(f"[bold red]Indexing failed:[/] {escape(str(exc))}")
-        sys.exit(1)
+        raise click.ClickException(f"Indexing failed: {exc}") from exc
 
     if not skip_enrich:
         if not cfg.library.beets_db:
-            console.print(
-                f"[yellow]Enrich skipped: no {escape('[library]')} beets_db configured.[/]"
-            )
+            console.print("[yellow]Enrich skipped: no beets database configured.[/]")
         else:
             from autodj.indexer import enrich_from_beets
 
@@ -947,20 +949,36 @@ def cmd_index(
                     music_dir=cfg.library.music_dir,
                     beets_db=cfg.library.beets_db,
                 )
-                console.print(f"[green]Enrich:[/] {updated} of {total} tracks updated.")
+                console.print(f"[green]Enrich:[/] {updated} of {total} songs updated.")
             except Exception as exc:
                 console.print(f"[bold red]Enrich failed:[/] {escape(str(exc))}")
 
     if not skip_analyse:
-        from autodj.indexer import backfill_dj_meta, load_index
+        from autodj.indexer import backfill_dj_meta
 
         try:
-            entries, _, _ = load_index(cfg.index.active_dir, music_dir=cfg.library.music_dir)
-            backfill_dj_meta(cfg, entries)
-        except FileNotFoundError:
-            console.print("[yellow]--analyse skipped: no index found.[/]")
+            # The portable DJ cache still belongs to the configured music root.
+            library.refresh()
+            entries = [
+                entry
+                for entry in library.entries_snapshot()
+                if Path(entry.path).is_relative_to(cfg.library.music_dir.resolve())
+                and any(
+                    source["advanced"]
+                    for source in library.catalog.sources_for_path(entry.path, "music")
+                )
+            ]
+            backfill_dj_meta(cfg, entries, prune=False)
+            for entry in entries:
+                library.catalog.set_points(
+                    entry.path,
+                    library._legacy_point_suggestions(Path(entry.path)),
+                    source="analysis",
+                )
         except Exception as exc:
             console.print(f"[bold red]Analyse failed:[/] {escape(str(exc))}")
+    if skip_analyse and skip_enrich:
+        console.print("Post-pass: skipped")
 
 
 # ---------------------------------------------------------------------------
@@ -1484,13 +1502,17 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         and not is_loopback_bind(staged_server.host)
     ):
         console.print("[yellow]WARNING: LAN access is unauthenticated (--insecure-lan).[/]")
-    _print_serve_banner(console, sim)
-    seed_entry = _resolve_seed(sim, cfg, seed, console)
+    from autodj.library import LibraryManager
+
+    _apply_index_name(cfg, index_name)
+    library = LibraryManager(cfg, sim)
+    ctx.call_on_close(library.close)
+    _print_serve_banner(console, library)
+    seed_entry = _resolve_seed(library, cfg, seed, console)
     url = _print_serve_url_banner(console, staged_server)
     cfg.server = staged_server
     if stream is not None:
         cfg.stream.enabled = stream
-    _apply_index_name(cfg, index_name)
     if stream is not None or server_cli_override:
         _append_cli_source(cfg)
     _require_ffmpeg_for_stream(cfg)
@@ -1505,6 +1527,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         serve(
             cfg=cfg,
             sim=sim,
+            library=library,
             seed_entry=seed_entry,
             host=host,
             port=port,

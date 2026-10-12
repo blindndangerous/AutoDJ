@@ -20,7 +20,6 @@ from autodj.server import (
     _transcode_alac_to_mp3,
     _websocket_session_is_valid,
     _WebSocketClient,
-    reload_published_generation_once,
 )
 
 
@@ -62,30 +61,6 @@ def test_websocket_session_validation_defaults_true_and_contains_callback_failur
         session_is_valid=MagicMock(side_effect=RuntimeError("session backend")),
     )
     assert not _websocket_session_is_valid(client)
-
-
-@pytest.mark.asyncio
-async def test_reload_generation_without_config_does_nothing() -> None:
-    bridge = MagicMock()
-    bridge.player = object()
-
-    assert await reload_published_generation_once(bridge) is False
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("on_disk", "reloaded"), [("same", False), ("newer", True), (None, False)])
-async def test_reload_generation_only_when_the_manifest_changed(
-    monkeypatch: pytest.MonkeyPatch, on_disk: str | None, reloaded: bool
-) -> None:
-    import autodj.server as server
-
-    bridge = MagicMock()
-    bridge.player._cfg.index.active_dir = "index"
-    bridge.sim.manifest = "same"
-    monkeypatch.setattr(server, "read_manifest", MagicMock(return_value=on_disk))
-
-    assert await reload_published_generation_once(bridge) is reloaded
-    assert bridge.reload_index_from_disk.called is reloaded
 
 
 def _mutagen_modules(mp4_factory: object) -> dict[str, ModuleType]:

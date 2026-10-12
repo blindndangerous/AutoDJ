@@ -3341,14 +3341,12 @@ class TestMisc:
         assert response.status_code == 200
         assert called[-2:] == ["to_thread", path]
 
-    def test_lyrics_endpoint_rejects_result_after_index_generation_swap(self, bridge) -> None:
+    def test_lyrics_endpoint_rejects_result_after_track_removed(self, bridge) -> None:
         from fastapi.testclient import TestClient
 
         path = bridge.sim.entries[0].path
-        bridge.sim.manifest = "generation 1"
 
         def swap_index_generation(_path: str) -> list[dict]:
-            bridge.sim.manifest = "generation 2"
             bridge.sim.entries = bridge.sim.entries[1:]
             return [{"time": 0.0, "text": "stale secret"}]
 
@@ -4171,62 +4169,6 @@ class TestPersistenceHelpers:
         bridge.player._cfg.transitions.effect = "none"
         bridge.load_persistent_state()
         assert bridge.player._cfg.transitions.effect == "tape_stop"
-
-
-class TestReloadIndexFromDisk:
-    def test_watcher_reloads_a_changed_manifest(self, monkeypatch, tmp_path) -> None:
-        from threading import Event
-
-        from fastapi.testclient import TestClient
-
-        reloaded = Event()
-        bridge = MagicMock()
-        bridge.player._cfg.index.active_dir = tmp_path
-        bridge.player._cfg.server.station_timezone = "UTC"
-        bridge.player._cfg.time_checks = TimeChecksConfig()
-        bridge.sim.manifest = "generation 1"
-        bridge.sim.ntotal = 5
-        bridge.reload_index_from_disk.side_effect = lambda: reloaded.set()
-        monkeypatch.setattr("autodj.server.read_manifest", lambda _: "generation 2")
-
-        with TestClient(create_app(bridge)):
-            assert reloaded.wait(timeout=1)
-        bridge.reload_index_from_disk.assert_called_with()
-
-    def test_watcher_retries_a_manifest_whose_load_failed(self, monkeypatch, tmp_path) -> None:
-        import asyncio
-
-        from autodj.index_manifest import IndexConsistencyError
-        from autodj.server import reload_published_generation_once
-
-        monkeypatch.setattr("autodj.server.read_manifest", lambda _: "generation 2")
-        bridge = MagicMock()
-        bridge.player._cfg.index.active_dir = tmp_path
-        bridge.player._cfg.server.station_timezone = "UTC"
-        bridge.sim.manifest = "generation 1"
-        bridge.reload_index_from_disk.side_effect = [IndexConsistencyError("torn copy"), 5]
-
-        with pytest.raises(IndexConsistencyError):
-            asyncio.run(reload_published_generation_once(bridge))
-
-        assert asyncio.run(reload_published_generation_once(bridge)) is True
-        assert bridge.reload_index_from_disk.call_count == 2
-
-    def test_reload_no_cfg_returns_current_total(self) -> None:
-        sim = MagicMock()
-        sim.ntotal = 7
-        bridge = PlayerBridge(player=MagicMock(_cfg=None), sim=sim)
-        assert bridge.reload_index_from_disk() == 7
-
-    def test_reload_calls_sim(self, tmp_path) -> None:
-        sim = MagicMock()
-        sim.reload_from_disk.return_value = 42
-        cfg = MagicMock()
-        cfg.index.active_dir = tmp_path
-        cfg.library.music_dir = None
-        bridge = PlayerBridge(player=MagicMock(_cfg=cfg), sim=sim)
-        assert bridge.reload_index_from_disk() == 42
-        sim.reload_from_disk.assert_called_once_with(tmp_path, music_dir=None)
 
 
 # ---------------------------------------------------------------------------

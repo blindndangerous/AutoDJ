@@ -1726,35 +1726,3 @@ class PlayerBridge:
         else:
             self.player._discovery_every = int(every)
             self.player._state.discovery_enabled = True
-
-    # ------------------------------------------------------------------
-    # Hot-reload — pick up new tracks while a parallel `index` runs
-    # ------------------------------------------------------------------
-
-    def reload_index_from_disk(self) -> int:
-        """Load the live index generation into the live sim.
-
-        Used by the background watcher in :func:`create_app` so a long-
-        running ``serve`` picks up tracks that ``autodj index`` (running
-        in parallel) has freshly embedded.  No restart required — the
-        next track pick consults the new entries.
-
-        Returns:
-            New track count after reload.
-        """
-        cfg = getattr(self.player, "_cfg", None)
-        if cfg is None:
-            return self.sim.ntotal
-        count = self.sim.reload_from_disk(cfg.index.active_dir, music_dir=cfg.library.music_dir)
-        if self.library is not None:
-            # Seeds only what the catalog lacks, and gives sim back the
-            # catalog's vectors, which the reload replaced.
-            self.library.import_legacy()
-            count = self.sim.ntotal
-        # The no-repeat window is clamped to the library size; a library
-        # that grew from empty (or shrank) needs it worked out again, or
-        # the picker keeps relaxing (or refusing) its history.
-        from autodj.player import apply_repeat_windows
-
-        apply_repeat_windows(self.player)
-        return count

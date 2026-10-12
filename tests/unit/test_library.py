@@ -1291,7 +1291,7 @@ def _generation(number: int):
     return IndexManifest(1, number, 2, "2026-01-01T00:00:00Z", f"t{number}", f"v{number}")
 
 
-def test_restart_does_not_import_an_imported_generation_again(tmp_path, monkeypatch):
+def test_legacy_generation_is_imported_once_in_chunks(tmp_path, monkeypatch):
     import faiss
 
     from autodj.similarity import SimilarityIndex
@@ -1311,29 +1311,29 @@ def test_restart_does_not_import_an_imported_generation_again(tmp_path, monkeypa
         sim._manifest = _generation(number)
         return sim
 
-    LibraryManager(cfg, legacy(1)).close()
+    # The first start imports the generation a chunk of rows at a time.
+    sim = legacy(1)
+    reconstruct = Mock(side_effect=AssertionError("one row at a time"))
+    monkeypatch.setattr(sim.faiss_index, "reconstruct", reconstruct, raising=False)
+    LibraryManager(cfg, sim).close()
+    monkeypatch.undo()
+    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+        assert catalog.get_setting("imported_index_generation")["generation"] == 1
 
     def no_seeding(*_args, **_kwargs):
         raise AssertionError("re-imported")
 
+    # Once the catalog exists, even a newer generation is not imported again.
     monkeypatch.setattr(LibraryCatalog, "seed_entries", no_seeding)
-    sim = legacy(1)
+    sim = SimilarityIndex.empty()
     manager = LibraryManager(cfg, sim)
     try:
-        # The catalog's vectors replace the loaded generation's, as before.
+        # The catalog's vectors reach sim.
         assert [Path(entry.path) for entry in sim.entries_snapshot()] == songs
         np.testing.assert_array_equal(sim.faiss_index.reconstruct_n(0, 2), vectors)
     finally:
         manager.close()
-    monkeypatch.undo()
-
-    # A new generation is imported, a chunk of rows at a time.
-    sim = legacy(2)
-    reconstruct = Mock(side_effect=AssertionError("one row at a time"))
-    monkeypatch.setattr(sim.faiss_index, "reconstruct", reconstruct, raising=False)
-    LibraryManager(cfg, sim).close()
-    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
-        assert catalog.get_setting("imported_index_generation")["generation"] == 2
+    LibraryManager(cfg, legacy(2)).close()
 
 
 def test_library_database_uses_wal(tmp_path):

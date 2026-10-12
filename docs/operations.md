@@ -56,23 +56,24 @@ serving and indexing before accepting this repair. `serve --lan` runs until stop
 change the saved configuration. Doctor redacts both server and Hugging Face tokens in its
 configuration report.
 
-The `index` check loads the index with the same code `serve` uses. It passes with the generation
-number and track count, warns when there is no index yet or the index is empty, and otherwise
-fails with the name and message of the error `serve` would stop with, for example
-`UnsupportedIndexError` for an index made by an older AutoDJ. The `dj-meta-db` check runs SQLite's
-integrity check on `dj_meta.db` without changing it. The `beets-db` check warns when
-`[library] beets_db` names a file that does not exist: indexing then scans the music folder
-instead, and `autodj enrich` fails. The `dependencies` check warns when FFmpeg is not on the
-PATH: indexing then skips `.mp3`, `.m4a`, `.mp4` and `.aac` files, and stream mode cannot start.
+The `index` check reads the current catalog when one exists. Before its first import, it checks
+the legacy index that `serve` or `index` would import. It reports catalog counts, warns when the
+library is empty, and reports an error that would prevent startup or import. The `dj-meta-db`
+check runs SQLite's integrity check on `dj_meta.db` without changing it. The `beets-db` check
+warns when `[library] beets_db` names a file that does not exist: folder scanning still imports
+basic song records, but optional beets enrichment cannot run. The `dependencies` check warns when
+FFmpeg is not on the PATH: advanced analysis cannot process `.mp3`, `.m4a`, `.mp4` and `.aac`
+files, and stream mode cannot start.
 
 ## Indexing and DJ analysis
 
-`autodj index` embeds new tracks, then by default enriches them from beets and runs the DJ
-analysis that `autodj analyse` also runs: intro and outro, beat grid and cue points for every
-track that has none yet. In a terminal, both commands update one status line after each track,
-showing the completed count and percentage. Redirected output and web job logs keep plain progress
-messages every 25 tracks and at completion. File checks report every 5000 files, so the log
-in the web page's library tools stays readable.
+`autodj index` scans the registered folders and saves basic song records in `library.db` before
+loading the model. It then embeds eligible songs that do not yet have vectors. By default it also
+refreshes metadata from beets and runs the DJ-meta backfill (`autodj analyse`) for tracks under
+the configured music root whose folders have advanced analysis enabled. This backfill adds intro,
+outro, beat-grid and cue data; `--no-analyse` skips it, while advanced embedding still runs.
+In a terminal, analysis commands show completed-track progress. Redirected output and web job
+logs keep plain progress messages.
 
 In the web page, add, remove and rescan music and voice liner folders in the **Library tools**
 tab. Browse what they hold in **Queue & Search**, after Search: **Browse library** lists all
@@ -98,9 +99,19 @@ directory that lists each file and its messages: `decode-indexing.log` for embed
 report removes it. FFmpeg's routine note that an MP3's duration is estimated from its bitrate is
 left out, because the decode itself is complete.
 
-Each run publishes the tracks embedded so far as a new index generation every 100 tracks and at
-the end, so an interrupted run resumes where it stopped. `autodj analyse` saves its results every
-25 tracks.
+`autodj index` uses the same registered folders as Library tools. `--limit` caps the advanced
+embedding pass, not the basic import. Folders with advanced analysis disabled stay playable
+without embedding. Each completed vector is saved in `library.db`, so an interrupted run resumes
+with remaining songs. `--force` replaces vectors for eligible songs without deleting cues,
+history or settings; a failed embedding leaves the previous vector in place. `--workers` controls
+audio prefetch. `--no-enrich` skips the optional beets refresh.
+
+The old published-index format, including `index-manifest.json`, is deprecated. If there is no
+catalog, `index` or `serve` imports a valid old index once and keeps the originals for recovery.
+A stale manifest is ignored when the catalog already exists. For an unreadable legacy index,
+`index --force` can build a catalog from the configured folders without importing that index.
+`migrate-index` remains available for older formats. Legacy `analyse`, `prune`, and `stats`
+commands still use the old files; `enrich` uses the catalog when present.
 
 To give network drives a rest during a long run, set a pause before each track, in milliseconds,
 in `config.toml`:
@@ -981,14 +992,14 @@ the authoritative check. Do not use world-writable Windows mounts.
 
 ## Moved files
 
-`autodj index` recognises a track that moved, for example after `beet move`, by its size and a
-fingerprint of 64 KiB from the middle of the file. A moved track keeps its vector, its metadata
-refreshed from beets, and its DJ analysis and cues; nothing is embedded again. It also works when
-the whole library moved. A track is re-pathed only when exactly one missing file and exactly one
-new file match. A copy, two identical files, or a file whose bytes changed (retagged) is indexed
-the usual way. The run prints `N moved files re-pathed`.
+When a file moves between registered folders in the same catalog, a scan can recognize it by its
+size and a fingerprint of 64 KiB from the middle of the file. The existing vector, metadata,
+analysis and cues stay with that track. A track is re-pathed only when exactly one missing file and
+exactly one new file match. A copy, two identical files, or a file whose bytes changed (retagged)
+is handled as a changed or new song. Register the destination folder before rescanning. This does
+not make a copied catalog portable to paths on another machine.
 
-This needs index schema 4. When started in an interactive terminal, `autodj serve` detects a
+Legacy imports need index schema 4. When started in an interactive terminal, `autodj serve` detects a
 schema-3 index and offers to save a recovery copy and convert it. Entering Yes converts the index
 and continues startup; No leaves it unchanged and stops startup. Stop any other AutoDJ serving,
 indexing or analysis process before accepting. Services and other non-interactive launches exit
@@ -1031,46 +1042,38 @@ The first command is a dry run. Both entry points use the same converter and rec
 
 ## More than one machine
 
-AutoDJ stores track paths relative to `music_dir`, so an index built on one machine works on
-another that mounts the same library somewhere else. Point `music_dir` at the right place on each
-machine in that machine's `config.local.toml`.
+The current `library.db` stores absolute paths. Each machine should use its own catalog and
+register folders using paths visible on that machine. Changing `music_dir` or copying a catalog
+does not rewrite those paths. Older published indexes store paths relative to `music_dir` and
+remain portable as a one-time import when the destination has no catalog.
 
-### Two independent indexes
+### One catalog per machine
 
-The simplest setup gives each machine its own index and never copies anything. For example, a NAS
-and a desktop each keep their own `index/` folder, and after you add tracks to the library you run
-this on each machine:
+Each machine should keep its own catalog and register its local music folders in Library tools.
+After adding tracks, run `autodj index` on that machine to import them and embed eligible songs.
+The catalog stores absolute file paths, so pointing `music_dir` at the same files from another
+mount point does not relocate an existing catalog. Create a catalog using the paths visible on
+that machine; do not copy a populated `library.db` expecting it to adapt to a different mount.
 
-```bash
-uv run autodj index
-```
+### Importing a legacy index on another machine
 
-`autodj index` first drops entries for deleted files (unless more than a fifth of the library is
-missing, which usually means a wrong `music_dir`), then embeds tracks it has not seen and files
-changed since they were embedded, enriches from beets, and analyses new tracks. Each machine keeps
-its own web settings, liners, profiles and paired browsers, and neither can overwrite the other.
-Use `autodj index --force` only when you want to rebuild an index from nothing.
+Older published indexes store paths relative to `music_dir` and can still be imported when the
+destination has no catalog. Set `music_dir` to that machine's library root, then place the legacy
+index files in its named index directory before running `serve` or `index`. The first import keeps
+the source files for recovery; after a catalog exists, the legacy manifest is ignored. The
+`migrate-index` command remains available for older index schemas.
 
-### Copying an index to another machine
+For this one-time legacy import, stop AutoDJ and any `index` or `analyse` run on both machines.
+Copy only the files needed by the old format from `index/<name>/`:
 
-Building an index is slow without a GPU, so you can build it on a fast machine and copy it to
-another. Copy only the derived files, and never the whole `index/` folder, because that folder also
-holds files that belong to the machine that made them.
-
-Stop AutoDJ, and any `autodj index` or `autodj analyse` run, on both machines first. Then copy
-these files from `index/<name>/` on the source to `index/<name>/` on the destination:
-
-- The generation files named in `index-manifest.json`, `tracks.g<number>.db` and
+- The generation files named in `index-manifest.json`: `tracks.g<number>.db` and
   `vectors.g<number>.index`. The number is the manifest's `generation` written with 20 digits.
 - `dj_meta.db`, the intro, outro, beat grid and cue cache.
 - `index-manifest.json` last, after the files it names are in place. AutoDJ loads only what the
   manifest names and checks both files against the SHA-256 in it, so a missing or half-copied file
   is refused with an error instead of being served.
 
-The destination may still hold older generation files. They are ignored, and deleted the next
-time AutoDJ publishes an index generation in that folder.
-
-Do not copy these; they belong to the machine that made them:
+Do not copy machine-specific data:
 
 - `index/<name>/web_state.json`, the settings chosen in the web page.
 - `index/<name>/liners/`, the voice liners uploaded on that machine.
@@ -1082,8 +1085,9 @@ Do not copy these; they belong to the machine that made them:
   AutoDJ no longer uses it, and you can delete it.
 - Any `-wal`, `-shm`, `.lock` or `.tmp` file. The index lock file is made when it is needed.
 
-Run `uv run autodj doctor` on the destination before serving. Copying replaces the destination's
-index, so the next `autodj index` there starts from the copied one.
+Do not copy `library.db` as part of this legacy import. Run `uv run autodj doctor` on the
+destination, then let the first `serve` or `index` import the relative-path legacy index into its
+local catalog. This procedure does not relocate an existing catalog.
 
 ## Play log export
 

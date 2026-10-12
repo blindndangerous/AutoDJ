@@ -239,8 +239,22 @@ def _saved_settings_check(cfg: AutoDJConfig) -> DoctorCheck:
 
 
 def _index_check(cfg: AutoDJConfig) -> DoctorCheck:
-    """Load the index with the loader ``serve`` uses and report the outcome."""
+    """Check the current catalog, or the legacy index before its first import."""
     index_dir = cfg.index.active_dir
+    catalog_path = index_dir / "library.db"
+    if catalog_path.is_file():
+        from autodj.catalog import catalog_counts
+
+        try:
+            ready, analyzed = catalog_counts(catalog_path)
+        except (OSError, sqlite3.Error) as exc:
+            return DoctorCheck("index", CheckStatus.FAIL, "library cannot be read", str(exc))
+        return DoctorCheck(
+            "index",
+            CheckStatus.PASS if ready else CheckStatus.WARN,
+            f"{ready} songs; {analyzed} analyzed",
+            str(catalog_path),
+        )
     if not index_dir.exists():
         return DoctorCheck(
             "index", CheckStatus.WARN, "no index", f"{index_dir}; run `autodj index`", "index"
