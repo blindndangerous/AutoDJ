@@ -39,6 +39,8 @@ _ENTRY_FIELDS = (
 )
 _POINTS = ("start", "intro", "outro", "segue", "end", "overlap_start")
 _POINT_SOURCES = {"auto", "lyrics", "analysis", "user", "imported"}
+# The columns a tag edit from Track info may change (LibraryCatalog.retag).
+_RETAG_FIELDS = frozenset({"title", "artist", "album", "genre", "year", "bpm", "key", "mode"})
 
 
 _SCHEMA = """
@@ -1320,6 +1322,60 @@ class LibraryCatalog:
             except BaseException:
                 self._db().rollback()
                 raise
+
+    def retag(self, path: str | Path, fields: dict[str, Any]) -> bool:
+        """Store a recording's edited tags and its file's new identity (#53).
+
+        Only the tags changed, not the audio, so the vector, cue points,
+        prepared audio and intro lift stay.  The file's size, fingerprint,
+        stale-check stamp and the loudness measurement's file stamp move to
+        the rewritten file, so neither a scan nor ``autodj index`` takes it
+        for a new recording and analyses it again.
+
+        Args:
+            path: The recording, already rewritten on disk.
+            fields: New values for any of ``title``, ``artist``, ``album``,
+                ``genre``, ``year``, ``bpm``, ``key`` and ``mode``.
+
+        Returns:
+            ``False`` when the catalog has no record for *path*.
+        """
+        if set(fields) - _RETAG_FIELDS:
+            raise ValueError("only tag fields can be retagged")
+        normalized = _path(path)
+        size, fingerprint = file_fingerprint(normalized)
+        stat = os.stat(normalized)
+        with self._lock:
+            db = self._db()
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    "SELECT id,size,embedded_at,loudness FROM catalog_entries WHERE path=?",
+                    (normalized,),
+                ).fetchone()
+                if row is None:
+                    db.rollback()
+                    return False
+                values: dict[str, Any] = {**fields, "size": size, "fingerprint": fingerprint}
+                if row["embedded_at"]:
+                    values["embedded_at"] = stat.st_mtime
+                try:
+                    loudness = json.loads(row["loudness"])
+                except (TypeError, json.JSONDecodeError):
+                    loudness = None
+                if isinstance(loudness, dict) and loudness.get("size") == row["size"]:
+                    loudness.update(size=stat.st_size, mtime_ns=stat.st_mtime_ns)
+                    values["loudness"] = json.dumps(loudness, allow_nan=False)
+                assignments = ",".join(f"{name}=?" for name in values)
+                db.execute(
+                    f"UPDATE catalog_entries SET {assignments} WHERE id=?",  # nosec B608 -- names checked against fixed columns above
+                    (*values.values(), row["id"]),
+                )
+                db.commit()
+            except BaseException:
+                db.rollback()
+                raise
+        return True
 
     def remember_play(
         self, path: str | Path, timestamp: float | None = None, station: str = DEFAULT_STATION
