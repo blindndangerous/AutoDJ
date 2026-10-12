@@ -2403,11 +2403,13 @@ describe("public status page contracts", () => {
   const statusScript = readFileSync(staticPath("modules", "status-page.js"), "utf8");
 
   it("draws every colour from the system palette, so light, dark and forced colours all hold", () => {
-    // No literal colours: Canvas, CanvasText, LinkText, ButtonText and
-    // ButtonFace follow the theme the reader or the web UI chose.
+    // No literal colours: Canvas, CanvasText and LinkText follow the theme
+    // the reader or the web UI chose.  Not ButtonFace and ButtonText:
+    // WebKit keeps them light under a dark colour scheme.
     expect(statusCss).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
     expect(statusCss).toMatch(/:root\[data-theme="light"\]\s*\{\s*color-scheme: light;/);
     expect(statusCss).toMatch(/:root\[data-theme="dark"\]\s*\{\s*color-scheme: dark;/);
+    expect(statusCss).not.toMatch(/ButtonFace|ButtonText/);
   });
 
   it("keeps a visible focus ring and a large enough target on every control", () => {

@@ -97,6 +97,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `GET /api/stations` now gives each station's status page, feed, stream and playlist addresses
   beside its state. On every status page the uptime is now labelled "Uptime" instead of "AutoDJ
   running for", since each station counts its own, and a stopped station's says "Not on air".
+  In Safari and other WebKit browsers, the status page's Pause updates button is now readable in
+  the dark theme; its text had too little contrast.
 
 - Schedule events can have a date range: an optional start date and end date, both included, in
   the station time zone. Outside the range an event does not run, and Next events skips it. An
