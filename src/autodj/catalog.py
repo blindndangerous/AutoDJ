@@ -1153,7 +1153,7 @@ class LibraryCatalog:
                 return
             order = " ORDER BY e.path" if ordered else ""
             for (path,) in db.execute(
-                "SELECT e.path FROM catalog_entries e LEFT JOIN catalog_vectors v "
+                "SELECT e.path FROM catalog_entries e LEFT JOIN catalog_vectors v "  # nosec B608 -- fixed ordering fragment
                 "ON v.entry_id=e.id WHERE e.kind='music' AND v.entry_id IS NULL" + order
             ):
                 if _covered_by(path, advanced) and not _covered_by(path, liner):

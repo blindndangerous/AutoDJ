@@ -8,10 +8,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Performance
-
-- Count the pending analysis queue without sorting and materializing its paths (#166).
-
 ### Added
 
 - A rotation tester (#125): Settings > Song picking > **Test rotation**, or
@@ -410,6 +406,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   place it reached most recently.
 
 ### Changed
+
+- Analysis worker status counts waiting songs without sorting or building a list of their paths (#166).
 
 - Clockwheel picks on a large library take less work, the same songs as before: in DMCA mode a
   pick checks each song against only the few albums and artists at a limit (and none while nothing
