@@ -14,10 +14,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   sends the cue point preview in Track info, which Queue & Search, History and the library open,
   to a device of its own, such as headphones, while the browser mix stays on the speakers.
   Previews never go through the station's mix, so they are never on the stream or in a
-  recording. The choice is saved in this browser. If the device is unplugged, previews move to
-  the system default output and the page says so once, then go back when it returns. Browsers
-  that cannot choose a device, such as Safari, say so on the page and keep previews on the system
-  default output. This is the first step toward headphone cueing.
+  recording. On a device of its own the preview keeps its own volume, and the page's volume and
+  Mute leave it alone. The choice is saved in this browser. If the device is unplugged, it stays
+  in the list as "not connected", previews move to the system default output and the page says so
+  once, then they go back when it returns. Browsers that cannot choose a device, such as Chrome on
+  Android, say so on the page and keep previews on the system default output. This is the first
+  step toward headphone cueing.
 - Play dates for voice liners and carts: a **Not before** date, a **Do not play after** date, or
   both, in the station time zone. Outside them, automatic liners, clockwheel liner steps and
   scheduled liner events skip the liner, and a cart plays nothing and says why. Browse voice

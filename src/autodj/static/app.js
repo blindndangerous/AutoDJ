@@ -785,6 +785,9 @@ installSettingsControls(_settingsEls(), postSettings);
 // main output's devicechange listener below.
 installPreviewOutput({
   announce: (message, options) => announceStatus(settingsStatus, message, options),
+  // A preview moved on or off a device of its own takes or drops the
+  // page's volume and mute.
+  onRoute: () => applyPageLevel(),
 });
 
 // ----------------------------------------------------------------
@@ -1844,14 +1847,28 @@ let _pageLevelSet = false;
 // Audio, where their own volume would apply the level twice.  Both a
 // GainNode's gain and a media element's volume scale the amplitude
 // linearly, so the same fader gain gives the same loudness on each.
+// A preview on a device of its own (Settings, Preview output device) is
+// a cue for headphones, not part of what the page plays: it starts at
+// full level, unmuted, and from then on only its own player's volume and
+// mute change it.  On the system default it follows the page as before.
 // Runs on every state push, slider move, mute change and reconnect,
 // and before any element starts playing.
+const _ownLevelPreviews = new WeakSet();
 function applyPageLevel() {
   setVolume(_pageGain);
   setMuted(_pageMuted);
   const deckElements = new Set(decks.map((deck) => deck.audio));
   for (const element of document.querySelectorAll("audio, video")) {
     if (deckElements.has(element)) continue;
+    if (element.hasAttribute("data-preview-output") && element.sinkId) {
+      if (!_ownLevelPreviews.has(element)) {
+        _ownLevelPreviews.add(element);
+        element.volume = 1;
+        element.muted = false;
+      }
+      continue;
+    }
+    _ownLevelPreviews.delete(element);
     if (element.volume !== _pageGain) element.volume = _pageGain;
     if (element.muted !== _pageMuted) element.muted = _pageMuted;
   }

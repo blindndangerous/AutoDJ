@@ -2,10 +2,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   DENIED_TEXT,
+  MICROPHONE_BUSY_TEXT,
   MISSING_TEXT,
+  NAMES_FAILED_TEXT,
+  NO_MICROPHONE_TEXT,
+  PREVIEW_LABEL_KEY,
   PREVIEW_SINK_KEY,
+  UNAVAILABLE_TEXT,
   UNSUPPORTED_TEXT,
   installPreviewOutput,
+  microphoneErrorText,
   outputChoices,
   previewOutputSupport,
 } from "../../src/autodj/static/modules/preview-output.js";
@@ -16,6 +22,7 @@ const DEVICES = [
   { kind: "audiooutput", deviceId: "speakers", label: "Speakers" },
   { kind: "audiooutput", deviceId: "phones", label: "Headphones" },
 ];
+const SAVED_PHONES = { [PREVIEW_SINK_KEY]: "phones", [PREVIEW_LABEL_KEY]: "Headphones" };
 
 function memoryStorage(initial = {}) {
   const store = new Map(Object.entries(initial));
@@ -33,7 +40,7 @@ function installDom() {
     <select id="preview-device" aria-describedby="preview-device-desc">
       <option value="">System default</option>
     </select>
-    <button type="button" id="preview-device-choose">Show device names</button>
+    <button type="button" id="preview-device-choose">Show preview device names</button>
     <span id="preview-device-desc">Help</span>
     <p id="preview-device-note" hidden></p>
     <audio id="points-preview" data-preview-output></audio>
@@ -62,30 +69,40 @@ function fakeMediaDevices(devices = DEVICES, extra = {}) {
 const supportedProto = { setSinkId() {} };
 
 async function settle() {
-  for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function setup({ devices, storage = memoryStorage(), mediaDevices, proto = supportedProto } = {}) {
   const dom = installDom();
   const md = mediaDevices || fakeMediaDevices(devices);
   const announce = vi.fn();
+  const onRoute = vi.fn();
   const controls = installPreviewOutput({
     document,
     mediaDevices: md,
     mediaElementPrototype: proto,
     storage,
     announce,
+    onRoute,
   });
   return {
     ...dom,
     controls,
     md,
     announce,
+    onRoute,
     storage,
     select: document.getElementById("preview-device"),
     button: document.getElementById("preview-device-choose"),
     note: document.getElementById("preview-device-note"),
   };
+}
+
+const optionTexts = (select) => [...select.options].map((option) => option.textContent);
+
+function choose(select, value) {
+  select.value = value;
+  select.dispatchEvent(new Event("change"));
 }
 
 afterEach(() => {
@@ -119,37 +136,49 @@ describe("outputChoices", () => {
   });
 });
 
+describe("microphoneErrorText", () => {
+  it("says what each getUserMedia failure means", () => {
+    const named = (name) => Object.assign(new Error("raw"), { name });
+    expect(microphoneErrorText(named("NotAllowedError"))).toBe(DENIED_TEXT);
+    expect(microphoneErrorText(named("SecurityError"))).toBe(DENIED_TEXT);
+    expect(microphoneErrorText(named("NotFoundError"))).toBe(NO_MICROPHONE_TEXT);
+    expect(microphoneErrorText(named("NotReadableError"))).toBe(MICROPHONE_BUSY_TEXT);
+    expect(microphoneErrorText(named("AbortError"))).toBe(MICROPHONE_BUSY_TEXT);
+    expect(microphoneErrorText(new TypeError("raw"))).toBe(NAMES_FAILED_TEXT);
+  });
+});
+
 describe("installPreviewOutput", () => {
   it("lists devices and routes only the preview player to the chosen one", async () => {
-    const { select, preview, deck, announce, storage } = setup();
+    const { select, preview, deck, announce, storage, md, onRoute } = setup();
     await settle();
-    expect([...select.options].map((option) => option.textContent))
-      .toEqual(["System default", "Speakers", "Headphones"]);
+    expect(optionTexts(select)).toEqual(["System default", "Speakers", "Headphones"]);
+    // Nothing asks for the microphone until the button is pressed.
+    expect(md.getUserMedia).not.toHaveBeenCalled();
 
     select.focus();
-    select.value = "phones";
-    select.dispatchEvent(new Event("change"));
+    choose(select, "phones");
     await settle();
 
     expect(preview.setSinkId).toHaveBeenLastCalledWith("phones");
     expect(deck.setSinkId).not.toHaveBeenCalled();
     expect(storage.store.get(PREVIEW_SINK_KEY)).toBe("phones");
+    expect(storage.store.get(PREVIEW_LABEL_KEY)).toBe("Headphones");
+    expect(onRoute).toHaveBeenCalled();
     expect(announce).toHaveBeenLastCalledWith("Previews play on Headphones.",
       expect.objectContaining({ force: true }));
     expect(document.activeElement).toBe(select);
   });
 
   it("restores the saved device on load without saying anything", async () => {
-    const { select, preview, announce } = setup({
-      storage: memoryStorage({ [PREVIEW_SINK_KEY]: "phones" }),
-    });
+    const { select, preview, announce } = setup({ storage: memoryStorage(SAVED_PHONES) });
     await settle();
     expect(select.value).toBe("phones");
     expect(preview.sinkId).toBe("phones");
     expect(announce).not.toHaveBeenCalled();
   });
 
-  it("forgets nothing when storage throws", async () => {
+  it("still routes the preview for this page when storage throws", async () => {
     const throwing = {
       getItem: () => { throw new Error("blocked"); },
       setItem: () => { throw new Error("blocked"); },
@@ -157,8 +186,7 @@ describe("installPreviewOutput", () => {
     };
     const { select, preview } = setup({ storage: throwing });
     await settle();
-    select.value = "phones";
-    select.dispatchEvent(new Event("change"));
+    choose(select, "phones");
     await settle();
     expect(preview.sinkId).toBe("phones");
   });
@@ -175,11 +203,11 @@ describe("installPreviewOutput", () => {
     expect(announce).not.toHaveBeenCalled();
   });
 
-  it("falls back to the default when the saved device is removed, then uses it again", async () => {
+  it("keeps a removed device listed as not connected, then uses it again", async () => {
     const devices = [...DEVICES];
     const { select, preview, note, announce, storage, md } = setup({
       devices,
-      storage: memoryStorage({ [PREVIEW_SINK_KEY]: "phones" }),
+      storage: memoryStorage(SAVED_PHONES),
     });
     await settle();
     expect(preview.sinkId).toBe("phones");
@@ -188,11 +216,13 @@ describe("installPreviewOutput", () => {
     md.fire("devicechange");
     await settle();
     expect(preview.sinkId).toBe("");
-    expect(select.value).toBe("");
+    expect(optionTexts(select)).toEqual(["System default", "Speakers", "Headphones (not connected)"]);
+    expect(select.value).toBe("phones");
     expect(note.textContent).toBe(MISSING_TEXT);
-    expect(select.getAttribute("aria-describedby")).toContain("preview-device-note");
+    expect(select.getAttribute("aria-describedby")).toBe("preview-device-desc preview-device-note");
     expect(storage.store.get(PREVIEW_SINK_KEY)).toBe("phones");
     expect(announce).toHaveBeenCalledTimes(1);
+    expect(announce).toHaveBeenLastCalledWith(MISSING_TEXT, expect.anything());
 
     // A second devicechange while it is still gone says nothing more.
     md.fire("devicechange");
@@ -203,21 +233,76 @@ describe("installPreviewOutput", () => {
     md.fire("devicechange");
     await settle();
     expect(preview.sinkId).toBe("phones");
+    expect(optionTexts(select)).toEqual(["System default", "Speakers", "Headphones"]);
     expect(select.value).toBe("phones");
     expect(note.hidden).toBe(true);
     expect(select.getAttribute("aria-describedby")).toBe("preview-device-desc");
     expect(announce).toHaveBeenLastCalledWith("Previews play on Headphones again.", expect.anything());
   });
 
-  it("returns to the default and says why when setSinkId refuses", async () => {
+  it("forgets a device that is not connected when System default is chosen", async () => {
+    const devices = DEVICES.filter((device) => device.deviceId !== "phones");
+    const { select, note, storage, announce } = setup({
+      devices,
+      storage: memoryStorage(SAVED_PHONES),
+    });
+    await settle();
+    expect(select.value).toBe("phones");
+    expect(note.textContent).toBe(MISSING_TEXT);
+    // On page load the note on the page is enough.
+    expect(announce).not.toHaveBeenCalled();
+
+    choose(select, "");
+    await settle();
+    expect(storage.store.has(PREVIEW_SINK_KEY)).toBe(false);
+    expect(storage.store.has(PREVIEW_LABEL_KEY)).toBe(false);
+    expect(optionTexts(select)).toEqual(["System default", "Speakers"]);
+    expect(note.hidden).toBe(true);
+    expect(announce).toHaveBeenLastCalledWith("Previews play on the system default output.",
+      expect.objectContaining({ force: true }));
+  });
+
+  it("announces a missing device once when refreshes overlap", async () => {
+    const devices = [...DEVICES];
+    const { controls, announce, md } = setup({ devices, storage: memoryStorage(SAVED_PHONES) });
+    await settle();
+    devices.splice(devices.findIndex((device) => device.deviceId === "phones"), 1);
+    md.fire("devicechange");
+    md.fire("devicechange");
+    await Promise.all([controls.refresh(), controls.refresh()]);
+    await settle();
+    expect(announce.mock.calls.filter(([text]) => text === MISSING_TEXT)).toHaveLength(1);
+  });
+
+  it("treats an unreadable or nameless device list as unknown, not missing", async () => {
+    const failing = fakeMediaDevices([], {
+      enumerateDevices: vi.fn(async () => { throw new Error("no"); }),
+    });
+    const first = setup({ mediaDevices: failing, storage: memoryStorage(SAVED_PHONES) });
+    await settle();
+    expect(first.note.hidden).toBe(true);
+    expect(first.announce).not.toHaveBeenCalled();
+    // The saved device is still tried: the browser may well accept it.
+    expect(first.preview.sinkId).toBe("phones");
+    expect(first.select.value).toBe("phones");
+
+    const nameless = [{ kind: "audiooutput", deviceId: "x", label: "" }];
+    const second = setup({ devices: nameless, storage: memoryStorage(SAVED_PHONES) });
+    await settle();
+    second.md.fire("devicechange");
+    await settle();
+    expect(second.note.textContent).not.toBe(MISSING_TEXT);
+    expect(second.announce).not.toHaveBeenCalled();
+  });
+
+  it("returns to the default and says why when setSinkId refuses a choice", async () => {
     const { select, preview, announce, storage } = setup();
     await settle();
     preview.setSinkId.mockImplementation(async function (id) {
       if (id) throw Object.assign(new Error("raw browser text"), { name: "NotAllowedError" });
       this.sinkId = id;
     });
-    select.value = "phones";
-    select.dispatchEvent(new Event("change"));
+    choose(select, "phones");
     await settle();
     expect(preview.sinkId).toBe("");
     expect(select.value).toBe("");
@@ -228,51 +313,101 @@ describe("installPreviewOutput", () => {
     expect(options).toMatchObject({ tone: "error", force: true });
   });
 
-  it("explains a denied microphone prompt and keeps numbered devices usable", async () => {
+  it("falls back once when setSinkId refuses the saved device on a devicechange", async () => {
+    const { preview, note, announce, storage, md, select } = setup({
+      storage: memoryStorage(SAVED_PHONES),
+    });
+    await settle();
+    expect(preview.sinkId).toBe("phones");
+    preview.setSinkId.mockImplementation(async function (id) {
+      if (id) throw Object.assign(new Error("gone"), { name: "NotFoundError" });
+      this.sinkId = id;
+    });
+    preview.sinkId = "";
+    md.fire("devicechange");
+    await settle();
+    md.fire("devicechange");
+    await settle();
+    expect(preview.sinkId).toBe("");
+    expect(note.textContent).toBe(UNAVAILABLE_TEXT);
+    expect(storage.store.get(PREVIEW_SINK_KEY)).toBe("phones");
+    expect(select.value).toBe("phones");
+    expect(announce.mock.calls.filter(([text]) => text === UNAVAILABLE_TEXT)).toHaveLength(1);
+  });
+
+  it("lets the user's newer choice win over a slow refresh", async () => {
+    let release;
+    const { select, preview, md } = setup({ storage: memoryStorage(SAVED_PHONES) });
+    await settle();
+    md.enumerateDevices.mockImplementationOnce(() => new Promise((resolve) => {
+      release = () => resolve(DEVICES);
+    }));
+    md.fire("devicechange");
+    await settle();
+    choose(select, "speakers");
+    await settle();
+    release();
+    await settle();
+    expect(preview.sinkId).toBe("speakers");
+    expect(preview.setSinkId).toHaveBeenLastCalledWith("speakers");
+    expect(select.value).toBe("speakers");
+  });
+
+  it("says why device names could not be shown, and numbered devices still work", async () => {
     const unnamed = [
       { kind: "audiooutput", deviceId: "a", label: "" },
       { kind: "audiooutput", deviceId: "b", label: "" },
     ];
-    const md = fakeMediaDevices(unnamed, {
-      getUserMedia: vi.fn(async () => {
-        throw Object.assign(new Error("denied"), { name: "NotAllowedError" });
-      }),
-    });
-    const { button, note, select, announce, preview } = setup({ mediaDevices: md });
-    await settle();
-    expect(button.hidden).toBe(false);
-    expect([...select.options].map((option) => option.textContent))
-      .toEqual(["System default", "Output device 1", "Output device 2"]);
+    for (const [name, text] of [
+      ["NotAllowedError", DENIED_TEXT],
+      ["NotFoundError", NO_MICROPHONE_TEXT],
+      ["NotReadableError", MICROPHONE_BUSY_TEXT],
+    ]) {
+      const md = fakeMediaDevices(unnamed, {
+        getUserMedia: vi.fn(async () => {
+          throw Object.assign(new Error("raw"), { name });
+        }),
+      });
+      const { button, note, select, announce, preview } = setup({ mediaDevices: md });
+      await settle();
+      expect(button.hidden).toBe(false);
+      expect(button.textContent).toBe("Show preview device names");
+      expect(optionTexts(select)).toEqual(["System default", "Output device 1", "Output device 2"]);
 
-    button.focus();
-    button.click();
-    await settle();
-    expect(note.textContent).toBe(DENIED_TEXT);
-    expect(announce).toHaveBeenLastCalledWith(DENIED_TEXT, expect.objectContaining({ tone: "error" }));
-    expect(document.activeElement).toBe(button);
+      button.focus();
+      button.click();
+      await settle();
+      expect(note.textContent).toBe(text);
+      expect(select.getAttribute("aria-describedby")).toBe("preview-device-desc preview-device-note");
+      expect(announce).toHaveBeenLastCalledWith(text, expect.objectContaining({ tone: "error" }));
+      expect(document.activeElement).toBe(button);
 
-    select.value = "b";
-    select.dispatchEvent(new Event("change"));
-    await settle();
-    expect(preview.sinkId).toBe("b");
+      choose(select, "b");
+      await settle();
+      expect(preview.sinkId).toBe("b");
+    }
   });
 
-  it("shows names after the microphone prompt and keeps focus on the button", async () => {
+  it("stops every microphone track, shows names and keeps focus on the button", async () => {
     let granted = false;
+    const tracks = [{ stop: vi.fn() }, { stop: vi.fn() }];
     const md = fakeMediaDevices([], {
       enumerateDevices: vi.fn(async () => [
         { kind: "audiooutput", deviceId: "phones", label: granted ? "Headphones" : "" },
       ]),
       getUserMedia: vi.fn(async () => {
         granted = true;
-        return { getTracks: () => [{ stop: vi.fn() }] };
+        return { getTracks: () => tracks };
       }),
     });
     const { button, select, announce } = setup({ mediaDevices: md });
     await settle();
+    expect(md.getUserMedia).not.toHaveBeenCalled();
     button.focus();
     button.click();
     await settle();
+    expect(md.getUserMedia).toHaveBeenCalledTimes(1);
+    for (const track of tracks) expect(track.stop).toHaveBeenCalledTimes(1);
     expect(select.options[1].textContent).toBe("Headphones");
     expect(document.activeElement).toBe(button);
     expect(button.hidden).toBe(false);
@@ -289,10 +424,28 @@ describe("installPreviewOutput", () => {
     button.click();
     await settle();
     expect(md.selectAudioOutput).toHaveBeenCalled();
+    expect(md.getUserMedia).not.toHaveBeenCalled();
     expect(select.value).toBe("phones");
     expect(preview.sinkId).toBe("phones");
     expect(storage.store.get(PREVIEW_SINK_KEY)).toBe("phones");
     expect(announce).toHaveBeenLastCalledWith("Previews play on Headphones.", expect.anything());
+  });
+
+  it("keeps a picked device the list leaves out, without calling it missing", async () => {
+    // Named devices are listed, but not the one the picker granted.
+    const md = fakeMediaDevices(DEVICES.filter((device) => device.deviceId !== "phones"), {
+      selectAudioOutput: vi.fn(async () => ({ kind: "audiooutput", deviceId: "phones", label: "Headphones" })),
+    });
+    const { button, select, preview, note } = setup({ mediaDevices: md });
+    await settle();
+    button.click();
+    await settle();
+    md.fire("devicechange");
+    await settle();
+    expect(optionTexts(select)).toEqual(["System default", "Speakers", "Headphones"]);
+    expect(select.value).toBe("phones");
+    expect(preview.sinkId).toBe("phones");
+    expect(note.hidden).toBe(true);
   });
 
   it("changes nothing when the browser's picker is cancelled", async () => {

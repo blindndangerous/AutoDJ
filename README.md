@@ -348,17 +348,18 @@ on and the choice lasts only until the page is reloaded.
 
 The default `serve` mode is browser-driven: the server picks tracks; the browser plays them.  Switching audio output devices in the browser only affects the browser.
 
+To play on the machine's own speakers instead (for example to send sound to a Bluetooth speaker through ALSA on Linux), run `autodj serve --server-audio` and control it from the web page. It needs the `play` extra. Pick the output device with `[playback] audio_device` in `config.toml`; `autodj list-devices` shows the choices.
+
 #### Preview output device
 
 The cue point preview in Track info can play on a device of its own, such as headphones, while the browser mix plays on the speakers. Choose it in Settings, Sound, **Preview output device**. Previews from Queue & Search, History and the library all play there, because they all open Track info. The choice is saved in this browser only.
 
 - A preview never goes through the station's mix. It is not part of the stream, a recording, the server's speakers (`--server-audio`), or the browser mix chosen in **Audio output device**. "Main output" here means that browser mix. If both settings are the system default, previews and the browser mix come out of the same speakers.
 - Liner, time check and cart **Test** are not previews: they test what listeners hear, so they play through the mix as before.
-- Browsers hide device names until the page has a media permission. In Chrome and Edge, **Show device names** asks for the microphone once and stops it at once; AutoDJ never records sound. Without permission the devices are listed as Output device 1, Output device 2 and so on, and they still work. Firefox shows **Choose preview device** instead, which opens its own device picker.
-- Where the browser cannot send a page's sound to a chosen device (Safari, or Firefox with that setting turned off), the setting is unavailable, the page says so, and previews play on the system default output.
-- If the chosen device is unplugged, previews move to the system default output and the page says so once. The choice is kept, and previews go back to that device when it is connected again.
-
-To play on the machine's own speakers instead (for example to send sound to a Bluetooth speaker through ALSA on Linux), run `autodj serve --server-audio` and control it from the web page. It needs the `play` extra. Pick the output device with `[playback] audio_device` in `config.toml`; `autodj list-devices` shows the choices.
+- On a device of its own, the preview starts at full volume and unmuted, and the page's volume slider and Mute leave it alone; set its level with the volume control in the preview player. On the system default it follows the page's volume and Mute, as before.
+- Browsers hide device names until the page has a media permission. Firefox 116 and later shows **Choose preview device**, which opens its own device picker. Chrome, Edge and Safari have no such picker, so they show **Show preview device names**, which asks for the microphone once and stops it at once; AutoDJ never records sound. Without permission the devices are listed as Output device 1, Output device 2 and so on, and they still work. If the microphone prompt fails, the page says why: permission refused, no microphone found, or the microphone busy in another program.
+- Choosing an output device for a page needs desktop Chrome or Edge, Firefox 116 or later, or Safari 18.4 or later. Chrome and Firefox on Android cannot do it. There the setting is unavailable, the page says so, and previews play on the system default output.
+- If the chosen device is unplugged, it stays in the list as "not connected", previews move to the system default output, and the page says so once. They go back to that device when it is connected again. Choose System default to forget it. If the browser cannot list its devices, AutoDJ does not treat the saved device as gone and still tries it.
 
 ## Voice liners
 

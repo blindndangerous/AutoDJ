@@ -2090,7 +2090,12 @@ describe("static accessibility contracts", () => {
     expect(note.hasAttribute("aria-live")).toBe(false);
     const button = document.getElementById("preview-device-choose");
     expect(button.getAttribute("type")).toBe("button");
-    expect(button.textContent.trim()).toBe("Show device names");
+    // Its own visible name, distinct from the main output's button in the
+    // same group (2.4.6, 2.5.3).
+    expect(button.textContent.trim()).toBe("Show preview device names");
+    expect(button.hasAttribute("aria-label")).toBe(false);
+    expect(document.getElementById("audio-device-refresh").textContent.trim())
+      .not.toBe(button.textContent.trim());
     // Changes are said through the polite Settings status region.
     const status = document.getElementById("settings-status");
     expect(status.getAttribute("role")).toBe("status");
