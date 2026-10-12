@@ -35,32 +35,93 @@ export function clearLiveRegionLater(el, dwellMs = 3000) {
 // into the live region that owns it and copies the SAME string into
 // #status-toast, a fixed strip at the foot of the viewport.
 //
-// The toast carries aria-hidden="true", no role and no aria-live, so it
-// is invisible to assistive tech: the region remains the single
-// announcement path and NVDA still hears the message exactly once.
+// #status-toast carries aria-hidden="true", no role and no aria-live, so
+// the message in it is invisible to assistive tech: the region remains
+// the single announcement path and NVDA still hears the message exactly
+// once.  Its frame, #status-toast-box, also holds a Dismiss button.  The
+// button sits beside the message, never inside it or inside a live
+// region, so it adds nothing to what is spoken, and showing the toast
+// never moves focus to it.
 // ----------------------------------------------------------------
 
 const VISIBLE_STATUS_DWELL_MS = 8000;
+// After the pointer or focus leaves a paused toast it stays at least this
+// long, so it does not vanish the instant the pointer slips off it.
+const VISIBLE_STATUS_RESUME_MS = 2000;
 // Matches the 1rem inset in app.css.
 const VISIBLE_STATUS_GAP_PX = 16;
 let _visibleStatusTimer = null;
+let _hideAt = 0;
+let _remainingMs = 0;
+let _hovered = false;
+let _focusWithin = false;
+let _lastFocusOutside = null;
+
+// The positioned box: #status-toast-box on the page, or the message
+// element itself where there is no frame.
+function toastFrame(toast) {
+  return toast.closest?.("#status-toast-box") || toast;
+}
 
 // WCAG 2.4.11: the toast is fixed to the foot of the viewport, so it
 // could sit on top of the control that has focus (a Save button, the
 // last queue row, the Refresh stats button).  When the focused element
 // reaches into the strip the toast would cover, the toast moves to the
-// top of the viewport instead.
-function placeVisibleStatus(toast, doc) {
+// top of the viewport instead.  Focus on the toast's own button leaves
+// it where it is.
+function placeVisibleStatus(frame, doc) {
   const view = doc.defaultView;
   const active = doc.activeElement;
+  if (active && frame.contains(active)) return;
   let atTop = false;
   if (view && active && active !== doc.body
       && typeof active.getBoundingClientRect === "function") {
     const focused = active.getBoundingClientRect();
-    const strip = view.innerHeight - toast.offsetHeight - 2 * VISIBLE_STATUS_GAP_PX;
+    const strip = view.innerHeight - frame.offsetHeight - 2 * VISIBLE_STATUS_GAP_PX;
     atTop = focused.bottom > strip && focused.top < view.innerHeight;
   }
-  toast.classList.toggle("at-top", atTop);
+  frame.classList.toggle("at-top", atTop);
+}
+
+function stopHideTimer() {
+  clearTimeout(_visibleStatusTimer);
+  _visibleStatusTimer = null;
+}
+
+// WCAG 1.4.13: while the pointer is over the toast or focus is in it, it
+// stays; the remaining time runs once both have left.
+function startHideTimer(doc, ms) {
+  stopHideTimer();
+  _remainingMs = ms;
+  if (_hovered || _focusWithin) return;
+  _hideAt = Date.now() + ms;
+  _visibleStatusTimer = setTimeout(() => {
+    _visibleStatusTimer = null;
+    showVisibleStatus("", doc);
+  }, ms);
+}
+
+function pauseVisibleStatus() {
+  if (!_visibleStatusTimer) return;
+  _remainingMs = Math.max(0, _hideAt - Date.now());
+  stopHideTimer();
+}
+
+function resumeVisibleStatus(doc) {
+  if (_hovered || _focusWithin || _visibleStatusTimer) return;
+  const toast = doc.getElementById?.("status-toast");
+  if (!toast || toast.hidden) return;
+  startHideTimer(doc, Math.max(_remainingMs, VISIBLE_STATUS_RESUME_MS));
+}
+
+// Hiding the toast must not drop focus that is on its own button onto
+// the page body: it goes back where it was before.
+function restoreFocusFrom(frame, doc) {
+  const active = doc.activeElement;
+  if (!active || !frame.contains(active)) return;
+  const back = _lastFocusOutside;
+  if (back && back.isConnected && !frame.contains(back)) back.focus?.();
+  if (frame.contains(doc.activeElement)) doc.getElementById("main-content")?.focus?.();
 }
 
 export function showVisibleStatus(
@@ -70,12 +131,18 @@ export function showVisibleStatus(
 ) {
   const toast = doc?.getElementById?.("status-toast");
   if (!toast) return;
-  clearTimeout(_visibleStatusTimer);
-  _visibleStatusTimer = null;
+  const frame = toastFrame(toast);
+  stopHideTimer();
   if (!message) {
+    restoreFocusFrom(frame, doc);
     toast.textContent = "";
-    toast.classList.remove("is-error");
+    frame.classList.remove("is-error");
     toast.hidden = true;
+    frame.hidden = true;
+    // A hidden toast is neither hovered nor focused, and its leave events
+    // may never come.
+    _hovered = false;
+    _focusWithin = false;
     return;
   }
   // A repeated user action has to look like it happened again, so the
@@ -83,14 +150,11 @@ export function showVisibleStatus(
   if (force) toast.textContent = "";
   if (toast.textContent !== message) toast.textContent = message;
   // A failure and a confirmation must not be the same bordered box.
-  toast.classList.toggle("is-error", tone === "error");
+  frame.classList.toggle("is-error", tone === "error");
   toast.hidden = false;
-  placeVisibleStatus(toast, doc);
-  _visibleStatusTimer = setTimeout(() => {
-    toast.textContent = "";
-    toast.hidden = true;
-    _visibleStatusTimer = null;
-  }, VISIBLE_STATUS_DWELL_MS);
+  frame.hidden = false;
+  placeVisibleStatus(frame, doc);
+  startHideTimer(doc, VISIBLE_STATUS_DWELL_MS);
 }
 
 // Returns true when a screen reader will speak.
@@ -129,15 +193,56 @@ export function announceStatus(
 }
 
 
-// Escape dismisses the visible mirror.  It never moves focus, so a
-// keyboard user does not lose their place, and it defers to an open
-// <dialog>, whose own Escape handling must win.  Every focus change while
-// the mirror is showing re-checks that it is not covering the new focus.
+// Escape, or the Dismiss button, dismisses the visible mirror.  Escape
+// never moves focus, so a keyboard user does not lose their place, and it
+// defers to an open <dialog>, whose own Escape handling must win.  Every
+// focus change while the mirror is showing re-checks that it is not
+// covering the new focus.  The pointer over the toast, or focus inside
+// it, holds it on screen until both leave.  The listeners are delegated
+// from the document, so they find a toast added later, and installing
+// twice on one document is a no-op.
+const _installed = new WeakSet();
+
 export function installVisibleStatusBehaviour(doc = globalThis.document) {
-  if (!doc?.addEventListener) return;
-  doc.addEventListener("focusin", () => {
+  if (!doc?.addEventListener || _installed.has(doc)) return;
+  _installed.add(doc);
+  const frameOf = () => {
     const toast = doc.getElementById("status-toast");
-    if (toast && !toast.hidden) placeVisibleStatus(toast, doc);
+    return toast ? toastFrame(toast) : null;
+  };
+  doc.addEventListener("focusin", (event) => {
+    const frame = frameOf();
+    if (frame && frame.contains(event.target)) {
+      _focusWithin = true;
+      pauseVisibleStatus();
+      return;
+    }
+    _lastFocusOutside = event.target;
+    if (frame && !frame.hidden) placeVisibleStatus(frame, doc);
+  });
+  doc.addEventListener("focusout", (event) => {
+    const frame = frameOf();
+    if (!frame || !frame.contains(event.target)) return;
+    if (event.relatedTarget && frame.contains(event.relatedTarget)) return;
+    _focusWithin = false;
+    resumeVisibleStatus(doc);
+  });
+  doc.addEventListener("pointerover", (event) => {
+    const frame = frameOf();
+    if (!frame || frame.hidden || !frame.contains(event.target)) return;
+    _hovered = true;
+    pauseVisibleStatus();
+  });
+  doc.addEventListener("pointerout", (event) => {
+    const frame = frameOf();
+    if (!frame || !frame.contains(event.target)) return;
+    if (event.relatedTarget && frame.contains(event.relatedTarget)) return;
+    _hovered = false;
+    resumeVisibleStatus(doc);
+  });
+  doc.addEventListener("click", (event) => {
+    if (!event.target?.closest?.("#status-toast-dismiss")) return;
+    showVisibleStatus("", doc);
   });
   doc.addEventListener("keydown", (event) => {
     if (event.key !== "Escape" || event.defaultPrevented) return;

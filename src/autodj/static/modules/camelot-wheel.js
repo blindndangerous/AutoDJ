@@ -122,16 +122,30 @@ export function applyCamelotWheel(currentCell, harmonicMode, { sectorsEl, labels
   if (!sectorsEl) return;
   _build(sectorsEl, labelsEl);
   const compat = _compatibleSet(currentCell, harmonicMode);
+  const lit = [];
+  let activeSector = null;
   for (const sec of sectorsEl.querySelectorAll(".sector")) {
     const cell = sec.getAttribute("data-cell");
     const isActive = cell === currentCell;
+    const isCompat = !isActive && compat.has(cell);
     sec.classList.toggle("active", isActive);
-    sec.classList.toggle("compat", !isActive && compat.has(cell));
+    sec.classList.toggle("compat", isCompat);
+    if (isActive) activeSector = sec;
+    else if (isCompat) lit.push(sec);
+  }
+  // SVG paints in document order, so a wedge drawn later lays its edge
+  // over its neighbour's.  The compatible wedges and then the current one
+  // go last, so their heavier edges are drawn whole, on top of the idle
+  // edges they share.  Moved only when the order is wrong.
+  if (activeSector) lit.push(activeSector);
+  const tail = [...sectorsEl.children].slice(-lit.length);
+  if (lit.some((sec, i) => tail[i] !== sec)) {
+    for (const sec of lit) sectorsEl.appendChild(sec);
   }
   if (!labelsEl) return;
   for (const lab of labelsEl.querySelectorAll(".label")) {
     // Match the exact cell, so the highlighted number is always the one
-    // drawn on the lit wedge -- black on --accent, 9.5:1.  Matching only
+    // drawn on the lit wedge -- --on-accent on --accent, 6.4:1 or more.  Matching only
     // the number lit an unlit neighbour instead, where #000 measured
     // 1.43:1 and the current key was effectively invisible.
     lab.classList.toggle("active", lab.getAttribute("data-cell") === currentCell);
