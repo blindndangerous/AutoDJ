@@ -236,3 +236,52 @@ def test_voice_packs_are_chosen_by_name_and_tested_one_at_a_time(
     preview = client.get("/api/time-checks/preview", params={"pack": "Studio"})
     assert preview.status_code == 200 and preview.content.startswith(b"RIFF")
     assert client.get("/api/time-checks/preview", params={"pack": "../x"}).status_code == 404
+
+
+def test_a_voice_pack_that_cannot_say_the_minute_keeps_the_song_on_a_hard_event(
+    bridge, tmp_path, monkeypatch
+) -> None:
+    from datetime import UTC, datetime
+    from unittest.mock import MagicMock
+
+    from autodj import time_checks
+
+    now = datetime(2026, 10, 11, 3, 5, tzinfo=UTC)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz)
+
+    monkeypatch.setattr(time_checks, "datetime", FixedDateTime)
+    studio = tmp_path / "packs" / "Studio"
+    studio.mkdir(parents=True)
+    # The hour, but not the minute: the pack cannot say 3:05.
+    sf.write(studio / "hr_03.wav", np.zeros((4410, 2)), 44100)
+    bridge.player._cfg.index.active_dir = tmp_path
+    bridge.player._cfg.index.index_dir = tmp_path
+    bridge.player._cfg.server.station_timezone = "UTC"
+    bridge.player._cfg.time_checks = TimeChecksConfig(enabled=True, voice_packs=[str(studio)])
+    bridge.liner_scheduler = MagicMock()
+    bridge.skip = MagicMock()
+    client = TestClient(create_app(bridge))
+    assert client.get("/api/time-checks").json()["enabled_packs"] == ["Studio"]
+    created = client.post(
+        "/api/schedule",
+        json={
+            "name": "Time",
+            "action": "time_check",
+            "params": {},
+            "repeat": "daily",
+            "time": "09:00",
+            "timing": "hard",
+            "enabled": True,
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    ran = client.post(f"/api/schedule/{created.json()['id']}/run").json()
+
+    assert ran["message"] == "No voice pack, recorded clip or working TTS command for this minute"
+    bridge.skip.assert_not_called()
+    bridge.liner_scheduler.play_audio.assert_not_called()
