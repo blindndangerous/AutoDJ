@@ -13,6 +13,10 @@ rest of the batch back and exits; a second Ctrl+C quits at once.  A heartbeat
 every half minute keeps the claims alive and tells the server the worker is
 there, which pauses the server's own CPU analysis.
 
+``--once`` stops at the first empty claim; ``--idle-exit MINUTES`` keeps
+asking every half minute and stops once the queue has stayed empty that
+long, for a server whose scan may still be finding new songs.
+
 ``--before-command`` and ``--after-command`` run a program (no shell)
 before the model is loaded and after the worker stops, for example to stop
 and restart another program that shares the GPU.
@@ -310,8 +314,13 @@ class WorkerStats:
     started: float = field(default_factory=time.monotonic)
 
 
+def _minutes(seconds: float) -> str:
+    minutes = seconds / 60
+    return f"{minutes:g} minute" + ("" if minutes == 1 else "s")
+
+
 class Worker:
-    """Claim, download, analyse and submit until stopped (or, with *once*, the queue empties).
+    """Claim, download, analyse and submit until stopped, or until the queue stays empty.
 
     Args:
         api: The server.
@@ -320,9 +329,13 @@ class Worker:
         identity: This worker's :func:`~autodj.indexer.analysis_identity`.
             Work stops if the server's differs.
         batch: Songs per claim.
-        once: Stop when the server has nothing left to hand out.
+        once: Stop when the server has nothing left to hand out; the same
+            as ``idle_exit=0``.
         device: Shown in the server's Settings, such as the GPU's name.
         stop: Set to stop after the current song.
+        idle_seconds: How long an empty queue waits before asking again.
+        idle_exit: Stop once the queue has been empty for this many seconds.
+            ``None`` (and not *once*) keeps working until stopped.
     """
 
     def __init__(
@@ -336,12 +349,13 @@ class Worker:
         device: str = "",
         stop: threading.Event | None = None,
         idle_seconds: float = IDLE_POLL_SECONDS,
+        idle_exit: float | None = None,
     ) -> None:
         self.api = api
         self.analyse = analyse
         self.identity = identity
         self.batch = batch
-        self.once = once
+        self.idle_exit = 0.0 if once and idle_exit is None else idle_exit
         self.device = device
         self.stop = stop or threading.Event()
         self.idle_seconds = idle_seconds
@@ -354,6 +368,25 @@ class Worker:
 
     def _wait(self, seconds: float) -> None:
         self.stop.wait(seconds)
+
+    def _now(self) -> float:
+        return time.monotonic()
+
+    def _idle_pause(self, empty_since: float, now: float) -> float | None:
+        """How long to wait after an empty claim before asking again; ``None`` to stop."""
+        if self.idle_exit is None:
+            logger.debug("Nothing to analyse; asking again later.")
+            return self.idle_seconds
+        left = empty_since + self.idle_exit - now
+        if left <= 0:
+            if self.idle_exit:
+                logger.info("Queue empty for %s; stopping.", _minutes(self.idle_exit))
+            else:
+                logger.info("Nothing left to analyse.")
+            return None
+        if now == empty_since:
+            logger.info("Queue empty; waiting up to %s for new songs.", _minutes(self.idle_exit))
+        return min(self.idle_seconds, left)
 
     def _retry_pause(self, exc: Exception) -> float:
         """Log *exc* and return how long to wait before trying again."""
@@ -506,7 +539,7 @@ class Worker:
             )
 
     def run(self) -> WorkerStats:
-        """Work until stopped, or until the queue is empty with *once*.
+        """Work until stopped, or until the queue has been empty for *idle_exit*.
 
         Raises:
             WorkerError: The token was refused or the model does not match.
@@ -518,6 +551,7 @@ class Worker:
         beat = threading.Thread(target=self._beat, args=(finished,), daemon=True)
         beat.start()
         held: list[str] = []
+        empty_since: float | None = None
         try:
             with tempfile.TemporaryDirectory(prefix="autodj-worker-") as folder:
                 while not self.stop.is_set():
@@ -530,12 +564,14 @@ class Worker:
                     self.check_identity(claim.get("identity", {}))
                     songs = list(claim.get("songs", []))
                     if not songs:
-                        if self.once:
-                            logger.info("Nothing left to analyse.")
+                        now = self._now()
+                        empty_since = now if empty_since is None else empty_since
+                        pause = self._idle_pause(empty_since, now)
+                        if pause is None:
                             break
-                        logger.debug("Nothing to analyse; asking again later.")
-                        self._wait(self.idle_seconds)
+                        self._wait(pause)
                         continue
+                    empty_since = None
                     held = [str(song["lease"]) for song in songs]
                     waiting = int(claim.get("waiting", 0))
                     for position, song in enumerate(songs, 1):
