@@ -1,10 +1,13 @@
 """Timed station events: repeat rules, an action registry, durable state and run history.
 
 An event pairs a repeat rule (once, daily, weekdays, chosen days, or every N
-minutes within an optional window) with an action from the registry.  Wall
-times are read in the station time zone.  A wall time that a daylight-saving
-change skips runs at the instant the clock jumps; one that happens twice runs
-the first time only.
+minutes within an optional window, on every day or chosen days) with an
+action from the registry.  An optional start and end date limit any rule to
+a date range, both days included.  Wall times and dates are read in the
+station time zone.  An active window that crosses midnight belongs to the
+day it starts, so the window that starts on the end date runs past midnight
+to its end.  A wall time that a daylight-saving change skips runs at the
+instant the clock jumps; one that happens twice runs the first time only.
 
 Features register their own actions (:meth:`Scheduler.register`) before the
 scheduler starts; the web UI builds its action list and fields from
@@ -15,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import calendar
+import json
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
@@ -67,6 +71,8 @@ FIELD_LABELS = {
     "interval_minutes": "Minutes between runs",
     "window_start": "Active from",
     "window_end": "Active until",
+    "start_date": "Start date",
+    "end_date": "End date",
     "timing": "Timing",
     "enabled": "Enabled",
 }
@@ -126,6 +132,8 @@ class EventSpec(BaseModel):
     interval_minutes: StrictInt | None = None
     window_start: Time | None = None
     window_end: Time | None = None
+    start_date: Date | None = None
+    end_date: Date | None = None
     timing: Timing = "soft"
     enabled: StrictBool = True
 
@@ -138,9 +146,10 @@ class EventSpec(BaseModel):
             raise EventError("date", "Enter a date for a one-time event")
         if self.repeat != "interval" and self.time is None:
             raise EventError("time", "Enter a time")
-        if self.repeat == "days":
-            if not self.days:
-                raise EventError("days", "Choose at least one day")
+        if self.repeat == "days" and not self.days:
+            raise EventError("days", "Choose at least one day")
+        # Every-few-minutes events may keep to chosen days; none means every day.
+        if self.repeat in ("days", "interval"):
             if any(day not in range(7) for day in self.days):
                 raise EventError("days", "Days must be numbered 0 (Monday) to 6 (Sunday)")
             self.days = sorted(set(self.days))
@@ -159,7 +168,13 @@ class EventSpec(BaseModel):
             self.time = None
         else:
             self.interval_minutes = self.window_start = self.window_end = None
-        if self.repeat != "once":
+        if self.start_date and self.end_date and self.end_date < self.start_date:
+            raise EventError("end_date", "End date must be on or after the start date")
+        if self.repeat == "once":
+            assert self.date is not None
+            if not in_range(self, self.date):
+                raise EventError("date", "Date must be within the start and end dates")
+        else:
             self.date = None
         return self
 
@@ -223,6 +238,28 @@ def field_error(exc: ValidationError) -> tuple[str, str]:
 # ----------------------------------------------------------------------
 
 
+def in_range(event: EventSpec, day: Date) -> bool:
+    """Whether the local *day* is within *event*'s start and end dates, both included."""
+    if event.start_date is not None and day < event.start_date:
+        return False
+    return event.end_date is None or day <= event.end_date
+
+
+def _runs_on(event: EventSpec, day: Date) -> bool:
+    """Whether *event* runs on the local *day*, or for a window, starts its window then."""
+    if not in_range(event, day):
+        return False
+    if event.repeat == "weekdays":
+        return day.weekday() < 5
+    # Chosen days: required for "days", optional for "interval".
+    return not event.days or day.weekday() in event.days
+
+
+def _first_day(event: EventSpec, day: Date) -> Date:
+    """Return *day*, or the start date when that is later."""
+    return max(day, event.start_date) if event.start_date is not None else day
+
+
 def _resolve(day: Date, at: Time, zone: ZoneInfo) -> datetime:
     """Return the UTC instant of a wall time in *zone*.
 
@@ -254,9 +291,16 @@ def _next_interval(event: EventSpec, after: datetime, zone: ZoneInfo) -> datetim
     step = timedelta(minutes=event.interval_minutes)
     after_wall = after.astimezone(zone).replace(tzinfo=None)
     start = event.window_start or Time(0)
-    # A window that starts the day before may run past midnight into today.
-    for offset in (-1, 0, 1):
-        day = after_wall.date() + timedelta(days=offset)
+    # A window that starts the day before may run past midnight into today,
+    # even when today is after the end date.  Nine days reach the next
+    # chosen weekday from yesterday.
+    begin = _first_day(event, after_wall.date() - timedelta(days=1))
+    for offset in range(9):
+        day = begin + timedelta(days=offset)
+        if event.end_date is not None and day > event.end_date:
+            return None
+        if not _runs_on(event, day):
+            continue
         first = datetime.combine(day, start)
         if event.window_start is None or event.window_end is None:
             last = datetime.combine(day + timedelta(days=1), Time(0)) - timedelta(seconds=1)
@@ -272,13 +316,14 @@ def _next_interval(event: EventSpec, after: datetime, zone: ZoneInfo) -> datetim
             if instant > after:
                 return instant
             slot += step
-    return None  # pragma: no cover - tomorrow's window always has a slot
+    return None  # pragma: no cover - the next chosen day's window has a slot
 
 
 def next_run(event: EventSpec, after: datetime, zone: ZoneInfo) -> datetime | None:
     """Return the first UTC run of *event* strictly after the aware instant *after*.
 
-    ``None`` means it never runs again (a one-time event in the past).
+    ``None`` means it never runs again: a one-time event in the past, or a
+    rule with no run left before its end date.
     """
     if after.tzinfo is None:
         raise ValueError("after must have a time zone")
@@ -290,12 +335,12 @@ def next_run(event: EventSpec, after: datetime, zone: ZoneInfo) -> datetime | No
         assert event.date is not None
         instant = _resolve(event.date, event.time, zone)
         return instant if instant > after else None
-    today = after.astimezone(zone).date()
+    begin = _first_day(event, after.astimezone(zone).date())
     for offset in range(8):
-        day = today + timedelta(days=offset)
-        if event.repeat == "weekdays" and day.weekday() >= 5:
-            continue
-        if event.repeat == "days" and day.weekday() not in event.days:
+        day = begin + timedelta(days=offset)
+        if event.end_date is not None and day > event.end_date:
+            return None
+        if not _runs_on(event, day):
             continue
         instant = _resolve(day, event.time, zone)
         if instant > after:
@@ -307,8 +352,35 @@ def _hhmm(value: Time | None) -> str:
     return value.strftime("%H:%M") if value is not None else ""
 
 
+def _day_words(day: Date, *, year: bool = True) -> str:
+    text = f"{day.day} {calendar.month_name[day.month]}"
+    return f"{text} {day.year}" if year else text
+
+
+def _joined(names: Sequence[str]) -> str:
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def describe_range(event: EventSpec) -> str:
+    """Say *event*'s date range in words, or ``""`` when it has none."""
+    start, end = event.start_date, event.end_date
+    if start is not None and end is not None:
+        return f"from {_day_words(start, year=start.year != end.year)} to {_day_words(end)}"
+    if start is not None:
+        return f"starting {_day_words(start)}"
+    if end is not None:
+        return f"ending {_day_words(end)}"
+    return ""
+
+
 def describe_repeat(event: EventSpec) -> str:
     """Say when *event* runs, in words, for the UI and the log."""
+    text = _describe_rule(event)
+    dates = describe_range(event)
+    return f"{text}, {dates}" if dates else text
+
+
+def _describe_rule(event: EventSpec) -> str:
     at = _hhmm(event.time)
     if event.repeat == "once":
         assert event.date is not None
@@ -320,12 +392,12 @@ def describe_repeat(event: EventSpec) -> str:
     if event.repeat == "weekdays":
         return f"Weekdays at {at}"
     if event.repeat == "days":
-        names = [calendar.day_name[day] for day in event.days]
-        joined = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
-        return f"{joined} at {at}"
+        return f"{_joined([calendar.day_name[day] for day in event.days])} at {at}"
     text = f"Every {event.interval_minutes} minutes"
     if event.window_start is not None:
         text += f" from {_hhmm(event.window_start)} until {_hhmm(event.window_end)}"
+    if event.days:
+        text += f" on {_joined([calendar.day_name[day] for day in event.days])}"
     return text
 
 
@@ -541,9 +613,15 @@ class Scheduler:
         """Write the schedule atomically."""
         document = ScheduleFile(
             schema_version=SCHEMA_VERSION, events=list(self.events.values()), runs=self.runs
-        )
+        ).model_dump(mode="json")
+        # An event without a date range is written without the two keys, so
+        # an older AutoDJ, which refuses unknown keys, still reads the file.
+        for event in document["events"]:
+            for key in ("start_date", "end_date"):
+                if event[key] is None:
+                    del event[key]
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write(self.path, document.model_dump_json(indent=2) + "\n")
+        atomic_write(self.path, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
 
     def _save_quietly(self) -> None:
         """Save from the timer: a failed write is logged, never raised."""
@@ -572,6 +650,8 @@ class Scheduler:
         params = await asyncio.to_thread(action.check, spec.params, live=True)
         now = self._clock()
         if spec.enabled and next_run(spec, now, self.zone) is None:
+            if spec.repeat != "once":
+                raise EventError("end_date", "The event has no run left before its end date")
             today = now.astimezone(self.zone).date()
             raise EventError(
                 "time" if spec.date == today else "date", "Choose a date and time in the future"
@@ -609,8 +689,12 @@ class Scheduler:
     async def set_enabled(self, event_id: str, enabled: bool) -> ScheduledEvent:
         """Enable or disable an event; raise ``KeyError`` for an unknown ID."""
         event = self.events[event_id]
-        if enabled and next_run(event, self._clock(), self.zone) is None:
-            raise EventError("enabled", "This one-time event is in the past; edit its date first")
+        if enabled and self.next_time(event) is None:
+            if event.repeat == "once":
+                raise EventError(
+                    "enabled", "This one-time event is in the past; edit its date first"
+                )
+            raise EventError("enabled", "This event's end date has passed; edit its dates first")
         event.enabled = enabled
         if not enabled:
             self._forget_pending(event_id)
@@ -621,6 +705,10 @@ class Scheduler:
         self.pending = [item for item in self.pending if item != event_id]
 
     # -- running --------------------------------------------------------
+
+    def next_time(self, event: EventSpec) -> datetime | None:
+        """Return *event*'s next run from now, or ``None`` when it has ended."""
+        return next_run(event, self._clock(), self.zone)
 
     def summary(self, event: EventSpec) -> str:
         """Say what *event*'s action does."""

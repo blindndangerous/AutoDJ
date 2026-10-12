@@ -205,7 +205,7 @@ describe("Schedule panel", () => {
     const repeat = byId("schedule-repeat");
     const visible = () => ["date", "time", "days", "interval"].filter((id) => !byId(`schedule-${id}`).closest("[data-repeat]").hidden);
     repeat.focus();
-    for (const [value, fields] of [["once", ["date", "time"]], ["daily", ["time"]], ["weekdays", ["time"]], ["days", ["time", "days"]], ["interval", ["interval"]]]) {
+    for (const [value, fields] of [["once", ["date", "time"]], ["daily", ["time"]], ["weekdays", ["time"]], ["days", ["time", "days"]], ["interval", ["days", "interval"]]]) {
       repeat.value = value;
       repeat.dispatchEvent(new Event("change", { bubbles: true }));
       expect(visible()).toEqual(fields);
@@ -256,6 +256,98 @@ describe("Schedule panel", () => {
     expect(document.activeElement).toBe(byId("schedule-window-end"));
     expect(byId("schedule-day-0").hasAttribute("aria-invalid")).toBe(false);
     expect(server.calls.some((call) => call.method === "POST")).toBe(false);
+  });
+
+  it("saves a date range and chosen days, and fills them in again on Edit", async () => {
+    const server = fakeServer();
+    await openPanel(server);
+    byId("schedule-add").click();
+    byId("schedule-name").value = "Friday nights";
+    const repeat = byId("schedule-repeat");
+    repeat.value = "interval";
+    repeat.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(byId("schedule-days").getAttribute("aria-describedby")).toBe("schedule-days-desc");
+    byId("schedule-interval").value = "60";
+    byId("schedule-window-start").value = "18:00";
+    byId("schedule-window-end").value = "02:00";
+    byId("schedule-day-4").checked = true;
+    byId("schedule-start-date").value = "2026-11-27";
+    byId("schedule-end-date").value = "2026-12-26";
+    submit();
+    await vi.waitFor(() => expect(status()).toBe("Event Friday nights saved"));
+    expect(server.calls.find((call) => call.method === "POST").body).toMatchObject({
+      repeat: "interval", interval_minutes: 60, window_start: "18:00", window_end: "02:00",
+      days: [4], start_date: "2026-11-27", end_date: "2026-12-26",
+    });
+
+    rowButton("Friday nights", "edit").click();
+    expect(byId("schedule-start-date").value).toBe("2026-11-27");
+    expect(byId("schedule-end-date").value).toBe("2026-12-26");
+    expect(byId("schedule-day-4").checked).toBe(true);
+    repeat.value = "days";
+    repeat.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(byId("schedule-days").hasAttribute("aria-describedby")).toBe(false);
+    expect(byId("schedule-days-desc").hidden).toBe(true);
+  });
+
+  it("names a backwards date range and links the error to the field", async () => {
+    const server = fakeServer();
+    await openPanel(server);
+    byId("schedule-add").click();
+    byId("schedule-name").value = "Holiday music";
+    byId("schedule-time").value = "00:00";
+    byId("schedule-start-date").value = "2026-12-26";
+    byId("schedule-end-date").value = "2026-11-27";
+    submit();
+    await vi.waitFor(() => expect(status()).toBe("End date must be on or after the start date"));
+    const end = byId("schedule-end-date");
+    expect(document.activeElement).toBe(end);
+    expect(end.getAttribute("aria-invalid")).toBe("true");
+    expect(end.getAttribute("aria-describedby")).toBe("schedule-range-desc schedule-form-error");
+    expect(byId("schedule-form-error").textContent).toBe("End date must be on or after the start date");
+    end.value = "2026-12-31";
+    end.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(end.hasAttribute("aria-invalid")).toBe(false);
+    expect(end.getAttribute("aria-describedby")).toBe("schedule-range-desc");
+
+    byId("schedule-repeat").value = "once";
+    byId("schedule-repeat").dispatchEvent(new Event("change", { bubbles: true }));
+    byId("schedule-date").value = "2027-01-02";
+    submit();
+    await vi.waitFor(() => expect(status()).toBe("Date must be within the start and end dates"));
+    expect(document.activeElement).toBe(byId("schedule-date"));
+    expect(byId("schedule-date").getAttribute("aria-describedby")).toBe("schedule-form-error");
+    expect(server.calls.some((call) => call.method === "POST")).toBe(false);
+
+    byId("schedule-date").value = "2026-12-30";
+    server.fail = new FakeError("The event has no run left before its end date", { field: "end_date" });
+    submit();
+    await vi.waitFor(() => expect(status()).toBe("The event has no run left before its end date"));
+    expect(document.activeElement).toBe(end);
+    expect(byId("schedule-date").hasAttribute("aria-describedby")).toBe(false);
+  });
+
+  it("says when an event has ended, and dates the next events", async () => {
+    const server = fakeServer();
+    server.events.push(event("Season", { end_date: "2026-01-01", enabled: false, ended: true }), event("Morning show"));
+    const reply = server.request.getMockImplementation();
+    server.request.mockImplementation(async (url, options) => {
+      const data = await reply(url, options);
+      if (url !== "/api/schedule" || options?.method) return data;
+      const later = { ...data.upcoming[0], time: "2027-01-04T07:00:00+00:00" };
+      return { ...data, upcoming: [...data.upcoming, later] };
+    });
+    await openPanel(server);
+    expect(rowButton("Season", "edit").closest("li").querySelector("span").textContent)
+      .toMatch(/Disabled\. Ended, no runs left\.$/);
+    const [today, later] = [...byId("schedule-upcoming").children].map((item) => item.textContent);
+    expect(today).toContain("Sunday");
+    expect(today).toContain("11");
+    expect(today).toContain("October");
+    expect(today).not.toContain("2026");
+    expect(later).toContain("Monday");
+    expect(later).toContain("January");
+    expect(later).toContain("2027");
   });
 
   it("says when an action has nothing to choose yet", async () => {
