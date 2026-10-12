@@ -589,3 +589,39 @@ history_limit = 5
 # url = "https://example.com/your-secret-endpoint"
 # format = "generic" # or "discord"
 # events = ["track_change"]
+
+# ---------------------------------------------------------------------------
+# More stations on one server
+# ---------------------------------------------------------------------------
+# The sections above are the default station.  Each [stations.<slug>] table
+# adds another station that plays from the same library, with its own player,
+# stream, recordings, schedule, carts, clockwheels and saved settings under
+# <index_dir>/<name>/stations/<slug>/.  The slug uses lower-case letters,
+# digits and inner hyphens (at most 32 characters); "default" is reserved.
+# At most 8 such stations.  See "Several stations" in docs/operations.md.
+#
+# A station starts from the defaults, not from the sections above: set
+# everything it needs here.  Its sections are playback, djmix, transitions,
+# replaygain, stream, recording, nowplaying, time_checks, dmca and presets.*;
+# library, index, model, huggingface and server are shared and read only from
+# the root.  Another station always streams (stream.enabled is ignored), and
+# stream.trusted_proxies comes from the root [stream] section.  Its recording
+# folder and relay targets must differ from every other station's.  Listener
+# credentials, relay passwords and webhooks belong in config.local.toml under
+# the same table names; a relay password can also come from
+# AUTODJ_STATION_<SLUG>_RELAY_<NAME>_PASSWORD ("-" as "_").
+#
+# [stations.nightowl]
+# autostart = true              # false: configured, stopped until started
+#
+# [stations.nightowl.stream]
+# station_name = "Night Owl Radio"
+# bitrate = 192
+# continuous = true
+# max_listeners = 20
+#
+# [stations.nightowl.playback]
+# loudness_processing = "smooth"  # one Stereo Tool licence: one station uses it
+#
+# [stations.nightowl.recording]
+# folder = "recordings/nightowl"
