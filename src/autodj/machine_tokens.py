@@ -44,7 +44,7 @@ SCOPE_ANNOUNCER = "announcer"
 #: Every scope a token may carry, with the words Settings shows for it.
 KNOWN_SCOPES: dict[str, str] = {
     SCOPE_ANALYSIS_WORKER: "Analysis worker",
-    SCOPE_ANNOUNCER: "Announcer: DJ breaks, news and weather",
+    SCOPE_ANNOUNCER: "Announcer",
 }
 #: Scopes that bind a token to one station.
 STATION_SCOPES = frozenset({SCOPE_ANNOUNCER})

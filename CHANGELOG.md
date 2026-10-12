@@ -25,8 +25,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   in size, length and number, decoded away from the playout, and checked before they are
   accepted. Operations has the API with example requests.
 - Announcer tokens: in Settings, Analysis workers, Machine tokens, **Token use** now offers
-  Announcer: DJ breaks, news and weather, with a **Station** choice that shows only for it. An
-  announcer token works for that one station and only for the breaks API.
+  Announcer, with a **Station** choice that shows only for it. An announcer token works for that
+  one station and only for the breaks API.
   `autodj tokens create NAME --scope announcer --station SLUG` does the same, and
   `autodj tokens list` names a token's station.
 - A rotation tester (#125): Settings > Song picking > **Test rotation**, or

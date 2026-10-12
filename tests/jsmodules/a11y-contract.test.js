@@ -2407,7 +2407,7 @@ describe("static accessibility contracts", () => {
     }
     // Both uses are written out, and what each token cannot do is said.
     expect([...scope.options].map((option) => option.textContent))
-      .toEqual(["Analysis worker", "Announcer: DJ breaks, news and weather"]);
+      .toEqual(["Analysis worker", "Announcer"]);
     expect(document.getElementById("token-scope-desc").textContent)
       .toMatch(/Neither can play, change settings or read anything else/);
     // The station choice and its help start hidden, together.

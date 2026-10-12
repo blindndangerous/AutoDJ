@@ -65,7 +65,7 @@ export function queueWords(view) {
   return `${waiting}${now}.  ${server}`;
 }
 
-// "radiodj.  Announcer: DJ breaks, news and weather, for Night Owl.
+// "radiodj.  Announcer, for Night Owl.
 // Created 3 May 2026, never used."
 export function tokenWords(token, scopeLabels, stationNames = new Map()) {
   const scopes = token.scopes.map((scope) => scopeLabels.get(scope) || scope).join(", ");

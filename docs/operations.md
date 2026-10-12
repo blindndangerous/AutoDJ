@@ -1546,7 +1546,7 @@ as a voice liner.
 
 An announcer token can read one station's coming songs and send that station breaks, and nothing
 else. It works for one station only. In Settings, Analysis workers, Machine tokens, type a name,
-choose Token use: Announcer: DJ breaks, news and weather, choose the Station, and choose Create
+choose Token use: Announcer, choose the Station, and choose Create
 token. Copy the token when it appears; it is never shown again. From the command line:
 
 ```bash

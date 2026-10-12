@@ -53,7 +53,7 @@ function server({ workers = [WORKER], tokens = [TOKEN] } = {}) {
       return {
         scopes: [
           { id: "analysis-worker", label: "Analysis worker", station: false },
-          { id: "announcer", label: "Announcer: DJ breaks, news and weather", station: true },
+          { id: "announcer", label: "Announcer", station: true },
         ],
         stations: [{ slug: "default", name: "Ice Cold" }, { slug: "nightowl", name: "Night Owl" }],
         tokens: state.tokens,
@@ -253,7 +253,7 @@ describe("Analysis workers panel", () => {
     expect(JSON.parse(post[1].body))
       .toEqual({ name: "radiodj", scopes: ["announcer"], station: "nightowl" });
     await vi.waitFor(() => expect(byId("token-list").textContent)
-      .toContain("radiodj.  Announcer: DJ breaks, news and weather, for Night Owl."));
+      .toContain("radiodj.  Announcer, for Night Owl."));
     scope.value = "analysis-worker";
     scope.dispatchEvent(new Event("change"));
     expect(byId("token-station-row").hidden).toBe(true);
