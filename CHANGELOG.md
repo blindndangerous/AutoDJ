@@ -205,6 +205,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Failed `serve` commands offer to run Doctor in a terminal with the same configuration and named
   index. `autodj doctor --name` also lets you select that index yourself.
 
+- Folder imports requested while a library scan measures loudness now publish their tracks
+  before that scan continues measuring the remaining tracks.
+
 - When a liner's segue moves earlier, move any later saved overlap back to the segue.
   Track Info now matches playback, and subsequent cue edits can be saved.
 
