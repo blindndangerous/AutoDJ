@@ -76,6 +76,65 @@ const THEME_MODES = [
   { name: "system-dark", stored: null, colorScheme: "dark", theme: "dark" },
 ];
 
+// Settings > Song picking > Test rotation, opened: the server's answers
+// are stood in for, so the running and finished states look the same on
+// an empty library as on a full one.  The finished report carries long
+// unbroken names, for the reflow checks.
+const ROTATION_SECTIONS = [
+  { title: "Summary", lines: [
+    "Simulated 168 hours, from Monday 12 October 2026, 06:00 to Monday 19 October 2026, 06:02, station time (UTC).",
+    "Picked 2,914 songs and 412 liners.",
+    "Seed 1234. Use the same seed to repeat this run exactly.",
+  ] },
+  { title: "Songs", lines: [
+    "The library has 77,000 songs; 2,604 played and 74,396 never played.",
+    { text: "Never played, first two:", items: [
+      "Example Artist — An_Exceptionally_Long_Title_Without_Any_Spaces_From_A_Tagless_File_0001",
+      "Another Example — Song 2",
+    ] },
+  ] },
+  { title: "Categories", lines: [
+    { text: "Power: six songs, 504 plays.", items: [
+      "Plays per song: fewest 80, most 90, average 84.",
+      "Its clockwheel step was skipped 40 times.",
+    ] },
+  ] },
+  { title: "Rules relaxed", lines: ["Same artist: relaxed for 12 picks."] },
+  { title: "Dead air", lines: ["No moment had nothing to play."] },
+];
+const rotationStates = new WeakMap();
+
+async function standInForRotationTest(page) {
+  if (rotationStates.has(page)) return rotationStates.get(page);
+  const state = { done: false };
+  rotationStates.set(page, state);
+  await page.route("**/api/rotation-test", (route) => {
+    const view = state.done
+      ? { state: "done", progress: { picks: 2914, percent: 100 }, elapsed_seconds: 61,
+        report: { picks: 2914, station: "default", seed: 1234, stopped_early: false },
+        text: "", sections: ROTATION_SECTIONS, error: null }
+      : { state: "running", progress: { picks: 1200, percent: 40 }, elapsed_seconds: 20,
+        report: null, text: null, sections: null, error: null };
+    return route.fulfill({
+      status: route.request().method() === "POST" ? 202 : 200,
+      contentType: "application/json",
+      body: JSON.stringify(view),
+    });
+  });
+  return state;
+}
+
+async function openRotationTest(page, visit) {
+  const state = await standInForRotationTest(page);
+  state.done = false;
+  await page.locator("#rotation-run").click();
+  await page.locator("#rotation-progress-row").waitFor({ state: "visible" });
+  await visit("settings/picking/rotation-running");
+  state.done = true;
+  await page.locator("#rotation-results").waitFor({ state: "visible", timeout: 10000 });
+  await visit("settings/picking/rotation-results");
+}
+
 // Track info with a song loaded, so its Tags form is shown: the server's
 // answers are stood in for, as the empty library has no song to open.  The
 // title is long and unbroken, for the reflow checks, and beets is offered so
@@ -161,6 +220,7 @@ async function newPage(context) {
 // Every view, and with Settings every subtab this server shows (Stream only
 // in stream mode).  `visit` runs once per target with that target shown.
 async function eachTarget(page, visit) {
+  await standInForRotationTest(page);
   await standInForTrackInfo(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   for (const view of VIEWS) {
@@ -184,6 +244,7 @@ async function eachTarget(page, visit) {
       await openEveryCard(page);
       await settle(page);
       await visit(`settings/${id.replace(/^stab-/, "")}`);
+      if (id === "stab-picking") await openRotationTest(page, visit);
     }
   }
 }
@@ -517,7 +578,7 @@ async function auditTheme(browser, mode, out) {
           });
         }
         await page.screenshot({
-          path: join(SHOTS, `${out.browser}-${mode.name}-${target.replace("/", "-")}.png`),
+          path: join(SHOTS, `${out.browser}-${mode.name}-${target.replaceAll("/", "-")}.png`),
           fullPage: true,
         });
         await showToast(page, "");

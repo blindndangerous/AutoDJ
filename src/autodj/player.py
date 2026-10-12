@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import sqlite3
 import threading
 import time
@@ -22,6 +23,7 @@ from collections.abc import Set as AbstractSet
 from concurrent.futures import Future, wait
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
+from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
@@ -93,6 +95,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 repeat_logger = logging.getLogger(f"{__name__}.repeat")
+
+#: Held while a station's song-picking settings or clockwheel are swapped
+#: in, and while a rotation test copies them (autodj.rotation_sim), so the
+#: copy never sees a change half made.  Only in-memory swaps happen under
+#: it: files and the catalog are read before it is taken.  A dry-run player
+#: has a lock of its own (see :func:`settings_lock`).
+SETTINGS_LOCK = threading.RLock()
+
+
+def settings_lock(player: Any) -> Any:
+    """The lock *player*'s settings changes hold: its own, or :data:`SETTINGS_LOCK`."""
+    lock = getattr(player, "settings_lock", None)
+    return lock if lock is not None else SETTINGS_LOCK
+
 
 # Default output sample rate; sounddevice converts if the device differs.
 _DEFAULT_SR = 44_100
@@ -746,12 +762,16 @@ class Player:
     _pending_clock_name: str | None = None
     _pending_clock_boundary: float | None = None
     _clock: dict[str, Any] | None = None
+    _clock_next_boundary: float | None = None
     # The clockwheel _seed_clock_cursor is a place in (#133).
     _seed_clock_name: str | None = None
     _seed_clock_revision: int | None = None
     _seed_clock_step: dict | None = None
     _seed_clock_following: tuple[IndexEntry, IndexEntry, int, dict | None] | None = None
     liner_scheduler: Any = None
+    # The station's liner play dates: passes over the liners a clockwheel's
+    # liner steps may not play today (see autodj.clip_dates.LinerGate).
+    liner_filter: Callable[[Any], Any] | None = None
     _skip_next_intro: bool = False
     _continuous_master: Any = None
     # Guards the per-pair effect plans of planned_transition.
@@ -766,6 +786,14 @@ class Player:
     # How far ahead of the playing position a skip effect starts, so it is
     # ready before the bus gets there: 0.1 s.
     _SKIP_LOOKAHEAD: ClassVar[int] = SAMPLE_RATE // 10
+    # A dry run of the picker (autodj.rotation_sim) gives the player its own
+    # seeded random.Random, a clock of its own (see _now) and a pick_observer
+    # that hears what each pick passed over.  On air the random module
+    # chooses and nothing observes.
+    _random: random.Random | None = None
+    pick_observer: Callable[[str, Any], None] | None = None
+    # The lock settings changes hold (see settings_lock); None is the shared one.
+    settings_lock: Any = None
 
     def __init__(
         self,
@@ -995,6 +1023,20 @@ class Player:
         """The history lock (``PlayerState.history_lock``); see :meth:`__init__`."""
         return self._state.history_lock
 
+    def _chooser(self) -> Any:
+        """What makes the picks' random choices: the dry run's generator or the random module."""
+        return self._random if self._random is not None else random
+
+    def _now(self) -> float:
+        """Wall-clock seconds the clockwheel and dayparting read; a dry run moves its own."""
+        return time.time()
+
+    def _observe(self, event: str, detail: Any) -> None:
+        """Tell the dry run's observer, if any, what a pick just met."""
+        observer = self.pick_observer
+        if observer is not None:
+            observer(event, detail)
+
     def stop(self) -> None:
         """Wake and stop the playback loop, including empty-library waiting."""
         self._state.should_stop = True
@@ -1074,7 +1116,7 @@ class Player:
                             None,
                             picked.liner,
                             upcoming,
-                            time.time(),
+                            self._now(),
                             getattr(self, "_clock_next_boundary", None),
                         ):
                             self._seed_clock_cursor = picked.next_cursor
@@ -1097,7 +1139,8 @@ class Player:
             except Exception as exc:
                 chosen = self._fallback_pick(None, context, exc)
         else:
-            chosen = self._sim.random_entry()
+            extra = {"rng": self._random} if self._random is not None else {}
+            chosen = self._sim.random_entry(**extra)
         if dmca is None or chosen is None:
             return chosen
         return self._dmca_checked(chosen, dmca)
@@ -1142,45 +1185,24 @@ class Player:
             self._pending_clock_cursor_revision = clock_revision
 
     def configure_clock(self) -> None:
-        with self._clock_lock:
-            self._configure_clock()
-
-    def configure_clock_after_selection(self) -> None:
-        """Load the saved wheel after an explicit active-wheel selection."""
-        with self._clock_lock:
-            self._pending_clock_update = None
-            self._configure_clock()
-
-    def _configure_clock(self) -> None:
         """Load the active clockwheel without marking any selected music played.
 
         A clockwheel that cannot load leaves the clock off, says why in the
-        clock status and the log, and lets the station start anyway.
+        clock status and the log, and lets the station start anyway.  The
+        setting and the clockwheel file are read first; only the swap
+        holds the settings lock.
         """
-        setting = None
-        if self._library is not None:
-            ledger = getattr(self, "_ledger", None)
-            setting = (
-                ledger.get_setting("clock", {})
-                if ledger is not None
-                else self._library.catalog.get_setting("clock", {})
-            )
-        # A deferred edit keeps the currently applied wheel in memory across
-        # unrelated settings reloads. Only the restart boundary promotes it.
-        if (
-            self._pending_clock_update is not None
-            and isinstance(setting, dict)
-            and setting.get("name") == self._clock_name()
-        ):
-            return
-        self._pending_clock_update = None
-        old_definition = getattr(self, "_clock_definition", None)
-        old_name = self._clock_name()
-        self._clock = None
-        self._seed_clock_following = None
-        self._clock_next_boundary = None
+        Player._configure_clock(self)  # also for the test doubles that borrow it
+
+    def configure_clock_after_selection(self) -> None:
+        """Load the latest saved wheel after an explicit selection."""
+        with self._clock_lock:
+            self._pending_clock_update = None
+        self.configure_clock()
+
+    def _configure_clock(self) -> None:
         if self._library is None:
-            self._clock_status = "Clockwheel waiting for library"
+            self._clock_off("Clockwheel waiting for library")
             return
         # The station's own key ("clock" for the default station).
         ledger = getattr(self, "_ledger", None)
@@ -1191,47 +1213,73 @@ class Player:
             setting = self._library.catalog.get_setting("clock", {})
         if not isinstance(setting, dict):
             setting = {}
+        with self._clock_lock:
+            if self._pending_clock_update is not None and setting.get("name") == self._clock_name():
+                return
+            self._pending_clock_update = None
         if "slots" in setting:
             from autodj.clockwheel_store import OLD_CLOCK_MESSAGE
 
-            self._clock_status = OLD_CLOCK_MESSAGE
             logger.error(OLD_CLOCK_MESSAGE)
+            self._clock_off(OLD_CLOCK_MESSAGE)
             return
         name = setting.get("name")
         if not name:
-            self._clock_status = "No clockwheel is active"
+            self._clock_off("No clockwheel is active")
             return
+        self.activate_clock(name, setting.get("cursor", 0))
+
+    def _clock_off(self, status: str) -> None:
+        """Turn the clockwheel off, with *status* saying why."""
+        with self._clock_lock, settings_lock(self):
+            self._pending_clock_update = None
+            self._clock = None
+            self._seed_clock_following = None
+            self._clock_next_boundary = None
+            self._clock_status = status
+
+    def activate_clock(self, name: str, cursor: Any = 0) -> None:
+        """Play clockwheel *name* from step *cursor*; one that cannot load leaves the clock off."""
         try:
             clock, slots = self._load_clockwheel(name)
         except (ValueError, OSError) as exc:
-            self._clock_status = f"Clockwheel {name} is off: {exc}"
-            logger.error("%s", self._clock_status)
+            status = f"Clockwheel {name} is off: {exc}"
+            logger.error("%s", status)
+            self._clock_off(status)
             return
-        self._clock = {
-            "name": name,
-            "cursor": setting.get("cursor", 0),
-            "resync_minutes": clock["resync_minutes"],
-        }
-        self._clock_slots = slots
-        self._clock_steps = clock["steps"]
-        if old_name != name or old_definition != clock:
-            self._clock_revision += 1
-            self._pending_clock_cursor = None
-            self._pending_clock_boundary = None
-        self._clock_definition = clock
-        self._pending_clock_cursor_revision = self._clock_revision
-        self._clock_status = "Ready"
         from datetime import datetime
 
         from autodj.clockwheel import next_boundary
 
-        boundary = next_boundary(datetime.now().astimezone(), clock["resync_minutes"])
-        self._clock_next_boundary = boundary.timestamp() if boundary else None
+        boundary = next_boundary(
+            datetime.fromtimestamp(self._now()).astimezone(), clock["resync_minutes"]
+        )
+        with self._clock_lock, settings_lock(self):
+            if (
+                Player._clock_name(self) != name
+                or getattr(self, "_clock_definition", None) != clock
+            ):
+                self._clock_revision += 1
+                self._pending_clock_cursor = None
+                self._pending_clock_boundary = None
+            self._clock_definition = clock
+            self._clock_steps = clock["steps"]
+            self._pending_clock_cursor_revision = self._clock_revision
+            self._pending_clock_update = None
+            self._clock = {
+                "name": name,
+                "cursor": cursor,
+                "resync_minutes": clock["resync_minutes"],
+            }
+            self._clock_slots = slots
+            self._clock_status = "Ready"
+            self._seed_clock_following = None
+            self._clock_next_boundary = boundary.timestamp() if boundary else None
 
     def apply_clockwheel_update(self, name: str, timing: str = "immediate") -> None:
         """Apply a saved active wheel now or at its next restart boundary."""
         clock, slots = self._load_clockwheel(name)
-        with self._clock_lock:
+        with self._clock_lock, settings_lock(self):
             refresh = self._apply_loaded_clockwheel_update(name, timing, clock, slots)
         if refresh:
             self.refresh_render_ahead()
@@ -1276,7 +1324,9 @@ class Player:
 
         from autodj.clockwheel import next_boundary
 
-        boundary = next_boundary(datetime.now().astimezone(), clock["resync_minutes"])
+        boundary = next_boundary(
+            datetime.fromtimestamp(self._now()).astimezone(), clock["resync_minutes"]
+        )
         self._clock_next_boundary = boundary.timestamp() if boundary else None
         self._pending_clock_cursor = None
         self._pending_clock_boundary = None
@@ -1363,18 +1413,12 @@ class Player:
         recent = set(context.recent)
         entries = self.playable_entries()
         closed = context.closed
-        eligible = tuple(
-            entry
-            for entry in entries
-            if not entry.is_silent
-            and entry.path not in context.protected
-            and entry.path not in closed
-        )
+        eligible = self._eligible_entries(entries, context.protected, closed)
         # DMCA mode holds every slot to the complement, even one that does
         # not enforce the repeat rules.
         complying = (
             eligible
-            if context.complement is None
+            if context.complement is None or context.complement.blocks_nothing
             else tuple(entry for entry in eligible if context.allows(entry))
         )
         ledger = self._ledger
@@ -1446,6 +1490,7 @@ class Player:
                 pool,
                 last_played,
                 allowed,
+                self._random,
                 liners=playable_liners,
                 categories=categories,
                 beets=beets_items,
@@ -1459,6 +1504,7 @@ class Player:
         # DMCA complement (_dmca_checked then looks for a track that keeps
         # it in the whole library).
         picked = pick(True, True)
+        self._observe("clock_skipped", picked.skipped)
         if picked.entry is None and context.repeat:
             logger.info(
                 "Clock: every matching track is held back (%s); relaxing the artist, "
@@ -1536,7 +1582,9 @@ class Player:
 
         from autodj.clockwheel import next_boundary
 
-        boundary = next_boundary(datetime.now().astimezone(), clock["resync_minutes"])
+        boundary = next_boundary(
+            datetime.fromtimestamp(self._now()).astimezone(), clock["resync_minutes"]
+        )
         self._clock_next_boundary = boundary.timestamp() if boundary else None
         self._pending_clock_cursor = 0
         self._pending_clock_name = name
@@ -1582,6 +1630,43 @@ class Player:
         except Exception:
             categories = []
         return {"number": index + 1, "step": step, "sources": sources, "categories": categories}
+
+    def _eligible_entries(
+        self,
+        entries: tuple[IndexEntry, ...],
+        protected: AbstractSet[str],
+        closed: AbstractSet[str],
+    ) -> tuple[IndexEntry, ...]:
+        """*entries* that are not silent, protected or outside their hours, in library order.
+
+        A clock pick needs this for the whole library on every pick.  The
+        songs left after the silent and closed ones are kept until the
+        library or the closed songs change, so a pick only cuts the few
+        protected ones out of them.
+        """
+        cached = getattr(self, "_eligible_cache", None)
+        if cached is None or cached[0] is not entries or cached[1] != closed:
+            base = tuple(
+                entry for entry in entries if entry.path not in closed and not entry.is_silent
+            )
+            where: dict[str, int] | None = {entry.path: index for index, entry in enumerate(base)}
+            if where is not None and len(where) != len(base):
+                where = None
+            cached = (entries, closed, base, where)
+            self._eligible_cache = cached
+        base, where = cached[2], cached[3]
+        if where is None:  # Two entries share a path: cut by path, one by one.
+            return tuple(entry for entry in base if entry.path not in protected)
+        cuts = sorted(where[path] for path in protected if path in where)
+        if not cuts:
+            return base
+        parts = []
+        begin = 0
+        for cut in cuts:
+            parts.append(base[begin:cut])
+            begin = cut + 1
+        parts.append(base[begin:])
+        return tuple(chain.from_iterable(parts))
 
     def _category_members(self) -> dict[str, tuple[str, frozenset[str]]]:
         """Each rotation category's name and songs, or none when they cannot be read.
@@ -1659,8 +1744,6 @@ class Player:
         When no track keeps every limit, one that breaks the fewest plays and
         a warning names the limits it breaks: the music never stops.
         """
-        import random as _rnd
-
         if not queued and entry.path in context.closed:
             entry = self._daypart_replacement(entry, context)
         limits = context.complement
@@ -1692,7 +1775,8 @@ class Player:
                 "; ".join(broken),
             )
             return entry
-        chosen, still = _rnd.choice(choices)  # nosec B311 -- music selection
+        chosen, still = self._chooser().choice(choices)  # nosec B311 -- music selection
+        self._observe("dmca_replaced", broken)
         if still:
             logger.warning(
                 "DMCA mode: no track keeps every limit; %s plays although it breaks %s",
@@ -1716,8 +1800,6 @@ class Player:
         protected ones; never one outside its own hours.  When every song is
         outside its hours, *entry* plays and a warning says so.
         """
-        import random as _rnd
-
         audible = [
             other
             for other in self.playable_entries()
@@ -1729,7 +1811,7 @@ class Player:
         fresh = [other for other in audible if other.path not in recent]
         for pool in ([other for other in fresh if context.repeat(other)], fresh, audible):
             if pool:
-                chosen = _rnd.choice(pool)  # nosec B311 -- music selection
+                chosen = self._chooser().choice(pool)  # nosec B311 -- music selection
                 logger.info(
                     "Dayparting: %s is outside its category's hours; %s plays instead",
                     entry.display_name,
@@ -1874,7 +1956,7 @@ class Player:
                     from autodj.clockwheel import next_boundary, resync_due
 
                     start, segue = self._clock_music_span(current)
-                    when = time.time() + max(
+                    when = self._now() + max(
                         0.0, segue - max(start, self._pending_offset / SAMPLE_RATE)
                     )
                     playing = self._playing_render
@@ -2822,9 +2904,9 @@ class Player:
 
     def _station_now(self) -> datetime:
         """The station's local wall time, naive (``[server] station_timezone``)."""
-        from autodj.categories import station_now
+        from autodj.categories import station_wall
 
-        return station_now(self._cfg)
+        return station_wall(self._cfg, self._now())
 
     def _dayparts(self) -> tuple[frozenset[str], dict[str, str]]:
         """The songs whose categories are outside their days and hours now, and why.
@@ -2935,8 +3017,6 @@ class Player:
         played recently, the history is relaxed to *current* and the protected
         tracks. Startup passes no *current*, so no arbitrary entry is excluded.
         """
-        import random as _rnd
-
         from autodj.similarity import SimilarityError
 
         protected = context.protected | ({current.path} if current is not None else set())
@@ -2972,9 +3052,9 @@ class Player:
             if history is not None and entries:
                 from autodj.clockwheel import least_recent
 
-                return least_recent(entries, history, allowed=allowed)
+                return least_recent(entries, history, self._random, allowed=allowed)
             pool = [entry for entry in entries if allowed(entry)]
-            return _rnd.choice(pool) if pool else None  # nosec B311 -- non-security
+            return self._chooser().choice(pool) if pool else None  # nosec B311 -- non-security
 
         chosen = choose(excluded)
         if chosen is None:
@@ -3008,11 +3088,13 @@ class Player:
         try:
             protected = context.protected | {current.path} | context.closed
             recent = deque([*context.recent, *sorted(protected - set(context.recent))])
+            extra = {"rng": self._random} if self._random is not None else {}
             entry = self._sim.find_distant(
-                current.path, recent, allowed=self._candidate_filter(context)
+                current.path, recent, allowed=self._candidate_filter(context), **extra
             )
             _log_repeat_blocks(context.repeat, entry)
-            _CONSOLE.print("  [bold cyan]◈ Discovery track[/bold cyan]")
+            if self.pick_observer is None:
+                _CONSOLE.print("  [bold cyan]◈ Discovery track[/bold cyan]")
             return entry
         except SimilarityError:
             return None
@@ -3118,6 +3200,8 @@ class Player:
             "pick_top_k": self._cfg.playback.pick_top_k,
             "pick_temperature": self._cfg.playback.pick_temperature,
         }
+        if self._random is not None:
+            search["rng"] = self._random
 
         # --- Normal similarity search ---
         try:
@@ -3164,8 +3248,6 @@ class Player:
         Raises:
             SimilarityError: The library has no track that is not silent.
         """
-        import random as _rnd
-
         from autodj.similarity import SimilarityError
 
         everything = [entry for entry in self.playable_entries() if not entry.is_silent]
@@ -3195,7 +3277,7 @@ class Player:
             for excluded in tiers:
                 pool = [entry for entry in candidates if entry.path not in excluded]
                 if pool:
-                    chosen = _rnd.choice(pool)  # nosec B311 -- non-security
+                    chosen = self._chooser().choice(pool)  # nosec B311 -- non-security
                     break
             if chosen is not None:
                 break
