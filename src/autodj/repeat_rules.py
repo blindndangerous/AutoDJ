@@ -623,7 +623,7 @@ class RepeatRules:
             self.album_window,
             self.title_window,
             related_window,
-            self.related_track_window,
+            self.related_track_window if self.related_tracks.links else 0,
         )
 
     @property
@@ -637,7 +637,7 @@ class RepeatRules:
                 self.album_minutes,
                 self.title_minutes,
                 related_minutes,
-                self.related_track_minutes,
+                self.related_track_minutes if self.related_tracks.links else 0.0,
             )
             * 60.0
         )

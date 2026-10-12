@@ -622,13 +622,32 @@ class TestRelatedTracks:
         assert rules.keep_tracks == 30
         assert rules.keep_seconds == 90 * 60
         # Limits only count while the rule has links.
-        assert RepeatRules(artist_window=2, related_track_window=30).keep_tracks == 30
+        assert RepeatRules(artist_window=2, related_track_window=30).keep_tracks == 2
         artists = parse_related_artists({"related": {"A": ["B"]}}, "test")
         assert RepeatRules(artist_window=2, related_artist_window=40).keep_tracks == 2
         assert (
             RepeatRules(artist_window=2, related=artists, related_artist_window=40).keep_tracks
             == 40
         )
+
+    def test_empty_related_tracks_do_not_load_or_retain_extra_history(self) -> None:
+        playback = PlaybackConfig.from_dict(
+            {
+                "repeat_rules": {
+                    "artist": {"tracks": 0},
+                    "track": {"tracks": 0},
+                    "related_track": {"tracks": 5000, "minutes": 10080},
+                    "use_related_tracks": True,
+                }
+            }
+        )
+        rules = RepeatRules.from_playback(playback, related_tracks=parse_related_tracks({}, "test"))
+        assert rules.keep_tracks == 0
+        assert rules.keep_seconds == 0
+        assert plays_to_load(rules) == 0
+        history = deque([_record(1, started=0.0)])
+        prune_history(history, rules, now=1.0)
+        assert not history
 
     def test_from_playback_uses_the_switch(self) -> None:
         related = parse_related_tracks(SUPER_FREAK, "test")
