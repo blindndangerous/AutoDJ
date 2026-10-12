@@ -1186,3 +1186,19 @@ def test_library_database_uses_wal(tmp_path):
     with LibraryCatalog(tmp_path / "library.db") as catalog:
         mode = catalog._db().execute("PRAGMA journal_mode").fetchone()[0]
     assert mode == "wal"
+
+
+def test_moved_track_is_playable_at_its_new_path_before_the_scan_reads_tracks(
+    manager_factory, tmp_path
+):
+    music = tmp_path / "Music"
+    music.mkdir()
+    old, new = music / "old.flac", music / "new.flac"
+    old.write_bytes(b"same bytes")
+    manager = manager_factory(music=music)
+    manager.catalog.put_entry(make_entry(old))
+    manager.refresh()
+    old.rename(new)
+    manager._reconcile_moves([("music", new)])
+    assert manager.entry_for_path(new) is not None
+    assert manager.entry_for_path(old) is None

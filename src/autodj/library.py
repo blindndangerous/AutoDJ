@@ -666,6 +666,7 @@ class LibraryManager:
         for kind, path in found:
             if _path(path) not in old_paths:
                 candidates_by_kind[kind].append(Track(path, path.stem, "", "", "", 0.0, 0, 0.0))
+        moved = False
         for kind in ("music", "liner"):
             kind_entries = [entry for entry_kind, entry in old if entry_kind == kind]
             moves = _detect_moves(kind_entries, missing, candidates_by_kind[kind])
@@ -674,6 +675,7 @@ class LibraryManager:
             for source, (track, _mtime) in moves.items():
                 if not self.catalog.rekey(source, track.path):
                     continue
+                moved = True
                 try:
                     if not (self.cfg.index.active_dir / "dj_meta.db").is_file():
                         continue
@@ -693,8 +695,8 @@ class LibraryManager:
             kept = {path for path in self._missing if not coverage.covered(path)}
             self._missing = frozenset(kept | missing)
             changed = self._missing != self._loaded_missing
-        if changed:
-            # Gone tracks leave the playable library now, not after the scan.
+        if changed or moved:
+            # Gone and moved tracks change now, not after the scan.
             self.refresh()
 
     def _basic_entry(self, fresh: IndexEntry, old: dict[str, Any] | None, path: Path) -> IndexEntry:
