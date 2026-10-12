@@ -1,31 +1,73 @@
 /* ----------------------------------------------------------------
-       Design tokens
-       #e0e0e0 on #1a1a2e → contrast ≈ 12.9:1  (WCAG AAA)
-       #ffffff on #2d5a87 → contrast ≈ 7.2:1   (WCAG AA)
-       #7eb3e8 thumb on #16213e → contrast ≈ 7.2:1 (non-text ≥ 3:1 ✓)
-       Focus ring: 2px solid #7eb3e8 — visible on all bg colors
+       Design tokens: one light and one dark value per colour.
+       light-dark() picks by the root's color-scheme: "light dark" (the
+       System choice) follows the reader's prefers-color-scheme, and
+       Settings, Display and keys, Theme sets data-theme on <html> to
+       pin one (modules/theme-init.js applies it before first paint).
+       Contrast, light / dark (WCAG 2.2 AA: text 4.5:1, non-text 3:1):
+         --text on --bg-card            16.8 / 12.0
+         --text-dim on --bg-card         7.5 / 6.2   (on --bg 6.6 / 6.6)
+         --accent on --bg-card           6.4 / 7.2   (links; focus ring)
+         --on-accent on --accent         6.4 / 9.5   (selected tab)
+         --btn-text on --btn-bg          7.2 / 7.2
+         --control-border on --bg-card   4.7 / 6.3   (on --bg 4.1 / 6.8)
+         --badge-border, --range-track   4.7 / 3.8, 3.7 on --bg-card
+         --danger-edge on --bg-card      5.4 / 4.4
+         tests/jsmodules/a11y-contract.test.js checks these pairs.
     ---------------------------------------------------------------- */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      /* Without this every native <select>, number field and file picker
-         renders as a white 18 px OS widget punched into the dark card. */
-      color-scheme: dark;
-      --bg:        #1a1a2e;
-      --bg-card:   #16213e;
-      --border:    #0f3460;
-      --accent:    #7eb3e8;
-      --text:      #e0e0e0;
-      --text-dim:  #a0a0b0;
+      /* Native <select>, number fields, file pickers, checkboxes and
+         scrollbars draw in the theme's own scheme; without it they were
+         white 18 px OS widgets punched into the dark card. */
+      color-scheme: light dark;
+      --bg:        light-dark(#eef1f6, #1a1a2e);
+      --bg-card:   light-dark(#ffffff, #16213e);
+      /* Card edges, dividers and the progress rail: decoration, not a
+         control's boundary (controls use --control-border). */
+      --border:    light-dark(#c4cdda, #0f3460);
+      --accent:    light-dark(#1f5fa8, #7eb3e8);
+      --on-accent: light-dark(#ffffff, #000000);
+      --text:      light-dark(#1a1d29, #e0e0e0);
+      --text-dim:  light-dark(#4d5566, #a0a0b0);
+      --text-desc: light-dark(#4d5566, #b8c5d8);
       --btn-bg:    #2d5a87;
-      --btn-hover: #3a72a8;
+      --btn-hover: light-dark(#22476b, #3a72a8);
       --btn-text:  #ffffff;
-      --danger:    #c0392b;
-      --green:     #27ae60;
+      /* A focused or hovered tab must not look like the selected one. */
+      --tab-hover-bg:   light-dark(#dce7f5, #2d5a87);
+      --tab-hover-text: light-dark(#1a1d29, #ffffff);
+      --control-border: light-dark(#66758c, #8aa4d6);
+      --danger:    #c0392b;    /* a fill under white text, 5.4:1 */
+      --danger-edge: light-dark(#c0392b, #e5574a);  /* an edge on the card */
+      --error-text: light-dark(#b3261e, #ffaaa0);
       --radius:    6px;
-      --badge-border: #4d7eb5;   /* 3.76:1 on --bg-card; meets 1.4.11 3:1 minimum */
-      --range-track: #5a7bb0;    /* 3.7:1 on --bg-card; slider track (1.4.11) */
+      --badge-border: light-dark(#66758c, #4d7eb5);
+      --range-track: light-dark(#66758c, #5a7bb0);
+      /* Faint washes over the card: striped rows, the lit lyric, badges. */
+      --tint:      light-dark(rgba(0, 0, 0, 0.035), rgba(255, 255, 255, 0.035));
+      --tint-2:    light-dark(rgba(0, 0, 0, 0.05), rgba(255, 255, 255, 0.05));
+      --tint-3:    light-dark(rgba(0, 0, 0, 0.05), rgba(255, 255, 255, 0.07));
+      --log-bg:    light-dark(#f3f6fb, #0f1626);
+      --log-text:  light-dark(#1a2a44, #cce0ff);
+      --toast-error-bg: light-dark(#fdf1f0, #221a26);
+      --stretch:   light-dark(#8a4b00, #ffb86c);
+      --notice-bg: light-dark(rgba(192, 57, 43, 0.12), rgba(192, 57, 43, 0.18));
+      /* Camelot wheel.  Each edge 3:1 or more against the wedges beside it. */
+      --wheel-fill:   light-dark(rgba(0, 0, 0, 0.03), rgba(255, 255, 255, 0.04));
+      --wheel-edge:   light-dark(#66758c, #6f87b4);
+      --wheel-compat: light-dark(rgba(31, 95, 168, 0.12), rgba(126, 179, 232, 0.30));
+      /* Cue ticks, 3:1 or more on the card. */
+      --cue-drop:      light-dark(#c8102e, #ff5470);
+      --cue-breakdown: light-dark(#3a4fd8, #5a7bff);
+      --cue-downbeat:  light-dark(#0a6f9a, #69d0ff);
+      --cue-outro:     light-dark(#9a5b00, #ffb454);
+      --cue-phrase:    light-dark(rgba(0, 0, 0, 0.55), rgba(255, 255, 255, 0.45));
+      --cue-user:      light-dark(#2e7d0f, #a4ff7a);
     }
+    :root[data-theme="light"] { color-scheme: light; }
+    :root[data-theme="dark"] { color-scheme: dark; }
 
     /* Keyboard focus that lands on a control near the top or bottom edge
        of the window scrolls it in far enough for the whole focus ring and
@@ -53,7 +95,7 @@
       top: -999px;
       left: 0;
       background: var(--accent);
-      color: #000;
+      color: var(--on-accent);
       padding: 0.5rem 1rem;
       z-index: 9999;
       font-weight: 600;
@@ -87,11 +129,11 @@
       padding: 0.55rem 0.75rem;
       color: var(--text);
       background: var(--bg);
-      border: 1px solid #8aa4d6;
+      border: 1px solid var(--control-border);
       border-radius: var(--radius);
       font: inherit;
     }
-    #auth-error { color: #ffaaa0; }
+    #auth-error { color: var(--error-text); }
 
     header {
       background: var(--bg-card);
@@ -184,7 +226,7 @@
       width: 100%;
       height: 24px;           /* 2.5.8: min 24 px interactive target */
       background: transparent;
-      border: 1px solid #8aa4d6;
+      border: 1px solid var(--control-border);
       border-radius: 3px;
       overflow: visible;
       position: relative;
@@ -245,7 +287,7 @@
       padding: 0.55rem 1.1rem;
       background: var(--btn-bg);
       color: var(--btn-text);
-      border: 1px solid #8aa4d6;
+      border: 1px solid var(--control-border);
       border-radius: var(--radius);
       font-size: 0.95rem;
       font-weight: 500;
@@ -257,7 +299,7 @@
          for the length of the fade, and a pressed toggle did the same. */
     }
     button:hover  { background: var(--btn-hover); }
-    button:active { background: var(--accent); color: #000; }
+    button:active { background: var(--accent); color: var(--on-accent); }
     /* Fix 1: #e67e22 on white only reaches 2.85:1 — use dark text */
     button[aria-pressed="true"] {
       background: #e67e22;
@@ -287,7 +329,7 @@
     input:not([type="checkbox"]):not([type="radio"]),
     select,
     textarea {
-      border: 1px solid #8aa4d6;
+      border: 1px solid var(--control-border);
     }
 
     /* Native text-ish controls: dark surface and a height that matches the
@@ -387,7 +429,7 @@
       min-width: 180px;
       padding: 0.55rem 0.85rem;
       background: var(--bg);
-      border: 1px solid #8aa4d6;
+      border: 1px solid var(--control-border);
       border-radius: var(--radius);
       color: var(--text);
       font-size: 0.95rem;
@@ -472,7 +514,7 @@
       color: var(--text-dim);
     }
     #history-table tbody tr:nth-child(even) {
-      background: rgba(255, 255, 255, 0.035);
+      background: var(--tint);
     }
     #history-table tbody tr:last-child td { border-bottom: none; }
     #history-table td:first-child,
@@ -575,13 +617,13 @@
       flex-shrink: 0;
       object-fit: cover;
       border-radius: 6px;
-      background: var(--surface-2, #222);
+      background: var(--tint-2);
     }
     /* Reserved even when the track has no embedded art: hiding the image
        shifted the title and the whole Camelot wheel 111 px left on every
        track change, and most libraries are mostly art-less. */
     #cover-art.no-art {
-      background: rgba(255, 255, 255, 0.05);
+      background: var(--tint-2);
       border: 1px dashed var(--badge-border);
     }
     .now-playing-text {
@@ -652,7 +694,7 @@
     }
     #lyrics-list li.active {
       color: var(--text);
-      background: rgba(255,255,255,0.05);
+      background: var(--tint-2);
       font-weight: 600;
       /* High-contrast outline ensures visibility for low-vision users */
       outline: 2px solid var(--accent);
@@ -726,13 +768,13 @@
     }
     .badge {
       padding: 0.15rem 0.5rem;
-      background: rgba(255,255,255,0.07);
+      background: var(--tint-3);
       border: 1px solid var(--badge-border);   /* 1.4.11: 3.76:1 on --bg-card */
       border-radius: 4px;
       color: var(--text-dim);
     }
     .badge.badge-key   { color: var(--accent); }
-    .badge.badge-stretch { color: #ffb86c; }
+    .badge.badge-stretch { color: var(--stretch); }
 
     /* ---- 3-band EQ ---- */
     .eq-row {
@@ -834,7 +876,7 @@
       display: block;
       margin: 0.15rem 0 0.55rem 2rem;
       font-size: 0.83rem;
-      color: #b8c5d8;             /* ≥ 4.5:1 vs --bg */
+      color: var(--text-desc);    /* ≥ 4.5:1 vs --bg and --bg-card */
       line-height: 1.35;
     }
     .settings-row + .setting-desc {
@@ -924,8 +966,8 @@
        log line at a time; each line keeps its own spacing. */
     #library-log {
       margin: 0;
-      background: #0f1626;
-      color: #cce0ff;
+      background: var(--log-bg);
+      color: var(--log-text);
       padding: 0.5rem;
       border-radius: var(--radius);
       font-family: ui-monospace, Consolas, monospace;
@@ -943,37 +985,51 @@
 
     /* ---- Visible status mirror ----
        Same string the live region just announced, shown where a sighted
-       user is looking.  aria-hidden in the markup, so it adds no second
-       announcement.  pointer-events:none keeps it from ever swallowing
-       a click on whatever sits underneath. */
-    #status-toast {
+       user is looking.  The message is aria-hidden in the markup, so it
+       adds no second announcement.  The frame takes the pointer, so it
+       can be hovered (which holds it on screen, WCAG 1.4.13) and
+       dismissed with its own button, by mouse, touch or keyboard. */
+    #status-toast-box {
       position: fixed;
       left: 50%;
       bottom: 1rem;
       transform: translateX(-50%);
       z-index: 9998;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      width: max-content;
       max-width: min(40rem, calc(100vw - 2rem));
-      padding: 0.6rem 1rem;
+      padding: 0.5rem 0.5rem 0.5rem 1rem;
       background: var(--bg-card);
       color: var(--text);
       border: 1px solid var(--accent);
       border-radius: var(--radius);
-      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
+      box-shadow: 0 6px 24px light-dark(rgba(0, 0, 0, 0.25), rgba(0, 0, 0, 0.55));
       font-size: 0.9rem;
       line-height: 1.4;
-      pointer-events: none;
+    }
+    #status-toast { flex: 1 1 auto; min-width: 0; }
+    /* 32 px tall and wide, over the 24 px minimum (WCAG 2.5.8); the
+       global focus ring shows round it on the card colour. */
+    #status-toast-dismiss {
+      flex: none;
+      min-width: 2rem;
+      min-height: 2rem;
+      padding: 0.2rem 0.75rem;
+      font-size: 0.85rem;
     }
     /* Moved out of the way when the focused control sits where the toast
        would be (WCAG 2.4.11); see placeVisibleStatus in live-region.js. */
-    #status-toast.at-top {
+    #status-toast-box.at-top {
       top: 1rem;
       bottom: auto;
     }
     /* Failures carry the same red edge as the stale-playback banner, so a
        confirmation and an error are not the same bordered box. */
-    #status-toast.is-error {
-      border-left: 4px solid var(--danger);
-      background: #221a26;
+    #status-toast-box.is-error {
+      border-left: 4px solid var(--danger-edge);
+      background: var(--toast-error-bg);
     }
 
     /* Search result count — visible and announced by the same node. */
@@ -988,15 +1044,15 @@
        says so, not just the banner inside it.  A border rather than a dim:
        fading the metadata would drop it below AA. */
     .card.is-stale {
-      border-left: 3px solid var(--danger);
+      border-left: 3px solid var(--danger-edge);
     }
 
     /* Stale-playback notice on the Now Playing card. */
     #playback-stale-note {
       margin-bottom: 0.6rem;
       padding: 0.35rem 0.6rem;
-      border-left: 3px solid var(--danger);
-      background: rgba(192, 57, 43, 0.18);
+      border-left: 3px solid var(--danger-edge);
+      background: var(--notice-bg);
       color: var(--text);
       font-size: 0.9rem;
     }
@@ -1006,13 +1062,13 @@
     .field-error {
       margin: 0.3rem 0 0.6rem;
       padding: 0.35rem 0.6rem;
-      border-left: 3px solid var(--danger);
-      background: rgba(192, 57, 43, 0.18);
+      border-left: 3px solid var(--danger-edge);
+      background: var(--notice-bg);
       color: var(--text);
     }
     input[aria-invalid="true"],
     select[aria-invalid="true"] {
-      border-left: 4px solid var(--danger);
+      border-left: 4px solid var(--danger-edge);
     }
 
     /* ---- Empty-list placeholder utility ---- */
@@ -1294,7 +1350,7 @@
       padding: 0.5rem 0.9rem;
       color: var(--text);
       background: transparent;
-      border: 1px solid #8aa4d6;
+      border: 1px solid var(--control-border);
       border-radius: var(--radius);
       font: inherit;
       font-weight: 500;
@@ -1302,12 +1358,12 @@
     }
     #view-nav [role="tab"]:hover, .subtabs [role="tab"]:hover,
     #view-nav [role="tab"]:focus-visible, .subtabs [role="tab"]:focus-visible {
-      background: var(--btn-bg);
-      color: var(--btn-text);
+      background: var(--tab-hover-bg);
+      color: var(--tab-hover-text);
     }
     #view-nav [role="tab"][aria-selected="true"], .subtabs [role="tab"][aria-selected="true"] {
       background: var(--accent);
-      color: #000;
+      color: var(--on-accent);
     }
     /* Settings subtabs sit inside the panel, under its heading. */
     .subtabs {
@@ -1334,25 +1390,35 @@
       margin: 0.75rem auto 0;
       max-width: 100%;
     }
+    /* Every edge is 3:1 or more against the wedges on both sides of it,
+       in both themes (WCAG 1.4.11): the old white 20 % hairline measured
+       1.9:1.  The edge is about 1 px at the wheel's size, not a hairline
+       that antialiasing fades further.  No fill transition: mid-fade the
+       numbers and edges sat on a colour between two measured ones. */
     #camelot-wheel .sector {
-      fill: rgba(255, 255, 255, 0.04);
-      stroke: rgba(255, 255, 255, 0.20);
-      stroke-width: 0.6;
-      transition: fill 0.18s ease;
+      fill: var(--wheel-fill);
+      stroke: var(--wheel-edge);
+      stroke-width: 1.1;
+      stroke-linejoin: round;
     }
     #camelot-wheel .sector.compat {
-      /* Mid-tone fill marks 'mixable' without competing with the active
-         cell.  The fill alone is only 1.8:1 against an idle wedge, so the
-         wedge also gets an accent edge (7:1 on the card), and the numbers
-         on it stay above 4.5:1 (WCAG 1.4.11, 1.4.1). */
-      fill: rgba(126, 179, 232, 0.30);  /* var(--accent) at 30% */
+      /* The tinted fill marks 'mixable'; the fill alone is under 3:1
+         against an idle wedge, so the wedge also gets a heavy accent edge
+         (light 5.4:1 / dark 3.9:1 against its own fill, 6.0 / 6.4:1
+         against an idle neighbour).  modules/camelot-wheel.js paints the
+         lit wedges last, so no neighbour's edge is drawn over theirs. */
+      fill: var(--wheel-compat);
       stroke: var(--accent);
-      stroke-width: 1.2;
+      stroke-width: 2.4;
     }
+    /* The current key: a solid fill (light 5.4:1 / dark 3.9:1 against a
+       compatible wedge, more against an idle one), the heaviest edge,
+       the bold number and the key in words in the hub.  Not colour alone
+       (WCAG 1.4.1). */
     #camelot-wheel .sector.active {
       fill: var(--accent);
-      stroke: #fff;
-      stroke-width: 1.6;       /* extra stroke = colour-independent cue */
+      stroke: var(--text);
+      stroke-width: 3;
     }
     #camelot-wheel .label {
       fill: var(--text);
@@ -1368,8 +1434,9 @@
     #camelot-wheel .label:not(.active) { fill: var(--text); font-weight: 600; }
     #camelot-wheel .label.minor:not(.active) { font-weight: 400; }
     /* The active number is drawn on its OWN wedge now, which is filled
-       with --accent, so #000 measures 9.5:1 there. */
-    #camelot-wheel .label.active { fill: #000; font-weight: 700; }
+       with --accent, so --on-accent measures 6.4:1 (light) and 9.5:1
+       (dark) there. */
+    #camelot-wheel .label.active { fill: var(--on-accent); font-weight: 700; }
     /* Centre readout — names the current cell in the hub. */
     #camelot-wheel .current-cell {
       fill: var(--text);
@@ -1465,6 +1532,24 @@
       #cue-legend .cue-swatch {
         forced-color-adjust: none;
       }
+      /* The theme's tick colours were picked for its own card, not for
+         the high-contrast Canvas; a CanvasText ring keeps every tick's
+         shape at full contrast whatever its colour. */
+      #cue-strip .cue-mark,
+      #cue-legend .cue-swatch {
+        box-shadow: 0 0 0 1px CanvasText;
+      }
+      /* The wheel draws in system colours: CanvasText edges between
+         Canvas wedges, a heavy Highlight edge round the compatible keys,
+         and the current key filled with Highlight inside a CanvasText
+         edge.  Edge widths differ too, so no state is colour alone. */
+      #camelot-wheel { forced-color-adjust: none; }
+      #camelot-wheel .sector { fill: Canvas; stroke: CanvasText; }
+      #camelot-wheel .sector.compat { fill: Canvas; stroke: Highlight; }
+      #camelot-wheel .sector.active { fill: Highlight; stroke: CanvasText; }
+      #camelot-wheel .label:not(.active),
+      #camelot-wheel .current-cell { fill: CanvasText; }
+      #camelot-wheel .label.active { fill: HighlightText; }
     }
 
 /* Hotkey help modal -------------------------------------------------- */
@@ -1492,9 +1577,9 @@
   background: rgba(0, 0, 0, 0.55);
 }
 #hotkey-help-modal kbd {
-  /* Dark theme: light surface + dark text, ~10:1 contrast against the
-     #16213e card background (WCAG AA passes for both kbd-text-on-kbd-bg
-     and kbd-on-card surface). */
+  /* The same light key cap in both themes: dark text on it is 17:1,
+     and the cap is ~10:1 against the dark card.  On the light card its
+     grey edge outlines it. */
   background: #f4f6fb;
   color: #0f1626;
   border: 1px solid #c0c8d4;
@@ -1508,8 +1593,8 @@
 #hotkey-help-modal dt { font-weight: 600; }
 #hotkey-help-modal dd { margin: 0; }
 
-/* Build-stamp footer.  Dim text on dark theme; --text-dim (#a0a0b0)
-   on --bg (#1a1a2e) clears WCAG AA 4.5:1 (1.4.3).  Decorative
+/* Build-stamp footer.  --text-dim on --bg clears WCAG AA 4.5:1 in both
+   themes (6.6:1, 1.4.3).  Decorative
    middle-dots are aria-hidden in markup; styled here to keep visual
    spacing consistent regardless of font metrics. */
 #page-footer {
@@ -1557,7 +1642,7 @@
   min-height: 44px;
   margin: 0.25rem 0;
 }
-#device-rename-error { margin: 0.5rem 0 1rem; color: #ffaaa0; }
+#device-rename-error { margin: 0.5rem 0 1rem; color: var(--error-text); }
 #confirm-dialog .dialog-actions,
 #device-rename-dialog .dialog-actions,
 #track-info-dialog .dialog-actions {
@@ -1566,4 +1651,4 @@
   gap: 0.75rem;
 }
 #track-info-dialog h2 { margin-top: 0; }
-#track-info-error { margin: 0.5rem 0 1rem; color: #ffaaa0; }
+#track-info-error { margin: 0.5rem 0 1rem; color: var(--error-text); }

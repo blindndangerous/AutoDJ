@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { applyCamelotWheel } from
   "../../src/autodj/static/modules/camelot-wheel.js";
+import { THEMES, cssForTheme, themeTokens } from "./theme-css.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -143,8 +144,11 @@ describe("camelot wheel labels", () => {
   });
 });
 
-describe("camelot label legibility", () => {
-  const css = readFileSync("src/autodj/static/app.css", "utf8");
+const appCss = readFileSync("src/autodj/static/app.css", "utf8");
+
+describe.each(THEMES)("camelot label legibility, %s theme", (theme) => {
+  const css = cssForTheme(appCss, theme);
+  const tokens = themeTokens(appCss, theme);
 
   function styled(stylesheet = css) {
     document.head.innerHTML = `<style>${stylesheet}</style>`;
@@ -200,7 +204,8 @@ describe("camelot label legibility", () => {
     return (light + 0.05) / (dark + 0.05);
   }
 
-  const CARD = "#16213e";
+  const CARD = tokens.get("--bg-card");
+  const ON_ACCENT = tokens.get("--on-accent");
 
   it("keeps minor-ring numbers legible on a compatible wedge", () => {
     const { sectorsEl, labelsEl } = styled();
@@ -229,9 +234,45 @@ describe("camelot label legibility", () => {
     const lit = sectorsEl.querySelector(".sector.active");
     const active = labelsEl.querySelector(".label.active");
 
-    expect(fillOf(active)).toBe("#000");
+    expect(fillOf(active)).toBe(ON_ACCENT);
     expect(contrast(channels(fillOf(active)), over(fillOf(lit), CARD)))
       .toBeGreaterThanOrEqual(4.5);
+  });
+
+  // WCAG 1.4.11: the edges were a white 20 % hairline, 1.9:1 against the
+  // wedges.  Each edge now reaches 3:1 against the wedges on both sides.
+  it("draws every wedge edge at 3:1 against the wedges beside it", () => {
+    const { sectorsEl } = styled();
+    const strokeOf = (element) => window.getComputedStyle(element).stroke;
+    const idle = sectorsEl.querySelector(".sector:not(.compat):not(.active)");
+    const compat = sectorsEl.querySelector(".sector.compat");
+    const lit = sectorsEl.querySelector(".sector.active");
+    const idleFill = over(fillOf(idle), CARD);
+    const compatFill = over(fillOf(compat), CARD);
+    const litFill = over(fillOf(lit), CARD);
+
+    expect(contrast(channels(strokeOf(idle)), idleFill)).toBeGreaterThanOrEqual(3);
+    // The compatible outline against its own fill and an idle neighbour.
+    expect(contrast(channels(strokeOf(compat)), compatFill)).toBeGreaterThanOrEqual(3);
+    expect(contrast(channels(strokeOf(compat)), idleFill)).toBeGreaterThanOrEqual(3);
+    // The current wedge stands out from a compatible neighbour by its
+    // fill, and its edge from both kinds of neighbour.
+    expect(contrast(litFill, compatFill)).toBeGreaterThanOrEqual(3);
+    expect(contrast(channels(strokeOf(lit)), compatFill)).toBeGreaterThanOrEqual(3);
+    expect(contrast(channels(strokeOf(lit)), idleFill)).toBeGreaterThanOrEqual(3);
+  });
+
+  it("marks compatible and current keys by edge weight, not colour alone", () => {
+    const { sectorsEl } = styled();
+    const width = (selector) => Number.parseFloat(
+      window.getComputedStyle(sectorsEl.querySelector(selector)).strokeWidth,
+    );
+    const idle = width(".sector:not(.compat):not(.active)");
+    const compat = width(".sector.compat");
+    const lit = width(".sector.active");
+    expect(idle).toBeGreaterThanOrEqual(1);
+    expect(compat).toBeGreaterThan(idle * 2);
+    expect(lit).toBeGreaterThan(compat);
   });
 
   it("lets the active rule win on specificity, not source order", () => {
@@ -239,7 +280,7 @@ describe("camelot label legibility", () => {
     // after the active rule: if the cascade depended on order, the number
     // would go back to the ring colour and vanish on the lit wedge.
     const minorRule = "#camelot-wheel .label.minor:not(.active) { font-weight: 400; }";
-    const activeRule = "#camelot-wheel .label.active { fill: #000; font-weight: 700; }";
+    const activeRule = "#camelot-wheel .label.active { fill: var(--on-accent); font-weight: 700; }";
     expect(css).toContain(minorRule);
     const reordered = css.replace(minorRule, "") + `
 ${minorRule}
@@ -251,7 +292,7 @@ ${minorRule}
 
     expect(active.getAttribute("data-cell")).toBe("8A");
     expect(active.classList.contains("minor")).toBe(true);
-    expect(fillOf(active)).toBe("#000");
+    expect(fillOf(active)).toBe(ON_ACCENT);
   });
 });
 
@@ -264,6 +305,22 @@ describe("camelot wheel compatible highlight", () => {
     const els = wheel();
     applyCamelotWheel("8A", "compatible", els);
     expect(lit(els)).toEqual(["7A", "8B", "9A"]);
+  });
+
+  it("paints the compatible wedges, then the current one, over the idle edges", () => {
+    const els = wheel();
+    applyCamelotWheel("8A", "compatible", els);
+    const order = [...els.sectorsEl.children].map((s) => s.getAttribute("data-cell"));
+    expect(order.slice(-4, -1).sort()).toEqual(["7A", "8B", "9A"]);
+    expect(order.at(-1)).toBe("8A");
+
+    // Unchanged key: nothing is moved again.
+    const records = [];
+    const observer = new window.MutationObserver((r) => records.push(...r));
+    observer.observe(els.sectorsEl, { childList: true });
+    applyCamelotWheel("8A", "compatible", els);
+    observer.disconnect();
+    expect(records.filter((r) => r.type === "childList")).toHaveLength(0);
   });
 
   it("lights nothing when harmonic mixing is off or no mode is known yet", () => {

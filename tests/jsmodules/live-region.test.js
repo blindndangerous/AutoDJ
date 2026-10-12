@@ -253,3 +253,129 @@ describe("visible status never covers the focused control", () => {
     expect(toast.classList.contains("at-top")).toBe(false);
   });
 });
+
+// The page's toast: the message, aria-hidden, beside a Dismiss button in
+// one frame.  Clicking the button, hovering the frame and focusing it.
+describe("dismissible, hoverable status message", () => {
+  const PAGE = '<button id="before">Save</button>'
+    + '<main id="main-content" tabindex="-1"></main>'
+    + '<p id="region" role="status" aria-live="polite" aria-atomic="true"></p>'
+    + '<div id="status-toast-box" hidden>'
+    + '<div id="status-toast" aria-hidden="true" hidden></div>'
+    + '<button type="button" id="status-toast-dismiss">Dismiss'
+    + '<span class="visually-hidden"> message</span></button></div>';
+  const $ = (id) => document.getElementById(id);
+  const pointer = (type, target, relatedTarget = null) => target.dispatchEvent(
+    new window.MouseEvent(type, { bubbles: true, relatedTarget }),
+  );
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    document.body.innerHTML = PAGE;
+    installVisibleStatusBehaviour(document);
+  });
+  afterEach(() => {
+    showVisibleStatus("", document);
+    vi.useRealTimers();
+  });
+
+  it("speaks only the message: the button is outside the region and the mirror", () => {
+    const region = $("region");
+    const records = [];
+    const observer = new window.MutationObserver((r) => records.push(...r));
+    observer.observe(region, { childList: true, characterData: true, subtree: true });
+    $("before").focus();
+
+    announceStatus(region, "Token created.");
+
+    records.push(...observer.takeRecords());
+    observer.disconnect();
+    expect(region.textContent).toBe("Token created.");
+    // One write of the region, as before the button existed.
+    expect(records).toHaveLength(1);
+    expect($("status-toast").textContent).toBe("Token created.");
+    expect($("status-toast-box").hidden).toBe(false);
+    expect(region.contains($("status-toast-dismiss"))).toBe(false);
+    expect($("status-toast").contains($("status-toast-dismiss"))).toBe(false);
+    // Showing the toast never takes focus.
+    expect(document.activeElement).toBe($("before"));
+  });
+
+  it("hides on a click of Dismiss, by mouse or keyboard alike", () => {
+    showVisibleStatus("Saved.", document);
+    $("status-toast-dismiss").click();
+    expect($("status-toast-box").hidden).toBe(true);
+    expect($("status-toast").hidden).toBe(true);
+    expect($("status-toast").textContent).toBe("");
+  });
+
+  it("puts focus back where it was when its own button is used", () => {
+    $("before").focus();
+    showVisibleStatus("Saved.", document);
+    $("status-toast-dismiss").focus();
+    $("status-toast-dismiss").click();
+    expect(document.activeElement).toBe($("before"));
+  });
+
+  it("puts focus back after Escape from its own button", () => {
+    $("before").focus();
+    showVisibleStatus("Saved.", document);
+    $("status-toast-dismiss").focus();
+    $("status-toast-dismiss").dispatchEvent(new window.KeyboardEvent("keydown", {
+      key: "Escape", bubbles: true,
+    }));
+    expect($("status-toast-box").hidden).toBe(true);
+    expect(document.activeElement).toBe($("before"));
+  });
+
+  it("stays while the pointer is over it, and runs out after it leaves", () => {
+    showVisibleStatus("Saved.", document);
+    vi.advanceTimersByTime(5000);
+    pointer("pointerover", $("status-toast"));
+    vi.advanceTimersByTime(60000);
+    expect($("status-toast-box").hidden).toBe(false);
+
+    // Moving between the message and the button is still over the toast.
+    pointer("pointerout", $("status-toast"), $("status-toast-dismiss"));
+    vi.advanceTimersByTime(60000);
+    expect($("status-toast-box").hidden).toBe(false);
+
+    pointer("pointerout", $("status-toast-dismiss"), document.body);
+    vi.advanceTimersByTime(2999);
+    expect($("status-toast-box").hidden).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect($("status-toast-box").hidden).toBe(true);
+  });
+
+  it("stays while focus is inside it, and runs out after focus leaves", () => {
+    $("before").focus();
+    showVisibleStatus("Saved.", document);
+    $("status-toast-dismiss").focus();
+    vi.advanceTimersByTime(60000);
+    expect($("status-toast-box").hidden).toBe(false);
+    // Focus on its own button does not send it to the top.
+    expect($("status-toast-box").classList.contains("at-top")).toBe(false);
+
+    $("before").focus();
+    vi.advanceTimersByTime(8000);
+    expect($("status-toast-box").hidden).toBe(true);
+  });
+
+  it("holds a new message while hovered, too", () => {
+    showVisibleStatus("First.", document);
+    pointer("pointerover", $("status-toast-box"));
+    showVisibleStatus("Second.", document);
+    vi.advanceTimersByTime(60000);
+    expect($("status-toast").textContent).toBe("Second.");
+    pointer("pointerout", $("status-toast-box"), document.body);
+    vi.advanceTimersByTime(8000);
+    expect($("status-toast-box").hidden).toBe(true);
+  });
+
+  it("keeps the error tone and the top placement on the frame", () => {
+    showVisibleStatus("Could not save.", document, { tone: "error" });
+    expect($("status-toast-box").classList.contains("is-error")).toBe(true);
+    showVisibleStatus("", document);
+    expect($("status-toast-box").classList.contains("is-error")).toBe(false);
+  });
+});
