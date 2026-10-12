@@ -623,22 +623,44 @@ function contrast(first, second) {
   return (lighter + 0.05) / (darker + 0.05);
 }
 
-function installDocument({ css = cssSource, html = htmlSource } = {}) {
-  const template = document.createElement("template");
-  template.innerHTML = html;
-  template.content.querySelectorAll('script, link[rel="stylesheet"]')
-    .forEach((element) => element.remove());
-  document.body.replaceChildren(template.content.cloneNode(true));
-  document.head.querySelectorAll("style[data-a11y-contract]")
-    .forEach((element) => element.remove());
-  const userAgentStyle = document.createElement("style");
-  userAgentStyle.dataset.a11yContract = "";
-  userAgentStyle.textContent = "pre { margin: 1em 0; }";
-  document.head.append(userAgentStyle);
-  const style = document.createElement("style");
-  style.dataset.a11yContract = "";
-  style.textContent = css;
-  document.head.append(style);
+// Parsing the page and its stylesheet is much of these checks' work, and most
+// cases install the same ones: keep the parsed page, and keep each <style>
+// whose text is unchanged so happy-dom does not parse the stylesheet again.
+const pageTemplates = new Map();
+
+function pageTemplate(html) {
+  let template = pageTemplates.get(html);
+  if (!template) {
+    template = document.createElement("template");
+    template.innerHTML = html;
+    template.content.querySelectorAll('script, link[rel="stylesheet"]')
+      .forEach((element) => element.remove());
+    // Only the real page is reused; one-off variants are parsed once.
+    if (html === htmlSource) pageTemplates.set(html, template);
+  }
+  return template;
+}
+
+function installStyles(sheets) {
+  const installed = [...document.head.querySelectorAll("style[data-a11y-contract]")];
+  sheets.forEach((sheet, index) => {
+    if (installed[index]?.textContent === sheet) return;
+    const style = document.createElement("style");
+    style.dataset.a11yContract = "";
+    style.textContent = sheet;
+    if (installed[index]) installed[index].replaceWith(style);
+    else document.head.append(style);
+  });
+  installed.slice(sheets.length).forEach((element) => element.remove());
+}
+
+const userAgentCss = "pre { margin: 1em 0; }";
+
+// ``extraCss`` goes in its own sheet after ``css``: the same cascade as
+// appending it to ``css``, without parsing ``css`` again.
+function installDocument({ css = cssSource, html = htmlSource, extraCss = "" } = {}) {
+  document.body.replaceChildren(pageTemplate(html).content.cloneNode(true));
+  installStyles([userAgentCss, css, extraCss]);
 }
 
 function installCascadeContractDocument() {
@@ -795,31 +817,52 @@ function hasVisuallyHiddenGeometry(element, computed) {
     || hasViewportDisplacement(element, computed);
 }
 
+// Most status cases change only the stylesheet.  Cloning the whole page for
+// each was most of the test's time, so the page stays while its markup is
+// the same and it is still the installed one; the only changes a check makes
+// are the "connected" class, which every check adds, and a measured box,
+// which it takes away again.
+let statusPage = null;
+
+function installStatusPage(html, extraCss) {
+  const installed = document.querySelector("#conn-status");
+  if (statusPage?.html === html && installed && statusPage.status === installed) {
+    installStyles([userAgentCss, cssSource, extraCss]);
+  } else {
+    installDocument({ extraCss, html });
+    statusPage = { html, status: document.querySelector("#conn-status") };
+  }
+  return document.querySelector("#conn-status");
+}
+
 function connectedStatusIsVisible({
-  css = cssSource,
+  extraCss = "",
   html = htmlSource,
   statusRect,
 } = {}) {
-  installDocument({ css, html });
-  const status = document.querySelector("#conn-status");
+  const status = installStatusPage(html, extraCss);
   if (!status || status.textContent.trim() === "") return false;
   if (statusRect) status.getBoundingClientRect = () => statusRect;
-  status.classList.add("connected");
-  for (let current = status; current; current = current.parentElement) {
-    const computed = window.getComputedStyle(current);
-    if (current.hidden
-      || current.getAttribute("aria-hidden") === "true"
-      || current.classList.contains("visually-hidden")
-      || computed.display === "none"
-      || ["hidden", "collapse"].includes(computed.visibility)
-      || Number.parseFloat(computed.opacity) === 0
-      || hasVisuallyHiddenGeometry(current, computed)) {
-      return false;
+  try {
+    status.classList.add("connected");
+    for (let current = status; current; current = current.parentElement) {
+      const computed = window.getComputedStyle(current);
+      if (current.hidden
+        || current.getAttribute("aria-hidden") === "true"
+        || current.classList.contains("visually-hidden")
+        || computed.display === "none"
+        || ["hidden", "collapse"].includes(computed.visibility)
+        || Number.parseFloat(computed.opacity) === 0
+        || hasVisuallyHiddenGeometry(current, computed)) {
+        return false;
+      }
     }
+    const statusStyle = window.getComputedStyle(status);
+    return !isTransparentColor(statusStyle.color)
+      && !isTransparentColor(statusStyle.backgroundColor);
+  } finally {
+    delete status.getBoundingClientRect;
   }
-  const statusStyle = window.getComputedStyle(status);
-  return !isTransparentColor(statusStyle.color)
-    && !isTransparentColor(statusStyle.backgroundColor);
 }
 
 function contractControls() {
@@ -850,9 +893,9 @@ function focusContractControls() {
   ].join(", ")))];
 }
 
-function nativeChoiceControlsRemainNative(css = cssSource) {
-  const rules = css === cssSource ? cssRules : parseCss(css);
-  installDocument({ css });
+function nativeChoiceControlsRemainNative(extraCss = "") {
+  const rules = extraCss ? [...cssRules, ...parseCss(extraCss)] : cssRules;
+  installDocument({ extraCss });
   for (const type of ["checkbox", "radio"]) {
     for (const checked of [false, true]) {
       const fixture = document.createElement("input");
@@ -883,9 +926,18 @@ function nativeChoiceControlsRemainNative(css = cssSource) {
   });
 }
 
-function boundariesMeetContract(css = cssSource) {
-  installDocument({ css });
-  return contractControls().every((control) => {
+// A rejection case names the control its rule breaks (``only``).  Checking
+// every other control again would cost a full style pass per case, and the
+// unmodified stylesheet already has its own test over every control.
+function onlyMatching(elements, only) {
+  return only ? elements.filter((element) => element.matches(only)) : elements;
+}
+
+function boundariesMeetContract({ extraCss = "", only = null } = {}) {
+  installDocument({ extraCss });
+  const controls = onlyMatching(contractControls(), only);
+  if (controls.length === 0) throw new Error(`No control matches ${only}`);
+  return controls.every((control) => {
     const computed = window.getComputedStyle(control);
     return Number.parseFloat(computed.borderTopWidth) >= 1
       && computed.borderTopStyle === "solid"
@@ -893,17 +945,22 @@ function boundariesMeetContract(css = cssSource) {
   });
 }
 
-function focusOutlinesMeetContract(css = cssSource) {
-  installDocument({
-    css: css.replaceAll(":focus-visible", ".a11y-focus-visible"),
-  });
+const focusVisibleAsClass = (css) => css.replaceAll(":focus-visible", ".a11y-focus-visible");
+const focusCssSource = focusVisibleAsClass(cssSource);
+
+function focusOutlinesMeetContract({ extraCss = "", only = null } = {}) {
+  installDocument({ css: focusCssSource, extraCss: focusVisibleAsClass(extraCss) });
   const controls = focusContractControls().filter((control) => !control.disabled);
   const expectedOutlines = new Map([
     ["details.card > summary", 3],
     ["section[data-view] > h2", 2],
-  ]);
+  ].filter(([selector]) => onlyMatching([document.querySelector(selector)], only).length));
   for (const control of controls) control.classList.add("a11y-focus-visible");
-  const controlsPass = controls.every((control) => {
+  const checked = onlyMatching(controls, only);
+  if (checked.length + expectedOutlines.size === 0) {
+    throw new Error(`No control matches ${only}`);
+  }
+  const controlsPass = checked.every((control) => {
     const computed = window.getComputedStyle(control);
     return Number.parseFloat(computed.outlineWidth) === 2
       && computed.outlineStyle === "solid"
@@ -989,36 +1046,36 @@ describe("static accessibility contracts", () => {
       ),
     })).toBe(false);
     expect(connectedStatusIsVisible({
-      css: `${cssSource}\n#conn-status.connected { color: transparent; }`,
+      extraCss: `#conn-status.connected { color: transparent; }`,
     })).toBe(false);
     expect(connectedStatusIsVisible({
-      css: `${cssSource}\n#conn-status.connected { background: transparent; }`,
+      extraCss: `#conn-status.connected { background: transparent; }`,
     })).toBe(false);
     expect(connectedStatusIsVisible({
-      css: `${cssSource}\n#conn-status.connected {
+      extraCss: `#conn-status.connected {
         position: absolute; width: 1px; height: 1px;
         overflow: hidden; clip: rect(0, 0, 0, 0);
       }`,
     })).toBe(false);
     expect(connectedStatusIsVisible({
-      css: `${cssSource}\n#conn-status.connected {
+      extraCss: `#conn-status.connected {
         position: absolute; left: -9999px;
       }`,
     })).toBe(false);
     for (const offset of ["right", "top", "bottom"]) {
       expect(connectedStatusIsVisible({
-        css: `${cssSource}\n#conn-status.connected {
+        extraCss: `#conn-status.connected {
           position: fixed; ${offset}: -9999px;
         }`,
       })).toBe(false);
     }
     expect(connectedStatusIsVisible({
-      css: `${cssSource}\n#conn-status.connected {
+      extraCss: `#conn-status.connected {
         transform: translateX(-9999px);
       }`,
     })).toBe(false);
     expect(connectedStatusIsVisible({
-      css: `${cssSource}\n#conn-status.connected {
+      extraCss: `#conn-status.connected {
         position: relative; left: -1px;
       }`,
     })).toBe(true);
@@ -1027,53 +1084,53 @@ describe("static accessibility contracts", () => {
       ["top", "height"], ["bottom", "height"],
     ]) {
       expect(connectedStatusIsVisible({
-        css: `${cssSource}\n#conn-status.connected {
+        extraCss: `#conn-status.connected {
           position: absolute; ${offset}: -100px; ${sizeProperty}: 20px;
         }`,
       }), `${offset} fully outside`).toBe(false);
       expect(connectedStatusIsVisible({
-        css: `${cssSource}\n#conn-status.connected {
+        extraCss: `#conn-status.connected {
           position: absolute; ${offset}: -10px; ${sizeProperty}: 20px;
         }`,
       }), `${offset} partially visible`).toBe(true);
     }
     expect(connectedStatusIsVisible({
-      css: `${cssSource}\n#conn-status.connected {
+      extraCss: `#conn-status.connected {
         position: absolute; left: 0; width: 20px; transform: translateX(-100px);
       }`,
     })).toBe(false);
     expect(connectedStatusIsVisible({
-      css: `${cssSource}\n#conn-status.connected {
+      extraCss: `#conn-status.connected {
         position: absolute; left: 0; width: 20px; transform: translateX(-10px);
       }`,
     })).toBe(true);
     expect(connectedStatusIsVisible({
-      css: `${cssSource}\n#conn-status.connected {
+      extraCss: `#conn-status.connected {
         position: absolute; left: -2000px; width: 20px;
         transform: translateX(2000px);
       }`,
     })).toBe(true);
     expect(connectedStatusIsVisible({
-      css: `${cssSource}\n#conn-status.connected {
+      extraCss: `#conn-status.connected {
         position: absolute; left: -2010px; width: 20px;
         transform: translateX(2000px);
       }`,
     })).toBe(true);
     expect(connectedStatusIsVisible({
-      css: `${cssSource}\n#conn-status.connected {
+      extraCss: `#conn-status.connected {
         position: absolute; left: -2000px; width: 20px; top: -2000px;
         transform: translateX(2000px);
       }`,
     })).toBe(false);
     expect(connectedStatusIsVisible({
-      css: `${cssSource}\n#conn-status.connected {
+      extraCss: `#conn-status.connected {
         position: absolute; left: -2000px; width: 20px;
         transform: translate(2000px, -2000px);
       }`,
     })).toBe(false);
     for (const offset of ["left", "top"]) {
       expect(connectedStatusIsVisible({
-        css: `${cssSource}\n#conn-status.connected {
+        extraCss: `#conn-status.connected {
           position: absolute; ${offset}: 9999px;
         }`,
       })).toBe(false);
@@ -1089,7 +1146,7 @@ describe("static accessibility contracts", () => {
     ]) {
       for (const direction of [-1, 1]) {
         expect(connectedStatusIsVisible({
-          css: `${cssSource}\n#conn-status.connected {
+          extraCss: `#conn-status.connected {
             position: absolute; ${offset}: ${direction * distance}px;
           }`,
         }), `${offset}:${direction}`).toBe(false);
@@ -1142,7 +1199,7 @@ describe("static accessibility contracts", () => {
       expect(connectedStatusIsVisible({ statusRect })).toBe(true);
     }
     expect(connectedStatusIsVisible({
-      css: `${cssSource}\n#conn-status.connected {
+      extraCss: `#conn-status.connected {
         position: absolute; left: -9999px;
       }`,
       statusRect: partiallyVisibleRects[0],
@@ -1197,12 +1254,21 @@ describe("static accessibility contracts", () => {
       expect(lastValue(selector, "border"), selector).toBe(expectedBoundary);
     }
     expect(contrast("#8aa4d6", "#16213e")).toBeGreaterThanOrEqual(3);
-    expect(boundariesMeetContract()).toBe(true);
-    expect(nativeChoiceControlsRemainNative()).toBe(true);
     expect(lastValue(":focus-visible", "outline")).toBe(
       "2px solid var(--accent)",
     );
     expect(contrast("#7eb3e8", "#16213e")).toBeGreaterThanOrEqual(3);
+  });
+
+  it("draws a solid high-contrast boundary on every control", () => {
+    expect(boundariesMeetContract()).toBe(true);
+  });
+
+  it("leaves checkboxes and radio buttons native", () => {
+    expect(nativeChoiceControlsRemainNative()).toBe(true);
+  });
+
+  it("draws a high-contrast focus outline on every control", () => {
     expect(focusOutlinesMeetContract()).toBe(true);
   });
 
@@ -1219,14 +1285,14 @@ describe("static accessibility contracts", () => {
     ["print checkbox", '@media print { input[type="checkbox"]:checked { appearance: none; } }', true],
     ["bounded screen width", '@media (min-width: 800px) and (max-width: 900px) { input[type="radio"]:checked { appearance: none; } }', false],
   ])("keeps native choice controls for %s", (_label, rule, expected) => {
-    expect(nativeChoiceControlsRemainNative(`${cssSource}\n${rule}`)).toBe(expected);
+    expect(nativeChoiceControlsRemainNative(rule)).toBe(expected);
   });
 
   it.each([
     ["opaque border color", "#btn-skip { border-color: #8aa4d6ff; }", true],
     ["transparent border color", "#btn-skip { border-color: rgba(138, 164, 214, 0); }", false],
   ])("checks %s", (_label, rule, expected) => {
-    expect(boundariesMeetContract(`${cssSource}\n${rule}`)).toBe(expected);
+    expect(boundariesMeetContract({ extraCss: rule, only: "#btn-skip" })).toBe(expected);
   });
 
   it.each([
@@ -1238,14 +1304,15 @@ describe("static accessibility contracts", () => {
     ["textarea", "#a11y-textarea-fixture"],
     ["tab", "#view-nav #tab-queue"],
   ])("rejects missing boundary on %s", (_label, selector) => {
-    expect(boundariesMeetContract(`${cssSource}\n${selector} { border: none; }`)).toBe(false);
+    expect(boundariesMeetContract({ extraCss: `${selector} { border: none; }`, only: selector }))
+      .toBe(false);
   });
 
   it.each([
     ["opaque outline color", "#btn-skip:focus-visible { outline-color: #7eb3e8ff; }", true],
     ["transparent outline color", "#btn-skip:focus-visible { outline-color: rgba(126, 179, 232, 0); }", false],
   ])("checks %s", (_label, rule, expected) => {
-    expect(focusOutlinesMeetContract(`${cssSource}\n${rule}`)).toBe(expected);
+    expect(focusOutlinesMeetContract({ extraCss: rule, only: "#btn-skip" })).toBe(expected);
   });
 
   it.each([
@@ -1258,9 +1325,10 @@ describe("static accessibility contracts", () => {
     ["equalizer", "#eq-mid"],
     ["phrase alignment", "#dj-phrase-align"],
   ])("rejects missing focus outline on %s", (_label, selector) => {
-    expect(focusOutlinesMeetContract(
-      `${cssSource}\n${selector}:focus-visible { outline: none; }`,
-    )).toBe(false);
+    expect(focusOutlinesMeetContract({
+      extraCss: `${selector}:focus-visible { outline: none; }`,
+      only: selector,
+    })).toBe(false);
   });
 
   it("honors the complete reduced-motion preference", () => {

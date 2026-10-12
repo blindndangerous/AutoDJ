@@ -1306,11 +1306,15 @@ def test_relays_start_with_the_stream_and_keep_the_station_playing(tmp_path: Pat
         assert bridge.station._continuous() is True
         state = client.get("/api/status").json()
         assert [relay["name"] for relay in state["stream_relays"]] == ["same", "low"]
-        # The relay can change connection state between these two snapshots.
         stream_relays = client.get("/api/stream").json()["relays"]
         assert [(relay["name"], relay["type"], relay["target"]) for relay in stream_relays] == [
             (relay["name"], relay["type"], relay["target"]) for relay in state["stream_relays"]
         ]
+        # Nothing listens on the port, so each relay is still logging in or
+        # waiting to retry; which one depends on when the refusal arrived, and
+        # it can change between the two snapshots.
+        for relay in [*state["stream_relays"], *stream_relays]:
+            assert relay["state"] in {"connecting", "retrying"}, relay
         assert password not in client.get("/api/status").text
         bridge.on_track_started(bridge.player._state.current_track)
         assert (tmp_path / "relay-status.json").exists()
