@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 from collections.abc import AsyncIterator
@@ -114,7 +115,9 @@ def _write_config(tmp_path: Path, **values: str) -> Path:
 
 
 def _station_threads(slug: str) -> list[threading.Thread]:
-    return [thread for thread in threading.enumerate() if thread.name.endswith(f"-{slug}")]
+    # A thread pool's workers add "_<n>" after the name (autodj-liner-nightowl_0).
+    named = re.compile(rf".*-{re.escape(slug)}(?:_\d+)?\Z")
+    return [thread for thread in threading.enumerate() if named.match(thread.name)]
 
 
 def _wait_for(predicate: Any, what: str) -> None:
@@ -358,6 +361,30 @@ def test_a_station_without_autostart_waits_to_be_started(rig: Any) -> None:
     assert client.get(f"{OWL}/status").status_code == 409
     assert client.post(f"{OWL}/start").status_code == 200
     _wait_for(lambda: _station_threads("nightowl"), "the station's threads")
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_a_station_that_fails_half_way_through_starting_leaves_nothing_running(
+    rig: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, *_ = rig
+
+    def broken_recorder(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("the recording state could not be read")
+
+    import autodj.recorder
+
+    working = autodj.recorder.Recorder
+    # The player, its thread and the mastering process exist by then.
+    monkeypatch.setattr(autodj.recorder, "Recorder", broken_recorder)
+    refused = client.post(f"{OWL}/start")
+    assert refused.status_code == 409
+    assert "the recording state could not be read" in refused.json()["detail"]
+    assert FakeMaster.instances[-1].closed
+    _wait_for(lambda: not _station_threads("nightowl"), "the station's threads to end")
+    assert _stations(client)["nightowl"]["state"] == "stopped"
+    monkeypatch.setattr(autodj.recorder, "Recorder", working)
+    assert client.post(f"{OWL}/start").status_code == 200
 
 
 @pytest.mark.parametrize(
