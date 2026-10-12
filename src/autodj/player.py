@@ -568,9 +568,13 @@ class _PickContext:
             started yet; its queue slot is skipped.
         protected: Paths no pick may return even after relaxing the repeat
             window: the track the pick follows, the track the bus is
-            starting, the latest recorded track and the playing one.
+            starting, the latest recorded track and the playing one.  Only
+            a clock with nothing else left falls back to them (all but
+            *follows*), so the music never stops.
         complement: In DMCA mode, what the last three hours of plays allow
             next (see :mod:`autodj.dmca`); ``None`` when the mode is off.
+        follows: The path of the track the pick follows (the one playing
+            at the handoff), which no pick returns.
     """
 
     recent: deque
@@ -580,6 +584,7 @@ class _PickContext:
     queue_reserved: IndexEntry | None = None
     protected: frozenset[str] = frozenset()
     complement: Complement | None = None
+    follows: str | None = None
 
     def allows(self, entry: IndexEntry) -> bool:
         """True when *entry* keeps the DMCA complement (always, with the mode off)."""
@@ -1137,16 +1142,24 @@ class Player:
         last_played = self._library.last_played()
         liners = self._library.entries_snapshot("liner")
 
-        def pick(use_rules: bool, use_recent: bool, use_dmca: bool = True) -> Any:
+        def pick(
+            use_rules: bool,
+            use_recent: bool,
+            use_dmca: bool = True,
+            protected: frozenset[str] = context.protected,
+        ) -> Any:
             def allowed(entry: IndexEntry) -> bool:
                 return (
                     not entry.is_silent
-                    and entry.path not in context.protected
+                    and entry.path not in protected
                     and not (use_recent and entry.path in recent)
                     and (not use_rules or context.repeat(entry))
                 )
 
-            pool = complying if use_dmca else eligible
+            if protected is context.protected:
+                pool = complying if use_dmca else eligible
+            else:
+                pool = tuple(entry for entry in entries if allowed(entry))
             return pick_slot(self._clock_slots, position, pool, last_played, allowed, liners=liners)
 
         # Like the other pick modes, relax rather than stop the music: first
@@ -1173,6 +1186,21 @@ class Player:
                 "looking further for this pick"
             )
             picked = pick(False, False, use_dmca=False)
+        if picked.entry is None and context.protected:
+            # Last resort: a slot whose only songs are protected (a small
+            # folder, or a track step for a song just played) would leave
+            # the station silent, so allow them, except the one playing.
+            follows = frozenset({context.follows} if context.follows else ())
+            picked = pick(False, False, use_dmca=False, protected=follows)
+            if picked.entry is not None and not getattr(self, "_clock_protected_warned", False):
+                logger.warning(
+                    "Clock: every matching track is playing or about to play; "
+                    "repeating %s rather than stopping the music",
+                    picked.entry.display_name,
+                )
+            self._clock_protected_warned = picked.entry is not None
+        elif picked.entry is not None:
+            self._clock_protected_warned = False
         self._clock_status = "; ".join(picked.skipped) or "Ready"
         if picked.entry is not None and picked.preset:
             from autodj.presets import get_preset
@@ -2127,6 +2155,7 @@ class Player:
             queue_reserved,
             frozenset(protected),
             complement(history, now, self._track_keys()) if self._state.dmca_enabled else None,
+            follows.path if (follows := pending or playing) is not None else None,
         )
 
     def _recent_exclusions(

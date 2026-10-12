@@ -191,13 +191,47 @@ def test_unenforced_clock_slot_skips_unavailable_music(kind: str, unavailable: s
     ]
     context = player._pick_context()
     if unavailable == "protected":
-        context = replace(context, protected=frozenset({entry.path}))
+        context = replace(context, protected=frozenset({entry.path}), follows=entry.path)
     else:
         silent = make_entry(0)
         silent.path = entry.path
         silent.energy = 0.0
         player._library.entries_snapshot = lambda kind="music": () if kind == "liner" else (silent,)
     assert player._clock_pick(context, 0).entry is None
+
+
+def test_a_clock_slot_of_protected_songs_repeats_one_rather_than_go_silent(caplog) -> None:
+    player = _clock_player([("Artist A", "Playing"), ("Artist B", "Just played")])
+    playing, latest = player.playable_entries()
+    context = replace(
+        player._pick_context(),
+        protected=frozenset({playing.path, latest.path}),
+        follows=playing.path,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="autodj.player"):
+        first = player._clock_pick(context, 0)
+        second = player._clock_pick(context, 0)
+
+    assert first.entry == latest
+    assert second.entry == latest
+    assert caplog.text.count("rather than stopping the music") == 1
+
+
+def test_a_track_step_for_a_protected_song_plays_it_unless_it_is_playing(caplog) -> None:
+    player = _clock_player([("Artist A", "Step"), ("Artist B", "Playing")])
+    step, playing = player.playable_entries()
+    player._clock_slots = [ClockSlot(folder="Z:/Music", kind="track", path=step.path)]
+    context = replace(
+        player._pick_context(),
+        protected=frozenset({step.path, playing.path}),
+        follows=playing.path,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="autodj.player"):
+        assert player._clock_pick(context, 0).entry == step
+    assert "rather than stopping the music" in caplog.text
+    assert player._clock_pick(replace(context, follows=step.path), 0).entry is None
 
 
 def test_discovery_honours_the_rules() -> None:
@@ -734,10 +768,10 @@ def test_a_clock_slot_relaxes_the_track_window_last(caplog) -> None:
     assert "relaxing the track window" in caplog.text
 
 
-def test_a_clock_slot_with_nothing_but_protected_tracks_still_finds_nothing() -> None:
+def test_a_clock_slot_with_nothing_but_the_playing_track_still_finds_nothing() -> None:
     player = _clock_player([("Artist A", "One")])
     only = player.playable_entries()[0]
-    context = replace(player._pick_context(), protected=frozenset({only.path}))
+    context = replace(player._pick_context(), protected=frozenset({only.path}), follows=only.path)
     assert player._clock_pick(context, 0).entry is None
 
 

@@ -171,6 +171,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Clock music slots with repeat rules disabled still skip silent tracks and songs already
   playing or being prepared.
+- A clock whose slots hold only songs just played or being prepared repeats one of them, with a
+  warning, instead of leaving the station silent. The song playing never follows itself.
 - Automatically chosen first songs now follow repeat rules and protected-track checks, including
   restored play history. When the rules leave no choice, they relax without stopping playback.
 - Unknown or removed configuration settings now produce warnings and are ignored instead of
