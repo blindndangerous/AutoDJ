@@ -56,8 +56,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Several named clockwheels (Library tools, Clockwheels): create, duplicate, rename, delete,
   activate one or turn the clockwheel off. Each is a versioned JSON file in `clockwheels/` in the
   active index folder, included in backups. The step editor has numbered names with Edit, Move up,
-  Move down, Duplicate and Delete buttons. Up/Down navigate names, Enter edits, and Delete removes
-  a step; Alt+Up/Down still move the focused step without changing the playback shortcuts. Steps
+  Move down, Duplicate and Delete buttons. Up/Down navigate names, Enter edits, and the Delete key
+  asks before it removes a step; Alt+Up/Down still move the focused step without changing the
+  playback shortcuts. Steps
   can play music or liners from a library folder or a folder inside it, a specific track, or
   switch preset. Profiles remember the active clockwheel, and the schedule's
   "Change song picking" action can switch to a clockwheel by name. Import .PAL turns a SAM
@@ -267,6 +268,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A setting with two descriptions now hides both when it does not apply, not just the first.
 
 ### Changed
+
+- The clockwheel's reset timing now measures every song from its start cue to its end cue (or its
+  segue or outro, when earlier) for all clockwheels, not only for liner steps with "Only play if
+  the following track fits before the next reset" ticked. Silence before the start cue and an
+  unused tail after the end cue no longer count toward a song's length when AutoDJ decides
+  whether to restart the clock at the next song handoff.
 
 - `autodj index` now adds songs from registered folders and saves analysis in the current
   library, matching Library tools. Limits apply to advanced analysis; songs are added first.

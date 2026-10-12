@@ -116,6 +116,11 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   focusing the new condition; Remove condition keeping focus in the editor, including when the
   last condition is removed; Match all/Match any and every condition read in the step summary;
   and saved values and keyboard focus preserved when folder, genre or Beets choices refresh.
+- Library tools, Clockwheels, the step list: Tab into the list turning on NVDA's focus mode on
+  the first step name (a grid cell, not a button); Up and Down moving between names and Left,
+  Right, Home and End along a row without leaving focus mode; Enter and Space pressing the focused
+  cell's button; Alt+Up and Alt+Down moving the step and saying its new position once; and the
+  Delete key asking with Cancel focused first, with focus back in the list after either answer.
 - EQ: each band's slider, its spoken value, and resetting the bands.
 - History: the History tab's table read with table navigation, its pagination, the empty state,
   and a new song added to the top of page 1 without the reading position moving or anything said.

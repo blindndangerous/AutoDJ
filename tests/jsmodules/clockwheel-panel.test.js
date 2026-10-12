@@ -11,6 +11,8 @@ const status = () => byId("clock-status").textContent;
 const rows = () => [...byId("clock-slots").querySelectorAll("li[data-index]")];
 const rowText = (index) => rows()[index].querySelector('button[data-action="edit"]').textContent;
 const rowButton = (index, action) => rows()[index].querySelector(`button[data-action="${action}"]`);
+// Keyboard focus rests on the grid cell around each button.
+const rowCell = (index, action) => rows()[index].querySelector(`[role="gridcell"][data-action="${action}"]`);
 
 const SOURCES = [
   { id: "rock", kind: "music", path: "D:\\Music\\Rock", recursive: true },
@@ -322,57 +324,136 @@ describe("clockwheel editor", () => {
     expect(byId("clock-list").querySelector("button").getAttribute("aria-current")).toBe("true");
     const button = rowButton(1, "move-up");
     expect(button.textContent).toBe("Move up step 2");
-    expect(rowButton(0, "edit").tabIndex).toBe(0);
-    expect(rowButton(1, "edit").tabIndex).toBe(-1);
-    expect([...byId("clock-slots").querySelectorAll("button[data-action]")].filter((item) => item.tabIndex === 0)).toHaveLength(1);
+    expect(rowCell(0, "edit").tabIndex).toBe(0);
+    expect(rowCell(1, "edit").tabIndex).toBe(-1);
+    expect([...byId("clock-slots").querySelectorAll('[role="gridcell"]')].filter((item) => item.tabIndex === 0)).toHaveLength(1);
+    expect([...byId("clock-slots").querySelectorAll("button[data-action]")].every((item) => item.tabIndex === -1)).toBe(true);
+    expect(rowCell(0, "move-up").getAttribute("aria-disabled")).toBe("true");
+    expect(rowCell(1, "move-up").hasAttribute("aria-disabled")).toBe(false);
     expect(button.querySelector(".visually-hidden").textContent).toBe(" step 2");
     expect(rowButton(0, "move-up").disabled).toBe(true);
     expect(rowButton(2, "move-down").disabled).toBe(true);
     expect(status()).toBe("");
   });
 
-  it("navigates step names with arrows, edits with Enter and removes with Delete", async () => {
+  it("navigates step names with arrows, edits with Enter and asks before Delete removes a step", async () => {
     await open(fakeServer());
-    rowButton(1, "edit").focus();
-    rowButton(1, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
-    expect(document.activeElement).toBe(rowButton(2, "edit"));
+    rowCell(1, "edit").focus();
+    rowCell(1, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(rowCell(2, "edit"));
+    expect(document.activeElement.getAttribute("role")).toBe("gridcell");
     expect(document.activeElement.textContent).toBe("track Album/Song.flac");
     const statusKey = new KeyboardEvent("keydown", { key: "T", bubbles: true, cancelable: true });
-    rowButton(2, "edit").dispatchEvent(statusKey);
+    rowCell(2, "edit").dispatchEvent(statusKey);
     expect(statusKey.defaultPrevented).toBe(false);
     const playbackKey = new KeyboardEvent("keydown", { key: "k", bubbles: true, cancelable: true });
-    rowButton(2, "edit").dispatchEvent(playbackKey);
+    rowCell(2, "edit").dispatchEvent(playbackKey);
     expect(playbackKey.defaultPrevented).toBe(false);
     const modifiedArrow = new KeyboardEvent("keydown", { key: "ArrowUp", shiftKey: true, bubbles: true, cancelable: true });
-    rowButton(2, "edit").dispatchEvent(modifiedArrow);
+    rowCell(2, "edit").dispatchEvent(modifiedArrow);
     expect(modifiedArrow.defaultPrevented).toBe(false);
-    rowButton(1, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
-    expect(document.activeElement).toBe(rowButton(1, "move-up"));
-    rowButton(1, "move-up").dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true, cancelable: true }));
-    expect(document.activeElement).toBe(rowButton(1, "delete"));
-    rowButton(1, "delete").dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true, cancelable: true }));
-    expect(document.activeElement).toBe(rowButton(1, "edit"));
-    rowButton(2, "edit").focus();
-    rowButton(2, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    rowCell(1, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(rowCell(1, "move-up"));
+    rowCell(1, "move-up").dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(rowCell(1, "delete"));
+    rowCell(1, "delete").dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(rowCell(1, "edit"));
+    rowCell(2, "edit").focus();
+    rowCell(2, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     expect(byId("clock-step-legend").textContent).toBe("Edit step 3");
-    rowButton(2, "edit").focus();
-    rowButton(2, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }));
+    rowCell(2, "edit").focus();
+    rowCell(2, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    expect(byId("confirm-title").textContent).toBe("Delete step 3, track Album/Song.flac?");
+    expect(byId("confirm-accept").textContent).toBe("Delete step");
+    expect(document.activeElement).toBe(byId("confirm-cancel"));
+    expect(rows()).toHaveLength(3);
+    byId("confirm-accept").click();
+    await vi.waitFor(() => expect(status()).toBe("Deleted step 3, track Album/Song.flac. 2 steps remain. Not saved yet."));
+    expect(byId("confirm-dialog").open).toBe(false);
     expect(rows()).toHaveLength(2);
-    expect(document.activeElement).toBe(rowButton(1, "edit"));
-    rowButton(1, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", repeat: true, bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(rowCell(1, "edit"));
+    rowCell(1, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", repeat: true, bubbles: true, cancelable: true }));
+    expect(byId("confirm-dialog").open).toBe(false);
     expect(rows()).toHaveLength(2);
+  });
+
+  it("focuses grid cells, not their buttons, and presses a cell's button with Enter or Space", async () => {
+    await open(fakeServer());
+    const key = (target, name, extra = {}) => {
+      const event = new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true, ...extra });
+      target.dispatchEvent(event);
+      return event;
+    };
+    // Row 1's Move up is unavailable, so Right skips from the name to Move down.
+    rowCell(0, "edit").focus();
+    key(rowCell(0, "edit"), "ArrowRight");
+    expect(document.activeElement).toBe(rowCell(0, "move-down"));
+    expect(rowCell(0, "move-down").tabIndex).toBe(0);
+    expect(rowCell(0, "edit").tabIndex).toBe(-1);
+    expect(key(rowCell(0, "move-down"), " ").defaultPrevented).toBe(true);
+    expect(rowText(1)).toBe("music from Rock");
+    expect(document.activeElement).toBe(rowCell(1, "move-down"));
+    await vi.waitFor(() => expect(status()).toBe("Moved. Step 2 of 3, music from Rock. Not saved yet."));
+    key(rowCell(1, "move-down"), "Enter", { repeat: true });
+    expect(rowText(1)).toBe("music from Rock");
+    key(rowCell(1, "move-down"), "Home");
+    key(document.activeElement, "Enter");
+    expect(byId("clock-step-legend").textContent).toBe("Edit step 2");
+    // A disabled action's cell does nothing.
+    rowCell(2, "move-down").focus();
+    key(rowCell(2, "move-down"), "Enter");
+    expect(rows().map((_, index) => rowText(index))).toEqual([
+      "liner from Top, at random, ignoring repeat rules", "music from Rock", "track Album/Song.flac",
+    ]);
+    // A button that has focus, as after a click, handles Enter itself.
+    const native = key(rowButton(0, "duplicate"), "Enter");
+    expect(native.defaultPrevented).toBe(false);
+    expect(rows()).toHaveLength(3);
+    rowButton(0, "duplicate").click();
+    expect(rows()).toHaveLength(4);
+    expect(document.activeElement).toBe(rowCell(1, "duplicate"));
+    expect([...byId("clock-slots").querySelectorAll('[role="gridcell"]')].filter((item) => item.tabIndex === 0)).toEqual([rowCell(1, "duplicate")]);
+  });
+
+  it("keeps the step when the Delete key's question is cancelled", async () => {
+    await open(fakeServer());
+    rowCell(0, "duplicate").focus();
+    rowCell(0, "duplicate").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    expect(byId("confirm-title").textContent).toBe("Delete step 1, music from Rock?");
+    expect(document.activeElement).toBe(byId("confirm-cancel"));
+    byId("confirm-cancel").click();
+    await vi.waitFor(() => expect(document.activeElement).toBe(rowCell(0, "duplicate")));
+    expect(rows()).toHaveLength(3);
+    expect(rowText(0)).toBe("music from Rock");
+    expect(byId("clock-next").textContent).not.toBe("Save to play these changes.");
+    expect(status()).toBe("");
+  });
+
+  it("deletes the last step after the Delete key's question and moves focus to the step type", async () => {
+    const server = fakeServer();
+    server.clocks.Morning.steps = [MUSIC];
+    await open(server);
+    rowCell(0, "edit").focus();
+    rowCell(0, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    byId("confirm-accept").click();
+    await vi.waitFor(() => expect(status()).toBe("Deleted step 1, music from Rock. No steps are left. Not saved yet."));
+    expect(rows()).toHaveLength(0);
+    expect(document.activeElement).toBe(byId("clock-step-type"));
   });
 
   it("moves a step with Alt+Down, keeps focus on it and says the new position", async () => {
     const server = await open(fakeServer());
-    rowButton(0, "edit").focus();
-    altKey(rowButton(0, "edit"), "ArrowDown");
-    expect(document.activeElement).toBe(rowButton(1, "edit"));
+    rowCell(0, "edit").focus();
+    altKey(rowCell(0, "edit"), "ArrowDown");
+    expect(document.activeElement).toBe(rowCell(1, "edit"));
     expect(rowText(1)).toBe("music from Rock");
     await vi.waitFor(() => expect(status()).toBe("Moved. Step 2 of 3, music from Rock. Not saved yet."));
     expect(byId("clock-next").textContent).toBe("Save to play these changes.");
     altKey(document.activeElement, "ArrowUp");
-    expect(document.activeElement).toBe(rowButton(0, "edit"));
+    expect(document.activeElement).toBe(rowCell(0, "edit"));
     altKey(document.activeElement, "ArrowUp");
     await vi.waitFor(() => expect(status()).toBe("This is already the first step."));
     altKey(document.activeElement, "ArrowDown");
@@ -388,9 +469,9 @@ describe("clockwheel editor", () => {
     await open(fakeServer());
     rowButton(1, "move-down").click();
     expect(rowText(2)).toBe("liner from Top, at random, ignoring repeat rules");
-    expect(document.activeElement).toBe(rowButton(2, "move-up"));
+    expect(document.activeElement).toBe(rowCell(2, "move-up"));
     rowButton(1, "move-up").click();
-    expect(document.activeElement).toBe(rowButton(0, "move-down"));
+    expect(document.activeElement).toBe(rowCell(0, "move-down"));
     expect(rowText(0)).toBe("track Album/Song.flac");
   });
 
@@ -398,11 +479,11 @@ describe("clockwheel editor", () => {
     await open(fakeServer());
     rowButton(0, "duplicate").click();
     expect(rows()).toHaveLength(4);
-    expect(document.activeElement).toBe(rowButton(1, "duplicate"));
+    expect(document.activeElement).toBe(rowCell(1, "duplicate"));
     await vi.waitFor(() => expect(status()).toBe("Duplicated as Step 2 of 4, music from Rock. Not saved yet."));
     rowButton(3, "delete").click();
     expect(rows()).toHaveLength(3);
-    expect(document.activeElement).toBe(rowButton(2, "edit"));
+    expect(document.activeElement).toBe(rowCell(2, "edit"));
     await vi.waitFor(() => expect(status()).toBe("Deleted step 4, track Album/Song.flac. 3 steps remain. Not saved yet."));
     for (let left = 3; left > 0; left -= 1) rowButton(0, "delete").click();
     expect(rows()).toHaveLength(0);
@@ -427,7 +508,7 @@ describe("clockwheel editor", () => {
     byId("clock-step-require-following").checked = true;
     byId("clock-add-step").click();
     expect(rowText(1)).toBe("liner from Top/Hour, ignoring repeat rules, only if the following track fits before the next reset");
-    expect(document.activeElement).toBe(rowButton(1, "edit"));
+    expect(document.activeElement).toBe(rowCell(1, "edit"));
     expect(byId("clock-step-legend").textContent).toBe("Add a step");
     expect(byId("clock-step-require-following").checked).toBe(false);
     byId("clock-save").click();
@@ -448,7 +529,7 @@ describe("clockwheel editor", () => {
     expect(savedAgain.body.steps[4].require_following).toBe(false);
     rowButton(2, "edit").click();
     byId("clock-cancel-edit").click();
-    expect(document.activeElement).toBe(rowButton(2, "edit"));
+    expect(document.activeElement).toBe(rowCell(2, "edit"));
     expect(byId("clock-add-step").textContent).toBe("Add step");
   });
 
@@ -532,7 +613,7 @@ describe("clockwheel editor", () => {
     byId("clock-save").focus();
     byId("clock-save").click();
     await vi.waitFor(() => expect(status()).toBe("Step 3: its music folder is not registered"));
-    expect(document.activeElement).toBe(rowButton(2, "edit"));
+    expect(document.activeElement).toBe(rowCell(2, "edit"));
   });
 
   it("copies, renames, activates and turns off clockwheels", async () => {
