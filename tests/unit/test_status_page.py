@@ -123,3 +123,23 @@ def test_missing_fields_fall_back_to_plain_words() -> None:
     assert NOTHING_PLAYING in html
     assert "0 listeners" in html
     assert "less than a minute" in html
+
+
+def test_the_show_on_air_is_said_in_words_like_the_page_script() -> None:
+    from autodj.status_page import show_text
+
+    # tests/jsmodules/status-page.test.js checks the same cases in JS.
+    show = {"name": "Remembering the 2000s", "ends_at": "2026-10-11T21:00:00-06:00"}
+    assert show_text(show) == "On air: Remembering the 2000s, until 21:00."
+    assert show_text({"name": "Late", "ends_at": "soon"}) == "On air: Late."
+    assert show_text({"name": " ", "ends_at": "2026-10-11T21:00:00Z"}) == ""
+    assert show_text(None) == ""
+    page = render_status_page({**FEED, "show": show}, stream_mode=False)
+    assert '<p id="status-show">On air: Remembering the 2000s, until 21:00.</p>' in page
+    hidden = render_status_page({**FEED, "show": None}, stream_mode=False)
+    assert '<p id="status-show" hidden></p>' in hidden
+    escaped = render_status_page({**FEED, "show": {"name": "<b>x</b>"}}, stream_mode=False)
+    assert "&lt;b&gt;x&lt;/b&gt;" in escaped
+    # The show line is plain text: only the now-playing line is a live region.
+    show_tag = [attrs for tag, attrs in _outline(page).tags if attrs.get("id") == "status-show"]
+    assert show_tag == [{"id": "status-show"}]

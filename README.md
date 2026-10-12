@@ -25,6 +25,10 @@ uploaded to a cloud service.
   crosses the hour.
 - A scheduler that switches profiles, presets or the clockwheel, plays liners, starts or stops the
   stream and turns discovery on or off at set times.
+- Themed shows such as "Remembering the 2000s": a first-release year range, genres and an optional
+  beets query pick the songs, with an optional clockwheel, intro, outro and liner folder. Start one
+  now or from the scheduler; listeners see "On air" on the status page and in the feed. See
+  [Themed shows](docs/operations.md#themed-shows).
 - Broadcast recording to dated MP3 files, with hourly or show splits, scheduled controls and retention.
 - Lyrics from sidecar files or tags, with scrolling and highlighting when timestamps are available.
 - Offline use after installing dependencies and downloading the model. The first indexing run

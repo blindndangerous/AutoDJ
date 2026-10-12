@@ -11,8 +11,17 @@ from zoneinfo import ZoneInfo
 
 from autodj._bridge import PlayerBridge
 
-#: Version of the public payload; 2 added the peak and uptime fields.
-SCHEMA_VERSION = 2
+#: Version of the public payload; 2 added the peak and uptime fields, 3 the show.
+SCHEMA_VERSION = 3
+
+
+def _show(bridge: Any) -> dict[str, str] | None:
+    """The themed show on air for listeners: its name and end time, or ``None``."""
+    state_of = getattr(bridge, "show_state", None)
+    state = state_of() if callable(state_of) else None
+    if not state:
+        return None
+    return {"name": str(state["name"]), "ends_at": str(state["ends_at"])}
 
 
 def _track(entry: Any) -> dict[str, Any] | None:
@@ -108,6 +117,9 @@ class NowPlaying:
             else [],
             "listener_count": self.bridge.stream.listener_count if self.bridge.stream else 0,
             "stream_path": "/stream.mp3",
+            # The themed show on air: {"name", "ends_at"} in the station's
+            # time zone, or null.  ICY titles stay artist and title only.
+            "show": _show(self.bridge),
         }
         with self._lock:
             self._payload = payload

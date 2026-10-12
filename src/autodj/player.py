@@ -20,6 +20,7 @@ from collections import deque
 from collections.abc import Callable
 from collections.abc import Set as AbstractSet
 from concurrent.futures import Future, wait
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -95,6 +96,28 @@ _DEFAULT_SR = 44_100
 
 # Rich console for transient terminal notes (the discovery marker).
 _CONSOLE = Console()
+
+# The show on air's songs while one pick runs inside it (see
+# Player._themed).  Per thread, so the render-ahead worker's pick never
+# narrows a pick another thread makes at the same time.
+_THEME: ContextVar[frozenset[str] | None] = ContextVar("autodj_show_theme", default=None)
+
+
+@dataclass(frozen=True)
+class ShowTheme:
+    """The themed show on air, as the picker sees it.
+
+    Attributes:
+        run_id: Identifies this run of the show: a render picked under
+            another run (or none) is picked again (see
+            ``Player._queue_pick_is_stale``).
+        name: The show's name, for the log.
+        paths: The library paths of the songs that pass its filter.
+    """
+
+    run_id: str
+    name: str
+    paths: frozenset[str]
 
 
 # ---------------------------------------------------------------------------
@@ -936,6 +959,8 @@ class Player:
         # Set once the picker has fallen back to a random track, so one
         # episode of failed picks logs one warning (see _fallback_pick).
         self._pick_fallback_active = False
+        # The themed show on air (set by autodj.show_runtime), or None.
+        self.show: ShowTheme | None = None
         self._dj_cache_lock = threading.Lock()
         self._dj_cache_retry_at = 0.0
         # The seed, recorded by run() before the bus starts it; its first
@@ -1008,7 +1033,25 @@ class Player:
         """Pick a starting track the way Shuffle does, or ``None`` if there is none.
 
         In DMCA mode it keeps the complement too (see :meth:`_dmca_checked`).
+        While a themed show runs it is one of the show's songs, when one can
+        play (see :meth:`_themed`).
         """
+        if getattr(self, "show", None) is None:
+            return self._random_start_any()
+        limits = self._pick_context().complement if self._state.dmca_enabled else None
+        liners = (
+            {entry.path for entry in self._library.entries_snapshot("liner")}
+            if self._library is not None
+            else set()
+        )
+
+        def accept(entry: IndexEntry, paths: frozenset[str]) -> bool:
+            return entry.path in liners or self._theme_fits(entry, paths, limits)
+
+        return cast("IndexEntry | None", self._themed(self._random_start_any, accept))
+
+    def _random_start_any(self) -> IndexEntry | None:
+        """:meth:`_random_start_entry` without the show."""
         chosen: IndexEntry | None
         dmca = self._pick_context() if self._state.dmca_enabled else None
         if self._library is not None:
@@ -1037,9 +1080,85 @@ class Player:
         return self._dmca_checked(chosen, dmca)
 
     def playable_entries(self) -> tuple[IndexEntry, ...]:
-        """Return basic-ready music, or the legacy index when no catalog is attached."""
+        """Return basic-ready music, or the legacy index when no catalog is attached.
+
+        Inside a themed pick (see :meth:`_themed`) only the show's songs.
+        """
         collection = self._library if self._library is not None else self._sim
-        return collection.entries_snapshot()
+        entries = collection.entries_snapshot()
+        theme = _THEME.get()
+        if theme is None:
+            return entries
+        return tuple(entry for entry in entries if entry.path in theme)
+
+    def _show_run(self) -> str:
+        """The run ID of the show on air, or ``""`` when none is."""
+        show = getattr(self, "show", None)
+        return show.run_id if show is not None else ""
+
+    def _themed(
+        self,
+        pick: Callable[[], Any],
+        accept: Callable[[Any, frozenset[str]], bool],
+        discard: Callable[[Any], None] = lambda _result: None,
+    ) -> Any:
+        """Run *pick* inside the show on air, falling back to a normal pick.
+
+        While a themed show runs, *pick* sees only the show's songs: the
+        pool every pick mode reads (:meth:`playable_entries`) and the
+        similarity search are narrowed to them, and each mode relaxes its
+        repeat rules in its usual order inside that pool.  DMCA limits are
+        never relaxed for the theme: *accept* refuses a result that breaks
+        them.  Only when nothing in the show can play is *pick* run again
+        over the whole library, and the log says so.
+
+        Args:
+            pick: The normal pick; it returns a result or raises.
+            accept: Whether a themed result can play (the show's paths are
+                passed in); a queue pick always can.
+            discard: Undo what a refused themed result reserved.
+        """
+        show = getattr(self, "show", None)
+        if show is None or _THEME.get() is not None:
+            return pick()
+        token = _THEME.set(show.paths)
+        reason = "no song in the show can play now"
+        try:
+            result = pick()
+        except Exception as exc:
+            result, reason = None, str(exc) or type(exc).__name__
+        finally:
+            _THEME.reset(token)
+        if result is not None and accept(result, show.paths):
+            return result
+        if result is not None:
+            discard(result)
+        logger.warning(
+            "Show %s: nothing in the show fits (%s); playing a song from the whole library",
+            show.name,
+            reason,
+        )
+        return pick()
+
+    @staticmethod
+    def _theme_fits(
+        entry: IndexEntry | None,
+        paths: frozenset[str],
+        limits: Any,
+        protected: AbstractSet[str] = frozenset(),
+    ) -> bool:
+        """Whether *entry* is one of the show's songs, keeps any DMCA limits and may follow.
+
+        A pick that ran out of show songs can fall back to repeating a
+        protected one (the song playing, for a one-song pool); the show
+        plays a song from the whole library then instead.
+        """
+        return (
+            entry is not None
+            and entry.path in paths
+            and entry.path not in protected
+            and (limits is None or not limits.broken(entry))
+        )
 
     def configure_clock(self) -> None:
         """Load the active clockwheel without marking any selected music played.
@@ -1308,6 +1427,32 @@ class Player:
         return liners, None
 
     def _choose_station_next(
+        self,
+        current: IndexEntry,
+        context: _PickContext,
+    ) -> tuple[IndexEntry, str, tuple[tuple[IndexEntry, bool], ...], int | None, str]:
+        """The station pick, inside the show on air (see :meth:`_themed`)."""
+        if getattr(self, "show", None) is None:
+            return self._choose_station_next_any(current, context)
+
+        protected = context.protected | {current.path}
+
+        def accept(result: tuple[Any, ...], paths: frozenset[str]) -> bool:
+            return result[1] == "queue" or self._theme_fits(
+                result[0], paths, context.complement, protected
+            )
+
+        def discard(result: tuple[Any, ...]) -> None:
+            scheduler = self.liner_scheduler
+            if result[4] and scheduler is not None and hasattr(scheduler, "release_plan"):
+                scheduler.release_plan(result[4])
+
+        return cast(
+            "tuple[IndexEntry, str, tuple[tuple[IndexEntry, bool], ...], int | None, str]",
+            self._themed(lambda: self._choose_station_next_any(current, context), accept, discard),
+        )
+
+    def _choose_station_next_any(
         self,
         current: IndexEntry,
         context: _PickContext,
@@ -1585,6 +1730,8 @@ class Player:
                 peek_queue=True,
                 queue_reserved=current if current_from_queue else None,
             )
+            # The show the pick is made under: a render from another one is stale.
+            show_run = self._show_run()
             next_entry: IndexEntry | None
             try:
                 if station_mode:
@@ -1650,6 +1797,7 @@ class Player:
                     clock_boundary=clock_boundary,
                     next_clock_boundary=self._pending_clock_boundary,
                     liner_plan_key=liner_key,
+                    next_show=show_run,
                 )
         return None
 
@@ -1793,6 +1941,10 @@ class Player:
         self.reset_render_ahead(None)
         return cut_short
 
+    def wait_for_render(self, timeout: float) -> bool:
+        """Wait up to *timeout* seconds for a freshly rendered next track (not a fallback)."""
+        return self._render_ahead.wait_fresh(timeout)
+
     def refresh_render_ahead(self) -> None:
         """Re-check the rendered next track after a queue edit.
 
@@ -1900,8 +2052,16 @@ class Player:
         A render that took its successor from the queue is stale when the
         queue head (skipping *track*'s own slot) is now something else or
         gone; a render that picked by similarity is stale once the queue
-        has anything, because the queue takes priority.
+        has anything, because the queue takes priority.  A song picked
+        automatically before a themed show started or ended is stale too,
+        so the show starts (or ends) with the next song.
         """
+        if (
+            track.next_entry is not None
+            and not track.next_from_queue
+            and track.next_show != self._show_run()
+        ):
+            return True
         if self._library is not None and self._cfg.playback.transition_mode == "saved_points":
             liners, head = self._station_queue(
                 track.entry if track.from_queue else None, track.reserved_liners
@@ -2326,8 +2486,10 @@ class Player:
         try:
             protected = context.protected | {current.path}
             recent = deque([*context.recent, *sorted(protected - set(context.recent))])
+            theme = _THEME.get()
+            narrowed = {} if theme is None else {"only": theme}
             entry = self._sim.find_distant(
-                current.path, recent, allowed=self._candidate_filter(context)
+                current.path, recent, allowed=self._candidate_filter(context), **narrowed
             )
             _log_repeat_blocks(context.repeat, entry)
             _CONSOLE.print("  [bold cyan]◈ Discovery track[/bold cyan]")
@@ -2360,6 +2522,24 @@ class Player:
         return entry
 
     def _choose_next(self, current: IndexEntry, context: _PickContext) -> tuple[IndexEntry, str]:
+        """Select the track to follow *current*, inside the show on air (see :meth:`_themed`)."""
+        if getattr(self, "show", None) is None:
+            return self._choose_next_any(current, context)
+
+        protected = context.protected | {current.path}
+
+        def accept(result: tuple[IndexEntry, str], paths: frozenset[str]) -> bool:
+            entry, mode = result
+            return mode == "queue" or self._theme_fits(entry, paths, context.complement, protected)
+
+        return cast(
+            "tuple[IndexEntry, str]",
+            self._themed(lambda: self._choose_next_any(current, context), accept),
+        )
+
+    def _choose_next_any(
+        self, current: IndexEntry, context: _PickContext
+    ) -> tuple[IndexEntry, str]:
         """Select the track to follow *current* and say how it was chosen.
 
         Selection priority:
@@ -2436,6 +2616,9 @@ class Player:
             "pick_top_k": self._cfg.playback.pick_top_k,
             "pick_temperature": self._cfg.playback.pick_temperature,
         }
+        theme = _THEME.get()
+        if theme is not None:
+            search["only"] = theme
 
         # --- Normal similarity search ---
         try:

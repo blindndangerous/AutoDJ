@@ -6,6 +6,7 @@ import {
   UNREACHABLE_TEXT,
   UPDATING_TEXT,
   listenersText,
+  showText,
   startStatusPage,
   trackText,
   uptimeText,
@@ -19,6 +20,7 @@ function mount() {
     <header><h1 id="status-station">Radio</h1></header>
     <main>
       <h2>Now playing</h2>
+      <p id="status-show" hidden></p>
       <p id="status-now" aria-live="polite" aria-atomic="true">Song by Artist, from the album Album.</p>
       <section id="status-next-section" hidden><h2>Up next</h2><p id="status-next"></p></section>
       <dl>
@@ -131,6 +133,23 @@ describe("status page polling", () => {
     start();
     await settle();
     expect(byId("status-now").textContent).toBe(NOTHING_PLAYING);
+  });
+
+  it("says the show on air in plain text, like status_page.py", async () => {
+    const show = { name: "Remembering the 2000s", ends_at: "2026-10-11T21:00:00-06:00" };
+    expect(showText(show)).toBe("On air: Remembering the 2000s, until 21:00.");
+    expect(showText({ name: "Late", ends_at: "soon" })).toBe("On air: Late.");
+    expect(showText({ name: " ", ends_at: "2026-10-11T21:00:00Z" })).toBe("");
+    expect(showText(null)).toBe("");
+    load.mockResolvedValue({ ...FEED, show });
+    start();
+    await settle();
+    expect(byId("status-show").hidden).toBe(false);
+    expect(byId("status-show").textContent).toBe("On air: Remembering the 2000s, until 21:00.");
+    expect(byId("status-show").getAttribute("aria-live")).toBeNull();
+    load.mockResolvedValue({ ...FEED, show: null });
+    await page.poll();
+    expect(byId("status-show").hidden).toBe(true);
   });
 
   it("shows the next song only while the feed carries one", async () => {

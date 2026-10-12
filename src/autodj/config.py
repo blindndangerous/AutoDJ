@@ -1396,13 +1396,17 @@ class DmcaConfig(_Section):
             raise TypeError("dmca.enabled must be true or false")
 
 
+#: Events a webhook destination can ask for: song changes and themed show starts.
+WEBHOOK_EVENTS = ("track_change", "show_started")
+
+
 @dataclass(frozen=True)
 class WebhookConfig:
-    """One outbound track-change destination, stored in config.local.toml."""
+    """One outbound destination for track changes and show starts, in config.local.toml."""
 
     url: str = field(repr=False)
     format: str = "generic"
-    events: tuple[str, ...] = ("track_change",)
+    events: tuple[str, ...] = WEBHOOK_EVENTS
 
     def __post_init__(self) -> None:
         if not isinstance(self.url, str):
@@ -1421,11 +1425,12 @@ class WebhookConfig:
             raise ValueError("webhooks.format must be generic or discord")
         if (
             not isinstance(self.events, (list, tuple))
+            or not self.events
             or not all(isinstance(event, str) for event in self.events)
-            or set(self.events) != {"track_change"}
+            or not set(self.events) <= set(WEBHOOK_EVENTS)
         ):
-            raise ValueError("webhooks.events must contain only track_change")
-        object.__setattr__(self, "events", tuple(self.events))
+            raise ValueError("webhooks.events must list track_change, show_started or both")
+        object.__setattr__(self, "events", tuple(dict.fromkeys(self.events)))
 
 
 # ---------------------------------------------------------------------------

@@ -41,9 +41,9 @@ port = 8080
 # [stream.relays.main]
 # password = "the source password from your host"
 
-# Track-change webhooks belong only here, because their URLs often hold a
-# token; config.toml refuses them.  Up to ten; Settings, Stream lists them by
-# host and can send a test.  See "Now-playing feed and webhooks" in
+# Webhooks for track changes and themed show starts belong only here, because
+# their URLs often hold a token; config.toml refuses them.  Up to ten; Settings,
+# Stream lists them by host and can send a test.  See "Now-playing feed and webhooks" in
 # docs/operations.md.
 # [[webhooks]]
 # url = "https://discord.com/api/webhooks/your-id/your-token"

@@ -563,11 +563,11 @@ setting that conflicts with it and says how to fix it: today that is
 
 `GET /api/nowplaying` is public and needs no paired browser. It accepts GET and HEAD, sends
 `Cache-Control: no-cache` and `Access-Control-Allow-Origin: *`, and reports the last cached
-track or listener change. The response schema is version 2:
+track or listener change. The response schema is version 3:
 
 ```json
 {
-  "schema": 2,
+  "schema": 3,
   "station_name": "AutoDJ",
   "current_track": {"artist": "Artist", "title": "Song", "album": "Album", "duration": 180.0, "started_at": "2026-10-11T12:00:00+00:00", "elapsed": 12.0},
   "next_track": {"artist": "Artist 2", "title": "Next song", "album": "Album 2", "duration": 200.0},
@@ -575,12 +575,16 @@ track or listener change. The response schema is version 2:
   "listener_count": 2,
   "peak_listeners_today": 5,
   "uptime_seconds": 7260,
-  "stream_path": "/stream.mp3"
+  "stream_path": "/stream.mp3",
+  "show": {"name": "Remembering the 2000s", "ends_at": "2026-10-11T21:00:00-06:00"}
 }
 ```
 
-Version 2 added `peak_listeners_today` and `uptime_seconds`. Clients that read version 1 keep
-working, since no field was removed or renamed.
+Version 2 added `peak_listeners_today` and `uptime_seconds`, and version 3 added `show`. Clients
+that read an earlier version keep working, since no field was removed or renamed.
+
+- `show` is the [themed show](#themed-shows) on air, or `null`: its name and its end time in the
+  station time zone, nothing else.
 
 - `listener_count` is the number of players connected to this server's stream now (0 outside
   stream mode). Listeners of a relay to another server are not counted.
@@ -599,8 +603,8 @@ it is always `null` in [DMCA mode](#dmca-mode).
 `history_limit` defaults to 5 and accepts 0 through 20.
 
 Put webhook URLs in `config.local.toml` only. Each `[[webhooks]]` table accepts an HTTP or
-HTTPS `url`, `format = "generic"` or `"discord"`, and optional
-`events = ["track_change"]`. Up to ten destinations are accepted:
+HTTPS `url`, `format = "generic"` or `"discord"`, and optional `events`, the events to send:
+`"track_change"`, `"show_started"` or both (the default). Up to ten destinations are accepted:
 
 ```toml
 [[webhooks]]
@@ -612,8 +616,11 @@ url = "https://discord.com/api/webhooks/your-secret"
 format = "discord"
 ```
 
-The generic POST body is the feed object above plus `"event": "track_change"`.
-The Discord preset sends one embed with the station, artist, title and album.
+The generic POST body is the feed object above plus `"event": "track_change"`, or
+`"event": "show_started"` when a themed show starts (its `show` field names it).
+The Discord preset sends one embed with the station, artist, title and album, or "On air:
+Remembering the 2000s, until 21:00." for a show start. A song change that follows a show start
+at once never replaces it.
 Delivery runs outside playback, on one background thread per destination, with a
 five-second request timeout. A track change is tried three times, waiting about 1 and then
 4 seconds, or the destination's `Retry-After` up to 30 seconds; a newer track change replaces
@@ -625,8 +632,8 @@ separately if you need to restore secrets.
 ### Status page
 
 `GET /status` is a public page for listeners, in the spirit of an Icecast status page: the
-station name, the song playing, the next song when **Show the next song publicly** is on, the
-number of listeners now, today's peak and how long AutoDJ has been running. It needs
+station name, the themed show on air, the song playing, the next song when **Show the next
+song publicly** is on, the number of listeners now, today's peak and how long AutoDJ has been running. It needs
 no pairing and does not load the paired app. The server writes every value into the page as
 plain text, so it works without JavaScript; with JavaScript, `/modules/status-page.js` polls
 `/api/nowplaying` every 15 seconds (skipping polls while the tab is hidden) and updates the
@@ -1254,6 +1261,7 @@ artists file is `index/<name>/related-artists.toml` and is read only when
   `index/profiles`, plus uploaded presets in `index/stereo-tool-presets`.
 - `time_checks.json` and every recorded clip in `[time_checks] clips_folder` (or the default
   time_checks folder under the active index). Generated TTS cache files are rebuilt when needed.
+- `shows.json`, the [themed shows](#themed-shows) and the one on air.
 - `manifest.json`, which records the AutoDJ version that made the archive and lists its files.
 
 Backups do not include `config.toml` or `config.local.toml`. Copy those yourself
@@ -1414,6 +1422,8 @@ Actions:
   stop keeps it off the air even with listeners, and automatic hands control back to the
   listener count. The choice lasts until the next stream event or a restart.
 - Turn discovery on or off. Discovery needs a rate set in Song picking before it can be on.
+- Start a themed show until a time of day (see [Themed shows](#themed-shows)). The show's own
+  Start setting decides whether the song playing finishes first, whatever the event's Timing.
 
 Timing is soft or hard. A soft event waits for the current song to end; with nothing playing it
 runs at once. A hard event runs at its time and fades out the current song through the normal
@@ -1492,6 +1502,114 @@ is refused: register the parent folder, or edit that step after the import.
 Upgrading from the single clockwheel: the clock saved by earlier versions is not read. The
 Clockwheels section and the server log say so. Import the `.PAL` file again under a name, then
 press **Activate**.
+
+## Themed shows
+
+A themed show, such as "Remembering the 2000s", plays only the songs that match it for a while,
+picked the way the station picks now: similar songs, random, least recently played or a
+clockwheel. Define shows once in **Settings**, **Shows**, then run them two ways:
+
+- **Start now** runs a show at once for its **Length when started now**. Every start has an end,
+  so a show never runs forever; **Stop** ends it early.
+- A **Start show** event in **Settings**, **Schedule** starts a show at set times. Choose the show
+  and the time it **Ends at**, in the station time zone; an end time earlier than the start is the
+  next day, so 22:00 until 02:00 works.
+
+One show is on air at a time. A show that starts while another runs takes over at once and skips
+the other show's outro.
+
+### Which songs a show plays
+
+A song plays in a show when it matches every part of the filter you fill in:
+
+- **First released from year** and **to year**, both ends included, so 2000 to 2009 is the 2000s.
+  The year is beets' `original_year`, the year the song first came out, not `year`, the year of
+  that particular release: a 1985 song on a 2005 compilation is not a 2000s song. When beets has
+  no first-release year for a song, its release year stands in; a song with neither is left out.
+  **Check** and **Save** say how many matches used the release year ("96 use the release year
+  because the first-release year is missing"), and `autodj doctor` lists them.
+- **Genres to include** (any of them) and **Genres to leave out** (none of them), chosen from the
+  genres in your library. Beets' multiple genres separated by commas or semicolons count one by
+  one.
+- An optional **Beets query** for anything else, with any beets field, including flexible
+  attributes that plugins and `beet modify` add, such as `mood` or `rating`.
+
+Without `[library] beets_db`, the filter reads AutoDJ's own library fields: title, artist, album,
+genre, year, BPM and length, and every year comes from the release year.
+
+AutoDJ runs the query itself, because beets is not installed in the container. It understands:
+
+- `field:value`: the field contains the value, ignoring case (`genre:rock` matches "Hard Rock").
+  On a number field such as `year`, `original_year` or `bpm`, the value must match the number.
+- `field:a..b`: a range of numbers, both ends included; leave an end open with `year:1990..` or
+  `bpm:..100`.
+- `^` (or `-`) in front of a term leaves out what matches it: `^genre:christmas`.
+- Quotes keep words together: `artist:"bon jovi"`.
+- A word with no field matches the artist, title, album, album artist, genre or comments.
+- Terms separated by spaces must all match.
+
+Examples:
+
+- Remembering the 2000s: years 2000 to 2009 in the form, or the query `original_year:2000..2009`.
+- Nineties rock without the ballads: `genre:rock original_year:1990..1999 ^title:ballad`.
+- A happy hour from a beets plugin's field: `mood:happy ^genre:christmas`.
+
+Regular expressions (`field::pattern`), exact matches (`field:=value`), alternatives separated by
+a comma, sorting (`year+`), path queries and plugin queries such as fuzzy matching are refused,
+with a message that names the term and the problem. A field that no song has (often a misspelt
+name) is refused too, since it could never match.
+
+**Check** counts the matching songs without saving and says the count once ("1,284 songs
+match"). **Save** checks again, refuses a query AutoDJ cannot run, and warns in words when the
+show is too long for its songs under the station's repeat rules, for example "about 30 songs
+needed; only 22 fit your artist rule". The warning plans with the songs' average length; in
+DMCA mode it also counts the three-hour limits.
+
+### On air
+
+While a show runs:
+
+- Every pick mode picks only from the show's songs. When the repeat rules hold back every one of
+  them, they relax inside the show in their usual order. DMCA limits never relax for a show. Only
+  when no show song can play at all does a song from the whole library play, and the server log
+  says so ("Show Remembering the 2000s: nothing in the show fits").
+- A queued song plays as usual, show or no show.
+- **Clockwheel** (optional): the station switches to that clockwheel for the show, from its first
+  step, and its music steps play only the show's songs. When the show, or a run of shows taking
+  over from each other, ends, the station's own song picking and clockwheel come back at their
+  place.
+- **Intro liner** and **Outro liner** (optional) play where an automatic voice liner would: the
+  intro over the show's first song, the outro over the first song after it, with the liner duck
+  and talk-up timing. They need server audio or stream mode.
+- **Show liner folder** (optional): a registered voice liner folder, or a folder inside it such as
+  `shows/2000s`. During the show the automatic voice liners come from it, at the same rate and
+  with the same talk-up timing; at all other times its liners never play automatically.
+
+Timing is set per show:
+
+- **Soft start** (the default): the song playing finishes, and the next song is the show's first.
+- **Hard start**: the song playing fades out at once.
+- **Soft end** (the default): no show song is picked after the end time; the song playing
+  finishes, then the outro plays over the next song.
+- **Hard end**: the song playing fades out at the end time.
+
+A Start show event runs at its minute whatever its own Timing says; the show's Start setting
+decides. In browser playback the page may already have loaded the next song, which then plays
+before the show's first song.
+
+Listeners see the show: `/api/nowplaying` and `/status` say "On air: Remembering the 2000s, until
+21:00", and webhooks get a `show_started` event. Stream titles (ICY) stay artist and title only.
+The Now Playing card shows the show and its end time, and each open page says its start and end
+once.
+
+### The shows file
+
+Shows live in `shows.json` in the active index folder, with the show on air, and are included in
+`autodj backup`. AutoDJ writes the file atomically; a damaged file is set aside as
+`shows.json.bad-<id>` and the station starts with no shows. A restart before a show's end carries
+on with it, without its intro again; a show whose end passed while AutoDJ was stopped ends
+quietly. Liners and liner folders are kept by their library ID, never as a path from the browser.
+AutoDJ keeps at most 100 shows.
 
 ## Spoken time checks
 

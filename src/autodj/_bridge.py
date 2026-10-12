@@ -123,6 +123,11 @@ class PlayerBridge:
     relays: Any = None
     public_state_changed: Callable[[], Any] | None = None
     track_started_callback: Callable[[], None] | None = None
+    # Set by the server (autodj.show_runtime): the themed show on air, as
+    # ``{"name", "ends_at", ...}`` or ``None``, and the voice liners the
+    # automatic liner triggers may pick from, given every registered one.
+    show_state: Callable[[], dict | None] | None = None
+    show_liners: Callable[[list[tuple[str, Any]]], list[tuple[str, Any]]] | None = None
     # History is appended on the mix-bus thread, trimmed by the station's
     # tick and read by request handlers.
     _history_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
@@ -1047,6 +1052,7 @@ class PlayerBridge:
             "stream_listeners": int(self.stream.listener_count) if self.stream_mode else 0,
             "stream_relays": self.relay_status(),
             "stream_event": self._current_station_event(),
+            "show": self.show_state() if self.show_state is not None else None,
             "playout": {
                 "processing": processing
                 or ("replaygain" if self.player._cfg.replaygain.enabled else "off"),

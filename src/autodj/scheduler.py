@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import calendar
 import logging
+import re
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -333,6 +334,8 @@ def describe_repeat(event: EventSpec) -> str:
 # Action registry
 # ----------------------------------------------------------------------
 
+_TIME_OF_DAY = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]")
+
 
 @dataclass(frozen=True)
 class ActionField:
@@ -344,7 +347,8 @@ class ActionField:
     loads, so a removed profile makes that event's runs fail instead of
     discarding the event.  ``more`` adds ``(value, label)`` pairs that
     exist right now, after the fixed ``choices``, checked like ``names``.
-    A field with none of them is free text.
+    A field with none of them is free text, or with ``kind="time"`` a
+    local time of day (``HH:MM``), which the form asks for with a time field.
     """
 
     name: str
@@ -352,6 +356,7 @@ class ActionField:
     choices: tuple[tuple[str, str], ...] = ()
     names: Callable[[], Sequence[str]] | None = None
     more: Callable[[], Sequence[tuple[str, str]]] | None = None
+    kind: Literal["text", "time"] = "text"
 
     def pairs(self) -> list[tuple[str, str]]:
         """The fixed choices followed by the ones that exist right now."""
@@ -364,7 +369,7 @@ class ActionField:
         elif self.names is not None:
             options = [{"value": name, "label": name} for name in self.names()]
         else:
-            return {"name": self.name, "label": self.label, "type": "text"}
+            return {"name": self.name, "label": self.label, "type": self.kind}
         return {"name": self.name, "label": self.label, "type": "select", "options": options}
 
 
@@ -376,7 +381,10 @@ class Action:
     ``"after"`` the change, so the next song reflects it; ``"before"`` it,
     so a liner airs over the next song; or ``"none"``. Audio handlers prepare
     the clip and return a playback callable; preparation must succeed before
-    the interruption. The callable runs on a worker thread.
+    the interruption. The callable runs on a worker thread.  An action with
+    ``own_timing`` decides its timing itself (a themed show has its own soft
+    or hard start): it runs at the minute whatever the event's timing, never
+    fades a song out on the event's behalf, and returns no playback callable.
     """
 
     name: str
@@ -384,14 +392,18 @@ class Action:
     handle: Callable[[dict[str, str]], Awaitable[Callable[[], None] | None]]
     fields: tuple[ActionField, ...] = ()
     interrupt: Literal["before", "after", "none"] = "after"
+    own_timing: bool = False
 
     def metadata(self) -> dict[str, Any]:
         """Describe the action for the web form (reads ``names`` lists)."""
-        return {
+        described: dict[str, Any] = {
             "name": self.name,
             "description": self.description,
             "fields": [item.metadata() for item in self.fields],
         }
+        if self.own_timing:
+            described["own_timing"] = True
+        return described
 
     def check(self, params: dict[str, str], *, live: bool = False) -> dict[str, str]:
         """Return *params* trimmed, or raise :class:`EventError` naming the bad one.
@@ -415,6 +427,8 @@ class Action:
                 raise EventError(key, f"{item.label}: {value} is not one of the choices")
             if live and item.names is not None and value not in item.names():
                 raise EventError(key, f"{item.label} {value} was not found")
+            if item.kind == "time" and not _TIME_OF_DAY.fullmatch(value):
+                raise EventError(key, f"{item.label} must be a time such as 21:00")
             clean[item.name] = value
         return clean
 
@@ -652,7 +666,7 @@ class Scheduler:
         try:
             if action is None:
                 raise ValueError(f"Action {event.action} is not available")
-            hard = event.timing == "hard"
+            hard = event.timing == "hard" and not action.own_timing
             play = await action.handle(dict(event.params))
             if hard and action.interrupt == "before":
                 self._interrupt()
@@ -690,7 +704,7 @@ class Scheduler:
             if now - due > MISSED_AFTER:
                 logger.warning("Scheduled event %r due at %s was missed", event.name, due)
                 await self._record(event, "missed", "Missed while the computer slept or stalled")
-            elif event.timing == "soft" and self._song_playing():
+            elif event.timing == "soft" and self._song_playing() and not self._own_timing(event):
                 if event.id not in self.pending:
                     self.pending.append(event.id)
             else:
@@ -700,6 +714,10 @@ class Scheduler:
             await self._publish({"type": "schedule_changed"})
         if self.pending and not self._song_playing():
             await self._run_pending()
+
+    def _own_timing(self, event: ScheduledEvent) -> bool:
+        action = self.actions.get(event.action)
+        return action is not None and action.own_timing
 
     def track_changed(self) -> None:
         """Run the soft events that waited for the song that just ended (event loop)."""

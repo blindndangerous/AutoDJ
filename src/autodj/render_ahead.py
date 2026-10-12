@@ -159,6 +159,18 @@ class RenderAhead:
                 lambda: self._ready is not None or self._fallback is not None, timeout
             )
 
+    def wait_fresh(self, timeout: float) -> bool:
+        """Block up to *timeout* seconds until a newly rendered track is ready.
+
+        Unlike :meth:`wait_ready`, a fallback kept by :meth:`refresh` does
+        not count: this waits for its replacement.
+
+        Returns:
+            Whether a fresh track is ready.
+        """
+        with self._cond:
+            return self._cond.wait_for(lambda: self._ready is not None, timeout)
+
     def reset(self, prepare: Callable[[], None]) -> None:
         """Hard jump: drop everything rendered and restart after *prepare*.
 
