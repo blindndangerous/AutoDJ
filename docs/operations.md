@@ -1042,7 +1042,9 @@ The rules:
   configured but stays stopped until it is started.
 - **Secrets stay out of `config.toml`.** Listener credentials, relay passwords and webhooks go in
   `config.local.toml` under the same table names; the two files are merged key by key.
-  `config.toml` refuses a station's `webhooks`, as it does the root ones. A relay password can
+  `config.toml` refuses a station's `webhooks`, as it does the root ones, and a station named
+  in `config.local.toml` but not in `config.toml` is refused, so a misspelled name cannot start
+  a station of its own. A relay password can
   also come from `AUTODJ_STATION_<SLUG>_RELAY_<NAME>_PASSWORD`, upper-cased, with `-` written as
   `_`: for the example above, `AUTODJ_STATION_NIGHTOWL_RELAY_MAIN_PASSWORD`. Only relays named in
   the TOML are looked up. The other `AUTODJ_STREAM_*` variables apply to the default station only.
