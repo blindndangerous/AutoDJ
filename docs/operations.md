@@ -994,6 +994,49 @@ bind-mount ownership depends on its WSL2/Linux filesystem mapping, and its host 
 be turned on in Docker Desktop's settings. Run `bash scripts/container_smoke.sh` inside WSL2 for
 the authoritative check. Do not use world-writable Windows mounts.
 
+## Editing tags
+
+Track info has a **Tags** section for the song or liner it shows. It has a field each for Title,
+Artist, Album, Genre, Year, BPM, Key and ISRC, filled in with what AutoDJ has for the file.
+Change any of them and choose **Save tags**. AutoDJ writes only the fields you changed, so a tag
+you did not touch stays as it is in the file. Leave a field empty to remove that tag. Title cannot
+be empty.
+
+The fields take:
+
+- Year: four digits, such as 1999.
+- BPM: a number from 1 to 400, such as 128 or 127.5. M4A files keep a whole number.
+- Key: a letter key such as Am, F#m, Db or C major, or a Camelot key such as 8A. AutoDJ writes it
+  as a letter key, and Track info shows it in the key notation set in Settings.
+- ISRC: 12 characters, such as AB1CD2600001. Hyphens and spaces are ignored.
+
+A field AutoDJ cannot take is marked invalid with the reason under it, and focus moves to the
+first one. When the save works, the page says so once and focus stays on Save tags.
+
+AutoDJ writes MP3, FLAC, M4A, Ogg Vorbis, Opus and WAV tags. For any other kind of file the Tags
+section says it cannot edit them. The write is safe to interrupt: AutoDJ copies the file, tags
+the copy, reads the copy back, and only then puts it in place of the original in one step. If
+anything fails, the original file is left exactly as it was and the page says why.
+
+Saving tags does not analyse the song again. The library and search show the new details at
+once, and the song keeps its advanced analysis, cue points and loudness measurement. A later
+scan sees the same file and leaves it alone.
+
+A song that is playing or up next on any station cannot be saved; save it once it has played.
+If another program has the file open, AutoDJ waits a few seconds and then says the file is busy
+without changing it.
+
+When `[library] beets_db` names a beets database, the Tags section also has **Also update the
+beets library**, ticked by default. With it ticked, AutoDJ copies the changed fields into the
+song's beets entry (ISRC only when your beets database has an `isrc` field) and sets its
+modification time, so `beet update` has nothing new to read. If beets has no entry for the file,
+or its database cannot be written, the file is still saved and the page says what happened to
+beets.
+
+In Docker, the music folder is mounted read-only by default, so saving tags fails with a message
+that AutoDJ is not allowed to change the file. Remove `:ro` from the music volume in
+`compose.yaml` to allow it, and from the beets volume to let AutoDJ update beets.
+
 ## Moved files
 
 When a file moves between registered folders in the same catalog, a scan can recognize it by its

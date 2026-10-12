@@ -10,6 +10,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Editing tags from Track info (#53). A Tags section has fields for title, artist, album, genre,
+  year, BPM, key and ISRC. Save tags writes only the changed fields into the file with mutagen
+  (MP3, FLAC, M4A, Ogg Vorbis, Opus and WAV) and updates the library at once, keeping the song's
+  analysis, cue points and loudness measurement, so nothing is analysed again. The file is tagged
+  as a copy that replaces the original only once it reads back correctly, so a failed save leaves
+  the original as it was. A song playing or up next is refused until it has played. When beets
+  manages the library, the same fields can be written to the beets database too. A refused field
+  is marked invalid with its reason linked to it and focused; a save is said once and focus stays
+  on Save tags.
 - Play dates for voice liners and carts: a **Not before** date, a **Do not play after** date, or
   both, in the station time zone. Outside them, automatic liners, clockwheel liner steps and
   scheduled liner events skip the liner, and a cart plays nothing and says why. Browse voice
