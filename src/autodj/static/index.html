@@ -357,7 +357,7 @@
         </div>
       </div>
       <button type="button" id="points-save">Save points</button>
-      <audio id="points-preview" controls preload="none" aria-label="Song point preview"></audio>
+      <audio id="points-preview" controls preload="none" aria-label="Song point preview" data-preview-output></audio>
     </section>
     <p id="points-status" role="status" aria-live="polite" aria-atomic="true"></p>
   </section>
@@ -1025,6 +1025,17 @@
       <span class="setting-desc" id="audio-device-desc">
         Choose the browser’s speakers or headphones, where your browser supports this. Show device names briefly requests microphone access to reveal their names; it does not record audio. The choice is saved in this browser. Server audio uses <code>[playback] audio_device</code> in config.toml.
       </span>
+      <div class="settings-row">
+        <label for="preview-device">Preview output device</label>
+        <select id="preview-device" aria-describedby="preview-device-desc">
+          <option value="">System default</option>
+        </select>
+        <button type="button" id="preview-device-choose">Show device names</button>
+      </div>
+      <span class="setting-desc" id="preview-device-desc">
+        Where the cue point preview in Track info plays, for example headphones, so you can listen to a song before it airs. Previews never go through the station’s mix, so they are never on the stream or in a recording, and they reach the same speakers as the browser mix only when both use the same device. The choice is saved in this browser.
+      </span>
+      <p class="setting-desc" id="preview-device-note" hidden></p>
       <div class="settings-check">
         <input type="checkbox" id="pb-prefetch" checked aria-describedby="pb-prefetch-desc">
         <label for="pb-prefetch">Load the next song early</label>

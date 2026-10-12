@@ -9,7 +9,10 @@
 //     (1.4.10, 1.4.4);
 //   - every native checkbox and radio button is at least 24 x 24 px (2.5.8);
 //   - Tab through the view: each stop draws a solid focus outline at least
-//     2 px wide, scrolled fully into the window (2.4.7, 2.4.11).
+//     2 px wide, scrolled fully into the window (2.4.7, 2.4.11);
+//   - Settings > Sound > Preview output device: a named select with its
+//     help, 24 px targets, a visible reason where the browser cannot
+//     choose a device, and a change said politely without moving focus.
 //
 // Set AUTODJ_URL=http://host:port before running, e.g.:
 //   AUTODJ_URL=http://localhost:8080 node tests/playwright/visual_audit.mjs
@@ -129,9 +132,64 @@ async function focusProblems(page, startSelector) {
   return problems;
 }
 
+// The preview output device setting, in whatever this engine supports.
+async function previewOutputProblems(page) {
+  await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
+  await page.locator("#tab-settings").click();
+  await page.locator("#stab-sound").click();
+  const select = page.locator("#preview-device");
+  await select.waitFor({ state: "visible" });
+  // Let the device list load.
+  await page.waitForTimeout(300);
+  const problems = [];
+  const info = await page.evaluate(() => {
+    const element = document.getElementById("preview-device");
+    const button = document.getElementById("preview-device-choose");
+    const note = document.getElementById("preview-device-note");
+    const box = (node) => node && node.getClientRects().length
+      ? node.getBoundingClientRect().toJSON() : null;
+    return {
+      label: element.labels?.[0]?.textContent.trim(),
+      describedBy: element.getAttribute("aria-describedby") || "",
+      disabled: element.disabled,
+      select: box(element),
+      button: box(button),
+      noteShown: Boolean(note && !note.hidden && note.textContent.trim()),
+    };
+  });
+  if (info.label !== "Preview output device") problems.push(`label is ${JSON.stringify(info.label)}`);
+  if (!info.describedBy.split(" ").includes("preview-device-desc")) problems.push("help is not linked");
+  for (const [what, rect] of [["select", info.select], ["button", info.button]]) {
+    if (rect && (rect.width < 24 || rect.height < 24)) {
+      problems.push(`${what} is ${Math.round(rect.width)}x${Math.round(rect.height)}`);
+    }
+  }
+  if (info.disabled) {
+    // No setSinkId: the reason is words on the page, linked to the select.
+    if (!info.noteShown) problems.push("unsupported browser shows no reason");
+    if (!info.describedBy.includes("preview-device-note")) problems.push("reason is not linked");
+    return problems;
+  }
+  await select.focus();
+  await select.selectOption("");
+  try {
+    await page.waitForFunction(() => /Previews play on/.test(
+      document.getElementById("settings-status").textContent), null, { timeout: 3000 });
+  } catch {
+    problems.push("a change was not said in the status region");
+  }
+  if (!await page.evaluate(() => document.activeElement?.id === "preview-device")) {
+    problems.push("a change moved focus");
+  }
+  return problems;
+}
+
 export async function audit(name, launcher) {
   const browser = await launcher.launch();
-  const out = { axe: {}, reflow320: {}, text200: {}, smallChoices: {}, focus: {}, pageerrors: [] };
+  const out = {
+    axe: {}, reflow320: {}, text200: {}, smallChoices: {}, focus: {}, previewOutput: {},
+    pageerrors: [],
+  };
   try {
     const wide = await browser.newContext({ viewport: { width: 1280, height: 800 },
       reducedMotion: "reduce", bypassCSP: true });
@@ -147,6 +205,8 @@ export async function audit(name, launcher) {
       const problems = await focusProblems(page, sub ? `#stab-${sub}` : `#tab-${view}`);
       if (problems.length) out.focus[target] = problems;
     });
+    const preview = await previewOutputProblems(page);
+    if (preview.length) out.previewOutput["settings/sound"] = preview;
     // 200 % text at the same window width.
     await wide.addInitScript(() => {
       document.addEventListener("DOMContentLoaded", () => {
@@ -176,7 +236,7 @@ export async function audit(name, launcher) {
 
 export function validateVisualAudit(name, result) {
   const failures = [];
-  for (const key of ["axe", "reflow320", "text200", "smallChoices", "focus"]) {
+  for (const key of ["axe", "reflow320", "text200", "smallChoices", "focus", "previewOutput"]) {
     const entries = Object.entries(result[key]);
     if (entries.length) failures.push(`${key}: ${JSON.stringify(Object.fromEntries(entries))}`);
   }

@@ -751,6 +751,7 @@ function renderMute(isMuted) {
 // Settings card — mirror of CLI flags
 // ----------------------------------------------------------------
 
+import { installPreviewOutput } from "./modules/preview-output.js";
 import {
   applySettingsState,
   installSettingsControls,
@@ -778,6 +779,13 @@ function postSettings(url, body, control, { onError } = {}) {
 }
 
 installSettingsControls(_settingsEls(), postSettings);
+
+// Preview output device: Track info's cue point player on a device of its
+// own (headphones), apart from the browser mix.  Installed before the
+// main output's devicechange listener below.
+installPreviewOutput({
+  announce: (message, options) => announceStatus(settingsStatus, message, options),
+});
 
 // ----------------------------------------------------------------
 // Audio output device selector (browser-only — server-side device is
