@@ -1795,8 +1795,15 @@ def create_app(
         )
         client_host = getattr(getattr(websocket, "client", None), "host", "unknown")
         async with station.ws_lock:
-            station.ws_clients.add(client)
+            # A station that began stopping after it was looked up may have
+            # closed its pages' sockets already; this one would never close.
+            stopped = station.stopped
+            if not stopped:
+                station.ws_clients.add(client)
             client_count = len(station.ws_clients)
+        if stopped:
+            await reject(409, 4409)
+            return
         logger.info(
             "WebSocket connected: %s (%d active client%s)",
             client_host,

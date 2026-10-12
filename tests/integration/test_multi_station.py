@@ -499,3 +499,32 @@ def test_soak_two_stations_rendering_at_once_keep_their_buses_on_time(rig: Any) 
     print(f"\nsoak {elapsed:.0f} s, expected {elapsed / period:.0f} blocks each: {report}")
     for slug, times in stamps.items():
         assert len(times) >= 0.99 * (elapsed / period), (slug, report)
+
+
+def test_a_socket_accepted_as_its_station_stops_is_closed(
+    rig: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from starlette.websockets import WebSocketDisconnect
+
+    client, *_ = rig
+    owl = client.app.state.stations.get("nightowl")
+    real = server.resolve_station
+
+    def resolve_then_stop(connection: Any) -> Any:
+        station = real(connection)
+        # The station starts stopping while this socket is being accepted,
+        # after its pages' sockets were gathered to be closed.
+        station.stopped = True
+        return station
+
+    monkeypatch.setattr(server, "resolve_station", resolve_then_stop)
+    try:
+        with (
+            client.websocket_connect(f"{OWL}/ws") as socket,
+            pytest.raises(WebSocketDisconnect) as closed,
+        ):
+            socket.receive_json()
+        assert closed.value.code == 4409
+        assert owl.ws_clients == set()
+    finally:
+        owl.stopped = False
