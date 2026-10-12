@@ -6,6 +6,7 @@ import { installTableNavigation } from "./table-navigation.js";
 import { lastSeenWords } from "./devices.js";
 import { formatPlayedAt } from "./history-format.js";
 import { announceStatus } from "./live-region.js";
+import { installTagEditor } from "./tag-editor.js";
 import { returnToView } from "./tabs.js";
 
 const POINTS = ["start", "intro", "outro", "segue", "end", "overlap_start"];
@@ -85,6 +86,17 @@ export function installLibraryFolders({ document: doc = document, request = requ
   let returnView = null;
   let returnMatch = null;
   let returnContainer = null;
+  const tags = installTagEditor({
+    document: doc,
+    request,
+    isCurrent: () => !suspended,
+    onSaved(record) {
+      if (record.title) currentName = fmtTrack(record);
+      renderDetails(record);
+    },
+  });
+  // Unsaved cue points or tags: switching tracks asks first.
+  const unsaved = () => savedFields !== fieldSnapshot() || tags.dirty();
 
   returnButton.addEventListener("click", () => {
     if (!returnView) return;
@@ -405,7 +417,11 @@ export function installLibraryFolders({ document: doc = document, request = requ
     }
     const save = doc.getElementById("track-info-save");
     const discard = doc.getElementById("track-info-discard");
+    const keep = doc.getElementById("track-info-keep");
     const error = doc.getElementById("track-info-error");
+    // Where Keep editing and Escape put focus back: the control that asked
+    // to switch tracks.
+    const returnFocus = doc.activeElement;
     doc.getElementById("track-info-dialog-title").textContent = `Save changes to ${currentName}?`;
     error.textContent = "";
     dialog.returnValue = "";
@@ -413,21 +429,29 @@ export function installLibraryFolders({ document: doc = document, request = requ
       async function accept() {
         if (saving) return;
         save.disabled = discard.disabled = true;
-        const saved = await savePoints(error);
+        if (keep) keep.disabled = true;
+        const saved = (savedFields === fieldSnapshot() || await savePoints(error))
+          && (!tags.dirty() || await tags.save(error));
         save.disabled = discard.disabled = false;
+        if (keep) keep.disabled = false;
         if (saved) dialog.close("save");
       }
       function reject() { if (!saving) dialog.close("discard"); }
+      function stay() { if (!saving) dialog.close("keep"); }
       function cancel(event) { if (saving) event.preventDefault(); }
       function closed() {
         save.removeEventListener("click", accept);
         discard.removeEventListener("click", reject);
+        keep?.removeEventListener("click", stay);
         dialog.removeEventListener("cancel", cancel);
         dialog.removeEventListener("close", closed);
-        resolve(dialog.returnValue === "save" || dialog.returnValue === "discard");
+        const switching = dialog.returnValue === "save" || dialog.returnValue === "discard";
+        if (!switching && returnFocus?.isConnected && !returnFocus.disabled) returnFocus.focus();
+        resolve(switching);
       }
       save.addEventListener("click", accept);
       discard.addEventListener("click", reject);
+      keep?.addEventListener("click", stay);
       dialog.addEventListener("cancel", cancel);
       dialog.addEventListener("close", closed);
       dialog.showModal();
@@ -439,12 +463,12 @@ export function installLibraryFolders({ document: doc = document, request = requ
     const sourceList = opener?.closest?.("ul, ol, table");
     const sourcePanel = opener?.closest?.("section[data-view]");
     if (!path) { rememberReturn(opener); showTrackInfo(); pointSay("Choose a track first.", true); return; }
-    if (path === currentPath && savedFields !== fieldSnapshot()) { rememberReturn(opener); showTrackInfo(); return; }
+    if (path === currentPath && unsaved()) { rememberReturn(opener); showTrackInfo(); return; }
     opening = true;
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
     try {
-      if (currentPath && savedFields !== fieldSnapshot() && !await confirmTrackChange()) return;
+      if (currentPath && unsaved() && !await confirmTrackChange()) return;
       if (!requestCurrent(epoch, generation)) return;
       editor.inert = true;
       const data = await request(`/api/library/points?path=${encodeURIComponent(path)}`);
@@ -456,6 +480,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       pointPath.value = currentPath;
       setPointFields(data.points || {}, data.point_sources || {});
       renderDetails(data);
+      tags.load(data);
       editor.hidden = false;
       const preview = doc.getElementById("points-preview");
       if (preview) {
@@ -486,6 +511,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
         rememberReturn(opener);
         if (error.status === 404) {
           currentPath = null;
+          tags.clear();
           editor.hidden = true;
           pointPath.value = "";
           const details = doc.getElementById("track-info-details");
@@ -569,6 +595,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     if (dialogError) dialogError.textContent = "";
     editor.inert = false;
     editor.hidden = true;
+    tags.clear();
     currentPath = null;
     currentKind = "music";
     currentName = "this track";
@@ -603,5 +630,5 @@ export function installLibraryFolders({ document: doc = document, request = requ
     if (preview) { preview.pause(); preview.removeAttribute("src"); preview.load(); }
   }
   function resume() { suspended = false; updatePolling(); }
-  return { refresh, openEditor, clearProtectedData, resume, destroy() { clearProtectedData(); returnButton.remove(); window.removeEventListener("hashchange", updatePolling); doc.removeEventListener("visibilitychange", updatePolling); doc.removeEventListener("autodj:edit-points", onEditPoints); } };
+  return { refresh, openEditor, clearProtectedData, resume, destroy() { clearProtectedData(); tags.destroy(); returnButton.remove(); window.removeEventListener("hashchange", updatePolling); doc.removeEventListener("visibilitychange", updatePolling); doc.removeEventListener("autodj:edit-points", onEditPoints); } };
 }

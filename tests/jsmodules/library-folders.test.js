@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { formatPointTime, installLibraryFolders as installControls, parsePointTime } from "../../src/autodj/static/modules/library-folders.js";
 import { invalidateAuthenticatedRequestEpoch } from "../../src/autodj/static/modules/api-client.js";
@@ -32,7 +35,7 @@ function mount() {
     </section>
     <dialog id="track-info-dialog" aria-labelledby="track-info-dialog-title">
       <h2 id="track-info-dialog-title"></h2><p id="track-info-error" role="status"></p>
-      <button id="track-info-save" type="button">Save</button><button id="track-info-discard" type="button">Discard</button>
+      <button id="track-info-save" type="button">Save</button><button id="track-info-discard" type="button">Discard</button><button id="track-info-keep" type="button">Keep editing</button>
     </dialog>`;
   const dialog = document.getElementById("track-info-dialog");
   dialog.showModal = () => { dialog.open = true; };
@@ -395,6 +398,85 @@ describe("clock folder and points controls", () => {
     expect(body.path).toBe("M:/one.flac");
     expect(body.points.intro).toBe(10);
     expect(document.getElementById("points-path").value).toBe("M:/two.flac");
+  });
+
+  it("loads the tags with the track, saves unsaved tags before switching and updates the details", async () => {
+    const html = readFileSync(join(process.cwd(), "src", "autodj", "static", "index.html"), "utf8");
+    document.getElementById("panel-track-info").insertAdjacentHTML("beforeend", html.match(/<section id="tags-editor"[\s\S]*?<\/section>/)[0]);
+    const tagsOf = (title) => ({ title, artist: "Artist", album: "", genre: "", year: "", bpm: "", key: "", isrc: "" });
+    const request = vi.fn(async (url, options) => {
+      if (url === "/api/library/tags") {
+        const body = JSON.parse(options.body);
+        return { path: body.path, title: body.tags.title, artist: "Artist", kind: "music", points: {}, tags: tagsOf(body.tags.title), tags_writable: true, beets: "off" };
+      }
+      const two = url.includes("two");
+      return { path: decodeURIComponent(url.split("path=")[1]), title: two ? "Two" : "One", artist: "Artist", kind: "music", points: { end: 180 }, tags: tagsOf(two ? "Two" : "One"), tags_writable: true };
+    });
+    const controls = installLibraryFolders({ document, request });
+    await controls.openEditor("M:/one.flac");
+    const title = document.getElementById("tag-title");
+    expect(document.getElementById("tags-editor").hidden).toBe(false);
+    expect(title.value).toBe("One");
+    title.value = "Uno";
+    const switching = controls.openEditor("M:/two.flac");
+    expect(document.getElementById("track-info-dialog").open).toBe(true);
+    document.getElementById("track-info-save").click();
+    await switching;
+    const urls = request.mock.calls.map(([url]) => url);
+    expect(urls).toEqual(["/api/library/points?path=M%3A%2Fone.flac", "/api/library/tags", "/api/library/points?path=M%3A%2Ftwo.flac"]);
+    expect(JSON.parse(request.mock.calls[1][1].body)).toEqual({ path: "M:/one.flac", tags: { title: "Uno" }, beets: false });
+    expect(title.value).toBe("Two");
+    // Saving here updates the details and the heading in place.
+    title.value = "Dos";
+    document.getElementById("tags-save").click();
+    await vi.waitFor(() => expect(request.mock.calls.map(([url]) => url)).toHaveLength(4));
+    await vi.waitFor(() => expect(document.getElementById("track-info-heading").textContent).toBe("Track info: Artist — Dos"));
+    expect(document.getElementById("track-info-details").textContent).toContain("Dos");
+    controls.clearProtectedData();
+    expect(document.getElementById("tags-editor").hidden).toBe(true);
+    expect(title.value).toBe("");
+  });
+
+  it("keeps editing like Escape: no save, the draft kept and focus back on the opener", async () => {
+    const request = trackRequest();
+    const controls = installLibraryFolders({ document, request });
+    await controls.openEditor("M:/one.flac");
+    document.querySelector('[data-point="intro"]').value = "0:10";
+    const opener = document.createElement("button");
+    opener.textContent = "Track info for Two";
+    document.getElementById("panel-now").append(opener);
+    opener.focus();
+    const switching = controls.openEditor("M:/two.flac", "music", opener);
+    expect(document.getElementById("track-info-dialog").open).toBe(true);
+    document.getElementById("track-info-save").focus();
+    document.getElementById("track-info-keep").click();
+    await switching;
+    expect(document.getElementById("track-info-dialog").open).toBe(false);
+    expect(document.getElementById("track-info-dialog").returnValue).toBe("keep");
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('[data-point="intro"]').value).toBe("0:10");
+    expect(document.getElementById("points-path").value).toBe("M:/one.flac");
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it("holds Keep editing while a save is in flight", async () => {
+    let finish;
+    const request = vi.fn((url, options) => options?.method === "POST"
+      ? new Promise((resolve) => { finish = resolve; })
+      : Promise.resolve({ path: "M:/one.flac", title: "One", kind: "music", points: { end: 180 } }));
+    const controls = installLibraryFolders({ document, request });
+    await controls.openEditor("M:/one.flac");
+    document.querySelector('[data-point="intro"]').value = "0:10";
+    const switching = controls.openEditor("M:/two.flac");
+    document.getElementById("track-info-save").click();
+    const keep = document.getElementById("track-info-keep");
+    expect(keep.disabled).toBe(true);
+    keep.click();
+    expect(document.getElementById("track-info-dialog").open).toBe(true);
+    finish({ points: { intro: 10, end: 180 } });
+    await switching;
+    expect(keep.disabled).toBe(false);
+    expect(document.getElementById("track-info-dialog").returnValue).toBe("save");
   });
 
   it("discards a liner draft without saving, and offers the same liner fields", async () => {
