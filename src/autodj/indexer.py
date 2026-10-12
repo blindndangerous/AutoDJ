@@ -33,7 +33,7 @@ import sqlite3
 import time
 import warnings
 from collections import deque
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -540,13 +540,22 @@ def _estimate_key_from_chroma(chroma: np.ndarray) -> tuple[int, int]:
     return (key, mode)
 
 
-def _apply_analysis_metadata(entry: IndexEntry, extra_meta: dict[str, float | int]) -> None:
-    """Apply derived analysis fields without replacing a valid source BPM."""
+def _apply_analysis_metadata(
+    entry: IndexEntry, extra_meta: dict[str, float | int], keep: Collection[str] = ()
+) -> None:
+    """Apply derived analysis fields without replacing a valid source BPM.
+
+    *keep* names fields set by hand (``"key"``, ``"bpm"``, from Track info's
+    tag editor) that the analysis must leave as they are.
+    """
     entry.energy = float(extra_meta["energy"])
-    entry.key = int(extra_meta["key"])
-    entry.mode = int(extra_meta["mode"])
+    if "key" not in keep:
+        entry.key = int(extra_meta["key"])
+        entry.mode = int(extra_meta["mode"])
     entry.tempo_confidence = float(extra_meta["tempo_confidence"])
     estimated_bpm = float(extra_meta["bpm"])
+    if "bpm" in keep:
+        return
     if not np.isfinite(entry.bpm) or entry.bpm <= 0.0:
         entry.bpm = 0.0
         if np.isfinite(estimated_bpm) and estimated_bpm > 0.0:

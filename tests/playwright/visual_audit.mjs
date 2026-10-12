@@ -81,6 +81,117 @@ const THEME_MODES = [
   { name: "system-dark", stored: null, colorScheme: "dark", theme: "dark" },
 ];
 
+// Settings > Song picking > Test rotation, opened: the server's answers
+// are stood in for, so the running and finished states look the same on
+// an empty library as on a full one.  The finished report carries long
+// unbroken names, for the reflow checks.
+const ROTATION_SECTIONS = [
+  { title: "Summary", lines: [
+    "Simulated 168 hours, from Monday 12 October 2026, 06:00 to Monday 19 October 2026, 06:02, station time (UTC).",
+    "Picked 2,914 songs and 412 liners.",
+    "Seed 1234. Use the same seed to repeat this run exactly.",
+  ] },
+  { title: "Songs", lines: [
+    "The library has 77,000 songs; 2,604 played and 74,396 never played.",
+    { text: "Never played, first two:", items: [
+      "Example Artist — An_Exceptionally_Long_Title_Without_Any_Spaces_From_A_Tagless_File_0001",
+      "Another Example — Song 2",
+    ] },
+  ] },
+  { title: "Categories", lines: [
+    { text: "Power: six songs, 504 plays.", items: [
+      "Plays per song: fewest 80, most 90, average 84.",
+      "Its clockwheel step was skipped 40 times.",
+    ] },
+  ] },
+  { title: "Rules relaxed", lines: ["Same artist: relaxed for 12 picks."] },
+  { title: "Dead air", lines: ["No moment had nothing to play."] },
+];
+const rotationStates = new WeakMap();
+
+async function standInForRotationTest(page) {
+  if (rotationStates.has(page)) return rotationStates.get(page);
+  const state = { done: false };
+  rotationStates.set(page, state);
+  await page.route("**/api/rotation-test", (route) => {
+    const view = state.done
+      ? { state: "done", progress: { picks: 2914, percent: 100 }, elapsed_seconds: 61,
+        report: { picks: 2914, station: "default", seed: 1234, stopped_early: false },
+        text: "", sections: ROTATION_SECTIONS, error: null }
+      : { state: "running", progress: { picks: 1200, percent: 40 }, elapsed_seconds: 20,
+        report: null, text: null, sections: null, error: null };
+    return route.fulfill({
+      status: route.request().method() === "POST" ? 202 : 200,
+      contentType: "application/json",
+      body: JSON.stringify(view),
+    });
+  });
+  return state;
+}
+
+async function openRotationTest(page, visit) {
+  const state = await standInForRotationTest(page);
+  state.done = false;
+  await page.locator("#rotation-run").click();
+  await page.locator("#rotation-progress-row").waitFor({ state: "visible" });
+  await visit("settings/picking/rotation-running");
+  state.done = true;
+  await page.locator("#rotation-results").waitFor({ state: "visible", timeout: 10000 });
+  await visit("settings/picking/rotation-results");
+}
+
+// Track info with a song loaded, so its Tags form is shown: the server's
+// answers are stood in for, as the empty library has no song to open.  The
+// title is long and unbroken, for the reflow checks, and beets is offered so
+// its checkbox is measured too.
+const TRACK_PATH = "/music/Example Artist/An_Exceptionally_Long_Title_Without_Any_Spaces_0001.flac";
+const TRACK_TAGS = {
+  title: "An_Exceptionally_Long_Title_Without_Any_Spaces_0001", artist: "Example Artist",
+  album: "Example Album", genre: "Ambient", year: "1999", bpm: "120", key: "Am", isrc: "",
+};
+const TRACK_RECORD = {
+  path: TRACK_PATH, kind: "music", ...TRACK_TAGS, year: 1999, bpm: 120, length: 215.4,
+  last_played: 0, key_label: "8A", analysis: "ready", loudness_ready: true, allow_outro: false,
+  points: { start: 0, intro: 8, outro: 200, segue: 210, end: 215 },
+  point_sources: { start: "analysis", intro: "analysis", outro: "analysis", segue: "analysis", end: "analysis" },
+  tags: TRACK_TAGS, tags_writable: true, beets_writeback: true,
+};
+const trackPages = new WeakSet();
+
+async function standInForTrackInfo(page) {
+  if (trackPages.has(page)) return;
+  trackPages.add(page);
+  await page.route("**/api/library/points?*", (route) => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify(TRACK_RECORD),
+  }));
+  await page.route("**/api/library/tags", (route) => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify({ ...TRACK_RECORD, beets: "updated" }),
+  }));
+}
+
+// Open the song's Track info, then show a refused save: two fields marked
+// invalid with their errors on the page and focus on the first.
+async function openTrackTags(page, visit) {
+  await page.evaluate((path) => document.dispatchEvent(new CustomEvent("autodj:edit-points",
+    { detail: { path, kind: "music", opener: document.getElementById("tab-track-info") } })), TRACK_PATH);
+  await page.locator("#tags-form").waitFor({ state: "visible" });
+  await visit("track-info/tags");
+  await page.locator("#tag-year").fill("99");
+  await page.locator("#tag-isrc").fill("123");
+  await page.locator("#tags-save").click();
+  await page.locator("#tag-year-error").waitFor({ state: "visible" });
+  await visit("track-info/tags-errors");
+  // Choosing another song with those edits unsaved opens Save, Discard or
+  // Keep editing; Keep editing closes it again with the edits kept.
+  await page.evaluate((path) => document.dispatchEvent(new CustomEvent("autodj:edit-points",
+    { detail: { path, kind: "music", opener: document.getElementById("tab-track-info") } })),
+  `${TRACK_PATH}.other.flac`);
+  await page.locator("#track-info-dialog").waitFor({ state: "visible" });
+  await visit("track-info/save-dialog");
+  await page.locator("#track-info-keep").click();
+  await page.locator("#track-info-dialog").waitFor({ state: "hidden" });
+}
+
 async function openEveryCard(page) {
   await page.evaluate(() => {
     for (const details of document.querySelectorAll("details")) details.open = true;
@@ -114,6 +225,8 @@ async function newPage(context) {
 // Every view, and with Settings every subtab this server shows (Stream only
 // in stream mode).  `visit` runs once per target with that target shown.
 async function eachTarget(page, visit) {
+  await standInForRotationTest(page);
+  await standInForTrackInfo(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   for (const view of VIEWS) {
     await page.locator(`#tab-${view}`).click();
@@ -125,6 +238,7 @@ async function eachTarget(page, visit) {
       await openEveryCard(page);
       await settle(page);
       await visit(view);
+      if (view === "track-info") await openTrackTags(page, visit);
       continue;
     }
     const ids = await page.$$eval("#settings-tabs [role='tab']:not([hidden])",
@@ -135,6 +249,7 @@ async function eachTarget(page, visit) {
       await openEveryCard(page);
       await settle(page);
       await visit(`settings/${id.replace(/^stab-/, "")}`);
+      if (id === "stab-picking") await openRotationTest(page, visit);
     }
   }
 }
@@ -405,7 +520,8 @@ async function focusProblems(page, startSelector, { maxStops = MAX_TAB_STOPS, me
 
 function startOf(target) {
   const [view, sub] = target.split("/");
-  return sub ? `#stab-${sub}` : `#tab-${view}`;
+  // Only Settings targets name a subtab; "track-info/tags" is a state.
+  return view === "settings" && sub ? `#stab-${sub}` : `#tab-${view}`;
 }
 
 async function themeContext(browser, mode) {
@@ -473,7 +589,7 @@ async function auditTheme(browser, mode, out) {
           });
         }
         await page.screenshot({
-          path: join(SHOTS, `${out.browser}-${mode.name}-${target.replace("/", "-")}.png`),
+          path: join(SHOTS, `${out.browser}-${mode.name}-${target.replaceAll("/", "-")}.png`),
           fullPage: true,
         });
         await showToast(page, "");

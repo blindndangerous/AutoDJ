@@ -1037,8 +1037,22 @@ describe("static accessibility contracts", () => {
     const dialog = document.querySelector("#track-info-dialog");
     expect(dialog.tagName).toBe("DIALOG");
     expect(dialog.getAttribute("aria-labelledby")).toBe("track-info-dialog-title");
-    expect([...dialog.querySelectorAll("button")].map(button => button.textContent)).toEqual(["Save", "Discard"]);
+    expect([...dialog.querySelectorAll("button")].map(button => button.textContent)).toEqual(["Save", "Discard", "Keep editing"]);
+    expect([...dialog.querySelectorAll("button")].every((button) => button.getAttribute("type") === "button")).toBe(true);
     expect(dialog.querySelector("#track-info-error").getAttribute("role")).toBe("status");
+    // The explanation is read when the dialog opens, after its name.
+    const description = document.getElementById(dialog.getAttribute("aria-describedby"));
+    expect(description.tagName).toBe("P");
+    expect(description.textContent).toBe("Save your changes before choosing another track, or discard them to switch.");
+    expect(dialog.contains(description)).toBe(true);
+    // Keep editing takes the shared button size (44 px, above the 24 px floor)
+    // and no colour of its own.
+    const css = stripCssComments(cssSource);
+    expect(css).not.toMatch(/#track-info-keep/);
+    expect(css.match(/(^|[\s,}])button\s*\{[^{}]*min-height:\s*44px/)).not.toBeNull();
+    // Three buttons wrap rather than run off a narrow window.
+    expect(lastValue("#track-info-dialog .dialog-actions", "flex-wrap")).toBe("wrap");
+    expect(lastValue("#track-info-dialog", "max-width")).toBe("min(32rem, calc(100vw - 2rem))");
   });
   it("keeps connected status text visible without relying on color alone", () => {
     const background = lastValue("#conn-status.connected", "background");
@@ -2223,6 +2237,110 @@ describe("static accessibility contracts", () => {
       .find((block) => block.includes('input[type="text"]') && block.includes("padding"));
     expect(rule).toContain('input[type="date"]');
     expect(rule).toContain('input[type="time"]');
+  });
+
+  it("gives the rotation test labelled native controls, one polite status and list results", () => {
+    installDocument({ html: htmlSource });
+    const group = document.querySelector("#rotation-test");
+    expect(group.tagName).toBe("FIELDSET");
+    expect(group.closest("#spanel-picking")).not.toBeNull();
+    expect(group.querySelector(":scope > legend").textContent.trim()).toBe("Test rotation");
+    const help = document.getElementById(group.getAttribute("aria-describedby"));
+    expect(help.textContent).toContain("Nothing on air changes.");
+    for (const [id, label, type] of [
+      ["rotation-span", "Simulate", "SELECT"],
+      ["rotation-start", "Start", "datetime-local"],
+      ["rotation-seed", "Seed", "text"],
+    ]) {
+      const control = document.getElementById(id);
+      expect(control.tagName === "SELECT" ? "SELECT" : control.getAttribute("type")).toBe(type);
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+      expect(control.hasAttribute("required")).toBe(false);
+    }
+    // The spans are said in words, not abbreviations.
+    expect([...document.querySelectorAll("#rotation-span option")].map((option) => option.textContent))
+      .toEqual(["24 hours", "3 days", "7 days", "14 days", "30 days", "100 songs", "1,000 songs"]);
+    for (const id of ["rotation-start", "rotation-seed"]) {
+      const desc = document.getElementById(document.getElementById(id).getAttribute("aria-describedby"));
+      expect(desc.textContent).toMatch(/^\s*Optional\./);
+    }
+    for (const [id, name] of [["rotation-run", "Test rotation"], ["rotation-cancel", "Cancel test"]]) {
+      const button = document.getElementById(id);
+      expect(button.getAttribute("type")).toBe("button");
+      expect(button.textContent.trim()).toBe(name);
+      expect(button.disabled).toBe(false);
+    }
+    // One polite status for the start and the end; progress is a labelled
+    // native bar and plain text, never live.
+    const live = [...group.querySelectorAll("[aria-live], [role='status'], [role='alert']")];
+    expect(live.map((node) => node.id)).toEqual(["rotation-status"]);
+    expect(live[0].getAttribute("aria-live")).toBe("polite");
+    const bar = document.getElementById("rotation-progress");
+    expect(bar.tagName).toBe("PROGRESS");
+    expect(document.querySelector('label[for="rotation-progress"]').textContent.trim()).toBe("Progress");
+    // Results: a section named by its heading, hidden until a run ends, no table.
+    const results = document.getElementById("rotation-results");
+    expect(results.tagName).toBe("SECTION");
+    expect(results.hidden).toBe(true);
+    expect(document.getElementById(results.getAttribute("aria-labelledby")).tagName).toBe("H4");
+    expect(results.querySelector("table")).toBeNull();
+    // Colours come from the theme tokens only, so the light theme follows.
+    const rules = stripCssComments(cssSource).match(/#rotation-[^{]*\{[^}]*\}/g);
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgb|hsl/i);
+    expect(rules.join("\n")).toContain("accent-color: var(--accent)");
+  });
+
+  it("gives Track info's tag editor labelled native fields, linkable errors and one status", () => {
+    installDocument({ html: htmlSource });
+    const section = document.querySelector("#panel-track-info #tags-editor");
+    expect(section.getAttribute("aria-labelledby")).toBe("tags-heading");
+    expect(document.getElementById("tags-heading").tagName).toBe("H3");
+    const form = section.querySelector("form#tags-form");
+    expect(form.hasAttribute("novalidate")).toBe(true);
+    const fields = [
+      ["title", "Title"], ["artist", "Artist"], ["album", "Album"], ["genre", "Genre"],
+      ["year", "Year"], ["bpm", "BPM"], ["key", "Key"], ["isrc", "ISRC"],
+    ];
+    for (const [name, label] of fields) {
+      const input = document.getElementById(`tag-${name}`);
+      expect(input.getAttribute("type")).toBe("text");
+      expect(input.dataset.tag).toBe(name);
+      expect(input.hasAttribute("aria-label")).toBe(false);
+      expect(form.querySelector(`label[for="tag-${name}"]`).textContent.trim()).toBe(label);
+      // The error is words on the page, hidden until there is one, with an
+      // ID the script adds to the field's aria-describedby.
+      const error = document.getElementById(`tag-${name}-error`);
+      expect(error.classList.contains("field-error")).toBe(true);
+      expect(error.hidden).toBe(true);
+      expect(error.hasAttribute("role")).toBe(false);
+      expect(error.closest("[aria-live]")).toBeNull();
+      const described = (input.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean);
+      expect(described).not.toContain(error.id);
+      for (const id of described) expect(document.getElementById(id).textContent).toMatch(/^\s*Optional\./);
+    }
+    // Title is the one required field, and says so natively.
+    expect(document.getElementById("tag-title").hasAttribute("required")).toBe(true);
+    expect(fields.filter(([name]) => document.getElementById(`tag-${name}`).hasAttribute("required"))).toHaveLength(1);
+    const beets = document.getElementById("tags-beets");
+    expect(beets.getAttribute("type")).toBe("checkbox");
+    expect(beets.closest("label").textContent.trim()).toBe("Also update the beets library");
+    const save = document.getElementById("tags-save");
+    expect(save.getAttribute("type")).toBe("submit");
+    expect(save.textContent).toBe("Save tags");
+    // One polite status, not nested in another live region.
+    const status = document.getElementById("tags-status");
+    expect(status.getAttribute("role")).toBe("status");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(status.parentElement.closest("[aria-live], [role=status]")).toBeNull();
+    // The layout uses the shared tokens and controls only: no colour of its own.
+    const rules = stripCssComments(cssSource).match(/[^{}]*\.tag-field[^{}]*\{[^{}]*\}/g);
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|color\s*:/i);
+    // Text inputs keep the 44 px control height (2.5.8).
+    const height = stripCssComments(cssSource).match(/([^{}]*)\{[^{}]*min-height:\s*44px[^{}]*\}/g)
+      .find((block) => block.includes('input[type="text"]') && block.includes("padding"));
+    expect(height).toBeTruthy();
   });
 
   it("gives the preview output device a labelled native select and silent help", () => {

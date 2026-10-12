@@ -87,7 +87,9 @@ def _builtin_actions(
         if mode == "clock" and getattr(bridge.player, "_clock", None) is None:
             status = getattr(bridge.player, "_clock_status", None) or "No clockwheel is active"
             raise ValueError(f"The clockwheel cannot play: {status}")
-        bridge.set_playback_settings(PlaybackSettingsBody.model_validate({"pick_mode": mode}))
+        await asyncio.to_thread(
+            bridge.set_playback_settings, PlaybackSettingsBody.model_validate({"pick_mode": mode})
+        )
         bridge.save_persistent_state()
 
     async def liner(params: dict[str, str]) -> Callable[[], None]:
@@ -122,8 +124,9 @@ def _builtin_actions(
     async def stereo_tool_preset(params: dict[str, str]) -> None:
         # Stereo Tool restarts with it on the next mix block; a preset
         # deleted since the event was saved fails the run in words.
-        bridge.set_playback_settings(
-            PlaybackSettingsBody.model_validate({"stereotool_preset": params["name"]})
+        await asyncio.to_thread(
+            bridge.set_playback_settings,
+            PlaybackSettingsBody.model_validate({"stereotool_preset": params["name"]}),
         )
         bridge.save_persistent_state()
 
