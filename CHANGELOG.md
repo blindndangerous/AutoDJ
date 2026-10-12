@@ -10,9 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-<<<<<<< HEAD
 - **Why this track?** names the clockwheel step that selected the song, with its number and the same description shown in the clockwheel list. Music and category steps say whether they choose the least recently played song or choose at random.
-=======
 - Editing tags from Track info (#53). A Tags section has fields for title, artist, album, genre,
   year, BPM, key and ISRC. Save tags writes only the changed fields into the file with mutagen
   (MP3, FLAC, M4A, Ogg Vorbis, Opus, WAV and AIFF) and updates the library at once, keeping the
@@ -26,7 +24,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   on Save tags. The dialog that asks to save before switching tracks now reads its explanation when
   it opens and has a Keep editing button, which does what Escape does.
 
->>>>>>> origin/master
 - A separate output device for previews (#54). In Settings, Sound, **Preview output device**
   sends the cue point preview in Track info, which Queue & Search, History and the library open,
   to a device of its own, such as headphones, while the browser mix stays on the speakers.
