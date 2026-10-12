@@ -330,8 +330,10 @@ public only for a configured slug; any other name, and anything else under a sta
 needs a session first and then returns 404. Each station's feed and page carry only that
 station's name, songs, listener counts and public stream path, from its own snapshot. A station's
 page names its own feed in a `data-feed` attribute, and the page script polls it only when it
-is a same-site path, so the attribute cannot send the page to another host (the
-`connect-src 'self'` policy also refuses that). While a station is stopped, its feed answers 503
+is a path under `/api/` that resolves to the page's own origin and has no backslash, written
+out or percent-encoded; anything else falls back to `/api/nowplaying`. So the attribute cannot
+send the page to another host (the `connect-src 'self'` policy also refuses that). Every
+station's feed, live (200) or off air (503), carries `Access-Control-Allow-Origin: *`. While a station is stopped, its feed answers 503
 `{"detail": "That station is off air"}` (still with the wildcard CORS header, so outside sites
 can read it) and its page answers 503 with its name and "off air". Like the stream's 503, this
 shows that the slug exists and gives the station's configured name; that is accepted, since a

@@ -67,7 +67,7 @@ def uptime_text(seconds: Any) -> str:
 
 NOTHING_PLAYING = "Nothing is playing right now."
 #: The uptime while a station is stopped.
-OFF_AIR = "Off air"
+OFF_AIR = "Not on air"
 
 
 def off_air_text(station: str) -> str:
@@ -184,7 +184,7 @@ def _page(
 <dd id="status-listeners">{escape(listeners)}</dd>
 <dt>Peak today</dt>
 <dd id="status-peak">{escape(peak)}</dd>
-<dt>On air for</dt>
+<dt>Uptime</dt>
 <dd id="status-uptime">{escape(uptime)}</dd>
 </dl>
 {links}

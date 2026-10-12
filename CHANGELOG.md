@@ -69,8 +69,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   While a station is stopped, its page, feed and stream all answer "off air" (HTTP 503); its page
   still shows its name, says it is off air, and shows the song again once the station is back.
   `GET /api/stations` now gives each station's status page, feed, stream and playlist addresses
-  beside its state. The status page now says "On air for" instead of "AutoDJ running for", since
-  each station has its own time on air.
+  beside its state. On every status page the uptime is now labelled "Uptime" instead of "AutoDJ
+  running for", since each station counts its own, and a stopped station's says "Not on air".
 
 - Schedule events can have a date range: an optional start date and end date, both included, in
   the station time zone. Outside the range an event does not run, and Next events skips it. An

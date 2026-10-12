@@ -21,7 +21,7 @@ import { requestJson } from "./api-client.js";
 const DEFAULT_FEED_URL = "/api/nowplaying";
 const POLL_MS = 15000;
 export const NOTHING_PLAYING = "Nothing is playing right now.";
-export const OFF_AIR = "Off air";
+export const OFF_AIR = "Not on air";
 export const UPDATING_TEXT = "Updates every 15 seconds.";
 export const UNREACHABLE_TEXT = "Could not reach the station. Trying again every 15 seconds.";
 export const PAUSED_TEXT = "Updates paused.";
@@ -46,11 +46,27 @@ export function offAirText(station) {
   return `${station} is off air right now.`;
 }
 
-// The station's feed: a same-site path from data-feed, else the default
-// station's.
+// The station's feed: a path on this site under /api/ from data-feed, else
+// the default station's.  Anything that could reach another host is
+// refused: a backslash (browsers read "/\host" as "//host"), written out or
+// percent-encoded, a scheme or "//", or any address that does not resolve
+// to this page's own origin.
 export function feedUrl(doc) {
   const feed = doc.body?.dataset?.feed || "";
-  return feed.startsWith("/") && !feed.startsWith("//") ? feed : DEFAULT_FEED_URL;
+  if (!feed.startsWith("/") || feed.startsWith("//") || /\\|%5c/i.test(feed)) {
+    return DEFAULT_FEED_URL;
+  }
+  const here = doc.location?.href || "http://localhost/";
+  let url;
+  try {
+    url = new URL(feed, here);
+  } catch {
+    return DEFAULT_FEED_URL;
+  }
+  if (url.origin !== new URL(here).origin || !url.pathname.startsWith("/api/")) {
+    return DEFAULT_FEED_URL;
+  }
+  return url.pathname + url.search;
 }
 
 export function listenersText(value) {

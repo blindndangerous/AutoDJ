@@ -2300,7 +2300,7 @@ describe("public status page contracts", () => {
   });
 
   it("polls only the station's own same-site feed and never moves focus", () => {
-    expect(statusScript).toMatch(/feed\.startsWith\("\/"\) && !feed\.startsWith\("\/\/"\)/);
+    expect(statusScript).toMatch(/url\.origin !== new URL\(here\)\.origin/);
     expect(statusScript).not.toMatch(/\.focus\(/);
     // Off air is said in the one live line, not a second region.
     expect(statusScript).not.toMatch(/aria-live/);

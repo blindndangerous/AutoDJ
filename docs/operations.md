@@ -635,7 +635,8 @@ separately if you need to restore secrets.
 
 `GET /status` is a public page for listeners, in the spirit of an Icecast status page: the
 station name, the song playing, the next song when **Show the next song publicly** is on, the
-number of listeners now, today's peak and how long the station has been on air. Every station
+number of listeners now, today's peak and how long the station has been on air (**Uptime**, which
+says "Not on air" while the station is stopped). Every station
 has one at `/stations/<slug>/status`; `/status` is the default station's. It needs
 no pairing and does not load the paired app. The server writes every value into the page as
 plain text, so it works without JavaScript; with JavaScript, `/modules/status-page.js` polls
@@ -1091,7 +1092,7 @@ Each station also has its own public status page and now-playing feed, for liste
 other sites:
 
 - `/stations/<slug>/status`, the status page, with the station's name, song, listeners and links
-  to its stream and playlist. It polls the station's own feed.
+  to its stream and playlist. It polls the station's own feed, and only a feed on this server.
 - `/api/stations/<slug>/nowplaying`, the now-playing feed, in the same form as `/api/nowplaying`
   (see [Now-playing feed and webhooks](#now-playing-feed-and-webhooks)).
 - Both are public without pairing, like the stream, but only for a configured station: any

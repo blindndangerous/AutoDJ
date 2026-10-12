@@ -860,3 +860,43 @@ def test_listener_credentials_and_webhooks_are_each_stations_own(rig: Any) -> No
         "https://hooks.example.net/night-owl-private-path"
     ]
     assert stations.default.webhooks.configs == ()
+
+
+# Every field the public feed may carry, and in each song and history row.
+FEED_FIELDS = {
+    "schema",
+    "station_name",
+    "current_track",
+    "next_track",
+    "history",
+    "listener_count",
+    "stream_path",
+    "peak_listeners_today",
+    "uptime_seconds",
+}
+TRACK_FIELDS = {"artist", "title", "album", "duration", "started_at", "elapsed"}
+HISTORY_FIELDS = {"artist", "title", "duration", "played_at"}
+
+
+def test_every_public_feed_carries_only_public_fields_to_any_site(rig: Any) -> None:
+    client, _library, _cfg, song, _closes = rig
+    owl = client.app.state.stations.get("nightowl")
+    # A song playing and one in the history, so every part of the feed is filled.
+    owl.player._state.current_track = song
+    owl.bridge.on_track_started(song)
+    owl.nowplaying.refresh()
+    for path in ("/api/nowplaying", "/api/stations/default/nowplaying", f"{OWL}/nowplaying"):
+        for method in ("GET", "HEAD"):
+            response = client.request(method, path)
+            assert response.status_code == 200, (method, path)
+            assert response.headers["access-control-allow-origin"] == "*", (method, path)
+            assert response.headers["cache-control"] == "no-cache", (method, path)
+        feed = client.get(path).json()
+        assert set(feed) == FEED_FIELDS, path
+        for track in (feed["current_track"], feed["next_track"]):
+            assert track is None or set(track) <= TRACK_FIELDS, path
+        for row in feed["history"]:
+            assert set(row) <= HISTORY_FIELDS, path
+    owl_feed = client.get(f"{OWL}/nowplaying").json()
+    assert owl_feed["current_track"]["title"] == song.title
+    assert song.path not in client.get(f"{OWL}/nowplaying").text

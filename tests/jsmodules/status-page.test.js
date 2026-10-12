@@ -27,7 +27,7 @@ function mount() {
       <dl>
         <dt>Listening now</dt><dd id="status-listeners">1 listener</dd>
         <dt>Peak today</dt><dd id="status-peak">2 listeners</dd>
-        <dt>On air for</dt><dd id="status-uptime">5 minutes</dd>
+        <dt>Uptime</dt><dd id="status-uptime">5 minutes</dd>
       </dl>
     </main>
     <footer><p id="status-updated">Reload the page for the latest.</p>
@@ -254,15 +254,38 @@ describe("status page polling", () => {
 });
 
 describe("status page feed address", () => {
-  it("polls the feed the page names, and only a same-site path", () => {
+  const named = (feed) => {
     document.body.innerHTML = "";
-    document.body.dataset.feed = "/api/stations/nightowl/nowplaying";
-    expect(feedUrl(document)).toBe("/api/stations/nightowl/nowplaying");
-    document.body.dataset.feed = "//evil.example/feed";
-    expect(feedUrl(document)).toBe("/api/nowplaying");
-    document.body.dataset.feed = "https://evil.example/feed";
-    expect(feedUrl(document)).toBe("/api/nowplaying");
-    delete document.body.dataset.feed;
-    expect(feedUrl(document)).toBe("/api/nowplaying");
+    if (feed === undefined) delete document.body.dataset.feed;
+    else document.body.dataset.feed = feed;
+    return feedUrl(document);
+  };
+
+  it("polls the station feed the page names", () => {
+    expect(named("/api/stations/nightowl/nowplaying")).toBe("/api/stations/nightowl/nowplaying");
+    expect(named("/api/nowplaying")).toBe("/api/nowplaying");
+    expect(named(undefined)).toBe("/api/nowplaying");
+    expect(named("")).toBe("/api/nowplaying");
+  });
+
+  it("refuses any address that could reach another host", () => {
+    for (const feed of [
+      "//evil.example/feed",
+      "//evil",
+      "/\\evil.example/feed",
+      "/\\/evil.example/feed",
+      "\\\\evil.example/feed",
+      "/api/\\..\\..\\evil",
+      "/%5Cevil.example/feed",
+      "/%5c%5cevil.example/feed",
+      "/api/%5Cfeed",
+      "https://evil.example/api/feed",
+      "javascript:alert(1)",
+      "evil.example/api/feed",
+      "/\t/evil.example/api/feed",
+      "/status",
+    ]) {
+      expect(named(feed), feed).toBe("/api/nowplaying");
+    }
   });
 });
