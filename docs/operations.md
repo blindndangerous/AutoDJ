@@ -1100,7 +1100,9 @@ settings. Results appear in the server's library within a couple of seconds, wit
 
 While a worker is connected, the server pauses its own analysis so the two never analyse the same
 song. Two minutes after the last worker leaves, the server analyses whatever is left on its own
-processor again, so new music is always analysed sooner or later.
+processor again, so new music is always analysed sooner or later. This includes `autodj index`
+run by hand on the server: its advanced analysis stops taking songs while a worker is connected
+and leaves them to the worker (`autodj index --force` does not stop).
 
 ### 1. Give the server HTTPS
 
@@ -1117,6 +1119,21 @@ button; copy it now, because it is never shown again. Choose Done to hide it. If
 choose Revoke on its row and create another. A worker token can only claim songs, download those
 songs and post their analysis.
 
+Use one token per machine. Settings counts a worker's songs and rate per token, so two machines
+sharing a token show up as one worker, and revoking it stops both.
+
+On a server without a browser at hand, for example inside a container, the same can be done from
+the command line (`docker exec -it autodj autodj tokens ...` in a container):
+
+```bash
+uv run autodj tokens create Alienware --scope analysis-worker   # prints the token once
+uv run autodj tokens list                                       # ids, names, scopes, last use
+uv run autodj tokens revoke <id>
+```
+
+`tokens create` prints only the token on standard output, and its warning that the token is never
+shown again on standard error.
+
 ### 3. Install AutoDJ on the GPU machine
 
 Install AutoDJ as usual with the `index` extra, then check that PyTorch sees the graphics card:
@@ -1127,9 +1144,16 @@ uv run python -c "import torch; print(torch.cuda.is_available())"
 
 `True` means the worker runs on the GPU (NVIDIA CUDA, or AMD ROCm as in
 [Windows AMD GPU setup](windows-amd.md)); `False` means it would run on the processor. The GPU
-machine needs no music folder and no library. It uses the model named by `[model] name` and
-`revision`, which must match the server's; both default to the same values, and the worker stops
-with a message saying what to change if they differ. The model downloads on first use.
+machine needs no music folder and no library. The model downloads on first use.
+
+The worker's results count only if it ran exactly the server's model weights. `[model] revision`
+is a branch name (`main`), and two machines that downloaded `main` at different times can hold
+different weights, so the server compares the snapshot commit of each machine's downloaded copy
+(or, for a `[model] manual_path` folder, a digest of its weight files). The server needs its own
+copy of the model for this, which `autodj index` downloads. If the copies differ, the worker stops
+before it loads anything and says which commit the server has; set
+`[model] revision = "<that commit>"` in the GPU machine's `config.toml` and start the worker again,
+and it downloads exactly the server's weights.
 
 ### 4. Run the worker
 
@@ -1160,7 +1184,8 @@ minutes, so a worker left running rides out a server restart. Ctrl+C finishes th
 gives the rest of its batch back and exits; a second Ctrl+C quits at once. A worker that stops
 without giving its songs back (a crash or a pulled cable) loses them after ten minutes, and the
 server hands them out again. A song the worker cannot decode is held back for six hours, and a song
-whose file changed on the server since the last scan for one hour.
+whose file changed on the server since the last scan for one hour; a Rescan that reads the song's
+new file clears either hold at once.
 
 Settings, Analysis workers shows each worker (connected or not, its graphics card, when it was
 last seen, songs analysed and failed, and songs per hour), how many songs are waiting, and whether

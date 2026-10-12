@@ -240,8 +240,9 @@ the detected addresses as a bare-metal server does.
 
 A machine token is a bearer secret for a program, not a person. Settings, Analysis workers
 creates, lists and revokes them; those routes (`/api/machine-tokens`) are ordinary paired-browser
-routes and need a session when pairing is on. The same store is meant for radiodj's upload
-tokens (#88), which add their own scopes.
+routes and need a session when pairing is on. `autodj tokens list|create|revoke` does the same
+from a shell on the server (it can read and write the token database anyway). The same store is
+meant for radiodj's upload tokens (#88), which add their own scopes.
 
 - A token reads `adj1.<id>.<secret>`: 32 hex digits naming the row and 256 random bits. It is
   shown once, in the reply to the request that created it (sent with `Cache-Control: no-store`),
@@ -273,8 +274,10 @@ What a worker can do with a valid token:
 - Read the original bytes of a song it holds a live claim on (`GET /api/worker/audio?lease=`),
   and nothing else. The lease id must match the token, and the file must still have the size and
   fingerprint it was claimed with.
-- Post one result per claimed song. The server refuses it unless the model id, model revision,
-  analysis version and vector size equal its own, the vector is exactly 1040 finite float32 values
+- Post one result per claimed song. The server refuses it unless the model id, the model weights
+  (the snapshot commit of the server's downloaded copy, or a SHA-256 digest of the weight files
+  of a `manual_path` folder; never the branch name, which two machines can resolve to different
+  weights), the analysis version and the vector size equal its own, the vector is exactly 1040 finite float32 values
   of unit length, the analysed fields are in range, and the record and the file on disk still have
   the claimed size and fingerprint. A result for a changed file is refused as stale. A result can
   change only a song's energy, key, mode, BPM estimate (when the song has no BPM tag), tempo

@@ -197,6 +197,8 @@ Every command takes `--help`, for example `uv run autodj serve --help`. The glob
   `--token` or `AUTODJ_WORKER_TOKEN`. `--once` stops when nothing is left; `--before-command` and
   `--after-command` run a program before and after, such as one that stops and restarts another
   program sharing the GPU. See [Using a GPU machine](docs/operations.md#using-a-gpu-machine).
+- `autodj tokens list`, `create NAME --scope analysis-worker` and `revoke ID` manage machine
+  tokens from the command line, as Settings, Analysis workers does; a new token is printed once.
 - `autodj migrate-index` previews a schema-3 to schema-4 conversion; add `--apply` to save a
   recovery copy and convert without repeating analysis. Interactive `serve` offers this too.
 - `autodj enrich` refreshes key and mode from your beets database.
