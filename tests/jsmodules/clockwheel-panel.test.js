@@ -44,7 +44,13 @@ function installIndex() {
 }
 
 // A stand-in for the clockwheel routes, holding files the way the server does.
-function fakeServer({ notice = null, categories = [] } = {}) {
+function fakeServer({
+  notice = null,
+  categories = [],
+  genres = ["Rock", "Jazz"],
+  beets_fields = ["mood"],
+  beets_error = null,
+} = {}) {
   const server = { clocks: { Morning: copy(MORNING) }, active: "Morning", calls: [], fail: null };
   server.request = vi.fn(async (url, options = {}) => {
     const method = options.method || "GET";
@@ -54,6 +60,7 @@ function fakeServer({ notice = null, categories = [] } = {}) {
     const names = () => Object.keys(server.clocks).sort();
     const snapshot = () => ({
       names: names(), active: server.active, sources: SOURCES, presets: ["night", "wakeup"], categories,
+      genres, beets_fields, beets_error,
       types: ["liner", "music", "settings", "track"], cursor: 1, last_status: "Ready", notice,
     });
     if (url === "/api/library/clock" && method === "GET") return snapshot();
@@ -136,12 +143,12 @@ describe("clockwheel editor", () => {
     expect(field("clock-step-category").hidden).toBe(false);
     expect(field("clock-step-selection").hidden).toBe(false);
     expect(field("clock-step-source").hidden).toBe(true);
-    expect(field("clock-step-folder").hidden).toBe(true);
+    expect(field("clock-step-conditions").hidden).toBe(true);
     expect([...byId("clock-step-category").options].map((option) => option.textContent)).toEqual(["Rock gold", "2000s"]);
     byId("clock-step-category").value = "c2";
     byId("clock-step-selection").value = "random";
     byId("clock-add-step").click();
-    expect(rowText(3)).toBe("Step 4 of 4, music from category 2000s, at random");
+    expect(rowText(3)).toBe("music from category 2000s, at random");
     await vi.waitFor(() => expect(status()).toBe("Added Step 4 of 4, music from category 2000s, at random. Not saved yet."));
     rowButton(3, "edit").click();
     expect(byId("clock-step-category").value).toBe("c2");
@@ -174,6 +181,133 @@ describe("clockwheel editor", () => {
     expect(describeStep({ ...MUSIC, recursive: true, source: "gone" }, SOURCES)).toBe("music from a folder that is no longer registered, with subfolders");
     expect(describeStep({ type: "settings", preset: "night" })).toBe("switch to preset night");
     expect(describeStep({ type: "time_check" })).toBe("time check step");
+  });
+
+  it("saves any-match folder rows and numeric ranges, with summaries for every condition", async () => {
+    const server = await open(fakeServer());
+    const type = byId("clock-step-type");
+    type.value = "music";
+    type.dispatchEvent(new Event("change"));
+    const host = byId("clock-step-conditions");
+    const first = host.firstElementChild;
+    first.querySelectorAll("select")[1].value = "rock";
+    first.querySelectorAll("input[type=text]")[0].value = "Live";
+    byId("clock-add-condition").click();
+    const second = host.lastElementChild;
+    const secondField = second.querySelectorAll("select")[0];
+    secondField.value = "year";
+    secondField.dispatchEvent(new Event("change"));
+    const secondOperator = second.querySelectorAll("select")[2];
+    secondOperator.value = "between";
+    secondOperator.dispatchEvent(new Event("change"));
+    const numeric = second.querySelectorAll("input[type=text]");
+    numeric[1].value = "1990";
+    numeric[2].value = "2000";
+    byId("clock-add-condition").click();
+    const duration = host.lastElementChild;
+    const durationField = duration.querySelector("select");
+    durationField.value = "duration";
+    durationField.dispatchEvent(new Event("change"));
+    const durationOperator = duration.querySelectorAll("select")[2];
+    durationOperator.value = "between";
+    durationOperator.dispatchEvent(new Event("change"));
+    duration.querySelectorAll("input[type=text]")[1].value = "1:05";
+    duration.querySelectorAll("input[type=text]")[2].value = "90";
+    byId("clock-step-match").value = "any";
+    byId("clock-add-step").click();
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(server.calls.some((call) => call.method === "PUT")).toBe(true));
+    const step = server.calls.find((call) => call.method === "PUT").body.steps.at(-1);
+    expect(step).toEqual({
+      type: "music",
+      match: "any",
+      conditions: [
+        { field: "folder", source: "rock", folder: "Live", recursive: false },
+        { field: "year", operator: "between", value: 1990, upper: 2000 },
+        { field: "duration", operator: "between", value: 65, upper: 90 },
+      ],
+      selection: "least_recent",
+      enforce_rules: true,
+    });
+    expect(rowText(3)).toContain("Live OR Year between 1990 and 2000 OR Duration (seconds) between 65 and 90");
+    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 4 steps."));
+    rowButton(3, "edit").click();
+    const reopenedRange = byId("clock-step-conditions").children[1];
+    expect(reopenedRange.querySelectorAll("select")[2].value).toBe("between");
+    expect(reopenedRange.querySelectorAll("input[type=text]")[2].value).toBe("2000");
+  });
+
+  it("allows metadata-only steps, preserves rows when edited, and focuses after removal", async () => {
+    const server = await open(fakeServer());
+    const type = byId("clock-step-type");
+    type.value = "music";
+    type.dispatchEvent(new Event("change"));
+    const row = byId("clock-step-conditions").firstElementChild;
+    const source = row.querySelectorAll("select")[1];
+    expect(source.value).toBe("rock");
+    type.value = "liner";
+    type.dispatchEvent(new Event("change"));
+    expect(source.value).toBe("ids");
+    type.value = "music";
+    type.dispatchEvent(new Event("change"));
+    expect(source.value).toBe("rock");
+    const field = row.querySelector("select");
+    field.value = "artist";
+    field.dispatchEvent(new Event("change"));
+    row.querySelectorAll("select")[2].value = "contains";
+    row.querySelectorAll("input[type=text]")[1].value = "Björk*";
+    await controls.refresh();
+    expect(row.querySelectorAll("input[type=text]")[1].value).toBe("Björk*");
+    byId("clock-add-condition").click();
+    const second = byId("clock-step-conditions").lastElementChild;
+    const secondField = second.querySelector("select");
+    secondField.value = "title";
+    secondField.dispatchEvent(new Event("change"));
+    second.querySelectorAll("select")[2].value = "contains";
+    second.querySelectorAll("input[type=text]")[1].value = "Live?";
+    byId("clock-add-step").click();
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(server.calls.some((call) => call.method === "PUT")).toBe(true));
+    expect(server.calls.find((call) => call.method === "PUT").body.steps.at(-1).conditions).toEqual([
+      { field: "artist", operator: "contains", value: "Björk*" },
+      { field: "title", operator: "contains", value: "Live?" },
+    ]);
+    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 4 steps."));
+    rowButton(3, "edit").click();
+    expect(byId("clock-step-conditions").children).toHaveLength(2);
+    byId("clock-step-conditions").children[0].querySelector("button").click();
+    expect(byId("clock-step-conditions").children).toHaveLength(1);
+    expect(byId("clock-step-conditions").firstElementChild.querySelector("legend").textContent).toBe("Condition 1");
+    expect(document.activeElement).toBe(byId("clock-step-conditions").firstElementChild.querySelector("select"));
+    byId("clock-step-conditions").firstElementChild.querySelector("button").click();
+    expect(byId("clock-step-conditions").children).toHaveLength(0);
+    expect(document.activeElement).toBe(byId("clock-add-condition"));
+    byId("clock-add-step").click();
+    await vi.waitFor(() => expect(status()).toBe("Add at least one condition."));
+  });
+
+  it("loads genres, exposes Beets and preserves an unavailable saved Beets field", async () => {
+    const old = {
+      ...copy(MUSIC),
+      conditions: [{ field: "beets", name: "mood", operator: "contains", value: "calm" }],
+    };
+    const fixture = fakeServer({
+      genres: ["Ambient", "Rock"],
+      beets_fields: [],
+      beets_error: "Beets database unavailable.",
+    });
+    fixture.clocks.Morning.steps[0] = old;
+    await open(fixture);
+    // Open again so this fixture exercises a saved condition that is no longer supplied by the library.
+    byId("clock-list").querySelector("button").click();
+    await vi.waitFor(() => expect(rowText(0)).toContain("Beets mood contains calm"));
+    rowButton(0, "edit").click();
+    const row = byId("clock-step-conditions").firstElementChild;
+    expect(row.querySelector("select").value).toBe("beets");
+    expect(byId("clock-step-beets-notice").hidden).toBe(false);
+    expect(byId("clock-step-beets-notice").textContent).toBe("Beets database unavailable.");
+    expect(row.querySelectorAll("select")[4].value).toBe("mood");
+    expect([...row.querySelectorAll("select")[3].options].map((option) => option.value)).toEqual(["Ambient", "Rock"]);
   });
 
   it("opens the active clockwheel quietly and lists each step with its position", async () => {
@@ -283,11 +417,12 @@ describe("clockwheel editor", () => {
     expect(byId("clock-step-legend").textContent).toBe("Edit step 2");
     expect(byId("clock-add-step").textContent).toBe("Update step 2");
     expect(byId("clock-cancel-edit").hidden).toBe(false);
-    expect(byId("clock-step-source").value).toBe("ids");
-    expect(byId("clock-step-folder").value).toBe("Top");
+    const legacyCondition = byId("clock-step-conditions").firstElementChild;
+    expect(legacyCondition.querySelectorAll("select")[1].value).toBe("ids");
+    expect(legacyCondition.querySelectorAll("input[type=text]")[0].value).toBe("Top");
     expect(byId("clock-step-enforce-rules").checked).toBe(false);
     expect(byId("clock-step-require-following").checked).toBe(false);
-    byId("clock-step-folder").value = "Top/Hour";
+    byId("clock-step-conditions").firstElementChild.querySelectorAll("input[type=text]")[0].value = "Top/Hour";
     byId("clock-step-selection").value = "least_recent";
     byId("clock-step-require-following").checked = true;
     byId("clock-add-step").click();
@@ -302,10 +437,10 @@ describe("clockwheel editor", () => {
     expect(put.body.steps[0]).not.toHaveProperty("require_following");
     byId("clock-step-require-following").checked = true;
     byId("clock-add-step").click();
-    await vi.waitFor(() => expect(status()).toBe("Added Step 4 of 4, liner from Top/Hour, ignoring repeat rules, only if the following track fits before the next reset. Not saved yet."));
+    await vi.waitFor(() => expect(status()).toBe("Added Step 4 of 4, liner from Liners, ignoring repeat rules, only if the following track fits before the next reset. Not saved yet."));
     expect(byId("clock-step-require-following").checked).toBe(false);
     byId("clock-add-step").click();
-    await vi.waitFor(() => expect(status()).toBe("Added Step 5 of 5, liner from Top/Hour, ignoring repeat rules. Not saved yet."));
+    await vi.waitFor(() => expect(status()).toBe("Added Step 5 of 5, liner from Liners, ignoring repeat rules. Not saved yet."));
     byId("clock-save").click();
     await vi.waitFor(() => expect(status()).toBe("Saved Morning, 5 steps."));
     const savedAgain = server.calls.filter((call) => call.method === "PUT").at(-1);
@@ -322,7 +457,7 @@ describe("clockwheel editor", () => {
     const type = byId("clock-step-type");
     const shown = () => [...document.querySelectorAll(".clock-step-field")].filter((field) => !field.hidden)
       .map((field) => field.querySelector("input, select").id.replace("clock-step-", ""));
-    expect(shown()).toEqual(["source", "folder", "recursive", "selection", "enforce-rules"]);
+    expect(shown()).toEqual(["match", "selection", "enforce-rules"]);
     type.value = "track";
     type.dispatchEvent(new Event("change"));
     expect(shown()).toEqual(["source", "path"]);
@@ -337,7 +472,7 @@ describe("clockwheel editor", () => {
     expect(rowText(3)).toBe("track Album/Other.flac");
     type.value = "liner";
     type.dispatchEvent(new Event("change"));
-    expect(shown()).toEqual(["source", "folder", "recursive", "selection", "enforce-rules", "require-following"]);
+    expect(shown()).toEqual(["match", "selection", "enforce-rules", "require-following"]);
     expect([...byId("clock-step-source").options].map((option) => option.value)).toEqual(["ids"]);
     expect(byId("clock-step-require-following").checked).toBe(false);
     type.value = "settings";
@@ -366,17 +501,27 @@ describe("clockwheel editor", () => {
     await vi.waitFor(() => expect(status()).toBe("New clockwheel Night. Add its steps, then press Save clockwheel."));
     expect(document.activeElement).toBe(byId("clock-step-type"));
     expect(byId("clock-open-name").textContent).toBe("Night, not saved yet");
-    byId("clock-step-source").value = "jazz";
-    byId("clock-step-folder").value = "Late/Slow";
-    byId("clock-step-recursive").checked = true;
+    const condition = byId("clock-step-conditions").firstElementChild;
+    condition.querySelectorAll("select")[1].value = "jazz";
+    condition.querySelectorAll("input[type=text]")[0].value = "Late/Slow";
+    condition.querySelector("input[type=checkbox]").checked = true;
     byId("clock-add-step").click();
     byId("clock-resync-minutes").value = "30, 0";
     byId("clock-save").click();
     await vi.waitFor(() => expect(status()).toBe("Saved Night, 1 step."));
     const post = server.calls.find((call) => call.method === "POST" && call.url === "/api/library/clock");
-    expect(post.body).toEqual({ version: 1, name: "Night", resync_minutes: [0, 30], steps: [
-      { type: "music", source: "jazz", folder: "Late/Slow", recursive: true, selection: "least_recent", enforce_rules: true },
-    ] });
+    expect(post.body).toEqual({
+      version: 1,
+      name: "Night",
+      resync_minutes: [0, 30],
+      steps: [{
+        type: "music",
+        match: "all",
+        conditions: [{ field: "folder", source: "jazz", folder: "Late/Slow", recursive: true }],
+        selection: "least_recent",
+        enforce_rules: true,
+      }],
+    });
     expect(byId("clock-open-name").textContent).toBe("Night");
   });
 

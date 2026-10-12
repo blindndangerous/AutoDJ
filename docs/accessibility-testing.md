@@ -112,6 +112,10 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   on the next Edit button or Add category; and the list never spoken on its 15-second refresh.
   In Clockwheels, "Music from a category" showing the Category choice and the step read as
   "music from category A".
+- Library tools, Clockwheels: each condition announced with its numbered legend; Add condition
+  focusing the new condition; Remove condition keeping focus in the editor, including when the
+  last condition is removed; Match all/Match any and every condition read in the step summary;
+  and saved values and keyboard focus preserved when folder, genre or Beets choices refresh.
 - EQ: each band's slider, its spoken value, and resetting the bands.
 - History: the History tab's table read with table navigation, its pagination, the empty state,
   and a new song added to the top of page 1 without the reading position moving or anything said.
