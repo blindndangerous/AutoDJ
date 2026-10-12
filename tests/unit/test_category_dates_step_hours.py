@@ -24,7 +24,11 @@ from autodj.categories import (
 )
 from autodj.clockwheel_store import ClockwheelStore, validate_clockwheel, validate_step
 from autodj.rotation_sim import SimulationRequest, simulate
-from tests.unit._rotation_station import category_step, make_station, song
+from tests.unit._rotation_station import MUSIC, category_step, make_station, song
+
+
+def track_step(entry: Any) -> dict[str, Any]:
+    return {"type": "track", "source": "music", "path": entry.path.removeprefix(f"{MUSIC}/")}
 
 
 def category(**changes: Any) -> Category:
@@ -213,7 +217,10 @@ def test_a_step_hours_rule_is_the_category_rule() -> None:
     assert isinstance(hours, StepHours)
     assert hours.refusal(wall("2026-10-16 23:00")) is None  # Friday night
     assert hours.refusal(wall("2026-10-17 01:00")) is None  # still Friday's window
-    assert hours.refusal(wall("2026-10-17 23:00")) == (
+    assert hours.refusal(wall("2026-10-17 23:00")) == (  # Saturday's own night
+        "outside its days: plays only on Friday from 22:00 until 02:00"
+    )
+    assert hours.refusal(wall("2026-10-16 12:00")) == (  # Friday noon
         "outside its hours: plays only on Friday from 22:00 until 02:00"
     )
     assert parse_step_hours({"type": "music"}) is None
@@ -260,13 +267,15 @@ def test_a_step_outside_its_hours_is_skipped_and_says_why(tmp_path: Path, caplog
     assert picked.entry.path not in night
 
 
-def test_a_clock_whose_every_step_is_outside_its_hours_plays_an_allowed_song(
+def test_a_category_clock_whose_every_step_is_closed_by_its_hours_acts_as_one_with_none(
     tmp_path: Path,
 ) -> None:
+    # Step hours are not category hours: the clock takes the path it takes
+    # when no step can play.  For category steps that already plays a song
+    # from the library; nothing says it is the hours of the songs.
     step = {**category_step("night"), "hours_from": "22:00", "hours_until": "02:00"}
     source, _night = _step_station(tmp_path, step)
     player = source.player
-    # The other step keeps the same hours, so at noon no step can play.
     player._clock_step_hours = (
         parse_step_hours({"hours_from": "22:00", "hours_until": "02:00"}),
     ) * 2
@@ -276,7 +285,30 @@ def test_a_clock_whose_every_step_is_outside_its_hours_plays_an_allowed_song(
     picked, mode, *_rest = player._choose_station_next(current, player._pick_context())
     assert mode == "fallback"
     assert picked is not None
-    assert player._clock_status.endswith("every song this clockwheel can play is outside its hours")
+    assert not player._clock_closed_only
+    assert "every song this clockwheel can play" not in player._clock_status
+
+
+def test_a_folder_clock_whose_every_step_is_closed_by_its_hours_stops_as_before(
+    tmp_path: Path,
+) -> None:
+    # No new fallback to the whole library for a clock of folder or track
+    # steps: closed by their hours, it does what an empty folder clock does.
+    music = [song(n, f"Artist {n}") for n in range(10)]
+    source = make_station(
+        tmp_path,
+        music,
+        clockwheels=[{"name": "Main", "steps": [{**track_step(music[0]), "days": [4]}]}],
+        active_clock="Main",
+        playback={"pick_mode": "clock"},
+    )
+    player = source.player
+    monday = _at("2026-10-12 12:00")
+    player._now = lambda: monday  # type: ignore[method-assign]
+    current = music[1]
+    with pytest.raises(ValueError, match="Step 1: outside its days: plays only on Friday"):
+        player._choose_station_next(current, player._pick_context())
+    assert not player._clock_closed_only
 
 
 def test_the_rotation_tester_skips_a_step_outside_its_hours(tmp_path: Path) -> None:
@@ -291,3 +323,33 @@ def test_the_rotation_tester_skips_a_step_outside_its_hours(tmp_path: Path) -> N
     friday = simulate(source, SimulationRequest(hours=3, start=_at("2026-10-16 22:00"), seed=4))
     rows = {row["name"]: row for row in friday["categories"]}
     assert rows["Night"]["plays"] > 0
+
+
+def test_the_warnings_name_what_holds_the_songs_back(caplog) -> None:
+    from types import SimpleNamespace
+
+    from autodj.player import _closure_words
+    from tests.unit.test_dayparting import _dayparted
+    from tests.unit.test_dmca import _player
+
+    def context(*reasons: str) -> Any:
+        return SimpleNamespace(closed_categories={str(n): r for n, r in enumerate(reasons)})
+
+    assert _closure_words(context()) == "hours"
+    assert _closure_words(context("outside its dates: plays only until 26 December 2026")) == (
+        "dates"
+    )
+    assert _closure_words(
+        context("outside its dates: x", "outside its hours: y", "outside its days: z")
+    ) == ("days, hours or dates")
+    everything = {entry.title for entry in _player("random").playable_entries()}
+    player = _dayparted(_player("random", dmca=False), everything)
+    paths = player._library.categories.closed_now(None)[0]
+    player._library.categories.closed_now = lambda _wall: (
+        paths,
+        {"xmas": "outside its dates: plays only until 26 December 2026"},
+    )
+    current = player.playable_entries()[0]
+    with caplog.at_level(logging.WARNING, logger="autodj.player"):
+        player._choose_next(current, player._pick_context())
+    assert "every song is outside its category's dates" in caplog.text

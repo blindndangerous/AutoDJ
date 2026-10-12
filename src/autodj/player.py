@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import random
+import re
 import sqlite3
 import threading
 import time
@@ -367,6 +368,29 @@ def apply_repeat_windows(player: Any) -> None:
             related=getattr(player, "_related_artists", None),
         )
     )
+
+
+#: "outside its hours", "outside its days" or "outside its dates" in a reason.
+_OUTSIDE_ITS = re.compile(r"outside its (hours|days|dates)\b")
+
+
+def _closure_words(context: _PickContext) -> str:
+    """What holds the closed categories back, in words: "hours", "days and dates" and so on.
+
+    Read from the reasons the category index gives (``"outside its dates: ..."``);
+    "hours" when none says.
+    """
+    found = sorted(
+        {
+            match.group(1)
+            for reason in context.closed_categories.values()
+            if (match := _OUTSIDE_ITS.search(reason))
+        },
+        key=("days", "hours", "dates").index,
+    )
+    if not found:
+        return "hours"
+    return found[0] if len(found) == 1 else f"{', '.join(found[:-1])} or {found[-1]}"
 
 
 def _log_repeat_blocks(repeat: RepeatFilter, picked: IndexEntry) -> None:
@@ -1396,7 +1420,7 @@ class Player:
                 # A step outside its days and hours is skipped like a step
                 # whose conditions cannot be read.
                 condition_errors={**condition_errors, **closed_steps}
-                if hours and closed_steps
+                if closed_steps
                 else condition_errors,
                 condition_cache=cache,
                 closed_categories=context.closed_categories if hours else None,
@@ -1449,13 +1473,15 @@ class Player:
         # nothing else.
         self._clock_closed_only = (
             picked.entry is None
-            and bool(closed or context.closed_categories or closed_steps)
+            and bool(closed or context.closed_categories)
             and pick(False, False, use_dmca=False, protected=follows_only, hours=False).entry
             is not None
         )
         self._clock_status = "; ".join(picked.skipped) or "Ready"
         if self._clock_closed_only:
-            self._clock_status += "; every song this clockwheel can play is outside its hours"
+            self._clock_status += (
+                f"; every song this clockwheel can play is outside its {_closure_words(context)}"
+            )
         self._log_category_skips(picked.skipped)
         if picked.entry is not None and picked.preset:
             from autodj.presets import get_preset
@@ -1575,7 +1601,7 @@ class Player:
         reasons = tuple(
             reason
             for reason in skipped
-            if reason.startswith("category") or "outside its hours" in reason
+            if reason.startswith("category") or _OUTSIDE_ITS.search(reason)
         )
         if reasons and reasons != getattr(self, "_category_skips_logged", ()):
             logger.warning(
@@ -1675,14 +1701,16 @@ class Player:
             if pool:
                 chosen = self._chooser().choice(pool)  # nosec B311 -- music selection
                 logger.info(
-                    "Dayparting: %s is outside its category's hours; %s plays instead",
+                    "Dayparting: %s is outside its category's %s; %s plays instead",
                     entry.display_name,
+                    _closure_words(context),
                     chosen.display_name,
                 )
                 return chosen
         self._warn_all_closed(
             context.closed,
-            f"Dayparting: {entry.display_name} plays outside its category's hours: "
+            f"Dayparting: {entry.display_name} plays outside its category's "
+            f"{_closure_words(context)}: "
             "no other song can play",
         )
         return entry
@@ -3074,7 +3102,7 @@ class Player:
         if audible is everything and context.closed:
             self._warn_all_closed(
                 context.closed,
-                "Dayparting: every song is outside its category's hours; "
+                f"Dayparting: every song is outside its category's {_closure_words(context)}; "
                 "playing one anyway rather than stopping the music",
             )
         bpm_range = self._bpm_range

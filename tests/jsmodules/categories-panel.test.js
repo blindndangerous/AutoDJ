@@ -245,6 +245,27 @@ describe("categories form", () => {
     expect(byId("categories-not-after").value).toBe("2026-12-26");
   });
 
+  it("says a category is now outside its dates in place, without moving focus or a sound", async () => {
+    const server = await open();
+    server.categories[0] = {
+      ...server.categories[0], not_after: "2026-12-26",
+      daypart_text: "Plays only until 26 December 2026", allowed_now: true, outside_now: null,
+    };
+    await controls.refresh();
+    const row = items()[0];
+    rowButton(0, "edit").focus();
+    const button = document.activeElement;
+    const said = status();
+    // The station's midnight passes: the next poll finds the season over.
+    server.categories[0] = { ...server.categories[0], allowed_now: false, outside_now: "dates" };
+    await controls.refresh();
+    expect(items()[0]).toBe(row);
+    expect(row.querySelector("span").textContent).toContain(
+      "Plays only until 26 December 2026. Outside its dates now.");
+    expect(document.activeElement).toBe(button);
+    expect(status()).toBe(said);
+  });
+
   it("names a backwards season and links the error to Do not play after", async () => {
     const server = await open();
     byId("categories-add").click();

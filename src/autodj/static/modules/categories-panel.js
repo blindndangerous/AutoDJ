@@ -46,7 +46,7 @@ export function describeCategory(category) {
   // Dayparting and the season, in words; "outside its hours now" (or its
   // dates) is said, not only shown.
   if (category.daypart_text) {
-    const outside = category.outside_now === "dates" ? "dates" : "hours";
+    const outside = ["days", "dates"].includes(category.outside_now) ? category.outside_now : "hours";
     sentences.push(`${category.daypart_text}.${category.allowed_now === false ? ` Outside its ${outside} now.` : ""}`);
   }
   const examples = (category.missing_examples || []).slice(0, EXAMPLES_SHOWN);
@@ -110,6 +110,20 @@ export function installCategoriesPanel({ document: doc = document, request = req
     const signature = JSON.stringify(data.categories);
     if (signature === listSignature) return;
     listSignature = signature;
+    // The same categories in the same order: change only the words of each
+    // row, so a poll that finds a category now outside its hours, days or
+    // dates (at the station's midnight, say) moves no focus and says nothing.
+    const rows = [...list.querySelectorAll(":scope > li[data-id]")];
+    if (rows.length && rows.length === data.categories.length
+        && rows.every((row, i) => row.dataset.id === data.categories[i].id
+          && row.dataset.name === data.categories[i].name)) {
+      rows.forEach((row, i) => {
+        const text = describeCategory(data.categories[i]);
+        const span = row.firstElementChild;
+        if (span && span.textContent !== text) span.textContent = text;
+      });
+      return;
+    }
     const focused = list.contains(doc.activeElement) ? doc.activeElement.dataset : null;
     if (!data.categories.length) {
       const none = doc.createElement("li");
@@ -120,6 +134,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
     list.replaceChildren(...data.categories.map((category) => {
       const item = doc.createElement("li");
       item.dataset.id = category.id;
+      item.dataset.name = category.name; // the buttons' names say it
       const text = doc.createElement("span");
       text.textContent = describeCategory(category);
       item.append(text, " ", rowButton(category, "edit", "Edit"), " ", rowButton(category, "delete", "Delete"));

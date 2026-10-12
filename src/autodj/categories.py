@@ -261,7 +261,10 @@ def limits_anything(item: Any) -> bool:
 
 
 def daypart_refusal(item: Any, wall: datetime) -> str | None:
-    """Why *item* does not allow local wall time *wall*: ``"hours"``, ``"dates"`` or ``None``.
+    """What of *item* leaves out local wall time *wall*, or ``None`` when it allows it.
+
+    ``"hours"`` (outside its times), ``"days"`` (not one of its days) or
+    ``"dates"`` (outside its season), the first that leaves it out.
 
     The start time is included and the end time is not.  A window that
     crosses midnight belongs to the day it starts, for the days and the
@@ -279,7 +282,7 @@ def daypart_refusal(item: Any, wall: datetime) -> str | None:
         elif at < item.hours_from:
             return "hours"
     if item.days and day.weekday() not in item.days:
-        return "hours"
+        return "days"
     first, last = getattr(item, "not_before", None), getattr(item, "not_after", None)
     if (first is not None and day < first) or (last is not None and day > last):
         return "dates"
@@ -314,10 +317,11 @@ class StepHours(BaseModel):
 
     def refusal(self, wall: datetime) -> str | None:
         """Why the step is skipped at *wall*, in words, or ``None`` when it may play."""
-        if daypart_refusal(self, wall) is None:
+        refused = daypart_refusal(self, wall)
+        if refused is None:
             return None
         text = describe_daypart(self)
-        return f"outside its hours: {text[0].lower()}{text[1:]}"
+        return f"outside its {refused}: {text[0].lower()}{text[1:]}"
 
     def to_json(self) -> dict[str, Any]:
         """The step keys, only those set: ``days``, ``hours_from``, ``hours_until``."""
