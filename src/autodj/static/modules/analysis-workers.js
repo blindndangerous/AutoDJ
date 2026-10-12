@@ -241,15 +241,23 @@ export function installAnalysisWorkers({
     showStationChoice();
   }
 
+  // The station choices after a "Choose a station" placeholder, so nothing
+  // is chosen silently; kept as they are when nothing changed, so a refresh
+  // never resets the choice under the user.
   function showStations(stations) {
     stationNames = new Map(stations.map((station) => [station.slug, station.name]));
-    const chosen = stationSelect.value;
-    stationSelect.replaceChildren(...stations.map((station) => option(
+    const labelled = stations.map((station) => [station.slug,
       station.name && station.name !== station.slug
-        ? `${station.name} (${station.slug})` : station.slug,
-      station.slug,
-    )));
-    if (stations.some((station) => station.slug === chosen)) stationSelect.value = chosen;
+        ? `${station.name} (${station.slug})` : station.slug]);
+    const wanted = ["\nChoose a station", ...labelled.map(([slug, label]) => `${slug}\n${label}`)]
+      .join("\n");
+    const shown = [...stationSelect.options].map((item) => `${item.value}\n${item.textContent}`)
+      .join("\n");
+    if (wanted === shown) return;
+    const chosen = stationSelect.value;
+    stationSelect.replaceChildren(option("Choose a station", ""),
+      ...labelled.map(([slug, label]) => option(label, slug)));
+    stationSelect.value = stations.some((station) => station.slug === chosen) ? chosen : "";
   }
 
   // The Station choice shows only for a token that works for one station.

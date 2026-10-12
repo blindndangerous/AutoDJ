@@ -237,3 +237,20 @@ def test_tokens_command_binds_an_announcer_token(tmp_path):
     unbound = runner.invoke(cli, [*base, "create", "x", "--scope", SCOPE_ANNOUNCER])
     assert unbound.exit_code == 1
     assert "needs the station" in unbound.output
+
+
+def test_adding_the_station_column_twice_is_harmless(tmp_path):
+    from autodj.machine_tokens import add_station_column
+
+    path = tmp_path / ".machine-tokens.sqlite3"
+    MachineTokenStore(path)  # already has the column
+    with sqlite3.connect(path) as db:
+        add_station_column(db)  # the slower of two openers finds it there
+    db.close()
+    # Any other failure still stops the store from opening.
+    with (
+        sqlite3.connect(tmp_path / "empty.sqlite3") as empty,
+        pytest.raises(sqlite3.OperationalError),
+    ):
+        add_station_column(empty)
+    empty.close()

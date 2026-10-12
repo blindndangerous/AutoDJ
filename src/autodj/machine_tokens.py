@@ -136,6 +136,20 @@ def validate_station(scopes: Iterable[str], station: object) -> str | None:
     return station
 
 
+def add_station_column(db: sqlite3.Connection) -> None:
+    """Give an older token table its ``station`` column.
+
+    The server and ``autodj tokens`` may both open an older file at once
+    and both see the column missing; whichever adds it second finds it
+    there, which is fine.
+    """
+    try:
+        db.execute("ALTER TABLE machine_tokens ADD COLUMN station TEXT")
+    except sqlite3.OperationalError as exc:
+        if "duplicate column" not in str(exc).lower():
+            raise
+
+
 class MachineTokenStore:
     """Create, list, check and revoke machine tokens in a small SQLite file."""
 
@@ -161,7 +175,7 @@ class MachineTokenStore:
             )
             columns = {row[1] for row in db.execute("PRAGMA table_info(machine_tokens)")}
             if "station" not in columns:
-                db.execute("ALTER TABLE machine_tokens ADD COLUMN station TEXT")
+                add_station_column(db)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:

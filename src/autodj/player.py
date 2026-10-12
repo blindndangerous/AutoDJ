@@ -54,7 +54,7 @@ from autodj.beatmatch import (
     phase_locked_start,
     tempo_ratio,
 )
-from autodj.breaks import Break, BreakError, SlotPlan, new_id, placement_for
+from autodj.breaks import Break, BreakError, SlotPlan, new_id, placement_for, speech_cues
 from autodj.dmca import WINDOW_SECONDS, Complement, complement, relaxed
 from autodj.indexer import IndexEntry
 from autodj.mixbus import BusEvents, MixBus, RenderedTrack, SkipTail
@@ -767,8 +767,8 @@ class Player:
     _seed_clock_name: str | None = None
     _seed_clock_following: tuple[IndexEntry, IndexEntry, int] | None = None
     liner_scheduler: Any = None
-    # This station's announcer breaks (a BreakDesk, #88), or None.
-    break_desk: Any = None
+    # This station's announcer breaks (a BreakDesk, #88), or None; see break_desk.
+    _break_desk: Any = None
     # The open song change, planned one song ahead for breaks (#88), and
     # the lock that guards it.  A leaf lock: only the desk's own lock is
     # taken while it is held.
@@ -971,6 +971,7 @@ class Player:
             rewind=self._rewind_render_cursor,
             skip_past=self._skip_past_render,
             plan=lambda track: self._plan_slot(track),
+            discard=lambda track: self._discard_render(track),
         )
         self._slot_lock = threading.Lock()
         self._heard_break_starts: set[str] = set()
@@ -2244,6 +2245,46 @@ class Player:
     # Announcer breaks (#88): the open song change, planned a song ahead
     # ------------------------------------------------------------------
 
+    @property
+    def break_desk(self) -> Any:
+        """This station's announcer breaks (a BreakDesk, #88), or ``None``."""
+        return self._break_desk
+
+    @break_desk.setter
+    def break_desk(self, desk: Any) -> None:
+        self._break_desk = desk
+        if desk is not None:
+            # A slot whose last waiting break went is unpinned again.
+            desk.on_slot_empty = self._unpin_slot
+
+    def _unpin_slot(self, slot_id: str) -> None:
+        """Let the queue move the open slot again once no break waits in it."""
+        desk = self.break_desk
+        with self._slot_lock:
+            plan = self._slot_plan
+            if (
+                plan is not None
+                and plan.slot_id == slot_id
+                and plan.pinned
+                and (desk is None or desk.waiting_in(slot_id) == 0)
+            ):
+                plan.pinned = False
+                logger.info("The open song change has no breaks left; the queue may change it")
+
+    def _discard_plan(self, plan: SlotPlan, reason: str) -> None:
+        """Throw *plan* away on the worker: undo its clock move and drop its breaks."""
+        if plan.serial == self._cursor_serial:
+            self._pending_clock_boundary = plan.boundary_before
+        if plan.pinned and self.break_desk is not None:
+            self.break_desk.drop_slot(plan.slot_id, reason)
+
+    def _discard_render(self, track: RenderedTrack) -> None:
+        """A render was thrown away unplayed: the breaks mixed into it will not air."""
+        desk = self.break_desk
+        if desk is not None:
+            for _at, break_id, _end in track.break_events:
+                desk.drop(break_id, "its render was thrown away before it played")
+
     def _breaks_on(self) -> bool:
         """Whether this station plans song changes for breaks.
 
@@ -2302,11 +2343,9 @@ class Player:
                 )
                 return
             self._slot_plan = None
-        if old is not None and old.pinned and self.break_desk is not None:
-            self.break_desk.drop_slot(old.slot_id, "the song before it changed")
-        if old is not None and old.serial == serial:
-            # Planning again from the same cursor: undo what the old pick moved.
-            self._pending_clock_boundary = old.boundary_before
+        if old is not None:
+            # Planning again from the same cursor undoes what the old pick moved.
+            self._discard_plan(old, "the song before it changed")
         also_reserved = (*((ready.entry,) if ready.from_queue else ()), *ready.reserved_liners)
         queue_reserved = current if self._pending_from_queue else None
         context = self._pick_context(
@@ -2341,6 +2380,7 @@ class Player:
             queue_reserved=queue_reserved,
             reserved=reserved,
             ending_offset_s=self._pending_offset / SAMPLE_RATE,
+            clock_name=self._pending_clock_name,
         )
         with self._slot_lock:
             self._slot_plan = plan
@@ -2361,14 +2401,22 @@ class Player:
         with self._slot_lock:
             plan = self._slot_plan
             if plan is None or plan.serial != self._cursor_serial:
+                # Not this render's plan: the cursor that plan's pick moved has
+                # been replaced, so there is nothing of it to undo here.
                 return None
             self._slot_plan = None
-        if plan.ending is not current:  # pragma: no cover -- the serial says it is
+        if plan.clock_name != self._pending_clock_name:
+            # Another clockwheel was selected (#133): the plan's place and
+            # resync time belong to the old one, which the cursor already
+            # forgot, so only its breaks go.
             if plan.pinned and self.break_desk is not None:
-                self.break_desk.drop_slot(plan.slot_id, "the station's next songs changed")
+                self.break_desk.drop_slot(plan.slot_id, "the clockwheel changed")
+            return None
+        if plan.ending is not current:  # pragma: no cover -- the serial says it is
+            self._discard_plan(plan, "the station's next songs changed")
             return None
         if plan.stale and not plan.pinned:
-            self._pending_clock_boundary = plan.boundary_before
+            self._discard_plan(plan, "")
             return None
         return plan
 
@@ -3787,15 +3835,15 @@ class Player:
                 )
             try:
                 audio = self._load_break_audio(item)
+                # Found again in the audio that plays: processing can move the
+                # speech's edges, and its level decides where they are.
+                cues = speech_cues(audio)
             except Exception:
                 logger.exception("Cannot decode break %s; the music plays on", item.break_id[:8])
-                desk.drop(item.break_id, "its file could not be decoded")
+                desk.drop(item.break_id, "its file could not be decoded or holds no speech")
                 continue
             added = add_clip(
-                audio,
-                item.cues.points(placement == "talk_up"),
-                item.cues.length,
-                item.allow_outro,
+                audio, cues.points(placement == "talk_up"), cues.length, item.allow_outro
             )
             if added is None:
                 desk.drop(item.break_id, "it holds no audio")
@@ -3808,14 +3856,24 @@ class Player:
         return spoken
 
     def _load_break_audio(self, item: Break) -> np.ndarray:
-        """A break's audio, processed like a voice liner when the station processes them."""
-        limit = float(self.break_desk.config.max_seconds) + 1.0
+        """A break's audio, processed like a voice liner when the station processes them.
+
+        The header is checked again before anything is decoded
+        (:mod:`autodj.break_audio`), and FFmpeg is told the demuxer, so it
+        probes nothing.
+        """
+        from autodj.break_audio import check_break_audio, decode_break, demuxer_for
+
+        limit = float(self.break_desk.config.max_seconds)
         if self._cfg.playback.loudness_processing in {"smooth", "stereotool"}:
             from autodj.processing import load_and_measure_audio
 
-            audio, _measurement = load_and_measure_audio(item.path, "liner", limit)
+            check_break_audio(item.path, limit)
+            audio, _measurement = load_and_measure_audio(
+                item.path, "liner", limit + 1.0, input_format=demuxer_for(item.path)
+            )
             return audio
-        return load_stereo(str(item.path), SAMPLE_RATE, limit)
+        return decode_break(item.path, limit)
 
     def _break_duck_db(self) -> float:
         """How far the music drops under a break's voice: ``[breaks] duck_db`` or the liners'."""

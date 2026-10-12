@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import logging
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -288,3 +289,130 @@ def test_a_station_with_no_open_slot_asks_to_try_again(station):
     context = station.context()
     assert context["slot"] is None and context["accepting"] is False
     assert "ask again" in context["reason"]
+
+
+def test_room_is_checked_before_the_body_is_read(tmp_path):
+    station = Station(tmp_path, max_queued=1)
+    # An upload still arriving holds the station's only place.
+    station.desk.reserve("f" * 32, "", 10, "arriving")
+    full = station.upload()
+    assert full.status_code == 429 and full.json()["reason"] == "queue_full"
+    assert files(station.desk) == []
+    station.desk.release("f" * 32)
+    assert station.upload().status_code == 201
+
+
+def test_a_declared_length_over_the_stations_own_cap_is_refused_unread(tmp_path):
+    # The server-wide cap is the largest station's (4 MB here); this station takes 1 MB.
+    station = Station(tmp_path, max_upload_mb=4)
+    own = replace(station.desk.config, max_upload_mb=1)
+    station.desk._config = lambda: own
+    reply = station.call(
+        "POST",
+        "/api/announcer/breaks",
+        content=b"x",
+        headers={
+            "Content-Length": str(2 * 1024 * 1024),
+            "Content-Type": "multipart/form-data; boundary=x",
+        },
+    )
+    assert reply.status_code == 413
+    assert "at most 1 MB" in reply.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("data", "files_", "status"),
+    [
+        ({"kind": "dj"}, None, 422),
+        ({"kind": "dj", "unknown": "x"}, "file", 422),
+        ({"kind": "dj"}, "two files", 422),
+    ],
+    ids=["no file", "unknown field", "two files"],
+)
+def test_a_malformed_form_is_refused(station, data, files_, status):
+    slot = station.context()["slot"]
+    form = {
+        "slot_id": slot["slot_id"],
+        "ending_id": slot["ending"]["id"],
+        "upcoming_id": slot["upcoming"]["id"],
+        **data,
+    }
+    if files_ == "file":
+        sent = {"file": ("b.wav", wav(), "audio/wav")}
+    elif files_ == "two files":
+        sent = [("file", ("b.wav", wav(), "audio/wav")), ("other", ("c.wav", wav(), "audio/wav"))]
+    else:
+        sent = None
+    reply = station.call("POST", "/api/announcer/breaks", data=form, files=sent)
+    assert reply.status_code == status, reply.text
+    assert files(station.desk) == []
+    # Nothing stays reserved.
+    station.desk.check_room(slot["slot_id"])
+
+
+def test_an_eight_channel_upload_is_refused_before_it_is_decoded(station):
+    sound = np.zeros((SR // 10, 8), dtype=np.float32)
+    out = io.BytesIO()
+    sf.write(out, sound, 48000, format="WAV")
+    reply = station.upload(body=out.getvalue())
+    assert reply.status_code == 422
+    assert "mono or stereo" in reply.json()["detail"]
+    assert files(station.desk) == []
+
+
+def test_a_token_behind_a_plain_http_proxy_is_refused(station):
+    reply = station.call(
+        "GET", "/api/announcer/context", headers={"X-Forwarded-For": "192.168.1.9"}
+    )
+    assert reply.status_code == 403
+    assert reply.json()["detail"] == "Machine tokens need HTTPS"
+
+
+def test_the_decode_gate_opens_when_the_decode_ends_not_when_the_client_leaves(tmp_path):
+    import asyncio
+    import threading
+
+    from autodj.breaks_api import _gated_decode
+
+    started, finish = threading.Event(), threading.Event()
+
+    def slow(_path, _seconds):
+        started.set()
+        assert finish.wait(5)
+        return "cues"
+
+    async def scenario() -> list[bool]:
+        gate = asyncio.Semaphore(1)
+        task = asyncio.create_task(_gated_decode(gate, tmp_path / "b.wav", 1.0, slow))
+        await asyncio.to_thread(started.wait, 5)
+        task.cancel()  # the client hung up
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        locked_while_decoding = gate.locked()
+        finish.set()
+        for _ in range(100):
+            if not gate.locked():
+                break
+            await asyncio.sleep(0.01)
+        return [locked_while_decoding, gate.locked()]
+
+    assert asyncio.run(scenario()) == [True, False]
+
+
+def test_a_busy_decoder_answers_503(tmp_path, monkeypatch):
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from autodj import breaks_api
+
+    monkeypatch.setattr(breaks_api, "DECODE_WAIT_SECONDS", 0.01)
+
+    async def scenario() -> HTTPException:
+        gate = asyncio.Semaphore(0)
+        with pytest.raises(HTTPException) as busy:
+            await breaks_api._gated_decode(gate, tmp_path / "b.wav", 1.0)
+        return busy.value
+
+    refused = asyncio.run(scenario())
+    assert refused.status_code == 503 and refused.headers == {"Retry-After": "5"}

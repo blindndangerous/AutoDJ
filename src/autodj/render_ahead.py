@@ -57,6 +57,10 @@ class RenderAhead:
     look-ahead state (the player plans the song change after the ready
     track there); cursor moves that arrive meanwhile are queued as they
     are during a render, so a plan never races a reset.
+
+    An optional *discard(track)* hook hears of every rendered track that is
+    thrown away unplayed (a reset, a render outdated while in flight, a
+    fallback replaced), with the lock released.
     """
 
     def __init__(
@@ -66,6 +70,7 @@ class RenderAhead:
         rewind: TrackHook,
         skip_past: TrackHook,
         plan: TrackHook | None = None,
+        discard: TrackHook | None = None,
     ) -> None:
         """Create an idle worker; call :meth:`start` to begin rendering.
 
@@ -76,9 +81,11 @@ class RenderAhead:
             rewind: See the class docstring.
             skip_past: See the class docstring.
             plan: See the class docstring.
+            discard: See the class docstring.
         """
         self._render = render
         self._plan = plan
+        self._discard = discard
         self._plan_due = False
         self._planning = False
         self._is_stale = is_stale
@@ -195,11 +202,14 @@ class RenderAhead:
         the next render, so the old render cannot overwrite the cursor.
         """
         with self._cond:
+            dropped = [track for track in (self._ready, self._fallback) if track is not None]
             self._ready = None
             self._fallback = None
             self._generation += 1
             self._apply(prepare)
             self._cond.notify_all()
+        for track in dropped:
+            self._thrown_away(track)
 
     def refresh(self) -> None:
         """Soft re-check after a queue edit; never causes dead air.
@@ -263,6 +273,15 @@ class RenderAhead:
                 logger.exception("Rendering the next track failed")
             self._settle(track, generation)
 
+    def _thrown_away(self, track: RenderedTrack) -> None:
+        """Tell the *discard* hook; a failure is only logged."""
+        if self._discard is None:
+            return
+        try:
+            self._discard(track)
+        except Exception:
+            logger.exception("Handling a discarded render failed")
+
     def _run_plan(self, track: RenderedTrack) -> None:
         """Run the *plan* hook for the waiting *track*; a failure is only logged."""
         try:
@@ -284,28 +303,45 @@ class RenderAhead:
         released because *is_stale* takes the player's queue lock.
         """
         while True:
+            thrown: list[RenderedTrack] = []
             with self._cond:
                 if generation != self._generation:
                     self._rendering = False  # a reset or fallback pop made it stale
-                    return
-                if track is None or not self._revalidate:
+                    if track is not None:
+                        thrown.append(track)
+                    done = True
+                elif track is None or not self._revalidate:
                     self._rendering = False
                     if track is not None:
+                        if self._fallback is not None:
+                            thrown.append(self._fallback)
                         self._ready = track
                         self._fallback = None
                         self._plan_due = self._plan is not None
                         self._cond.notify_all()
                     elif not self._stopped:
                         self._cond.wait(_RETRY_SECONDS)
-                    return
-                self._revalidate = False
+                    done = True
+                else:
+                    self._revalidate = False
+                    done = False
+            for unplayed in thrown:
+                self._thrown_away(unplayed)
+            if done or track is None:
+                return
             if self._is_stale(track):
                 with self._cond:
                     self._rendering = False
                     if generation == self._generation:
                         # Out of date already: keep it to fall back on and
                         # render it again from its start.
+                        if self._fallback is not None and self._fallback is not track:
+                            thrown.append(self._fallback)
                         self._fallback = track
                         self._apply(functools.partial(self._rewind, track))
                         self._cond.notify_all()
+                    else:
+                        thrown.append(track)
+                for unplayed in thrown:
+                    self._thrown_away(unplayed)
                 return

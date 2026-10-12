@@ -561,3 +561,58 @@ def test_request_plan_without_a_hook_or_a_ready_track_does_nothing(worker_factor
     worker, _cursor = worker_factory()
     worker.request_plan()
     assert worker._plan_due is False
+
+
+def test_the_discard_hook_hears_every_render_thrown_away(monkeypatch):
+    monkeypatch.setattr("autodj.render_ahead._RETRY_SECONDS", 0.01)
+    cursor = _Cursor()
+    discarded: list[str] = []
+    worker = RenderAhead(
+        cursor,
+        is_stale=cursor.is_stale,
+        rewind=cursor.rewind,
+        skip_past=cursor.skip_past,
+        discard=lambda track: discarded.append(track.entry.path),
+    )
+    worker.start()
+    try:
+        assert worker.wait_ready(WAIT)
+        # A reset throws away the ready track ...
+        worker.reset(lambda: None)
+        assert discarded == ["t0"]
+        assert worker.wait_ready(WAIT)
+        # ... and a render that a reset outdated while it was in flight.
+        cursor.gate.clear()
+        cursor.rendering.clear()
+        assert worker.pop() is not None
+        assert cursor.rendering.wait(WAIT)
+        worker.reset(lambda: None)
+        cursor.gate.set()
+        assert worker.wait_ready(WAIT)
+        assert len(discarded) == 2
+    finally:
+        cursor.gate.set()
+        worker.stop()
+
+
+def test_a_failing_discard_hook_never_stops_the_worker(monkeypatch):
+    monkeypatch.setattr("autodj.render_ahead._RETRY_SECONDS", 0.01)
+    cursor = _Cursor()
+
+    def broken(_track):
+        raise RuntimeError("boom")
+
+    worker = RenderAhead(
+        cursor,
+        is_stale=cursor.is_stale,
+        rewind=cursor.rewind,
+        skip_past=cursor.skip_past,
+        discard=broken,
+    )
+    worker.start()
+    try:
+        assert worker.wait_ready(WAIT)
+        worker.reset(lambda: None)
+        assert worker.wait_ready(WAIT)
+    finally:
+        worker.stop()

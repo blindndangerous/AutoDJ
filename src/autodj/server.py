@@ -126,6 +126,7 @@ from autodj.stations import (
     tick_stream_workers,
 )
 from autodj.status_page import STATUS_PAGE_CSP, render_status_page
+from autodj.stereo import SAFE_FFMPEG_INPUT
 from autodj.stereotool_presets import MAX_PRESET_BYTES
 from autodj.stream import EncoderUnavailableError, ListenerLimitError
 from autodj.tags_api import TAG_BODY_MAX_BYTES, install_tag_editor, tag_form
@@ -579,6 +580,7 @@ async def _start_alac_transcoder(executable: str, source: BinaryIO) -> Any:
         executable,
         "-loglevel",
         "error",
+        *SAFE_FFMPEG_INPUT,
         "-i",
         "pipe:0",
         "-c:a",
