@@ -413,7 +413,8 @@ SOAK_SECONDS = float(os.environ.get("AUTODJ_SOAK_SECONDS", "0"))
 @pytest.mark.skipif(
     not SOAK_SECONDS, reason="Set AUTODJ_SOAK_SECONDS to measure two stations rendering at once"
 )
-def test_two_stations_rendering_at_once_keep_their_buses_on_time(rig: Any) -> None:
+@pytest.mark.timeout(SOAK_SECONDS + 120)
+def test_soak_two_stations_rendering_at_once_keep_their_buses_on_time(rig: Any) -> None:
     """Both mix buses keep time while both stations render, sharing one GIL.
 
     Each station's render-ahead work is stood in for by a decode-sized
