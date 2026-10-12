@@ -10,9 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- Saving edits to the active clockwheel can now apply at its next scheduled restart or immediately
-  to the earliest selection not already lined up. With no restart minutes, deferred edits apply at
-  the next natural wheel wrap; the editor shows when an edit is waiting.
+- Saving edits to the active clockwheel can now apply at its next restart, immediately from
+  step 1, or immediately continuing at the next step number. A song already playing and its
+  committed handoff finish normally. With no restart minutes, deferred edits apply when the
+  wheel wraps to step 1; the editor shows when an edit is waiting.
 - **Why this track?** names the clockwheel step that selected the song, with its number and the same description shown in the clockwheel list. Music and category steps say whether they choose the least recently played song or choose at random.
 - Editing tags from Track info (#53). A Tags section has fields for title, artist, album, genre,
   year, BPM, key and ISRC. Save tags writes only the changed fields into the file with mutagen
@@ -308,6 +309,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   "Relaying to Icecast and Shoutcast" in the operations guide.
 
 ### Fixed
+
+- Audio prepared before a clockwheel edit no longer restores the old step position or restart
+  time when it begins playing (#153).
 
 - The web page works better for people who see it. In Windows High Contrast (forced colours) the
   selected section tab and Settings subtab now show their names; they were blank. Queue &

@@ -159,6 +159,7 @@ def test_saved_start_survives_next_rendered_metadata(station):
 
 def test_clock_step_provenance_follows_each_rendered_track(station, monkeypatch):
     player, (a, b, voice, _), _points = station
+    player._cfg.playback.pick_mode = "clock"
     steps = iter(
         (
             {"number": 2, "step": {"type": "music", "selection": "random"}},
@@ -602,7 +603,8 @@ def test_seed_place_from_another_clockwheel_is_not_carried(
     assert (result.clock_cursor, result.clock_name) == (cursor, "Night")
 
 
-def test_clock_resync_drops_unheard_pick_without_recording_it(station, monkeypatch):
+@pytest.mark.parametrize("deferred", [False, True])
+def test_clock_resync_drops_unheard_pick_without_recording_it(station, monkeypatch, deferred):
     from autodj.clockwheel import ClockPick
 
     player, (a, b, *_), _points = station
@@ -610,6 +612,9 @@ def test_clock_resync_drops_unheard_pick_without_recording_it(station, monkeypat
     player._clock = {"cursor": 4, "resync_minutes": [0]}
     now = 1_791_621_000.0
     player._set_render_cursor(a, 0, "clock", clock_cursor=4, clock_boundary=now + 14)
+    if deferred:
+        definition = {"steps": [{"type": "music"}], "resync_minutes": [30]}
+        player._pending_clock_update = (definition, [object()], 1)
     monkeypatch.setattr("autodj.player.time.time", lambda: now)
     picked = MagicMock(side_effect=[ClockPick(b, None, 5, []), ClockPick(b, None, 1, [])])
     monkeypatch.setattr(player, "_clock_pick", picked)
@@ -617,7 +622,12 @@ def test_clock_resync_drops_unheard_pick_without_recording_it(station, monkeypat
     entry, mode, liners, cursor, _key = player._choose_station_next(a, context)
     assert (entry, mode, liners, cursor) == (b, "clock", (), 1)
     assert [call.args[1] for call in picked.call_args_list] == [4, 0]
-    assert player._clock["cursor"] == 4
+    assert player._clock["cursor"] == (0 if deferred else 4)
+    if deferred:
+        assert player._pending_clock_update is None
+        assert player._clock_revision == player._chosen_clock_revision == 1
+        assert player._clock["resync_minutes"] == [30]
+        assert player._pending_clock_boundary > now + 14
     player._library.ledger.remember_play.assert_not_called()
     player._library.ledger.remember_setting.assert_not_called()
 
@@ -1070,3 +1080,31 @@ def test_clock_conditions_are_worked_out_once_per_library_generation(station, mo
     music = (a, b)  # The library published new entries.
     assert player._clock_pick(player._pick_context(), 0).entry is b
     assert len(built) == 2
+
+
+def test_nonclock_station_pick_does_not_hold_up_track_start(station, monkeypatch):
+    player, (a, b, *_), _points = station
+    player._cfg.playback.pick_mode = "least_recent"
+    player._set_render_cursor(a, 0, "seed")
+    started = player._render_track(b, a, 0)
+    searching, release = threading.Event(), threading.Event()
+
+    def choose(*_args):
+        searching.set()
+        assert release.wait(5)
+        return b, "least_recent", (), None, ""
+
+    monkeypatch.setattr(player, "_choose_station_next", choose)
+    picker = threading.Thread(target=player._next_rendered)
+    starter = threading.Thread(target=player._start_playing, args=(started,))
+    picker.start()
+    try:
+        assert searching.wait(2)
+        starter.start()
+        starter.join(1)
+        assert not starter.is_alive(), "track start waited for a non-clock station pick"
+    finally:
+        release.set()
+        picker.join(5)
+        if starter.ident is not None:
+            starter.join(5)

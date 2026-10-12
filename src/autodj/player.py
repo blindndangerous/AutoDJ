@@ -2143,6 +2143,7 @@ class Player:
             station_mode = (
                 self._library is not None and self._cfg.playback.transition_mode == "saved_points"
             )
+            clock_selection = station_mode and self._cfg.playback.pick_mode == "clock"
             liners: tuple[tuple[IndexEntry, bool], ...] = ()
             next_cursor, liner_key = None, ""
             next_clock_step = None
@@ -2169,7 +2170,7 @@ class Player:
                 next_clock_name = clock_name
                 next_clock_revision = clock_revision
                 next_clock_boundary = clock_boundary
-                if station_mode:
+                if clock_selection:
                     try:
                         next_entry, next_mode, liners, next_cursor, liner_key = (
                             self._choose_station_next(current, context)
@@ -2184,9 +2185,14 @@ class Player:
                             "No track can follow %s (%s); it plays out alone.", current.path, exc
                         )
                         next_entry, next_mode = None, "similarity"
-            if not station_mode:
+            if not clock_selection:
                 try:
-                    next_entry, next_mode = self._choose_next(current, context)
+                    if station_mode:
+                        next_entry, next_mode, liners, next_cursor, liner_key = (
+                            self._choose_station_next(current, context)
+                        )
+                    else:
+                        next_entry, next_mode = self._choose_next(current, context)
                 except Exception as exc:
                     logger.warning(
                         "No track can follow %s (%s); it plays out alone.", current.path, exc
