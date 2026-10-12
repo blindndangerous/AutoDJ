@@ -1594,7 +1594,7 @@ Step types:
 The editor lists numbered steps with their names as Edit buttons. With focus in the step list,
 Up and Down move to the previous or next step name, Enter on a name edits it, and Delete asks
 before it removes that step (Cancel has focus first, and focus returns to the list either way). Left and Right move between the actions in a row; Home and End go to its first or
-last available action. Tab leaves the step list. Alt+Up and Alt+Down still reorder the focused
+last available action, and Enter or Space presses it. Tab leaves the step list. Alt+Up and Alt+Down still reorder the focused
 step, and focus moves with it. Move up, Move down, Duplicate and Delete buttons remain available; the Delete button removes the step without asking.
 These list keys do not replace the playback or spoken-status shortcuts. Nothing is saved until you press **Save clockwheel**; opening
 another clockwheel with unsaved changes asks first. **Restart at these minutes past each hour**
