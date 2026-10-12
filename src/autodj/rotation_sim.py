@@ -853,14 +853,20 @@ def _simulate(
     def start_fresh(now: float) -> Any | None:
         """A first song, as the station picks one when a set starts."""
         player._sim_now = now
+        player._seed_clock_cursor = None
+        player._seed_clock_name = None
         try:
+            context = player._pick_context()
             entry = player._random_start_entry()
         except Exception:
             return None
         # As the render cursor takes a set's first song: its clock place and
         # the clockwheel that place is in (#133).
-        player._pending_clock_cursor = getattr(player, "_seed_clock_cursor", None)
+        player._pending_clock_cursor = player._seed_clock_cursor
         player._pending_clock_name = player._seed_clock_name
+        if entry is not None and entry.path not in liner_paths:
+            enforced = _step_enforces_rules(player, player._cfg.playback.pick_mode)
+            _tally_rules(tally, context, entry, enforced, when(now))
         return entry
 
     def record(entry: Any, now: float) -> None:

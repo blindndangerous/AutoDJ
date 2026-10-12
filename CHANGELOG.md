@@ -283,6 +283,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Rotation tests now count repeat-rule violations on the opening song and after a fresh start,
+  including steps configured to ignore repeat rules. Those picks could previously repeat a song
+  while the report said no rules had been relaxed.
+
 - The web page works better for people who see it. In Windows High Contrast (forced colours) the
   selected section tab and Settings subtab now show their names; they were blank. Queue &
   Search no longer scrolls sideways when a music folder has a long path, and no view scrolls
