@@ -173,9 +173,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the count from an older index. Doctor and list-indexes also use the current catalog. Existing
   catalogs no longer depend on the old index manifest; legacy indexes are imported on first use.
 
+- Hard scheduled liners and time checks prepare their audio before skipping the current song.
+  Missing clips or failed speech generation leave the song playing and report the failed event.
+- Clock music slots with repeat rules disabled still skip silent tracks and songs already
+  playing or being prepared.
+- A clock whose slots hold only songs just played or being prepared repeats one of them, with a
+  warning, instead of leaving the station silent. The song playing never follows itself.
 - Automatically chosen first songs now follow repeat rules and protected-track checks, including
   restored play history. When the rules leave no choice, they relax without stopping playback.
-
 - Unknown or removed configuration settings now produce warnings and are ignored instead of
   blocking startup. Saved browser settings follow the same rule, preserving valid repeat limits
   alongside obsolete keys. Invalid values for supported configuration settings still fail validation.
