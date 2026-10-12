@@ -1290,7 +1290,7 @@ class Player:
         return clock, validate_clock(slots)
 
     def _clock_pick(self, context: _PickContext, cursor: int | None) -> Any:
-        from autodj.clockwheel import ClockPick, ConditionPaths, pick_slot
+        from autodj.clockwheel import ClockPick, ConditionPaths, _normalized, pick_slot
 
         if self._clock is None:
             return ClockPick(
@@ -1311,6 +1311,15 @@ class Player:
         )
         ledger = self._ledger
         last_played = ledger.last_played() if ledger is not None else {}
+        normalized_history = (
+            {
+                _normalized(path): stamp
+                for path, stamp in last_played.items()
+                if isinstance(path, str)
+            }
+            if any(slot.selection == "least_recent" for slot in self._clock_slots)
+            else None
+        )
         liners = self._library.entries_snapshot("liner")
         # Liner steps pass over liners outside their play dates; the step
         # conditions are still worked out from every liner, so they stay cached.
@@ -1385,6 +1394,7 @@ class Player:
                 condition_errors=condition_errors,
                 condition_cache=cache,
                 closed_categories=context.closed_categories if hours else None,
+                normalized_history=normalized_history,
             )
 
         # Like the other pick modes, relax rather than stop the music: first

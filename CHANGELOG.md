@@ -410,7 +410,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Clockwheel picks on a large library take less work, the same songs as before: in DMCA mode a
   pick checks each song against only the few albums and artists at a limit (and none while nothing
   is), the songs a clock can pick from are kept between picks until the library or the hours
-  change, and least-recently-played steps compare play times without reworking every path.
+  change, and least-recently-played steps reuse normalized play history across retries.
 
 - The clockwheel's reset timing now measures every song from its start cue to its end cue (or its
   segue or outro, when earlier) for all clockwheels, not only for liner steps with "Only play if
