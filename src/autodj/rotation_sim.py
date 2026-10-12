@@ -35,6 +35,7 @@ import math
 import os
 import random
 import re
+import sqlite3
 import sys
 import threading
 import time
@@ -203,16 +204,17 @@ class PlayerSnapshot:
 def snapshot_player(player: Any) -> PlayerSnapshot:
     """Copy what a run needs from *player*, holding the locks its writers hold.
 
-    Song-picking and clockwheel changes made on a worker thread hold
-    :data:`~autodj.player.SETTINGS_LOCK`; the play history is guarded by the
-    player's pick lock.  The server takes this copy on its event loop, where
-    the other settings routes run, so none of them can change it half way.
+    Song-picking and clockwheel changes are swapped in under the player's
+    settings lock (:func:`~autodj.player.settings_lock`), which only ever
+    covers memory, so the copy waits a moment at most; the play history is
+    guarded by the player's pick lock.  The server takes this copy in a
+    worker thread, never on its event loop.
     """
-    from autodj.player import SETTINGS_LOCK
+    from autodj.player import settings_lock
 
-    with SETTINGS_LOCK:
+    with settings_lock(player):
         cfg = copy.deepcopy(player._cfg)
-        settings = {name: getattr(player, name, None) for name in _COPIED}
+        settings = {name: getattr(player, name) for name in _COPIED if hasattr(player, name)}
         clock = getattr(player, "_clock", None)
         snapshot_clock = dict(clock) if clock else None
         clock_status = getattr(player, "_clock_status", None)
@@ -313,12 +315,14 @@ def open_station(cfg: Any, station: str = "default") -> Iterator[SimulationSourc
     settings, plays and the clockwheel place from the library, events from
     the schedule file.  The catalog is opened read-only (see
     :class:`~autodj.catalog.ReadOnlyCatalog`), so a running server keeps
-    its write lock and nothing is migrated or written.  It closes when the
-    block ends.
+    its write lock, nothing is migrated and ``library.db`` itself is never
+    written; SQLite may still create the ``-wal`` and ``-shm`` files beside
+    it, as any reader does.  It closes when the block ends.
 
     Raises:
-        SimulationError: There is no library yet, or the schedule file
-            cannot be read.
+        SimulationError: There is no library yet, it cannot be read (a
+            damaged file, one that is not an AutoDJ library, or one left
+            half written), or the schedule file cannot be read.
     """
     from autodj._bridge import PlayerBridge
     from autodj.catalog import ReadOnlyCatalog
@@ -333,9 +337,16 @@ def open_station(cfg: Any, station: str = "default") -> Iterator[SimulationSourc
         )
     paths = StationPaths.default(cfg)
     events = _read_events(paths.schedule)
-    catalog = ReadOnlyCatalog(active / "library.db")
+    database = active / "library.db"
     try:
-        library = LibrarySnapshot(cfg, catalog, station)
+        catalog = ReadOnlyCatalog(database)
+    except sqlite3.Error as exc:
+        raise SimulationError(_unreadable(database, exc)) from exc
+    try:
+        try:
+            library = LibrarySnapshot(cfg, catalog, station)
+        except sqlite3.Error as exc:
+            raise SimulationError(_unreadable(database, exc)) from exc
         ledger = library.ledger
         sim = library.sim
         player = Player(cfg, sim, dry_run=True)
@@ -356,6 +367,14 @@ def open_station(cfg: Any, station: str = "default") -> Iterator[SimulationSourc
         )
     finally:
         catalog.close()
+
+
+def _unreadable(database: Path, exc: sqlite3.Error) -> str:
+    """Why the library cannot be tested, in words, with SQLite's own reason."""
+    return (
+        f"The music library {database} cannot be read ({exc}). It may be damaged, not an "
+        "AutoDJ library, or left half written; start autodj serve once to check it."
+    )
 
 
 def _read_events(path: Path) -> list[Any]:
@@ -487,6 +506,9 @@ def _copy_player(
 ) -> _SimPlayer:
     """A dry-run player with the snapshot's settings, history and clockwheel place."""
     player = _SimPlayer(copy.deepcopy(snapshot.cfg), snapshot.sim, dry_run=True)
+    # Its own settings lock: nothing the dry run changes waits on, or holds,
+    # the live stations' lock.
+    player.settings_lock = threading.RLock()
     player._sim_now = start
     player._state.clock = lambda: player._sim_now
     if snapshot.related_artists is not None:
@@ -596,12 +618,41 @@ def _apply_event(player: _SimPlayer, bridge: Any, event: Any) -> str | None:
     """Make *event*'s change on the dry-run player; why not, in words, when it cannot.
 
     An event the player refuses (a mode or preset that no longer exists)
-    is a refusal in the report, never the end of the run.
+    is a refusal in the report, never the end of the run, and it changes
+    nothing: what the event had changed before it failed is put back.
     """
+    own = vars(player)
+    before = {name: own[name] for name in _EVENT_STATE if name in own}
+    playback = copy.deepcopy(player._cfg.playback)
+    discovery = player._state.discovery_enabled
     try:
-        return _make_change(player, bridge, event)
+        refusal = _make_change(player, bridge, event)
     except Exception as exc:
-        return f"it could not be applied: {exc}"
+        refusal = f"it could not be applied: {exc}"
+    if refusal:
+        for name in _EVENT_STATE:
+            if name in before:
+                own[name] = before[name]
+            else:
+                own.pop(name, None)
+        player._cfg.playback = playback
+        player._state.discovery_enabled = discovery
+    return refusal
+
+
+# What a scheduled change can touch on the dry-run player, put back when it fails.
+_EVENT_STATE = (
+    "_clock",
+    "_clock_slots",
+    "_clock_status",
+    "_clock_next_boundary",
+    "_seed_clock_following",
+    "_pending_clock_cursor",
+    "_pending_clock_boundary",
+    "_pure_shuffle",
+    "_preset",
+    "_discovery_every",
+)
 
 
 def _make_change(player: _SimPlayer, bridge: Any, event: Any) -> str | None:

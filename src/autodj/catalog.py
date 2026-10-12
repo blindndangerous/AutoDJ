@@ -1402,9 +1402,11 @@ class ReadOnlyCatalog(LibraryCatalog):
     """A catalog opened read-only, for a look beside a running server (``autodj simulate``).
 
     The connection is SQLite's ``mode=ro``: no schema set-up, no column or
-    history migration, no journal-mode switch and no write lock.  Any write
-    method fails instead of touching the file.  A catalog that does not
-    exist yet raises :class:`sqlite3.OperationalError`.
+    history migration, no journal-mode switch and no write lock, and any
+    write method fails.  The database file itself is never written, though
+    SQLite may create or touch the ``-wal`` and ``-shm`` files beside a
+    write-ahead-log database, as every reader does.  A file that is not a
+    catalog raises :class:`sqlite3.Error` on its first read.
     """
 
     def __init__(self, path: Path | str) -> None:

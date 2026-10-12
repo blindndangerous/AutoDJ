@@ -217,6 +217,7 @@ def _player(tmp_path, setting, sources):
     player._load_clockwheel = MethodType(Player._load_clockwheel, player)
     player.activate_clock = MethodType(Player.activate_clock, player)
     player._now = MethodType(Player._now, player)
+    player._clock_off = MethodType(Player._clock_off, player)
     return player
 
 

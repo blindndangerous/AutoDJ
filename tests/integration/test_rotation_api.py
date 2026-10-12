@@ -203,3 +203,54 @@ def test_a_start_out_of_range_is_refused_in_words(client: TestClient, start: str
     assert answer.json()["detail"] == (
         "The start must be between 1 January 2000 and 31 December 2099"
     )
+
+
+def test_no_run_starts_once_shutdown_has_begun() -> None:
+    tests = rotation_api.RotationTests()
+    assert tests.shutdown(1.0) is True
+    late = rotation_api.RotationTestRun("default", None, SimulationRequest(picks=1))
+    with pytest.raises(HTTPException) as refused:
+        tests.start(late)
+    assert refused.value.status_code == 503
+    assert refused.value.detail == "The server is shutting down"
+    assert tests.get("default") is None
+
+
+def test_a_run_that_outlives_shutdown_is_logged(bridge, tmp_path, monkeypatch, caplog) -> None:
+    import logging
+
+    bridge.player._cfg.index.active_dir = tmp_path
+    bridge.player._cfg.index.index_dir = tmp_path
+    app = create_app(bridge)
+    app.state.rotation_tests = rotation_api.RotationTests()
+    monkeypatch.setattr(app.state.rotation_tests, "shutdown", lambda _timeout: False)
+    with caplog.at_level(logging.WARNING, logger="autodj.server"), TestClient(app):
+        pass
+    assert any(
+        "A rotation test was still running" in record.getMessage() for record in caplog.records
+    )
+
+
+def test_starting_a_run_never_holds_up_other_requests(client: TestClient, monkeypatch) -> None:
+    """The settings copy waits on the settings lock in a worker thread, not on the event loop."""
+    import threading
+
+    from autodj.player import SETTINGS_LOCK
+
+    _slow(monkeypatch)
+    answers: list[int] = []
+    with SETTINGS_LOCK:  # A settings change in progress.
+        poster = threading.Thread(
+            target=lambda: answers.append(
+                client.post("/api/rotation-test", json={"hours": 1}).status_code
+            )
+        )
+        poster.start()
+        time.sleep(0.2)
+        # The start is still waiting for its copy, and the server answers meanwhile.
+        assert answers == []
+        assert client.get("/api/rotation-test").json()["state"] == "idle"
+    poster.join(30)
+    assert answers == [202]
+    assert client.delete("/api/rotation-test").status_code == 200
+    assert _finished(client)["state"] == "cancelled"

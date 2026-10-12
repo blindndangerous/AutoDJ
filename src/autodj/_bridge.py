@@ -1633,15 +1633,14 @@ class PlayerBridge:
     def set_playback_settings(self, body: PlaybackSettingsBody, *, restoring: bool = False) -> None:
         """Apply the fields set in *body*, which pydantic has already validated.
 
-        Holds :data:`~autodj.player.SETTINGS_LOCK`: the route runs this on a
-        worker thread, and a rotation test copies the settings under it.
+        Files are checked and read first; then the new values are swapped in
+        under the player's settings lock (see :func:`~autodj.player.settings_lock`),
+        which a rotation test's copy also holds; the saved plays are read
+        again for new repeat rules only after it is released.  Callers on
+        the event loop run this in a worker thread.
         """
-        from autodj.player import SETTINGS_LOCK
+        from autodj.player import settings_lock
 
-        with SETTINGS_LOCK:
-            self._apply_playback_settings(body, restoring=restoring)
-
-    def _apply_playback_settings(self, body: PlaybackSettingsBody, *, restoring: bool) -> None:
         values = body.model_dump(exclude_none=True)
         player = self.player
         cfg = player._cfg
@@ -1649,6 +1648,25 @@ class PlayerBridge:
             from autodj.stereotool_presets import preset_path
 
             preset_path(cfg.index.active_dir, values["stereotool_preset"])
+        related_artists = self._read_related_artists(body, restoring=restoring)
+        if body.repeat_rules is not None:
+            values["repeat_rules"] = body.repeat_rules
+        with settings_lock(player):
+            self._apply_playback_settings(values, related_artists)
+        if "repeat_rules" in values and (ledger := self._ledger()) is not None:
+            player.restore_repeat_history(ledger, refresh=True)
+
+    def _read_related_artists(
+        self, body: PlaybackSettingsBody, *, restoring: bool
+    ) -> tuple[Any, str | None] | None:
+        """The related artists new repeat rules use, and any problem with the file.
+
+        ``None`` when *body* sets no repeat rules.  A file that cannot be
+        read refuses the change (the old rules stay), except while settings
+        are restored at startup, when the rules apply without it.
+        """
+        player = self.player
+        cfg = player._cfg
         if body.repeat_rules is not None:
             from autodj.related_artist_file import (
                 invalid_related_artists_message,
@@ -1672,9 +1690,17 @@ class PlayerBridge:
                         raise ValueError(message) from exc
                     problem = unused_related_artists_message(exc)
                     logger.warning("Related artists file was not used: %s", exc)
-            values["repeat_rules"] = body.repeat_rules
-            player._related_artists = related
-            player.related_artists_problem = problem
+            return related, problem
+        return None
+
+    def _apply_playback_settings(
+        self, values: dict[str, Any], related_artists: tuple[Any, str | None] | None
+    ) -> None:
+        """Swap *values* in (hold the settings lock); only memory changes here."""
+        player = self.player
+        cfg = player._cfg
+        if related_artists is not None:
+            player._related_artists, player.related_artists_problem = related_artists
             if hasattr(player, "_key_cache_lock"):
                 with player._key_cache_lock:
                     player._key_cache = None
@@ -1725,8 +1751,6 @@ class PlayerBridge:
             from autodj.player import apply_repeat_windows
 
             apply_repeat_windows(player)
-            if (ledger := self._ledger()) is not None:
-                player.restore_repeat_history(ledger, refresh=True)
 
     def set_bpm_range(self, lo: float | None, hi: float | None) -> None:
         """Set the hard BPM filter; pass both null to clear."""

@@ -549,7 +549,7 @@ async def apply_profile(station: StationRuntime, name: str) -> dict:
                 status_code=400,
                 detail=f"Profile {name} uses cart page {snap.cart_page!r}, which does not exist",
             )
-    bridge.set_playback_settings(playback)
+    await asyncio.to_thread(bridge.set_playback_settings, playback)
     if snap.clockwheel is not None:
         await select_clock(station, _catalog_library(station), snap.clockwheel)
         applied.append("clockwheel")

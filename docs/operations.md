@@ -1422,9 +1422,11 @@ a run song for song, in every pick mode. Runs are capped at 30 days or 20,000 so
 minutes of work: a run that reaches that limit stops with the songs picked so far, and the report
 says so.
 
-`autodj simulate` can run beside a running server. It opens `library.db` read-only (no write
-lock, no migration, nothing written), and a categories or liner dates file it cannot read is
-skipped, never moved aside.
+`autodj simulate` can run beside a running server. It opens `library.db` read-only: no write
+lock, no migration, and the file itself is never written, though SQLite may create the
+`library.db-wal` and `library.db-shm` files beside it, as any reader does. A library it cannot
+read (damaged, not an AutoDJ library, or left half written) stops the command with a message. A
+categories or liner dates file it cannot read is skipped, never moved aside.
 
 In the web page: Settings > Song picking > **Test rotation**. Choose a span or a number of songs,
 optionally a start and a seed, and press **Test rotation**. The run works in the background; a

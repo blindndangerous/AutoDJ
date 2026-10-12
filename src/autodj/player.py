@@ -94,10 +94,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 repeat_logger = logging.getLogger(f"{__name__}.repeat")
 
-#: Held while song-picking settings or the clockwheel change on a worker
-#: thread, and while a rotation test copies them (autodj.rotation_sim), so
-#: the copy never sees a change half made.
+#: Held while a station's song-picking settings or clockwheel are swapped
+#: in, and while a rotation test copies them (autodj.rotation_sim), so the
+#: copy never sees a change half made.  Only in-memory swaps happen under
+#: it: files and the catalog are read before it is taken.  A dry-run player
+#: has a lock of its own (see :func:`settings_lock`).
 SETTINGS_LOCK = threading.RLock()
+
+
+def settings_lock(player: Any) -> Any:
+    """The lock *player*'s settings changes hold: its own, or :data:`SETTINGS_LOCK`."""
+    lock = getattr(player, "settings_lock", None)
+    return lock if lock is not None else SETTINGS_LOCK
+
 
 # Default output sample rate; sounddevice converts if the device differs.
 _DEFAULT_SR = 44_100
@@ -772,6 +781,8 @@ class Player:
     # chooses and nothing observes.
     _random: random.Random | None = None
     pick_observer: Callable[[str, Any], None] | None = None
+    # The lock settings changes hold (see settings_lock); None is the shared one.
+    settings_lock: Any = None
 
     def __init__(
         self,
@@ -1116,17 +1127,15 @@ class Player:
         """Load the active clockwheel without marking any selected music played.
 
         A clockwheel that cannot load leaves the clock off, says why in the
-        clock status and the log, and lets the station start anyway.
+        clock status and the log, and lets the station start anyway.  The
+        setting and the clockwheel file are read first; only the swap
+        holds the settings lock.
         """
-        with SETTINGS_LOCK:
-            Player._configure_clock(self)  # also for the test doubles that borrow it
+        Player._configure_clock(self)  # also for the test doubles that borrow it
 
     def _configure_clock(self) -> None:
-        self._clock = None
-        self._seed_clock_following = None
-        self._clock_next_boundary = None
         if self._library is None:
-            self._clock_status = "Clockwheel waiting for library"
+            self._clock_off("Clockwheel waiting for library")
             return
         # The station's own key ("clock" for the default station).
         ledger = getattr(self, "_ledger", None)
@@ -1137,33 +1146,32 @@ class Player:
         if "slots" in setting:
             from autodj.clockwheel_store import OLD_CLOCK_MESSAGE
 
-            self._clock_status = OLD_CLOCK_MESSAGE
             logger.error(OLD_CLOCK_MESSAGE)
+            self._clock_off(OLD_CLOCK_MESSAGE)
             return
         name = setting.get("name")
         if not name:
-            self._clock_status = "No clockwheel is active"
+            self._clock_off("No clockwheel is active")
             return
         self.activate_clock(name, setting.get("cursor", 0))
 
+    def _clock_off(self, status: str) -> None:
+        """Turn the clockwheel off, with *status* saying why."""
+        with settings_lock(self):
+            self._clock = None
+            self._seed_clock_following = None
+            self._clock_next_boundary = None
+            self._clock_status = status
+
     def activate_clock(self, name: str, cursor: Any = 0) -> None:
         """Play clockwheel *name* from step *cursor*; one that cannot load leaves the clock off."""
-        self._clock = None
-        self._seed_clock_following = None
-        self._clock_next_boundary = None
         try:
             clock, slots = self._load_clockwheel(name)
         except (ValueError, OSError) as exc:
-            self._clock_status = f"Clockwheel {name} is off: {exc}"
-            logger.error("%s", self._clock_status)
+            status = f"Clockwheel {name} is off: {exc}"
+            logger.error("%s", status)
+            self._clock_off(status)
             return
-        self._clock = {
-            "name": name,
-            "cursor": cursor,
-            "resync_minutes": clock["resync_minutes"],
-        }
-        self._clock_slots = slots
-        self._clock_status = "Ready"
         from datetime import datetime
 
         from autodj.clockwheel import next_boundary
@@ -1171,7 +1179,16 @@ class Player:
         boundary = next_boundary(
             datetime.fromtimestamp(self._now()).astimezone(), clock["resync_minutes"]
         )
-        self._clock_next_boundary = boundary.timestamp() if boundary else None
+        with settings_lock(self):
+            self._clock = {
+                "name": name,
+                "cursor": cursor,
+                "resync_minutes": clock["resync_minutes"],
+            }
+            self._clock_slots = slots
+            self._clock_status = "Ready"
+            self._seed_clock_following = None
+            self._clock_next_boundary = boundary.timestamp() if boundary else None
 
     def _load_clockwheel(self, name: str) -> tuple[dict[str, Any], list[Any]]:
         """Read clockwheel *name* and turn its steps into playable slots."""

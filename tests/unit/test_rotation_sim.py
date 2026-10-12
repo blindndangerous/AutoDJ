@@ -925,3 +925,211 @@ def test_the_settings_copy_waits_for_a_settings_change_in_progress(tmp_path: Pat
         assert not copied.wait(0.2)
     assert copied.wait(10)
     worker.join(10)
+
+
+# -- second review: lock scope, atomic events, unreadable libraries ------------
+
+
+def _held_elsewhere(lock: Any) -> bool:
+    """Whether another thread holds *lock* (a probe thread cannot take it)."""
+    import threading
+
+    taken: list[bool] = []
+
+    def probe() -> None:
+        got = lock.acquire(blocking=False)
+        taken.append(got)
+        if got:
+            lock.release()
+
+    worker = threading.Thread(target=probe)
+    worker.start()
+    worker.join()
+    return not taken[0]
+
+
+def test_settings_changes_read_files_and_plays_outside_the_settings_lock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from autodj import related_artist_file
+    from autodj._bridge import PlayerBridge
+    from autodj.player import SETTINGS_LOCK
+    from autodj.repeat_rules import RelatedArtists
+    from autodj.settings_bodies import PlaybackSettingsBody
+
+    source = _rotation(tmp_path)
+    player = source.player
+    bridge = PlayerBridge(
+        player=player, sim=player._sim, library=source.library, ledger=source.ledger
+    )
+    seen: dict[str, bool] = {}
+
+    def related(_folder: Any) -> RelatedArtists:
+        seen["related artists file"] = _held_elsewhere(SETTINGS_LOCK)
+        return RelatedArtists()
+
+    def restore(_ledger: Any, *, refresh: bool = False) -> int:
+        seen["saved plays"] = _held_elsewhere(SETTINGS_LOCK)
+        return 0
+
+    monkeypatch.setattr(related_artist_file, "load_configured_related_artists", related)
+    monkeypatch.setattr(player, "restore_repeat_history", restore)
+    rules = {"artist": {"tracks": 3, "minutes": 0}, "use_related_artists": True}
+    bridge.set_playback_settings(
+        PlaybackSettingsBody.model_validate({"repeat_rules": rules, "pick_mode": "random"})
+    )
+    # Reads happen on this thread: the lock would show as free to the probe
+    # only if this thread does not hold it.
+    assert seen == {"related artists file": False, "saved plays": False}
+    assert player._cfg.playback.pick_mode == "random"
+    assert player._cfg.playback.repeat_rules.artist.tracks == 3
+
+
+def test_loading_a_clockwheel_reads_outside_the_settings_lock(tmp_path: Path, monkeypatch) -> None:
+    from autodj.player import SETTINGS_LOCK
+
+    source = _rotation(tmp_path)
+    player = source.player
+    catalog = source.library.catalog
+    seen: list[bool] = []
+    real_get, real_load = catalog.get_setting, player._load_clockwheel
+
+    def get_setting(key: str, default: Any = None) -> Any:
+        seen.append(_held_elsewhere(SETTINGS_LOCK))
+        return real_get(key, default)
+
+    def load(name: str) -> Any:
+        seen.append(_held_elsewhere(SETTINGS_LOCK))
+        return real_load(name)
+
+    monkeypatch.setattr(catalog, "get_setting", get_setting)
+    monkeypatch.setattr(player, "_load_clockwheel", load)
+    player.configure_clock()
+    assert seen == [False, False]
+    assert player._clock_status == "Ready"
+
+
+def test_a_run_never_waits_on_the_live_settings_lock(tmp_path: Path) -> None:
+    import threading
+
+    from autodj.player import SETTINGS_LOCK
+    from autodj.rotation_sim import snapshot_player
+
+    events = [
+        _event(
+            name="Switch",
+            action="pick_mode",
+            params={"mode": "random"},
+            repeat="daily",
+            time=time(12, 30),
+        )
+    ]
+    source = _rotation(tmp_path, events=events)
+    source.snapshot = snapshot_player(source.player)
+    reports: list[dict] = []
+    with SETTINGS_LOCK:  # A live settings change that never ends.
+        worker = threading.Thread(
+            target=lambda: reports.append(
+                simulate(source, SimulationRequest(hours=2, start=NOON, seed=1))
+            ),
+            daemon=True,
+        )
+        worker.start()
+        worker.join(120)
+        assert not worker.is_alive()
+    assert reports[0]["schedule"]["applied"] == 1
+    assert reports[0]["song_picking"]["final_mode"] == "random"
+
+
+def test_the_copy_keeps_the_dry_run_defaults_for_settings_the_player_lacks(
+    tmp_path: Path,
+) -> None:
+    from autodj.rotation_sim import snapshot_player
+
+    source = _rotation(tmp_path)
+    del source.player._anchor_to_seed
+    snapshot = snapshot_player(source.player)
+    assert "_anchor_to_seed" not in snapshot.settings
+    source.snapshot = snapshot
+    report = simulate(source, SimulationRequest(picks=5, start=NOON, seed=1))
+    assert report["picks"] == 5
+
+
+def test_a_refused_clockwheel_switch_changes_nothing(tmp_path: Path) -> None:
+    events = [
+        _event(
+            name="Missing clock",
+            action="pick_mode",
+            params={"mode": "clock:Gone"},
+            repeat="daily",
+            time=time(12, 30),
+        )
+    ]
+    report = simulate(
+        _rotation(tmp_path, events=events), SimulationRequest(hours=2, start=NOON, seed=1)
+    )
+    [reason] = report["schedule"]["refused"]
+    assert reason.startswith("Missing clock: the clockwheel cannot play: Clockwheel Gone is off")
+    # The clock it would have replaced kept playing.
+    assert report["song_picking"]["final_clockwheel"] == "Main"
+    assert report["modes"].get("clock", 0) == report["picks"] - report["modes"].get("start", 0)
+
+
+def test_an_event_that_fails_half_way_is_undone(tmp_path: Path, monkeypatch) -> None:
+    from autodj._bridge import PlayerBridge
+
+    events = [
+        _event(
+            name="Evening",
+            action="pick_mode",
+            params={"mode": "clock:Second"},
+            repeat="daily",
+            time=time(12, 30),
+        )
+    ]
+    second = {"name": "Second", "steps": [category_step("gold")]}
+    source = _rotation(
+        tmp_path,
+        events=events,
+        clockwheels=[
+            {
+                "name": "Main",
+                "steps": [category_step("power"), category_step("current")],
+            },
+            second,
+        ],
+    )
+
+    def broken(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("settings store went away")
+
+    monkeypatch.setattr(PlayerBridge, "set_playback_settings", broken)
+    report = simulate(source, SimulationRequest(hours=2, start=NOON, seed=1))
+    assert report["schedule"]["refused"] == {
+        "Evening: it could not be applied: settings store went away": 1
+    }
+    # The clockwheel switch made before the failure was put back.
+    assert report["song_picking"]["final_clockwheel"] == "Main"
+    gold = next(row for row in report["categories"] if row["name"] == "Gold")
+    assert gold["plays"] == 0
+
+
+@pytest.mark.parametrize("content", [b"", b"this is not a database at all" * 40])
+def test_an_unreadable_library_stops_simulate_in_words(tmp_path: Path, content: bytes) -> None:
+    from autodj.config import load_config
+    from autodj.rotation_sim import open_station
+
+    config = tmp_path / "cli.toml"
+    config.write_text(
+        f'[index]\nindex_dir = "{(tmp_path / "index").as_posix()}"\n', encoding="utf-8"
+    )
+    cfg = load_config(config, environ={})
+    cfg.index.active_dir.mkdir(parents=True)
+    database = cfg.index.active_dir / "library.db"
+    database.write_bytes(content)
+    with pytest.raises(SimulationError) as refused, open_station(cfg):
+        pass
+    message = str(refused.value)
+    assert message.startswith(f"The music library {database} cannot be read (")
+    assert message.endswith("start autodj serve once to check it.")
+    assert database.read_bytes() == content

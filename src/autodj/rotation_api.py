@@ -10,6 +10,7 @@ progress and, once done, the report in JSON and in words.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import threading
 import time
@@ -171,6 +172,8 @@ class RotationTests:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._runs: dict[str, RotationTestRun] = {}
+        # Set when the server starts shutting down: no run starts after it.
+        self._closing = False
 
     def start(self, run: RotationTestRun) -> None:
         """Take the slot for *run* and start it; 409 while any station's run is going.
@@ -179,6 +182,8 @@ class RotationTests:
         previous result returns) and answers 503.
         """
         with self._lock:
+            if self._closing:
+                raise HTTPException(status_code=503, detail="The server is shutting down")
             busy = next((other for other in self._runs.values() if other.state == "running"), None)
             if busy is not None:
                 where = "" if busy.station == run.station else f" for station {busy.station}"
@@ -200,8 +205,12 @@ class RotationTests:
             ) from exc
 
     def shutdown(self, timeout: float) -> bool:
-        """Cancel every run and wait up to *timeout* seconds in all; whether they all ended."""
+        """Cancel every run and wait up to *timeout* seconds in all; whether they all ended.
+
+        No run starts once this has begun.
+        """
         with self._lock:
+            self._closing = True
             runs = [run for run in self._runs.values() if run.state == "running"]
         for run in runs:
             run.cancel()
@@ -271,9 +280,10 @@ def install_rotation_test(router: StationRouter) -> None:
             wanted = body.request(source.timezone)
         except SimulationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
-        # Copied here, on the event loop where the settings routes run, and
-        # under the lock the worker-thread settings writers hold.
-        source = replace(source, snapshot=snapshot_player(source.player))
+        # Copied now, in a worker thread: the copy may wait a moment on the
+        # settings lock, and the event loop never does.
+        snapshot = await asyncio.to_thread(snapshot_player, source.player)
+        source = replace(source, snapshot=snapshot)
         run = RotationTestRun(station.slug, source, wanted)
         _tests(request).start(run)
         return run.view()
