@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import random
 from datetime import date
@@ -97,6 +98,52 @@ def test_liner_dates_are_saved_shared_and_removed(tmp_path: Path) -> None:
     }
     first.set("promo.mp3", ClipDates())
     assert second.all() == {}
+
+
+def test_saves_at_once_never_lose_each_other(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two saves at once (two requests, or a save and a delete) both land."""
+    import threading
+
+    store = LinerDates(tmp_path / "liner_dates.json")
+    both_read = threading.Barrier(2, timeout=0.5)
+    real_empty = ClipDates.empty
+
+    def empty_after_both_read(dates: ClipDates) -> bool:
+        # Without one lock over read, change and write, both saves have read
+        # the empty file here, and the second write drops the first save.
+        with contextlib.suppress(threading.BrokenBarrierError):
+            both_read.wait()
+        return real_empty.fget(dates)
+
+    monkeypatch.setattr(ClipDates, "empty", property(empty_after_both_read))
+    saves = [
+        threading.Thread(target=store.set, args=(name, CHRISTMAS))
+        for name in ("one.mp3", "two.mp3")
+    ]
+    for save in saves:
+        save.start()
+    for save in saves:
+        save.join()
+    assert set(LinerDates(store.path).all()) == {"one.mp3", "two.mp3"}
+
+
+def test_a_replaced_file_of_the_same_size_and_time_is_read_again(tmp_path: Path) -> None:
+    import os
+
+    path = tmp_path / "liner_dates.json"
+    store = LinerDates(path)
+    store.set("a.mp3", CHRISTMAS)
+    stamp = path.stat()
+    # A restore writes a new file of the same size in the same clock tick.
+    other = ClipDates(not_before=date(2026, 12, 2), not_after=date(2026, 12, 26))
+    replacement = tmp_path / "new.json"
+    replacement.write_bytes(path.read_bytes().replace(b"2026-12-01", b"2026-12-02"))
+    os.utime(replacement, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    os.replace(replacement, path)
+    assert path.stat().st_size == stamp.st_size
+    assert store.get("a.mp3") == other
 
 
 def test_a_bad_liner_dates_file_is_set_aside(tmp_path: Path) -> None:

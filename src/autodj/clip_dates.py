@@ -128,14 +128,19 @@ def parse_dates(body: object) -> ClipDates:
         raise ClipDatesError(name, f"{label}: {error['msg']}") from None
 
 
+def station_zone(cfg: AutoDJConfig) -> str:
+    """The station time zone's name: ``[server] station_timezone`` or the system's."""
+    from autodj.scheduler import system_timezone
+
+    zone = getattr(getattr(cfg, "server", None), "station_timezone", None)
+    return str(zone or system_timezone())
+
+
 def station_today(cfg: AutoDJConfig) -> Date:
     """Today in the station time zone: ``[server] station_timezone`` or the system's."""
     from zoneinfo import ZoneInfo
 
-    from autodj.scheduler import system_timezone
-
-    zone = getattr(getattr(cfg, "server", None), "station_timezone", None)
-    return datetime.now(ZoneInfo(zone or system_timezone())).date()
+    return datetime.now(ZoneInfo(station_zone(cfg))).date()
 
 
 class _LinerDatesFile(BaseModel):
@@ -157,15 +162,17 @@ class LinerDates:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self._lock = threading.Lock()
-        self._stamp: tuple[int, int] | None = None
+        self._stamp: tuple[int, int, int] | None = None
         self._dates: dict[str, ClipDates] = {}
 
-    def _stat(self) -> tuple[int, int] | None:
+    def _stat(self) -> tuple[int, int, int] | None:
+        # The file ID too: every save replaces the file, so a new file of the
+        # same size written within one tick of the clock is still noticed.
         try:
             found = self.path.stat()
         except OSError:
             return None
-        return found.st_mtime_ns, found.st_size
+        return found.st_mtime_ns, found.st_size, found.st_ino
 
     def _keep_bad_copy(self, reason: str) -> None:
         bad = self.path.with_name(f"{self.path.name}.bad-{uuid.uuid4().hex[:8]}")
@@ -178,21 +185,25 @@ class LinerDates:
             "Liner dates file %s is invalid (%s); set it aside as %s", self.path, reason, bad
         )
 
+    def _load_locked(self) -> dict[str, ClipDates]:
+        """Every liner's dates, read again if the file changed. Caller holds ``_lock``."""
+        stamp = self._stat()
+        if stamp == self._stamp:
+            return dict(self._dates)
+        dates: dict[str, ClipDates] = {}
+        if stamp is not None:
+            try:
+                dates = _LinerDatesFile.model_validate_json(self.path.read_bytes()).liners
+            except (OSError, ValueError) as exc:
+                self._keep_bad_copy(str(exc).splitlines()[0])
+                stamp = None
+        self._stamp, self._dates = stamp, dates
+        return dict(dates)
+
     def all(self) -> dict[str, ClipDates]:
         """Every liner's dates, read again if the file changed."""
         with self._lock:
-            stamp = self._stat()
-            if stamp == self._stamp:
-                return dict(self._dates)
-            dates: dict[str, ClipDates] = {}
-            if stamp is not None:
-                try:
-                    dates = _LinerDatesFile.model_validate_json(self.path.read_bytes()).liners
-                except (OSError, ValueError) as exc:
-                    self._keep_bad_copy(str(exc).splitlines()[0])
-                    stamp = None
-            self._stamp, self._dates = stamp, dates
-            return dict(dates)
+            return self._load_locked()
 
     def get(self, liner_id: str) -> ClipDates:
         """The dates of *liner_id*; empty when it has none."""
@@ -204,17 +215,19 @@ class LinerDates:
         Raises:
             ClipDatesError: Too many liners have dates already.
         """
-        current = self.all()
-        if dates.empty:
-            if liner_id not in current:
-                return  # Nothing to forget; the file is left as it is.
-            del current[liner_id]
-        else:
-            if liner_id not in current and len(current) >= MAX_LINER_DATES:
-                raise ClipDatesError("", f"At most {MAX_LINER_DATES} liners can have dates")
-            current[liner_id] = dates
-        document = _LinerDatesFile(schema_version=SCHEMA_VERSION, liners=current)
+        # Read, change and write under one lock, so two saves at once (two
+        # requests, or a save and a delete) never lose each other's change.
         with self._lock:
+            current = self._load_locked()
+            if dates.empty:
+                if liner_id not in current:
+                    return  # Nothing to forget; the file is left as it is.
+                del current[liner_id]
+            else:
+                if liner_id not in current and len(current) >= MAX_LINER_DATES:
+                    raise ClipDatesError("", f"At most {MAX_LINER_DATES} liners can have dates")
+                current[liner_id] = dates
+            document = _LinerDatesFile(schema_version=SCHEMA_VERSION, liners=current)
             self.path.parent.mkdir(parents=True, exist_ok=True)
             atomic_write(self.path, document.model_dump_json(indent=2) + "\n")
             self._stamp, self._dates = self._stat(), current
@@ -251,6 +264,13 @@ class LinerGate:
 
     def playable(self, entries: Sequence[Any]) -> Sequence[Any]:
         """The liner *entries* that may play now; *entries* itself when no liner has dates."""
-        if not self.store.all():
+        dates = self.store.all()
+        if not dates:
             return entries
-        return tuple(entry for entry in entries if self.refusal(self._liner_id(entry.path)) is None)
+        today = self._today()
+        return tuple(
+            entry
+            for entry in entries
+            if (found := dates.get(self._liner_id(entry.path))) is None
+            or found.refusal(today) is None
+        )
