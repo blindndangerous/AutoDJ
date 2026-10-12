@@ -79,6 +79,7 @@ from autodj._bridge import (
     PlayerBridge,
     StreamSeekUnavailable,
 )
+from autodj.categories_api import install_categories
 
 # PlayerBridge lives in autodj._bridge; it is re-exported here.
 from autodj.clockwheel import parse_pal
@@ -2856,6 +2857,7 @@ def create_app(
         """Validate *value*, then check its folders, tracks and presets exist."""
         clock = validate_clockwheel(value)
         sources = {source["id"]: source for source in library.catalog.sources()}
+        categories = _category_names(library)
         for number, step in enumerate(clock["steps"], 1):
             kind = step["type"]
             if kind in {"music", "liner"}:
@@ -2875,7 +2877,19 @@ def create_app(
                     )
             elif kind == "settings" and step["preset"] not in _preset_names():
                 raise ValueError(f"Step {number}: there is no preset named {step['preset']}")
+            elif kind == "category" and step["category"] not in categories:
+                raise ValueError(
+                    f"Step {number}: its category is not saved; choose one in Library tools, "
+                    "Categories"
+                )
         return clock
+
+    def _category_names(library: Any) -> dict[str, str]:
+        """Each saved rotation category's ID and name."""
+        index = getattr(library, "categories", None)
+        if index is None:
+            return {}
+        return {category.id: category.name for category in index.categories()}
 
     def _clock_snapshot(library: Any) -> dict:
         setting = _clock_setting(library)
@@ -2888,6 +2902,9 @@ def create_app(
                 for s in library.catalog.sources()
             ],
             "presets": _preset_names(),
+            "categories": [
+                {"id": key, "name": name} for key, name in _category_names(library).items()
+            ],
             "cursor": (getattr(bridge.player, "_clock", None) or {}).get("cursor", 0),
             "last_status": getattr(bridge.player, "_clock_status", None),
             "notice": OLD_CLOCK_MESSAGE if "slots" in setting else None,
@@ -3315,6 +3332,7 @@ def create_app(
     from autodj.time_checks import install_time_checks
 
     time_checks = install_time_checks(app, bridge, station_schedule, station_timezone)
+    install_categories(app, bridge)
     return app
 
 

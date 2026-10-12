@@ -12,6 +12,7 @@
 //
 // Folders are chosen from the registered library folders by ID, with an
 // optional path inside the folder; the browser never sends a full path.
+// Category steps name a saved category (Categories, above) by its ID.
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
@@ -27,8 +28,9 @@ const FIELDS_FOR = {
   liner: ["source", "folder", "recursive", "selection", "enforce-rules"],
   track: ["source", "path"],
   settings: ["preset"],
+  category: ["category", "selection", "enforce-rules"],
 };
-const ALL_FIELDS = ["source", "folder", "path", "preset", "recursive", "selection", "enforce-rules"];
+const ALL_FIELDS = ["source", "folder", "path", "preset", "category", "recursive", "selection", "enforce-rules"];
 // Row buttons, in tab order.
 const ROW_ACTIONS = [["edit", "Edit"], ["move-up", "Move up"], ["move-down", "Move down"], ["duplicate", "Duplicate"], ["delete", "Delete"]];
 
@@ -46,16 +48,25 @@ function lastPart(path) {
   return parts[parts.length - 1] || String(path);
 }
 
+function selectionExtras(step) {
+  const extras = [];
+  if (step.selection === "random") extras.push("at random");
+  if (step.enforce_rules === false) extras.push("ignoring repeat rules");
+  return extras;
+}
+
 // "music from Rock, at random": what one step does, for its list item.
-export function describeStep(step, sources = []) {
+export function describeStep(step, sources = [], categories = []) {
+  if (step.type === "category") {
+    const category = categories.find((item) => item.id === step.category);
+    const where = category ? `category ${category.name}` : "a category that no longer exists";
+    return [`music from ${where}`, ...selectionExtras(step)].join(", ");
+  }
   if (FOLDER_TYPES.has(step.type)) {
     const source = sources.find((item) => item.id === step.source);
     const where = step.folder || (source ? lastPart(source.path) : "a folder that is no longer registered");
-    const extras = [];
-    if (step.recursive) extras.push("with subfolders");
-    if (step.selection === "random") extras.push("at random");
-    if (step.enforce_rules === false) extras.push("ignoring repeat rules");
-    return [`${step.type} from ${where}`, ...extras].join(", ");
+    const extras = step.recursive ? ["with subfolders"] : [];
+    return [`${step.type} from ${where}`, ...extras, ...selectionExtras(step)].join(", ");
   }
   if (step.type === "track") return `track ${step.path}`;
   if (step.type === "settings") return `switch to preset ${step.preset}`;
@@ -78,7 +89,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     return { refresh: async () => {}, clearProtectedData() {}, resume() {}, destroy() {} };
   }
 
-  const empty = () => ({ names: [], active: null, sources: [], presets: [], cursor: 0, notice: null });
+  const empty = () => ({ names: [], active: null, sources: [], presets: [], categories: [], cursor: 0, notice: null });
   let data = empty();
   let clock = null; // the working copy, or null when none is open
   let isNew = false; // created in the page and never saved
@@ -96,7 +107,8 @@ export function installClockwheelPanel({ document: doc = document, request = req
   const clockUrl = (name) => `/api/library/clock/${encodeURIComponent(name)}`;
   const send = (url, method, body) => request(url, body === undefined ? { method } : { method, headers: JSON_HEADERS, body: JSON.stringify(body) });
   const count = (n) => `${n} ${n === 1 ? "step" : "steps"}`;
-  const position = (index) => `Step ${index + 1} of ${clock.steps.length}, ${describeStep(clock.steps[index], data.sources)}`;
+  const describe = (step) => describeStep(step, data.sources, data.categories);
+  const position = (index) => `Step ${index + 1} of ${clock.steps.length}, ${describe(clock.steps[index])}`;
 
   function typedName() {
     const value = nameInput.value.trim();
@@ -136,7 +148,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   }
 
   function renderOptions() {
-    const signature = JSON.stringify([data.sources, data.presets, typeSelect.value]);
+    const signature = JSON.stringify([data.sources, data.presets, data.categories, typeSelect.value]);
     if (signature === optionsSignature) return;
     optionsSignature = signature;
     const fill = (select, items) => {
@@ -153,6 +165,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     const kind = typeSelect.value === "liner" ? "liner" : "music";
     fill(el("clock-step-source"), data.sources.filter((source) => source.kind === kind).map((source) => [source.id, source.path]));
     fill(el("clock-step-preset"), data.presets.map((name) => [name, name]));
+    fill(el("clock-step-category"), data.categories.map((category) => [category.id, category.name]));
   }
 
   function renderNotice() {
@@ -243,7 +256,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   }
 
   function remove(index) {
-    const gone = describeStep(clock.steps[index], data.sources);
+    const gone = describe(clock.steps[index]);
     clock.steps.splice(index, 1);
     if (editing !== null) resetForm();
     const left = clock.steps.length;
@@ -305,6 +318,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     set("clock-step-folder", step.folder || "");
     set("clock-step-path", step.path || "");
     set("clock-step-preset", step.preset || "");
+    set("clock-step-category", step.category || "");
     set("clock-step-selection", step.selection || "least_recent");
     const check = (id, value) => { const field = el(id); if (field) field.checked = value; };
     check("clock-step-recursive", Boolean(step.recursive));
@@ -341,6 +355,18 @@ export function installClockwheelPanel({ document: doc = document, request = req
       return {
         type, source, folder: relative("clock-step-folder", "The subfolder", true),
         recursive: el("clock-step-recursive").checked,
+        selection: el("clock-step-selection").value,
+        enforce_rules: el("clock-step-enforce-rules").checked,
+      };
+    }
+    if (type === "category") {
+      const category = el("clock-step-category")?.value || "";
+      if (!category) {
+        el("clock-step-category")?.focus();
+        throw new Error("Add a category under Categories first.");
+      }
+      return {
+        type, category,
         selection: el("clock-step-selection").value,
         enforce_rules: el("clock-step-enforce-rules").checked,
       };

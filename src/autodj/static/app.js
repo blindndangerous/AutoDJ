@@ -27,6 +27,7 @@ import {
 } from "./modules/api-client.js";
 import { installSeekController } from "./modules/seek-controller.js";
 import { installLibraryFolders } from "./modules/library-folders.js";
+import { installCategoriesPanel } from "./modules/categories-panel.js";
 import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
 import { installSchedulerPanel } from "./modules/scheduler-panel.js";
 import { installCartWall } from "./modules/cart-wall.js";
@@ -208,6 +209,7 @@ const auth = initAuthDialog({ document });
 let authExpiryHandled = false;
 let libraryFoldersControls = null;
 let clockwheelPanelControls = null;
+let categoriesPanelControls = null;
 let schedulerPanelControls = null;
 let cartWallControls = null;
 let reconnectGeneration = 0;
@@ -306,6 +308,7 @@ function clearProtectedSessionData() {
   }
   libraryFoldersControls?.clearProtectedData();
   clockwheelPanelControls?.clearProtectedData();
+  categoriesPanelControls?.clearProtectedData();
   schedulerPanelControls?.clear();
   cartWallControls?.clear();
   const browseFolder = document.getElementById("library-browse-folder");
@@ -1318,6 +1321,7 @@ function connectWS() {
           authenticatedActivityActive = true;
           libraryFoldersControls?.resume();
           clockwheelPanelControls?.resume();
+          categoriesPanelControls?.resume();
           void schedulerPanelControls?.refresh();
           connectWS();
         },
@@ -2346,6 +2350,8 @@ libraryFoldersControls = installLibraryFolders({
 });
 
 clockwheelPanelControls = installClockwheelPanel();
+// A saved or deleted category reaches the clockwheel step form at once.
+categoriesPanelControls = installCategoriesPanel({ onChange: () => clockwheelPanelControls?.refresh() });
 schedulerPanelControls = installSchedulerPanel();
 
 import { installLiners, bumpLinerTrackCount } from "./modules/liners.js";
@@ -2448,6 +2454,7 @@ function startAuthenticatedApp(initialState) {
   authenticatedActivityActive = true;
   libraryFoldersControls?.resume();
   clockwheelPanelControls?.resume();
+  categoriesPanelControls?.resume();
   void schedulerPanelControls?.refresh();
   installLibraryJobs(_libEls);
   // Audio dependencies are owned by the audio engine. Inject closures
