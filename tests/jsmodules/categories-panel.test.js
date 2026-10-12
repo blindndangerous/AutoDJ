@@ -219,6 +219,23 @@ describe("categories form", () => {
     expect(byId("categories-hours-until").value).toBe("02:00");
   });
 
+  it("names a half-typed time instead of saving the category for all day", async () => {
+    const server = await open();
+    byId("categories-add").click();
+    byId("categories-name").value = "Late night";
+    byId("categories-query").value = "genre:jazz";
+    // A browser reports a half-typed time as an empty value with bad input.
+    const from = byId("categories-hours-from");
+    Object.defineProperty(from, "validity", { configurable: true, value: { badInput: true } });
+    byId("categories-save").click();
+    expect(document.activeElement).toBe(from);
+    expect(from.getAttribute("aria-invalid")).toBe("true");
+    expect(from.getAttribute("aria-describedby")).toBe("categories-form-error");
+    expect(byId("categories-form-error").textContent).toBe(
+      "Allowed from is not a whole time. Enter hours and minutes, such as 22:00, or clear it.");
+    expect(server.calls.some((call) => call.method === "POST")).toBe(false);
+  });
+
   it("names a half-filled or empty time window and links the error to the field", async () => {
     const server = await open();
     byId("categories-add").click();

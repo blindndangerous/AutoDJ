@@ -229,6 +229,13 @@ export function installCategoriesPanel({ document: doc = document, request = req
       showError("playlist", `Put an M3U or M3U8 file in ${data.playlists_folder || "the playlists folder"} first.`);
       return false;
     }
+    // A half-typed time reads as empty; say so rather than save "all day".
+    for (const [field, label] of [["hours_from", "Allowed from"], ["hours_until", "Allowed until"]]) {
+      if (el(FIELD_IDS[field])?.validity?.badInput) {
+        showError(field, `${label} is not a whole time. Enter hours and minutes, such as 22:00, or clear it.`);
+        return false;
+      }
+    }
     if (Boolean(value.hours_from) !== Boolean(value.hours_until)) {
       showError(value.hours_from ? "hours_until" : "hours_from", "Enter both Allowed from and Allowed until, or leave both empty.");
       return false;
