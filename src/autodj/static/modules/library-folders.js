@@ -38,6 +38,11 @@ const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&":
 
 export function installLibraryFolders({ document: doc = document, request = requestJson, getCurrentTrack = () => null, getCurrentPosition = () => null, onFolders }) {
   const panel = doc.getElementById("panel-library");
+  // Browse library sits in Queue & Search, and its folder choice comes from
+  // this list: one load each time that tab is shown keeps it current
+  // without polling there.
+  const browsePanel = doc.getElementById("library-browse-folder")?.closest("section[data-view]") || null;
+  let browseShown = false;
   const list = doc.getElementById("source-folders");
   const status = doc.getElementById("source-folders-status");
   status.textContent = "";
@@ -86,7 +91,12 @@ export function installLibraryFolders({ document: doc = document, request = requ
     if (!returnView) return;
     returnToView(returnView, () => {
       const panel = doc.querySelector(`section[data-view="${returnView}"]`);
-      const replacement = returnMatch && [...panel.querySelectorAll("button")]
+      // Queue & Search holds several lists that can show the same track
+      // (Search results, Browse library): look for the redrawn button in
+      // the list it came from.
+      const listNow = returnContainer?.id ? doc.getElementById(returnContainer.id) : null;
+      const scope = listNow && panel.contains(listNow) ? listNow : panel;
+      const replacement = returnMatch && [...scope.querySelectorAll("button")]
         .filter((button) => !button.disabled && returnMatch.matches(button))[returnMatch.occurrence];
       if (returnTarget?.isConnected && !returnTarget.disabled && panel.contains(returnTarget)) return returnTarget;
       if (replacement) return replacement;
@@ -118,9 +128,10 @@ export function installLibraryFolders({ document: doc = document, request = requ
       const action = opener.dataset.action;
       const matches = (button) => button.getAttribute("aria-label") === label
         && button.dataset.path === path && button.dataset.action === action;
+      const scope = returnContainer?.id ? returnContainer : panel;
       returnMatch = {
         matches,
-        occurrence: [...panel.querySelectorAll("button")].filter(matches).indexOf(opener),
+        occurrence: [...scope.querySelectorAll("button")].filter(matches).indexOf(opener),
       };
       returnButton.textContent = `Return to ${doc.getElementById(`tab-${returnView}`)?.textContent?.trim() || returnView}`;
     } else returnMatch = null;
@@ -189,7 +200,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     }
   }
   async function refresh() {
-    if (!panel || panel.hidden || suspended) return;
+    if (suspended || ((!panel || panel.hidden) && (!browsePanel || browsePanel.hidden))) return;
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
     try {
@@ -201,6 +212,9 @@ export function installLibraryFolders({ document: doc = document, request = requ
   }
   function visible() { return !suspended && !panel.hidden && !doc.hidden; }
   function updatePolling() {
+    const browsing = !suspended && !!browsePanel && !browsePanel.hidden && !doc.hidden;
+    if (browsing && !browseShown && !visible()) void refresh();
+    browseShown = browsing;
     if (visible() && timer == null) {
       void refresh();
       timer = setInterval(refresh, 3000);
@@ -536,6 +550,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     actionAnnouncement += 1;
     if (timer != null) clearInterval(timer);
     timer = null;
+    browseShown = false;
     opening = saving = false;
     const dialog = doc.getElementById("track-info-dialog");
     if (dialog?.open) dialog.close();

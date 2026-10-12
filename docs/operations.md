@@ -74,6 +74,12 @@ showing the completed count and percentage. Redirected output and web job logs k
 messages every 25 tracks and at completion. File checks report every 5000 files, so the log
 in the web page's library tools stays readable.
 
+In the web page, add, remove and rescan music and voice liner folders in the **Library tools**
+tab. Browse what they hold in **Queue & Search**, after Search: **Browse library** lists all
+music, all voice liners or one registered folder, 100 tracks a page, and **Browse voice liners**
+lists the liner files with Delete and Track info. Track info's Return to Queue & Search button
+puts focus back on the button that opened it.
+
 With `[playback] import_external_cues` on (the default), intro and outro markers set in Mixxx,
 Rekordbox or Traktor take the place of the detected intro and outro, so the crossfade follows
 them. A track analysed before AutoDJ read those markers gets them the first time it plays while

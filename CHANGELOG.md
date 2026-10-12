@@ -175,6 +175,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Browse library and the voice liner list moved to the Queue & Search tab, after Search, as
+  **Browse library** and **Browse voice liners**. Tab goes from Search to Browse library to the
+  voice liners, and Track info's Return to Queue & Search puts focus back on the button that
+  opened it, even after the list is drawn again. Adding, removing and rescanning folders stays in
+  Library tools, which now says where browsing went, and uploading liners stays in Settings,
+  Voice liners. Play next and Add to queue from Browse library are now spoken, since the queue's
+  status region is on the same tab; Delete on a voice liner says its result beside the list and
+  moves focus to the next liner, or to the list when none is left.
 - Old repeat keys in `config.toml` and `web_state.json` are ignored with a warning.
   Re-enter any limits that still use those keys in Settings > Picking > Repeats.
 - Random walk, least recently played and clock picks now hold back the same album and the same

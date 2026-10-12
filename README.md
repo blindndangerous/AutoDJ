@@ -261,8 +261,8 @@ and copy it to the mounted index directory before starting Compose.
 After `autodj serve`, point a browser at `http://localhost:8080`.  Six tabs:
 
 - **Now Playing.**  What is playing, the next track, album art, lyrics, the cue strip on the progress bar.
-- **Queue & Search.**  Find any track in your library and choose Play now, Play next (straight after the current track) or Add to queue (at the end).  Move queued tracks up, down or to the top, remove them, or clear the whole queue; each move says the new position, such as "Moved Alpha to position 2 of 5".
-- **Track info.**  View a recording's details and edit its cue points. Open it from Now Playing, Queue, Search results, History, library browse or the voice liner list. Use the Return to History, Return to Queue & Search or other view-specific button to return to the source item.
+- **Queue & Search.**  Find any track in your library and choose Play now, Play next (straight after the current track) or Add to queue (at the end).  Move queued tracks up, down or to the top, remove them, or clear the whole queue; each move says the new position, such as "Moved Alpha to position 2 of 5".  After Search come **Browse library**, which lists the whole library or one music or voice liner folder 100 tracks a page, and **Browse voice liners**, the liner files with Delete and Track info.
+- **Track info.**  View a recording's details and edit its cue points. Open it from Now Playing, History, or the Queue, Search results, Browse library and Browse voice liners lists in Queue & Search. Use the Return to History, Return to Queue & Search or other view-specific button to return to the source item.
 - **History.**  What has played, newest first, one page at a time.  Times get a date when the page holds tracks from before today.  While page 1 is shown, each new song is added to the top on its own.  Refresh history reloads the page you are on.  Export play log saves every play between two dates, for royalty reports: a CSV with one row per play (times, seconds played, artist, title, album, ISRC, label, kind, file and performances, meaning listeners who heard it) or a SoundExchange Report of Use.  `autodj export-plays` does the same from the command line; see [Play log export](docs/operations.md#play-log-export).
 - **Settings.**  Split into subtabs, so each screen holds one group.  Move between them with the arrow keys, Home and End, as with the section tabs; the page remembers the last one you used.
   - **Transitions**: the transition mode, crossfade and fade-in length, EQ ducking and its cutoff, the transition effect and its level, and how Skip ends a track.
@@ -276,7 +276,7 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Six tabs:
   - **Profiles and access**: **Profiles** saves the current settings under a name to apply later.  **Browser access** (with `--lan`) signs this browser out, renames or revokes paired devices, and shows the pairing code for adding another.
 
   A setting that has no effect right now is hidden.  For example, the effect level is hidden while no transition effect is chosen, and the DJ-mix options are hidden with saved segue points.  Changes are saved on the server and survive a restart.  Paths, server and security options, and the model stay in `config.toml`.
-- **Library tools.**  Run index, enrich, analyse, prune and stats jobs without leaving the page.  One job runs at a time; the index stats and the full job log refresh when it finishes.
+- **Library tools.**  Add and remove music and voice liner folders and rescan them, keep clockwheels, and run index, enrich, analyse, prune and stats jobs without leaving the page.  Browsing the library and the voice liners is in Queue & Search.  One job runs at a time; the index stats and the full job log refresh when it finishes.
 
 ### Keyboard shortcuts
 
@@ -335,6 +335,9 @@ Drop short spoken clips into a folder.  AutoDJ will fade the music down for a co
    swap in a new recording under a name that is already there, tick **Replace existing file**
    first; without it the upload is refused so nothing is overwritten by accident.
 5. Set how often you want them to play.
+
+The liner files are listed in the **Queue & Search** tab, under **Browse voice liners**, each with
+**Delete** and **Track info**.  Add or remove liner folders in **Library tools**.
 
 You can pick three trigger styles, in any combination:
 
