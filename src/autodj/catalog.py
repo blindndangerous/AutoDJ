@@ -1262,9 +1262,17 @@ class LibraryCatalog:
                     isinstance(value, bool)
                     or not isinstance(value, int | float)
                     or not math.isfinite(value)
-                    or value < 0
+                    or (
+                        value < -15
+                        if name == "overlap_start" and row["kind"] == "liner"
+                        else value < 0
+                    )
                 ):
-                    raise ValueError(f"{name} must be a finite non-negative time or None")
+                    raise ValueError(
+                        f"{name} must be a finite time of at least -15 seconds or None"
+                        if name == "overlap_start" and row["kind"] == "liner"
+                        else f"{name} must be a finite non-negative time or None"
+                    )
                 if row["length"] > 0 and name != "overlap_start" and value > row["length"]:
                     raise ValueError(f"{name} exceeds track length")
             if sources.get(name) in {"user", "imported"} and source not in {"user", "imported"}:

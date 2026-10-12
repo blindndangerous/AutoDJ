@@ -418,6 +418,8 @@ def test_clock_omits_only_liner_when_pair_will_not_fit(
         (0, 0.25, True, None),
         (0, 2.25, True, None),
         (3, 2.25, True, None),
+        (-3, 5.25, False, None),
+        (-3, 2.25, False, None),
         (None, 2.25, False, 2.5),
         (3, 2.25, False, 2.5),
     ],
@@ -566,6 +568,16 @@ def test_voice_followed_by_id_never_starts_id_before_song_segue(station):
     result = player._render_track(a, b, 0, liners=((voice, True), (jingle, True)))
     assert result.liner_events == ((6 * SR, voice, True), (10 * SR, jingle, True))
     assert len(result.audio) - result.overlap_frames == 12 * SR
+
+
+def test_later_negative_liner_cue_delays_the_chain_within_song_intro(station):
+    player, (a, b, voice, jingle), points = station
+    points[b.path]["intro"] = 6
+    points[voice.path].update(start=0, segue=1, end=1, overlap_start=0)
+    points[jingle.path].update(start=0, segue=1, end=1, overlap_start=-3)
+    result = player._render_track(a, b, 0, liners=((voice, False), (jingle, False)))
+    assert result.liner_events == ((12 * SR, voice, False), (13 * SR, jingle, False))
+    assert len(result.audio) - result.overlap_frames == 10 * SR
 
 
 @pytest.fixture

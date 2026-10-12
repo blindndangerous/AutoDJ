@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Negative liner **Overlap start** values down to -15 seconds start the next song first, then place liner content within its intro when it fits. If the main content is longer than that intro, the existing liner-first timing remains in effect; the liner tail continues over the song.
+
 - A separate output device for previews (#54). In Settings, Sound, **Preview output device**
   sends the cue point preview in Track info, which Queue & Search, History and the library open,
   to a device of its own, such as headphones, while the browser mix stays on the speakers.

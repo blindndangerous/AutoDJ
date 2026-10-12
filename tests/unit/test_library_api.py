@@ -119,6 +119,20 @@ def test_points_validate_and_keep_manual_values_without_analysis(library_api, tm
     )
     assert saved["points"]["overlap_start"] == 5.3
     assert saved["points"]["segue"] == 5.5
+    saved = call(
+        "POST",
+        "/api/library/points",
+        SongPointsBody(path=str(liner), points={"overlap_start": -3}),
+    )
+    assert saved["points"]["overlap_start"] == -3
+    assert manager.catalog.points(liner)["overlap_start"] == -3
+    with pytest.raises(HTTPException) as invalid:
+        call(
+            "POST",
+            "/api/library/points",
+            SongPointsBody(path=str(liner), points={"overlap_start": -16}),
+        )
+    assert invalid.value.status_code == 400
     with pytest.raises(HTTPException) as invalid:
         call("POST", "/api/library/points", SongPointsBody(path=str(liner), points={"intro": 1}))
     assert invalid.value.status_code == 400

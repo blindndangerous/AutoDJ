@@ -323,7 +323,7 @@
     <section id="points-editor" aria-labelledby="points-heading" hidden>
       <h3 id="points-heading">Cue points</h3>
       <p>Preview this file to check its cues. Use preview position copies the preview’s time; it does not use or change the station’s playback position.</p>
-      <p id="points-liner-help" hidden>Segue marks the end of the liner’s main content; End keeps the remaining tail. A blank Overlap start uses Segue, or End when Segue is blank. With Allow start over outro unchecked, the liner starts at the outgoing song’s Segue; checked, it may start over the Outro. Set Overlap start to 0 to let the next song’s intro overlap the liner when timing allows. A positive value is the number of seconds after the liner’s saved Start at which the next song may enter. It cannot be later than the liner’s Segue.</p>
+      <p id="points-liner-help" hidden>Segue marks the end of the liner’s main content; End keeps the remaining tail. A blank Overlap start uses Segue, or End when Segue is blank. With Allow start over outro unchecked, the liner starts at the outgoing song’s Segue; checked, it may start over the Outro. Set Overlap start to 0 to let the next song’s intro overlap the liner when timing allows. A positive value is the number of seconds after the liner’s saved Start at which the next song may enter. It cannot be later than the liner’s Segue. A negative value starts the liner after the next song begins, limited by its intro.</p>
       <label id="points-allow-outro-label" hidden><input type="checkbox" id="points-allow-outro" aria-describedby="points-liner-help"> Allow start over outro</label>
       <label for="points-path">Track path</label>
       <input id="points-path" type="text" autocomplete="off" readonly>
@@ -354,10 +354,11 @@
           <button type="button" data-preview="end">Preview End</button>
         </div>
         <div class="cue-point-row">
-          <label>Overlap start (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="overlap_start" aria-label="Overlap start time"><span data-point-source="overlap_start"></span></label>
+          <label>Overlap start (seconds or MM:SS; -15 to 0 starts after the next song) <input type="text" inputmode="decimal" data-point="overlap_start" aria-label="Overlap start time"><span data-point-source="overlap_start"></span></label>
           <button type="button" data-set-current="overlap_start" aria-label="Set Overlap start to preview position">Use preview position</button>
           <button type="button" data-preview="overlap_start">Preview Overlap start</button>
         </div>
+        <small id="negative-overlap-help" hidden>Starts after next song; limited by its intro.</small>
       </div>
       <button type="button" id="points-save">Save points</button>
       <audio id="points-preview" controls preload="none" aria-label="Song point preview" data-preview-output></audio>

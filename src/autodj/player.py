@@ -1608,10 +1608,13 @@ class Player:
             0.0, min(liner_end, main_end if main_end is not None else liner_end) - liner_start
         )
         overlap = cues.get("overlap_start")
-        release = main if overlap is None else min(overlap, main)
-        if overlap == 0:
-            intro = max(0.0, (self.saved_points(upcoming).get("intro") or start) - start)
-            release = max(0.0, main - intro)
+        from autodj.playout import liner_release_frames
+
+        intro = max(0.0, (self.saved_points(upcoming).get("intro") or start) - start)
+        release = (
+            liner_release_frames(round(main * SAMPLE_RATE), round(intro * SAMPLE_RATE), overlap)
+            / SAMPLE_RATE
+        )
         lead = 0.0
         record = self._library.catalog.record_for_path(liner.path) if self._library else None
         if current is not None and record and record.get("allow_outro", False):
@@ -3163,6 +3166,8 @@ class Player:
             entry.path == current.path for entry in self._library.entries_snapshot("liner")
         )
         clips, events, release = [], [], 0.0
+        negative_constraints, zero_constraints = [], []
+        has_negative_overlap = has_ordinary_overlap = False
         outro_lead_limit = None
         frames = 0
         main_frames = 0
@@ -3177,6 +3182,12 @@ class Player:
                 else min(frames, max(0, round(segue * SAMPLE_RATE) - source_start))
             )
             overlap_point = points.get("overlap_start")
+            has_negative_overlap = overlap_point is not None and overlap_point < 0
+            has_ordinary_overlap = overlap_point is None or overlap_point > 0
+            if has_negative_overlap:
+                negative_constraints.append((0, overlap_point, main_frames))
+            elif overlap_point == 0:
+                zero_constraints.append((0, main_frames))
             release = (
                 main_frames / SAMPLE_RATE
                 if overlap_point is None
@@ -3201,11 +3212,24 @@ class Player:
                     else min(len(clip), max(0, round(segue * SAMPLE_RATE) - first))
                 )
                 overlap_point = cues.get("overlap_start")
+                clip_offset = frames
+                clip_main_frames = (
+                    len(clip)
+                    if segue is None
+                    else min(len(clip), max(0, round(segue * SAMPLE_RATE) - first))
+                )
                 overlap = (
                     (main_frames - frames) / SAMPLE_RATE
                     if overlap_point is None
                     else min(float(overlap_point), (main_frames - frames) / SAMPLE_RATE)
                 )
+                if overlap_point is not None and overlap_point < 0:
+                    has_negative_overlap = True
+                    negative_constraints.append((clip_offset, overlap_point, clip_main_frames))
+                elif overlap_point == 0:
+                    zero_constraints.append((clip_offset, clip_main_frames))
+                else:
+                    has_ordinary_overlap = True
                 if overlap > 0 or overlap_point is None:
                     release = max(release, frames / SAMPLE_RATE + overlap)
                 if overlap_point == 0:
@@ -3232,11 +3256,26 @@ class Player:
                     with self._state.queue_lock:
                         self._commit_queue_pick(liner_entry)
         incoming_points = self.saved_points(next_entry)
-        if fit_main_frames:
-            incoming_intro = max(
-                0.0,
-                (incoming_points.get("intro") or 0.0) - (incoming_points.get("start") or 0.0),
+        incoming_intro = max(
+            0.0,
+            (incoming_points.get("intro") or 0.0) - (incoming_points.get("start") or 0.0),
+        )
+        if has_negative_overlap:
+            from autodj.playout import liner_release_frames
+
+            intro_frames = round(incoming_intro * SAMPLE_RATE)
+            constraints = [
+                offset / SAMPLE_RATE
+                + liner_release_frames(main, intro_frames, overlap) / SAMPLE_RATE
+                for offset, overlap, main in negative_constraints
+            ]
+            constraints.extend(
+                (offset + main - intro_frames) / SAMPLE_RATE for offset, main in zero_constraints
             )
+            if has_ordinary_overlap:
+                constraints.append(release)
+            release = max(constraints)
+        elif fit_main_frames:
             release = max(release, fit_main_frames / SAMPLE_RATE - incoming_intro)
         handoff = render_handoff(
             np.zeros((1, 2), dtype=np.float32) if is_liner else source,

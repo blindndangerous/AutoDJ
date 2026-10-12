@@ -18,6 +18,8 @@ White Town starts at 0:00.250, leaving 11.75 seconds before its 0:12 vocal. Keep
 
 **All the following are Voice liners.** Each has one **Overlap start** field. Zero means fit the complete liner around the song cues; it does not force the next song to start immediately. A positive value releases the next song that many seconds after the liner's selected Start, allowing its remaining audio to overlap even an incoming vocal. End still controls the full playback length. No separate liner Outro or fade point is required; the music table above is unchanged.
 
+A negative Overlap start (down to -15 seconds) starts the incoming song first, then starts the liner by that many seconds when its intro allows. The liner's main content must finish before the first vocal; if it is longer than the intro, the existing liner-first placement is used. The liner tail remains over the song. In a contiguous liner chain, a negative cue constrains the chain's start and earlier zero-overlap liners can reduce its delay.
+
 | Recording | Start | Overlap start | End |
 | --- | --- | --- | --- |
 | IMAGING — ALL DAY | 0:00.000 | 0:00.000 | 0:04.832 |

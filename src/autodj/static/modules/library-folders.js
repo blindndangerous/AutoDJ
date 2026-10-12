@@ -11,27 +11,28 @@ const POINTS = ["start", "intro", "outro", "segue", "end", "overlap_start"];
 export function parsePointTime(value) {
   const text = String(value ?? "").trim();
   if (!text) return null;
-  if (/^\d+(?:\.\d+)?$/.test(text)) {
+  if (/^-?\d+(?:\.\d+)?$/.test(text)) {
     const seconds = Number(text);
     if (Number.isFinite(seconds)) return seconds;
   }
-  const match = /^(\d+):([0-5]?\d(?:\.\d+)?)$/.exec(text);
+  const match = /^(-?)(\d+):([0-5]?\d(?:\.\d+)?)$/.exec(text);
   if (match) {
-    const seconds = Number(match[1]) * 60 + Number(match[2]);
-    if (Number.isFinite(seconds)) return seconds;
+    const seconds = Number(match[2]) * 60 + Number(match[3]);
+    if (Number.isFinite(seconds)) return match[1] ? -seconds : seconds;
   }
   throw new Error("Enter seconds or minutes:seconds, for example 5.3 or 1:05.");
 }
 
 export function formatPointTime(value) {
   if (value == null) return "";
-  const centiseconds = Math.round(value * 100);
+  const sign = value < 0 ? "-" : "";
+  const centiseconds = Math.round(Math.abs(value) * 100);
   const minutes = Math.floor(centiseconds / 6000);
   const seconds = Math.floor(centiseconds / 100) % 60;
   const fractionValue = centiseconds % 100;
   const whole = String(seconds).padStart(2, "0");
   const fraction = fractionValue ? `.${String(fractionValue).padStart(2, "0").replace(/0$/, "")}` : "";
-  return `${minutes}:${whole}${fraction}`;
+  return `${sign}${minutes}:${whole}${fraction}`;
 }
 
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
@@ -311,6 +312,17 @@ export function installLibraryFolders({ document: doc = document, request = requ
       if (provenance) provenance.textContent = sources[name] ? ` (${String(sources[name]).replaceAll("_", " ")})` : " (not set)";
     }
     savedFields = fieldSnapshot();
+    updateNegativeOverlapHelp();
+  }
+  function updateNegativeOverlapHelp() {
+    const negative = currentKind === "liner"
+      && doc.querySelector('[data-point="overlap_start"]').value.trim().startsWith("-");
+    const help = doc.getElementById("negative-overlap-help");
+    if (help) help.hidden = !negative;
+    for (const selector of ['[data-preview="overlap_start"]', '[data-set-current="overlap_start"]']) {
+      const button = doc.querySelector(selector);
+      if (button) button.disabled = negative;
+    }
   }
   function fieldSnapshot() {
     return JSON.stringify([...POINTS.map((name) => doc.querySelector(`[data-point="${name}"]`).value), allowOutro?.checked ?? false]);
@@ -364,7 +376,15 @@ export function installLibraryFolders({ document: doc = document, request = requ
       const points = {};
       for (const name of POINTS) {
         const field = doc.querySelector(`[data-point="${name}"]`);
-        if (!field.closest("label").hidden) points[name] = parsePointTime(field.value);
+        if (!field.closest("label").hidden) {
+          points[name] = parsePointTime(field.value);
+          if (points[name] < 0 && (currentKind !== "liner" || name !== "overlap_start")) {
+            throw new Error("Only a liner Overlap start can be negative.");
+          }
+          if (name === "overlap_start" && points[name] < -15) {
+            throw new Error("Overlap start cannot be less than -15 seconds.");
+          }
+        }
       }
       const body = { path: currentPath, points };
       if (currentKind === "liner" && allowOutro) body.allow_outro = allowOutro.checked;
@@ -501,6 +521,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
   doc.addEventListener("autodj:edit-points", onEditPoints);
   doc.getElementById("points-load")?.addEventListener("click", () => void openEditor(pointPath.value.trim(), currentKind));
   doc.getElementById("points-save").addEventListener("click", () => void savePoints());
+  doc.querySelector('[data-point="overlap_start"]').addEventListener("input", updateNegativeOverlapHelp);
   editor.addEventListener("click", async (event) => {
     const setButton = event.target.closest("button[data-set-current]");
     if (setButton) {

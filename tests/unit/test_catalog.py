@@ -203,6 +203,11 @@ def test_liner_allow_outro_persists_and_overlap_tracks_effective_segue(tmp_path:
         catalog.set_points(
             liner, {"start": 2, "segue": 8, "overlap_start": 5}, "analysis", allow_outro=True
         )
+        catalog.set_points(liner, {"overlap_start": -15})
+        assert catalog.points(liner)["overlap_start"] == -15
+        with pytest.raises(ValueError, match="-15"):
+            catalog.set_points(liner, {"overlap_start": -15.01})
+        catalog.set_points(liner, {"overlap_start": 5})
         with pytest.raises(ValueError, match="overlap_start"):
             catalog.set_points(liner, {"start": 2, "segue": 6, "overlap_start": 7})
         catalog.set_points(liner, {"segue": 6}, source="analysis")
@@ -285,6 +290,7 @@ def test_catalog_adds_allow_outro_to_existing_database(tmp_path: Path) -> None:
         {"start": -1},
         {"start": 181},
         {"overlap_start": True},
+        {"overlap_start": -0.01},
     ],
 )
 def test_points_reject_unknown_or_invalid_times(tmp_path: Path, points: dict) -> None:
