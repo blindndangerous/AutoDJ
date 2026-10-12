@@ -76,9 +76,11 @@ def _library(player: Player) -> SimpleNamespace:
     entries = player._sim.entries_snapshot()
     return SimpleNamespace(
         entries_snapshot=lambda kind="music": () if kind == "liner" else entries,
-        last_played=lambda: {},
-        pending_history=lambda: [],
-        remember_setting=lambda *_args: None,
+        ledger=SimpleNamespace(
+            last_played=lambda: {},
+            pending_history=lambda: [],
+            remember_setting=lambda *_args: None,
+        ),
     )
 
 
@@ -167,10 +169,12 @@ def test_clock_slot_without_rules_skips_protected_and_allows_recent(selection: s
     now = datetime.now(UTC)
     player._library = SimpleNamespace(
         entries_snapshot=lambda kind="music": () if kind == "liner" else entries,
-        last_played=lambda: {
-            protected.path: now - timedelta(days=10),
-            recent.path: now,
-        },
+        ledger=SimpleNamespace(
+            last_played=lambda: {
+                protected.path: now - timedelta(days=10),
+                recent.path: now,
+            }
+        ),
     )
     context = replace(
         player._pick_context(), protected=frozenset({protected.path}), recent=deque([recent.path])
@@ -274,7 +278,7 @@ def test_least_recent_stops_checking_rules_after_the_oldest_eligible_track() -> 
     history = {entry.path: now for entry in entries}
     history[entries[2].path] = now - timedelta(days=3)
     history[entries[4].path] = now - timedelta(days=2)
-    player._library.last_played = lambda: history
+    player._library.ledger.last_played = lambda: history
     current = _played_first(player)
     context = player._pick_context()
     picked, _how = player._choose_by_mode(current, context)
@@ -301,7 +305,7 @@ def test_automatic_start_honours_restored_repeat_history(mode: str) -> None:
         entries[0].path: datetime.now(UTC) - timedelta(days=1),
     }
     player._library = _library(player)
-    player._library.last_played = lambda: history
+    player._library.ledger.last_played = lambda: history
     assert player.restore_repeat_history(_Catalog([_saved_play(entries[0], minutes_ago=1)])) == 1
 
     for _ in range(5):
@@ -676,7 +680,9 @@ def test_refresh_includes_pending_history_writes() -> None:
         },
     )
     entry = player.playable_entries()[2]
-    player._library = SimpleNamespace(pending_history=lambda: [_saved_play(entry, minutes_ago=0)])
+    player._library = SimpleNamespace(
+        ledger=SimpleNamespace(pending_history=lambda: [_saved_play(entry, minutes_ago=0)])
+    )
     player.restore_repeat_history(_Catalog([]), refresh=True)
     assert list(player._state.recently_played) == [entry.path]
     assert player._state.play_history[0].album == entry.album

@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Groundwork for running several stations on one server (#70). Every control address also answers
+  under `/api/stations/default/...`, and the play log, last-played times and active clockwheel are
+  kept per station in `library.db`. Existing plays belong to the default station, so nothing
+  changes for a single station. `autodj export-plays --station NAME` exports one station's plays.
+
 - `autodj worker --idle-exit MINUTES` keeps asking for new songs every half minute and stops only
   once the queue has stayed empty for that long, so a worker started alongside a Rescan does not
   exit before the scan has found the new music. The before- and after-commands still run once
@@ -229,6 +234,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   other fields, list bullets stay inside their cards, a status message no longer stays over the
   next view after you change tabs, and a control reached with Tab near the window's edge is
   scrolled fully into view.
+- Voice pack exact-hour files may have a space, `_` or `-` before the `o`, as in `hrs05_o.mp3`,
+  so packs named that way say "it's 5 o'clock" on the hour instead of skipping the top of the hour.
 
 - Startup now loads the current library and shows its song and analysis counts, rather than
   the count from an older index. Doctor and list-indexes also use the current catalog. Existing

@@ -11,7 +11,7 @@ from fastapi import HTTPException
 from autodj.catalog import LibraryCatalog
 from autodj.clockwheel_store import ClockwheelStore, validate_clockwheel
 from autodj.player import Player
-from autodj.server import ClockNameBody, NewClockNameBody
+from autodj.station_routes import ClockNameBody, NewClockNameBody
 from tests.unit.test_clock_config_api import add_sources, app_for, body, call
 from tests.unit.test_clockwheel_store import _player, clock
 

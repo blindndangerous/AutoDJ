@@ -156,6 +156,8 @@ def test_soundexchange_report_download(catalog) -> None:
 
 
 class _Library:
+    """Stands in for the library and its station ledger, keeping the play rows."""
+
     def __init__(self) -> None:
         self.rows: list[dict] = []
 
@@ -175,7 +177,9 @@ class _Clock:
 
 
 def _stream_bridge(entry, library):
-    bridge = PlayerBridge(player=_make_player_mock(entry), sim=_make_sim_mock(), library=library)
+    bridge = PlayerBridge(
+        player=_make_player_mock(entry), sim=_make_sim_mock(), library=library, ledger=library
+    )
     bridge.stream = SimpleNamespace(listener_count=0, set_title=lambda *_: None)
     clock = _Clock()
     bridge._audience = StreamAudience(clock)
@@ -284,6 +288,8 @@ def test_plays_are_not_counted_while_a_relay_serves_listeners() -> None:
 
 def test_local_playback_counts_one_listener() -> None:
     library = _Library()
-    bridge = PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock(), library=library)
+    bridge = PlayerBridge(
+        player=_make_player_mock(), sim=_make_sim_mock(), library=library, ledger=library
+    )
     bridge.on_track_started(_make_entry(2))
     assert library.rows[-1]["performances"] == 1

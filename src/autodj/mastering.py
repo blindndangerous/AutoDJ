@@ -85,6 +85,13 @@ def _ffmpeg_command(audio_filter: str) -> list[str]:
         "error",
         "-nostats",
         "-nostdin",
+        # The input format is given in full, so there is nothing to probe.
+        # Left to probe, FFmpeg 6.1 reads about 1.2 s (58 blocks) of a live
+        # pipe before it emits anything, far past the 24-block delay.
+        "-probesize",
+        "32",
+        "-analyzeduration",
+        "0",
         "-f",
         "f32le",
         "-ar",
@@ -221,7 +228,15 @@ class ContinuousMaster:
                 self._set_error("master input queue overflow; dropped oldest block")
             self._input.append((generation, data))
             self._input_cond.notify()
-            if not self._ready and len(self._output) > self._output_guard_blocks:
+            if (
+                not self._ready
+                and len(self._output) > self._output_guard_blocks
+                # A processor that answers sooner than measured must still
+                # wait out the advertised delay: the bypass replays the delay
+                # line at that delay, so a shorter one would leave a gap of
+                # silence if the processor later fails.
+                and len(self._fallback_delay) > _MEASURED_PIPELINE_BLOCKS
+            ):
                 self._ready = True
             if self._ready and self._output and self._output[0][0] == generation:
                 output = self._output.popleft()[1]

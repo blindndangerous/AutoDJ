@@ -13,17 +13,21 @@ Architecture
 
 Routes
 ------
+Shared routes (pairing, the library, search, cover art, audio files) are
+registered here.  Routes that act on one station (``/api/status``,
+``/api/skip``, the queue, settings, stream, schedule, carts and the rest)
+live in :mod:`autodj.station_routes` and answer twice: under ``/api`` for
+the default station and under ``/api/stations/<slug>`` for any station by
+name.
+
 ``GET  /``                  → index.html
-``GET  /api/status``        → JSON state snapshot
+``GET  /api/status``        → JSON state snapshot (station)
 ``GET  /api/version``       → {version, commit, built_at} for footer build stamp
                               (commit and built_at only with a session when pairing is on)
-``POST /api/skip``          → skip to next track
-``POST /api/pause``         → toggle pause / resume
-``POST /api/volume``        → set volume (body: ``{"volume": 0.75}``)
-``POST /api/mute``          → toggle mute
+``POST /api/skip``          → skip to next track (station)
 ``GET  /api/search?q=``     → fuzzy search of indexed tracks
-``POST /api/play-next``     → queue a track by path to play after the current one
-``WS   /ws``                → push state JSON every 1 second
+``WS   /ws``                → push the default station's state JSON every 1 second
+``WS   /api/stations/<slug>/ws`` → the same for one station by name
 
 Stream mode (``serve --stream``) adds ``GET /stream.mp3`` and
 ``GET /stream.m3u`` (no login required) and the authenticated
@@ -46,9 +50,8 @@ import ssl
 import stat
 import threading
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
-from dataclasses import dataclass, field, fields
-from datetime import timedelta
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, BinaryIO, Literal
 
@@ -62,37 +65,19 @@ from fastapi import (
     UploadFile,
     WebSocket,
 )
-from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, ValidationError, model_validator
-from pydantic import Field as PydanticField
+from pydantic import BaseModel, ConfigDict, StrictBool
 from starlette.background import BackgroundTask
 from starlette.datastructures import Headers
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.staticfiles import NotModifiedResponse
 from starlette.types import Receive, Scope, Send
 
-from autodj._bridge import (
-    STREAM_SEEK_UNAVAILABLE,
-    PlayerBridge,
-    StreamSeekUnavailable,
-)
-from autodj.categories_api import install_categories
-
 # PlayerBridge lives in autodj._bridge; it is re-exported here.
-from autodj.clockwheel import parse_pal
-from autodj.clockwheel_store import (
-    OLD_CLOCK_MESSAGE,
-    ClockwheelStore,
-    from_pal,
-    source_folder,
-    step_source,
-    step_types,
-    validate_clockwheel,
-    validate_name,
-)
+from autodj._bridge import PlayerBridge
+from autodj.categories_api import install_categories
 from autodj.icy import METAINT
 from autodj.indexer import analysis_identity
 from autodj.lan import PAIRING_ON_REQUEST_HINT, format_lan_banner, lan_urls, running_in_container
@@ -107,17 +92,7 @@ from autodj.listener_access import (
 from autodj.machine_tokens import MachineTokenStore
 from autodj.model_identity import CachedModelCommit
 from autodj.pairing import DeviceRegistry
-from autodj.playlog import (
-    missing_fields,
-    parse_bound,
-    plays_between,
-    plays_csv,
-    soundexchange_filename,
-    soundexchange_report,
-)
-from autodj.recorder import Recorder
-from autodj.scheduler import Action, system_timezone
-from autodj.scheduler_api import install_scheduler
+from autodj.scheduler import system_timezone
 from autodj.secret_files import machine_tokens_path, paired_devices_path
 from autodj.security import (
     COOKIE_NAME,
@@ -129,20 +104,14 @@ from autodj.security import (
     new_request_id,
     peer_address,
 )
-from autodj.settings_bodies import (
-    BpmRangeBody,
-    DiscoveryBody,
-    DjMixBody,
-    EqBody,
-    FadeSeconds,
-    FiniteFloat,
-    PlaybackSettingsBody,
-    PresetBody,
-    StreamSettingsBody,
-    TransitionBody,
-    VolumeBody,
-    validate_playback_choices,
+from autodj.station_routes import (
+    STATION_PREFIX,
+    StationRouter,
+    equip_station,
+    install_station_routes,
+    resolve_station,
 )
+from autodj.station_routes import audio_mime as _audio_mime
 from autodj.stations import (
     SharedLibrary,
     StationRegistry,
@@ -176,25 +145,6 @@ logger = logging.getLogger(__name__)
 STARTUP_COMPLETE = threading.Event()
 
 
-class RecordingSettingsBody(BaseModel):
-    """Runtime recording settings; the archive folder stays config-only."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    split: Literal["hour", "show"]
-    retention_days: StrictInt = PydanticField(ge=0)
-    free_space_mb: StrictInt = PydanticField(ge=0)
-
-
-class ListenerBanBody(BaseModel):
-    """An address or CIDR to block from the public stream."""
-
-    model_config = ConfigDict(extra="forbid")
-    address: str
-    minutes: int | None = PydanticField(default=None, ge=1, le=525600)
-    note: str = PydanticField(default="", max_length=200)
-
-
 _WS_SEND_TIMEOUT_SECONDS = 2.0
 # Stream listeners stay connected until they hang up, so uvicorn would wait
 # for them forever on Ctrl+C; give them this long, then cancel them.
@@ -205,9 +155,6 @@ _MULTIPART_OVERHEAD_BYTES = 64 * 1024
 # Total seconds shutdown waits for the player and cache writers to stop.
 _SHUTDOWN_TIMEOUT_S = 30.0
 _STATIC_DIR = Path(__file__).parent / "static"
-# Play now, Play next and Add to queue on a search result whose file was
-# pruned from the index since the search ran.
-_TRACK_GONE_DETAIL = "That track is no longer in the library."
 
 
 @dataclass(eq=False)
@@ -221,6 +168,8 @@ class _WebSocketClient:
     handler_task: asyncio.Task[Any] | None = None
     failure_code: int | None = None
     close_started: bool = False
+    # The socket's route template, for the audit log: /ws or the station's.
+    route: str = "/ws"
 
 
 async def _close_websocket_client(
@@ -246,7 +195,7 @@ async def _close_websocket_client(
                 failure_action,
                 "rejected",
                 method="WS",
-                route="/ws",
+                route=client.route,
                 status=code,
                 level=logging.WARNING,
             )
@@ -543,97 +492,6 @@ def _version_info() -> dict[str, str]:
 __all__ = ["PlayerBridge", "create_app", "serve"]
 
 
-class ProfileSaveBody(BaseModel):
-    """Request body for POST /api/profiles.
-
-    All snapshot fields are optional except ``name``; missing fields
-    mean "do not override" when the profile is later applied.  Unknown
-    fields are refused, as the stored profile would refuse them.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    name: str
-    preset: str | None = None
-    bpm_lo: FiniteFloat | None = None
-    bpm_hi: FiniteFloat | None = None
-    harmonic_mode: str | None = None
-    transition_mode: str | None = None
-    post_queue_seed: str | None = None
-    beat_sync_fx: bool | None = None
-    key_sync_fx: bool | None = None
-    beatmatch_on_skip: bool | None = None
-    crossfade_seconds: FadeSeconds | None = None
-    fade_in_seconds: FadeSeconds | None = None
-    pure_shuffle: bool | None = None
-    pick_mode: Literal["similarity", "random", "least_recent", "clock"] | None = None
-    loudness_processing: Literal["off", "replaygain", "smooth", "stereotool"] | None = None
-    anchor_to_seed: bool | None = None
-    liners_enabled: bool | None = None
-    liners_pick_mode: str | None = None
-
-    @model_validator(mode="after")
-    def _check_choices(self) -> ProfileSaveBody:
-        """Refuse to store a profile that could never be applied."""
-        validate_playback_choices(self.model_dump())
-        return self
-
-
-@contextlib.contextmanager
-def _profile_http_errors() -> Iterator[None]:
-    """Answer a bad profile name or file with 400 and a missing profile with 404."""
-    try:
-        yield
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-class SeekBody(BaseModel):
-    """Request body for POST /api/seek.
-
-    Either ``seconds`` (absolute) or ``delta`` (relative) is set.  When
-    both are provided, ``seconds`` wins.
-    """
-
-    seconds: FiniteFloat | None = None
-    delta: FiniteFloat | None = None
-
-
-class PlayNextBody(BaseModel):
-    """Request body for POST /api/play-next."""
-
-    path: str
-    now: bool = False  # if True, also skip the current track
-    # DMCA mode: queue it even though it breaks a limit (the operator said so).
-    confirm: StrictBool = False
-
-
-class QueueReorderBody(BaseModel):
-    """Request body for POST /api/queue/reorder.
-
-    Attributes:
-        paths: New ordering of the queue, expressed as a list of
-            :attr:`~autodj.indexer.IndexEntry.path` strings.  The first
-            entry plays after the current track finishes.
-    """
-
-    paths: list[str]
-
-
-class LinerTestBody(BaseModel):
-    """Request body for POST /api/liners/test.
-
-    ``name`` names a specific clip; omitted, the scheduler's configured
-    rotation mode picks the next one.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    name: str | None = None
-
-
 class LibraryJobBody(BaseModel):
     """Request body for POST /api/library/run — invokes a CLI subcommand."""
 
@@ -668,39 +526,6 @@ class SongPointsBody(BaseModel):
     allow_outro: StrictBool | None = None
 
 
-class ClockBody(BaseModel):
-    """A native clockwheel from the editor; clockwheel_store validates the rest."""
-
-    model_config = ConfigDict(extra="forbid")
-    version: int
-    name: str = PydanticField(max_length=64)
-    steps: list[Any] = PydanticField(max_length=256)
-    resync_minutes: list[Any] = PydanticField(max_length=60)
-
-
-class PalImportBody(BaseModel):
-    """PAL text is parsed as a small declarative subset, never executed."""
-
-    model_config = ConfigDict(extra="forbid")
-    text: str = PydanticField(max_length=256 * 1024)
-    name: str = PydanticField(max_length=64)
-    resync_minutes: list[Any] = PydanticField(max_length=60)
-
-
-class ClockNameBody(BaseModel):
-    """The clockwheel to make active, or null for none."""
-
-    model_config = ConfigDict(extra="forbid")
-    name: str | None
-
-
-class NewClockNameBody(BaseModel):
-    """The name for a copied or renamed clockwheel."""
-
-    model_config = ConfigDict(extra="forbid")
-    name: str = PydanticField(max_length=64)
-
-
 class PairBody(BaseModel):
     """Short-lived code and operator-visible name for one browser."""
 
@@ -712,26 +537,6 @@ class DeviceRenameBody(BaseModel):
     """New operator-visible name for one paired browser."""
 
     name: str
-
-
-_MIME_BY_SUFFIX = {
-    ".mp3": "audio/mpeg",
-    ".flac": "audio/flac",
-    ".m4a": "audio/mp4",
-    ".mp4": "audio/mp4",
-    ".aac": "audio/aac",
-    ".ogg": "audio/ogg",
-    ".oga": "audio/ogg",
-    ".opus": "audio/ogg",
-    ".wav": "audio/wav",
-    ".aif": "audio/aiff",
-    ".aiff": "audio/aiff",
-}
-
-
-def _audio_mime(path: Path) -> str:
-    """Return MIME type associated with *path*'s audio suffix."""
-    return _MIME_BY_SUFFIX.get(path.suffix.lower(), "application/octet-stream")
 
 
 def _is_alac(path: Path) -> bool:
@@ -956,7 +761,6 @@ def create_app(
     )
     stations = StationRegistry(runtime)
     nowplaying = runtime.nowplaying
-    webhooks = runtime.webhooks
     listener_access = runtime.listener_access
     stream_cfg = bridge.player._cfg.stream
     listener_auth_limiter = ListenerAuthLimiter()
@@ -1115,6 +919,7 @@ def create_app(
         body_limits=body_limits,
         machine_scopes=MACHINE_SCOPES,
         machine_auth=lambda token, scope: machine_tokens().authenticate(token, scope),
+        station_slugs=stations.slugs,
     )
     model_commit = CachedModelCommit(lambda: (bridge.player._cfg.model, bridge.player._cfg.index))
     install_worker_api(
@@ -1180,14 +985,6 @@ def create_app(
     # ------------------------------------------------------------------
     # REST API
     # ------------------------------------------------------------------
-
-    @app.get("/api/status")
-    async def api_status() -> JSONResponse:
-        """Return the current player state snapshot."""
-        state = await asyncio.to_thread(bridge.get_state)
-        if runtime.recorder is not None:
-            state["recording"] = runtime.recorder.status()
-        return JSONResponse(state)
 
     @app.get("/api/auth/status")
     async def api_auth_status(request: Request) -> dict[str, object]:
@@ -1404,14 +1201,6 @@ def create_app(
             return {"status": "ok"}
         return {"status": "ok", "tracks": bridge.sim.ntotal}
 
-    @app.api_route("/api/nowplaying", methods=["GET", "HEAD"])
-    async def api_nowplaying() -> JSONResponse:
-        """Return public metadata with no file paths or pairing details."""
-        return JSONResponse(
-            nowplaying.snapshot(),
-            headers={"Cache-Control": "no-cache", "Access-Control-Allow-Origin": "*"},
-        )
-
     @app.api_route("/status", methods=["GET", "HEAD"], response_class=HTMLResponse)
     async def get_status_page() -> HTMLResponse:
         """Serve the public station status page, built from the same feed."""
@@ -1424,90 +1213,6 @@ def create_app(
                 "Referrer-Policy": "no-referrer",
             },
         )
-
-    @app.get("/api/history")
-    async def api_history(
-        page: int = Query(1, ge=1),
-        per_page: int = Query(50, ge=1, le=500),
-    ) -> JSONResponse:
-        """Return recent play history across restarts (newest first), one page."""
-        hist = bridge.history_snapshot()
-        total = len(hist)
-        pages = max(1, (total + per_page - 1) // per_page)
-        page = max(1, min(page, pages))
-        start = (page - 1) * per_page
-        end = start + per_page
-        # Slice from the "newest-first" perspective: index ``start`` from
-        # the end of the deque becomes ``total - 1 - start`` walking back.
-        if total == 0:
-            items: list = []
-        else:
-            hi = total - start
-            lo = max(0, total - end)
-            items = list(reversed([hist[i] for i in range(lo, hi)]))
-        return JSONResponse({"items": items, "total": total, "page": page, "pages": pages})
-
-    @app.get("/api/history/export")
-    async def api_history_export(
-        from_text: Annotated[str, Query(alias="from", max_length=64)],
-        to_text: Annotated[str, Query(alias="to", max_length=64)],
-        report_format: Annotated[Literal["csv", "soundexchange"], Query(alias="format")] = "csv",
-        service: Annotated[str, Query(max_length=200)] = "",
-        category: Annotated[str, Query(max_length=1)] = "A",
-    ) -> Response:
-        """Download the play log between two dates (see :mod:`autodj.playlog`).
-
-        Dates are ``YYYY-MM-DD`` in the server's time zone and ``to`` is
-        included.  ``format=soundexchange`` gives a Report of Use for
-        *service* and transmission *category* instead of the CSV.
-        ``X-Play-Count`` and ``X-Songs-Missing-Fields`` give the page the
-        numbers it announces.
-        """
-        library = _catalog_library()
-        try:
-            start = parse_bound(from_text)
-            end = parse_bound(to_text, end=True)
-            plays = await asyncio.to_thread(plays_between, library.catalog, start, end)
-            last_day = end - timedelta(microseconds=1)
-            if report_format == "soundexchange":
-                body = soundexchange_report(plays, service, category)
-                media_type = "text/plain; charset=us-ascii"
-                name = soundexchange_filename(service, start, last_day)
-            else:
-                body = plays_csv(plays)
-                media_type = "text/csv; charset=utf-8"
-                name = f"autodj-plays-{start:%Y-%m-%d}-to-{last_day:%Y-%m-%d}.csv"
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        missing = missing_fields(plays)
-        return Response(
-            body.encode("utf-8"),
-            media_type=media_type,
-            headers={
-                **_NO_STORE,
-                "Content-Disposition": f'attachment; filename="{name}"',
-                "X-Play-Count": str(len(plays)),
-                "X-Songs-Missing-Fields": str(len(missing)),
-                "X-Songs-Unmatchable": str(sum(1 for item in missing if item[5] == "no")),
-            },
-        )
-
-    @app.post("/api/skip")
-    async def api_skip() -> JSONResponse:
-        """Skip the current track immediately."""
-        bridge.skip()
-        # Return fresh state so the browser updates its now-playing UI
-        # without waiting up to 1 s for the next WS broadcast tick.
-        return JSONResponse(await asyncio.to_thread(bridge.get_state))
-
-    @app.post("/api/seek")
-    async def api_seek(body: SeekBody) -> dict[str, float]:
-        """Seek the active track (absolute or relative seconds)."""
-        try:
-            new_pos = bridge.seek(seconds=body.seconds, delta=body.delta)
-        except StreamSeekUnavailable as exc:
-            raise HTTPException(status_code=409, detail=STREAM_SEEK_UNAVAILABLE) from exc
-        return {"elapsed": round(new_pos, 2)}
 
     # ------------------------------------------------------------------
     # Radio stream (stream mode only; 404 otherwise)
@@ -1625,580 +1330,11 @@ def create_app(
             release()  # never leak a listener slot
             raise
 
-    @app.get("/api/stream")
-    async def api_stream_info() -> dict:
-        """Return the stream URL paths, bitrate, listener count and state."""
-        _require_stream_mode()
-        return bridge.stream_info()
-
-    async def _recording_call(call: Callable[[Recorder], dict[str, object]]) -> dict[str, object]:
-        """Run *call* on the recorder off the event loop (it saves a state file).
-
-        Raises:
-            ValueError: Not in stream mode, or the call is not possible now.
-            OSError: The change was made but its state file could not be saved.
-        """
-        recorder = runtime.recorder
-        if recorder is None:
-            raise ValueError("Recording requires stream mode")
-        return await asyncio.to_thread(call, recorder)
-
-    async def _recording_route(call: Callable[[Recorder], dict[str, object]]) -> dict[str, object]:
-        try:
-            return await _recording_call(call)
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except OSError as exc:
-            logger.error("Could not save the recording state", exc_info=True)
-            raise HTTPException(
-                status_code=503, detail="Could not save the recording state"
-            ) from exc
-
-    @app.get("/api/recording")
-    async def api_recording_status() -> dict[str, object]:
-        return await _recording_route(Recorder.status)
-
-    @app.post("/api/recording/start")
-    async def api_recording_start() -> dict[str, object]:
-        return await _recording_route(Recorder.start)
-
-    @app.post("/api/recording/stop")
-    async def api_recording_stop() -> dict[str, object]:
-        return await _recording_route(Recorder.stop)
-
-    @app.post("/api/recording/split")
-    async def api_recording_split() -> dict[str, object]:
-        return await _recording_route(Recorder.split)
-
-    @app.post("/api/recording/settings")
-    async def api_recording_settings(body: RecordingSettingsBody) -> dict[str, object]:
-        return await _recording_route(
-            lambda target: target.configure(body.split, body.retention_days, body.free_space_mb)
-        )
-
-    @app.get("/api/webhooks")
-    async def api_webhooks() -> list[dict[str, str | int]]:
-        """Show redacted webhook destinations to a paired browser."""
-        return webhooks.status()
-
-    @app.post("/api/webhooks/{index}/test")
-    async def api_webhook_test(index: int) -> dict[str, bool]:
-        """Send the current public snapshot to one configured webhook."""
-        if index < 0 or index >= len(webhooks.configs):
-            raise HTTPException(status_code=404, detail="Webhook not found")
-        result = webhooks.submit(nowplaying.snapshot(), index)
-        assert result is not None
-        try:
-            delivered = await asyncio.wait_for(asyncio.wrap_future(result), timeout=20)
-        except TimeoutError:
-            delivered = False
-        return {"delivered": delivered}
-
-    @app.get("/api/stream/listeners")
-    async def api_stream_listeners() -> dict:
-        access = _require_stream_mode()
-        return {
-            "listeners": await asyncio.to_thread(access.listeners),
-            "revision": access.revision,
-            "password_set": bool(stream_cfg.listener_password),
-            "max_per_address": access.max_per_address,
-        }
-
-    @app.delete("/api/stream/listeners/{ident}")
-    async def api_stream_kick(ident: str) -> dict:
-        access = _require_stream_mode()
-        address = await asyncio.to_thread(access.kick, ident)
-        if address is None:
-            raise HTTPException(status_code=404, detail="Listener already disconnected")
-        return {"address": address}
-
-    @app.get("/api/stream/bans")
-    async def api_stream_bans() -> dict:
-        access = _require_stream_mode()
-        return {"bans": await asyncio.to_thread(access.bans)}
-
-    @app.post("/api/stream/bans")
-    async def api_stream_ban(body: ListenerBanBody) -> dict:
-        access = _require_stream_mode()
-        try:
-            return {
-                "ban": await asyncio.to_thread(access.ban, body.address, body.minutes, body.note)
-            }
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except OSError as exc:
-            logger.error("Could not save listener ban", exc_info=True)
-            raise HTTPException(status_code=503, detail="Could not save listener ban") from exc
-
-    @app.delete("/api/stream/bans")
-    async def api_stream_unban(address: str) -> dict:
-        access = _require_stream_mode()
-        try:
-            removed = await asyncio.to_thread(access.unban, address)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except OSError as exc:
-            logger.error("Could not remove listener ban", exc_info=True)
-            raise HTTPException(status_code=503, detail="Could not remove listener ban") from exc
-        if not removed:
-            raise HTTPException(status_code=404, detail="Ban not found")
-        return {"address": address}
-
-    @app.post("/api/stream/settings")
-    async def api_stream_settings(body: StreamSettingsBody) -> dict:
-        """Change the stream bitrate (listeners reconnect), continuous play or name."""
-        access = _require_stream_mode()
-        if body.show_next and bridge.player._cfg.dmca.enabled:
-            raise HTTPException(
-                status_code=409,
-                detail="DMCA mode is on, so the next song is never shown publicly.",
-            )
-        if body.bitrate is not None:
-            try:
-                await asyncio.to_thread(bridge.set_stream_bitrate, body.bitrate)
-            except EncoderUnavailableError as exc:
-                raise HTTPException(status_code=503, detail="stream encoder failed") from exc
-        if body.continuous is not None:
-            bridge.player._cfg.stream.continuous = body.continuous
-        if body.station_name is not None:
-            # Read per stream request, so each player shows it when it next connects.
-            bridge.player._cfg.stream.station_name = body.station_name
-        if body.show_next is not None:
-            bridge.player._cfg.nowplaying.show_next = body.show_next
-        nowplaying.refresh()
-        if body.max_listeners_per_address is not None:
-            stream_cfg.max_listeners_per_address = body.max_listeners_per_address
-            access.max_per_address = body.max_listeners_per_address
-        await asyncio.to_thread(bridge.save_persistent_state)
-        return bridge.stream_info()
-
-    def _profile_store() -> Any:
-        """Return the ProfileStore in ``<index_dir>/profiles``."""
-        from autodj.profiles import ProfileStore
-
-        return ProfileStore(runtime.paths.profiles)
-
-    @app.get("/api/profiles")
-    async def api_profiles() -> dict:
-        """List saved profile bundles."""
-        store = _profile_store()
-        return {"profiles": await asyncio.to_thread(store.list_names), "root": str(store.root)}
-
-    @app.post("/api/profiles")
-    async def api_profile_save(body: ProfileSaveBody) -> dict:
-        """Save (or overwrite) a profile bundle."""
-        from autodj.profiles import ProfileSnapshot
-
-        values = body.model_dump()
-        # The cart page shown now is part of the profile.
-        values["cart_page"] = cart_store.page(cart_store.wall.active_page).name
-        snap = ProfileSnapshot(**values)
-        # The active clockwheel goes with the picking settings.
-        snap.clockwheel = _active_clock(bridge.library) if bridge.library is not None else None
-        with _profile_http_errors():
-            target = await asyncio.to_thread(_profile_store().save, snap)
-        return {"saved": snap.name, "path": str(target)}
-
-    @app.delete("/api/profiles/{name}")
-    async def api_profile_delete(name: str) -> dict:
-        """Delete a saved profile bundle by name."""
-        with _profile_http_errors():
-            ok = await asyncio.to_thread(_profile_store().delete, name)
-        if not ok:
-            raise HTTPException(status_code=404, detail="Profile not found")
-        return {"deleted": name}
-
-    @app.post("/api/profiles/{name}/apply")
-    async def api_profile_apply(name: str) -> dict:
-        """Load a saved profile and push every set field through the bridge."""
-        from autodj.profiles import ProfileSnapshot
-
-        with _profile_http_errors():
-            snap = await asyncio.to_thread(_profile_store().load, name)
-
-        # A preset the configuration no longer has would be dropped without a
-        # word by set_preset, so the profile is refused before anything
-        # changes, the same as a bad playback choice below.
-        if snap.preset is not None:
-            from autodj.presets import get_preset
-
-            try:
-                get_preset(snap.preset, bridge.player._cfg.presets)
-            except ValueError as exc:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Profile {name} uses preset {snap.preset!r}, which does not exist",
-                ) from exc
-        if snap.clockwheel is not None:
-            try:
-                _clock_store().load(snap.clockwheel)
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        applied: list[str] = []
-        # Playback flags: every snapshot field not applied on its own below.
-        kw: dict = {}
-        for fld in fields(ProfileSnapshot):
-            if fld.name in {
-                "name",
-                "preset",
-                "bpm_lo",
-                "bpm_hi",
-                "harmonic_mode",
-                "cart_page",
-                "clockwheel",
-            }:
-                continue
-            v = getattr(snap, fld.name)
-            if v is not None:
-                kw[fld.name] = v
-                applied.append(fld.name)
-        # A profile saved before its fields were validated, or edited by hand,
-        # can hold a bad value.  Both bodies are validated before any setter
-        # runs, so a rejected profile leaves the session untouched.
-        try:
-            playback = PlaybackSettingsBody.model_validate(kw)
-            bpm = BpmRangeBody(lo=snap.bpm_lo, hi=snap.bpm_hi)
-        except ValidationError as exc:
-            raise HTTPException(
-                status_code=400, detail=f"Profile {name} is invalid: {exc}"
-            ) from exc
-        # The profile names its cart page.  A page renamed since then refuses
-        # the profile before anything changes, like a missing preset.
-        cart_page = None
-        if snap.cart_page is not None:
-            cart_page = next(
-                (
-                    number
-                    for number, page in enumerate(cart_store.wall.pages, 1)
-                    if page.name.casefold() == snap.cart_page.casefold()
-                ),
-                None,
-            )
-            if cart_page is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Profile {name} uses cart page {snap.cart_page!r}, which does not exist",
-                )
-        bridge.set_playback_settings(playback)
-        if snap.clockwheel is not None:
-            await _select_clock(_catalog_library(), snap.clockwheel)
-            applied.append("clockwheel")
-        # BPM range
-        if bpm.lo is not None and bpm.hi is not None:
-            bridge.set_bpm_range(bpm.lo, bpm.hi)
-            applied.append("bpm_range")
-        # DJ-mix harmonic mode
-        if snap.harmonic_mode is not None:
-            bridge.set_djmix(harmonic_mode=snap.harmonic_mode)
-            applied.append("harmonic_mode")
-        # Preset, checked above
-        if snap.preset is not None:
-            bridge.set_preset(snap.preset)
-            applied.append("preset")
-        if cart_page is not None:
-            cart_store.wall.active_page = cart_page
-            await asyncio.to_thread(cart_store.save)
-            await _publish_schedule({"type": "cart_changed"})
-            applied.append("cart_page")
-        bridge.save_persistent_state()
-        if runtime.recorder is not None:
-            runtime.recorder.show_changed()
-        return {"applied": applied, "name": name}
-
-    @app.get("/api/liners")
-    async def api_liners() -> dict:
-        """List discovered voice liners + current trigger config.
-
-        The browser uses this to populate the Settings panel listing
-        and to fetch raw liner bytes for ducking-overlay playback.
-        """
-        from autodj.liners import LinerLibrary
-
-        cfg = bridge.player._cfg
-        folder = _resolve_liner_folder()
-        # from_folder lists the configured directory (not recursive).  That
-        # directory is operator-controlled and may live on a slow mount, so
-        # keep the walk off the event loop.
-        lib = await asyncio.to_thread(LinerLibrary.from_folder, folder)
-        items: list[dict[str, Any]] = []
-        catalog_paths: set[str] = set()
-        library = bridge.library
-        if library is not None:
-            for entry in await asyncio.to_thread(library.entries_snapshot, "liner"):
-                record = await asyncio.to_thread(library.catalog.record_for_path, entry.path)
-                if not record or record.get("kind") != "liner":
-                    continue
-                path = Path(record["path"])
-                catalog_paths.add(os.path.normcase(os.path.abspath(path)))
-                items.append(
-                    {
-                        "id": record["id"],
-                        "name": path.name,
-                        "path": str(path),
-                        "kind": "liner",
-                        "editable": True,
-                        "length": record.get("length"),
-                        "points": record.get("points", {}),
-                    }
-                )
-        for file_path in lib.files:
-            normalized = os.path.normcase(os.path.abspath(file_path))
-            if normalized not in catalog_paths:
-                items.append(
-                    {
-                        "id": file_path.name,
-                        "name": file_path.name,
-                        "path": str(file_path),
-                        "kind": "liner",
-                        "editable": False,
-                    }
-                )
-        return {
-            # Echo the operator's configured string verbatim; only the derived
-            # default is rendered from a Path.
-            "folder": cfg.playback.liners_folder or str(folder),
-            "files": [f.name for f in lib.files],
-            "count": len(lib.files),
-            "items": items,
-            "metadata": {item["id"]: item for item in items},
-            "folders": library.catalog.sources("liner") if library is not None else [],
-            "config": {
-                "enabled": bool(cfg.playback.liners_enabled),
-                "every_n_songs": cfg.playback.liners_every_n_songs,
-                "every_minutes": cfg.playback.liners_every_minutes,
-                "random_min_minutes": cfg.playback.liners_random_min_minutes,
-                "random_max_minutes": cfg.playback.liners_random_max_minutes,
-                "pick_mode": cfg.playback.liners_pick_mode,
-                "duck_db": cfg.playback.liners_duck_db,
-            },
-        }
-
-    def _resolve_liner_folder() -> Path:
-        """Return the configured liner folder, defaulting under index_dir."""
-        return runtime.paths.liners
-
-    @app.post("/api/liners/upload")
-    async def api_liner_upload(
-        file: UploadFile = File(...), replace: bool = False
-    ) -> dict[str, str | int]:
-        """Validate, bound, and atomically store a liner clip."""
-        from autodj.liner_files import (
-            InvalidLinerName,
-            LinerConflictError,
-            LinerTooLargeError,
-            store_liner_upload,
-        )
-
-        name = file.filename or ""
-        folder = _resolve_liner_folder()
-        try:
-            target, size = await store_liner_upload(
-                folder,
-                name,
-                file,
-                max_bytes=_liner_upload_max_bytes(),
-                replace=replace,
-            )
-        except InvalidLinerName as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except LinerConflictError as exc:
-            raise HTTPException(status_code=409, detail="Liner already exists") from exc
-        except LinerTooLargeError as exc:
-            raise HTTPException(status_code=413, detail=str(exc)) from exc
-        return {"filename": target.name, "size": size}
-
-    @app.delete("/api/liners/file/{name}")
-    async def api_liner_delete(name: str) -> dict[str, str]:
-        """Remove one validated plain liner file."""
-        from autodj.liner_files import InvalidLinerName, delete_liner_file
-
-        library = bridge.library
-        record = library.record_for_id(name) if library is not None else None
-        if (
-            record is not None
-            and record.get("kind") == "liner"
-            and library.entry_for_path(record["path"]) is not None
-        ):
-            path = Path(record["path"])
-            try:
-                from autodj.liner_files import validate_liner_name
-
-                validate_liner_name(path.name)
-                if path.is_symlink() or not path.is_file():
-                    raise FileNotFoundError(path.name)
-                path.unlink()
-                await asyncio.to_thread(library.refresh)
-            except InvalidLinerName as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            except FileNotFoundError as exc:
-                raise HTTPException(status_code=404, detail="Liner not found") from exc
-            except OSError as exc:
-                raise HTTPException(status_code=500, detail="Unable to delete liner") from exc
-            return {"deleted": path.name}
-
-        try:
-            await asyncio.to_thread(delete_liner_file, _resolve_liner_folder(), name)
-        except InvalidLinerName as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="Liner not found") from exc
-        except OSError as exc:
-            raise HTTPException(status_code=500, detail="Unable to delete liner") from exc
-        return {"deleted": name}
-
-    @app.get("/api/liners/file/{name}")
-    async def api_liner_file(name: str) -> FileResponse:
-        """Serve one validated plain liner file."""
-        from autodj.liner_files import InvalidLinerName, open_liner_file
-
-        library = bridge.library
-        record = library.record_for_id(name) if library is not None else None
-        if (
-            record is not None
-            and record.get("kind") == "liner"
-            and library.entry_for_path(record["path"]) is not None
-        ):
-            path = Path(record["path"])
-            if path.is_symlink() or not path.is_file():
-                raise HTTPException(status_code=404, detail="Liner not found")
-            metadata = await asyncio.to_thread(path.stat)
-            return FileResponse(path, media_type=_audio_mime(path), stat_result=metadata)
-
-        folder = _resolve_liner_folder()
-        try:
-            opened = await asyncio.to_thread(open_liner_file, folder, name)
-        except InvalidLinerName as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="Liner not found") from exc
-        await asyncio.to_thread(opened.file.close)
-        return FileResponse(folder / name, stat_result=opened.stat_result)
-
-    @app.post("/api/liners/test")
-    async def api_liner_test(body: LinerTestBody) -> dict[str, str | None]:
-        """Fire a liner through the server mix bus, in server-mixed modes.
-
-        Browser-driven mode has no server-side mix bus to fire into —
-        ``bridge.liner_scheduler`` is ``None`` there and the browser's
-        "Test liner" button already plays the clip itself by fetching
-        ``GET /api/liners/file/<name>`` directly, so this is a no-op.
-
-        In stream mode the bus renders nothing while the station is idle
-        or paused, so the liner is refused with a ``message`` saying why
-        instead of waiting unheard to open the next set.
-        """
-        scheduler = bridge.liner_scheduler
-        if scheduler is None:
-            return {"played": None}
-        station = bridge.station
-        state = station.state if station is not None else "playing"
-        if state == "idle":
-            return {"played": None, "message": "Nobody is listening, so the liner was not played."}
-        if state == "paused":
-            return {"played": None, "message": "Playback is paused, so the liner was not played."}
-        played = await asyncio.to_thread(scheduler.fire, body.name)
-        return {"played": played}
-
-    @app.post("/api/pause")
-    async def api_pause() -> dict[str, bool]:
-        """Toggle pause/play."""
-        paused = bridge.pause()
-        return {"paused": paused}
-
-    @app.post("/api/volume")
-    async def api_volume(body: VolumeBody) -> dict[str, float]:
-        """Set the playback volume (0.0-1.0)."""
-        bridge.set_volume(body.volume)
-        # Saved so a restart comes back at this volume, not at full.  On the
-        # event loop like the other settings, so two saves never overlap.
-        bridge.save_persistent_state()
-        return {"volume": bridge.player._state.volume}
-
-    @app.post("/api/mute")
-    async def api_mute() -> dict[str, bool]:
-        """Toggle mute."""
-        muted = bridge.toggle_mute()
-        bridge.save_persistent_state()
-        return {"muted": muted}
-
-    def _dmca_refusal(body: PlayNextBody, *, append: bool) -> JSONResponse | None:
-        """A 409 naming the DMCA limits a queued song would break, unless *body* confirms it.
-
-        The song is not queued until the operator confirms; a confirmed
-        song is queued and the limits it breaks are logged.
-        """
-        if not bridge.player._cfg.dmca.enabled:
-            return None
-        entry = bridge.entry_for_path(body.path)
-        if entry is None:
-            raise HTTPException(status_code=404, detail=_TRACK_GONE_DETAIL)
-        now = body.now and not append
-        broken = bridge.dmca_queue_limits(entry, now=now, append=append)
-        if not broken:
-            return None
-        limits = "; ".join(broken)
-        if body.confirm:
-            logger.warning(
-                "DMCA mode: the operator queued %s although it breaks the limit: %s",
-                entry.display_name,
-                limits,
-            )
-            return None
-        where = "now" if now else "at the end of the queue" if append else "next"
-        return JSONResponse(
-            status_code=409,
-            content={
-                "detail": f"DMCA mode: playing this song {where} would mean {limits}.",
-                "field": "confirm",
-            },
-        )
-
-    @app.post("/api/play-next", response_model=None)
-    async def api_play_next(body: PlayNextBody) -> dict[str, bool] | JSONResponse:
-        """Insert a track at the head of the queue."""
-        if refusal := _dmca_refusal(body, append=False):
-            return refusal
-        if not bridge.play_next(body.path, now=body.now):
-            raise HTTPException(status_code=404, detail=_TRACK_GONE_DETAIL)
-        nowplaying.refresh()
-        return {"ok": True}
-
     @app.get("/api/search")
     async def api_search(q: str = "", limit: int = 100) -> dict[str, list]:
         """Search the indexed library by title / artist / album."""
         results = await asyncio.to_thread(bridge.search, q, max(1, min(500, int(limit))))
         return {"results": results}
-
-    # ------------------------------------------------------------------
-    # Queue manipulation
-    # ------------------------------------------------------------------
-
-    @app.post("/api/queue/add", response_model=None)
-    async def api_queue_add(body: PlayNextBody) -> dict[str, bool] | JSONResponse:
-        """Append a track to the user-ordered queue."""
-        if refusal := _dmca_refusal(body, append=True):
-            return refusal
-        if not bridge.queue_add(body.path):
-            raise HTTPException(status_code=404, detail=_TRACK_GONE_DETAIL)
-        nowplaying.refresh()
-        return {"ok": True}
-
-    @app.post("/api/queue/remove")
-    async def api_queue_remove(body: PlayNextBody) -> dict[str, bool]:
-        """Remove a track from the user-ordered queue."""
-        removed = bridge.queue_remove(body.path)
-        if removed:
-            nowplaying.refresh()
-        return {"ok": removed}
-
-    @app.post("/api/queue/reorder")
-    async def api_queue_reorder(body: QueueReorderBody) -> dict[str, bool]:
-        """Reorder the user-ordered queue."""
-        changed = bridge.queue_reorder(body.paths)
-        if changed:
-            nowplaying.refresh()
-        return {"ok": changed}
 
     # ------------------------------------------------------------------
     # Cover art and lyrics
@@ -2251,108 +1387,6 @@ def create_app(
                 return transcoded
         return FileResponse(audio_path, media_type=_audio_mime(audio_path), stat_result=metadata)
 
-    @app.post("/api/advance")
-    async def api_advance(request: Request) -> JSONResponse:
-        """Browser signals end-of-track — server picks next track.
-
-        Returns the fresh state synchronously so the browser can update
-        ``current_track`` / ``next_track`` immediately without waiting
-        for the 1 Hz WS broadcast.  Decouples advance latency from the
-        broadcast cadence.
-
-        Optional JSON body: ``{"from_path": "<the track the page is
-        playing>"}``.  When it is not the server's current track, another
-        tab (or a retried request) already advanced, so nothing changes
-        and the current state is returned.  Without it, the server
-        advances unconditionally.
-        """
-        from_path = None
-        try:
-            body = await request.json()
-        except (ValueError, TypeError):
-            body = None  # no JSON body: advance unconditionally
-        if isinstance(body, dict) and isinstance(body.get("from_path"), str):
-            from_path = body["from_path"]
-        bridge.advance(from_path)
-        return JSONResponse(await asyncio.to_thread(bridge.get_state))
-
-    @app.post("/api/repick-next")
-    async def api_repick_next(request: Request) -> JSONResponse:
-        """Replace next_track without advancing current.
-
-        Browser POSTs this when its standby deck fails to load the
-        prefetched next-track (bad codec, codec not supported on this
-        client, network drop).  Server picks a different next-track so
-        the currently-playing track keeps playing instead of being
-        cascade-skipped along with the unplayable upcoming.
-
-        Optional JSON body: ``{"blacklist": "path/that/failed.flac"}``
-        adds the failed path to recently-played so similarity skips it.
-        """
-        blacklist = None
-        try:
-            body = await request.json()
-            blacklist = body.get("blacklist") if isinstance(body, dict) else None
-        except (ValueError, TypeError):
-            # No JSON body or malformed payload — endpoint accepts either.
-            logger.debug("repick_next: no JSON body, blacklist not set")
-        bridge.repick_next(blacklist_path=blacklist)
-        nowplaying.refresh()
-        return JSONResponse(await asyncio.to_thread(bridge.get_state))
-
-    @app.post("/api/random-track")
-    async def api_random_track() -> JSONResponse:
-        """Reseed the auto-DJ from a fresh random track in the index.
-
-        Status code distinguishes success from an empty index:
-        ``200`` when a track was picked, ``409 Conflict`` when the
-        index has nothing to reseed from (no tracks, or only silent ones).
-        """
-        if not bridge.reseed_random():
-            raise HTTPException(
-                status_code=409, detail="The index has no tracks that are not silent"
-            )
-        return JSONResponse(await asyncio.to_thread(bridge.get_state))
-
-    # ------------------------------------------------------------------
-    # Settings (mirror of CLI flags)
-    # ------------------------------------------------------------------
-
-    @app.post("/api/preset")
-    async def api_preset(body: PresetBody) -> dict:
-        """Activate a preset by name."""
-        bridge.set_preset(body.name)
-        bridge.save_persistent_state()
-        return bridge.get_settings()
-
-    @app.post("/api/transition")
-    async def api_transition(body: TransitionBody) -> dict:
-        """Apply transition-effect overrides."""
-        try:
-            bridge.set_transition(body.effect)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        bridge.save_persistent_state()
-        return bridge.get_settings()
-
-    @app.post("/api/djmix")
-    async def api_djmix(body: DjMixBody) -> dict:
-        """Apply dj-mix flag overrides (beatmatch, harmonic, etc.)."""
-        bridge.set_djmix(**body.model_dump(exclude_none=True))
-        bridge.save_persistent_state()
-        return bridge.get_settings()
-
-    @app.post("/api/playback-settings")
-    async def api_playback_settings(body: PlaybackSettingsBody) -> dict:
-        """Apply playback-flag overrides (transition mode, lyrics, ...)."""
-        try:
-            await run_in_threadpool(bridge.set_playback_settings, body)
-        # FileNotFoundError (an OSError) is a Stereo Tool preset that is gone.
-        except (OSError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        bridge.save_persistent_state()
-        return bridge.get_settings()
-
     @app.get("/api/stereo-tool-presets")
     async def api_stereo_tool_presets() -> dict:
         """List the included and uploaded processor presets."""
@@ -2402,38 +1436,6 @@ def create_app(
                 status_code=409, detail="select another preset before deleting this one"
             ) from exc
         return {"deleted": name}
-
-    @app.post("/api/bpm-range")
-    async def api_bpm_range(body: BpmRangeBody) -> dict:
-        """Set the active BPM range filter."""
-        bridge.set_bpm_range(body.lo, body.hi)
-        bridge.save_persistent_state()
-        return bridge.get_settings()
-
-    @app.post("/api/discovery")
-    async def api_discovery(body: DiscoveryBody) -> dict:
-        """Set the discovery rate (null turns discovery off)."""
-        bridge.set_discovery_every(body.every)
-        bridge.save_persistent_state()
-        return bridge.get_settings()
-
-    @app.post("/api/discovery/toggle")
-    async def api_discovery_toggle() -> dict[str, bool]:
-        """Turn discovery on or off and remember it (the Now Playing Discovery button)."""
-        enabled = bridge.toggle_discovery()
-        bridge.save_persistent_state()
-        return {"discovery_enabled": enabled}
-
-    # ------------------------------------------------------------------
-    # 3-band EQ
-    # ------------------------------------------------------------------
-
-    @app.post("/api/eq")
-    async def api_eq(body: EqBody) -> dict[str, float]:
-        """Set the 3-band EQ gains."""
-        result = bridge.set_eq(low=body.low, mid=body.mid, high=body.high)
-        bridge.save_persistent_state()
-        return result
 
     # ------------------------------------------------------------------
     # Library tools — index / enrich / prune / stats from the web UI
@@ -2510,239 +1512,6 @@ def create_app(
         library = _catalog_library()
         library.start_scan()
         return library.snapshot()
-
-    def _clock_store() -> ClockwheelStore:
-        return ClockwheelStore(runtime.paths.clockwheels)
-
-    def _clock_setting(library: Any) -> dict:
-        setting = library.catalog.get_setting("clock", {})
-        return setting if isinstance(setting, dict) else {}
-
-    def _active_clock(library: Any) -> str | None:
-        setting = _clock_setting(library)
-        name = setting.get("name")
-        # Old single-clock data has a name too, but no file behind it.
-        return name if isinstance(name, str) and "slots" not in setting else None
-
-    def _preset_names() -> list[str]:
-        from autodj.presets import BUILTIN_PRESETS
-
-        return sorted(set(BUILTIN_PRESETS) | set(bridge.player._cfg.presets or {}))
-
-    def _validate_step_conditions(library: Any, step: dict, sources: dict, number: int) -> None:
-        from autodj.clockwheel_store import resolve_conditions
-
-        for condition in resolve_conditions(step, sources, number):
-            if condition["field"] == "beets":
-                known, _, error = _clock_beets(library).snapshot()
-                if error:
-                    raise ValueError(f"Step {number}: {error}")
-                if condition["name"] not in known:
-                    raise ValueError(f"Step {number}: Beets has no field named {condition['name']}")
-
-    def _validate_native_clock(library: Any, value: Any) -> dict:
-        """Validate *value*, then check its folders, tracks and presets exist."""
-        clock = validate_clockwheel(value)
-        sources = {source["id"]: source for source in library.catalog.sources()}
-        categories = _category_names(library)
-        for number, step in enumerate(clock["steps"], 1):
-            kind = step["type"]
-            if kind in {"music", "liner"}:
-                _validate_step_conditions(library, step, sources, number)
-            elif kind == "track":
-                source = step_source(step, sources, number)
-                target = source_folder(source["path"], step["path"])
-                if library.entry_for_path(target) is None:
-                    raise ValueError(
-                        f"Step {number}: {step['path']} is not a track in {source['path']}"
-                    )
-            elif kind == "settings" and step["preset"] not in _preset_names():
-                raise ValueError(f"Step {number}: there is no preset named {step['preset']}")
-            elif kind == "category" and step["category"] not in categories:
-                raise ValueError(
-                    f"Step {number}: its category is not saved; choose one in Library tools, "
-                    "Categories"
-                )
-        return clock
-
-    def _category_names(library: Any) -> dict[str, str]:
-        """Each saved rotation category's ID and name."""
-        index = getattr(library, "categories", None)
-        if index is None:
-            return {}
-        return {category.id: category.name for category in index.categories()}
-
-    def _clock_beets(library: Any) -> Any:
-        from autodj.clock_condition_data import BeetsConditions
-
-        if not hasattr(library, "clock_beets"):
-            library.clock_beets = BeetsConditions(bridge.player._cfg)
-        return library.clock_beets
-
-    # The genre names last listed, with the music and liner entries they came from.
-    clock_genres: list[Any] = [None, None, []]
-
-    def _clock_genres(library: Any) -> list[str]:
-        """Every genre in the library, worked out again only when its entries change."""
-        from autodj.clock_conditions import genres
-
-        music, liners = library.entries_snapshot(), library.entries_snapshot("liner")
-        if clock_genres[0] is not music or clock_genres[1] is not liners:
-            names = {genre for entry in music + liners for genre in genres(entry.genre)}
-            clock_genres[:] = [music, liners, sorted(names, key=str.casefold)]
-        return list(clock_genres[2])
-
-    def _clock_snapshot(library: Any) -> dict:
-        setting = _clock_setting(library)
-        known, _, beets_error = _clock_beets(library).snapshot()
-        return {
-            "names": _clock_store().list_names(),
-            "active": _active_clock(library),
-            "types": step_types(),
-            "sources": [
-                {"id": s["id"], "kind": s["kind"], "path": s["path"], "recursive": s["recursive"]}
-                for s in library.catalog.sources()
-            ],
-            "presets": _preset_names(),
-            "genres": _clock_genres(library),
-            "beets_fields": sorted(known),
-            "beets_error": beets_error,
-            "categories": [
-                {"id": key, "name": name} for key, name in _category_names(library).items()
-            ],
-            "cursor": (getattr(bridge.player, "_clock", None) or {}).get("cursor", 0),
-            "last_status": getattr(bridge.player, "_clock_status", None),
-            "notice": OLD_CLOCK_MESSAGE if "slots" in setting else None,
-        }
-
-    async def _select_clock(
-        library: Any, name: str | None, cursor: int | None = None, *, renamed: bool = False
-    ) -> dict:
-        """Make *name* active.  Reselecting the active one keeps its place."""
-        if name is not None and not renamed:
-            clock = _clock_store().load(name)
-            sources = {source["id"]: source for source in library.catalog.sources()}
-            for number, step in enumerate(clock["steps"], 1):
-                if "conditions" in step:
-                    await asyncio.to_thread(
-                        _validate_step_conditions, library, step, sources, number
-                    )
-        setting = _clock_setting(library)
-        if cursor is None:
-            kept = setting.get("cursor")
-            same = name is not None and setting.get("name") == name and type(kept) is int
-            cursor = kept if same else 0
-        library.catalog.set_setting("clock", {"name": name, "cursor": cursor})
-        reload_clock = getattr(bridge.player, "configure_clock", None)
-        if callable(reload_clock):
-            await asyncio.to_thread(reload_clock)
-        return await asyncio.to_thread(_clock_snapshot, library)
-
-    def _existing_clock(name: str) -> dict:
-        try:
-            validate_name(name)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        try:
-            return _clock_store().load(name)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    @app.get("/api/library/clock")
-    async def api_library_clock() -> dict:
-        return await asyncio.to_thread(_clock_snapshot, _catalog_library())
-
-    @app.post("/api/library/clock")
-    async def api_library_create_clock(body: ClockBody) -> dict:
-        library = _catalog_library()
-        try:
-            clock = await asyncio.to_thread(_validate_native_clock, library, body.model_dump())
-            return _clock_store().save(clock, overwrite=False)
-        except (ValueError, OSError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    @app.post("/api/library/clock/active")
-    async def api_library_select_clock(body: ClockNameBody) -> dict:
-        try:
-            return await _select_clock(_catalog_library(), body.name)
-        except (ValueError, OSError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    @app.post("/api/library/clock/import")
-    async def api_library_import_clock(body: PalImportBody) -> dict:
-        library = _catalog_library()
-        try:
-            slots = parse_pal(
-                body.text, [source["path"] for source in library.catalog.sources("liner")]
-            )
-            clock = from_pal(body.name, slots, library.catalog.sources(), body.resync_minutes)
-            clock = await asyncio.to_thread(_validate_native_clock, library, clock)
-            return _clock_store().save(clock, overwrite=False)
-        except (ValueError, OSError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    @app.get("/api/library/clock/{name}")
-    async def api_library_get_clock(name: str) -> dict:
-        return _existing_clock(name)
-
-    @app.put("/api/library/clock/{name}")
-    async def api_library_update_clock(name: str, body: ClockBody) -> dict:
-        library = _catalog_library()
-        _existing_clock(name)
-        if body.name != name:
-            raise HTTPException(status_code=400, detail="Use Rename to change the name")
-        try:
-            checked = await asyncio.to_thread(_validate_native_clock, library, body.model_dump())
-            clock = _clock_store().save(checked)
-            if _active_clock(library) == name:
-                await asyncio.to_thread(bridge.player.configure_clock)
-            return clock
-        except (ValueError, OSError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    @app.post("/api/library/clock/{name}/duplicate")
-    async def api_library_duplicate_clock(name: str, body: NewClockNameBody) -> dict:
-        clock = _existing_clock(name)
-        try:
-            return _clock_store().save({**clock, "name": body.name}, overwrite=False)
-        except (ValueError, OSError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    @app.post("/api/library/clock/{name}/rename")
-    async def api_library_rename_clock(name: str, body: NewClockNameBody) -> dict:
-        library = _catalog_library()
-        clock = _existing_clock(name)
-        store = _clock_store()
-        try:
-            renamed = validate_clockwheel({**clock, "name": body.name})
-            if body.name.casefold() == name.casefold():
-                # Only the letter case changes: the same file on Windows.
-                store.delete(name)
-                store.save(renamed)
-            else:
-                store.save(renamed, overwrite=False)
-                store.delete(name)
-            if _active_clock(library) == name:
-                cursor = _clock_setting(library).get("cursor")
-                # Renaming the active clock does not change its conditions.
-                await _select_clock(
-                    library, body.name, cursor if type(cursor) is int else 0, renamed=True
-                )
-            return renamed
-        except (ValueError, OSError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    @app.delete("/api/library/clock/{name}")
-    async def api_library_delete_clock(name: str) -> dict:
-        library = _catalog_library()
-        _existing_clock(name)
-        try:
-            _clock_store().delete(name)
-            if _active_clock(library) == name:
-                return await _select_clock(library, None)
-            return await asyncio.to_thread(_clock_snapshot, library)
-        except (ValueError, OSError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/library/points")
     async def api_library_points(path: str) -> dict:
@@ -2880,14 +1649,20 @@ def create_app(
         }
 
     # ------------------------------------------------------------------
-    # WebSocket broadcast
+    # Station routes: /api/<route> for the default station, and
+    # /api/stations/<slug>/<route> for any station by name
     # ------------------------------------------------------------------
 
-    @app.websocket("/ws")
+    install_station_routes(StationRouter(app.router))
+
+    # ------------------------------------------------------------------
+    # WebSocket broadcast: one socket per station
+    # ------------------------------------------------------------------
+
     async def websocket_endpoint(websocket: WebSocket) -> None:
-        """WebSocket: broadcast state updates to a connected browser."""
+        """WebSocket: broadcast one station's state updates to a connected browser."""
         request_id = new_request_id()
-        route = "/ws"
+        route = STATION_PREFIX + "/ws" if "slug" in websocket.path_params else "/ws"
         request_policy = policy
         host_values = _raw_header_values(websocket.scope, b"host")
         origin_values = _raw_header_values(websocket.scope, b"origin")
@@ -2917,6 +1692,12 @@ def create_app(
         ):
             await reject(401, 4401)
             return
+        try:
+            station = resolve_station(websocket)
+        except HTTPException as exc:
+            # 4404: no station has that name; 4409: the station is stopped.
+            await reject(exc.status_code, 4000 + exc.status_code)
+            return
 
         await websocket.accept()
 
@@ -2931,11 +1712,12 @@ def create_app(
             request_id=request_id,
             session_is_valid=session_is_valid,
             handler_task=asyncio.current_task(),
+            route=route,
         )
         client_host = getattr(getattr(websocket, "client", None), "host", "unknown")
-        async with runtime.ws_lock:
-            runtime.ws_clients.add(client)
-            client_count = len(runtime.ws_clients)
+        async with station.ws_lock:
+            station.ws_clients.add(client)
+            client_count = len(station.ws_clients)
         logger.info(
             "WebSocket connected: %s (%d active client%s)",
             client_host,
@@ -2963,9 +1745,9 @@ def create_app(
                 raise
             disconnect_code = client.failure_code
         finally:
-            async with runtime.ws_lock:
-                runtime.ws_clients.discard(client)
-                remaining = len(runtime.ws_clients)
+            async with station.ws_lock:
+                station.ws_clients.discard(client)
+                remaining = len(station.ws_clients)
             logger.info(
                 "WebSocket disconnected: %s (%d active client%s remain)",
                 client_host,
@@ -2981,81 +1763,52 @@ def create_app(
                 status=disconnect_code,
             )
 
-    async def _broadcast_loop() -> None:  # pragma: no cover — long-running task
-        """Push state JSON to all connected WebSocket clients once per second."""
+    app.add_api_websocket_route("/ws", websocket_endpoint)
+    app.add_api_websocket_route(STATION_PREFIX + "/ws", websocket_endpoint)
+
+    for station in stations.all():
+        _equip_station(station)
+    install_categories(
+        app, bridge, clock_roots=lambda: [station.paths.clockwheels for station in stations.all()]
+    )
+    return app
+
+
+def _station_broadcast(station: StationRuntime) -> Callable[[], Coroutine[Any, Any, None]]:
+    """The loop that pushes *station*'s state to its WebSocket clients once a second."""
+
+    async def broadcast() -> None:  # pragma: no cover — long-running task
         failures = _BroadcastFailureLog()
+        bridge = station.bridge
+        listener_access = station.listener_access
         while True:
             await asyncio.sleep(1)
             if bridge.stream_mode and listener_access is not None:
                 # One revision per tick covers churn, encoder resets and expired bans.
                 await asyncio.to_thread(listener_access.listeners)
                 await asyncio.to_thread(listener_access.prune_expired)
-            recorder = runtime.recorder
+            recorder = station.recorder
             await _broadcast_state_once(
                 bridge,
-                runtime.ws_clients,
-                runtime.ws_lock,
+                station.ws_clients,
+                station.ws_lock,
                 failures,
                 listener_access.revision if listener_access is not None else None,
                 recorder.status if recorder is not None else None,
             )
 
-    runtime.broadcast = _broadcast_loop
+    return broadcast
 
-    async def _publish_schedule(message: dict[str, Any]) -> None:
-        await _broadcast_and_prune(runtime.ws_clients, runtime.ws_lock, json.dumps(message))
 
-    from autodj.carts import install_carts
+def _equip_station(station: StationRuntime) -> None:
+    """Give *station* its WebSocket push, cart wall, scheduler and time checks."""
 
-    cart_store, cart_action = install_carts(app, bridge, _publish_schedule, _resolve_liner_folder)
-    runtime.carts = cart_store
+    async def publish(message: dict[str, Any]) -> None:
+        """Send a schedule or cart event to this station's pages only."""
+        await _broadcast_and_prune(station.ws_clients, station.ws_lock, json.dumps(message))
 
-    def _liner_names() -> list[str]:
-        from autodj.liners import LinerLibrary
-
-        return [path.name for path in LinerLibrary.from_folder(_resolve_liner_folder()).files]
-
-    # Features with scheduler actions register them on station_schedule
-    # here, before the lifespan starts it.
-    station_schedule = install_scheduler(
-        app,
-        bridge,
-        timezone=station_timezone,
-        apply_profile=api_profile_apply,
-        profile_names=lambda: _profile_store().list_names(),
-        liner_names=_liner_names,
-        clock_names=lambda: _clock_store().list_names(),
-        select_clock=lambda name: _select_clock(_catalog_library(), name),
-        publish=_publish_schedule,
-    )
-    runtime.schedule = station_schedule
-    station_schedule.register(cart_action)
-
-    for name, description, call in (
-        ("start", "Start recording", Recorder.start),
-        ("stop", "Stop recording", Recorder.stop),
-        ("split", "Split recording", Recorder.split),
-    ):
-
-        async def run_recording(
-            _params: dict[str, str], call: Callable[[Recorder], dict[str, object]] = call
-        ) -> None:
-            try:
-                await _recording_call(call)
-            except OSError as exc:
-                # The run log reaches the browser: no index path in it.
-                logger.error("Could not save the recording state", exc_info=True)
-                raise RuntimeError("Could not save the recording state") from exc
-
-        station_schedule.register(
-            Action(f"recording_{name}", description, run_recording, interrupt="none")
-        )
-
-    from autodj.time_checks import install_time_checks
-
-    runtime.time_checks = install_time_checks(app, bridge, station_schedule, station_timezone)
-    install_categories(app, bridge)
-    return app
+    station.broadcast = _station_broadcast(station)
+    equip_station(station, publish)
 
 
 # ---------------------------------------------------------------------------

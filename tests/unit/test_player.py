@@ -429,18 +429,17 @@ class TestLoadLyricsToggle:
         import asyncio
 
         from autodj._bridge import PlayerBridge
-        from autodj.server import EqBody, create_app
+        from autodj.server import create_app
+        from autodj.settings_bodies import EqBody
 
         player = self._make()
         player._cfg.index.active_dir = tmp_path
         bridge = PlayerBridge(player, player._sim)
         monkeypatch.setattr(bridge, "get_settings", lambda: {"eq": bridge.get_eq()})
-        route = next(
-            route
-            for route in create_app(bridge).routes
-            if getattr(route, "path", None) == "/api/eq"
-        )
-        assert asyncio.run(route.endpoint(EqBody(low=1.25, mid=0.75, high=1.5))) == {
+        app = create_app(bridge)
+        route = next(route for route in app.routes if getattr(route, "path", None) == "/api/eq")
+        station = app.state.stations.default
+        assert asyncio.run(route.endpoint(station, EqBody(low=1.25, mid=0.75, high=1.5))) == {
             "low": 1.25,
             "mid": 0.75,
             "high": 1.5,

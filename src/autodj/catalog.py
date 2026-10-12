@@ -70,7 +70,11 @@ _SCHEMA = """
         event_id TEXT PRIMARY KEY NOT NULL, entry_id TEXT, path TEXT,
         title TEXT NOT NULL, artist TEXT NOT NULL, duration REAL NOT NULL,
         played_at TEXT NOT NULL, interrupted INTEGER NOT NULL DEFAULT 0,
-        performances INTEGER
+        performances INTEGER, station TEXT NOT NULL DEFAULT 'default'
+    );
+    CREATE TABLE IF NOT EXISTS station_plays (
+        station TEXT NOT NULL, path TEXT NOT NULL, last_played REAL NOT NULL,
+        PRIMARY KEY(station, path)
     );
     CREATE TABLE IF NOT EXISTS catalog_vectors (
         entry_id TEXT PRIMARY KEY REFERENCES catalog_entries(id) ON DELETE CASCADE,
@@ -131,6 +135,12 @@ _CHANGE_TRACKING = f"""
 # Rows of vectors read and handed on at a time, so a reload never holds every
 # vector twice (as SQLite blobs and as one matrix) next to the FAISS copy.
 VECTOR_CHUNK = 4096
+
+
+# The station the root config sections describe (autodj.stations.DEFAULT_SLUG).
+# Its plays keep their last-played time in catalog_entries; every other
+# station's are in station_plays.  Play log rows name their station.
+DEFAULT_STATION = "default"
 
 
 def _path(path: str | Path) -> str:
@@ -279,11 +289,19 @@ class CatalogReader:
         if filled:
             yield block[:filled]
 
-    def last_played(self) -> dict[str, float]:
-        return {
-            path: float(value)
-            for path, value in self._conn.execute("SELECT path,last_played FROM catalog_entries")
-        }
+    def last_played(self, station: str = DEFAULT_STATION) -> dict[str, float]:
+        """When *station* last played each track."""
+        return _last_played(self._conn, station)
+
+
+def _last_played(conn: sqlite3.Connection, station: str) -> dict[str, float]:
+    if station == DEFAULT_STATION:
+        rows = conn.execute("SELECT path,last_played FROM catalog_entries")
+    else:
+        rows = conn.execute(
+            "SELECT path,last_played FROM station_plays WHERE station=?", (station,)
+        )
+    return {path: float(value) for path, value in rows}
 
 
 def _versions(conn: sqlite3.Connection) -> dict[str, int]:
@@ -333,9 +351,11 @@ class LibraryCatalog:
         """Add columns an older catalog file lacks.
 
         These are the liner ``allow_outro`` flag, the cached quiet-intro
-        ``intro_lift_db``, loudness metadata and the play log's ``performances`` count.  The checks and the changes share one write
-        transaction, so a second process opening the same old file waits,
-        then finds the columns.
+        ``intro_lift_db``, loudness metadata, and the play log's
+        ``performances`` count and ``station``.  A play logged before
+        stations existed belongs to the default station.  The checks and the
+        changes share one write transaction, so a second process opening the
+        same old file waits, then finds the columns.
         """
         db = self._db()
         db.execute("BEGIN IMMEDIATE")
@@ -354,6 +374,13 @@ class LibraryCatalog:
             have = {row[1] for row in db.execute("PRAGMA table_info(play_history)")}
             if "performances" not in have:
                 db.execute("ALTER TABLE play_history ADD COLUMN performances INTEGER")
+            if "station" not in have:
+                db.execute(
+                    "ALTER TABLE play_history ADD COLUMN station TEXT NOT NULL DEFAULT 'default'"
+                )
+            # Each station reads its own plays, newest first; SQLite keeps the
+            # rowid in every index, so this one also orders them.
+            db.execute("CREATE INDEX IF NOT EXISTS play_history_station ON play_history(station)")
             db.commit()
         except BaseException:
             db.rollback()
@@ -435,8 +462,13 @@ class LibraryCatalog:
                 db.rollback()
                 raise
 
-    def write_history(self, rows: Sequence[dict], interrupted: Sequence[str] = ()) -> None:
-        """Append unique play events and mark any supplied events interrupted.
+    def write_history(
+        self,
+        rows: Sequence[dict],
+        interrupted: Sequence[str] = (),
+        station: str = DEFAULT_STATION,
+    ) -> None:
+        """Append unique play events of *station* and mark any supplied events interrupted.
 
         A row for an event already stored only raises its ``performances``,
         which grows as listeners join during the play.
@@ -468,6 +500,7 @@ class LibraryCatalog:
                     duration,
                     row["played_at"],
                     self._count(row.get("performances")),
+                    station,
                 )
             )
         interrupted = tuple(
@@ -479,8 +512,8 @@ class LibraryCatalog:
                 db.execute("BEGIN")
                 db.executemany(
                     "INSERT INTO play_history (event_id,entry_id,path,title,artist,duration,"
-                    "played_at,performances) "
-                    "VALUES (?,(SELECT id FROM catalog_entries WHERE path=?),?,?,?,?,?,?) "
+                    "played_at,performances,station) "
+                    "VALUES (?,(SELECT id FROM catalog_entries WHERE path=?),?,?,?,?,?,?,?) "
                     # A play is written again when a listener joins during it.
                     "ON CONFLICT(event_id) DO UPDATE SET performances="
                     "max(COALESCE(performances,0),excluded.performances) "
@@ -496,7 +529,8 @@ class LibraryCatalog:
                 db.rollback()
                 raise
 
-    def recent_history(self, limit: int = 500) -> list[dict]:
+    def recent_history(self, limit: int = 500, station: str = DEFAULT_STATION) -> list[dict]:
+        """*station*'s latest *limit* completed plays, oldest first."""
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
             raise ValueError("limit must be a non-negative integer")
         with self._lock:
@@ -505,16 +539,17 @@ class LibraryCatalog:
                 .execute(
                     "SELECT event_id,entry_id,path,title,artist,duration,played_at FROM ("
                     "SELECT rowid,event_id,entry_id,path,title,artist,duration,played_at "
-                    "FROM play_history WHERE interrupted=0 ORDER BY rowid DESC LIMIT ?) "
+                    "FROM play_history WHERE interrupted=0 AND station=? "
+                    "ORDER BY rowid DESC LIMIT ?) "
                     "ORDER BY rowid ASC",
-                    (limit,),
+                    (station, limit),
                 )
                 .fetchall()
             )
             return [dict(row) for row in rows]
 
-    def recent_plays(self, limit: int) -> list[dict]:
-        """The latest *limit* plays that started, oldest first, with each track's album.
+    def recent_plays(self, limit: int, station: str = DEFAULT_STATION) -> list[dict]:
+        """*station*'s latest *limit* plays that started, oldest first, with each album.
 
         For the repeat rules.  A play a set stop cut short (``interrupted``)
         is left out, as in :meth:`recent_history`, and so is a liner.  The
@@ -531,17 +566,17 @@ class LibraryCatalog:
                     "SELECT h.rowid AS row,h.path,h.title,h.artist,"
                     "COALESCE(e.album,'') AS album,h.played_at "
                     "FROM play_history h LEFT JOIN catalog_entries e ON e.path=h.path "
-                    "WHERE h.interrupted=0 AND h.path IS NOT NULL "
+                    "WHERE h.interrupted=0 AND h.station=? AND h.path IS NOT NULL "
                     "AND (e.kind IS NULL OR e.kind='music') "
                     "ORDER BY h.rowid DESC LIMIT ?) ORDER BY row ASC",
-                    (limit,),
+                    (station, limit),
                 )
                 .fetchall()
             )
             return [dict(row) for row in rows]
 
-    def play_log(self) -> list[dict]:
-        """Return every completed play, oldest first, with its record's details.
+    def play_log(self, station: str = DEFAULT_STATION) -> list[dict]:
+        """Return every completed play of *station*, oldest first, with its record's details.
 
         ``path``, ``album`` and ``kind`` come from the catalog record the
         play refers to (by id, so a moved file gives its new path), or from
@@ -560,7 +595,8 @@ class LibraryCatalog:
                     "h.performances "
                     "FROM play_history h LEFT JOIN catalog_entries e ON e.id="
                     "COALESCE(h.entry_id,(SELECT id FROM catalog_entries WHERE path=h.path)) "
-                    "WHERE h.interrupted=0 ORDER BY h.rowid"
+                    "WHERE h.interrupted=0 AND h.station=? ORDER BY h.rowid",
+                    (station,),
                 )
                 .fetchall()
             )
@@ -1285,24 +1321,36 @@ class LibraryCatalog:
                 self._db().rollback()
                 raise
 
-    def remember_play(self, path: str | Path, timestamp: float | None = None) -> None:
+    def remember_play(
+        self, path: str | Path, timestamp: float | None = None, station: str = DEFAULT_STATION
+    ) -> None:
+        """Record when *station* last played *path*.
+
+        The default station keeps the time on the track's record, as
+        always; any other station keeps it in ``station_plays``.
+        """
         import time
 
         value = time.time() if timestamp is None else float(timestamp)
         if not math.isfinite(value):
             raise ValueError("timestamp must be finite")
         with self._lock:
-            self._db().execute(
-                "UPDATE catalog_entries SET last_played=? WHERE path=?", (value, _path(path))
-            )
+            if station == DEFAULT_STATION:
+                self._db().execute(
+                    "UPDATE catalog_entries SET last_played=? WHERE path=?", (value, _path(path))
+                )
+            else:
+                self._db().execute(
+                    "INSERT INTO station_plays VALUES (?,?,?) ON CONFLICT(station, path) "
+                    "DO UPDATE SET last_played=excluded.last_played",
+                    (station, _path(path), value),
+                )
             self._db().commit()
 
-    def last_played(self) -> dict[str, float]:
+    def last_played(self, station: str = DEFAULT_STATION) -> dict[str, float]:
+        """When *station* last played each track."""
         with self._lock:
-            return {
-                r["path"]: float(r["last_played"])
-                for r in self._db().execute("SELECT path,last_played FROM catalog_entries")
-            }
+            return _last_played(self._db(), station)
 
     def get_setting(self, key: str, default: Any = None) -> Any:
         with self._lock:
@@ -1342,8 +1390,12 @@ class LibraryCatalog:
             self._db().execute(
                 "UPDATE catalog_entries SET path=? WHERE id=?", (new_path, old_row["id"])
             )
+            # Other stations' last plays follow the file too.
+            self._db().execute(
+                "UPDATE OR REPLACE station_plays SET path=? WHERE path=?", (new_path, old_path)
+            )
             self._db().commit()
             return True
 
 
-__all__ = ["LibraryCatalog"]
+__all__ = ["DEFAULT_STATION", "LibraryCatalog"]

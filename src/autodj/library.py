@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import os
 import threading
-import time
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 from pathlib import Path
@@ -39,7 +38,8 @@ from autodj.processing import (
     analyze_loudness,
     loudness_matches,
 )
-from autodj.stations import StationPaths
+from autodj.station_ledger import StationLedger
+from autodj.stations import DEFAULT_SLUG, StationPaths
 from autodj.stereo import SAMPLE_RATE, DecodeReport
 
 logger = logging.getLogger(__name__)
@@ -108,11 +108,6 @@ class LibraryManager:
             "current": "",
         }
         self._import_errors: list[dict[str, str]] = []
-        self._pending_plays: dict[str, float] = {}
-        self._pending_history: dict[str, dict] = {}
-        self._interrupted_plays: set[str] = set()
-        self._pending_settings: dict[str, Any] = {}
-        self._last_played: dict[str, float] = {}
         # The catalog change counters the loaded snapshot was read at.
         self._versions: dict[str, int] | None = None
         # Paths a scan found gone from a present source folder; left out of
@@ -138,6 +133,10 @@ class LibraryManager:
         catalog_path = cfg.index.active_dir / "library.db"
         existing_catalog = catalog_path.is_file()
         self.catalog = LibraryCatalog(catalog_path)
+        # What each station played, and its settings; the default station's
+        # first.  tick() writes them all.
+        self.ledger = StationLedger(self.catalog, DEFAULT_SLUG, self.entry_for_path)
+        self._ledgers: list[StationLedger] = [self.ledger]
         # Set while a remote analysis worker is connected, so the CPU job,
         # which waited for it, runs again once it has gone.
         self._yielded_to_worker = False
@@ -246,12 +245,14 @@ class LibraryManager:
                     or versions["sources"] != seen["sources"]
                     or missing != self._loaded_missing
                 )
-                played: dict[str, float] = {}
+                played: dict[StationLedger, dict[str, float]] = {}
                 if reload_entries:
                     coverage = reader.coverage()
                     entries = reader.entries("music", coverage, missing)
                     liner_entries = reader.entries("liner", coverage, missing)
-                    played = reader.last_played()
+                    with self._lock:
+                        ledgers = list(self._ledgers)
+                    played = {ledger: reader.last_played(ledger.station) for ledger in ledgers}
                 else:
                     with self._lock:
                         entries, liner_entries = self._entries, self._liner_entries
@@ -272,14 +273,15 @@ class LibraryManager:
                     self._entries = entries
                     self._liner_entries = liner_entries
                     self._index_entries()
-                    self._last_played.update(played)
-                    self._last_played.update(self._pending_plays)
                 self._tracks_ready = len(self._entries)
                 self._tracks_indexed = len(vector_paths or ())
                 self._vector_paths = vector_paths
                 self._versions = versions
                 self._loaded_missing = missing
-                return self._entries
+                loaded = self._entries
+            for ledger, times in played.items():
+                ledger.loaded(times)
+            return loaded
 
     def _index_entries(self) -> None:
         """Rebuild the path lookups for the loaded entries; caller holds ``_lock``."""
@@ -409,86 +411,22 @@ class LibraryManager:
         with self._lock:
             return record if _path(record["path"]) in self._by_path else None
 
-    def remember_play(self, path: str | Path, timestamp: float | None = None) -> None:
-        value = time.time() if timestamp is None else float(timestamp)
-        if not np.isfinite(value):
-            return
-        normalized = _path(path)
+    def add_ledger(self, station: str) -> StationLedger:
+        """Keep another station's plays; :meth:`tick` writes them with the rest."""
+        ledger = StationLedger(self.catalog, station, self.entry_for_path)
+        ledger.loaded(self.catalog.last_played(station))
         with self._lock:
-            self._pending_plays[normalized] = value
-            self._last_played[normalized] = value
+            self._ledgers.append(ledger)
+        return ledger
 
-    def remember_setting(self, key: str, value: Any) -> None:
-        """Buffer a runtime setting update without writing SQLite on an audio thread."""
+    def _flush_ledgers(self) -> None:
         with self._lock:
-            self._pending_settings[key] = value
-
-    def remember_history(self, row: dict) -> None:
-        """Queue a play-log entry without writing SQLite on the audio thread."""
-        with self._lock:
-            self._pending_history[row["event_id"]] = dict(row)
-
-    def interrupt_history(self, event_id: str) -> None:
-        with self._lock:
-            self._interrupted_plays.add(event_id)
-
-    def pending_history(self) -> list[dict]:
-        """Plays not yet written to SQLite, oldest first, with each track's album.
-
-        The rows :meth:`~autodj.catalog.LibraryCatalog.recent_plays` gives
-        once they are written: a play a set stop cut short is left out, and
-        a track no longer in the library has an empty album.
-        """
-        with self._lock:
-            rows = [
-                dict(row)
-                for event_id, row in self._pending_history.items()
-                if event_id not in self._interrupted_plays
-            ]
-            for row in rows:
-                entry = self._by_path.get(_path(row.get("path") or ""))
-                row["album"] = entry.album if entry is not None else ""
-        return rows
-
-    def last_played(self) -> dict[str, float]:
-        with self._lock:
-            return dict(self._last_played)
-
-    def _flush_plays(self) -> None:
-        with self._lock:
-            pending = dict(self._pending_plays)
-        for path, value in pending.items():
-            self.catalog.remember_play(path, value)
-            with self._lock:
-                if self._pending_plays.get(path) == value:
-                    self._pending_plays.pop(path, None)
-
-    def _flush_settings(self) -> None:
-        with self._lock:
-            pending = dict(self._pending_settings)
-        for key, value in pending.items():
-            self.catalog.set_setting(key, value)
-            with self._lock:
-                if self._pending_settings.get(key) == value:
-                    self._pending_settings.pop(key, None)
-
-    def _flush_history(self) -> None:
-        with self._lock:
-            pending = dict(self._pending_history)
-            interrupted = set(self._interrupted_plays)
-        if not pending and not interrupted:
-            return
-        self.catalog.write_history(list(pending.values()), list(interrupted))
-        with self._lock:
-            for event_id, row in pending.items():
-                if self._pending_history.get(event_id) == row:
-                    self._pending_history.pop(event_id, None)
-            self._interrupted_plays.difference_update(interrupted)
+            ledgers = list(self._ledgers)
+        for ledger in ledgers:
+            ledger.flush()
 
     def tick(self) -> None:
-        self._flush_plays()
-        self._flush_history()
-        self._flush_settings()
+        self._flush_ledgers()
         with self._lock:
             # A scan publishes its own tracks and reloads when it has read
             # them; while it measures loudness, analysis may add vectors.
@@ -967,9 +905,7 @@ class LibraryManager:
             thread.join()
         with self._scan_lock:
             pass
-        self._flush_plays()
-        self._flush_history()
-        self._flush_settings()
+        self._flush_ledgers()
         self.analysis_queue.close()
         self.catalog.close()
 

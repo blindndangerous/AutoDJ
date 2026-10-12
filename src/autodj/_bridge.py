@@ -101,6 +101,9 @@ class PlayerBridge:
     player: Any
     sim: Any
     library: Any = None
+    # This station's plays and settings (a StationLedger); the library's
+    # default-station ledger when not given.
+    ledger: Any = None
     # The viewer keeps 500 rows; the catalog retains the full play log.
     _play_history: deque = field(
         default_factory=lambda: deque(maxlen=500),
@@ -283,6 +286,14 @@ class PlayerBridge:
         except Exception:
             logger.exception("Liner track-start check failed")
 
+    def _ledger(self) -> Any:
+        """This station's plays and settings, or ``None`` without a library."""
+        if self.library is None:
+            return None
+        if self.ledger is not None:
+            return self.ledger
+        return getattr(self.library, "ledger", None)
+
     def forget_track(self, entry: Any) -> None:
         """Remove the history row of *entry*'s play that a set stop cut short.
 
@@ -297,8 +308,8 @@ class PlayerBridge:
             for index in range(len(self._play_history) - 1, -1, -1):
                 if self._play_history[index] is play[1]:
                     del self._play_history[index]
-                    if self.library is not None:
-                        self.library.interrupt_history(play[1]["event_id"])
+                    if (ledger := self._ledger()) is not None:
+                        ledger.interrupt_history(play[1]["event_id"])
                     return
 
     def _append_history(self, entry: Any) -> dict:
@@ -313,9 +324,9 @@ class PlayerBridge:
         row = _history_entry(entry, performances)
         self._play_history.append(row)
         self._history_started = True
-        if self.library is not None:
-            self.library.remember_history(row)
-            self.library.remember_play(entry.path)
+        if (ledger := self._ledger()) is not None:
+            ledger.remember_history(row)
+            ledger.remember_play(entry.path)
         return row
 
     def listener_connected(self, client: tuple[str, str]) -> None:
@@ -331,8 +342,8 @@ class PlayerBridge:
             if row.get("performances") is None:  # not counted while relaying
                 return
             row["performances"] += 1
-            if self.library is not None:
-                self.library.remember_history(row)
+            if (ledger := self._ledger()) is not None:
+                ledger.remember_history(row)
 
     def listener_disconnected(self, client: tuple[str, str]) -> None:
         """Note that a stream connection from *client* ended."""
@@ -1443,16 +1454,17 @@ class PlayerBridge:
         from autodj.runtime_state import load_into_bridge
 
         load_into_bridge(self, self.player._cfg.index.active_dir)
-        if self.library is None:
+        ledger = self._ledger()
+        if ledger is None:
             return
         with self._history_lock:
             if self._history_started:
                 return
             self._play_history.clear()
-            self._play_history.extend(self.library.catalog.recent_history())
+            self._play_history.extend(ledger.recent_history())
         # The repeat rules count the plays from before the restart too.
         try:
-            self.player.restore_repeat_history(self.library.catalog)
+            self.player.restore_repeat_history(ledger)
         except Exception:
             logger.exception("Could not load earlier plays into the repeat rules")
 
@@ -1703,8 +1715,8 @@ class PlayerBridge:
             from autodj.player import apply_repeat_windows
 
             apply_repeat_windows(player)
-            if self.library is not None:
-                player.restore_repeat_history(self.library.catalog, refresh=True)
+            if (ledger := self._ledger()) is not None:
+                player.restore_repeat_history(ledger, refresh=True)
 
     def set_bpm_range(self, lo: float | None, hi: float | None) -> None:
         """Set the hard BPM filter; pass both null to clear."""

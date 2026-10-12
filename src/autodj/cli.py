@@ -1942,6 +1942,13 @@ def cmd_list_indexes(ctx: click.Context) -> None:  # pragma: no cover -- filesys
     type=str,
     help="Named index whose play log to export (default: [index] name).",
 )
+@click.option(
+    "--station",
+    default="default",
+    show_default=True,
+    metavar="NAME",
+    help="Station whose plays to export; the default station is the one the main config describes.",
+)
 @click.pass_context
 def cmd_export_plays(
     ctx: click.Context,
@@ -1954,6 +1961,7 @@ def cmd_export_plays(
     channel: str,
     missing: bool,
     index_name: str | None,
+    station: str,
 ) -> None:
     """Export the play log between two dates as CSV, for royalty reports.
 
@@ -1968,6 +1976,7 @@ def cmd_export_plays(
       uv run autodj export-plays --from 2026-09-01 --to 2026-09-30 --out september.csv
       uv run autodj export-plays --from 2026-09-01 --to 2026-09-30 --missing
       uv run autodj export-plays --from 2026-09-01 --to 2026-09-30 --format soundexchange --service "My Station"
+      uv run autodj export-plays --from 2026-09-01 --to 2026-09-30 --station nightowl
     """
     from autodj.catalog import LibraryCatalog
     from autodj.playlog import (
@@ -1978,7 +1987,12 @@ def cmd_export_plays(
         soundexchange_report,
         summary,
     )
+    from autodj.stations import SLUG_PATTERN
 
+    if SLUG_PATTERN.match(station) is None:
+        raise click.BadParameter(
+            "a station name is lower-case letters, digits and hyphens", param_hint="--station"
+        )
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
     _apply_index_name(cfg, index_name)
     try:
@@ -1992,7 +2006,7 @@ def cmd_export_plays(
         raise click.exceptions.Exit(1)
     try:
         with LibraryCatalog(db) as catalog:
-            plays = plays_between(catalog, start, end)
+            plays = plays_between(catalog, start, end, station=station)
     except ValueError as exc:
         raise click.BadParameter(str(exc)) from exc
     except sqlite3.Error as exc:

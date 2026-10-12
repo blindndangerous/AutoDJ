@@ -1257,7 +1257,9 @@ warning when some songs have neither an ISRC nor both an album and a label, beca
 may not be able to match those. Add `--missing` to get the songs that lack a field instead of the
 plays, one row each, with the fields they lack, how often they played, and a `matchable` column
 that says `no` for the songs SoundExchange may not be able to match. Add `--name` for a named index. Dates are in the server's time zone; an ISO
-8601 date and time also works, for example `--from 2026-09-01T06:00`.
+8601 date and time also works, for example `--from 2026-09-01T06:00`. Each station keeps its own
+play log: `--station NAME` exports another station's plays, and without it you get the default
+station's, which are all the plays logged before AutoDJ ran more than one station.
 
 In the web page, open History, go to "Export play log", choose the dates and the format, and press
 Export. AutoDJ says "Exporting play log" and the Export button is unavailable until the file is
@@ -1866,8 +1868,9 @@ or `.ogg`, and compares letters without regard to case. It recognises these name
 
 - Hour file: letters, spaces, `_` or `-` that include `h` and no `m`, then a two-digit hour
   from 00 to 23. Examples: `hr_05.mp3`, `H05.wav`, `hour-17.ogg`.
-- Exact-hour file: an hour file name with `o` straight after the digits, such as
-  `hr_05o.mp3`. It plays alone at minute 00.
+- Exact-hour file: an hour file name with `o` after the digits, either straight after them or
+  after one space, `_` or `-`, such as `hr_05o.mp3` or `hrs05_o.mp3`. It plays alone at
+  minute 00.
 - Minute file: letters, spaces, `_` or `-` that include `m` and no `h`, then a two-digit minute
   from 00 to 59. Examples: `m_56.mp3`, `min 07.wav`.
 - `intro` and `outro` (such as `intro.wav`): said before and after the time, joined in the same

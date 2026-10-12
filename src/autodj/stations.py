@@ -25,6 +25,7 @@ import asyncio
 import contextlib
 import functools
 import logging
+import re
 import threading
 import time
 from collections.abc import Awaitable, Callable, Coroutine
@@ -34,7 +35,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from autodj._bridge import PlayerBridge
-    from autodj.carts import CartStore
+    from autodj.carts import StationCarts
     from autodj.config import AutoDJConfig
     from autodj.indexer import IndexEntry
     from autodj.library import LibraryManager
@@ -48,6 +49,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DEFAULT_SLUG = "default"
+# A station's name: lower-case letters, digits and inner hyphens, at most 32
+# characters.  It names a folder and a URL path segment.
+SLUG_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?\Z")
 
 
 class StationPaths:
@@ -150,6 +154,7 @@ def start_stream_station(
     loop: asyncio.AbstractEventLoop,
     first_track: IndexEntry | None = None,
     recorder: Recorder | None = None,
+    paths: StationPaths | None = None,
 ) -> StreamOutput:
     """Build the stream output, liner scheduler and station; attach them.
 
@@ -166,6 +171,7 @@ def start_stream_station(
         loop: The event loop listeners are served on.
         first_track: The first set's first track (``--seed``), if given.
         recorder: Receives the stream's audio while a recording runs.
+        paths: The station's state files; the default station's when omitted.
 
     Returns:
         The stream output (closed by :func:`stop_stream_station`).
@@ -194,7 +200,7 @@ def start_stream_station(
                 bitrate, 0, encoder_factory=stream_module.FfmpegEncoder, loop=loop
             ),
             station_name=lambda: cfg.stream.station_name,
-            status_path=relay_status_path(cfg),
+            status_path=relay_status_path(cfg, paths),
         )
     relays_active = relays is not None and relays.active
     station = Station(
@@ -386,14 +392,14 @@ async def _cancel(task: asyncio.Task[None] | None, *quiet: type[BaseException]) 
 class StationRuntime:
     """One playout chain: a player and the station state around it.
 
-    The scheduler, time checks, cart store and WebSocket push register
-    routes on the app, so the app builds them and sets them here before
-    it starts the station.
+    The app builds the scheduler, time checks, cart wall and WebSocket
+    push (:func:`autodj.station_routes.equip_station`) and sets them here
+    before it starts the station; the station routes find them here.
     """
 
     schedule: Scheduler
     time_checks: TimeChecks
-    carts: CartStore
+    carts: StationCarts
     # Pushes the state to this station's WebSocket clients once a second.
     broadcast: Callable[[], Coroutine[Any, Any, None]]
 
@@ -448,6 +454,8 @@ class StationRuntime:
         self._schedule_ticker: asyncio.Task[None] | None = None
         self._stream_ticker: asyncio.Task[None] | None = None
         self._broadcast_task: asyncio.Task[None] | None = None
+        # Set while the station is stopped; its routes then answer 409.
+        self.stopped = False
 
     @property
     def cfg(self) -> AutoDJConfig:
@@ -458,6 +466,11 @@ class StationRuntime:
     def player(self) -> Any:
         """The station's player."""
         return self.bridge.player
+
+    @property
+    def ledger(self) -> Any:
+        """The station's plays and settings in the shared library, or ``None`` without one."""
+        return self.bridge._ledger()
 
     # Both run on playout threads (mix bus, station), so a fault here is
     # logged and never reaches playback.
@@ -477,6 +490,7 @@ class StationRuntime:
 
     async def start(self) -> None:
         """Start the schedule, the stream or liners, the WebSocket push and webhooks."""
+        self.stopped = False
         bridge = self.bridge
         cfg = self.cfg
         schedule = self.schedule
@@ -507,6 +521,7 @@ class StationRuntime:
                 asyncio.get_running_loop(),
                 self.first_track,
                 self.recorder,
+                self.paths,
             )
             self._stream_ticker = asyncio.create_task(tick_stream_workers(bridge))
         elif self.server_audio:
@@ -531,6 +546,7 @@ class StationRuntime:
         Returns:
             Whether every cache writer stopped in time.
         """
+        self.stopped = True
         bridge = self.bridge
         bridge.scheduler_track_changed = None
         await _cancel(self._schedule_ticker)
@@ -610,6 +626,10 @@ class StationRegistry:
     def all(self) -> tuple[StationRuntime, ...]:
         """Every station, the default first."""
         return tuple(self._stations.values())
+
+    def slugs(self) -> frozenset[str]:
+        """The name of every configured station."""
+        return frozenset(self._stations)
 
     async def shutdown(self, library: SharedLibrary, timeout_s: float) -> tuple[bool, bool]:
         """Stop every station, then close the shared library, then each master and push.

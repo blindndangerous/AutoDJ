@@ -711,7 +711,11 @@ class Player:
     # The track rendered just before the render cursor's track: the bus is
     # starting it while the worker picks what follows the cursor's track.
     _pending_previous: IndexEntry | None = None
+    # The shared music library, and this station's plays and settings in it
+    # (a StationLedger).  Without a ledger of its own, the player records
+    # into the library's default-station ledger.
     _library: Any = None
+    _station_ledger: Any = None
     # A queue pick the bus has taken (which removed it from the queue) and
     # not yet started: it goes back if its set stops first.  Only the bus
     # thread touches it (_take_render, then _on_track_start).
@@ -1056,6 +1060,17 @@ class Player:
         collection = self._library if self._library is not None else self._sim
         return collection.entries_snapshot()
 
+    @property
+    def _ledger(self) -> Any:
+        """This station's :class:`~autodj.station_ledger.StationLedger`, or ``None``."""
+        if self._station_ledger is not None:
+            return self._station_ledger
+        return getattr(self._library, "ledger", None) if self._library is not None else None
+
+    @_ledger.setter
+    def _ledger(self, ledger: Any) -> None:
+        self._station_ledger = ledger
+
     def configure_clock(self) -> None:
         """Load the active clockwheel without marking any selected music played.
 
@@ -1068,7 +1083,10 @@ class Player:
         if self._library is None:
             self._clock_status = "Clockwheel waiting for library"
             return
-        setting = self._library.catalog.get_setting("clock", {})
+        # The station's own key ("clock" for the default station).
+        ledger = getattr(self, "_ledger", None)
+        key = ledger.setting_key("clock") if ledger is not None else "clock"
+        setting = self._library.catalog.get_setting(key, {})
         if not isinstance(setting, dict):
             setting = {}
         if "slots" in setting:
@@ -1190,7 +1208,8 @@ class Player:
             if context.complement is None
             else tuple(entry for entry in eligible if context.allows(entry))
         )
-        last_played = self._library.last_played()
+        ledger = self._ledger
+        last_played = ledger.last_played() if ledger is not None else {}
         liners = self._library.entries_snapshot("liner")
         categories = self._category_members()
         beets_items: Mapping[str, Mapping[str, Any]] | None = None
@@ -2181,7 +2200,8 @@ class Player:
         self._active_processing_mode = rendered.loudness_processing
         if self._clock is not None and rendered.clock_cursor is not None:
             self._clock = {**self._clock, "cursor": rendered.clock_cursor}
-            self._library.remember_setting("clock", self._clock)
+            if (ledger := self._ledger) is not None:
+                ledger.remember_setting("clock", self._clock)
             self._clock_next_boundary = rendered.clock_boundary
         if entry is not self._state.current_track:
             self._previous_track = self._state.current_track
@@ -2216,11 +2236,11 @@ class Player:
                 and not self._heard_next_entry
             ):
                 self._heard_next_entry = True
-                if self._library is not None:
-                    self._library.remember_play(playing.next_entry.path)
+                if (ledger := self._ledger) is not None:
+                    ledger.remember_play(playing.next_entry.path)
                     if self._clock is not None and playing.next_clock_cursor is not None:
                         self._clock = {**self._clock, "cursor": playing.next_clock_cursor}
-                        self._library.remember_setting("clock", self._clock)
+                        ledger.remember_setting("clock", self._clock)
                         self._clock_next_boundary = playing.next_clock_boundary
             for index, (at, entry, queued) in enumerate(playing.liner_events):
                 if frames > at and index not in self._heard_liner_events:
@@ -2228,8 +2248,8 @@ class Player:
                     if queued:
                         with self._state.queue_lock:
                             self._commit_queue_pick(entry)
-                    if self._library is not None:
-                        self._library.remember_play(entry.path)
+                    if (ledger := self._ledger) is not None:
+                        ledger.remember_play(entry.path)
                     scheduler = self.liner_scheduler
                     if scheduler is not None and hasattr(scheduler, "mark_planned_fired"):
                         scheduler.mark_planned_fired(playing.liner_plan_key)
@@ -2443,7 +2463,8 @@ class Player:
         short are not counted, nor are plays dated after now.
 
         Args:
-            catalog: The station's :class:`~autodj.catalog.LibraryCatalog`.
+            catalog: Gives the saved plays (``recent_plays``): the station's
+                :class:`~autodj.station_ledger.StationLedger`.
 
         Returns:
             How many plays were loaded.
@@ -2455,10 +2476,10 @@ class Player:
         if limit <= 0:
             return 0
         rows = catalog.recent_plays(limit)
-        library = getattr(self, "_library", None)
-        if library is not None:
-            # Plays the library has not written to SQLite yet count too.
-            rows.extend(library.pending_history())
+        ledger = self._ledger
+        if ledger is not None:
+            # Plays not written to SQLite yet count too.
+            rows.extend(ledger.pending_history())
         records = records_from_plays(rows, time.time())
         if records:
             self._state.restore_history(records)
@@ -2489,9 +2510,10 @@ class Player:
 
         entries = self.playable_entries()
         repeat = context.repeat
+        ledger = self._ledger
         history = (
-            self._library.last_played()
-            if self._cfg.playback.pick_mode == "least_recent" and self._library is not None
+            ledger.last_played()
+            if self._cfg.playback.pick_mode == "least_recent" and ledger is not None
             else None
         )
 
