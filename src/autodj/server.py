@@ -122,6 +122,7 @@ from autodj.stations import (
 from autodj.status_page import STATUS_PAGE_CSP, render_status_page
 from autodj.stereotool_presets import MAX_PRESET_BYTES
 from autodj.stream import EncoderUnavailableError, ListenerLimitError
+from autodj.tags_api import install_tag_editor, tag_form
 from autodj.tls import CertificateReloader
 from autodj.version import current_version
 from autodj.worker_api import (
@@ -1519,6 +1520,10 @@ def create_app(
         entry = library.entry_for_path(path)
         if entry is None:
             raise HTTPException(status_code=404, detail="Recording not in library")
+        return await _track_info(library, path)
+
+    async def _track_info(library: Any, path: str) -> dict:
+        """The Track info record of *path*: details, cue points and tag form."""
         record = await asyncio.to_thread(library.catalog.record_for_path, path)
         if record is None:
             raise HTTPException(status_code=404, detail="Recording not in library")
@@ -1542,7 +1547,10 @@ def create_app(
             library.cfg.playback.key_notation,
             prefer_flats=library.cfg.playback.key_prefer_flats,
         )
+        record.update(await asyncio.to_thread(tag_form, library, record))
         return record
+
+    install_tag_editor(app, bridge, _track_info)
 
     @app.post("/api/library/points")
     async def api_library_save_points(body: SongPointsBody) -> dict:

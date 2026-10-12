@@ -193,6 +193,18 @@ use, whatever its letter case. Selecting a preset in `/api/playback-settings` re
 existing file; a preset removed outside AutoDJ is replaced by the included one when Stereo Tool
 next starts.
 
+`POST /api/library/tags` rewrites the tags of one recording, under the same session, Host and
+Origin policy as every other `/api` route. It is the one route that changes a music file. The
+path must name a recording the catalog holds under a registered, present source folder, so no
+browser input reaches any other file. The body may carry only the eight known tag names, each a
+string that is checked (length, no control characters, year, BPM, key and ISRC shapes) before
+anything is written; tag values go into mutagen frames, never a path, command or SQL text. The
+file is tagged as a hidden copy in its own folder, read back, and renamed over the original, so a
+failure leaves the original intact; a song playing or up next is refused. With the page's
+consent and `[library] beets_db` set, the same values update that beets item with bound
+parameters on fixed column names. The beets database is the only file outside the music folders
+the route writes.
+
 `GET /api/history/export` returns the play log for a date range: titles, artists, albums, ISRC
 and label tags, file paths inside the music folders and performance counts. Like every other `/api`
 route it needs an allowed Host, and a session whenever the server requires one. It is a GET with
