@@ -216,6 +216,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The web page works better for people who see it. In Windows High Contrast (forced colours) the
+  selected section tab and Settings subtab now show their names; they were blank. Queue &
+  Search no longer scrolls sideways when a music folder has a long path, and no view scrolls
+  sideways at 320 px wide or with text at 200 %. Library tools, Browse library, the clockwheel
+  editor, the address-ban form and the new worker token lay out each label above its field
+  instead of running them together, and each clockwheel step is one row. Checkboxes and radio
+  buttons are 24 px everywhere. Pressed toggles such as Mute and Record broadcast show a tick as
+  well as the orange fill, cue points are listed in words under their colour key, compatible
+  Camelot keys get an outline, and the phone slider track is visible. The Play or Pause button
+  shows the words it is called by, for speech input. Time, date and address-ban fields match the
+  other fields, list bullets stay inside their cards, a status message no longer stays over the
+  next view after you change tabs, and a control reached with Tab near the window's edge is
+  scrolled fully into view.
+
 - Startup now loads the current library and shows its song and analysis counts, rather than
   the count from an older index. Doctor and list-indexes also use the current catalog. Existing
   catalogs no longer depend on the old index manifest; legacy indexes are imported on first use.

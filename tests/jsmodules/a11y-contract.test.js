@@ -1450,6 +1450,65 @@ describe("static accessibility contracts", () => {
     `))).toBe(false);
   });
 
+  it("keeps selected and pressed states readable without colour", () => {
+    const forced = "(forced-colors: active)";
+    // Chromium's forced-colours backplate is Canvas: HighlightText on it
+    // was invisible, so the state rule opts out of forcing.
+    for (const selector of [
+      '#view-nav [role="tab"][aria-selected="true"]',
+      '.subtabs [role="tab"][aria-selected="true"]',
+      'button[aria-pressed="true"]',
+    ]) {
+      expect(lastValue(selector, "forced-color-adjust", forced), selector).toBe("none");
+    }
+    // Pressed differs from not pressed by a tick as well as by colour
+    // (WCAG 1.4.1), and the tick has empty alt text so it is not spoken.
+    expect(lastValue('button[aria-pressed="true"]::before', "content"))
+      .toBe('"\\2713" / ""');
+    // A transition on the background alone left a tab just left with
+    // light text on the fading light fill.
+    expect(lastValue("button", "transition")).toBeUndefined();
+    // The cue ticks differ by hue only, so their text is shown with the key.
+    expect(lastValue(
+      "#cue-legend:not([hidden]) ~ #cue-details.visually-hidden", "clip",
+    )).toBe("auto");
+    // The phone layout's slider track meets 3:1 against the card.
+    expect(lastValue(":root", "--range-track")).toBe("#5a7bb0");
+    expect(contrast("#5a7bb0", "#16213e")).toBeGreaterThanOrEqual(3);
+    // Compatible Camelot wedges carry an accent edge, not just a 1.8:1 fill.
+    expect(lastValue("#camelot-wheel .sector.compat", "stroke")).toBe("var(--accent)");
+  });
+
+  it("keeps targets, fields and text inside the column", () => {
+    // WCAG 2.5.8: every checkbox and radio button is 24 x 24 px.
+    for (const selector of ['input[type="checkbox"]', 'input[type="radio"]']) {
+      expect(lastValue(selector, "width"), selector).toBe("1.5rem");
+      expect(lastValue(selector, "height"), selector).toBe("1.5rem");
+    }
+    // WCAG 1.4.10 / 1.4.4: no field or fieldset outgrows its column, long
+    // paths break, and the column widens with the reader's text size.
+    for (const selector of ["input", "select", "textarea"]) {
+      expect(lastValue(selector, "max-width"), selector).toBe("100%");
+    }
+    expect(lastValue("fieldset", "min-width")).toBe("0");
+    expect(lastValue("body", "overflow-wrap")).toBe("break-word");
+    expect(lastValue("main", "max-width")).toMatch(/rem$/);
+    expect(lastValue(".settings-row", "flex-wrap")).toBe("wrap");
+    // Typeless, time and date fields get the same dark 44 px field as text.
+    for (const selector of ["input:not([type])", 'input[type="time"]', 'input[type="date"]']) {
+      expect(lastValue(selector, "min-height"), selector).toBe("44px");
+    }
+    // The forms that were bare label / field / button siblings use the
+    // source-order form layout.
+    installDocument();
+    for (const id of [
+      "source-folder-path", "library-browse-query", "clock-name",
+      "clock-step-type", "listener-ban-address", "token-secret",
+    ]) {
+      expect(document.getElementById(id).closest(".flow-form"), id).not.toBeNull();
+    }
+  });
+
   it("keeps durable playback evidence separate from scoped announcements", () => {
     expect(libraryLogOwnershipIsScoped()).toBe(true);
     expect(libraryLogOwnershipIsScoped(htmlSource.replace(

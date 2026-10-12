@@ -1530,7 +1530,7 @@
         <p id="listener-control-empty" hidden>No listeners connected.</p>
         <button type="button" id="listener-ban-new">Add address ban</button>
         <form id="listener-ban-form" hidden>
-          <fieldset>
+          <fieldset class="flow-form">
             <legend>Ban a listener address</legend>
             <label for="listener-ban-address">Address or CIDR</label>
             <input id="listener-ban-address" required autocomplete="off">
@@ -1640,7 +1640,7 @@
     </fieldset>
     <!-- The token is shown once.  Creating it moves focus here and
          #workers-status says it will not be shown again. -->
-    <div id="token-new" hidden>
+    <div id="token-new" class="flow-form" hidden>
       <label for="token-secret">New token for <span id="token-new-name"></span></label>
       <input type="text" id="token-secret" readonly autocomplete="off" spellcheck="false"
              aria-describedby="token-secret-warning">
@@ -1715,7 +1715,7 @@
   <!-- Browse library.  The folder choice lists the registered music and
        voice liner folders; library-folders.js refreshes it each time this
        tab is shown.  Adding and removing folders stays in Library tools. -->
-  <section class="card" aria-labelledby="browse-library-heading">
+  <section class="card flow-form" aria-labelledby="browse-library-heading">
     <h2 id="browse-library-heading">Browse library</h2>
     <label for="library-browse-folder">Folder</label>
     <select id="library-browse-folder"><option value="all-music">All music</option><option value="all-liners">All voice liners</option></select>
@@ -1849,7 +1849,7 @@
         advanced analysis finishes. One advanced analysis job runs at a time.
       </p>
 
-      <section aria-labelledby="source-folders-heading">
+      <section class="flow-form" aria-labelledby="source-folders-heading">
         <h3 id="source-folders-heading">Music folders and Voice liner folders</h3>
         <p>Enter a folder path on the machine running AutoDJ. Music folders include advanced analysis by default. Liners get automatic Start, Segue and End suggestions without the music-matching job.</p>
         <label for="source-folder-path">Folder path</label>
@@ -1997,7 +1997,7 @@
       </form>
     </section>
 
-    <section class="card" aria-labelledby="clockwheel-heading">
+    <section class="card flow-form" aria-labelledby="clockwheel-heading">
       <h2 id="clockwheel-heading">Clockwheels</h2>
       <!-- clockwheel-panel.js fills this section.  Each result of a button
            is said once through #clock-status; the lists are plain text. -->
@@ -2024,7 +2024,7 @@
       <p id="clock-steps-help">Up and Down move between step names; Left and Right move between row buttons; Home and End move to the first and last row buttons. Enter or Space presses the focused button, so Enter on a step name edits it; Delete asks before it removes that step. Alt+Up and Alt+Down move the focused step. Changes are kept only when you press Save clockwheel.</p>
       <ol id="clock-slots" role="grid" aria-labelledby="clock-steps-heading" aria-describedby="clock-steps-help"><li role="row"><div role="gridcell">Open or create a clockwheel to see its steps.</div></li></ol>
       <p id="clock-next"></p>
-      <fieldset id="clock-step-form">
+      <fieldset id="clock-step-form" class="flow-form">
         <legend id="clock-step-legend">Add a step</legend>
         <label for="clock-step-type">Step type</label>
         <select id="clock-step-type">
