@@ -53,10 +53,10 @@ function _floatOrNull(el) {
 // 30 nearly silent.
 const DUCK_DB = { label: "Duck depth", min: -30, max: 0, integer: false };
 
-function _setStatus(els, msg, { force = false, tone = "info" } = {}) {
-  if (!els.lnStatus) return;
-  els.lnStatus.classList.remove("visually-hidden");
-  announceStatus(els.lnStatus, msg, { dwellMs: tone === "error" ? 6000 : 4000, force, tone });
+function _setStatus(els, msg, { force = false, tone = "info", region = els.lnStatus } = {}) {
+  if (!region) return;
+  region.classList.remove("visually-hidden");
+  announceStatus(region, msg, { dwellMs: tone === "error" ? 6000 : 4000, force, tone });
 }
 
 export function renderLinerFileList(fileList, files, onDelete, onEdit = (path, kind, opener) => {
@@ -127,10 +127,12 @@ async function _refreshLibrary(els) {
 
 // The delete runs while the confirmation is still open, so the list is
 // already updated when it closes and focus goes straight to the next
-// row's Delete, or Upload when none is left (see confirmAction).  The
-// result is said after the dialog has closed.
+// row's Delete, or the list itself when none is left (see confirmAction).
+// The result is said after the dialog has closed, in the status region
+// beside the list (Queue & Search), since the Settings one is hidden there.
 async function _deleteLiner(els, name, button, label = name) {
   const list = els.lnFileList;
+  const region = els.lnBrowseStatus || els.lnStatus;
   const index = Array.from(list.querySelectorAll("button")).indexOf(button);
   const epoch = captureAuthenticatedRequestEpoch();
   let result = null;
@@ -155,14 +157,14 @@ async function _deleteLiner(els, name, button, label = name) {
         return button;
       }
       result = `Deleted ${label}`;
-      return nextRowControl(list, "button", index, els.lnUploadSubmit);
+      return nextRowControl(list, "button", index, list);
     },
   });
   if (!confirmed) {
     button.focus();
     return;
   }
-  if (result && isAuthenticatedRequestCurrent(epoch)) _setStatus(els, result);
+  if (result && isAuthenticatedRequestCurrent(epoch)) _setStatus(els, result, { region });
 }
 
 function _postConfig(els, postSettings, control) {

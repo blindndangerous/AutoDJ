@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Public now-playing history and its webhooks include only artist, title, duration and play time;
+  local file paths and internal event IDs remain available in operator history.
+
 ### Added
 
 - Several named clockwheels (Library tools, Clockwheels): create, duplicate, rename, delete,
@@ -35,6 +40,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   12- or 24-hour speech; doctor reports missing recordings, and backups include the clips and the
   saved switches. `scripts/time_check_sapi.ps1` speaks with a chosen Windows SAPI voice.
 
+- Time checks can speak from voice packs: folders of hour and minute files, named the way
+  RadioBOSS names them (`hr_05.mp3`, `hr_05o.mp3`, `m_56.mp3`, optional intro, outro, am and
+  pm), listed in `[time_checks] voice_packs`. AutoDJ trims each piece's silence, matches their
+  loudness and joins them with a 40 ms equal-power crossfade, so the time sounds like one
+  sentence, then plays it through the voice liner path. Settings, Time checks lists the packs as
+  checkboxes with their coverage, takes turns between ticked packs or picks one at random, and
+  can test one pack. A pack that lacks the minute falls back to the next pack, the recorded
+  clips, then text to speech. Doctor reports each pack's missing hours, exact hours and minutes
+  and the files it does not use; packs kept in the `time_checks` folder are in backups.
+
 - DMCA mode (`[dmca] enabled = true`): every pick mode, the clockwheel included, keeps to the
   US statutory webcasting licence's performance complement (at most 3 songs from one album, 2 in
   a row, and 4 by one artist or from one box set, 3 in a row, in any three hours; featured
@@ -48,7 +63,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   A scheduled event can switch the Stereo Tool preset (Settings, Schedule).
 - Stereo Tool input trim is adjustable from -12 to +6 dB. Quiet song openings can receive up
   to 4 dB of peak-safe lift by default, returning to normal within eight seconds. The limit
-  is adjustable from 0 to 6 dB, with 0 disabling the lift.
+  is adjustable from 0 to 6 dB, with 0 disabling the lift. This intro-only lift applies to
+  ReplayGain playback; Smooth and Stereo Tool use their continuous output processors.
 
 - Broadcast recording saves the encoded stream, including liners and processing, as dated MP3
   files. Settings, Stream and scheduled actions control recording and splits. A free-space floor
@@ -155,6 +171,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Hard scheduled liners and time checks prepare their audio before skipping the current song.
   Missing clips or failed speech generation leave the song playing and report the failed event.
+- Automatically chosen first songs now follow repeat rules and protected-track checks, including
+  restored play history. When the rules leave no choice, they relax without stopping playback.
 
 - Unknown or removed configuration settings now produce warnings and are ignored instead of
   blocking startup. Saved browser settings follow the same rule, preserving valid repeat limits
@@ -177,6 +195,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The included Stereo Tool preset recovers more slowly after drum hits, keeping snare tails
+  less prominent while retaining the default 7 dB AGC drive for quiet passages.
+
+- Browse library and the voice liner list moved to the Queue & Search tab, after Search, as
+  **Browse library** and **Browse voice liners**. Tab goes from Search to Browse library to the
+  voice liners, and Track info's Return to Queue & Search puts focus back on the button that
+  opened it, even after the list is drawn again. Adding, removing and rescanning folders stays in
+  Library tools, which now says where browsing went, and uploading liners stays in Settings,
+  Voice liners. Play next and Add to queue from Browse library are now spoken, since the queue's
+  status region is on the same tab; Delete on a voice liner says its result beside the list and
+  moves focus to the next liner, or to the list when none is left.
 - Old repeat keys in `config.toml` and `web_state.json` are ignored with a warning.
   Re-enter any limits that still use those keys in Settings > Picking > Repeats.
 - Random walk, least recently played and clock picks now hold back the same album and the same
@@ -187,14 +216,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A blank liner Overlap start uses its Segue, or End if Segue is blank. Set it to 0 to let
   the next song's intro overlap the liner when timing allows. Overlap start cannot be later
   than the liner's segue.
-- Smooth and Stereo Tool offer "Boost quiet sections", defaulting to 9 dB. It applies throughout
-  music tracks. After a change, each track is prepared again in the background when it is
-  next loaded, or during a scan; it keeps its previous preparation until the new one is ready.
-  The next library scan deletes prepared audio files that nothing uses any more.
+- Smooth and Stereo Tool play original music and liner files. AutoDJ saves small loudness
+  measurements in the library and processes audio in memory, instead of writing a second
+  audio library. The old `prepared` folder inside the active index folder is no longer
+  used and is safe to delete. It holds uncompressed 32-bit float WAV copies, about 21 MB
+  per minute of audio (roughly 85 MB for a four-minute song), so on a large library it
+  can free tens of gigabytes. After upgrading, a library scan measures loudness in the
+  background; a song played before it is measured is measured as it loads, so its first
+  start takes longer. Later plays reuse the saved measurement.
+- Stereo Tool's **AGC drive boost** replaces **Boost quiet sections**. It starts at 7 dB
+  and adjusts how strongly the processor lifts quiet passages throughout a song.
+  Smooth keeps its built-in compressor and limiter, without the old quiet-section lift.
+  Neither mode adds the separate intro-only lift. An uploaded preset without a single
+  `Drive` line under `[Pre Compressor]` plays unchanged, and Settings and the status API
+  say the AGC drive was not applied.
 - Stereo Tool output gains 5.8 dB through a final peak limiter, with a -1.8 dB ceiling,
-  5 ms attack and 100 ms release. Its existing compression preset is unchanged.
+  5 ms attack and 100 ms release. The included preset remains the starting point for the AGC drive boost.
 - Liners play 1.5 dB lower with Smooth or Stereo Tool processing, reducing their intended
-  lift above music from 4.5 dB to 3 dB. Existing prepared audio and cue points are retained.
+  lift above music from 4.5 dB to 3 dB. Cue points are retained.
 - Radio listening uses `/stream.mp3`, with `/stream.m3u` for players that need a playlist.
   Anyone who can reach the server can listen without a key; browser controls still require
   pairing when LAN authentication is enabled.

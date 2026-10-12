@@ -81,11 +81,6 @@ const NUMBER_FIELDS = [
     read: (st) => st.djmix?.filter_sweep_floor_hz,
   },
   {
-    key: "pbQuietBoost", url: "/api/playback-settings", field: "quiet_boost_db",
-    label: "Boost quiet sections", min: 0, max: 12, integer: false,
-    read: (st) => st.playback?.quiet_boost_db,
-  },
-  {
     key: "pbIntroLift", url: "/api/playback-settings", field: "intro_lift_max_db",
     label: "Quiet intro lift limit", min: 0, max: 6, integer: false,
     read: (st) => st.playback?.intro_lift_max_db,
@@ -94,6 +89,11 @@ const NUMBER_FIELDS = [
     key: "pbStereoTrim", url: "/api/playback-settings", field: "stereotool_input_trim_db",
     label: "Stereo Tool input trim", min: -12, max: 6, integer: false,
     read: (st) => st.playback?.stereotool_input_trim_db,
+  },
+  {
+    key: "pbStereoAgcDrive", url: "/api/playback-settings", field: "stereotool_agc_drive_db",
+    label: "AGC drive boost", min: 0, max: 12, integer: false,
+    read: (st) => st.playback?.stereotool_agc_drive_db,
   },
 ];
 

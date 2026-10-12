@@ -47,6 +47,86 @@ def test_intro_lift_column_migrates_and_persists(tmp_path: Path) -> None:
         assert catalog.record_for_path(song)["intro_lift_db"] == 3.25
 
 
+def test_loudness_column_migrates_and_persists(tmp_path: Path) -> None:
+    db = tmp_path / "catalog.db"
+    song = tmp_path / "song.wav"
+    song.write_bytes(b"source")
+    with closing(sqlite3.connect(db)) as conn:
+        conn.executescript(_SCHEMA.replace("        loudness TEXT NOT NULL DEFAULT '{}',\n", ""))
+        conn.execute(
+            "INSERT INTO catalog_entries (id,path,kind,title,size) VALUES ('old',?,'music','Old',?)",
+            (os.path.normcase(str(song)), song.stat().st_size),
+        )
+        conn.commit()
+    measurement = {
+        "version": "1",
+        "kind": "music",
+        "size": song.stat().st_size,
+        "mtime_ns": song.stat().st_mtime_ns,
+        "lufs": -18.5,
+        "gain_db": 2.5,
+    }
+    with LibraryCatalog(db) as catalog:
+        assert catalog.record_for_path(song)["title"] == "Old"
+        assert catalog.record_for_path(song)["loudness"] == {}
+        catalog.set_loudness(song, measurement)
+        assert catalog.record_for_path(song)["loudness"] == measurement
+        catalog._db().execute(
+            "UPDATE catalog_entries SET loudness='not-json' WHERE path=?",
+            (os.path.normcase(str(song)),),
+        )
+        assert catalog.record_for_path(song)["loudness"] == {}
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"lufs": float("nan")},
+        {"lufs": float("inf")},
+        {"gain_db": float("nan")},
+        {"gain_db": 18.1},
+        {"gain_db": -60.1},
+        {"size": True},
+    ],
+)
+def test_set_loudness_rejects_invalid_measurements(tmp_path: Path, updates: dict) -> None:
+    song = tmp_path / "song.wav"
+    song.write_bytes(b"source")
+    stat = song.stat()
+    measurement = {
+        "version": "1",
+        "kind": "music",
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "lufs": -18.5,
+        "gain_db": 2.5,
+        **updates,
+    }
+    with LibraryCatalog(tmp_path / "catalog.db") as catalog:
+        catalog.put_entry(entry(song))
+        with pytest.raises(ValueError):
+            catalog.set_loudness(song, measurement)
+
+
+def test_set_loudness_discards_stale_source_measurement(tmp_path: Path) -> None:
+    song = tmp_path / "song.wav"
+    song.write_bytes(b"source")
+    stat = song.stat()
+    measurement = {
+        "version": "1",
+        "kind": "music",
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "lufs": -18.5,
+        "gain_db": 2.5,
+    }
+    with LibraryCatalog(tmp_path / "catalog.db") as catalog:
+        catalog.put_entry(entry(song))
+        os.utime(song, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+        catalog.set_loudness(song, measurement)
+        assert catalog.record_for_path(song)["loudness"] == {}
+
+
 def test_overlapping_sources_deduplicate_and_liners_are_excluded_from_music(tmp_path: Path) -> None:
     root, child = tmp_path / "music", tmp_path / "music" / "child"
     child.mkdir(parents=True)
@@ -412,10 +492,23 @@ def test_changed_content_invalidates_vector_and_prepared_audio(tmp_path: Path) -
     with LibraryCatalog(tmp_path / "catalog.db") as catalog:
         catalog.add_source(root)
         catalog.put_entry(entry(track), prepared_path=str(root / "prepared.wav"))
+        stat = track.stat()
+        catalog.set_loudness(
+            track,
+            {
+                "version": "1",
+                "kind": "music",
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+                "lufs": -18.5,
+                "gain_db": 2.5,
+            },
+        )
         catalog.set_vector(track, np.ones(FEATURE_DIM, dtype=np.float32))
         track.write_bytes(b"new audio, a different file")
         catalog.put_entry(entry(track), prepared_path=None)
         assert catalog.record_for_path(track)["prepared_path"] is None
+        assert catalog.record_for_path(track)["loudness"] == {}
         records, vectors = catalog.vectors_snapshot()
         assert records == []
         assert vectors.shape == (0, FEATURE_DIM)
