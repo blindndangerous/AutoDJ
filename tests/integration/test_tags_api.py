@@ -401,3 +401,56 @@ def test_a_damaged_file_still_opens_in_track_info(tagged, monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json()["tags_writable"] is False
     assert response.json()["tags"]["isrc"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Second review
+# ---------------------------------------------------------------------------
+
+
+def test_a_folder_flush_failure_after_the_rename_still_stores_the_edit(tagged, monkeypatch) -> None:
+    from autodj import tag_edit
+
+    client, manager, song, _bridge = tagged
+
+    def refused(_folder):
+        raise OSError(22, "this share cannot flush a folder")
+
+    monkeypatch.setattr(tag_edit, "fsync_directory", refused)
+    response = client.post("/api/library/tags", json={"path": str(song), "tags": {"title": "New"}})
+    assert response.status_code == 200
+    stored = manager.catalog.record_for_path(song)
+    assert stored["title"] == "New"
+    assert (stored["size"], stored["fingerprint"]) == file_fingerprint(song)
+    assert manager.catalog.has_vector(song)
+
+
+def test_a_scan_between_the_rename_and_retag_keeps_the_analysis(tagged, monkeypatch) -> None:
+    client, manager, song, _bridge = tagged
+    real_retag = manager.catalog.retag
+
+    def scan_first(path, fields):
+        # What a scan does when it reads the rewritten file first.
+        manager.catalog.put_entry(make_entry(song, title="Read by the scan"))
+        return real_retag(path, fields)
+
+    monkeypatch.setattr(manager.catalog, "retag", scan_first)
+    response = client.post("/api/library/tags", json={"path": str(song), "tags": {"title": "New"}})
+    assert response.status_code == 200
+    stored = manager.catalog.record_for_path(song)
+    assert stored["title"] == "New"
+    assert stored["points"] == {"start": 0.0, "end": 0.1}
+    assert manager.catalog.has_vector(song)
+
+
+def test_beets_without_the_changed_field_is_left_alone(tagged, tmp_path: Path) -> None:
+    client, manager, song, _bridge = tagged
+    manager.cfg.library.beets_db = _beets(tmp_path, song)
+    response = client.post(
+        "/api/library/tags",
+        json={"path": str(song), "tags": {"isrc": "AB1CD2600001"}, "beets": True},
+    )
+    assert response.json()["beets"] == "unchanged"
+    conn = sqlite3.connect(manager.cfg.library.beets_db)
+    assert conn.execute("SELECT mtime FROM items").fetchone() == (None,)
+    conn.close()

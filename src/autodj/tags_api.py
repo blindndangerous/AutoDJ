@@ -188,7 +188,9 @@ def _save(library: Any, stations: Any, path: str, values: TagValues) -> str:
         TagError: The file was not changed.
     """
     roots = [source["path"] for source in library.catalog.sources()]
-    with _lock_for(path):
+    # The edit mark keeps a scan from storing the rewritten file as a new
+    # recording in the moment between the rename and retag.
+    with _lock_for(path), library.catalog.editing(path):
         write_tags(path, values, roots=roots, guard=lambda target: _held_still(stations, target))
         warning = ""
         try:
@@ -224,7 +226,7 @@ def install_tag_editor(
         library = bridge.library
         if library is None:
             raise HTTPException(status_code=503, detail="Folder library is not attached")
-        if library.entry_for_path(body.path) is None:
+        if await asyncio.to_thread(library.entry_for_path, body.path) is None:
             raise HTTPException(status_code=404, detail="Recording not in library")
         path = normalize_path(body.path)
         try:
@@ -232,7 +234,7 @@ def install_tag_editor(
         except TagError as exc:
             return JSONResponse(status_code=400, content={"detail": str(exc), "field": exc.field})
         stations = app.state.stations
-        busy = playing_on(stations, path)
+        busy = await asyncio.to_thread(playing_on, stations, path)
         if busy is not None:
             raise HTTPException(status_code=409, detail=busy)
         try:
@@ -244,10 +246,9 @@ def install_tag_editor(
         beets_db = library.cfg.library.beets_db
         if body.beets and beets_db is not None and Path(beets_db).is_file():
             try:
-                found = await asyncio.to_thread(
+                beets = await asyncio.to_thread(
                     update_beets, Path(beets_db), path, library.cfg.library.music_dir, values
                 )
-                beets = "updated" if found else "not_found"
             except (sqlite3.Error, OSError) as exc:
                 logger.warning("Could not update beets for %s: %s", path, exc)
                 beets, beets_error = "failed", str(exc)

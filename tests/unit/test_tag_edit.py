@@ -6,6 +6,7 @@ import errno
 import os
 import sqlite3
 import struct
+import time
 from pathlib import Path
 
 import mutagen
@@ -327,7 +328,7 @@ def test_beets_gets_the_changed_columns_and_the_new_mtime(tmp_path: Path) -> Non
     db = _beets_db(tmp_path, [(str(song).encode(), "Old")])
     values = validate_tags({"title": "New", "bpm": "127.6", "key": "8A", "isrc": "AB1CD2600001"})
 
-    assert update_beets(db, str(song), music, values)
+    assert update_beets(db, str(song), music, values) == "updated"
 
     conn = sqlite3.connect(db)
     row = conn.execute("SELECT title, artist, bpm, initial_key, mtime FROM items").fetchone()
@@ -342,13 +343,14 @@ def test_beets_finds_a_relative_path_and_reports_a_missing_item(tmp_path: Path) 
     song = make_audio(music / "Artist", ".flac")
     db = _beets_db(tmp_path, [(b"Artist/song.flac", "Old")], key_column=False)
 
-    assert update_beets(db, str(song), music, validate_tags({"key": "Am", "artist": "Band"}))
+    result = update_beets(db, str(song), music, validate_tags({"key": "Am", "artist": "Band"}))
+    assert result == "updated"
     conn = sqlite3.connect(db)
     assert conn.execute("SELECT artist FROM items").fetchone() == ("Band",)
     conn.close()
 
     other = make_audio(music, ".flac", stem="other")
-    assert not update_beets(db, str(other), music, validate_tags({"artist": "Band"}))
+    assert update_beets(db, str(other), music, validate_tags({"artist": "Band"})) == "not_found"
 
 
 def test_beets_without_matching_columns_changes_nothing(tmp_path: Path) -> None:
@@ -358,7 +360,18 @@ def test_beets_without_matching_columns_changes_nothing(tmp_path: Path) -> None:
     conn.commit()
     conn.close()
     song = make_audio(tmp_path, ".flac")
-    assert not update_beets(db, str(song), None, validate_tags({"isrc": "AB1CD2600001"}))
+    assert update_beets(db, str(song), None, validate_tags({"isrc": "AB1CD2600001"})) == "unchanged"
+
+
+def test_beets_mtime_alone_is_never_written(tmp_path: Path) -> None:
+    # Without an isrc column only mtime would change, which would tell
+    # beet update the file holds nothing new.
+    song = make_audio(tmp_path, ".flac")
+    db = _beets_db(tmp_path, [(str(song).encode(), "Old")])
+    assert update_beets(db, str(song), None, validate_tags({"isrc": "AB1CD2600001"})) == "unchanged"
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT mtime FROM items").fetchone() == (None,)
+    conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -429,28 +442,6 @@ def test_the_file_keeps_its_name_and_a_link_stays_a_link(tmp_path: Path) -> None
 # ---------------------------------------------------------------------------
 
 
-def test_the_copy_is_flushed_before_the_rename_and_the_folder_after(tmp_path, monkeypatch):
-    path = make_audio(tmp_path, ".flac")
-    order = []
-    real_replace = os.replace
-
-    def replace(source, target):
-        order.append(("replace", ""))
-        real_replace(source, target)
-
-    monkeypatch.setattr(tag_edit, "_flush", lambda p: order.append(("flush", Path(p).name)))
-    monkeypatch.setattr(tag_edit.os, "replace", replace)
-    monkeypatch.setattr(
-        tag_edit, "fsync_directory", lambda p: order.append(("folder", Path(p).name))
-    )
-    write_tags(path, validate_tags({"title": "Durable"}))
-    assert order == [
-        ("flush", tag_edit.temp_path(path).name),
-        ("replace", ""),
-        ("folder", tmp_path.name),
-    ]
-
-
 @pytest.mark.parametrize("version", [3, 4])
 def test_an_id3_tag_keeps_its_version(tmp_path: Path, version: int) -> None:
     from mutagen.id3 import ID3, TIT2
@@ -483,16 +474,6 @@ def test_every_changed_field_is_read_back(tmp_path: Path, monkeypatch) -> None:
     with pytest.raises(TagError, match="did not read back"):
         write_tags(path, validate_tags({"title": "Fine", "artist": "Band"}))
     assert path.read_bytes() == before
-
-
-def test_a_crashed_copy_is_replaced_and_removed(tmp_path: Path) -> None:
-    path = make_audio(tmp_path, ".flac")
-    leftover = tag_edit.temp_path(path)
-    assert leftover.name == ".song.flac.autodj-tags.tmp"
-    leftover.write_bytes(b"left by a crash")
-    write_tags(path, validate_tags({"title": "Clean"}))
-    assert not leftover.exists()
-    assert read_file_tags(path).title == "Clean"
 
 
 def test_a_file_outside_the_library_folders_is_refused(tmp_path: Path) -> None:
@@ -646,14 +627,6 @@ def test_analysis_metadata_keeps_named_fields() -> None:
     assert (entry.key, entry.mode, entry.bpm) == (7, 1, 128.0)
 
 
-def test_unreadable_user_tags_count_as_none() -> None:
-    from autodj.catalog import _user_tags
-
-    assert _user_tags("not json") == []
-    assert _user_tags('{"key": 1}') == []
-    assert _user_tags('["key", "title"]') == ["key"]
-
-
 def test_the_page_and_the_server_agree_on_keys() -> None:
     import json
 
@@ -667,3 +640,173 @@ def test_the_page_and_the_server_agree_on_keys() -> None:
         if key.strip():
             with pytest.raises(TagError, match="Camelot"):
                 validate_tags({"key": key})
+
+
+# ---------------------------------------------------------------------------
+# Second review: folder flush, guard per try, unique copies, flags per file
+# ---------------------------------------------------------------------------
+
+
+def test_the_copy_is_flushed_before_the_rename_and_the_folder_after(tmp_path, monkeypatch):
+    path = make_audio(tmp_path, ".flac")
+    order = []
+    real_replace = os.replace
+
+    def replace(source, target):
+        order.append("replace")
+        real_replace(source, target)
+
+    monkeypatch.setattr(
+        tag_edit,
+        "_flush",
+        lambda p: order.append("flush" if Path(p).name.endswith(tag_edit.TEMP_SUFFIX) else p),
+    )
+    monkeypatch.setattr(tag_edit.os, "replace", replace)
+    monkeypatch.setattr(
+        tag_edit, "fsync_directory", lambda p: order.append(("folder", Path(p).name))
+    )
+    write_tags(path, validate_tags({"title": "Durable"}))
+    assert order == ["flush", "replace", ("folder", tmp_path.name)]
+
+
+def test_a_failed_folder_flush_still_counts_as_written(tmp_path, monkeypatch, caplog) -> None:
+    path = make_audio(tmp_path, ".flac")
+
+    def refused(_folder):
+        raise OSError(errno.EINVAL, "this share cannot flush a folder")
+
+    monkeypatch.setattr(tag_edit, "fsync_directory", refused)
+    with caplog.at_level("WARNING", logger="autodj.tag_edit"):
+        written = write_tags(path, validate_tags({"title": "On a share"}))
+    assert written == Path(os.path.realpath(path))
+    assert read_file_tags(path).title == "On a share"
+    assert "Could not flush the folder" in caplog.text
+
+
+def test_the_guard_is_held_for_each_try_and_never_while_waiting(tmp_path, monkeypatch) -> None:
+    import contextlib
+
+    path = make_audio(tmp_path, ".flac")
+    held = []
+    events = []
+    real_replace = os.replace
+
+    @contextlib.contextmanager
+    def guard(_target):
+        held.append(True)
+        events.append("enter")
+        try:
+            yield
+        finally:
+            held.pop()
+            events.append("leave")
+
+    def replace(source, target):
+        events.append("try")
+        if events.count("try") < 3:
+            raise PermissionError(errno.EACCES, "in use")
+        real_replace(source, target)
+
+    def sleep(_seconds):
+        assert not held
+        events.append("sleep")
+
+    monkeypatch.setattr(tag_edit.os, "replace", replace)
+    monkeypatch.setattr(tag_edit.time, "sleep", sleep)
+    write_tags(path, validate_tags({"title": "Third try"}), guard=guard)
+    assert events == ["enter", "try", "leave", "sleep"] * 2 + ["enter", "try", "leave"]
+
+
+def test_each_write_uses_its_own_copy_and_old_leftovers_go(tmp_path: Path, monkeypatch) -> None:
+    path = make_audio(tmp_path, ".flac")
+    first, second = tag_edit.temp_path(path), tag_edit.temp_path(path)
+    assert first != second
+    assert first.name.startswith(".song.flac.")
+    assert first.name.endswith(tag_edit.TEMP_SUFFIX)
+    stale, fresh = tag_edit.temp_path(path), tag_edit.temp_path(path)
+    stale.write_bytes(b"left by a crash")
+    fresh.write_bytes(b"another server's write in progress")
+    old = time.time() - 2 * tag_edit._STALE_COPY_S
+    os.utime(stale, (old, old))
+    other = tmp_path / ".other.flac.0123.autodj-tags.tmp"
+    other.write_bytes(b"belongs to another file")
+    os.utime(other, (old, old))
+
+    write_tags(path, validate_tags({"title": "Clean"}))
+
+    assert not stale.exists()
+    assert fresh.exists()
+    assert other.exists()
+    assert read_file_tags(path).title == "Clean"
+
+
+def test_a_leftover_that_cannot_be_checked_is_left_alone(tmp_path, monkeypatch) -> None:
+    path = make_audio(tmp_path, ".flac")
+    leftover = tag_edit.temp_path(path)
+    leftover.write_bytes(b"x")
+    monkeypatch.setattr(tag_edit, "_STALE_COPY_S", -60.0)
+    real_stat = Path.stat
+
+    def stat(self, *args, **kwargs):
+        if self == leftover:
+            raise PermissionError(errno.EACCES, "denied")
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat)
+    tag_edit._sweep(path)
+    assert leftover.exists()
+
+
+def test_unreadable_user_tags_count_as_none() -> None:
+    from autodj.catalog import _user_tags
+
+    assert _user_tags("not json", "abc") == []
+    assert _user_tags('["key"]', "abc") == []
+    assert _user_tags('{"key": "abc", "title": "abc"}', "abc") == ["key"]
+    assert _user_tags('{"key": "abc"}', "") == []
+
+
+def test_a_flag_for_other_bytes_is_ignored(tmp_path: Path) -> None:
+    # An older AutoDJ rescans a changed file without clearing user_tags:
+    # the flag names the old fingerprint, so analysis may set the key again.
+    song = make_audio(tmp_path, ".flac")
+    catalog = LibraryCatalog(tmp_path / "library.db")
+    try:
+        catalog.put_entry(make_entry(song))
+        write_tags(song, validate_tags({"key": "8A"}))
+        catalog.retag(song, {"key": 9, "mode": 0})
+        assert catalog.record_for_path(song)["user_tags"] == ["key"]
+        catalog._db().execute(
+            "UPDATE catalog_entries SET fingerprint='other bytes', size=size+1 WHERE path=?",
+            (catalog.record_for_path(song)["path"],),
+        )
+        catalog._db().commit()
+        assert catalog.record_for_path(song)["user_tags"] == []
+    finally:
+        catalog.close()
+
+
+def test_a_scan_during_an_edit_leaves_the_record_alone(tmp_path: Path) -> None:
+    song = make_audio(tmp_path, ".flac")
+    catalog = LibraryCatalog(tmp_path / "library.db")
+    try:
+        catalog.put_entry(make_entry(song), points={"start": 0.0, "end": 0.1}, point_source="user")
+        catalog.set_vector(song, np.ones(FEATURE_DIM, dtype=np.float32))
+        with catalog.editing(song), catalog.editing(song):
+            write_tags(song, validate_tags({"title": "Mid edit"}))
+            # A scan reads the rewritten file before retag stores it.
+            catalog.put_entry(make_entry(song, title="From the scan"))
+            assert catalog.has_vector(song)
+            assert catalog.record_for_path(song)["title"] == song.stem
+            catalog.retag(song, {"title": "Mid edit"})
+        assert catalog._editing == {}
+        record = catalog.record_for_path(song)
+        assert record["title"] == "Mid edit"
+        assert record["points"] == {"start": 0.0, "end": 0.1}
+        assert catalog.has_vector(song)
+        # Once the edit is over, a scan stores what it reads again.
+        catalog.put_entry(make_entry(song, title="After"))
+        assert catalog.record_for_path(song)["title"] == "After"
+        assert catalog.has_vector(song)
+    finally:
+        catalog.close()
