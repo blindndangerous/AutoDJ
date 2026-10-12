@@ -2558,10 +2558,9 @@ class Player:
     def _load_playout_audio(self, entry: IndexEntry) -> np.ndarray:
         """Decode originals on the render worker, preserving source cue positions.
 
-        A track the library (or, failing that, the file's header) says is
-        longer than ``server_max_track_minutes`` is refused before FFmpeg
-        starts; the decode would stop a second past the limit and refuse it
-        anyway, after holding that much audio.
+        A reliable source header can refuse an over-long track before FFmpeg
+        starts. Estimated lengths fall through to the bounded decode; catalog
+        lengths may come from metadata and are not proof that a file is too long.
 
         Raises:
             TrackTooLongError: The track is longer than the limit.
@@ -2569,7 +2568,7 @@ class Player:
         from autodj.processing import probe_seconds
 
         limit = self._max_render_seconds()
-        known = float(getattr(entry, "length", 0.0) or 0.0) or probe_seconds(Path(entry.path))
+        known = probe_seconds(Path(entry.path))
         if known is not None and known > limit + 1.0:
             raise TrackTooLongError(str(entry.path), known)
         if self._cfg.playback.loudness_processing not in {"smooth", "stereotool"}:
@@ -2609,23 +2608,27 @@ class Player:
             stat = os.stat(entry.path)
         except OSError:
             return None
+        from autodj.processing import loudness_matches
+
         record = self._library.catalog.record_for_path(entry.path) if self._library else None
         playback, replaygain = self._cfg.playback, self._cfg.replaygain
+        kind = record.get("kind", "music") if record else "music"
+        measurement = record.get("loudness") if record else None
+        measurement_key = (
+            repr(measurement) if loudness_matches(measurement, Path(entry.path), kind) else None
+        )
         return (
             entry.path,
             stat.st_size,
             stat.st_mtime_ns,
-            repr(
-                (record.get("kind"), record.get("loudness"), record.get("intro_lift_db"))
-                if record
-                else None
-            ),
+            (kind, record.get("intro_lift_db") if record else None),
             playback.loudness_processing,
             playback.intro_lift_max_db,
             self._max_render_seconds(),
             replaygain.enabled,
             replaygain.target_db,
             replaygain.max_clip_safe_gain,
+            measurement_key,
         )
 
     def _prefetch_playout_audio(self, entry: IndexEntry) -> Future[tuple[tuple | None, np.ndarray]]:
@@ -2642,9 +2645,17 @@ class Player:
 
         def decode() -> None:
             try:
+                before = self._playout_key(entry)
                 audio = self._load_playout_audio(entry)
-                # After the decode: a first play stores its loudness measurement.
-                future.set_result((self._playout_key(entry), audio))
+                after = self._playout_key(entry)
+                # A first decode fills missing loudness data; other changes invalidate reuse.
+                stable = (
+                    before is not None
+                    and after is not None
+                    and before[:-1] == after[:-1]
+                    and (before[-1] is None or before[-1] == after[-1])
+                )
+                future.set_result((after if stable else None, audio))
             except BaseException as exc:
                 future.set_exception(exc)
 

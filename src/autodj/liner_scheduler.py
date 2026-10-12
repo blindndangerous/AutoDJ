@@ -68,6 +68,7 @@ class _Prepared:
     name: str
     audio: np.ndarray
     cue: LinerCue | None = None
+    rotation: tuple[str, int] | None = None
 
 
 class LinerDecodeError(Exception):
@@ -333,37 +334,44 @@ class LinerScheduler:
             key, at = self._heard.popleft()
             self._commit_planned_locked(key, at)
 
-    def _choose(self, name: str | None) -> tuple[str, Path | None] | None:
+    def _choose(self, name: str | None) -> tuple[str, Path | None, tuple[str, int] | None] | None:
         """Pick what to decode: *name*, or the next pick in rotation.
 
         Caller holds ``_work_lock`` but not ``_lock``: the catalog and the
         folder are read without it, and only the rotation step takes it.
 
         Returns:
-            ``(name, path)`` for a registered liner, ``(name, None)`` for
-            one in the liner folder, or ``None`` when there is none.
+            ``(name, path, rotation)`` for a registered liner, ``(name,
+            None, rotation)`` for one in the liner folder, or ``None``.
         """
         registered = self._registered_entries()
         if name is not None and registered:
             match = next(((key, path) for key, path in registered if key == name), None)
             if match is not None:
-                return match
+                return (*match, None)
         if name is None and registered:
             with self._state():
-                if self._cfg.liners_pick_mode == "sequential":
+                mode = self._cfg.liners_pick_mode
+                if mode == "sequential":
                     key, path = registered[self._registered_cursor % len(registered)]
                     self._registered_cursor = (self._registered_cursor + 1) % len(registered)
+                    rotation = ("registered", len(registered))
                 else:
                     key, path = self._rng.choice(registered)
-            return key, path
+                    rotation = None
+            return key, path, rotation
         if name is None:
             self._refresh_library()
             with self._state():
-                picked = self._library.pick(self._cfg.liners_pick_mode, rng=self._rng)
+                mode = self._cfg.liners_pick_mode
+                picked = self._library.pick(mode, rng=self._rng)
+                rotation = ("folder", len(self._library.files)) if mode == "sequential" else None
             if picked is None:
                 return None
             name = picked.name
-        return name, None
+        else:
+            rotation = None
+        return name, None, rotation
 
     def _decode(self, name: str | None) -> _Prepared | None:
         """Decode *name*, or the next pick, with ``_lock`` released.
@@ -379,10 +387,10 @@ class LinerScheduler:
         choice = self._choose(name)
         if choice is None:
             return None
-        key, path = choice
+        key, path, rotation = choice
         if path is not None:
             try:
-                return _Prepared(key, self._path_decoder(path))
+                return _Prepared(key, self._path_decoder(path), rotation=rotation)
             except Exception:
                 logger.warning(
                     "Skipping registered liner %s: it could not be decoded", key, exc_info=True
@@ -393,7 +401,17 @@ class LinerScheduler:
         except Exception:
             logger.warning("Skipping liner %s: it could not be decoded", key, exc_info=True)
             return None
-        return _Prepared(key, audio)
+        return _Prepared(key, audio, rotation=rotation)
+
+    def _undo_pick_locked(self, liner: _Prepared) -> None:
+        """Undo a sequential pick that was discarded before playback."""
+        if liner.rotation is None:
+            return
+        source, size = liner.rotation
+        if source == "registered":
+            self._registered_cursor = (self._registered_cursor - 1) % size
+        elif source == "folder":
+            self._library.cursor = (self._library.cursor - 1) % size
 
     def _registered_entries(self) -> list[tuple[str, Path]]:
         """Return current active catalog liner ids and their paths."""
@@ -493,6 +511,7 @@ class LinerScheduler:
         frame = int(vocal_frame - TALK_UP_MARGIN_S * SAMPLE_RATE - len(liner.audio))
         with self._state():
             if self._fires != fires:
+                self._undo_pick_locked(liner)
                 return  # a planned liner aired while this one decoded: not due now
             if overlap_start <= frame < len(track.audio):
                 liner.cue = LinerCue(track, frame)
@@ -532,6 +551,8 @@ class LinerScheduler:
         with self._state():
             if self._fires == fires:
                 self._play_locked(liner, cue)
+            else:
+                self._undo_pick_locked(liner)
 
     def on_track_start(self, track: RenderedTrack | None = None) -> None:
         """Count a track advance and fire a liner if a trigger is due.

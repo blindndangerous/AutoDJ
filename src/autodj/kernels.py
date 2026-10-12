@@ -31,10 +31,17 @@ def compile_kernel(signature: str) -> Any:
     a user cache directory (the container sets ``XDG_CACHE_HOME``); when
     there is neither, compile without it rather than fail the import.
     """
-    try:
-        return numba.njit(signature, cache=True)
-    except RuntimeError:  # pragma: no cover - no writable cache location
-        return numba.njit(signature)
+    cached = numba.njit(signature, cache=True)
+
+    def decorate(function: Any) -> Any:
+        try:
+            return cached(function)
+        except RuntimeError as exc:
+            if "no locator available" not in str(exc).lower():
+                raise
+            return numba.njit(signature)(function)
+
+    return decorate
 
 
 @compile_kernel("void(float32[:, :])")

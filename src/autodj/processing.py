@@ -320,20 +320,27 @@ def load_and_measure_audio(
 
 
 def probe_seconds(source: Path) -> float | None:
-    """Return *source*'s length in seconds from its headers, without decoding it.
+    """Return a header duration suitable for refusing an over-long file.
 
-    Uses the tags' audio info (read by mutagen), then ``ffprobe``; ``None``
-    when neither knows.  Header lengths can be estimates (a VBR MP3 without
-    a Xing header), so callers keep their exact check after decoding.
+    MP3 without a known bitrate mode, raw AAC, and damaged MPEG headers may
+    only provide estimates. Return ``None`` for those so callers use the
+    bounded decode instead of rejecting a playable track from an estimate.
     """
-    from autodj.audio_meta import read_file_tags
+    from mutagen.mp3 import MPEGInfo
 
-    try:
-        seconds = read_file_tags(source).length
-    except Exception:
-        seconds = 0.0
-    if seconds > 0:
-        return seconds
+    from autodj.audio_meta import _open_mutagen
+
+    info = getattr(_open_mutagen(source), "info", None)
+    if isinstance(info, MPEGInfo):
+        from mutagen.mp3 import BitrateMode
+
+        if info.sketchy or info.bitrate_mode == BitrateMode.UNKNOWN:
+            return None
+    elif source.suffix.lower() in {".mp3", ".mp2", ".aac"}:
+        return None
+    seconds = getattr(info, "length", 0.0)
+    if math.isfinite(seconds) and seconds > 0:
+        return float(seconds)
     ffprobe = shutil.which("ffprobe")
     if ffprobe is None:
         return None

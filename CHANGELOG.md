@@ -169,22 +169,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Hard scheduled liners and time checks prepare their audio before skipping the current song.
   Missing clips or failed speech generation leave the song playing and report the failed event.
 - The library scan no longer runs out of memory on very long files such as multi-hour mixes. A
-  track longer than `[playback] server_max_track_minutes` is refused from its header length before
-  it is decoded, with a warning naming it, and the decode stops a second past the limit. Server
-  playout also refuses such a track before decoding or measuring it.
+  track longer than `[playback] server_max_track_minutes` is refused early when its header gives
+  a reliable duration. Estimated MP3/AAC lengths use the bounded decode instead, so an estimate
+  alone does not reject a playable song. The decode still stops a second past the limit.
 - A voice liner, cart or time check being decoded no longer holds up the mix bus. Liners are now
   decoded without the scheduler's state lock, the bus never waits for that lock when a planned
-  liner is heard, and carts and time checks play without waiting for a liner decode.
+  liner is heard, and carts and time checks play without waiting for a liner decode. A sequential
+  liner displaced by an announcement stays in rotation rather than being skipped unheard.
 - Play now and every song change start sooner on server audio and the stream. Each song is now
   decoded once instead of twice (the render that mixes a song in keeps its audio for the render
   that plays it), the outgoing and incoming songs decode side by side when neither is ready, and a
   song's first loudness measurement happens in the same FFmpeg run as its decode. Saved-point
-  renders also build the track in one buffer instead of copying it again. The audio is identical.
-- Server audio and the stream no longer drop out while the library scan, a track pick or another
-  busy task runs. The mix bus, its EQ and duck, and the Smooth and Stereo Tool processor feeds no
+  renders also build the track in one buffer instead of copying it again. A file or processing
+  change during decoding prevents reuse of the old audio. The audio processing is unchanged.
+- Server audio and the stream are less likely to drop out while the library scan, a track pick or
+  another busy task runs. The mix bus, its EQ and duck, and the Smooth and Stereo Tool processor feeds no
   longer give up Python's interpreter lock in the middle of a block, and a block that comes out late
   is made up straight away (up to eight blocks, 160 ms) instead of being lost from every listener's
-  buffer. The sound is unchanged.
+  buffer. The sound is unchanged. Startup can compile the audio helpers without caching when
+  no writable compilation-cache location is available.
 - Clock music slots with repeat rules disabled still skip silent tracks and songs already
   playing or being prepared.
 - A clock whose slots hold only songs just played or being prepared repeats one of them, with a

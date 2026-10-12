@@ -387,9 +387,38 @@ def test_scan_passes_the_limit_to_the_decode(tmp_path: Path, monkeypatch) -> Non
 def test_probe_seconds_reads_headers_then_ffprobe(tmp_path: Path, monkeypatch) -> None:
     source = _source(tmp_path / "song.wav")
     assert processing.probe_seconds(source) == pytest.approx(3.0)
-    monkeypatch.setattr(
-        "autodj.audio_meta.read_file_tags", MagicMock(side_effect=OSError("no tags"))
-    )
+    monkeypatch.setattr("autodj.audio_meta._open_mutagen", MagicMock(return_value=None))
     if shutil.which("ffprobe"):
         assert processing.probe_seconds(source) == pytest.approx(3.0, abs=0.05)
     assert processing.probe_seconds(tmp_path / "missing.wav") is None
+
+
+@pytest.mark.parametrize(
+    "sketchy,mode,expected", [(False, 0, None), (True, 2, None), (False, 2, 1000.0)]
+)
+def test_only_reliable_mpeg_duration_is_used_for_refusal(
+    tmp_path, monkeypatch, sketchy, mode, expected
+):
+    from types import SimpleNamespace
+
+    from mutagen.mp3 import MPEGInfo
+
+    info = object.__new__(MPEGInfo)
+    info.length, info.sketchy, info.bitrate_mode = 1000.0, sketchy, mode
+    monkeypatch.setattr(
+        "autodj.audio_meta._open_mutagen", lambda _source: SimpleNamespace(info=info)
+    )
+    monkeypatch.setattr(
+        processing.subprocess, "run", MagicMock(side_effect=AssertionError("estimated fallback"))
+    )
+    assert processing.probe_seconds(tmp_path / "song.mp3") == expected
+
+
+def test_unknown_raw_aac_duration_is_not_used_for_refusal(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "autodj.audio_meta._open_mutagen",
+        lambda _source: SimpleNamespace(info=SimpleNamespace(length=1000.0)),
+    )
+    assert processing.probe_seconds(tmp_path / "song.aac") is None

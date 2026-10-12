@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from scipy.signal import sosfilt
 
+import autodj.kernels as kernels
 from autodj.eq import apply_eq, make_eq_filters, make_eq_state, ramp_eq
 from autodj.kernels import duck_and_mix_in_place, nan_to_num_in_place
 
@@ -13,6 +14,49 @@ from autodj.kernels import duck_and_mix_in_place, nan_to_num_in_place
 def _noise(frames: int, seed: int = 0) -> np.ndarray:
     rng = np.random.default_rng(seed)
     return rng.uniform(-1.0, 1.0, (frames, 2)).astype(np.float32)
+
+
+def test_compile_kernel_retries_without_cache_at_decoration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    njit = kernels.numba.njit
+
+    def without_cache(signature: str):
+        return njit(signature)
+
+    def fail_cached(signature: str, *, cache: bool = False):
+        if cache:
+
+            def decorate(function):
+                raise RuntimeError("cannot cache function: no locator available for file")
+
+            return decorate
+        return without_cache(signature)
+
+    monkeypatch.setattr(kernels.numba, "njit", fail_cached)
+
+    @kernels.compile_kernel("int64(int64)")
+    def increment(value: int) -> int:
+        return value + 1
+
+    assert increment(4) == 5
+    assert increment.signatures == [(kernels.numba.int64,)]
+
+
+def test_compile_kernel_propagates_other_runtime_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_cached(signature: str, *, cache: bool = False):
+        if cache:
+
+            def decorate(function):
+                raise RuntimeError("compilation failed")
+
+            return decorate
+        pytest.fail("unexpected uncached retry")
+
+    monkeypatch.setattr(kernels.numba, "njit", fail_cached)
+
+    with pytest.raises(RuntimeError, match="compilation failed"):
+        kernels.compile_kernel("int64(int64)")(lambda value: value + 1)
 
 
 def _scipy_eq(chunk, sos, gains, state):  # type: ignore[no-untyped-def]

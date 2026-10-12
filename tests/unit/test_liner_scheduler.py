@@ -427,14 +427,22 @@ def test_a_reservation_heard_while_the_state_is_busy_is_committed_by_the_holder(
     assert sched._library.cursor == 1
 
 
-def test_a_liner_that_decoded_while_another_aired_is_dropped(tmp_path: Path) -> None:
-    """The trigger is checked again after the decode: a time check aired meanwhile."""
+@pytest.mark.parametrize("registered", [False, True])
+def test_a_discarded_liner_keeps_its_sequential_turn(tmp_path: Path, registered: bool) -> None:
+    """A time check during decode drops audio without consuming its rotation slot."""
     decoding, release = threading.Event(), threading.Event()
+    picked: list[str] = []
 
-    def slow(_root: Path, _name: str) -> np.ndarray:
+    def slow(_root: Path, name: str) -> np.ndarray:
+        picked.append(name)
         decoding.set()
         release.wait(timeout=10)
         return np.zeros((4, 2), np.float32)
+
+    first, second = tmp_path / "one.wav", tmp_path / "two.wav"
+    if registered:
+        first.touch()
+        second.touch()
 
     bus = MagicMock()
     sched = LinerScheduler(
@@ -443,6 +451,8 @@ def test_a_liner_that_decoded_while_another_aired_is_dropped(tmp_path: Path) -> 
         bus,
         clock=lambda: 120.0,
         decoder=slow,
+        registered_liners=(lambda: [("first", first), ("second", second)]) if registered else None,
+        path_decoder=(lambda path: slow(tmp_path, path.stem)) if registered else None,
     )
     sched._last_fire = 0.0
     ticking = threading.Thread(target=sched.tick)
@@ -453,3 +463,52 @@ def test_a_liner_that_decoded_while_another_aired_is_dropped(tmp_path: Path) -> 
     ticking.join(timeout=5)
     assert bus.play_liner.call_count == 1
     np.testing.assert_array_equal(bus.play_liner.call_args.args[0], np.ones((4, 2)))
+
+    # Retry the due trigger: the same first pick remains next after the stale decode.
+    sched._last_fire = 0.0
+    sched.tick()
+    assert picked == (["one", "one"] if registered else ["a.wav", "a.wav"])
+
+
+def test_a_discarded_talk_up_keeps_its_sequential_turn(tmp_path: Path) -> None:
+    decoding, release = threading.Event(), threading.Event()
+    picked: list[str] = []
+
+    def slow(_root: Path, name: str) -> np.ndarray:
+        picked.append(name)
+        decoding.set()
+        release.wait(timeout=10)
+        return np.zeros((4, 2), np.float32)
+
+    bus = MagicMock()
+    sched = LinerScheduler(
+        _cfg(liners_every_n_songs=1, liners_talk_up=True),
+        _folder(tmp_path),
+        bus,
+        decoder=slow,
+        vocal_start=lambda _entry: 0.8,
+    )
+    track = SimpleNamespace(
+        next_entry=object(),
+        next_entry_offset=0,
+        overlap_frames=30_000,
+        beatmatch_ratio=1.0,
+        audio=np.zeros((50_000, 2), np.float32),
+    )
+
+    def arm() -> None:
+        with sched._work_lock:
+            sched._maybe_arm(track)
+
+    arming = threading.Thread(target=arm)
+    arming.start()
+    assert decoding.wait(timeout=5)
+    sched.play_audio(np.ones((4, 2), np.float32))
+    release.set()
+    arming.join(timeout=5)
+    assert not arming.is_alive()
+    assert sched._prepared is None
+
+    arm()
+    assert picked == ["a.wav", "a.wav"]
+    assert sched._prepared is not None and sched._prepared.name == "a.wav"

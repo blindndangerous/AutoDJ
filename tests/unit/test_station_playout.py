@@ -413,7 +413,7 @@ def test_saved_render_is_built_in_one_buffer(decoded):
 
 @pytest.mark.parametrize("known", [True, False])
 def test_play_path_refuses_a_long_track_before_decoding(station, tmp_path, monkeypatch, known):
-    """The library's length (or the header's) refuses it; no FFmpeg run, no loudness pass."""
+    """A reliable source header refuses it regardless of the catalog length."""
     from autodj.stereo import TrackTooLongError
 
     player, (entry, *_), _points = station
@@ -424,3 +424,113 @@ def test_play_path_refuses_a_long_track_before_decoding(station, tmp_path, monke
         monkeypatch.setattr(f"autodj.processing.{name}", MagicMock(side_effect=AssertionError))
     with pytest.raises(TrackTooLongError):
         Player._load_playout_audio(player, entry)
+
+
+@pytest.mark.parametrize("change", ["processing", "source"])
+def test_prefetch_does_not_stamp_old_audio_with_changes_during_decode(decoded, monkeypatch, change):
+    player, (entry, *_), _loads = decoded
+    player._library = None
+    monkeypatch.setattr(
+        player, "_load_playout_audio", lambda entry: Player._load_playout_audio(player, entry)
+    )
+    monkeypatch.setattr("autodj.processing.probe_seconds", lambda _path: None)
+    entered, release = threading.Event(), threading.Event()
+    decodes = []
+
+    def raw(*args):
+        sample = 0.1 if not decodes else 0.3
+        decodes.append(sample)
+        if len(decodes) == 1:
+            entered.set()
+            assert release.wait(5)
+        return np.full((100, 2), sample, np.float32)
+
+    monkeypatch.setattr("autodj.player.load_stereo", raw)
+    monkeypatch.setattr(
+        "autodj.processing.load_and_measure_audio",
+        lambda *_: (np.full((100, 2), 0.3, np.float32), {}),
+    )
+    future = player._prefetch_playout_audio(entry)
+    try:
+        assert entered.wait(5)
+        if change == "processing":
+            player._cfg.playback.loudness_processing = "stereotool"
+        else:
+            Path(entry.path).write_bytes(b"new source")
+    finally:
+        release.set()
+    assert future.result(timeout=5)[0] is None
+    actual = player._playout_audio(entry, player._take_prefetched(entry))
+    np.testing.assert_array_equal(actual, np.full((100, 2), 0.3, np.float32))
+
+
+def test_first_loudness_measurement_keeps_the_prefetched_decode(decoded, monkeypatch):
+    from autodj.processing import PREPARATION_VERSION
+
+    player, (entry, *_), _loads = decoded
+    player._cfg.playback.loudness_processing = "stereotool"
+    stat = Path(entry.path).stat()
+    measured = {
+        "version": PREPARATION_VERSION,
+        "kind": "music",
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "lufs": -20.0,
+        "gain_db": -8.0,
+    }
+    record = {"kind": "music", "loudness": {}}
+    player._library.catalog.record_for_path = lambda _path: record
+    player._library.catalog.set_loudness = lambda _path, measurement: record.update(
+        loudness=measurement
+    )
+    monkeypatch.setattr(
+        player, "_load_playout_audio", lambda entry: Player._load_playout_audio(player, entry)
+    )
+    monkeypatch.setattr("autodj.processing.probe_seconds", lambda _path: None)
+    audio = np.full((100, 2), 0.3, np.float32)
+    measure = MagicMock(return_value=(audio, measured))
+    monkeypatch.setattr("autodj.processing.load_and_measure_audio", measure)
+    monkeypatch.setattr(
+        "autodj.processing.load_processed_audio",
+        MagicMock(side_effect=AssertionError("second decode")),
+    )
+    future = player._prefetch_playout_audio(entry)
+    assert future.result(timeout=5)[0] is not None
+    assert player._playout_audio(entry, player._take_prefetched(entry)) is audio
+    measure.assert_called_once()
+
+
+def test_catalog_length_estimate_does_not_reject_a_playable_track(station, monkeypatch):
+    player, (entry, *_), _points = station
+    entry.length = 3 * 3600
+    player._cfg.playback.loudness_processing = "off"
+    monkeypatch.setattr("autodj.processing.probe_seconds", lambda _path: None)
+    audio = np.full((100, 2), 0.3, np.float32)
+    decode = MagicMock(return_value=audio)
+    monkeypatch.setattr("autodj.player.load_stereo", decode)
+    assert Player._load_playout_audio(player, entry) is audio
+    decode.assert_called_once_with(entry.path, SR, player._max_render_seconds())
+
+
+def test_prefetch_rejects_changes_to_an_existing_loudness_measurement(decoded, monkeypatch):
+    from autodj.processing import PREPARATION_VERSION
+
+    player, (entry, *_), _loads = decoded
+    stat = Path(entry.path).stat()
+    measured = {
+        "version": PREPARATION_VERSION,
+        "kind": "music",
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "lufs": -20.0,
+        "gain_db": -8.0,
+    }
+    record = {"kind": "music", "loudness": measured}
+    player._library.catalog.record_for_path = lambda _path: record
+
+    def decode(_entry):
+        record["loudness"] = {**measured, "lufs": -22.0, "gain_db": -6.0}
+        return np.full((100, 2), 0.3, np.float32)
+
+    monkeypatch.setattr(player, "_load_playout_audio", decode)
+    assert player._prefetch_playout_audio(entry).result(timeout=5)[0] is None
