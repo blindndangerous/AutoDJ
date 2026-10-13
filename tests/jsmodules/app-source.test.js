@@ -3222,8 +3222,12 @@ describe("browser robustness", () => {
   describe("beatmatch on Skip", () => {
     const skipWith = async ({ outBpm, inBpm }) => {
       let finish;
-      const startCrossfade = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+      const startCrossfade = vi.fn((path) => {
+        standbyDeck.path = path;
+        return new Promise((resolve) => { finish = resolve; });
+      });
       const standby = { playbackRate: 1, preservesPitch: false };
+      const standbyDeck = { audio: standby, kind: "music", path: "previous-standby.mp3" };
       await setupApp({
         audio: {
           _beatmatchOnSkip: true,
@@ -3233,7 +3237,7 @@ describe("browser robustness", () => {
           _nextTrackPathCache: "next.mp3",
           _outBpmCache: outBpm,
           crossfading: false,
-          decks: [{ audio: { duration: Number.NaN } }, { audio: standby }],
+          decks: [{ audio: { duration: Number.NaN } }, standbyDeck],
           playbackEnabled: true,
           startCrossfade,
         },

@@ -2114,7 +2114,7 @@ function requestRepick(blacklist) {
 // of waiting a bar for the next one.
 export function startCrossfade(
   nextPath, fadeSec, serverLed = false, phraseAt = null,
-  incomingRateMultiplier = 1, incomingPreservesPitch = false,
+  incomingRateMultiplier = 1, incomingPreservesPitch = false, incomingKind = null,
 ) {
   if (!_ctx || crossfading || !nextPath) return Promise.resolve(false);
   crossfading = true;
@@ -2124,7 +2124,7 @@ export function startCrossfade(
 
   const standby = deckStandby();
   let cleanupMetadata = () => {};
-  setSrcOnDeck(standby, nextPath, _nextTrackKindCache);
+  setSrcOnDeck(standby, nextPath, incomingKind || _nextTrackKindCache);
   standby.rateMultiplier = incomingRateMultiplier;
   standby.preservePitch = standby.kind === "music" && incomingPreservesPitch;
   _writeDeckRate(standby);
@@ -2846,7 +2846,8 @@ export function applyBrowserPlaybackState(s) {
         try { active.audio.pause(); } catch (_) {}
         try { active.audio.currentTime = 0; } catch (_) {}
       } else if (active.path && _ctx) {
-        startCrossfade(path, _crossfadeSecondsCache, /* serverLed = */ true);
+        startCrossfade(path, _crossfadeSecondsCache, /* serverLed = */ true,
+          null, 1, false, s.current_track?.kind || "music");
       } else {
         setSrcOnDeck(active, path, s.current_track?.kind || "music");
         playOnDeck(active);

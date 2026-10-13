@@ -1547,9 +1547,10 @@ btnSkip.addEventListener("click", async () => {
   if (_lastBrowserPlayback && playbackEnabled && _ctx && _nextTrackPathCache && !crossfading) {
     // Beatmatch-on-skip: when the user opted in AND both BPMs are
     // known, stretch the standby deck's tempo so the new track joins the
-    // existing groove instead of cold-cutting.  preservesPitch=true
-    // gives a tempo-only stretch (proper beatmatch).  Held for the whole
-    // transition, however long its effect runs, then eased back.
+    // existing groove instead of cold-cutting.  At native music speed the
+    // stretch preserves pitch; with speed enabled the two rates share the
+    // browser's playbackRate, so pitch follows their combined rate.  Held
+    // for the whole transition, then eased back.
     const rate = beatmatchRate();
     let stretched = null;
     if (rate !== null) {
@@ -1557,7 +1558,7 @@ btnSkip.addEventListener("click", async () => {
       const audio = decks[activeIdx ^ 1].audio;
       const deck = decks[activeIdx ^ 1];
       stretched = {
-        audio, deck, path: deck.path, rate, prevPitch: audio.preservesPitch,
+        audio, deck, path: _nextTrackPathCache, rate, prevPitch: audio.preservesPitch,
       };
       deck.rateMultiplier = rate;
       deck.preservePitch = preservePitch;
