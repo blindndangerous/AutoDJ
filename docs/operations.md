@@ -2312,11 +2312,12 @@ is taken if its chance comes up. If a song intro misses its chance, the artist's
 The chance is rolled on a random source of its own, so the rotation tester and the hour preview
 keep predicting the same songs.
 
-A matched intro takes the place of the automatic liner at that song change, and the liner trigger
-stays due for the next one. Liners the queue or the clockwheel put in the change still play, before
-the intro, and so do news, weather and music news breaks. A DJ break booked for the change, from
-an announcer program or the Voice tracks tab, wins: the DJ already talks the song up, so no intro
-is added.
+A matched intro takes the place of the automatic liner at that song change by default, and when it
+does the liner trigger stays due for the next one. In Voice liners settings, turn on **Only when no liner is
+scheduled** to use a matched intro only when no queued, clockwheel or automatic liner is planned
+for the change. With the option off, queued and clockwheel liners still play before the intro, as
+do news, weather and music news breaks. A DJ break booked for the change, from an announcer program
+or the Voice tracks tab, wins: the DJ already talks the song up, so no intro is added.
 
 When the song's intro (Start to Intro) is at least as long as the speech, the intro talks the song
 up: the voice starts with the song and ends before the singing, and the music ducks under it as it

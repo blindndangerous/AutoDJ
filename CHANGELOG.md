@@ -21,8 +21,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   server audio or a stream mixes the clip into its song change: it talks the song up when the song's intro is long enough
   for the speech, and otherwise plays just before the song. The song's own intros come first,
   then the artist's. Each intro has a chance, a wait between plays (60 minutes by default) and
-  optional play dates. A matched intro takes the place of the automatic liner at that change, and
-  a DJ break booked for the change wins over it. Uploads have the liner upload limits and are
+  optional play dates. By default, a matched intro takes the place of the automatic liner at that
+  change; Voice liners can instead limit matched intros to changes with no liner scheduled. A DJ
+  break booked for the change wins over it. Uploads have the liner upload limits and are
   decoded like announcer breaks, at most one minute long. Intros are kept per station in
   `matched_intros.json` and the `intros` folder, included in backups; a clean library scan removes
   the intros of songs it found gone, and a share that is away loses none. The hour preview lists
