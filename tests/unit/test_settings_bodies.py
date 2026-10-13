@@ -139,6 +139,18 @@ def test_stream_body_trims_the_station_name() -> None:
     )
 
 
+@pytest.mark.parametrize("field", ["genre", "description", "url"])
+def test_stream_body_rejects_station_metadata_control_characters(field: str) -> None:
+    with pytest.raises(ValidationError):
+        StreamSettingsBody.model_validate({field: "bad\r\nheader"})
+
+
+@pytest.mark.parametrize("url", ["ftp://radio.example", "not a URL", "https://[bad"])
+def test_stream_body_requires_http_station_website(url: str) -> None:
+    with pytest.raises(ValidationError):
+        StreamSettingsBody.model_validate({"url": url})
+
+
 @pytest.mark.parametrize("value", (0, 1.0, 2))
 def test_eq_body_accepts_bridge_range(value: float) -> None:
     assert EqBody.model_validate({"low": value}).low == value
