@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  installAnalysisWorkers, ONCE_WARNING, queueWords, workerWords,
+  installAnalysisWorkers, ONCE_WARNING, queueWords, tokenWords, workerWords,
 } from "../../src/autodj/static/modules/analysis-workers.js";
 
 // The real Settings markup, so the ids, labels and live region the module
@@ -44,13 +44,20 @@ function server({ workers = [WORKER], tokens = [TOKEN] } = {}) {
     }
     if (url === "/api/machine-tokens" && options.method === "POST") {
       const body = JSON.parse(options.body);
-      const token = { ...TOKEN, token_id: "b".repeat(32), name: body.name, last_used_at: null };
+      const token = { ...TOKEN, token_id: "b".repeat(32), name: body.name, last_used_at: null,
+        scopes: body.scopes, station: body.station ?? null };
       state.tokens = [...state.tokens, token];
       return { token, secret: "adj1.bbbb.secret-text" };
     }
     if (url === "/api/machine-tokens") {
-      return { scopes: [{ id: "analysis-worker", label: "Analysis worker" }],
-        tokens: state.tokens };
+      return {
+        scopes: [
+          { id: "analysis-worker", label: "Analysis worker", station: false },
+          { id: "announcer", label: "Announcer", station: true },
+        ],
+        stations: [{ slug: "default", name: "Ice Cold" }, { slug: "nightowl", name: "Night Owl" }],
+        tokens: state.tokens,
+      };
     }
     if (url.startsWith("/api/machine-tokens/") && options.method === "DELETE") {
       const id = url.split("/").pop();
@@ -107,7 +114,7 @@ describe("Analysis workers markup", () => {
     const status = byId("workers-status");
     expect(status.getAttribute("role")).toBe("status");
     expect(status.getAttribute("aria-live")).toBe("polite");
-    for (const id of ["token-name", "token-secret"]) {
+    for (const id of ["token-name", "token-scope", "token-station", "token-secret"]) {
       expect(document.querySelector(`label[for="${id}"]`), id).not.toBeNull();
       const described = byId(id).getAttribute("aria-describedby").split(/\s+/);
       for (const ref of described) expect(byId(ref), ref).not.toBeNull();
@@ -225,6 +232,61 @@ describe("Analysis workers panel", () => {
     expect(document.activeElement).toBe(byId("token-secret"));
   });
 
+  it("shows the station choice only for an announcer token and sends it", async () => {
+    const { request } = install();
+    open();
+    await vi.waitFor(() => expect(byId("token-station").options).toHaveLength(3));
+    expect(byId("token-station-row").hidden).toBe(true);
+    expect(byId("token-station-desc").hidden).toBe(true);
+    const scope = byId("token-scope");
+    scope.value = "announcer";
+    scope.dispatchEvent(new Event("change"));
+    expect(byId("token-station-row").hidden).toBe(false);
+    expect(byId("token-station-desc").hidden).toBe(false);
+    expect([...byId("token-station").options].map((o) => o.textContent))
+      .toEqual(["Choose a station", "Ice Cold (default)", "Night Owl (nightowl)"]);
+    // Nothing is chosen for the user.
+    expect(byId("token-station").value).toBe("");
+    byId("token-station").value = "nightowl";
+    byId("token-name").value = "radiodj";
+    byId("token-create").click();
+    await vi.waitFor(() => expect(byId("token-new").hidden).toBe(false));
+    const post = request.mock.calls.find(([, options]) => options?.method === "POST");
+    expect(JSON.parse(post[1].body))
+      .toEqual({ name: "radiodj", scopes: ["announcer"], station: "nightowl" });
+    await vi.waitFor(() => expect(byId("token-list").textContent)
+      .toContain("radiodj.  Announcer, for Night Owl."));
+    scope.value = "analysis-worker";
+    scope.dispatchEvent(new Event("change"));
+    expect(byId("token-station-row").hidden).toBe(true);
+  });
+
+  it("asks for a station until one is chosen, and keeps the choice across reloads", async () => {
+    const { request } = install();
+    open();
+    await vi.waitFor(() => expect(byId("token-station").options).toHaveLength(3));
+    byId("token-scope").value = "announcer";
+    byId("token-name").value = "radiodj";
+    byId("token-create").click();
+    expect(await said()).toMatch(/Choose the station/);
+    expect(document.activeElement).toBe(byId("token-station"));
+    expect(request).not.toHaveBeenCalledWith("/api/machine-tokens", expect.objectContaining({
+      method: "POST" }));
+    // A reload of the same stations leaves the options and the choice alone.
+    byId("token-station").value = "nightowl";
+    const first = byId("token-station").options[1];
+    byId("token-done").click();
+    byId("workers-refresh").click();
+    const panel = byId("spanel-workers");
+    panel.open = false;
+    panel.dispatchEvent(new Event("toggle"));
+    open();
+    await vi.waitFor(() => expect(request.mock.calls.filter(([url]) => url === "/api/machine-tokens"))
+      .toHaveLength(2));
+    expect(byId("token-station").options[1]).toBe(first);
+    expect(byId("token-station").value).toBe("nightowl");
+  });
+
   it("revokes a token after confirmation and moves focus sensibly", async () => {
     const { request } = install();
     open();
@@ -260,6 +322,17 @@ describe("worker words", () => {
       "Alienware, not connected.  Last seen 2 hours ago.  "
       + "1 song analysed, 1 skipped because the file changed.",
     );
+  });
+
+  it("names a token's use and its station", () => {
+    const labels = new Map([["announcer", "Announcer"]]);
+    const token = { ...TOKEN, name: "radiodj", scopes: ["announcer"], station: "nightowl",
+      last_used_at: null };
+    expect(tokenWords(token, labels, new Map([["nightowl", "Night Owl"]])))
+      .toMatch(/^radiodj\. {2}Announcer, for Night Owl\. {2}Created .*, never used\.$/);
+    expect(tokenWords(token, labels)).toMatch(/Announcer, for nightowl\./);
+    expect(tokenWords({ ...TOKEN, station: null }, new Map()))
+      .toMatch(/^Alienware\. {2}analysis-worker\. {2}Created/);
   });
 
   it("describes the queue and who analyses it", () => {

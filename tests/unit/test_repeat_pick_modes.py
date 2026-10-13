@@ -13,6 +13,7 @@ import faiss
 import numpy as np
 import pytest
 
+import autodj.clockwheel as clockwheel
 from autodj.clockwheel import ClockSlot
 from autodj.config import PlaybackConfig
 from autodj.indexer import FEATURE_DIM
@@ -746,6 +747,32 @@ def _clock_player(tracks: list[tuple[str, str]]) -> Player:
     player._clock = {"cursor": 0}
     player._clock_slots = [ClockSlot(folder="Z:/Music", selection="random")]
     return player
+
+
+def test_clock_pick_reuses_normalized_history_across_recent_relaxation(monkeypatch) -> None:
+    player = _clock_player([("Artist A", "Old"), ("Artist B", "New")])
+    player._clock_slots = [ClockSlot(folder="Z:/Music", selection="least_recent")]
+    entries = player.playable_entries()
+    old_path, new_path = r"z:\music\SONG_0.FLAC", r"z:\music\SONG_1.FLAC"
+    now = datetime.now(UTC)
+    player._library.ledger.last_played = lambda: {
+        old_path: now - timedelta(days=1),
+        new_path: now,
+    }
+    calls = []
+    normalize = clockwheel._normalized
+
+    def count_normalization(path: str) -> str:
+        calls.append(path)
+        return normalize(path)
+
+    monkeypatch.setattr(clockwheel, "_normalized", count_normalization)
+    context = replace(player._pick_context(), recent=deque(entry.path for entry in entries))
+
+    picked = player._clock_pick(context, 0)
+
+    assert picked.entry == entries[0]
+    assert calls.count(old_path) == calls.count(new_path) == 1
 
 
 def test_a_clock_slot_relaxes_the_rules_when_every_track_is_held_back(caplog) -> None:

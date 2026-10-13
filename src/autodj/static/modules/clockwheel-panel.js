@@ -21,6 +21,7 @@ import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, reques
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
 import { parsePointTime } from "./library-folders.js";
+import { fillStepHours, installStepHours, readStepHours, stepHoursText } from "./step-hours.js";
 
 const NAME = /^[A-Za-z0-9 _-]{1,64}$/;
 const RESERVED = /^(con|prn|aux|nul|com\d|lpt\d)$/i;
@@ -147,7 +148,10 @@ export function installClockwheelPanel({ document: doc = document, request = req
   const clockUrl = (name) => `/api/library/clock/${encodeURIComponent(name)}`;
   const send = (url, method, body) => request(url, body === undefined ? { method } : { method, headers: JSON_HEADERS, body: JSON.stringify(body) });
   const count = (n) => `${n} ${n === 1 ? "step" : "steps"}`;
-  const describe = (step) => describeStep(step, data.sources, data.categories);
+  // A step with days and hours says them after what it plays.
+  installStepHours(doc);
+  const describe = (step) => [describeStep(step, data.sources, data.categories), stepHoursText(step)]
+    .filter(Boolean).join(", ");
   const position = (index) => `Step ${index + 1} of ${clock.steps.length}, ${describe(clock.steps[index])}`;
 
   function typedName() {
@@ -696,6 +700,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     renderConditions([{}]);
     const requireFollowing = el("clock-step-require-following");
     if (requireFollowing) requireFollowing.checked = false;
+    fillStepHours(doc);
     if (legend) legend.textContent = "Add a step";
     addButton.textContent = "Add step";
     if (cancelEdit) cancelEdit.hidden = true;
@@ -722,6 +727,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     if (legend) legend.textContent = `Edit step ${index + 1}`;
     addButton.textContent = `Update step ${index + 1}`;
     if (cancelEdit) cancelEdit.hidden = false;
+    fillStepHours(doc, step);
     typeSelect.focus();
     say(`Editing ${position(index)}.`);
   }
@@ -804,7 +810,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   addButton.addEventListener("click", () => {
     if (!clock) { say("Open or create a clockwheel first.", true); return; }
     let step;
-    try { step = formStep(); } catch (error) { say(error.message, true); return; }
+    try { step = { ...formStep(), ...readStepHours(doc) }; } catch (error) { say(error.message, true); return; }
     if (editing !== null) {
       const index = editing;
       clock.steps[index] = step;

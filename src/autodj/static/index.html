@@ -1399,6 +1399,30 @@
       Which ticked pack says each time check. When that pack has no files for the minute, the other ticked packs are tried before recorded clips.
     </span>
 
+    <!-- Play dates for one pack at a time; the result is said through
+         #tc-status, and a refused date is shown in #tc-dates-error and
+         linked to its field. -->
+    <fieldset id="tc-dates" aria-describedby="tc-dates-desc" hidden>
+      <legend>Voice pack play dates</legend>
+      <span class="setting-desc" id="tc-dates-desc">
+        Optional. A ticked pack speaks only from its Not before date to its Do not play after date, both days included, in the station time zone, such as a holiday voice in December. Outside them the other ticked packs speak instead. Choosing the pack in Voice to test still plays it.
+      </span>
+      <div class="settings-row">
+        <label for="tc-dates-pack">Voice pack</label>
+        <select id="tc-dates-pack"></select>
+      </div>
+      <div class="settings-row">
+        <label for="tc-not-before">Not before</label>
+        <input type="date" id="tc-not-before">
+      </div>
+      <div class="settings-row">
+        <label for="tc-not-after">Do not play after</label>
+        <input type="date" id="tc-not-after">
+      </div>
+      <p id="tc-dates-error" class="field-error" hidden></p>
+      <button type="button" id="tc-dates-save">Save play dates</button>
+    </fieldset>
+
     <h4>Recordings</h4>
     <p id="tc-clips-status"></p>
     <div class="settings-row">
@@ -1780,24 +1804,47 @@
     <p class="card-desc">
       A computer with a graphics card can analyse new songs for this server far faster than the server can.  Create a token below, then run <code>autodj worker</code> on that computer with this server's address and the token.  The worker downloads each song from this server, so it needs no copy of the music.  While a worker is connected, this server pauses its own analysis.
     </p>
+    <p class="card-desc">
+      An announcer program on this computer, such as radiodj, sends a station DJ breaks, news and weather with an announcer token.  Breaks also need <code>[breaks] enabled = true</code> in config.toml.
+    </p>
     <div id="workers-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     <h4 id="workers-heading">Workers</h4>
     <p id="workers-queue">Loading…</p>
     <ul id="workers-list" aria-labelledby="workers-heading"></ul>
     <button type="button" id="workers-refresh">Refresh workers</button>
 
-    <h4>Worker tokens</h4>
+    <h4>Machine tokens</h4>
     <fieldset>
       <legend>Create a token</legend>
       <div class="settings-row">
         <label for="token-name">Token name</label>
         <input type="text" id="token-name" maxlength="64" autocomplete="off"
                aria-describedby="token-name-desc">
-        <button type="button" id="token-create">Create token</button>
       </div>
       <span class="setting-desc" id="token-name-desc">
-        Name the computer that will use it, such as Alienware.  A worker token can only analyse songs: it cannot play, change settings or read anything else.
+        Name the computer or program that will use it, such as Alienware or radiodj.
       </span>
+      <div class="settings-row">
+        <label for="token-scope">Token use</label>
+        <select id="token-scope" aria-describedby="token-scope-desc">
+          <option value="analysis-worker">Analysis worker</option>
+          <option value="announcer">Announcer</option>
+        </select>
+      </div>
+      <span class="setting-desc" id="token-scope-desc">
+        A worker token can only analyse songs.  An announcer token can only read one station's coming songs and send that station breaks; choosing Announcer shows a Station choice below.  Neither can play, change settings or read anything else.
+      </span>
+      <!-- Shown only for an announcer token: it works for one station. -->
+      <div class="settings-row" id="token-station-row" hidden>
+        <label for="token-station">Station</label>
+        <select id="token-station" aria-describedby="token-station-desc">
+          <option value="">Choose a station</option>
+        </select>
+      </div>
+      <span class="setting-desc" id="token-station-desc" hidden>
+        The station this announcer token sends breaks to.  It works for no other station.
+      </span>
+      <button type="button" id="token-create">Create token</button>
     </fieldset>
     <!-- The token is shown once.  Creating it moves focus here and
          #workers-status says it will not be shown again. -->
@@ -2189,7 +2236,7 @@
           <fieldset id="categories-daypart" aria-describedby="categories-daypart-help">
             <legend>When the songs may play</legend>
             <p class="setting-desc" id="categories-daypart-help">
-              Optional. Outside these days and hours no pick mode plays the category's songs, and a clockwheel step for it is skipped. A song in several categories plays only when all of them allow it. Leave every day unchecked for every day, and both times empty for all day. Times are in the station time zone, and a window that crosses midnight, such as 22:00 until 02:00, belongs to the day it starts. A song you queue yourself plays at any time.
+              Optional. Outside these days, hours and dates no pick mode plays the category's songs, and a clockwheel step for it is skipped. A song in several categories plays only when all of them allow it. Leave every day unchecked for every day, both times empty for all day, and both dates empty for every day of the year; both dates are included, such as 1 December until 26 December for seasonal songs. Times and dates are in the station time zone, and a window that crosses midnight, such as 22:00 until 02:00, belongs to the day it starts. A song you queue yourself plays at any time.
             </p>
             <fieldset id="categories-days">
               <legend>Days</legend>
@@ -2208,6 +2255,14 @@
             <div class="settings-row">
               <label for="categories-hours-until">Allowed until</label>
               <input type="time" id="categories-hours-until">
+            </div>
+            <div class="settings-row">
+              <label for="categories-not-before">Not before</label>
+              <input type="date" id="categories-not-before">
+            </div>
+            <div class="settings-row">
+              <label for="categories-not-after">Do not play after</label>
+              <input type="date" id="categories-not-after">
             </div>
           </fieldset>
           <button type="button" id="categories-check" aria-describedby="categories-match">Check</button>
@@ -2298,6 +2353,33 @@
           <input id="clock-step-require-following" type="checkbox">
           <label for="clock-step-require-following">Only play if the following track fits before the next reset</label>
         </div>
+        <!-- step-hours.js: the step's days and hours.  A refused field is
+             linked to #clock-step-hours-error and focused; #clock-status says it. -->
+        <fieldset id="clock-step-hours" aria-describedby="clock-step-hours-help">
+          <legend>When this step plays</legend>
+          <p class="setting-desc" id="clock-step-hours-help">
+            Optional. Outside these days and hours the step is skipped, as an empty step is, and the clockwheel moves on to its next step. Leave every day unchecked for every day, and both times empty for all day. Times are in the station time zone, and a window that crosses midnight, such as 22:00 until 02:00, belongs to the day it starts.
+          </p>
+          <fieldset id="clock-step-days">
+            <legend>Days</legend>
+            <div class="settings-check"><input type="checkbox" id="clock-step-day-0" value="0"><label for="clock-step-day-0">Monday</label></div>
+            <div class="settings-check"><input type="checkbox" id="clock-step-day-1" value="1"><label for="clock-step-day-1">Tuesday</label></div>
+            <div class="settings-check"><input type="checkbox" id="clock-step-day-2" value="2"><label for="clock-step-day-2">Wednesday</label></div>
+            <div class="settings-check"><input type="checkbox" id="clock-step-day-3" value="3"><label for="clock-step-day-3">Thursday</label></div>
+            <div class="settings-check"><input type="checkbox" id="clock-step-day-4" value="4"><label for="clock-step-day-4">Friday</label></div>
+            <div class="settings-check"><input type="checkbox" id="clock-step-day-5" value="5"><label for="clock-step-day-5">Saturday</label></div>
+            <div class="settings-check"><input type="checkbox" id="clock-step-day-6" value="6"><label for="clock-step-day-6">Sunday</label></div>
+          </fieldset>
+          <div class="settings-row">
+            <label for="clock-step-hours-from">Allowed from</label>
+            <input type="time" id="clock-step-hours-from">
+          </div>
+          <div class="settings-row">
+            <label for="clock-step-hours-until">Allowed until</label>
+            <input type="time" id="clock-step-hours-until">
+          </div>
+          <p id="clock-step-hours-error" class="field-error" hidden></p>
+        </fieldset>
         <button type="button" id="clock-add-step">Add step</button>
         <button type="button" id="clock-cancel-edit" hidden>Cancel edit</button>
       </fieldset>

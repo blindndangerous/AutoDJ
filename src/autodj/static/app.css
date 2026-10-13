@@ -424,7 +424,16 @@
       min-height: 44px;
     }
     input[type="file"] { padding: 0.35rem 0.5rem; }
-    select { cursor: pointer; }
+    /* WebKit (Safari) lays the chosen option out on one line however
+       narrow the select is, and that hidden line still widens the page:
+       at 320 px the Time checks "Voice to test" choice made it scroll
+       sideways (WCAG 1.4.10).  Letting the text wrap shows the whole
+       choice there; Chromium and Firefox ignore it and clip as before. */
+    select {
+      cursor: pointer;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
 
     /* ---- Volume ---- */
     .volume-row {

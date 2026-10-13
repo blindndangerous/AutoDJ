@@ -2213,6 +2213,43 @@ describe("static accessibility contracts", () => {
     expect(rule).toContain('input[type="time"]');
   });
 
+  it("gives a category season labelled native date inputs inside its dayparting fieldset", () => {
+    installDocument({ html: htmlSource });
+    const group = document.querySelector("#categories-daypart");
+    for (const [id, label] of [["categories-not-before", "Not before"], ["categories-not-after", "Do not play after"]]) {
+      const input = document.getElementById(id);
+      expect(input.closest("#categories-daypart")).toBe(group);
+      expect(input.getAttribute("type")).toBe("date");
+      expect(input.hasAttribute("required")).toBe(false);
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+    }
+    expect(document.getElementById(group.getAttribute("aria-describedby")).textContent).toContain("dates");
+  });
+
+  it("gives a clockwheel step labelled native day and time controls and an error to link", () => {
+    installDocument({ html: htmlSource });
+    const group = document.querySelector("#clock-step-hours");
+    expect(group.tagName).toBe("FIELDSET");
+    expect(group.querySelector(":scope > legend").textContent.trim()).toBe("When this step plays");
+    expect(document.getElementById(group.getAttribute("aria-describedby")).textContent).toMatch(/^\s*Optional\./);
+    const days = group.querySelector("#clock-step-days");
+    expect(days.querySelector(":scope > legend").textContent).toBe("Days");
+    const boxes = [...days.querySelectorAll('input[type="checkbox"]')];
+    expect(boxes.map((box) => document.querySelector(`label[for="${box.id}"]`).textContent))
+      .toEqual(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]);
+    for (const [id, label] of [["clock-step-hours-from", "Allowed from"], ["clock-step-hours-until", "Allowed until"]]) {
+      const input = document.getElementById(id);
+      expect(input.getAttribute("type")).toBe("time");
+      expect(input.hasAttribute("required")).toBe(false);
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+    }
+    const error = document.querySelector("#clock-step-hours-error");
+    expect(error.classList.contains("field-error")).toBe(true);
+    expect(error.hasAttribute("aria-live")).toBe(false);
+    // It sits before Add step, so the fields are reached before the button.
+    expect(group.compareDocumentPosition(document.querySelector("#clock-add-step")) & 4).toBeTruthy(); // DOCUMENT_POSITION_FOLLOWING
+  });
+
   it("gives the schedule date range native labelled date inputs and a target-size rule", () => {
     installDocument({ html: htmlSource });
     const group = document.querySelector("#schedule-range");
@@ -2238,6 +2275,36 @@ describe("static accessibility contracts", () => {
       .find((block) => block.includes('input[type="text"]') && block.includes("padding"));
     expect(rule).toContain('input[type="date"]');
     expect(rule).toContain('input[type="time"]');
+  });
+
+  it("gives voice pack play dates a fieldset, labelled native date inputs and an error to link", () => {
+    installDocument({ html: htmlSource });
+    const group = document.querySelector("#tc-dates");
+    expect(group.tagName).toBe("FIELDSET");
+    expect(group.closest("#spanel-time-checks")).not.toBeNull();
+    expect(group.querySelector(":scope > legend").textContent.trim()).toBe("Voice pack play dates");
+    expect(document.getElementById(group.getAttribute("aria-describedby")).textContent)
+      .toMatch(/^\s*Optional\./);
+    expect(document.querySelector('label[for="tc-dates-pack"]').textContent.trim()).toBe("Voice pack");
+    for (const [id, label] of [["tc-not-before", "Not before"], ["tc-not-after", "Do not play after"]]) {
+      const input = document.getElementById(id);
+      expect(input.getAttribute("type")).toBe("date");
+      expect(input.hasAttribute("required")).toBe(false);
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+    }
+    // The error is text on the page with an ID, not a live region of its own:
+    // the status region says it once and the field links to it.
+    const error = document.querySelector("#tc-dates-error");
+    expect(error.classList.contains("field-error")).toBe(true);
+    expect(error.hasAttribute("aria-live")).toBe(false);
+    expect(document.querySelector("#tc-dates-save").getAttribute("type")).toBe("button");
+  });
+
+  it("hides the schedule date range for one-time events in the script, not the markup", () => {
+    installDocument({ html: htmlSource });
+    // Shown in the markup, so it never hides a range a saved event has.
+    expect(document.querySelector("#schedule-range").hidden).toBe(false);
+    expect(document.querySelector("#schedule-range").hasAttribute("data-repeat")).toBe(false);
   });
 
   it("gives the rotation test labelled native controls, one polite status and list results", () => {
@@ -2389,6 +2456,41 @@ describe("static accessibility contracts", () => {
     expect(moduleSource).not.toMatch(/\.focus\(/);
     expect(stripCssComments(cssSource))
       .toMatch(/\.settings-row \+ \.setting-desc \+ \.setting-desc\s*\{\s*margin-left: 10rem;/);
+  });
+
+  it("gives machine tokens a labelled use and a station choice hidden until it applies", () => {
+    installDocument({ html: htmlSource });
+    const fieldset = document.getElementById("token-name").closest("fieldset");
+    expect(fieldset.querySelector("legend").textContent.trim()).toBe("Create a token");
+    const scope = document.getElementById("token-scope");
+    const station = document.getElementById("token-station");
+    for (const [select, label] of [[scope, "Token use"], [station, "Station"]]) {
+      expect(select.tagName).toBe("SELECT");
+      expect(select.closest("fieldset")).toBe(fieldset);
+      expect(document.querySelector(`label[for="${select.id}"]`).textContent.trim()).toBe(label);
+      expect(select.hasAttribute("aria-label")).toBe(false);
+      const help = document.getElementById(select.getAttribute("aria-describedby"));
+      expect(help.classList.contains("setting-desc")).toBe(true);
+      expect(help.hasAttribute("aria-live")).toBe(false);
+    }
+    // Both uses are written out, and what each token cannot do is said.
+    expect([...scope.options].map((option) => option.textContent))
+      .toEqual(["Analysis worker", "Announcer"]);
+    expect(document.getElementById("token-scope-desc").textContent)
+      .toMatch(/Neither can play, change settings or read anything else/);
+    // Token use says the Station choice appears, and Station starts with a
+    // placeholder, so no station is chosen silently.
+    expect(document.getElementById("token-scope-desc").textContent)
+      .toMatch(/choosing Announcer shows a Station choice below/);
+    expect([...station.options].map((option) => [option.value, option.textContent]))
+      .toEqual([["", "Choose a station"]]);
+    // The station choice and its help start hidden, together.
+    expect(document.getElementById("token-station-row").hidden).toBe(true);
+    expect(document.getElementById("token-station-desc").hidden).toBe(true);
+    // Reading order is name, use, station, then the button that acts on them.
+    const order = [...fieldset.querySelectorAll("input, select, button")].map((node) => node.id);
+    expect(order).toEqual(["token-name", "token-scope", "token-station", "token-create"]);
+    expect(document.getElementById("token-create").getAttribute("type")).toBe("button");
   });
 
   it("keeps the transition effect description to one sentence", () => {

@@ -1,3 +1,4 @@
+import logging
 import os
 import threading
 from contextlib import contextmanager
@@ -1254,6 +1255,9 @@ def test_scan_drops_deleted_tracks_but_not_an_unmounted_share(manager_factory, t
         manager.scan()
         assert [Path(entry.path).name for entry in manager.entries_snapshot()] == ["kept.flac"]
         assert manager._missing == frozenset({os.path.normcase(str(deleted))})
+        assert manager.is_gone(deleted)
+        assert not manager.is_gone(remote)  # its share is only away
+        assert not manager.is_gone(kept)
         moved.rename(share)
         manager.catalog.update_source(manager.catalog.sources("music")[-1]["id"], True, True)
         manager.tick()
@@ -1556,3 +1560,120 @@ def test_a_write_during_a_refresh_is_caught_on_the_next_tick(other_connection, m
     monkeypatch.setattr(manager.catalog, "reader", reader)
     manager.tick()
     assert manager.entry_for_path(late) is not None
+
+
+def test_a_finished_scan_calls_its_tidy_up_and_survives_its_failure(
+    manager_factory, tmp_path, caplog
+):
+    music = tmp_path / "Music"
+    music.mkdir()
+    (music / "one.flac").write_bytes(b"one")
+    manager = manager_factory(music=music)
+    seen = []
+
+    def tidy() -> None:
+        seen.append(len(manager.entries_snapshot()))  # after the refresh
+        raise OSError("disk gone")
+
+    manager.on_scan_done = tidy
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+        caplog.at_level(logging.ERROR, logger="autodj.library"),
+    ):
+        manager.scan()
+    assert seen == [1]
+    assert "after-scan tidy-up failed" in caplog.text
+    assert manager._state["running"] is False
+
+
+def test_a_folder_the_scan_cannot_read_marks_nothing_gone_and_skips_the_tidy_up(
+    manager_factory, tmp_path, monkeypatch
+):
+    import autodj.library as library_module
+
+    music = tmp_path / "Music"
+    (music / "Sub").mkdir(parents=True)
+    kept, deleted = music / "kept.flac", music / "Sub" / "deleted.flac"
+    for path in (kept, deleted):
+        path.write_bytes(path.name.encode())
+    manager = manager_factory(music=music)
+    tidied = []
+    manager.on_scan_done = lambda: tidied.append(True)
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+    ):
+        manager.scan()
+        assert tidied == [True]
+        deleted.unlink()
+        real_walk = os.walk
+
+        def failing_walk(top, *args, onerror=None, **kwargs):
+            # The subfolder cannot be read just now: its files are not seen.
+            for current, directories, files in real_walk(top, *args, **kwargs):
+                if "Sub" in directories:
+                    directories.remove("Sub")
+                    onerror(PermissionError(13, "Permission denied", str(Path(current, "Sub"))))
+                yield current, directories, files
+
+        monkeypatch.setattr(library_module.os, "walk", failing_walk)
+        manager.scan()
+    assert not manager.is_gone(deleted)  # not seen is not gone
+    assert tidied == [True]  # no tidy-up after a scan that could not read a folder
+    monkeypatch.setattr(library_module.os, "walk", real_walk)
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+    ):
+        manager.scan()
+    assert manager.is_gone(deleted)
+    assert tidied == [True, True]
+
+
+def test_a_file_listed_but_not_resolvable_is_not_marked_gone(manager_factory, tmp_path):
+    music = tmp_path / "Music"
+    music.mkdir()
+    flapping = music / "flapping.flac"
+    flapping.write_bytes(b"x")
+    (music / "kept.flac").write_bytes(b"y")
+    manager = manager_factory(music=music)
+    tidied = []
+    manager.on_scan_done = lambda: tidied.append(True)
+    real_resolve = Path.resolve
+
+    def flap(self: Path, strict: bool = False) -> Path:
+        if self.name == "flapping.flac" and strict:
+            raise OSError(64, "The specified network name is no longer available")
+        return real_resolve(self, strict=strict)
+
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+    ):
+        manager.scan()
+        with patch.object(Path, "resolve", flap), patch("os.path.isfile", return_value=False):
+            manager.scan()
+    assert not manager.is_gone(flapping)
+    assert tidied == [True, True]
+
+
+def test_a_scan_that_fails_part_way_runs_no_tidy_up(manager_factory, tmp_path):
+    music = tmp_path / "Music"
+    music.mkdir()
+    (music / "one.flac").write_bytes(b"one")
+    manager = manager_factory(music=music)
+    tidied = []
+    manager.on_scan_done = lambda: tidied.append(True)
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("catalog locked")
+
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+        patch.object(manager, "_reconcile_moves", broken),
+        pytest.raises(RuntimeError),
+    ):
+        manager.scan()
+    assert tidied == []
