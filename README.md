@@ -193,10 +193,10 @@ station. See [Several stations](docs/operations.md#several-stations), including
 `autodj serve` loads the current library from `library.db` and shows its song and analysis
 counts. Add music in Library tools; songs become available before advanced analysis finishes.
 The published-index format (`index-manifest.json` and its generation files) is deprecated.
-`serve` and `index` import it when a library has no catalog yet, keeping the original files for
-recovery. Once the catalog exists, neither command reads or watches the old manifest. Use
-Library folders or `autodj index` to update the current library. Migration tools remain available
-for older indexes during this transition.
+Stop AutoDJ and run `autodj migrate-index` to preview an upgrade, then add `--apply` to
+import the old data into `library.db`. The command keeps a recovery copy. Normal startup and
+indexing use only the catalog; a leftover manifest does not replace it. Use Library folders or
+`autodj index` to update the current library.
 
 ## Commands
 

@@ -1431,4 +1431,3 @@ class TestClaimIndexForServe:
         _claim_index_for_serve(ctx, active)
         for close in closers:
             close()
-

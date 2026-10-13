@@ -26,7 +26,7 @@ from autodj.config import (
     PlaybackConfig,
 )
 from autodj.dj_meta import Cue, DjMeta, DjMetaCache
-from autodj.index_manifest import MANIFEST_NAME
+from autodj.index_manifest import MANIFEST_NAME, IndexConsistencyError
 from autodj.indexer import FEATURE_DIM, _write_tracks_file
 
 
@@ -292,77 +292,20 @@ def test_cli_migrate_default_is_dry_run(tmp_path: Path) -> None:
     assert _tree(index_dir) == before
 
 
-def test_accepted_startup_converts_and_loads_real_named_index(tmp_path: Path) -> None:
+@pytest.mark.parametrize("interactive", [True, False])
+def test_startup_requires_explicit_migration_without_modifying_named_library(
+    tmp_path: Path, interactive: bool
+) -> None:
     cfg = _config(tmp_path)
     named_dir = cfg.index.index_dir / "gold"
     _fixture(tmp_path, index_dir=named_dir, music_dir=cfg.library.music_dir)
+    before = _tree(named_dir)
     with (
-        patch("autodj.cli.sys.stdin", SimpleNamespace(isatty=lambda: True)),
-        patch("autodj.cli.click.confirm", return_value=True),
-    ):
-        sim = _load_index_for_serve(cfg, active_dir=named_dir)
-    assert sim.ntotal == 2
-    assert json.loads((named_dir / MANIFEST_NAME).read_text())["schema_version"] == 4
-    assert not (cfg.index.active_dir / MANIFEST_NAME).exists()
-
-
-@pytest.mark.parametrize("accept", [True, False])
-def test_serve_prompt_accepts_or_declines_for_named_index(tmp_path: Path, accept: bool) -> None:
-    cfg = _config(tmp_path)
-    named_dir = cfg.index.index_dir / "named"
-    named_dir.mkdir()
-    manifest = {"schema_version": 3}
-    (named_dir / MANIFEST_NAME).write_text(json.dumps(manifest), encoding="utf-8")
-    from autodj.index_manifest import UnsupportedIndexError
-    from autodj.similarity import SimilarityIndex
-
-    unsupported = UnsupportedIndexError(named_dir, "schema 3", schema_version=3)
-    loads = iter((unsupported, object()))
-
-    def load_index(*args: object, **kwargs: object) -> object:
-        result = next(loads)
-        if isinstance(result, UnsupportedIndexError):
-            raise result
-        return result
-
-    with (
-        patch("autodj.cli.sys.stdin", SimpleNamespace(isatty=lambda: True)),
-        patch("autodj.cli.click.confirm", return_value=accept) as confirm,
-        patch("autodj.cli._convert_index") as convert,
-        patch.object(SimilarityIndex, "from_index_dir", side_effect=load_index),
-    ):
-        if accept:
-            value = _load_index_for_serve(cfg, active_dir=named_dir)
-            assert value is not None
-            convert.assert_called_once_with(named_dir, cfg.library.music_dir, {}, apply=True)
-        else:
-            with pytest.raises(UnsupportedIndexError):
-                _load_index_for_serve(cfg, active_dir=named_dir)
-            convert.assert_not_called()
-    confirm.assert_called_once()
-
-
-def test_non_tty_serve_does_not_prompt_and_uses_named_active_dir(tmp_path: Path) -> None:
-    cfg = _config(tmp_path)
-    named_dir = cfg.index.index_dir / "named"
-    named_dir.mkdir()
-    (named_dir / MANIFEST_NAME).write_text('{"schema_version": 3}', encoding="utf-8")
-    from autodj.index_manifest import UnsupportedIndexError
-    from autodj.similarity import SimilarityIndex
-
-    with (
-        patch("autodj.cli.sys.stdin", SimpleNamespace(isatty=lambda: False)),
+        patch("autodj.cli.sys.stdin", SimpleNamespace(isatty=lambda: interactive)),
         patch("autodj.cli.click.confirm") as confirm,
-        patch("autodj.cli._convert_index") as convert,
-        patch.object(
-            SimilarityIndex,
-            "from_index_dir",
-            side_effect=UnsupportedIndexError(named_dir, "schema 3", schema_version=3),
-        ) as load,
-        pytest.raises(UnsupportedIndexError),
+        pytest.raises(IndexConsistencyError, match="migrate-index"),
     ):
         _load_index_for_serve(cfg, active_dir=named_dir)
     confirm.assert_not_called()
-    convert.assert_not_called()
-    assert load.call_args.kwargs["music_dir"] == cfg.library.music_dir
-    assert load.call_args.args[0] == named_dir
+    assert _tree(named_dir) == before
+    assert not (named_dir / "library.db").exists()
