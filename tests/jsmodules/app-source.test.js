@@ -48,6 +48,8 @@ async function setupApp({
   },
   // GET /api/stations: one station unless a test gives several (#70).
   stations = [{ slug: "default", name: "AutoDJ", state: "playing", listeners: 0, title: null }],
+  // GET /api/version: the footer build stamp.
+  version = { version: "test", commit: "test", built_at: "2026-01-01T00:00:00Z" },
 } = {}) {
   vi.resetModules();
   const addListener = window.addEventListener;
@@ -149,11 +151,7 @@ async function setupApp({
         ? jsonResponse({ stations })
         : jsonResponse({ detail: "Station list unavailable" }, 503));
     }
-    if (url === "/api/version") {
-      return Promise.resolve(jsonResponse({
-        version: "test", commit: "test", built_at: "2026-01-01T00:00:00Z",
-      }));
-    }
+    if (url === "/api/version") return Promise.resolve(jsonResponse(version));
     return Promise.resolve(onRequest(url, options));
   });
   const webSocket = { close: vi.fn(), readyState: 1, send: vi.fn() };
@@ -355,6 +353,58 @@ describe("durable playback semantics", () => {
     expect(cueSummary.textContent).toBe("No cue points");
     expect(cueDetails.textContent).toBe("No cue points");
     expect(metadata.textContent).toBe("");
+  });
+});
+
+describe("footer build stamp", () => {
+  const built = "2026-01-01T00:00:00Z";
+
+  it("links a known commit, its name starting with the words shown", async () => {
+    const url = "https://github.com/blindndangerous/AutoDJ/commit/1a2b3c4";
+    await setupApp({
+      version: { version: "0.20.0", commit: "1a2b3c4", built_at: built, commit_url: url },
+    });
+    const link = await vi.waitFor(() => {
+      const found = document.querySelector("#ver-build > a#ver-commit-link");
+      expect(found).not.toBeNull();
+      return found;
+    });
+    expect(link.getAttribute("href")).toBe(url);
+    expect(link.target).toBe("_blank");
+    expect(link.rel.split(" ")).toEqual(expect.arrayContaining(["noopener", "noreferrer"]));
+    expect(link.querySelector("#ver-commit").textContent).toBe("1a2b3c4");
+    // Visible text first (2.5.3), then where it goes, for a screen reader.
+    expect(link.textContent.replace(/\s+/g, " ").trim())
+      .toBe("build 1a2b3c4 on GitHub (opens in a new tab)");
+    expect(link.querySelector(".visually-hidden").textContent)
+      .toBe(" on GitHub (opens in a new tab)");
+    expect(link.hasAttribute("aria-label")).toBe(false);
+    // Reference data, not a status update: still no live region.
+    expect(document.querySelector("#version-stamp [aria-live]")).toBeNull();
+    expect(document.querySelector("#version-stamp").hasAttribute("aria-live")).toBe(false);
+  });
+
+  it("keeps an unknown commit as plain text", async () => {
+    await setupApp({ version: { version: "0.20.0", commit: "unknown", built_at: built } });
+    await vi.waitFor(() => expect(document.querySelector("#ver-commit").textContent)
+      .toBe("unknown"));
+    expect(document.querySelector("#page-footer a")).toBeNull();
+    expect(document.querySelector("#ver-build").textContent.replace(/\s+/g, " ").trim())
+      .toBe("build unknown");
+  });
+
+  it.each([
+    "javascript:alert(1)",
+    "https://evil.example/blindndangerous/AutoDJ/commit/1a2b3c4",
+    "https://github.com/blindndangerous/AutoDJ/commit/1a2b3c4?x=1",
+    "https://github.com/blindndangerous/AutoDJ/commit/not-a-sha",
+  ])("does not link a commit address it does not expect: %s", async (url) => {
+    await setupApp({
+      version: { version: "0.20.0", commit: "1a2b3c4", built_at: built, commit_url: url },
+    });
+    await vi.waitFor(() => expect(document.querySelector("#ver-commit").textContent)
+      .toBe("1a2b3c4"));
+    expect(document.querySelector("#page-footer a")).toBeNull();
   });
 });
 
