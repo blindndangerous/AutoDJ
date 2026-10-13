@@ -136,7 +136,7 @@ keyed addresses such as `/stream/<secret>.mp3` no longer work, so set any player
 to `/stream.mp3`.
 
 The public `/api/nowplaying` JSON feed lets pages show the station's current song, upcoming song,
-recent plays and listener count, and the public `/status` page shows the same to listeners as plain text. The upcoming song is hidden unless you turn on `[nowplaying] show_next`. Track-change
+recent plays and listener count, and the public `/status` page shows the same to listeners as plain text. With several stations, each has its own feed and page, at `/api/stations/<slug>/nowplaying` and `/stations/<slug>/status`. The upcoming song is hidden unless you turn on `[nowplaying] show_next`. Track-change
 webhooks can send the same metadata to other services or Discord; configure their URLs in
 `config.local.toml`. See [Operations](docs/operations.md#now-playing-feed-and-webhooks).
 
@@ -204,7 +204,9 @@ Every command takes `--help`, for example `uv run autodj serve --help`. The glob
   tokens from the command line, as Settings, Analysis workers does; a new token is printed once.
   `create NAME --scope announcer --station SLUG` makes a token for an announcer program that sends
   that station DJ breaks, news and weather; see
-  [Announcer breaks](docs/operations.md#announcer-breaks-dj-breaks-news-and-weather).
+  [Announcer breaks](docs/operations.md#announcer-breaks-dj-breaks-news-and-weather). The
+  web UI's Voice tracks tab records and books a DJ break from the browser's microphone with no
+  token; see [Voice tracking](docs/operations.md#voice-tracking-from-the-browser).
 - `autodj migrate-index` previews a schema-3 to schema-4 conversion; add `--apply` to save a
   recovery copy and convert without repeating analysis. Interactive `serve` offers this too.
 - `autodj enrich` refreshes key and mode from your beets database.
@@ -290,7 +292,7 @@ exists.
 
 After `autodj serve`, point a browser at `http://localhost:8080`.  Six tabs:
 
-- **Now Playing.**  What is playing, the next track, album art, lyrics, the cue strip on the progress bar.
+- **Now Playing.**  What is playing, the next track, album art, lyrics, the cue strip on the progress bar, and the **Hour preview**: what plays next with estimated start times, each marked fixed or predicted, and how early or late the hour lands.  See [Hour preview and backtiming](docs/operations.md#hour-preview-and-backtiming).
 - **Queue & Search.**  Find any track in your library and choose Play now, Play next (straight after the current track) or Add to queue (at the end).  Move queued tracks up, down or to the top, remove them, or clear the whole queue; each move says the new position, such as "Moved Alpha to position 2 of 5".  After Search come **Browse library**, which lists the whole library or one music or voice liner folder 100 tracks a page, and **Browse voice liners**, the liner files with Delete and Track info.
 - **Track info.**  View a recording's details, edit its tags (title, artist, album, genre, year, BPM, key and ISRC, written into the file without analysing it again) and edit its cue points. Open it from Now Playing, History, or the Queue, Search results, Browse library and Browse voice liners lists in Queue & Search. Use the Return to History, Return to Queue & Search or other view-specific button to return to the source item.
 - **History.**  What has played, newest first, one page at a time.  Times get a date when the page holds tracks from before today.  While page 1 is shown, each new song is added to the top on its own.  Refresh history reloads the page you are on.  Export play log saves every play between two dates, for royalty reports: a CSV with one row per play (times, seconds played, artist, title, album, ISRC, label, kind, file and performances, meaning listeners who heard it) or a SoundExchange Report of Use.  `autodj export-plays` does the same from the command line; see [Play log export](docs/operations.md#play-log-export).
@@ -328,6 +330,7 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Six tabs:
 - **Shift+Q** — speak how many tracks are queued, and the first one.
 - **Shift+J** — speak the library job status: what is running, for how long, and how far it has
   got as a percentage when the job shows one, or how the last job ended.
+- **Shift+H** — speak how the hour lands, from the hour preview.
 - **?** — open the shortcut list.
 
 Every shortcut works from any tab, except Space and the Up and Down arrows, which work on Now

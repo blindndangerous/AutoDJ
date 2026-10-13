@@ -499,19 +499,28 @@
       outline-offset: 2px;
     }
 
-    #search-results {
+    #library-results-table, #source-folders-table {
+      width: 100%;
+      table-layout: fixed;
+      border-collapse: collapse;
       margin-top: 0.75rem;
-      list-style: none;
     }
-    #search-results li {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.45rem 0.25rem;
+    #library-results-table th, #library-results-table td,
+    #source-folders-table th, #source-folders-table td {
+      padding: 0.45rem 0.5rem;
       border-bottom: 1px solid var(--border);
-      font-size: 0.9rem;
+      text-align: left;
+      vertical-align: middle;
+      overflow-wrap: anywhere;
     }
-    #search-results li:last-child { border-bottom: none; }
+    #library-results-table th:first-child { width: 25%; }
+    #library-results-table th:not(:first-child) { width: 18.75%; }
+    #source-folders-table th:nth-child(1) { width: 14%; }
+    #source-folders-table th:nth-child(2) { width: 28%; }
+    #source-folders-table th:nth-child(3) { width: 18%; }
+    #source-folders-table th:nth-child(4) { width: 24%; }
+    #source-folders-table th:nth-child(5) { width: 16%; }
+    #source-folders-table label { display: block; margin: 0.2rem 0; overflow-wrap: anywhere; }
     .result-name {
       flex: 1;
       min-width: 0;
@@ -591,6 +600,65 @@
     #hist-page-info { color: var(--text-dim); font-size: 0.9rem; }
     #hist-goto { width: 5rem; }
     #hist-refresh { margin-bottom: 0.75rem; }
+
+    /* ---- Now Playing, Hour preview (#126): a table like History's.
+       Predicted rows are italic and dimmer, but the Status column says
+       "Fixed" or "Predicted" in words on every row, so neither the style
+       nor the colour carries the meaning alone. ---- */
+    #hour-preview-refresh { margin: 0.25rem 0 0.75rem; }
+    #hour-preview-summary { margin-bottom: 0.75rem; }
+    #hour-preview-stopped { margin-bottom: 0.75rem; }
+    #hour-preview-backtiming h3 { font-size: 1rem; margin: 0.25rem 0 0.5rem; }
+    #hour-preview-points,
+    #hour-preview-notes {
+      margin: 0 0 1rem 1.25rem;
+    }
+    #hour-preview-points li + li,
+    #hour-preview-notes li + li { margin-top: 0.35rem; }
+    #hour-preview-table {
+      width: 100%;
+      /* As History: fixed layout keeps the table inside a narrow window. */
+      table-layout: fixed;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+      margin-bottom: 0.75rem;
+    }
+    #hour-preview-table caption {
+      text-align: left;
+      font-weight: 600;
+      padding-bottom: 0.4rem;
+    }
+    #hour-preview-table col.hp-starts { width: 24%; }
+    #hour-preview-table col.hp-what   { width: 42%; }
+    #hour-preview-table col.hp-length { width: 12%; }
+    #hour-preview-table col.hp-status { width: 22%; }
+    #hour-preview-table th,
+    #hour-preview-table td {
+      padding: 0.5rem 0.7rem;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--border);
+      overflow-wrap: anywhere;
+    }
+    #hour-preview-table thead th {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+    }
+    #hour-preview-table tbody tr:nth-child(even) { background: var(--tint); }
+    #hour-preview-table tbody tr:last-child td { border-bottom: none; }
+    #hour-preview-table td:first-child,
+    #hour-preview-table td:nth-child(3) {
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    #hour-preview-table tr.is-on-air td { font-weight: 600; }
+    #hour-preview-table tr.is-predicted td {
+      font-style: italic;
+      color: var(--text-dim);
+    }
 
     /* ---- Queue: Clear queue sits under the rows ---- */
     #queue-clear { margin-top: 0.75rem; }
@@ -794,6 +862,31 @@
       text-align: left;
       white-space: normal;
     }
+    /* ---- Voice tracks (voice-tracker.js) ----
+       The open song change as label and value pairs, wrapping under one
+       another on a narrow window. */
+    .vt-facts {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr);
+      column-gap: 1rem;
+      row-gap: 0.25rem;
+      margin: 0.5rem 0;
+    }
+    .vt-facts dt { color: var(--text-dim); }
+    .vt-facts dd { overflow-wrap: anywhere; }
+    @media (max-width: 30rem) {
+      .vt-facts { grid-template-columns: minmax(0, 1fr); }
+      .vt-facts dd { margin-bottom: 0.35rem; }
+    }
+    #vt-timer { margin: 0.5rem 0; font-variant-numeric: tabular-nums; }
+    .vt-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.5rem 0; }
+    #vt-list { list-style: none; padding: 0; margin: 0.5rem 0; }
+    #vt-list li {
+      padding: 0.35rem 0;
+      border-bottom: 1px solid var(--border);
+      overflow-wrap: anywhere;
+    }
+    #vt-list li:last-child { border-bottom: none; }
     .queue-name {
       flex: 1;
       min-width: 0;
@@ -1176,7 +1269,7 @@
     }
 
     /* ---- Empty-list placeholder utility ---- */
-    /* Used by #why-list, #queue-list, #search-results, #ln-file-list,
+    /* Used by #why-list, #queue-list, #ln-file-list,
        #profile-list and #device-list.  list-style: none matters for #why-list, which is
        the one of those lists that still shows markers. */
     .no-results {
@@ -1209,9 +1302,8 @@
     :where(main) :where(ul, ol) {
       padding-inline-start: 1.5rem;
     }
-    :where(#search-results, #queue-list, #profile-list, #device-list,
-      #ln-file-list, #lyrics-list, #why-list, #library-browse-results,
-      #clock-slots),
+    :where(#queue-list, #profile-list, #device-list,
+      #ln-file-list, #lyrics-list, #why-list, #clock-slots),
     :where(main) :where(ul, ol):where(:has(> li.no-results:only-child)) {
       padding-inline-start: 0;
     }
@@ -1219,7 +1311,7 @@
     /* Rows that end in a button (Revoke, Remove folder, Unban) touched the
        next row's button: 44 px targets with no space between them. */
     :where(#token-list, #workers-list, #listener-ban-list, #listener-control-list,
-      #source-folders, #clock-list, #categories-list) > li + li {
+      #clock-list, #categories-list) > li + li {
       margin-top: 0.4rem;
     }
     /* Links: the card colour scheme's own link blue, underlined, so a link
@@ -1379,6 +1471,14 @@
       #history-table td:last-child {
         white-space: normal;
       }
+      #hour-preview-table th,
+      #hour-preview-table td {
+        padding: 0.45rem 0.4rem;
+      }
+      #hour-preview-table td:first-child,
+      #hour-preview-table td:nth-child(3) {
+        white-space: normal;
+      }
 
       /* Help text: the desktop rule indents it 10rem to line up under the
          control column, but on a 390 px screen that left 162 px of usable
@@ -1393,10 +1493,24 @@
       /* Track names get the full row width instead of being truncated to
          "3 Doors Down ..." for every entry, which made queue rows
          indistinguishable from each other. */
-      #queue-list li,
-      #search-results li {
+      #queue-list li {
         flex-wrap: wrap;
         row-gap: 0.4rem;
+      }
+      #library-results-table th, #library-results-table td,
+      #source-folders-table th, #source-folders-table td {
+        padding: 0.35rem 0.2rem;
+      }
+      #library-results-table .result-btn, #source-folders-table button {
+        width: 100%;
+        min-width: 0;
+        padding: 0.25rem 0.1rem;
+        white-space: normal;
+      }
+      #library-results-table .result-name {
+        display: block;
+        overflow-wrap: anywhere;
+        white-space: normal;
       }
       .queue-name,
       .result-name {

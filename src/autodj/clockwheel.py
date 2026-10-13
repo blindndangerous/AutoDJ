@@ -195,6 +195,11 @@ def _least_recent(
         raise ValueError("entries must not be empty")
     chooser = rng if rng is not None else random
     song_played = versions.last_played(played) if versions else None
+    song_order: dict[str, int] = {}
+    if versions:
+        songs = list(dict.fromkeys(versions.song(entry.path) for entry in entries))
+        chooser.shuffle(songs)
+        song_order = {song: index for index, song in enumerate(songs)}
 
     def age(entry: Any) -> tuple[Any, ...]:
         # Never played sorts first, then the oldest play.
@@ -202,7 +207,14 @@ def _least_recent(
         if song_played is None:
             return (stamp is not None, stamp)
         song = song_played(entry.path)
-        return (song is not None, song, stamp is not None, stamp)
+        # Break equal song ages before considering versions, so extra copies add no odds.
+        return (
+            song is not None,
+            song,
+            song_order[versions.song(entry.path)],
+            stamp is not None,
+            stamp,
+        )
 
     if allowed is not None:
         ordered = list(entries)

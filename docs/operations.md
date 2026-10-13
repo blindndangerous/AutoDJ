@@ -79,11 +79,12 @@ In a terminal, analysis commands show completed-track progress. Redirected outpu
 logs keep plain progress messages.
 
 In the web page, add, remove and rescan music and voice liner folders in the **Library tools**
-tab. Browse what they hold in **Queue & Search**, after Search: **Browse library** lists all
-music, all voice liners or one registered folder, 100 tracks a page, and **Browse voice liners**
-lists the liner files with Delete, Track info and Play dates (see
-[Liner and cart play dates](#liner-and-cart-play-dates)). Track info's Return to Queue & Search button
-puts focus back on the button that opened it.
+tab. Its folder table shows each folder's type, path and scan options. **Queue & Search** uses one
+paginated list: choose Music or Voice liners, choose all folders or one folder, and optionally
+search by artist or title. Each result has Play now, Play next, Add to queue and Track info.
+Manage liner files, including Delete and Play dates, under **Settings > Voice liners** (see
+[Liner and cart play dates](#liner-and-cart-play-dates)). Track info's Return button puts focus
+back on the result that opened it.
 
 With `[playback] import_external_cues` on (the default), intro and outro markers set in Mixxx,
 Rekordbox or Traktor take the place of the detected intro and outro, so the crossfade follows
@@ -592,7 +593,12 @@ working, since no field was removed or renamed.
   time zone (`[server] station_timezone`, the one the scheduler uses; the computer's time zone
   when it is not set). It is kept in memory only, so it starts again from the current count when
   AutoDJ restarts.
-- `uptime_seconds` counts whole seconds since this AutoDJ server started.
+- `uptime_seconds` counts whole seconds since this station started: for the default station,
+  since this AutoDJ server started; for another station, since it was last started.
+
+Each station has its own feed, with its own name, songs, listeners and stream path:
+`/api/nowplaying` for the default station, `/api/stations/<slug>/nowplaying` for any station
+(the default one is `default`). See [Several stations](#several-stations).
 
 `current_track` and `next_track` are `null` when unavailable. History is newest first.
 The feed never contains local file paths, internal IDs, credentials or pairing state.
@@ -630,10 +636,12 @@ separately if you need to restore secrets.
 
 `GET /status` is a public page for listeners, in the spirit of an Icecast status page: the
 station name, the song playing, the next song when **Show the next song publicly** is on, the
-number of listeners now, today's peak and how long AutoDJ has been running. It needs
+number of listeners now, today's peak and how long the station has been on air (**Uptime**, which
+says "Not on air" while the station is stopped). Every station
+has one at `/stations/<slug>/status`; `/status` is the default station's. It needs
 no pairing and does not load the paired app. The server writes every value into the page as
 plain text, so it works without JavaScript; with JavaScript, `/modules/status-page.js` polls
-`/api/nowplaying` every 15 seconds (skipping polls while the tab is hidden) and updates the
+the station's own feed every 15 seconds (skipping polls while the tab is hidden) and updates the
 text. Only the now-playing line is a live region: screen readers hear it, politely, when the
 song changes, and nothing else on a poll. A **Pause updates** toggle stops the polling until
 pressed again. In stream mode the page also links to the stream and
@@ -1057,6 +1065,9 @@ The rules:
   set it.
 - **Each relay target belongs to one station.** Two stations pushing to the same host, port and
   mount (or Shoutcast stream) are refused.
+- **A station without a `stream.station_name` is called by its slug**, for example `nightowl`, in
+  stream metadata and on its pages, so it never takes the default station's "AutoDJ". Two
+  stations given the same name are warned about at startup: listeners could not tell them apart.
 - **Unknown keys are warned about and ignored**, as in the root sections; the warning names the
   station's table. `autodj doctor` offers to remove an unknown key from a station section.
 - **Errors name the station**, for example
@@ -1078,27 +1089,80 @@ the addresses. These are public like `/stream.mp3`, and the station's own `liste
 `/status`, and also answers at `/stations/default.mp3`. A station's stream needs ffmpeg, even when
 the default station is browser-driven.
 
+Each station also has its own public status page and now-playing feed, for listeners and for
+other sites:
+
+- `/stations/<slug>/status`, the status page, with the station's name, song, listeners and links
+  to its stream and playlist. It polls the station's own feed, and only a feed on this server.
+- `/api/stations/<slug>/nowplaying`, the now-playing feed, in the same form as `/api/nowplaying`
+  (see [Now-playing feed and webhooks](#now-playing-feed-and-webhooks)).
+- Both are public without pairing, like the stream, but only for a configured station: any
+  other name needs a paired browser and then answers 404. The station's listener password
+  protects only its stream, not these.
+- The default station keeps `/status` and `/api/nowplaying`, and also answers as `default`
+  (`/stations/default/status`, `/api/stations/default/nowplaying`).
+- While a station is stopped, its stream, its feed and its status page all answer 503, "off air".
+  The page still shows the station's name and says it is off air right now; an open page notices
+  when the station is back on air and shows the song again. The feed answers
+  `{"detail": "That station is off air"}`.
+- Each station sends its own track-change webhooks, set in `config.local.toml` under
+  `[[stations.<slug>.webhooks]]`, with only that station's feed.
+
 Every control route of a station answers under `/api/stations/<slug>/`, for example
 `/api/stations/nightowl/status`, `/api/stations/nightowl/skip` or
 `/api/stations/nightowl/queue/add`; the default station keeps its `/api/...` addresses. These
 need a paired browser, like the default station's.
 
-- `GET /api/stations` lists every configured station: its slug, name, state (`stopped`, `idle`,
-  `playing` or `paused`), listener count, current song and stream address.
+- `GET /api/stations` lists every configured station: its slug, name, state (`stopped`,
+  `stopping`, `stuck stopping`, `idle`, `playing` or `paused`), listener count and current
+  song, and its public addresses: `status_path`, `nowplaying_path`, `stream_path` and
+  `m3u_path`. The stream and playlist are `null` for a default station that does not stream. For
+  example:
+
+  ```json
+  {"slug": "nightowl", "name": "Night Owl Radio", "state": "playing", "listeners": 3,
+   "title": "Artist — Song", "status_path": "/stations/nightowl/status",
+   "nowplaying_path": "/api/stations/nightowl/nowplaying",
+   "stream_path": "/stations/nightowl.mp3", "m3u_path": "/stations/nightowl.m3u"}
+  ```
 - `POST /api/stations/<slug>/start` builds and starts a stopped station. Starting a running
   station changes nothing.
 - `POST /api/stations/<slug>/stop` stops a station completely: its listeners are disconnected,
   its encoder, relays, recorder and mastering process are closed and its player ends, so it uses
   no memory or processor time. Its routes then answer 409 and its stream answers 503, "off air".
-  The default station cannot be stopped.
+  This starts as soon as the stop is asked for: while the player finishes its work, which can
+  take several seconds, the station is listed as `stopping`, its routes already answer 409, a
+  start request is refused at once with 409, and a second stop request returns at once. Its
+  open pages are told at once. Other stations can be started and stopped meanwhile. If the
+  stopping station used Stereo Tool, it keeps it until it has stopped, and another station asking
+  for it is told to try again in a few seconds. The default station cannot be stopped.
+- The stop reply is the station's entry, as in `GET /api/stations`, plus `warnings`: a list of
+  what went wrong, in plain words, such as "Closing its recorder failed; the server log has the
+  details.". It is empty when everything stopped cleanly. The station is stopped either way.
+- If a station's player has not finished 30 seconds after a stop, the station is listed as
+  `stuck stopping`, and the stop's `warnings` say so. Its player and mastering process keep
+  running, because closing the mastering process under a running player is unsafe, so it keeps
+  Stereo Tool, and it cannot be started again. The log says every minute that it is still stuck;
+  only a restart of AutoDJ frees a player that never ends. When the player ends, the mastering
+  process is closed, and closed again every few seconds until it has really ended; only then is
+  the station `stopped` and Stereo Tool free. The same holds for a station that failed to start.
+- On a normal shutdown, and when Python exits, AutoDJ kills any mastering process still running,
+  after making sure none can start again. On Windows each mastering process (Stereo Tool and its
+  FFmpeg limiter, or the FFmpeg master) is also tied to AutoDJ's own process with a job object,
+  so it ends even when AutoDJ is killed outright or crashes. On Linux and macOS, a hard kill of
+  AutoDJ (such as `kill -9`) can leave one running; stop it by hand.
 
 A station that cannot start, with the server or when asked, says why: in the log at startup, and
-in the reply to a start request. The default station and the other stations keep running.
+in the reply to a start request. Whatever it had already started (its player, mastering process,
+encoders and relays) is stopped again. The default station and the other stations keep running.
 
 Each station starts with its saved settings (its `web_state.json`), its active clockwheel and its
 own play history. The first time a station runs, its liner folder is added to Library folders as
 a liner source. A station plays only the liners in its own folder; the default station plays every
-other registered liner, as before.
+other registered liner, as before. When one station's liner folder sits inside another's (for
+example `liners/nightowl` inside the default station's `liners`), the inner folder's liners belong
+to the inner station only. This holds for automatic liners, clockwheel liner steps, the Liners
+list and the clips a cart can use.
 
 ### Stereo Tool: one station at a time
 
@@ -1135,12 +1199,47 @@ Each running station is a complete playout chain in the same process:
 - **An idle station still runs** its mix bus, mastering and encoder on silence. Stopping a
   station is the real saving.
 - **One process, one interpreter lock.** A heavy render on one station could make another
-  station's mix bus late. To measure it on your own machine, run the soak test with a duration in
-  seconds; it reports the blocks each station's bus emitted while both render at once:
+  station's mix bus late. The soak test below measures it.
 
-  ```bash
-  AUTODJ_SOAK_SECONDS=60 uv run pytest tests/integration/test_multi_station.py -k soak -s
-  ```
+### Soak test
+
+`tests/integration/test_multi_station.py` has a soak test with two stations, the default one and
+Night Owl Radio. Both mix buses run while two threads do song-sized time-stretches back to back,
+standing in for each station's render-ahead work, and Night Owl is stopped and started again
+every cycle. The test counts the 20 ms blocks each bus sends out. It fails if a stop leaves any
+of the station's threads, encoders or mastering process behind, and, in a long run, if either bus
+falls short (an underrun). ffmpeg and Stereo Tool are replaced by stand-ins, so it measures AutoDJ's own
+work.
+
+Every test run, including CI, runs it for 4 seconds with one restart. To run it for longer, on the
+machine that will host the stations, set `AUTODJ_SOAK_SECONDS`. This runs it for four hours,
+restarts Night Owl every 10 minutes, and samples memory and processor use every 30 seconds:
+
+```bash
+AUTODJ_SOAK_SECONDS=14400 AUTODJ_SOAK_REPORT=soak.jsonl \
+  uv run pytest tests/integration/test_multi_station.py -k soak -s -p no:cacheprovider
+```
+
+The settings, all optional:
+
+- `AUTODJ_SOAK_SECONDS`: how long to run. A long run uses four-minute songs for the render
+  stand-ins and fails if a bus sends fewer than 99% of the blocks it should. The short default
+  run uses 20-second songs and only reports the block counts: a few seconds on a shared CI
+  machine is too short to judge underruns, so there it checks the restart and leaks only.
+- `AUTODJ_SOAK_CYCLE_SECONDS`: how often Night Owl is stopped and started (default 600 in a long
+  run).
+- `AUTODJ_SOAK_SAMPLE_SECONDS`: how often memory and processor use are sampled (default 30 in a
+  long run).
+- `AUTODJ_SOAK_REPORT`: a file the samples are added to, one JSON object per line. Each has the
+  seconds since the start, `rss_mb` (resident memory, on Linux only), `cpu_percent` (processor
+  time as a percentage of one core since the last sample), `threads` and `restarts`. The last
+  line is the summary.
+
+At the end the test prints a summary line: the blocks each bus sent against the number expected,
+the longest gap between blocks in milliseconds, the number of restarts and renders, memory at the
+start and the end, and Night Owl's thread count before and after. Memory that keeps climbing from
+one restart to the next, or a thread count that grows, points to a leak; attach the report file to
+an issue.
 
 ## Windows PowerShell setup
 
@@ -1685,8 +1784,9 @@ curl -s -H "Authorization: Bearer $TOKEN" \
   http://127.0.0.1:8080/api/announcer/breaks/0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a
 ```
 
-`GET breaks` lists the breaks still waiting, then the finished ones, newest first, as
-`{"breaks": [...]}`. A break's `state` is one of:
+`GET breaks` lists the announcer's breaks still waiting, then the finished ones, newest first, as
+`{"breaks": [...]}`. Voice tracks booked in the web UI are not listed, and an announcer token
+cannot look them up or cancel them (404). A break's `state` is one of:
 
 - `queued`: booked, waiting for its song change to be rendered.
 - `rendered`: mixed into the song change; it will air. `mixed_as` says `talk_up` or `standalone`
@@ -1734,6 +1834,63 @@ minutes after its expected air time expires.
 
 The log records each break by the first eight characters of its id: when it is booked, mixed in,
 aired, dropped or expired, and why.
+
+## Voice tracking from the browser
+
+The **Voice tracks** tab records a DJ break with your microphone and books it for the open song
+change, the same as an announcer program's break (see [Announcer breaks](#announcer-breaks-dj-breaks-news-and-weather)).
+It needs breaks turned on for the station (`[breaks] enabled = true`, with saved-point playback);
+otherwise the tab says why it cannot take a voice track. No token is needed: the tab uses your
+signed-in browser.
+
+The browser lets a page use the microphone only over a secure connection: open AutoDJ over HTTPS,
+or at `http://localhost:<port>` on the station's own computer. On a plain `http://` address from
+another computer the tab says so instead of recording.
+
+The tab shows the open song change: the ending song, the next song, how long the next song's
+intro is, the time left to book it and roughly when it airs. That change is the one after the next
+song, because the next one is already mixed. The time left counts down on the page; it is not
+read out on its own.
+
+1. Choose **Record**. The first time, the browser asks to use the microphone. Speak, then choose
+   **Record** again to stop. **Alt+R** starts and stops recording from anywhere in the tab without
+   moving focus, which suits a screen reader user who wants to stay on another control.
+2. Choose **Listen back** to hear the take, on the Preview output device when one is chosen in
+   Settings, Sound (headphones, say). **Record** again replaces it; **Discard recording**
+   throws it away.
+3. Choose the **Placement**: **Automatic** (follows `[breaks] dj_placement`; the description under
+   it says what it will do for this change), **Talk up the next song's intro** (your voice ends as
+   the vocal starts), or **Standalone, between the songs**. For a talk-up, **Start over the ending
+   song's outro** lets your voice begin while the ending song plays out.
+4. Choose **Book voice track**. The browser turns the take into a mono WAV at 44.1 kHz and
+   uploads it; AutoDJ trims the silence before and after your voice as it does for any break.
+
+The recording state is said once when recording starts and stops, then once a minute, and 30
+seconds before the length limit or before the song change closes. Recording stops by itself at
+three minutes, or sooner at the station's `max_seconds`, or when `max_upload_mb` could not hold
+that much WAV (about 5 MB per minute). Three minutes is the browser's own cap: booking decodes the
+whole take in the page, so the length is what keeps the page's memory down (about 80 MB at most).
+Recording also stops, keeping the take and letting the microphone go, when you leave the Voice
+tracks tab or the page is hidden (another browser tab, a minimised window); that is said once.
+
+If the song change moves on before you book, the tab says which change is open now. When the open
+change has the same two songs (it was planned again), **Book voice track** books the take there.
+When it has other songs, the take is not booked: record again for those songs, or, if what you
+said still fits, use **Listen back** and then choose **Book voice track** again. Errors, such as a
+blocked or missing microphone or a Cancel that failed, are shown under the Record heading and
+linked to the control they are about.
+
+**Booked voice tracks** lists what became of each voice track (waiting, mixed in, on the air,
+aired, dropped or expired, with the reason). **Cancel** drops one that is still waiting for its
+song change. Voice tracks share the station's break limits and quota with announcer breaks:
+`max_queued`, `max_per_slot` and `quota_mb`. Uploads and cancels count against
+`requests_per_minute` for the station.
+
+For scripts and other stations, the routes are `GET`, `POST` and `DELETE` under
+`/api/voice-tracks` and `/api/stations/<slug>/voice-tracks`. They take the browser session and the
+page's `Origin`, never an announcer token. `POST` takes the announcer upload's fields (`slot_id`,
+`ending_id`, `upcoming_id`, `placement`, `allow_outro` and `file`), with no `kind`: a voice track is
+always a DJ break.
 
 ## Play log export
 
@@ -1969,6 +2126,71 @@ How long a run takes grows with the library. On a synthetic 77,000-song library 
 categories and a seven-step clockwheel, an older four-core PC (2018) simulated a week (about 2,500
 songs) in about two minutes, and in a little over three with the DMCA limits on.
 
+## Hour preview and backtiming
+
+Now Playing > **Hour preview** lists what the station plays next, with the time each item is
+expected to start, and says how the hour lands: how early or late the song changes fall against
+the top of the hour, each clockwheel restart and each scheduled event. Choose the next 30
+minutes, hour, 2 hours or 3 hours under **Show**.
+
+Each row says in its Status column whether it is fixed or predicted:
+
+- **Fixed: on the air**: the song playing now, with the liners and breaks mixed into it.
+- **Fixed: ready to play**: what the server has already rendered, with its liners and breaks
+  (server audio and stream mode only).
+- **Fixed: picked**: the song chosen to follow, and with `[breaks] enabled = true` the song after
+  it (the open song change) and its liners.
+- **Fixed: booked break**: an announcer break booked on the open song change.
+- **Fixed: in the queue**: the request queue, which plays before any pick.
+- **Predicted**: the rest, from a dry run of the station's own picker that starts where the
+  fixed part ends, with the station's clockwheel place, play history, repeat rules, DMCA limits,
+  categories and schedule. It is the same dry run the rotation tester uses (see
+  [Testing the rotation](#testing-the-rotation)), so it never touches the air: the station's
+  random choices, clockwheel place, history and library are only read.
+
+Backtiming goes to each fixed point in the span:
+
+- **Top of the hour**: the nearer song change counts. "Lands about 35 seconds early" means the
+  song change nearest the hour comes 35 seconds before it; the sentence names the song that
+  causes it and whether that song is fixed or predicted. Liners and breaks that run straight into
+  a song start its song change.
+- **Clockwheel restart**: the station restarts the clockwheel at the nearer song change, as it
+  does on the air, so the preview says how early or late that is.
+- **Scheduled events**: a soft event waits for the song playing to end, so the preview says how
+  late it runs; a hard event runs on time and the preview says how much of the song it cuts.
+
+The first top of the hour (or clockwheel restart) is the card's summary. **Refresh preview** says
+it once; **Shift+H** says it from any tab. While the card is open and Now Playing is showing, the
+table refreshes every 30 seconds and shortly after the song changes, changing cells in place,
+saying nothing and leaving focus where it is; if those refreshes start failing, the failure is
+said once, and not again until one succeeds. Choosing another span under **Show** says the new
+summary once. If more than 24 fixed points fall in the span, the first 24 are timed and the card
+says so. Times show as "2:04:30 PM" and read as "2:04 PM and
+30 seconds"; lengths show as "3:45" and read as "3 minutes 45 seconds". Times are in the station
+time zone (`[server] station_timezone`); clockwheel restarts are worked out in the computer's own
+time zone, as the player does.
+
+The page asks the server only while the card is open. Each preview runs on one worker thread
+below normal priority, never on the web server's event loop and never on the audio threads. The
+dry run stops after 80 songs, or once it has worked about 4 seconds, and says so; the time limit
+is checked before each pick, so one slow pick can run a little past it. A preview is reused for
+45 seconds while nothing new is fixed, longer than the page's 30-second refresh, so an open card
+costs no dry run until a song changes. Several pages asking for the same station and span at once
+share one preview, at most 8 different previews wait for the worker, and one more is answered
+with 503 and "try again in a few seconds". At shutdown the server waits for the worker; if it has
+not stopped, the server logs an error and leaves the library open rather than close it under the
+preview. The same fixed part always gives the same prediction, so a refresh does not reshuffle
+the predicted songs. Every station has its own:
+`GET /api/hour-preview?minutes=60` for the default station and
+`GET /api/stations/<name>/hour-preview` for any station, each answering with JSON that holds the
+items, the fixed points with their sentences, and the summary.
+
+What it approximates, as the rotation tester does: a song runs from its saved start to its segue,
+or its length less the crossfade; liners and booked breaks add their full length; automatic
+liners, time checks and carts are left out; and a scheduled change of song picking applies from
+the first song after its time. It shows where the last songs of the hour land; it does not yet
+choose them to fit.
+
 ## Backup
 
 `autodj backup` writes one ZIP file holding:
@@ -2147,7 +2369,7 @@ such as a promotion that must stop after the event. Both days are included, and 
 read in the station time zone (`[server] station_timezone`). Leave both empty to play the clip
 on any day.
 
-- **Voice liners:** in Queue & Search, **Browse voice liners**, press **Play dates** on a liner.
+- **Voice liners:** in **Settings > Voice liners**, press **Play dates** on a liner.
   Outside its dates, automatic liners (in the browser and on the server), clockwheel liner steps
   and scheduled liner events skip it, and a scheduled event's run says why in Recent runs. The
   liner list says the dates in words, such as "Plays until 26 December 2026", and adds "Skipped

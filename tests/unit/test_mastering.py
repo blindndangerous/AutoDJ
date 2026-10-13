@@ -462,3 +462,12 @@ def test_installed_stereotool_recovers_when_output_limiter_exits() -> None:
     finally:
         master.close()
     assert all(proc is not None and proc.poll() is not None for proc in processes)
+
+
+def test_a_second_close_returns_at_once() -> None:
+    master = ContinuousMaster()
+    master.close()
+    start = time.monotonic()
+    master.close()  # a failed start's clean-up, then a stop
+    assert time.monotonic() - start < 0.1
+    assert not master._worker.is_alive()

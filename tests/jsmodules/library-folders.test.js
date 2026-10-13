@@ -16,6 +16,7 @@ afterEach(() => { for (const controls of installed.splice(0)) controls.destroy()
 function mount() {
   document.body.innerHTML = `
     <button id="tab-now">Now Playing</button><section id="panel-now" hidden></section>
+    <button id="tab-queue">Queue & Search</button><section id="panel-queue" data-view="queue" hidden><select id="library-kind"><option value="music">Music</option></select></section>
     <button id="tab-track-info">Track info</button>
     <section id="panel-track-info" hidden><h2 id="track-info-heading" tabindex="-1">Track info</h2></section>
     <p id="track-info-empty">Choose a track</p><dl id="track-info-details" hidden></dl>
@@ -23,7 +24,7 @@ function mount() {
       <input id="source-folder-path"><select id="source-folder-kind"><option value="music">Music</option><option value="liner">Liner</option></select>
       <input id="source-folder-recursive" type="checkbox" checked><input id="source-folder-advanced" type="checkbox" checked>
       <input id="source-folder-override-tags" type="checkbox" aria-describedby="source-folder-override-tags-help"><p id="source-folder-override-tags-help">Rescan refreshes populated file tags. Hand-edited BPM and key values and cue points are retained.</p><button id="source-folder-add"></button><button id="source-folder-rescan"></button>
-      <p id="source-folders-status"></p><ul id="source-folders"></ul>
+      <p id="source-folders-status"></p><p id="source-folders-progress"></p><table id="source-folders-table"><caption>Registered music and voice liner folders</caption><tbody id="source-folders"></tbody></table>
     </section>
     <button id="edit-current-points"></button><section id="points-editor" hidden>
       <h3 id="points-heading">Song points</h3><p id="points-liner-help" hidden></p><small id="negative-overlap-help" hidden>A negative value delays the liner. Preview and Use preview position are unavailable for negative values.</small><label id="points-allow-outro-label" hidden><input id="points-allow-outro" type="checkbox"> Allow start over outro</label>
@@ -53,6 +54,15 @@ document.addEventListener("click", (event) => {
 });
 
 describe("clock folder and points controls", () => {
+  it("names folder tables by caption and matches the queue column to its action", () => {
+    const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
+    const page = document.createElement("template");
+    page.innerHTML = html;
+    expect(page.content.querySelector("#source-folders").hasAttribute("aria-label")).toBe(false);
+    expect(page.content.querySelector("#source-folders-table caption").textContent).toBe("Registered music and voice liner folders");
+    expect(page.content.querySelectorAll("#library-results-table th")[3].textContent).toBe("Add to queue");
+  });
+
   it("sends the embedded-tag override only when checked", async () => {
     const request = vi.fn(async () => ({}));
     installLibraryFolders({ document, request });
@@ -181,7 +191,7 @@ describe("clock folder and points controls", () => {
     installLibraryFolders({ document, request });
     await request.mock.results[0]?.value;
     const list = document.getElementById("source-folders");
-    list.innerHTML = `<li data-id="abc"><input type="checkbox" data-field="recursive"></li><li data-id="abc"><button data-action="remove"></button></li>`;
+    list.innerHTML = `<tr data-id="abc"><td><input type="checkbox" data-field="recursive"></td></tr><tr data-id="abc"><td><button data-action="remove"></button></td></tr>`;
     const recursion = list.querySelector("input");
     recursion.checked = true;
     recursion.dispatchEvent(new Event("change", { bubbles: true }));
@@ -192,20 +202,69 @@ describe("clock folder and points controls", () => {
     expect(request).toHaveBeenCalledWith("/api/library/folders/abc", { method: "DELETE" });
   });
 
-  it("holds a folder checkbox while its update is in flight", async () => {
-    document.getElementById("source-folders").innerHTML = '<li data-id="abc"><input type="checkbox" data-field="recursive"></li>';
+  it("keeps checkbox focus and blocks another toggle while saving, then survives a redraw", async () => {
+    document.getElementById("panel-library").hidden = false;
+    let folders = [{ id: "abc", path: "M:/", kind: "music", recursive: false, advanced: false }];
     let finish;
-    const request = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
-    installLibraryFolders({ document, request });
+    const request = vi.fn((url, options) => options?.method === "PATCH"
+      ? new Promise((resolve) => { finish = resolve; })
+      : Promise.resolve({ folders }));
+    const controls = installLibraryFolders({ document, request });
+    await new Promise((resolve) => setTimeout(resolve, 0));
     const checkbox = document.querySelector('[data-field="recursive"]');
-    checkbox.checked = true;
-    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
-    expect(checkbox.disabled).toBe(true);
-    expect(request).toHaveBeenCalledTimes(1);
+    checkbox.focus();
+    checkbox.click();
+    expect(checkbox.disabled).toBe(false);
+    expect(checkbox.getAttribute("aria-disabled")).toBe("true");
+    expect(document.activeElement).toBe(checkbox);
+    checkbox.click();
+    expect(checkbox.checked).toBe(true);
+    expect(request.mock.calls.filter(([, options]) => options?.method === "PATCH")).toHaveLength(1);
+    folders = [{ ...folders[0], recursive: true }];
+    await controls.refresh();
+    expect(document.activeElement).toBe(checkbox);
     finish({});
-    await vi.waitFor(() => expect(checkbox.disabled).toBe(false));
+    await vi.waitFor(() => expect(document.querySelector('[data-field="recursive"]')).not.toBe(checkbox));
+    const replacement = document.querySelector('[data-field="recursive"]');
+    expect(replacement.checked).toBe(true);
+    expect(replacement.hasAttribute("aria-disabled")).toBe(false);
+    expect(document.activeElement).toBe(replacement);
   });
 
+  it("restores the checkbox after a failed save without losing focus", async () => {
+    document.getElementById("panel-library").hidden = false;
+    const request = vi.fn(async (url, options) => {
+      if (options?.method === "PATCH") throw new Error("save failed");
+      return { folders: [{ id: "abc", path: "M:/", kind: "music", recursive: false, advanced: false }] };
+    });
+    installLibraryFolders({ document, request });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const checkbox = document.querySelector('[data-field="recursive"]');
+    checkbox.focus();
+    checkbox.click();
+    await vi.waitFor(() => expect(checkbox.hasAttribute("aria-disabled")).toBe(false));
+    expect(checkbox.checked).toBe(false);
+    expect(document.activeElement).toBe(checkbox);
+    expect(document.getElementById("source-folders-status").textContent).toContain("save failed");
+  });
+
+  it("reaches both folder checkboxes with Space in separate grid cells", async () => {
+    document.getElementById("panel-library").hidden = false;
+    const request = vi.fn(async () => ({ folders: [{ id: "abc", path: "M:/", kind: "music", recursive: false, advanced: false }] }));
+    installLibraryFolders({ document, request });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const row = document.querySelector("#source-folders tr[data-id=abc]");
+    const cells = row.querySelectorAll("td");
+    expect(cells).toHaveLength(5);
+    const recursive = cells[2];
+    recursive.focus();
+    recursive.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith("/api/library/folders/abc", expect.objectContaining({ body: JSON.stringify({ recursive: true }) })));
+    const advanced = cells[3];
+    advanced.focus();
+    advanced.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith("/api/library/folders/abc", expect.objectContaining({ body: JSON.stringify({ advanced: true }) })));
+  });
   it("keeps folder-control focus across unchanged polls and restores focus if a folder disappears", async () => {
     document.getElementById("panel-library").hidden = false;
     let folders = [{ id: "abc", path: "M:/", kind: "music", recursive: false, advanced: false }];
@@ -222,43 +281,34 @@ describe("clock folder and points controls", () => {
     controls.destroy();
   });
 
-  it("loads the Browse library folder choice once each time Queue & Search is shown", async () => {
+  it("loads folder choices when Queue opens and polls management only in Library tools", async () => {
     vi.useFakeTimers();
     try {
-      const queue = document.createElement("section");
-      queue.dataset.view = "queue";
-      queue.id = "panel-queue";
+      const queue = document.getElementById("panel-queue");
       queue.hidden = true;
-      queue.innerHTML = '<select id="library-browse-folder"><option value="all-music">All music</option></select>';
-      document.body.append(queue);
-      const folders = [{ id: 3, path: "M:/rock", kind: "music", recursive: true, advanced: true }];
-      const request = vi.fn(async () => ({ folders }));
-      const onFolders = vi.fn();
-      installLibraryFolders({ document, request, onFolders });
+      const library = document.getElementById("panel-library");
+      library.hidden = true;
+      const request = vi.fn(async () => ({ folders: [] }));
+      installLibraryFolders({ document, request });
       expect(request).not.toHaveBeenCalled();
-
       queue.hidden = false;
       window.dispatchEvent(new window.HashChangeEvent("hashchange"));
       await vi.advanceTimersByTimeAsync(0);
       expect(request).toHaveBeenCalledTimes(1);
-      expect(onFolders).toHaveBeenCalledWith(folders);
-      // No polling while the tab stays open, and no second load for a
-      // hashchange that leaves it shown.
-      window.dispatchEvent(new window.HashChangeEvent("hashchange"));
       await vi.advanceTimersByTimeAsync(10000);
       expect(request).toHaveBeenCalledTimes(1);
-
       queue.hidden = true;
+      library.hidden = false;
       window.dispatchEvent(new window.HashChangeEvent("hashchange"));
-      queue.hidden = false;
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(request).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(request).toHaveBeenCalledTimes(4);
+      library.hidden = true;
       window.dispatchEvent(new window.HashChangeEvent("hashchange"));
-      await vi.advanceTimersByTimeAsync(0);
-      expect(request).toHaveBeenCalledTimes(2);
-      // Same folders: the choice is not rebuilt under the user's focus.
-      expect(onFolders).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.useRealTimers();
-    }
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(request).toHaveBeenCalledTimes(4);
+    } finally { vi.useRealTimers(); }
   });
 
   it("updates browser folders only when the registered folder signature changes", async () => {

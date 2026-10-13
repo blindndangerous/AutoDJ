@@ -83,6 +83,7 @@
     <button type="button" role="tab" id="tab-now"      data-view="now"      aria-selected="true"  tabindex="0">Now Playing</button>
     <button type="button" role="tab" id="tab-queue"    data-view="queue"    aria-selected="false" tabindex="-1">Queue &amp; Search</button>
     <button type="button" role="tab" id="tab-carts"    data-view="carts"    aria-selected="false" tabindex="-1">Carts</button>
+    <button type="button" role="tab" id="tab-voice"    data-view="voice"    aria-selected="false" tabindex="-1">Voice tracks</button>
     <button type="button" role="tab" id="tab-track-info" data-view="track-info" aria-selected="false" tabindex="-1">Track info</button>
     <button type="button" role="tab" id="tab-history"  data-view="history"  aria-selected="false" tabindex="-1">History</button>
     <button type="button" role="tab" id="tab-settings" data-view="settings" aria-selected="false" tabindex="-1">Settings</button>
@@ -304,6 +305,60 @@
          is the one track-change announcement.  Shift+N speaks it. -->
     <p id="next-track-text"><span aria-hidden="true">—</span><span class="visually-hidden">None</span></p>
     <p id="handoff-status" aria-live="polite" aria-atomic="true" class="setting-desc"></p>
+  </details>
+
+  <!-- Hour preview (#126, hour-preview.js): what plays next, when it is
+       expected to start, and how the hour lands against the top of the
+       hour, clockwheel restarts and scheduled events.  Closed until opened,
+       because each preview runs a dry run of the picker on the server.
+       While it is open and Now Playing is showing, the table refreshes
+       every 30 seconds and when the song changes: cells change in place,
+       focus stays where it is and nothing is said (a failure is said once).
+       Refresh preview and a new span under Show say the new summary once
+       through #hour-preview-status; Shift+H says it from anywhere.  Fixed or predicted is a word in every row, never
+       only a colour or a style. -->
+  <details class="card" id="hour-preview-card">
+    <summary><h2>Hour preview</h2></summary>
+    <p class="setting-desc" id="hour-preview-desc">Estimated start times for what plays next. Fixed items are already decided: the song on the air, what is ready to play, the songs picked to follow, booked breaks and the queue. Predicted items come from a dry run of the station's song picking and can change. Nothing on air changes.</p>
+    <div class="settings-row">
+      <label for="hour-preview-span">Show</label>
+      <select id="hour-preview-span" aria-describedby="hour-preview-desc">
+        <option value="30">Next 30 minutes</option>
+        <option value="60" selected>Next hour</option>
+        <option value="120">Next 2 hours</option>
+        <option value="180">Next 3 hours</option>
+      </select>
+    </div>
+    <button type="button" id="hour-preview-refresh">Refresh preview</button>
+    <!-- Not live: the summary changes with every refresh.  Refresh
+         preview and Shift+H say it on demand. -->
+    <p id="hour-preview-summary">Open this card to see the hour ahead.</p>
+    <p id="hour-preview-stopped" class="setting-desc" hidden></p>
+    <section id="hour-preview-backtiming" aria-labelledby="hour-preview-backtiming-heading" hidden>
+      <h3 id="hour-preview-backtiming-heading">Backtiming</h3>
+      <ul id="hour-preview-points" role="list"></ul>
+      <p id="hour-preview-points-note" class="setting-desc" hidden></p>
+    </section>
+    <table id="hour-preview-table" hidden>
+      <caption id="hour-preview-table-caption">What plays next</caption>
+      <colgroup>
+        <col class="hp-starts">
+        <col class="hp-what">
+        <col class="hp-length">
+        <col class="hp-status">
+      </colgroup>
+      <thead>
+        <tr>
+          <th scope="col">Starts</th>
+          <th scope="col">What</th>
+          <th scope="col">Length</th>
+          <th scope="col">Status</th>
+        </tr>
+      </thead>
+      <tbody id="hour-preview-tbody"></tbody>
+    </table>
+    <ul id="hour-preview-notes" class="setting-desc" role="list" hidden></ul>
+    <div id="hour-preview-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
   </details>
 
   <!-- Lyrics — collapsed disclosure, shown only when the current track
@@ -1175,7 +1230,7 @@
         <button type="button" id="preview-device-choose" aria-describedby="preview-device-choose-desc">Show preview device names</button>
       </div>
       <span class="setting-desc" id="preview-device-desc">
-        Where the cue point preview in Track info plays, for example headphones, so you can listen to a song before it airs. Previews never go through the station’s mix, so they are never on the stream or in a recording, and they reach the same speakers as the browser mix only when both use the same device. On a device of its own the preview has its own volume, in its player, and the page’s volume and Mute leave it alone. The choice is saved in this browser.
+        Where the cue point preview in Track info and Listen back in Voice tracks play, for example headphones, so you can listen to a song or your recording before it airs. Previews never go through the station’s mix, so they are never on the stream or in a recording, and they reach the same speakers as the browser mix only when both use the same device. On a device of its own the preview has its own volume, in its player, and the page’s volume and Mute leave it alone. The choice is saved in this browser.
         <span id="preview-device-choose-desc">Show preview device names asks for the microphone once, only to read the device names, and stops it straight away.</span>
       </span>
       <p class="setting-desc" id="preview-device-note" hidden></p>
@@ -1274,7 +1329,7 @@
   <div class="card" role="tabpanel" id="spanel-liners" aria-labelledby="stab-liners" hidden>
     <h3>Voice liners</h3>
     <p class="card-desc">
-      IDs, jingles and voice tracks. Add liner folders in Library tools or upload a file below. Use Track info beside a liner in Queue &amp; Search, Browse voice liners, to edit its Segue and Overlap start.
+      IDs, jingles and voice tracks. Add liner folders in Library tools or upload a file below. Use Track info beside a liner in Queue &amp; Search to edit its Segue and Overlap start.
     </p>
 
     <div id="ln-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
@@ -1368,8 +1423,16 @@
       <span class="setting-desc" id="ln-upload-replace-desc">
         When a liner with the same file name is already in the folder, overwrite it.  Unticked, that upload is refused.
       </span>
-      <p>Browse, delete and open Track info for your voice liners in Queue &amp; Search, under Browse voice liners.</p>
     </fieldset>
+    <p id="ln-browse-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></p>
+    <h4 id="ln-files-heading">Voice liner files</h4>
+    <ul id="ln-file-list" role="list" aria-labelledby="ln-files-heading" tabindex="-1"></ul>
+    <form id="ln-dates-form" novalidate hidden><fieldset><legend id="ln-dates-legend">Play dates</legend><p id="ln-dates-error" class="field-error" hidden></p>
+      <div class="settings-row"><label for="ln-not-before">Not before</label><input type="date" id="ln-not-before" aria-describedby="ln-dates-desc"></div>
+      <div class="settings-row"><label for="ln-not-after">Do not play after</label><input type="date" id="ln-not-after" aria-describedby="ln-dates-desc"></div>
+      <span class="setting-desc" id="ln-dates-desc">Optional. Both days are included, in the station time zone. Outside them, automatic liners, clockwheel liner steps, scheduled liner events and Test skip this liner; a cart that uses it still plays it. Leave both empty to play it on any day.</span>
+      <button type="submit" id="ln-dates-save">Save dates</button><button type="button" id="ln-dates-cancel">Cancel</button>
+    </fieldset></form>
   </div>
 
   <div class="card" role="tabpanel" id="spanel-time-checks" aria-labelledby="stab-time-checks" hidden>
@@ -1926,80 +1989,19 @@
     <button type="button" id="queue-clear">Clear queue</button>
   </details>
 
-  <!-- Search.  Open by default: the empty-queue message above tells the
-       user to search, so the field it refers to must not be hidden behind
-       a disclosure. -->
-  <details class="card" open>
-    <summary><h2>Search Library</h2></summary>
-    <div class="search-row">
-      <!-- Fix 6: label provides accessible name; removed duplicate aria-label -->
-      <label for="search-input"
-             style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap">
-        Search by artist or title
-      </label>
-      <!-- No aria-expanded / aria-controls: this is a plain search field,
-           not a combobox, and the result count is announced through the
-           #search-count live region. -->
-      <input type="search"
-             id="search-input"
-             placeholder="Artist or title…"
-             autocomplete="off">
-      <button id="btn-search" aria-label="Search">Search</button>
-    </div>
-    <!-- Visible AND announced: the same node is the sighted result count
-         and the polite region, so there is exactly one source of truth. -->
+  <!-- Search and browse share one paginated result list. -->
+  <section class="card flow-form" aria-labelledby="search-library-heading">
+    <h2 id="search-library-heading">Search &amp; browse library</h2>
+    <label for="library-kind">Type</label>
+    <select id="library-kind"><option value="music">Music</option><option value="liner">Voice liners</option></select>
+    <label for="library-folder">Folder</label>
+    <select id="library-folder"><option value="all">All folders</option></select>
+    <label for="search-input">Search text (optional)</label>
+    <div class="search-row"><input type="search" id="search-input" placeholder="Artist or title…" autocomplete="off"><button id="btn-search" type="button">Search</button></div>
     <div id="search-count" aria-live="polite" aria-atomic="true"></div>
-    <!-- aria-atomic="false": announce count separately, not the entire list -->
-    <ul id="search-results" role="list" aria-label="Search results"></ul>
-  </details>
-
-  <!-- Browse library.  The folder choice lists the registered music and
-       voice liner folders; library-folders.js refreshes it each time this
-       tab is shown.  Adding and removing folders stays in Library tools. -->
-  <section class="card flow-form" aria-labelledby="browse-library-heading">
-    <h2 id="browse-library-heading">Browse library</h2>
-    <label for="library-browse-folder">Folder</label>
-    <select id="library-browse-folder"><option value="all-music">All music</option><option value="all-liners">All voice liners</option></select>
-    <label for="library-browse-query">Search text (optional)</label>
-    <input id="library-browse-query" type="search">
-    <button type="button" id="library-browse">Browse</button>
-    <p id="library-browse-count" aria-live="polite" aria-atomic="true"></p>
-    <ul id="library-browse-results" role="list" aria-label="Library tracks"></ul>
+    <table id="library-results-table" role="grid"><caption class="visually-hidden">Library tracks</caption><thead><tr><th scope="col">Track</th><th scope="col">Play now</th><th scope="col">Play next</th><th scope="col">Add to queue</th><th scope="col">Track info</th></tr></thead><tbody id="search-results"></tbody></table>
     <button type="button" id="library-browse-previous" disabled>Previous</button>
     <button type="button" id="library-browse-next" disabled>Next</button>
-  </section>
-
-  <!-- Browse voice liners: the liner files (liners.js).  #ln-browse-status
-       says the result of a Delete here, where it is heard: the Settings
-       status region is hidden while this tab is shown.  The list takes
-       focus (tabindex -1) when the last liner is deleted.  Uploading stays
-       in Settings, Voice liners. -->
-  <section class="card" aria-labelledby="browse-liners-heading">
-    <h2 id="browse-liners-heading">Browse voice liners</h2>
-    <div id="ln-browse-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
-    <ul id="ln-file-list" role="list" aria-label="Voice liner files" tabindex="-1"></ul>
-    <!-- Play dates opens this form for one liner (liners.js).  Save and
-         Cancel go back to that liner's Play dates button; a refused date is
-         named in #ln-dates-error, linked to its field and focused. -->
-    <form id="ln-dates-form" novalidate hidden>
-      <fieldset>
-        <legend id="ln-dates-legend">Play dates</legend>
-        <p id="ln-dates-error" class="field-error" hidden></p>
-        <div class="settings-row">
-          <label for="ln-not-before">Not before</label>
-          <input type="date" id="ln-not-before" aria-describedby="ln-dates-desc">
-        </div>
-        <div class="settings-row">
-          <label for="ln-not-after">Do not play after</label>
-          <input type="date" id="ln-not-after" aria-describedby="ln-dates-desc">
-        </div>
-        <span class="setting-desc" id="ln-dates-desc">
-          Optional. Both days are included, in the station time zone. Outside them, automatic liners, clockwheel liner steps, scheduled liner events and Test skip this liner; a cart that uses it still plays it. Leave both empty to play it on any day.
-        </span>
-        <button type="submit" id="ln-dates-save">Save dates</button>
-        <button type="button" id="ln-dates-cancel">Cancel</button>
-      </fieldset>
-    </form>
   </section>
 
   </section>
@@ -2110,6 +2112,82 @@
     </div>
   </section>
   <!-- ============================================================
+       View: Voice tracks -- record a DJ break in the browser for the
+       open song change and book it (modules/voice-tracker.js, #128).
+       The module finds everything inside #voice-tracker.  The timer and
+       the time left are on the page, never live: the recording state is
+       said once through #vt-status.
+       ============================================================ -->
+  <section data-view="voice" id="panel-voice" role="tabpanel" hidden aria-labelledby="tab-voice">
+    <h2 id="voice-heading">Voice tracks</h2>
+    <div id="voice-tracker">
+      <p id="vt-help">
+        Record a DJ break for the open song change, listen back, then book it.
+        The song change after the next song is the one still open: the next one is already mixed.
+        Your voice plays over the next song's intro (a talk-up) or between the songs.
+        Alt+R starts and stops recording from anywhere in this tab without moving focus.
+      </p>
+
+      <section class="card" aria-labelledby="vt-slot-heading">
+        <h3 id="vt-slot-heading">Open song change</h3>
+        <p id="vt-unavailable">Loading the open song change.</p>
+        <dl id="vt-slot" class="vt-facts" hidden>
+          <dt>Ending song</dt><dd id="vt-ending"></dd>
+          <dt>Next song</dt><dd id="vt-upcoming"></dd>
+          <dt>Intro of the next song</dt><dd id="vt-intro"></dd>
+          <dt>Time left to book</dt><dd id="vt-closes"></dd>
+          <dt>Airs in about</dt><dd id="vt-airs"></dd>
+        </dl>
+      </section>
+
+      <section class="card" aria-labelledby="vt-record-heading">
+        <h3 id="vt-record-heading">Record</h3>
+        <!-- A refusal in words, linked to the control it is about. -->
+        <p id="vt-error" class="field-error" hidden></p>
+        <button type="button" id="vt-record" aria-pressed="false" aria-describedby="vt-record-desc">Record</button>
+        <span class="setting-desc" id="vt-record-desc">
+          Press to start recording from your microphone, and again (or Alt+R) to stop.
+          The browser asks for the microphone the first time. Recording stops at 3 minutes,
+          or when you leave this tab or the page is hidden.
+        </span>
+        <p id="vt-timer">Not recording.</p>
+        <!-- Played by Listen back, never shown: one named toggle instead of
+             the browser's own player controls.  A preview, so it plays on
+             the Preview output device (modules/preview-output.js). -->
+        <audio id="vt-playback" preload="auto" hidden data-preview-output></audio>
+        <div class="settings-row">
+          <label for="vt-placement">Placement</label>
+          <select id="vt-placement" aria-describedby="vt-placement-desc">
+            <option value="auto">Automatic</option>
+            <option value="talk_up">Talk up the next song's intro</option>
+            <option value="standalone">Standalone, between the songs</option>
+          </select>
+        </div>
+        <span class="setting-desc" id="vt-placement-desc"></span>
+        <div class="settings-check">
+          <input type="checkbox" id="vt-allow-outro" aria-describedby="vt-allow-outro-desc">
+          <label for="vt-allow-outro">Start over the ending song's outro</label>
+        </div>
+        <span class="setting-desc" id="vt-allow-outro-desc">
+          For a talk-up: your voice may begin while the ending song plays out, not only after it.
+        </span>
+        <div class="vt-actions">
+          <button type="button" id="vt-listen" aria-pressed="false">Listen back</button>
+          <button type="button" id="vt-book">Book voice track</button>
+          <button type="button" id="vt-discard">Discard recording</button>
+        </div>
+        <div id="vt-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+      </section>
+
+      <section class="card" aria-labelledby="vt-booked-heading">
+        <h3 id="vt-booked-heading">Booked voice tracks</h3>
+        <p id="vt-none">No voice tracks yet.</p>
+        <!-- role="list": list-style none drops the list role in Safari. -->
+        <ul id="vt-list" role="list"></ul>
+      </section>
+    </div>
+  </section>
+  <!-- ============================================================
        View: Library tools — music and voice liner folders, index /
        enrich / analyse / prune / stats jobs and the index stats, run from
        the web UI.  Browsing is in Queue & Search.
@@ -2139,7 +2217,7 @@
         <p id="source-folder-override-tags-help">Rescan refreshes populated file tags. Hand-edited BPM and key values and cue points are retained.</p>
         <button type="button" id="source-folder-rescan">Rescan</button>
         <p id="source-folders-status">Loading folders…</p>
-        <ul id="source-folders" aria-label="Registered music and liner folders"><li>No folders loaded.</li></ul>
+        <table id="source-folders-table" role="grid"><caption>Registered music and voice liner folders</caption><thead><tr><th scope="col">Type</th><th scope="col">Path</th><th scope="col">Add subfolders</th><th scope="col">Advanced analysis</th><th scope="col">Actions</th></tr></thead><tbody id="source-folders"><tr><td colspan="5">No folders loaded.</td></tr></tbody></table>
       </section>
 
       <!-- Stats card -->
@@ -2496,6 +2574,7 @@
     <dt><kbd>Esc</kbd></dt><dd>Close this dialog</dd>
     <dt style="margin-top:0.5rem">Number keys 1 to 9 and 0, <kbd><span aria-hidden="true">-</span><span class="visually-hidden">minus</span></kbd>, <kbd><span aria-hidden="true">=</span><span class="visually-hidden">equals</span></kbd></dt><dd style="margin-top:0.5rem">Play carts 1 to 12 on the cart page shown. Only with focus on the cart wall, in the Carts tab.</dd>
     <dt><kbd>Page Up</kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd>Page Down</kbd></dt><dd>Previous <span aria-hidden="true">/</span><span class="visually-hidden">or</span> next cart page. Only with focus on the cart wall.</dd>
+    <dt><kbd>Alt+R</kbd></dt><dd>Start <span aria-hidden="true">/</span><span class="visually-hidden">or</span> stop recording a voice track. Only while the Voice tracks tab shows; focus stays where it is.</dd>
     <dt style="margin-top:0.5rem"><kbd>Shift+T</kbd></dt><dd style="margin-top:0.5rem">Speak current track (artist – title)</dd>
     <dt><kbd>Shift+N</kbd></dt><dd>Speak next track (artist, title, BPM)</dd>
     <dt><kbd>Shift+R</kbd></dt><dd>Speak time remaining</dd>
@@ -2506,6 +2585,7 @@
     <dt><kbd>Shift+V</kbd></dt><dd>Speak volume, and whether muted</dd>
     <dt><kbd>Shift+Q</kbd></dt><dd>Speak how many tracks are queued, and the first one</dd>
     <dt><kbd>Shift+J</kbd></dt><dd>Speak the library job status</dd>
+    <dt><kbd>Shift+H</kbd></dt><dd>Speak how the hour lands, from the hour preview</dd>
   </dl>
   <p style="margin-top:1rem;color:var(--text-dim);font-size:0.9em">
     NVDA users: shortcuts work in focus mode (NVDA+Space to toggle).  In browse mode, NVDA intercepts the letter keys; switch to focus mode first, or press NVDA+F2 and then the shortcut to pass that one key through.

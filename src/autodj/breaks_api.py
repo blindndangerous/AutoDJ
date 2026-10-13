@@ -1,10 +1,17 @@
 """The breaks API: an announcer program feeds a station DJ breaks, news and weather (#88).
 
-Every route here is a machine route.  The security middleware lets a
-request in only with an ``Authorization: Bearer`` machine token that has
-the :data:`~autodj.machine_tokens.SCOPE_ANNOUNCER` scope, over HTTPS or
+Every ``announcer`` route here is a machine route.  The security middleware
+lets a request in only with an ``Authorization: Bearer`` machine token that
+has the :data:`~autodj.machine_tokens.SCOPE_ANNOUNCER` scope, over HTTPS or
 from this machine, with no ``Origin`` header; a browser session does not
 work here.  The token is bound to one station and works for no other.
+
+The ``voice-tracks`` routes (#128) are the browser's: an operator signed in
+to the web UI records a DJ break for the open song change and books it.
+They take the session cookie and, for a change, the page's ``Origin``, as
+every other browser route does, and never a machine token.  A voice track
+is a break like any other: the same checks, caps, decoding, quota and
+placement.
 
 The routes answer under ``/api/announcer/`` for the default station and
 ``/api/stations/<slug>/announcer/`` for any station by name:
@@ -16,6 +23,15 @@ The routes answer under ``/api/announcer/`` for the default station and
   or its songs changed, with the slot that is open now.
 * ``GET breaks`` and ``GET breaks/<id>``: what became of the breaks.
 * ``DELETE breaks/<id>``: drop a break that is still waiting.
+
+The voice tracker's routes answer under ``/api/voice-tracks`` and
+``/api/stations/<slug>/voice-tracks``:
+
+* ``GET voice-tracks``: the open slot, the limits, and the station's voice
+  tracks.
+* ``POST voice-tracks``: book one recording for the open slot, as an
+  announcer's upload, ``kind`` left out (always a DJ break).
+* ``DELETE voice-tracks/<id>``: cancel a voice track that is still waiting.
 
 Uploads stream to the station's announcements folder under a name the
 server makes up, are decoded off the event loop (one at a time, so a
@@ -43,8 +59,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from autodj.breaks import (
+    ANNOUNCER,
     EXTENSIONS,
     KINDS,
+    VOICE_TRACK,
     Break,
     BreakCues,
     BreakDesk,
@@ -52,6 +70,7 @@ from autodj.breaks import (
     SlotPlan,
     file_name,
     new_id,
+    placement_for,
     speech_cues,
     valid_id,
 )
@@ -72,6 +91,8 @@ ANNOUNCER_PREFIX = "/api/announcer/"
 ANNOUNCER_SCOPES = {ANNOUNCER_PREFIX: SCOPE_ANNOUNCER}
 #: The upload route, for the request-body cap.
 UPLOAD_PATH = ANNOUNCER_PREFIX + "breaks"
+#: The voice tracker's upload route (#128), a browser route with the same cap.
+VOICE_UPLOAD_PATH = "/api/voice-tracks"
 #: Room for the multipart framing and the form fields around the file.
 MULTIPART_OVERHEAD_BYTES = 64 * 1024
 #: Plays and queued requests the context lists.
@@ -271,14 +292,26 @@ def install_breaks(router: StationRouter) -> None:
 
     @router.post("/announcer/breaks", status_code=201)
     async def announcer_upload(station: StationDep, request: Request) -> JSONResponse:
-        """Upload one break for the open song change.
-
-        The body is read only after the token, the station, the declared
-        length and the station's room are checked, and room for it is held
-        while it arrives and decodes, so uploads in parallel cannot pass the
-        caps together.
-        """
+        """Upload one break for the open song change."""
         token, desk = announcer(request, station)
+        return await receive(station, request, desk, _UploadFields, token.name, ANNOUNCER)
+
+    async def receive(
+        station: StationRuntime,
+        request: Request,
+        desk: BreakDesk,
+        form: type[_UploadFields],
+        who: str,
+        source: str,
+    ) -> JSONResponse:
+        """Take one break upload for the open song change: the announcer's or the voice tracker's.
+
+        The body is read only after the station, the declared length and
+        the station's room are checked, and room for it is held while it
+        arrives and decodes, so uploads in parallel cannot pass the caps
+        together.  *who* names the sender in the log; *source* says where
+        the break came from.
+        """
         require_breaks(station, desk)
         config = desk.config
         cap = config.max_upload_bytes
@@ -300,7 +333,7 @@ def install_breaks(router: StationRouter) -> None:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + BODY_DEADLINE_SECONDS + size / MIN_BODY_BYTES_PER_SECOND
         try:
-            fields, upload = await _within(deadline, _read_form(request))
+            fields, upload = await _within(deadline, _read_form(request, form))
             try:
                 suffix = Path(upload.filename or "").suffix.lower()
                 if suffix not in EXTENSIONS:
@@ -345,6 +378,9 @@ def install_breaks(router: StationRouter) -> None:
             assert path is not None  # stored, or the request has already answered
             cues = await decode_one(path, config.max_seconds)
             now = time.time()
+            label = _clean_label(fields.label)
+            if not label and source == VOICE_TRACK:
+                label = _clean_label(_pair_label(slot))
             item = Break(
                 break_id=break_id,
                 kind=fields.kind,
@@ -356,10 +392,11 @@ def install_breaks(router: StationRouter) -> None:
                 path=path,
                 size=stored,
                 cues=cues,
-                label=_clean_label(fields.label),
-                token_name=token.name,
+                label=label,
+                token_name=who,
                 created_at=now,
                 expires_at=now + (fields.expires_s or config.default_expires_seconds),
+                source=source,
             )
             try:
                 await asyncio.to_thread(station.player.book_break, item)
@@ -388,16 +425,21 @@ def install_breaks(router: StationRouter) -> None:
 
     @router.get("/announcer/breaks")
     async def announcer_breaks(station: StationDep, request: Request) -> JSONResponse:
-        """The breaks waiting to air, then the finished ones, newest first."""
+        """The announcer's breaks waiting to air, then the finished ones, newest first.
+
+        Voice tracks booked in the browser are the operators', not the
+        announcer's: they are not listed here.
+        """
         _token, desk = announcer(request, station)
-        return JSONResponse({"breaks": [item.view() for item in desk.listing()]}, headers=_NO_STORE)
+        items = [item.view() for item in desk.listing() if item.source == ANNOUNCER]
+        return JSONResponse({"breaks": items}, headers=_NO_STORE)
 
     @router.get("/announcer/breaks/{break_id}")
     async def announcer_break(station: StationDep, request: Request, break_id: str) -> JSONResponse:
         """What became of one break."""
         _token, desk = announcer(request, station)
         item = desk.get(break_id) if valid_id(break_id) else None
-        if item is None:
+        if item is None or item.source != ANNOUNCER:
             raise HTTPException(status_code=404, detail="No break has that id")
         return JSONResponse(item.view(), headers=_NO_STORE)
 
@@ -411,10 +453,124 @@ def install_breaks(router: StationRouter) -> None:
             raise HTTPException(status_code=404, detail="No break has that id")
         try:
             # Off the event loop: cancelling may unpin the player's slot.
-            item = await asyncio.to_thread(desk.cancel, break_id)
+            item = await asyncio.to_thread(
+                desk.cancel, break_id, "cancelled by the announcer", ANNOUNCER
+            )
         except BreakError as exc:
             return refused(exc.status, exc.detail, exc.reason, None)
         return JSONResponse(item.view(), headers=_NO_STORE)
+
+    # ------------------------------------------------------------------
+    # The voice tracker (#128): browser routes, with the signed-in session
+    # ------------------------------------------------------------------
+
+    def voice_desk(station: StationRuntime) -> BreakDesk:
+        """The station's desk for a voice tracker request, or the HTTP error that refuses it.
+
+        The security middleware has already checked the session and, for a
+        change, the page's ``Origin``.  Changes count against the
+        station's ``requests_per_minute``, shared by every open page.
+        """
+        desk: BreakDesk | None = getattr(station, "breaks", None)
+        if desk is None:
+            raise HTTPException(status_code=503, detail="This station cannot take voice tracks")
+        per_minute = desk.config.requests_per_minute
+        limiter = limiters.setdefault(per_minute, RateLimiter(per_minute, 60.0))
+        wait = limiter.retry_after(f"voice-tracker:{station.slug}")
+        if wait is not None:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Too many voice track changes this minute; wait {wait} seconds",
+                headers={"Retry-After": str(wait)},
+            )
+        return desk
+
+    @router.get("/voice-tracks")
+    async def voice_tracks(station: StationDep) -> JSONResponse:
+        """The open song change, the limits, and this station's voice tracks."""
+        desk: BreakDesk | None = getattr(station, "breaks", None)
+        if desk is None:
+            return JSONResponse(
+                {
+                    "station": station.slug,
+                    "accepting": False,
+                    "reason": "This station cannot take voice tracks",
+                    "slot": None,
+                    "tracks": [],
+                },
+                headers=_NO_STORE,
+            )
+        return JSONResponse(await asyncio.to_thread(_voice_context, station), headers=_NO_STORE)
+
+    @router.post("/voice-tracks", status_code=201)
+    async def voice_track_upload(station: StationDep, request: Request) -> JSONResponse:
+        """Book a voice track recorded in the browser for the open song change.
+
+        The same checks, caps, decoding and quota as an announcer's break.
+        """
+        desk = voice_desk(station)
+        return await receive(station, request, desk, _VoiceFields, "the voice tracker", VOICE_TRACK)
+
+    @router.delete("/voice-tracks/{break_id}")
+    async def voice_track_cancel(station: StationDep, break_id: str) -> JSONResponse:
+        """Cancel a voice track that is still waiting for its song change."""
+        desk = voice_desk(station)
+        if not valid_id(break_id):
+            raise HTTPException(status_code=404, detail="No voice track has that id")
+        try:
+            item = await asyncio.to_thread(
+                desk.cancel, break_id, "cancelled in the voice tracker", VOICE_TRACK
+            )
+        except BreakError as exc:
+            detail = "No voice track has that id" if exc.status == 404 else exc.detail
+            return refused(exc.status, detail, exc.reason, None)
+        return JSONResponse(item.view(), headers=_NO_STORE)
+
+
+def _pair_label(slot: dict[str, Any] | None) -> str:
+    """ "Ending into Upcoming", by title, for a voice track's label."""
+    if not slot:
+        return ""
+    names = [
+        (slot.get(key) or {}).get("title") or "an unnamed song" for key in ("ending", "upcoming")
+    ]
+    return f"{names[0]} into {names[1]}"
+
+
+def _voice_context(station: StationRuntime) -> dict[str, Any]:
+    """What the voice tracker shows (blocking: it reads the catalog).
+
+    The open song change, with where a voice track set to ``auto`` would
+    go, the limits a recording must keep, and the voice tracks booked on
+    this station, waiting ones first.
+    """
+    context = _context(station)
+    desk: BreakDesk = station.breaks
+    config = desk.config
+    slot = context["slot"]
+    if slot is not None:
+        placement, note = placement_for(
+            "dj", "auto", config.dj_placement, slot["upcoming_intro_s"], config.min_intro_seconds
+        )
+        slot["auto_placement"] = placement
+        slot["auto_note"] = note or None
+    return {
+        "station": context["station"],
+        "accepting": context["accepting"],
+        "reason": context["reason"],
+        "now": context["now"],
+        "next": context["next"],
+        "slot": slot,
+        "limits": {
+            "max_bytes": config.max_upload_bytes,
+            "max_seconds": config.max_seconds,
+            "sample_rate": SAMPLE_RATE,
+            "dj_placement": config.dj_placement,
+            "min_intro_s": config.min_intro_seconds,
+            "max_per_slot": config.max_per_slot,
+        },
+        "tracks": [item.view() for item in desk.listing() if item.source == VOICE_TRACK],
+    }
 
 
 def _decode_cues(path: Path, max_seconds: float) -> BreakCues:
@@ -529,8 +685,16 @@ class _UploadFields(BaseModel):
     label: str = Field(default="", max_length=200)
 
 
-async def _read_form(request: Request) -> tuple[_UploadFields, StarletteUploadFile]:
-    """Parse the multipart body: one file and a few short fields.
+class _VoiceFields(_UploadFields):
+    """The form fields of a voice track: a DJ break, so ``kind`` may be left out."""
+
+    kind: Literal["dj"] = "dj"
+
+
+async def _read_form[F: _UploadFields](
+    request: Request, model: type[F]
+) -> tuple[F, StarletteUploadFile]:
+    """Parse the multipart body: one file and a few short fields, as *model*.
 
     Raises:
         HTTPException: 422 for a missing file, an unknown or bad field, or
@@ -552,7 +716,7 @@ async def _read_form(request: Request) -> tuple[_UploadFields, StarletteUploadFi
         await form.close()
         raise HTTPException(status_code=422, detail="Send one audio file as the field file")
     try:
-        fields = _UploadFields.model_validate(values)
+        fields = model.model_validate(values)
     except ValidationError as exc:
         await form.close()
         raise HTTPException(
@@ -570,5 +734,6 @@ __all__ = [
     "ANNOUNCER_SCOPES",
     "MULTIPART_OVERHEAD_BYTES",
     "UPLOAD_PATH",
+    "VOICE_UPLOAD_PATH",
     "install_breaks",
 ]

@@ -292,3 +292,57 @@ def test_why_this_track_names_a_version_only_with_the_setting(on, index, note) -
     reasons = _build_why(player, entry)
     expected = "One of 2 versions of this song, which count as one song."
     assert (expected in reasons) is note
+
+
+@pytest.mark.parametrize("with_filter", [False, True])
+def test_least_recent_ties_choose_songs_before_versions(with_filter: bool) -> None:
+    versions = SongVersions(LIBRARY)
+    rng = random.Random(27)
+    picks = Counter(
+        versions.song(
+            least_recent(
+                LIBRARY,
+                {},
+                rng,
+                versions=versions,
+                allowed=(lambda _: True) if with_filter else None,
+            ).path
+        )
+        for _ in range(3000)
+    )
+    assert set(picks) == {"a1", "b", "c"}
+    assert all(900 < count < 1100 for count in picks.values()), picks
+
+
+def test_least_recent_checks_other_versions_when_oldest_is_blocked() -> None:
+    versions = SongVersions(LIBRARY)
+    picked = least_recent(
+        LIBRARY,
+        {"b": 10, "c": 20},
+        random.Random(0),
+        versions=versions,
+        allowed=lambda entry: entry.path == "a3",
+    )
+    assert picked.path == "a3"
+
+
+@pytest.mark.parametrize(
+    "title", ["Hold Me (Live Forever)", "Hold Me (The Radio Is On)", "Hold Me (2000 Miles)"]
+)
+def test_song_names_are_not_mistaken_for_version_notes(title: str) -> None:
+    assert song_key("Artist", title) != song_key("Artist", "Hold Me")
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        "Live at Wembley",
+        "2011 Remaster",
+        "David Morales Remix",
+        "Radio Edit",
+        "Clean",
+        "Extended Mix",
+    ],
+)
+def test_explicit_version_notes_still_share_a_song(note: str) -> None:
+    assert song_key("Artist", f"Hold Me ({note})") == song_key("Artist", "Hold Me")

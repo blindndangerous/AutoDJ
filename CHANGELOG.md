@@ -10,6 +10,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- An hour preview with backtiming (#126): Now Playing > **Hour preview** lists what plays over
+  the next 30 minutes to 3 hours with each item's estimated start time, and says in words on
+  every row whether it is fixed (on the air, ready to play, picked, a booked break, in the queue)
+  or predicted. The prediction is a dry run of the station's own picker from where the fixed part
+  ends, so nothing on the air changes. The card then says how early or late the song changes
+  land against the top of the hour, each clockwheel restart and each scheduled event, and which
+  song is the reason. The list is a table with column headers; times read as "2:04 PM and 30
+  seconds". It refreshes every 30 seconds while open, in place and silently; **Refresh preview**
+  and the new **Shift+H** shortcut say the summary. Every station has its own, at
+  `/api/hour-preview` and `/api/stations/<name>/hour-preview`. Previews run on one low-priority
+  worker thread, stop after 80 songs or about 4 seconds, and are shared and reused for 45 seconds
+  while nothing new is fixed.
+
+- Queue & Search uses one paginated library table with Music or Voice liners, folder filtering
+  and text search. Folder management is shown as a table in Library tools; liner file maintenance
+  is back in Settings > Voice liners. Search, folders and History share arrow-key navigation.
+  Action cells focus their buttons and checkboxes so screen readers can announce their roles
+  and checked state. Folder saves and table refreshes preserve focus.
 - Clockwheel Music steps can combine categories with folder and metadata conditions. Use
   Match any to combine categories, or Match all to narrow a category by year, BPM or other
   fields. Songs matching more than one condition are included once. Existing category steps
@@ -46,6 +64,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Library Rescan can override saved fields with populated embedded tags; missing tags keep the
   saved values, cue points and analysis remain intact for unchanged files.
 
+- Voice tracking from the browser (#128): a new **Voice tracks** tab, after Carts, records a DJ
+  break with the computer's microphone for the open song change and books it, as an announcer
+  program books one (#88). The tab names the ending song and the next one, the next song's intro,
+  the time left to book and when the change airs, and where an Automatic voice track will go:
+  over the intro as a talk-up, or between the songs. **Record** asks for the microphone only when
+  pressed and lets it go when the recording stops; **Listen back** plays the take, **Record**
+  again replaces it, **Discard recording** throws it away and **Book voice track** uploads it.
+  Placement can be Automatic, Talk up or Standalone, and a talk-up may start over the ending
+  song's outro. Booked voice tracks are listed with what became of them, and one still waiting can
+  be cancelled. A take for a song change that has moved on to other songs is not booked: record
+  again, or listen back to it and press Book again. Recording stops at three minutes (or the
+  station's shorter limit), because booking decodes the whole take in the page, and it stops,
+  keeping the take and letting the microphone go, when the tab is left or the page is hidden.
+  Announcer tokens list, look up and cancel only announcer breaks, not voice tracks.
+  - Keyboard and screen readers: every control is a named native control, and focus stays where
+    it was through record, stop, listen, book and discard. **Alt+R** starts and stops recording
+    from anywhere in the tab without moving focus. The recording state is said once, politely, at
+    start and stop, then once a minute and 30 seconds before the length limit or the song change
+    closing; the timer and the time left are on the page and never read out on their own. A
+    blocked or missing microphone, a page not on a secure connection (HTTPS, or localhost on the
+    same computer), a closed song change and a recording that is too long are said in plain
+    words, shown on the page and linked to the control they are about.
+  - Voice tracks go through the signed-in session, never an announcer token, with the page's
+    origin checked as for every other change and the upload size capped before the body is read.
+    They get the same checks, length limit, decoding and placement as announcer breaks, and share
+    their caps and quota. The browser sends a mono WAV at the playout rate; the server decodes it
+    off the event loop, one upload at a time, as it does a break. Each station has its own at
+    `/api/stations/<slug>/voice-tracks`.
 - Seasons for rotation categories (#140): under **When the songs may play**, a category can have a
   **Not before** date, a **Do not play after** date, or both, such as 1 to 26 December for
   Christmas songs. Outside them its songs are left out of every pick mode and a clockwheel step
@@ -169,6 +215,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stopped until then. Its log lines start with `[<slug>]`. Only one station can use Stereo Tool
   at a time (one licence), and a Stereo Tool preset any station uses cannot be deleted. The web
   page's station switcher comes later.
+- Each station has its own public status page and now-playing feed (#70): `/stations/<slug>/status`
+  and `/api/stations/<slug>/nowplaying`. Each shows only that station's name, songs and
+  listeners, and the page links to that station's stream and playlist and keeps itself current
+  from that station's feed. The default station keeps `/status` and `/api/nowplaying`. Only
+  configured stations have them; any other name needs a paired browser and then is not found.
+  While a station is stopped, its page, feed and stream all answer "off air" (HTTP 503); its page
+  still shows its name, says it is off air, and shows the song again once the station is back.
+  `GET /api/stations` now gives each station's status page, feed, stream and playlist addresses
+  beside its state. On every status page the uptime is now labelled "Uptime" instead of "AutoDJ
+  running for", since each station counts its own, and a stopped station's says "Not on air".
+  In Safari and other WebKit browsers, the status page's Pause updates button is now readable in
+  the dark theme; its text had too little contrast.
 
 - Schedule events can have a date range: an optional start date and end date, both included, in
   the station time zone. Outside the range an event does not run, and Next events skips it. An
@@ -399,6 +457,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   "Relaying to Icecast and Shoutcast" in the operations guide.
 
 ### Fixed
+
+- A `[model] manual_path` folder whose weights are rewritten at the same size within one tick of
+  the filesystem clock (two seconds on FAT and exFAT drives) gets a new digest instead of keeping
+  the old one, so the server and a remote worker can no longer look as if they run the same
+  weights when they do not. A digest is only remembered once every weight file is more than two
+  seconds old.
+
+- Several stations on one server (#70, #141):
+  - Restarting audio processing releases finished process objects and their Windows handles
+    during playback instead of retaining them until the station stops.
+  - Stopping a station takes effect at once. While its player finishes, the station is listed
+    as "stopping", its controls answer 409 straight away, its open pages are told at once, and
+    starting it again is refused at once instead of waiting up to 30 seconds. Other stations can
+    start and stop meanwhile. If the stopping station still holds Stereo Tool, a station asking
+    for it is told that the other station is stopping and to try again in a few seconds.
+  - A station stops and closes only once, even when a stop request arrives during server
+    shutdown. Every step of a stop is tried even if an earlier one fails, so shutdown always
+    stops every station and closes the library.
+  - A station whose player does not finish within 30 seconds of a stop is listed as "stuck
+    stopping", and the log says so every minute. It keeps its mastering process and Stereo Tool
+    until the player ends and the mastering process has really ended, instead of closing them
+    under a running player.
+  - Stopping a station now says what went wrong: the reply has a `warnings` list in plain words
+    (empty after a clean stop), and the log line is a warning instead of "stopped".
+  - On a normal shutdown, AutoDJ kills any mastering process still running and lets none start
+    again. On Windows, mastering processes also end when AutoDJ is killed outright or crashes.
+  - The check that only one station uses Stereo Tool can no longer miss a station that is
+    starting or stopping at that moment.
+  - A station that fails part of the way through starting now stops everything it had started:
+    its encoders, relays, liner worker, mastering process and player. If its player does not
+    finish in time, the player and its mastering process are left running and the log says so.
+  - A station with no `stream.station_name` is called by its slug, such as `nightowl`, instead of
+    "AutoDJ", so it no longer shares the default station's name in stream metadata. Two stations
+    given the same name are warned about at startup.
+  - When one station's liner folder is inside another's, each station keeps to its own liners.
+    The outer station no longer plays the inner station's liners in clockwheel liner steps or
+    offers them as cart clips. Folders reached through a symbolic link or a Windows short name
+    are matched too.
+  - Stopping a station cancels a cart's end timer, so a cart can no longer announce its end
+    after the station has stopped.
+  - The multi-station soak test now runs for a few seconds in every test run, stops and starts
+    the second station while both render, and checks that nothing is left behind (the bus timing
+    is judged only in a long run). It can run for hours and write memory and processor samples to
+    a file. See "Soak test" in `docs/operations.md`.
 
 - Clockwheel Delete and Undo leave an open step edit alone. Duplicating or moving steps
   keeps the edit attached to its original step and updates its displayed number (#146).

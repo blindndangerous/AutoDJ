@@ -34,6 +34,14 @@ AutoDJ is a single-user local music player with these exposed surfaces:
   expressions are refused, so a query costs at most one pass over the library, and playlist
   files larger than 8 MB are not read. `categories.json` is written atomically and a damaged one
   is set aside, not used.
+- The hour preview (`/api/hour-preview`) requires a paired browser. It only reads the station:
+  the playing render, the render cursor, the open song change and the queue; its dry run picks
+  with a copy of the player that has its own random generator, so it cannot steer the station's
+  real random choices. Its cost is bounded: the span is 15 to 180 minutes, every preview runs on
+  one worker thread below normal priority, the same station and span share one preview, at most
+  8 previews wait (one more gets 503), the dry run stops at 80 songs or after about 4 seconds
+  (checked before each pick), and a preview is reused for 45 seconds while what is fixed stays
+  the same. Shutdown joins the worker and leaves the library open if it has not stopped.
 - Machine tokens let a program on another computer use one narrow API without a browser. The
   only scope so far is "analysis worker" (`autodj worker`); see "Machine tokens and analysis
   workers" below.
@@ -385,7 +393,8 @@ What an announcer can do with a valid token:
   same checks run again when the break is mixed in. FFmpeg's demuxers still parse
   the upload, so a malformed file reaches them; the scope only lets a program the operator trusts
   do this.
-- Look up and cancel its station's breaks, by their random ids.
+- Look up and cancel its station's announcer breaks, by their random ids. Voice tracks that
+  operators booked in the web UI are not listed to it and answer 404 to it.
 
 It cannot change the queue, settings, clockwheels, liners or anything else. A booked break pins
 the song after it, so a token can keep one song in place for one song change; it cannot choose
@@ -401,6 +410,31 @@ the station's once-a-second upkeep, off the event loop (a file still held open i
 half minute until it goes);
 files a previous run left are deleted when the station starts, except an upload still arriving
 (its name is held, and part files younger than ten minutes are left).
+
+### Voice tracks from the browser
+
+The voice tracker (#128) books the same breaks from the web UI. Its routes,
+`/api/voice-tracks` and `/api/stations/<slug>/voice-tracks`, are browser routes: they need the
+signed-in session cookie when `access_token` is set and, for an upload or a cancel, an allowed
+`Origin`, like every other change. They are outside the announcer prefix, so a machine token is
+never accepted there, and an announcer token never reaches them by another address. The upload
+takes the announcer path described above: the middleware's body cap (the same as an announcer
+upload), the declared length checked against the station's own limit before the body is read,
+the room held in the station's caps, the 60-second body deadline, the server's own file name, the
+one-at-a-time decode with the header checked first, and the quota, slot and per-slot limits,
+which announcer breaks and voice tracks share. A voice track is always a DJ break. Uploads and
+cancels count against the station's `requests_per_minute`, shared by every open page; reading
+the open slot does not. A cancel finds only voice tracks, so a page cannot drop an announcer's
+break, and the announcer routes list, look up and cancel only announcer breaks, so an announcer
+token cannot see or drop an operator's voice track. Anyone who can sign in to the web UI can already control the station, so a voice track
+gives them no new power over it.
+
+In the browser, the microphone is asked for only when Record is pressed, and every track of the
+stream is stopped when the recording stops, is discarded, or the page signs out, and recording
+stops by itself when the Voice tracks tab is left or the page is hidden, so the microphone is
+never left open in the background. The browser
+needs a secure context for the microphone: HTTPS, or `localhost` on the same computer. The take
+stays in the page until it is booked, and only the WAV made from it is sent.
 
 On-air safety: nothing an announcer does runs on the audio thread or waits for it. The breaks are
 mixed by the render-ahead worker one song ahead, as liners are; the mix bus only marks a break
@@ -435,8 +469,26 @@ script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-a
 `/modules/status-page.js` and `/modules/status-page.css`, which were already public with the
 rest of `/modules/`. It has no forms or controls, so framing it elsewhere gains nothing.
 
+Every station has the same two public surfaces under its own name:
+`GET|HEAD /api/stations/<slug>/nowplaying` and `GET|HEAD /stations/<slug>/status`. The default
+station keeps `/api/nowplaying` and `/status`, and also answers by the name `default`. These are
+public only for a configured slug; any other name, and anything else under a station's name,
+needs a session first and then returns 404. Each station's feed and page carry only that
+station's name, songs, listener counts and public stream path, from its own snapshot. A station's
+page names its own feed in a `data-feed` attribute, and the page script polls it only when it
+is a path under `/api/` that resolves to the page's own origin and has no backslash, written
+out or percent-encoded; anything else falls back to `/api/nowplaying`. So the attribute cannot
+send the page to another host (the `connect-src 'self'` policy also refuses that). Every
+station's feed, live (200) or off air (503), carries `Access-Control-Allow-Origin: *`. While a station is stopped, its feed answers 503
+`{"detail": "That station is off air"}` (still with the wildcard CORS header, so outside sites
+can read it) and its page answers 503 with its name and "off air". Like the stream's 503, this
+shows that the slug exists and gives the station's configured name; that is accepted, since a
+station's name is public whenever it is on air. Listener Basic credentials protect only a
+station's stream, never its feed or page, as for the default station.
+
 Configured webhooks make outbound HTTP requests to operator-chosen URLs after track
-changes. Their URLs can contain tokens and are accepted only from `config.local.toml`;
+changes. Each station has its own (`[[stations.<slug>.webhooks]]`), which receive only that
+station's feed. Their URLs can contain tokens and are accepted only from `config.local.toml`;
 the paired status API exposes the host and last result, never the URL or response body.
 The send-test route requires pairing. Operators should choose destinations they trust,
 since each receives the public now-playing metadata.

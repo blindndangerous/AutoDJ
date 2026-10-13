@@ -116,11 +116,15 @@ def album_key(album: str) -> str:
     return " ".join(_words(album))
 
 
-_VERSION_NOTE = re.compile(
-    r"\b(?:remix(?:es|ed)?|rmx|mix(?:ed)?|edit|live|re-?master(?:ed)?|version|demo|acoustic"
+_VERSION_WORD = (
+    r"(?:remix(?:es|ed)?|rmx|mix(?:ed)?|edit|live|re-?master(?:ed)?|version|demo|acoustic"
     r"|unplugged|mono|stereo|extended|instrumental|single|radio|club|dub|explicit|clean"
     r"|bonus|deluxe|anniversary|re-?recorded|reprise|karaoke|session|take|original|cut"
-    r"|(?:19|20)\d\d)\b",
+    r"|(?:19|20)\d\d)"
+)
+_VERSION_NOTE = re.compile(
+    rf"\s*(?:{_VERSION_WORD}(?:[\s-]+{_VERSION_WORD})*"
+    r"|live\s+(?:at|from|in)\s+.+|.+\s+(?:remix|mix|edit))\s*",
     re.IGNORECASE,
 )
 _CREDIT_NOTE = re.compile(r"^\s*(?:feat\b|ft\b|featuring\b|with\b|w/|from\b|prod\b)", re.IGNORECASE)
@@ -131,7 +135,7 @@ _INLINE_FEAT = re.compile(r"\s(?:feat\.?|featuring)\s.*$", re.IGNORECASE)
 
 def _is_note(text: str) -> bool:
     """True when bracketed or dash-suffixed *text* names a version or a credit."""
-    return bool(_CREDIT_NOTE.match(text) or _VERSION_NOTE.search(text))
+    return bool(_CREDIT_NOTE.match(text) or _VERSION_NOTE.fullmatch(text))
 
 
 @lru_cache(maxsize=65536)

@@ -1740,7 +1740,7 @@ describe("static accessibility contracts", () => {
     // source-order form layout.
     installDocument();
     for (const id of [
-      "source-folder-path", "source-folder-override-tags", "library-browse-query", "clock-name",
+      "source-folder-path", "source-folder-override-tags", "search-input", "clock-name",
       "clock-step-type", "listener-ban-address", "token-secret",
     ]) {
       expect(document.getElementById(id).closest(".flow-form"), id).not.toBeNull();
@@ -2359,6 +2359,52 @@ describe("static accessibility contracts", () => {
     expect(rules.join("\n")).toContain("accent-color: var(--accent)");
   });
 
+  it("gives the hour preview a headed table, one polite status and token colours", () => {
+    installDocument({ html: htmlSource });
+    const card = document.querySelector("#hour-preview-card");
+    expect(card.tagName).toBe("DETAILS");
+    expect(card.closest("#panel-now")).not.toBeNull();
+    // Closed until opened: each preview runs a dry run on the server.
+    expect(card.open).toBe(false);
+    expect(card.querySelector(":scope > summary > h2").textContent.trim()).toBe("Hour preview");
+    const span = document.getElementById("hour-preview-span");
+    expect(span.tagName).toBe("SELECT");
+    expect(document.querySelector('label[for="hour-preview-span"]').textContent.trim()).toBe("Show");
+    expect([...span.options].map((option) => option.textContent))
+      .toEqual(["Next 30 minutes", "Next hour", "Next 2 hours", "Next 3 hours"]);
+    expect(span.value).toBe("60");
+    const help = document.getElementById(span.getAttribute("aria-describedby"));
+    expect(help.textContent).toContain("Fixed items");
+    expect(help.textContent).toContain("Predicted items");
+    expect(help.textContent).toContain("Nothing on air changes.");
+    const button = document.getElementById("hour-preview-refresh");
+    expect(button.getAttribute("type")).toBe("button");
+    expect(button.textContent.trim()).toBe("Refresh preview");
+    // One polite status, for Refresh preview; the summary, the backtiming
+    // list and the table refresh silently.
+    const live = [...card.querySelectorAll("[aria-live], [role='status'], [role='alert'], [role='log']")];
+    expect(live.map((node) => node.id)).toEqual(["hour-preview-status"]);
+    expect(live[0].getAttribute("aria-live")).toBe("polite");
+    for (const id of ["hour-preview-summary", "hour-preview-points", "hour-preview-table"]) {
+      expect(document.getElementById(id).closest("[aria-live], [role=status]")).toBeNull();
+    }
+    // A real table: a caption and a header for each column.
+    const table = document.getElementById("hour-preview-table");
+    expect(table.querySelector("caption").textContent.trim()).toBe("What plays next");
+    expect([...table.querySelectorAll("thead th")].map((th) => [th.textContent.trim(), th.getAttribute("scope")]))
+      .toEqual([["Starts", "col"], ["What", "col"], ["Length", "col"], ["Status", "col"]]);
+    const backtiming = document.getElementById("hour-preview-backtiming");
+    expect(document.getElementById(backtiming.getAttribute("aria-labelledby")).tagName).toBe("H3");
+    // Shift+H is in the shortcut list.
+    expect(document.querySelector("#hotkey-help-modal").textContent).toContain("Shift+H");
+    // Colours come from the theme tokens only, so both themes follow.
+    const rules = stripCssComments(cssSource).match(/#hour-preview-[^{]*\{[^}]*\}/g);
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgb|hsl/i);
+    // Predicted rows look different, but the Status column says so in words too.
+    expect(rules.join("\n")).toMatch(/tr\.is-predicted td\s*\{[^}]*font-style: italic/);
+  });
+
   it("gives Track info's tag editor labelled native fields, linkable errors and one status", () => {
     installDocument({ html: htmlSource });
     const section = document.querySelector("#panel-track-info #tags-editor");
@@ -2448,9 +2494,10 @@ describe("static accessibility contracts", () => {
     expect(status.getAttribute("role")).toBe("status");
     expect(status.getAttribute("aria-live")).toBe("polite");
     expect(appSource).toMatch(/installPreviewOutput\(\{\s*announce: \(message, options\) => announceStatus\(settingsStatus/);
-    // Only the cue point player is a preview; the decks and Listen here are not.
+    // Only the cue point player and the voice tracker's Listen back are
+    // previews; the decks and Listen here are not.
     expect([...document.querySelectorAll("audio[data-preview-output]")].map((audio) => audio.id))
-      .toEqual(["points-preview"]);
+      .toEqual(["points-preview", "vt-playback"]);
     // The module never moves focus, and the note lines up under the select.
     const moduleSource = readFileSync(staticPath("modules", "preview-output.js"), "utf8");
     expect(moduleSource).not.toMatch(/\.focus\(/);
@@ -2493,10 +2540,92 @@ describe("static accessibility contracts", () => {
     expect(document.getElementById("token-create").getAttribute("type")).toBe("button");
   });
 
+  it("gives the voice tracker named native controls, one polite status and a silent timer", () => {
+    installDocument({ html: htmlSource });
+    const panel = document.getElementById("panel-voice");
+    expect(panel.getAttribute("role")).toBe("tabpanel");
+    expect(panel.getAttribute("aria-labelledby")).toBe("tab-voice");
+    expect(document.getElementById("tab-voice").textContent).toBe("Voice tracks");
+    expect([...panel.children].find((child) => child.tagName === "H2").id).toBe("voice-heading");
+    const tracker = document.getElementById("voice-tracker");
+    for (const button of tracker.querySelectorAll("button")) {
+      expect(button.getAttribute("type"), button.id).toBe("button");
+      expect(button.textContent.trim(), button.id).not.toBe("");
+    }
+    // Record is a toggle with a fixed name: the pressed state says recording.
+    const record = document.getElementById("vt-record");
+    expect(record.textContent).toBe("Record");
+    expect(record.getAttribute("aria-pressed")).toBe("false");
+    expect(document.getElementById(record.getAttribute("aria-describedby")).textContent).toMatch(/Alt\+R/);
+    // One polite region says the recording state; the timer, the time left
+    // and the open song change are on the page and never live.
+    const live = [...tracker.querySelectorAll("[aria-live], [role='status'], [role='alert'], [role='log']")];
+    expect(live.map((node) => node.id)).toEqual(["vt-status"]);
+    expect(live[0].getAttribute("aria-live")).toBe("polite");
+    expect(live[0].getAttribute("aria-atomic")).toBe("true");
+    for (const id of ["vt-timer", "vt-slot", "vt-closes", "vt-airs", "vt-unavailable", "vt-error", "vt-list"]) {
+      expect(document.getElementById(id).closest("[aria-live], [role=status], [role=alert]"), id).toBeNull();
+    }
+    // An error is words on the page that a control can be described by.
+    const error = document.getElementById("vt-error");
+    expect(error.classList.contains("field-error")).toBe(true);
+    expect(error.hidden).toBe(true);
+    const placement = document.getElementById("vt-placement");
+    expect(document.querySelector('label[for="vt-placement"]').textContent).toBe("Placement");
+    expect(placement.getAttribute("aria-describedby")).toBe("vt-placement-desc");
+    expect([...placement.options].map((option) => option.value)).toEqual(["auto", "talk_up", "standalone"]);
+    const outro = document.getElementById("vt-allow-outro");
+    expect(outro.getAttribute("type")).toBe("checkbox");
+    expect(outro.parentElement.classList.contains("settings-check")).toBe(true);
+    expect(document.querySelector('label[for="vt-allow-outro"]').textContent).toBe("Start over the ending song's outro");
+    expect(outro.getAttribute("aria-describedby")).toBe("vt-allow-outro-desc");
+    // Listen back is a named toggle; the player itself is never shown.
+    const player = document.getElementById("vt-playback");
+    expect(player.tagName).toBe("AUDIO");
+    expect(player.hasAttribute("controls")).toBe(false);
+    expect(player.hidden).toBe(true);
+    expect(document.getElementById("vt-listen").getAttribute("aria-pressed")).toBe("false");
+    expect([...tracker.querySelectorAll(".vt-actions button")].map((button) => button.textContent))
+      .toEqual(["Listen back", "Book voice track", "Discard recording"]);
+    expect(document.getElementById("vt-list").getAttribute("role")).toBe("list");
+    // The shortcut is listed with the others, in words.
+    const keys = [...document.querySelectorAll("#hotkey-help-modal dt kbd")].map((kbd) => kbd.textContent);
+    expect(keys).toContain("Alt+R");
+  });
+
   it("keeps the transition effect description to one sentence", () => {
     // The per-effect list, about 450 words, was read on every focus.
     installDocument({ html: htmlSource });
     const desc = document.querySelector("#transition-desc").textContent.trim();
     expect(desc.split(/\s+/).length).toBeLessThan(20);
+  });
+});
+
+describe("public status page contracts", () => {
+  const statusCss = stripCssComments(readFileSync(staticPath("modules", "status-page.css"), "utf8"));
+  const statusScript = readFileSync(staticPath("modules", "status-page.js"), "utf8");
+
+  it("draws every colour from the system palette, so light, dark and forced colours all hold", () => {
+    // No literal colours: Canvas, CanvasText and LinkText follow the theme
+    // the reader or the web UI chose.  Not ButtonFace and ButtonText:
+    // WebKit keeps them light under a dark colour scheme.
+    expect(statusCss).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
+    expect(statusCss).toMatch(/:root\[data-theme="light"\]\s*\{\s*color-scheme: light;/);
+    expect(statusCss).toMatch(/:root\[data-theme="dark"\]\s*\{\s*color-scheme: dark;/);
+    expect(statusCss).not.toMatch(/ButtonFace|ButtonText/);
+  });
+
+  it("keeps a visible focus ring and a large enough target on every control", () => {
+    expect(statusCss).toMatch(/button:focus-visible,\s*a:focus-visible\s*\{\s*outline: 3px solid currentcolor;/);
+    expect(statusCss).toMatch(/button\s*\{[^}]*min-height: 44px;/);
+    // One column on a phone, so nothing scrolls sideways at 320 px.
+    expect(statusCss).toMatch(/@media \(max-width: 24rem\)\s*\{\s*dl\s*\{\s*grid-template-columns: 1fr;/);
+  });
+
+  it("polls only the station's own same-site feed and never moves focus", () => {
+    expect(statusScript).toMatch(/url\.origin !== new URL\(here\)\.origin/);
+    expect(statusScript).not.toMatch(/\.focus\(/);
+    // Off air is said in the one live line, not a second region.
+    expect(statusScript).not.toMatch(/aria-live/);
   });
 });

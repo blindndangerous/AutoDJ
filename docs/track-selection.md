@@ -277,6 +277,12 @@ The title rule does not change. It still holds back songs that share a title acr
 such as two recordings of the same Christmas song. With the setting on, the rotation tester
 counts a song's versions as one song.
 
+Grouping depends on tags: reversed artist credits such as "A & B" and "B & A" stay separate,
+while identical titles by the same lead artist (such as "Intro" on different albums) group
+together. DMCA limits still count every actual play against its credited artists and album;
+grouping never reduces those counts. Related-track rules continue to use their existing
+artist/title matching, including recognised version labels.
+
 ### Where the rules apply
 
 - Similarity and anchored picks pass the rules to `find_next_for_path`.

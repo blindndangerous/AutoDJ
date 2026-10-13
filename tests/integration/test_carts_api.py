@@ -461,3 +461,55 @@ def test_a_cart_outside_its_play_dates_is_skipped_in_words(tmp_path: Path) -> No
         saved = json.loads((tmp_path / "carts.json").read_text(encoding="utf-8"))
         # Without dates the slot is written as before, so an older AutoDJ reads it.
         assert "not_after" not in saved["pages"][0]["slots"][2]
+
+
+def test_liners_in_another_stations_folder_are_not_offered(tmp_path: Path) -> None:
+    own = tmp_path / "liners" / "own.wav"
+    theirs = tmp_path / "liners" / "nightowl" / "owl.wav"
+    records = {
+        str(own): {"id": "rec-own", "kind": "liner", "path": str(own)},
+        str(theirs): {"id": "rec-owl", "kind": "liner", "path": str(theirs)},
+    }
+    library = SimpleNamespace(
+        entries_snapshot=lambda kind: [SimpleNamespace(path=path) for path in records],
+        catalog=SimpleNamespace(record_for_path=records.get),
+    )
+
+    async def publish(_message: dict[str, Any]) -> None:
+        return None
+
+    carts = StationCarts(
+        SimpleNamespace(library=library),
+        publish,
+        lambda: tmp_path / "liners",
+        tmp_path,
+        owns_liner=lambda path: "nightowl" not in Path(path).parts,
+    )
+    assert carts.clip_choices()["liners"] == [{"id": "rec-own", "name": "own.wav"}]
+
+
+def test_closing_the_carts_cancels_the_end_timer_without_announcing(tmp_path: Path) -> None:
+    import asyncio
+
+    events: list[dict[str, Any]] = []
+
+    async def publish(message: dict[str, Any]) -> None:
+        events.append(message)
+
+    async def scenario() -> None:
+        carts = StationCarts(SimpleNamespace(), publish, lambda: tmp_path, tmp_path)
+        carts._cart = (1, 3, "Cart 3, Station ID")
+
+        async def ends() -> None:
+            await asyncio.sleep(0.05)
+            await carts.finish("end")
+
+        timer = asyncio.create_task(ends())
+        carts._timer = timer
+        await carts.close()
+        assert timer.cancelled()
+        await asyncio.sleep(0.1)
+        await carts.close()  # nothing playing: nothing to do
+
+    asyncio.run(scenario())
+    assert events == []
