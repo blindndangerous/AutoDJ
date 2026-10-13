@@ -1174,7 +1174,8 @@ list and the clips a cart can use.
 Backup refuses file links that point outside their configured backup folder and linked
 subfolders (including Windows junctions). This prevents unrelated files from entering an
 archive through a link. File links to another file inside the same folder are saved as
-ordinary files. Uploaded Stereo Tool preset links are still excluded. Configure a folder
+ordinary files. Hard-linked files are refused because their other names may be outside the
+backup folder; use an independent copy instead. Uploaded Stereo Tool preset links are still excluded. Configure a folder
 directly if it is an intended backup source. Restore refuses linked archive entries and
 destinations that point outside their configured folder.
 

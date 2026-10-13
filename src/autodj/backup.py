@@ -90,7 +90,15 @@ class BackupError(RuntimeError):
 def _within_root(path: Path, root: Path) -> None:
     """Do not silently copy linked files from outside a configured backup root."""
     if not path.resolve().is_relative_to(root.resolve()):
-        raise BackupError(f"{path} points outside backup folder {root}; remove the link first")
+        raise BackupError(
+            f"{path} points outside backup folder {root}; replace that linked path with a real file or folder"
+        )
+
+
+def _single_link(path: Path) -> None:
+    """Hard-link aliases cannot be checked for containment without scanning the volume."""
+    if path.stat().st_nlink > 1:
+        raise BackupError(f"hard-linked backup file {path}; use a separate file copy instead")
 
 
 def _folder_files(root: Path) -> Iterator[Path]:
@@ -192,7 +200,10 @@ def _snapshot_index(active: Path, snapshot: Path) -> None:
     """Copy the live index generation, its manifest and SQLite data into *snapshot*."""
     snapshot.mkdir(parents=True)
     for name in INDEX_FILES:
-        _within_root(active / name, active)
+        path = active / name
+        _within_root(path, active)
+        if path.is_file():
+            _single_link(path)
     with im.publication_lock(active):
         try:
             manifest: im.IndexManifest | None = im.require_manifest(active)
@@ -208,6 +219,7 @@ def _snapshot_index(active: Path, snapshot: Path) -> None:
                 (manifest.vectors_file, manifest.vectors_sha256),
             ):
                 _within_root(active / name, active)
+                _single_link(active / name)
                 shutil.copyfile(active / name, snapshot / name)
                 if im.sha256_file(snapshot / name) != digest:
                     raise BackupError(f"{active / name} does not match its SHA-256 in the manifest")
@@ -286,6 +298,7 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
             with partial.open("xb") as handle:
                 with zipfile.ZipFile(handle, "w", zipfile.ZIP_DEFLATED) as archive:
                     for name, path in members.items():
+                        _single_link(path)
                         archive.write(path, name)
                     manifest = {
                         "autodj_version": current_version(),

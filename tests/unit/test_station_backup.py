@@ -452,3 +452,23 @@ def test_restore_refuses_archive_symlink_entries(tmp_path: Path) -> None:
     with pytest.raises(BackupError, match="linked file in archive"):
         restore_backup(cfg, archive, force=True)
     assert not (cfg.index.active_dir / name).exists()
+
+
+@pytest.mark.parametrize("kind", ["liner", "state", "preset"])
+def test_backup_refuses_hard_linked_files(tmp_path: Path, kind: str) -> None:
+    cfg = _config(tmp_path)
+    external = tmp_path / "private.bin"
+    external.write_bytes(b"private")
+    relative = {"liner": "liners/alias.wav", "state": "web_state.json"}
+    path = (
+        (cfg.index.active_dir / relative[kind])
+        if kind != "preset"
+        else cfg.index.active_dir.parent / "stereo-tool-presets/alias.sts"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.hardlink_to(external)
+    archive = tmp_path / "unsafe.zip"
+    with pytest.raises(BackupError, match="hard-linked backup file"):
+        create_backup(cfg, archive, force=False)
+    assert not archive.exists()
+    assert external.read_bytes() == b"private"
