@@ -12,6 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Multiple stations can use independent Stereo Tool processing instances when configured with the
   required per-instance licences and executable paths (#163).
+- Hour preview rows now use the same compact timestamp and duration on screen and in screen-reader
+  output. A refresh keeps a predicted choice while it remains eligible and tied for best, while
+  still following the picker when eligibility or play history changes.
 
 ### Added
 

@@ -2677,8 +2677,8 @@ table refreshes every 30 seconds and shortly after the song changes, changing ce
 saying nothing and leaving focus where it is; if those refreshes start failing, the failure is
 said once, and not again until one succeeds. Choosing another span under **Show** says the new
 summary once. If more than 24 fixed points fall in the span, the first 24 are timed and the card
-says so. Times show as "2:04:30 PM" and read as "2:04 PM and
-30 seconds"; lengths show as "3:45" and read as "3 minutes 45 seconds". Times are in the station
+says so. Timestamps and durations use the same compact text on screen and in speech, such as
+"2:04:30 PM" and "3:45". Times are in the station
 time zone (`[server] station_timezone`); clockwheel restarts are worked out in the computer's own
 time zone, as the player does.
 
