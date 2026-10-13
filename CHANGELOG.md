@@ -19,6 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The rotation tester, `autodj doctor` and `autodj backup` include the file.
 - Related artists have their own Tracks and Minutes limits under **Use related artists**.
   Settings saved before this keep using the artist limits.
+- A "(w/ X)" note in a title now credits X, like "(feat. X)" and "(with X)", for the artist
+  repeat rules, related artists and DMCA mode, and is ignored when titles are compared.
 
 - A rotation tester (#125): Settings > Song picking > **Test rotation**, or
   `autodj simulate --days 7`, plays a span of time (up to 30 days) or a number of songs (up to
