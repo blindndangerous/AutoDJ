@@ -774,7 +774,6 @@ class RequestDesk:
             ):
                 self._searches.move_to_end(key)
                 return cached[2]
-        self.blocklist.refresh()
         found: list[tuple[str, IndexEntry]] = []
         for entry, text in indexed:
             if all(token in text for token in tokens) and not self.blocklist.blocks(entry):
