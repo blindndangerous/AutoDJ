@@ -214,6 +214,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Stream mode encodes with ffmpeg and refuses to start without it.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends ffmpeg >/dev/null
           mkdir -p "$RUNNER_TEMP/stream/music" "$RUNNER_TEMP/stream/index" "$RUNNER_TEMP/stream/models"
           printf '[server]\nport = 8081\n' >"$RUNNER_TEMP/stream/config.toml"
           AUTODJ_LIBRARY_MUSIC_DIR="$RUNNER_TEMP/stream/music" \
