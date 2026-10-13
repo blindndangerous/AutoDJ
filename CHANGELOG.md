@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Multiple stations can use independent Stereo Tool processing instances when configured with the
+  required per-instance licences and executable paths (#163).
+
 ### Added
 
 - An hour preview with backtiming (#126): Now Playing > **Hour preview** lists what plays over
