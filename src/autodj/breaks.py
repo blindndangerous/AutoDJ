@@ -298,6 +298,7 @@ class SlotPlan:
     reserved: tuple[IndexEntry, ...]
     ending_offset_s: float = 0.0
     clock_name: str | None = None
+    clock_revision: int | None = None
     pinned: bool = False
     stale: bool = False
     clock_step: dict | None = None
