@@ -1395,7 +1395,7 @@
     /* Rows that end in a button (Revoke, Remove folder, Unban) touched the
        next row's button: 44 px targets with no space between them. */
     :where(#token-list, #workers-list, #listener-ban-list, #listener-control-list,
-      #clock-list, #categories-list) > li + li {
+      #clock-list, #categories-list, #shows-list) > li + li {
       margin-top: 0.4rem;
     }
     /* Links: the card colour scheme's own link blue, underlined, so a link
@@ -1485,6 +1485,36 @@
     #clock-slots [role="gridcell"] {
       display: inline-flex;
       border-radius: var(--radius);
+    }
+
+    /* ---- Shows (#106) ----
+       Each song is a row: its number (the list's own), its words, then
+       Move up, Move down and Remove wrapping inside the row, so a long
+       title never pushes a button past the card. */
+    #shows-editor {
+      margin-top: 1rem;
+    }
+    :is(#shows-songs, #shows-results) > li {
+      padding: 0.3rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    :is(#shows-songs, #shows-results) > li:last-child {
+      border-bottom: none;
+    }
+    :is(#shows-songs, #shows-results) .show-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.4rem 0.75rem;
+    }
+    :is(#shows-songs, #shows-results) .show-song {
+      flex: 1 1 14rem;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    #shows-songs .show-missing {
+      color: var(--text-dim);
+      font-style: italic;
     }
 
     /* ----------------------------------------------------------------
