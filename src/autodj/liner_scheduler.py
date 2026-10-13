@@ -42,7 +42,7 @@ import soundfile as sf
 from autodj.liner_files import open_liner_file
 from autodj.liners import LinerLibrary, LinerTrigger
 from autodj.mixbus import LinerCue
-from autodj.stereo import SAMPLE_RATE, to_stereo
+from autodj.stereo import SAFE_FFMPEG_INPUT, SAMPLE_RATE, to_stereo
 
 if TYPE_CHECKING:
     from autodj.indexer import IndexEntry
@@ -125,6 +125,7 @@ def decode_liner(
                 "ffmpeg",
                 "-v",
                 "error",
+                *SAFE_FFMPEG_INPUT,
                 "-i",
                 "pipe:0",
                 "-f",
@@ -174,6 +175,7 @@ def decode_liner_path(
                 "ffmpeg",
                 "-v",
                 "error",
+                *SAFE_FFMPEG_INPUT,
                 "-i",
                 "pipe:0",
                 "-f",

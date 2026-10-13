@@ -535,13 +535,40 @@ def _is_loopback(address: str) -> bool:
         return False
 
 
+#: Headers a reverse proxy adds.  On plain HTTP they mean the request may
+#: have crossed the network before it reached this machine's loopback.
+_PROXY_HEADERS = (
+    b"forwarded",
+    b"x-forwarded-for",
+    b"x-forwarded-proto",
+    b"x-forwarded-host",
+    b"x-real-ip",
+)
+
+
 def machine_transport_allowed(scope: Scope) -> bool:
     """Whether a machine token may travel on this connection: HTTPS, or loopback.
 
     A bearer token sent over plain HTTP can be read by anyone on the network
-    path, so it is refused unless the client is this machine.
+    path, so it is refused unless the client is this machine.  A request
+    on plain HTTP that carries any proxy header (``Forwarded``,
+    ``X-Forwarded-*``, ``X-Real-IP``) is refused even from loopback: a
+    reverse proxy on this machine may have carried it in from the network
+    in the clear.  Through a proxy, a machine token needs TLS up to the
+    proxy, and the server must trust the proxy's ``X-Forwarded-Proto:
+    https`` (``[stream] trusted_proxies``, or a proxy on this machine when
+    that list is empty; see
+    :func:`~autodj.listener_access.forwarded_allow_ips`), so the request
+    counts as HTTPS here.
     """
-    return scope.get("scheme") in {"https", "wss"} or _is_loopback(peer_address(scope))
+    if scope.get("scheme") in {"https", "wss"}:
+        return True
+    names = {key.lower() for key, _value in scope.get("headers", ())}
+    if any(name in names for name in _PROXY_HEADERS) or any(
+        name.startswith(b"x-forwarded-") for name in names
+    ):
+        return False
+    return _is_loopback(peer_address(scope))
 
 
 def bearer_token(scope: Scope) -> str | None:
@@ -587,7 +614,10 @@ class SecurityMiddleware:
         routes need.  Those routes take only ``Authorization: Bearer``
         tokens, checked by *machine_auth(token, scope)*, which returns who
         the token belongs to or ``None``; a browser session does not work
-        there, and a machine token works nowhere else.
+        there, and a machine token works nowhere else.  A prefix under
+        ``/api/`` also covers the same path under ``/api/stations/<slug>/``,
+        whatever the name, so a station route is never a browser route by
+        another address.
         """
         self.app = app
         self._policy = policy
@@ -598,8 +628,9 @@ class SecurityMiddleware:
 
     def _machine_scope(self, path: str) -> str | None:
         """The token scope *path* needs, or ``None`` for a browser route."""
+        relative = station_relative(path, None)
         for prefix, scope_name in self._machine_scopes.items():
-            if path.startswith(prefix):
+            if path.startswith(prefix) or (relative is not None and relative.startswith(prefix)):
                 return scope_name
         return None
 
