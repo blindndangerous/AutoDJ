@@ -7,6 +7,7 @@ import random
 import threading
 import time
 import uuid
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from datetime import time as clock_time
 from pathlib import Path
@@ -571,6 +572,39 @@ def test_a_preview_is_kept_while_nothing_new_is_fixed(tmp_path: Path, monkeypatc
     assert KEEP_SECONDS > hour_preview.PAGE_REFRESH_SECONDS
 
 
+def test_cache_freshness_covers_handoff_rules_schedule_library_and_refresh(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source, _power, _gold = _station(tmp_path)
+    decided = hour_preview.Decided(
+        now=1000, handoff=1100, items=(Item("song", 900, 200, "on_air"),)
+    )
+    monkeypatch.setattr(hour_preview, "read_station", lambda *_args, **_kwargs: decided)
+    builds: list[int] = []
+    monkeypatch.setattr(
+        hour_preview, "build_preview", lambda *_args, **_kwargs: builds.append(1) or {}
+    )
+    versions = [0]
+    source.library.catalog.change_versions = lambda: {"entries": versions[0]}
+    source.player._cfg = SimpleNamespace(playback=SimpleNamespace(repeat_rules="one"))
+    previews = HourPreviews()
+
+    previews.get(source, 60)
+    previews.get(source, 60)
+    assert len(builds) == 1
+    decided = replace(decided, handoff=980)  # Same tracks and statuses after a seek.
+    monkeypatch.setattr(hour_preview, "read_station", lambda *_args, **_kwargs: decided)
+    previews.get(source, 60)
+    source.player._cfg.playback.repeat_rules = "two"
+    previews.get(source, 60)
+    source.events = ("changed scheduled event",)
+    previews.get(source, 60)
+    versions[0] += 1
+    previews.get(source, 60)
+    previews.get(source, 60, force=True)
+    assert len(builds) == 6
+
+
 def test_previews_run_on_their_own_worker_thread(tmp_path: Path, monkeypatch) -> None:
     source, _power, gold = _station(tmp_path)
     _playing(source, gold[0], time.time() - 30)
@@ -665,6 +699,49 @@ def test_the_preview_and_the_rotation_tester_time_songs_alike(tmp_path: Path) ->
     for item in predicted:
         expected = song_seconds(player, by_title[item["title"]], average)
         assert item["seconds"] == pytest.approx(expected, abs=0.05)
+
+
+@pytest.mark.parametrize("first_overlap,second_overlap", [(None, 0), (0, -1), (2, 1), (-2, 0)])
+@pytest.mark.parametrize("incoming_intro", [None, 0.0, 4.0])
+@pytest.mark.parametrize("allow_outro", [False, True])
+def test_preview_liner_chain_matches_synthetic_live_render(
+    tmp_path: Path,
+    monkeypatch,
+    first_overlap: float | None,
+    second_overlap: float,
+    incoming_intro: float | None,
+    allow_outro: bool,
+) -> None:
+    source, _power, gold = _station(tmp_path)
+    player = source.player
+    liners = source.library.entries_snapshot("liner")
+    points = {
+        gold[0].path: {"start": 0, "outro": 4, "segue": 8, "end": 12},
+        liners[0].path: {"start": 0.5, "segue": 2.5, "end": 3.5, "overlap_start": first_overlap},
+        liners[1].path: {"start": 0.25, "segue": 1, "end": 2, "overlap_start": second_overlap},
+        gold[1].path: {"start": 0, "end": 12},
+    }
+    if incoming_intro is not None:
+        points[gold[1].path]["intro"] = incoming_intro
+    monkeypatch.setattr(source.library.catalog, "points", lambda path: points.get(path, {}))
+    monkeypatch.setattr(
+        source.library.catalog, "record_for_path", lambda _path: {"allow_outro": allow_outro}
+    )
+
+    def audio(entry):
+        return np.zeros((round(entry.length * SR), 2), dtype=np.float32)
+
+    monkeypatch.setattr(player, "_playout_audio", lambda entry, _decode: audio(entry))
+    monkeypatch.setattr(player, "_load_playout_audio", audio)
+
+    actual = player._render_saved_track(
+        gold[0], gold[1], 0, ((liners[0], False), (liners[1], False))
+    )
+    rows, delay = hour_preview._preview_liner_group(player, gold[0], gold[1], liners, NOW + 8)
+    actual_incoming = len(actual.audio) - actual.overlap_frames
+    assert delay == pytest.approx(actual_incoming / SR - 8)
+    assert rows[0][1] == pytest.approx(NOW + actual.liner_events[0][0] / SR)
+    assert rows[1][1] == pytest.approx(NOW + actual.liner_events[1][0] / SR)
 
 
 def test_the_snapshot_shares_nothing_of_the_clockwheel(tmp_path: Path) -> None:

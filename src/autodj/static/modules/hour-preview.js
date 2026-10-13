@@ -134,6 +134,7 @@ export function installHourPreview({
       refresh: async () => null,
       resume() {},
       noteState() {},
+      noteSeek() {},
       speakSummary: async () => {},
       clear() {},
     };
@@ -178,14 +179,14 @@ export function installHourPreview({
 
   // Ask for the preview; resolves to the view, or null when it failed or an
   // answer for a newer request (or a cleared session) superseded it.
-  async function load() {
+  async function load({ force = false } = {}) {
     const mine = session;
     latest += 1;
     const ticket = latest;
     const minutes = Number(span.value) || 60;
     let view;
     try {
-      view = await request(`${ENDPOINT}?minutes=${minutes}`);
+      view = await request(`${ENDPOINT}?minutes=${minutes}${force ? "&refresh=true" : ""}`);
     } catch (error) {
       if (mine !== session || ticket !== latest) return null;
       throw error;
@@ -197,9 +198,9 @@ export function installHourPreview({
 
   // A refresh nobody asked for: on its timer, a song change or the card
   // opening.  It says nothing, except a failure, once, until one succeeds.
-  async function quietRefresh() {
+  async function quietRefresh(force = false) {
     try {
-      const view = await load();
+      const view = await load({ force });
       if (view) quietError = null;
       return view;
     } catch (error) {
@@ -232,10 +233,10 @@ export function installHourPreview({
   // Ask on the user's behalf and say the outcome once, even when it is the
   // same as before.  Only the newest ask is said: one overtaken by a later
   // one (another span chosen meanwhile) says nothing.
-  async function askAndSay(lead) {
+  async function askAndSay(lead, { force = false } = {}) {
     let view;
     try {
-      view = await load();
+      view = await load({ force });
     } catch (error) {
       announceStatus(status, `The hour preview could not be loaded: ${error.message}`,
         { force: true, dwellMs: 8000, tone: "error" });
@@ -252,7 +253,7 @@ export function installHourPreview({
 
   // Refresh preview: the new summary is said once.
   function refresh() {
-    return askAndSay("Hour preview updated.");
+    return askAndSay("Hour preview updated.", { force: true });
   }
 
   // Show: a new span is said with its summary, once it has loaded.
@@ -292,6 +293,15 @@ export function installHourPreview({
     songTimer = setTimer(() => {
       songTimer = null;
       if (showing()) void quietRefresh();
+    }, SONG_CHANGE_DELAY_MS);
+  }
+
+  function noteSeek() {
+    if (!card.open) return;
+    if (songTimer !== null) clearTimer(songTimer);
+    songTimer = setTimer(() => {
+      songTimer = null;
+      if (showing()) void quietRefresh(true);
     }, SONG_CHANGE_DELAY_MS);
   }
 
@@ -345,5 +355,5 @@ export function installHourPreview({
     schedule();
   }
 
-  return { refresh, resume, noteState, speakSummary, clear };
+  return { refresh, resume, noteState, noteSeek, speakSummary, clear };
 }

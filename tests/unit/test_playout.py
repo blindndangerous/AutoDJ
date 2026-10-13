@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from autodj.playout import render_handoff
+from autodj.playout import liner_chain_placement, render_handoff
 from autodj.stereo import SAMPLE_RATE
 
 
@@ -213,6 +213,29 @@ def test_negative_overlap_keeps_tail_after_a_short_liner_segue():
     assert handoff.incoming_s == pytest.approx(8)
     assert len(handoff.next_overlay) == 8 * SAMPLE_RATE
     assert handoff.next_overlay[-1, 0] == pytest.approx(0.2)
+
+
+@pytest.mark.parametrize("overlap", [None, 0, 2.5, -2])
+def test_saved_cue_placement_helper_matches_rendered_transition(overlap):
+    outgoing = {"start": 0.5, "outro": 5, "segue": 8, "end": 12}
+    incoming = {"start": 1, "intro": 3.5}
+    main_frames = round(3.3 * SAMPLE_RATE)
+    start, segue = round(0.5 * SAMPLE_RATE), round(8 * SAMPLE_RATE)
+    safe_outro = round(5 * SAMPLE_RATE)
+    liner_start, incoming_frame = liner_chain_placement(
+        start, segue, safe_outro, main_frames, round(2.5 * SAMPLE_RATE), overlap, 1.0
+    )
+    rendered = render_handoff(
+        audio(12),
+        outgoing,
+        incoming,
+        liner=audio(6),
+        liner_segue=3.3,
+        overlap_start=overlap,
+        outro_lead_limit=1.0,
+    )
+    assert rendered.liner_s == pytest.approx(liner_start / SAMPLE_RATE)
+    assert rendered.incoming_s == pytest.approx(incoming_frame / SAMPLE_RATE)
 
 
 @pytest.mark.parametrize("overlap", [-15.01, float("nan"), float("inf")])
