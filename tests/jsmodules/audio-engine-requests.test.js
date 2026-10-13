@@ -1095,4 +1095,26 @@ describe("browser playback robustness", () => {
       expect(deck.gain.gain.linearRampToValueAtTime).not.toHaveBeenCalled();
     }
   });
+
+  it("uses the current track kind for a server-led handoff, not the future next track", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ current_track: { path: "song.mp3" } })));
+    const { engine } = await importEngine();
+    await startPlaying(engine, "song.mp3");
+
+    engine.applyBrowserPlaybackState({
+      browser_playback: true,
+      current_track: { kind: "liner", path: "liner.mp3" },
+      next_track: { kind: "music", path: "next-song.mp3" },
+      is_muted: false,
+      is_paused: false,
+      settings: { playback: { music_speed_percent: 1.23 } },
+    });
+
+    const incoming = engine.decks[engine.activeIdx ^ 1];
+    expect(incoming.path).toBe("liner.mp3");
+    expect(incoming.kind).toBe("liner");
+    expect(incoming.audio.playbackRate).toBe(1);
+    expect(incoming.audio.preservesPitch).toBe(true);
+    engine.stopAllDecks();
+  });
 });

@@ -811,6 +811,9 @@ function applyState(s) {
       { ...s.settings, discovery_enabled: s.discovery_enabled },
       _settingsEls(),
     );
+    if (document.activeElement !== _musicSpeedNumber) {
+      syncMusicSpeedSlider(_musicSpeedNumber, _musicSpeedSlider, _musicSpeedOutput);
+    }
     applyMixSettings(s.settings, _mixEls);
     applyRepeatSettings(s.settings, _repeatEls);
   }
@@ -837,6 +840,11 @@ import {
   postSettings as _postSettingsModule,
   resetSettingsState,
 } from "./modules/settings-panel.js";
+import { installMusicSpeedSlider, syncMusicSpeedSlider } from "./modules/music-speed.js";
+
+const _musicSpeedNumber = document.getElementById("pb-music-speed-number");
+const _musicSpeedSlider = document.getElementById("pb-music-speed-slider");
+const _musicSpeedOutput = document.getElementById("pb-music-speed-value");
 
 const _settingsEls = () => ({
   presetSelect, transitionSelect, harmonicMode,
@@ -852,6 +860,8 @@ const _settingsEls = () => ({
   discEnabled, discEvery,
   pbPrefetch: document.getElementById("pb-prefetch"),
   pbSilenceTrigger: document.getElementById("pb-silence-trigger"),
+  pbMusicSpeed: _musicSpeedNumber,
+  pbMusicSpeedSlider: _musicSpeedSlider,
 });
 
 function postSettings(url, body, control, { onError } = {}) {
@@ -859,6 +869,7 @@ function postSettings(url, body, control, { onError } = {}) {
 }
 
 installSettingsControls(_settingsEls(), postSettings);
+installMusicSpeedSlider({ number: _musicSpeedNumber, slider: _musicSpeedSlider, output: _musicSpeedOutput });
 
 // Preview output device: Track info's cue point player on a device of its
 // own (headphones), apart from the browser mix.  Installed before the
@@ -1118,6 +1129,7 @@ function applyCamelotWheel(currentCell, harmonicMode) {
 // accessors.
 import {
   setVolume, setMuted, applyBrowserPlaybackState, startCrossfade, stopAllDecks,
+  musicSpeedRate,
   applyEqState, loadCoverArt,
   resetTrackCaches, resetTransitionCaches,
   ensureAudioGraph, unlockAndPlay, duckMusic, isStaleAdvanceState, setLinkUp,
@@ -1875,10 +1887,15 @@ function beatmatchRate() {
 // `finished` is startCrossfade's result: true once the transition has
 // really ended (the engine's own timeline, the effect length included),
 // false when it was cut short by a stop.
-function returnToOwnTempo({ audio, rate, prevRate, prevPitch }, finished) {
+function returnToOwnTempo({ audio, deck, path, rate, prevPitch }, finished) {
   const restore = () => {
-    try { audio.playbackRate = prevRate; } catch (_) {}
-    try { audio.preservesPitch = prevPitch; } catch (_) {}
+    if (path && deck.path !== path) return;
+    deck.rateMultiplier = 1;
+    deck.preservePitch = false;
+    const isMusic = !deck.kind || deck.kind === "music";
+    try { audio.defaultPlaybackRate = isMusic ? musicSpeedRate() : 1; } catch (_) {}
+    try { audio.playbackRate = isMusic ? musicSpeedRate() : 1; } catch (_) {}
+    try { audio.preservesPitch = isMusic ? prevPitch : true; } catch (_) {}
   };
   if (!finished) {
     restore();
@@ -1887,6 +1904,11 @@ function returnToOwnTempo({ audio, rate, prevRate, prevPitch }, finished) {
   const steps = Math.round(BEATMATCH_RETURN_MS / BEATMATCH_RETURN_STEP_MS);
   let step = 0;
   const timer = setInterval(() => {
+    if ((path && deck.path !== path) || (deck.kind && deck.kind !== "music")) {
+      clearInterval(timer);
+      restore();
+      return;
+    }
     step += 1;
     // A stop or the next transition takes the deck over: hand it back now.
     if (step >= steps || !playbackEnabled || crossfading) {
@@ -1894,7 +1916,10 @@ function returnToOwnTempo({ audio, rate, prevRate, prevPitch }, finished) {
       restore();
       return;
     }
-    try { audio.playbackRate = rate + (prevRate - rate) * (step / steps); } catch (_) {}
+    const multiplier = rate + (1 - rate) * (step / steps);
+    deck.rateMultiplier = multiplier;
+    try { audio.defaultPlaybackRate = musicSpeedRate() * multiplier; } catch (_) {}
+    try { audio.playbackRate = musicSpeedRate() * multiplier; } catch (_) {}
   }, BEATMATCH_RETURN_STEP_MS);
 }
 
@@ -1907,22 +1932,31 @@ btnSkip.addEventListener("click", async () => {
   if (_lastBrowserPlayback && playbackEnabled && _ctx && _nextTrackPathCache && !crossfading) {
     // Beatmatch-on-skip: when the user opted in AND both BPMs are
     // known, stretch the standby deck's tempo so the new track joins the
-    // existing groove instead of cold-cutting.  preservesPitch=true
-    // gives a tempo-only stretch (proper beatmatch).  Held for the whole
-    // transition, however long its effect runs, then eased back.
+    // existing groove instead of cold-cutting.  At native music speed the
+    // stretch preserves pitch; with speed enabled the two rates share the
+    // browser's playbackRate, so pitch follows their combined rate.  Held
+    // for the whole transition, then eased back.
     const rate = beatmatchRate();
     let stretched = null;
     if (rate !== null) {
+      const preservePitch = musicSpeedRate() === 1;
       const audio = decks[activeIdx ^ 1].audio;
+      const deck = decks[activeIdx ^ 1];
       stretched = {
-        audio, rate, prevRate: audio.playbackRate, prevPitch: audio.preservesPitch,
+        audio, deck, path: _nextTrackPathCache, rate, prevPitch: audio.preservesPitch,
       };
-      try { audio.preservesPitch = true; } catch (_) {}
-      try { audio.playbackRate = rate; } catch (_) {}
+      deck.rateMultiplier = rate;
+      deck.preservePitch = preservePitch;
+      try { audio.preservesPitch = preservePitch; } catch (_) {}
+      try { audio.defaultPlaybackRate = musicSpeedRate() * rate; } catch (_) {}
+      try { audio.playbackRate = musicSpeedRate() * rate; } catch (_) {}
       dbg("beatmatch-on-skip: ratio=", rate.toFixed(3),
         "(", _outBpmCache.toFixed(1), "/", _inBpmCache.toFixed(1), ")");
     }
-    const finished = await startCrossfade(_nextTrackPathCache, _crossfadeSecondsCache);
+    const finished = await startCrossfade(
+      _nextTrackPathCache, _crossfadeSecondsCache, false, null, rate ?? 1,
+      rate !== null && musicSpeedRate() === 1,
+    );
     if (stretched) returnToOwnTempo(stretched, finished);
   } else {
     await requestJson("/api/skip", { method: "POST" });

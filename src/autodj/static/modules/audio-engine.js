@@ -217,8 +217,8 @@ const audioElB = document.getElementById("browser-player-b");
 // require a user activation to construct an AudioContext).
 export let _ctx = null;
 export const decks = [
-  { audio: audioEl,  source: null, gain: null, intro: null, liftDb: 0, path: null, busy: false },
-  { audio: audioElB, source: null, gain: null, intro: null, liftDb: 0, path: null, busy: false },
+  { audio: audioEl,  source: null, gain: null, intro: null, liftDb: 0, path: null, kind: "music", rateMultiplier: 1, preservePitch: false, busy: false },
+  { audio: audioElB, source: null, gain: null, intro: null, liftDb: 0, path: null, kind: "music", rateMultiplier: 1, preservePitch: false, busy: false },
 ];
 export let activeIdx = 0;
 export let crossfading = false;
@@ -341,10 +341,68 @@ export function stopAllDecks() {
   suppressAdvance = false;
 }
 
-export function setSrcOnDeck(deck, path) {
-  if (deck.path === path) return;
+let _musicSpeedPercent = 0;
+let _pendingMusicSpeedApply = false;
+
+export function musicSpeedRate() {
+  return 1 + _musicSpeedPercent / 100;
+}
+
+function _deckRate(deck) {
+  const rate = Number(deck?.audio?.playbackRate);
+  return Number.isFinite(rate) && rate > 0 ? rate : 1;
+}
+
+function _outroWallSeconds() {
+  return typeof _currentOutroLenCache === "number"
+    ? _currentOutroLenCache / _deckRate(deckActive()) : _currentOutroLenCache;
+}
+
+function _writeDeckRate(deck) {
+  if (!deck?.audio) return;
+  if (deck.kind !== "music") {
+    if (deck.audio.defaultPlaybackRate !== 1) deck.audio.defaultPlaybackRate = 1;
+    if (deck.audio.playbackRate !== 1) deck.audio.playbackRate = 1;
+    if (deck.audio.preservesPitch !== true) {
+      try { deck.audio.preservesPitch = true; } catch (_) {}
+    }
+    return;
+  }
+  const rate = musicSpeedRate() * (deck.rateMultiplier || 1);
+  // The media load algorithm resets playbackRate to defaultPlaybackRate.
+  // Keep both in sync so prefetch/retry .load() calls retain the selected speed.
+  if (deck.audio.defaultPlaybackRate !== rate) deck.audio.defaultPlaybackRate = rate;
+  if (deck.audio.playbackRate !== rate) deck.audio.playbackRate = rate;
+  const preservePitch = Boolean(deck.preservePitch) || rate === 1;
+  if (deck.audio.preservesPitch !== preservePitch) {
+    try { deck.audio.preservesPitch = preservePitch; } catch (_) {}
+  }
+}
+
+function _setMusicSpeedFromState(state, { applyNow = true } = {}) {
+  const value = state?.settings?.playback?.music_speed_percent;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < -10 || value > 10) return;
+  if (value === _musicSpeedPercent) return;
+  _musicSpeedPercent = value;
+  if (!applyNow) return;
+  if (crossfading) {
+    _pendingMusicSpeedApply = true;
+  } else {
+    _writeDeckRate(deckActive());
+  }
+}
+
+export function setSrcOnDeck(deck, path, kind = "music") {
+  deck.kind = kind;
+  if (deck.path === path) {
+    _writeDeckRate(deck);
+    return;
+  }
   deck.path = path;
+  deck.rateMultiplier = 1;
+  deck.preservePitch = false;
   deck.liftDb = 0;
+  _writeDeckRate(deck);
   updateIntroGain(deck);
   deck.audio.src = "/api/audio?path=" + encodeURIComponent(path);
 }
@@ -1214,6 +1272,7 @@ function _bendRate(fx, { sec = fx.fadeSec, everyMs, rateAt, preservesPitch = fal
   const audio = fx.outDeck.audio;
   const prevPreserve = audio.preservesPitch !== false;
   const prevRate = audio.playbackRate;
+  const speedRate = fx.outDeck.kind === "music" ? musicSpeedRate() : 1;
   try { audio.preservesPitch = preservesPitch; } catch (_) {}
   const startMs = performance.now();
   const durMs = sec * 1000;
@@ -1221,14 +1280,14 @@ function _bendRate(fx, { sec = fx.fadeSec, everyMs, rateAt, preservesPitch = fal
     const t = (performance.now() - startMs) / durMs;
     if (t >= 1) {
       clearInterval(iv);
-      if (endRate !== null) { try { audio.playbackRate = endRate; } catch (_) {} }
+      if (endRate !== null) { try { audio.playbackRate = speedRate * endRate; } catch (_) {} }
       return;
     }
-    try { audio.playbackRate = rateAt(t); } catch (_) {}
+    try { audio.playbackRate = speedRate * rateAt(t); } catch (_) {}
   }, everyMs);
   fx.teardowns.push(() => {
     clearInterval(iv);
-    try { audio.playbackRate = restoreRate === null ? prevRate : restoreRate; } catch (_) {}
+    try { audio.playbackRate = restoreRate === null ? prevRate : speedRate * restoreRate; } catch (_) {}
     try { audio.preservesPitch = prevPreserve; } catch (_) {}
   });
 }
@@ -2067,7 +2126,10 @@ function requestRepick(blacklist) {
 // little late (up to _PHRASE_SNAP_S) anchors the whole fade there, so the
 // beat-synced effects take the boundary as their first downbeat instead
 // of waiting a bar for the next one.
-export function startCrossfade(nextPath, fadeSec, serverLed = false, phraseAt = null) {
+export function startCrossfade(
+  nextPath, fadeSec, serverLed = false, phraseAt = null,
+  incomingRateMultiplier = 1, incomingPreservesPitch = false, incomingKind = null,
+) {
   if (!_ctx || crossfading || !nextPath) return Promise.resolve(false);
   crossfading = true;
   const operationGeneration = _playbackGeneration;
@@ -2076,7 +2138,10 @@ export function startCrossfade(nextPath, fadeSec, serverLed = false, phraseAt = 
 
   const standby = deckStandby();
   let cleanupMetadata = () => {};
-  setSrcOnDeck(standby, nextPath);
+  setSrcOnDeck(standby, nextPath, incomingKind || _nextTrackKindCache);
+  standby.rateMultiplier = incomingRateMultiplier;
+  standby.preservePitch = standby.kind === "music" && incomingPreservesPitch;
+  _writeDeckRate(standby);
   // The cached lift belongs to the announced next track; any other song
   // (a skip to a different pick) starts unlifted until the server says.
   setDeckIntro(standby, { path: nextPath,
@@ -2126,14 +2191,19 @@ export function startCrossfade(nextPath, fadeSec, serverLed = false, phraseAt = 
   const cut = !(fadeSec > 0);
 
   // Resolve + apply the chosen transition effect over the fade window.
-  const fxName = cut ? "none" : _fxForFade(active, nextPath);
+  const linerOverlap = active.kind !== "music" || standby.kind !== "music";
+  // A rate-shifted song crossing a voice liner must leave the spoken deck
+  // at native speed. Keep that overlap a plain linear fade so transition
+  // effects cannot bend or otherwise process the voice.
+  const fxName = cut || (linerOverlap && _musicSpeedPercent !== 0)
+    ? "none" : _fxForFade(active, nextPath);
   // Resolve effect-preferred duration UP FRONT so the gain ramp, the
   // effect scheduling, and the cleanup setTimeout all use the SAME
   // timeline.  Earlier code resolved this inside applyTransitionFx
   // which left the gain ramp ending before / after the effect tail and
   // caused audible cuts (effect-shorter-than-fade) or trailing silence
   // (effect-longer-than-fade).
-  const effectDur = cut ? 0 : _effectDurationFor(fxName, fadeSec, _currentOutroLenCache);
+  const effectDur = cut ? 0 : _effectDurationFor(fxName, fadeSec, _outroWallSeconds());
   // Refresh the beat-sync cache up front so applyTransitionFx can read
   // _BS.beatSec / barSec / nextDownbeat / rootHzAt while scheduling.
   _BS.refresh(active, t0, effectDur, ctxNow);
@@ -2194,6 +2264,10 @@ export function startCrossfade(nextPath, fadeSec, serverLed = false, phraseAt = 
       activeIdx ^= 1;
       crossfading = false;
       suppressAdvance = false;
+      if (_pendingMusicSpeedApply) {
+        _pendingMusicSpeedApply = false;
+        _writeDeckRate(deckActive());
+      }
       try { active.audio.pause(); } catch (_) {}
       try { active.audio.removeAttribute("src"); } catch (_) {}
       active.path = null;
@@ -2222,7 +2296,7 @@ function reloadDeck(deck, retry) {
   }
   // A new src, even for the same file, so the element fetches again.
   deck.path = null;
-  setSrcOnDeck(deck, retry.path);
+  setSrcOnDeck(deck, retry.path, deck.kind);
   if (deck !== deckActive() && !crossfading) {
     try { deck.audio.load(); } catch (_) {}
     return;
@@ -2335,7 +2409,7 @@ for (const d of decks) {
     if (crossfading || !playbackEnabled) return;
     const dur = d.audio.duration;
     if (!isFinite(dur) || dur <= 0) return;
-    const remaining = dur - d.audio.currentTime;
+    const remaining = (dur - d.audio.currentTime) / _deckRate(d);
     const fadeSec = _fadeSecNow();
     // For outro_fade + full_intro_outro, the fade should begin AT the
     // outgoing outro_start (when known) rather than just "fadeSec from
@@ -2356,7 +2430,8 @@ for (const d of decks) {
     // before the boundary.  A boundary missed by more than a moment (a
     // seek past it, a grid that arrived late) leaves today's triggers.
     const phraseStart = _nextTrackPathCache ? _phraseStartFor(dur, fadeSec, useMarker) : null;
-    const ahead = phraseStart === null ? -Infinity : phraseStart - d.audio.currentTime;
+    const ahead = phraseStart === null
+      ? -Infinity : (phraseStart - d.audio.currentTime) / _deckRate(d);
     if (ahead >= -_PHRASE_LATE_S) {
       if (ahead <= 0) {
         _cancelPhraseStart();
@@ -2413,6 +2488,7 @@ export let _currentOutroStartCache = null;   // active deck's outro_start_s
 export let _nextTrackIntroEndCache = null;   // incoming track's intro_end_s
 export let _nextTrackIntroStartCache = null; // incoming track's intro_start_s
 export let _nextTrackPathCache = null;
+let _nextTrackKindCache = "music";
 let _nextTrackLiftCache = 0;
 let _transitionMode = "full_intro_outro";
 let _prefetchEnabled = true;
@@ -2464,9 +2540,13 @@ export function _resolveFadeSec(mode, baseFade, outroLen, nextIntroEnd, nextIntr
 // The fade length the timeupdate trigger uses (crossfade seconds, or the
 // outro and intro markers in the marker modes).
 function _fadeSecNow() {
+  const outgoingRate = _deckRate(deckActive());
+  const incomingRate = _nextTrackKindCache === "music" ? musicSpeedRate() : 1;
   return _resolveFadeSec(
     _transitionMode, _crossfadeSecondsCache,
-    _currentOutroLenCache, _nextTrackIntroEndCache, _nextTrackIntroStartCache,
+    typeof _currentOutroLenCache === "number" ? _currentOutroLenCache / outgoingRate : null,
+    typeof _nextTrackIntroEndCache === "number" ? _nextTrackIntroEndCache / incomingRate : null,
+    typeof _nextTrackIntroStartCache === "number" ? _nextTrackIntroStartCache / incomingRate : null,
   );
 }
 
@@ -2541,7 +2621,7 @@ function _plannedEffectDur(fadeSec) {
   const names = planned === null && (name === "random" || name === "rotate")
     ? Object.keys(_EFFECTS).filter(_canRun)
     : [planned ?? _resolveTransition(name)];
-  return Math.max(0, ...names.map((n) => _effectDurationFor(n, fadeSec, _currentOutroLenCache)));
+  return Math.max(0, ...names.map((n) => _effectDurationFor(n, fadeSec, _outroWallSeconds())));
 }
 
 // Where the timeupdate trigger should start the fade with phrase align
@@ -2549,10 +2629,12 @@ function _plannedEffectDur(fadeSec) {
 // in the marker modes, or fadeSec before the end, whichever comes first.
 function _phraseStartFor(dur, fadeSec, useMarker) {
   if (!_phraseAlignCache) return null;
-  const today = useMarker ? Math.min(_currentOutroStartCache, dur - fadeSec) : dur - fadeSec;
+  const rate = _deckRate(deckActive());
+  const sourceFade = fadeSec * rate;
+  const today = useMarker ? Math.min(_currentOutroStartCache, dur - sourceFade) : dur - sourceFade;
   return _phraseBoundary(
     _outDownbeatsCache, _outFirstBarCache, _phraseBarsCache,
-    today, _plannedEffectDur(fadeSec), dur,
+    today, _plannedEffectDur(fadeSec) * rate, dur,
   );
 }
 
@@ -2646,8 +2728,9 @@ export async function unlockAndPlay(beforePlay = null) {
     announceEngineError("No current track on server.", { force: true });
     throw new Error("no current track");
   }
+  _setMusicSpeedFromState(state, { applyNow: false });
   const deck = deckActive();
-  setSrcOnDeck(deck, path);
+  setSrcOnDeck(deck, path, state.current_track?.kind || "music");
   setDeckIntro(deck, state.current_track);
   let started = true;
   try {
@@ -2680,6 +2763,8 @@ export function applyBrowserPlaybackState(s) {
   // would fade back to the track the page has just left.
   if (isStaleAdvanceState(s)) return;
 
+  _setMusicSpeedFromState(s);
+
   // 0 is a real setting (cut between tracks), not a missing one.
   const crossfade = s.settings && s.settings.playback
     && s.settings.playback.crossfade_seconds;
@@ -2688,6 +2773,7 @@ export function applyBrowserPlaybackState(s) {
     typeof s.settings.playback.fade_in_seconds === "number")
     ? s.settings.playback.fade_in_seconds : 3.0;
   _nextTrackPathCache = s.next_track ? s.next_track.path : null;
+  _nextTrackKindCache = s.next_track?.kind || "music";
   _nextTrackLiftCache = s.next_track?.intro_lift_db || 0;
   for (const deck of decks) {
     setDeckIntro(deck, s.current_track);
@@ -2751,6 +2837,10 @@ export function applyBrowserPlaybackState(s) {
   if (playbackEnabled) {
     const active = deckActive();
     const path = s.current_track ? s.current_track.path : null;
+    if (path && active.path === path && active.kind !== (s.current_track?.kind || "music")) {
+      active.kind = s.current_track?.kind || "music";
+      if (!crossfading) _writeDeckRate(active);
+    }
     if (path && active.path !== path && !crossfading) {
       // Four cases:
       //   1. Paused — keep pause frozen.  Hard-cut to new track at
@@ -2766,13 +2856,14 @@ export function applyBrowserPlaybackState(s) {
       //   4. Mid-playback w/o AudioContext — first-click unlock hasn't
       //      happened yet; can't crossfade, just set + play.
       if (s.is_paused) {
-        setSrcOnDeck(active, path);
+        setSrcOnDeck(active, path, s.current_track?.kind || "music");
         try { active.audio.pause(); } catch (_) {}
         try { active.audio.currentTime = 0; } catch (_) {}
       } else if (active.path && _ctx) {
-        startCrossfade(path, _crossfadeSecondsCache, /* serverLed = */ true);
+        startCrossfade(path, _crossfadeSecondsCache, /* serverLed = */ true,
+          null, 1, false, s.current_track?.kind || "music");
       } else {
-        setSrcOnDeck(active, path);
+        setSrcOnDeck(active, path, s.current_track?.kind || "music");
         playOnDeck(active);
       }
     }
@@ -2783,7 +2874,7 @@ export function applyBrowserPlaybackState(s) {
     if (_prefetchEnabled && _nextTrackPathCache && !crossfading) {
       const standby = deckStandby();
       if (standby.path !== _nextTrackPathCache) {
-        setSrcOnDeck(standby, _nextTrackPathCache);
+        setSrcOnDeck(standby, _nextTrackPathCache, _nextTrackKindCache);
         setDeckIntro(standby, s.next_track);
         // Force the browser to start buffering NOW (preload="metadata"
         // alone won't fetch audio bytes until play()).  We can't actually
@@ -2887,6 +2978,7 @@ export function resetTransitionCaches() {
   _nextTrackIntroEndCache  = null;
   _nextTrackIntroStartCache = null;
   _nextTrackPathCache      = null;
+  _nextTrackKindCache = "music";
   _nextTrackLiftCache = 0;
   _fxPlan = null;
   _prevFxPlan = null;

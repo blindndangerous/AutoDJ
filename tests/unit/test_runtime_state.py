@@ -25,6 +25,7 @@ def _make_player() -> SimpleNamespace:
     playback = SimpleNamespace(
         crossfade_seconds=3.0,
         fade_in_seconds=3.0,
+        music_speed_percent=0.0,
         crossfade_eq_duck=False,
         transition_mode="full_intro_outro",
         pick_mode="similarity",
@@ -599,6 +600,7 @@ class TestRoundTrip:
         p1 = _make_player()
         p1._eq_low, p1._eq_mid, p1._eq_high = 1.4, 0.75, 1.2
         p1._cfg.djmix.harmonic_mode = "strict"
+        p1._cfg.playback.music_speed_percent = 1.23
         p1._cfg.djmix.beatmatch = True
         p1._cfg.djmix.phrase_align = True
         p1._cfg.djmix.outro_intro_align = True
@@ -682,6 +684,7 @@ class TestRoundTrip:
         assert set(saved["playback"]) == {
             "crossfade_seconds",
             "fade_in_seconds",
+            "music_speed_percent",
             "crossfade_eq_duck",
             "pure_shuffle",
             "anchor_to_seed",

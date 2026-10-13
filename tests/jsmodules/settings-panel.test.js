@@ -68,6 +68,8 @@ function makeEls() {
     discEvery:       num(),
     pbPrefetch:      cb(),
     pbSilenceTrigger: cb(),
+    pbMusicSpeed: num(),
+    pbMusicSpeedSlider: Object.assign(document.createElement("input"), { type: "range" }),
   };
 }
 
@@ -124,6 +126,15 @@ describe("applySettingsState", () => {
     expect(els.djKeyShift.checked).toBe(false);
     expect(els.discEnabled.checked).toBe(true);
     expect(els.discEvery.value).toBe("5");
+  });
+
+  it("keeps the music speed value while its slider is being dragged", () => {
+    const els = makeEls();
+    els.pbMusicSpeed.value = "1.23";
+    document.body.append(els.pbMusicSpeedSlider);
+    els.pbMusicSpeedSlider.focus();
+    applySettingsState({ playback: { music_speed_percent: 0 } }, els);
+    expect(els.pbMusicSpeed.value).toBe("1.23");
   });
 
   it("shows the skip style, talk-up and vocal guard the server reports", () => {

@@ -34,6 +34,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[stream] stats_days` days (90 by default; 0 keeps none), in each station's
   `listener_stats.json`, which backups include. Routes: `/api/stream/stats` and
   `/api/stream/stats/export`, and the same under `/api/stations/<name>/`.
+- Music speed (#162): Settings > Sound > Music speed has a slider and exact numeric field for
+  10% slower to 10% faster. Speed and pitch change together. Browser music changes speed when
+  safe; voice liners and previews stay at their normal speed. In stream and server-audio modes,
+  the new speed takes effect at the next unrendered audio-buffer boundary. Cue points, lyrics,
+  catalog durations and playback progress remain on the source-file timeline.
 - Daypart and hourpart song separation (#129): two new repeat rules in Settings > Song picking >
   Repeats keep a song from playing at the same time every day. **Prevent a song from playing in
   the same daypart** holds back a song that played in the daypart the next song starts in (such
@@ -47,7 +52,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `config.toml` they are the `daypart` and `hourpart` tables of `[playback.repeat_rules]`; unknown
   keys there are ignored with a warning. See
   [Time of day](docs/track-selection.md#time-of-day).
-
 - Saving edits to the active clockwheel can now apply at its next restart, immediately from
   step 1, or immediately continuing at the next step number. A song already playing and its
   committed handoff finish normally. With no restart minutes, deferred edits apply when the

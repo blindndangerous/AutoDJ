@@ -12,6 +12,7 @@ or the stream encoder in 20 ms blocks.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import random
 import re
@@ -61,6 +62,7 @@ from autodj.breaks import Break, BreakError, SlotPlan, new_id, placement_for, sp
 from autodj.dmca import WINDOW_SECONDS, Complement, complement, relaxed
 from autodj.indexer import IndexEntry
 from autodj.mixbus import BusEvents, MixBus, RenderedTrack, SkipTail
+from autodj.music_speed import resample_music
 from autodj.render_ahead import RenderAhead
 from autodj.repeat_rules import (
     RELAXED_RULES,
@@ -399,6 +401,36 @@ def _closure_words(context: _PickContext) -> str:
     if not found:
         return "hours"
     return found[0] if len(found) == 1 else f"{', '.join(found[:-1])} or {found[-1]}"
+
+
+def _music_output_frame(source_frame: int, rate: float) -> int:
+    """Map a source-file frame to its position in a rate-adjusted buffer."""
+    return round(source_frame / rate)
+
+
+def _music_source_frame(output_frame: int, rate: float) -> int:
+    """Map a rate-adjusted output frame back to source-file coordinates."""
+    return round(output_frame * rate)
+
+
+def _music_segment(audio: np.ndarray, rate: float, output_frames: int) -> np.ndarray:
+    """Rate-adjust a music segment to an exact wall-clock frame count."""
+    result = resample_music(audio, rate)
+    if len(result) > output_frames:
+        return result[:output_frames]
+    if len(result) < output_frames:
+        return np.pad(result, ((0, output_frames - len(result)), (0, 0)))
+    return result
+
+
+def _music_output_points(points: dict[str, Any], rate: float) -> dict[str, Any]:
+    """Copy source-time music cues into a rate-adjusted output timeline."""
+    result = dict(points)
+    for key in ("start", "end", "intro", "segue", "outro"):
+        value = result.get(key)
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            result[key] = float(value) / rate
+    return result
 
 
 def _log_repeat_blocks(repeat: RepeatFilter, picked: IndexEntry) -> None:
@@ -1011,8 +1043,12 @@ class Player:
         # Shared playback position (samples) — written by the mix bus, read and
         # written by seeks.  Using a list so both sides share the same object.
         self._playback_pos: list[int] = [0]
-        self._playback_len: int = 0  # length of the current audio array in samples
+        self._playback_output_pos: list[int] = [0]
+        self._playback_len: int = 0  # end position in source-file samples
         self._current_sr: int = _DEFAULT_SR
+        self._liner_entries_snapshot: tuple[IndexEntry, ...] | None = None
+        self._liner_paths: frozenset[str] = frozenset()
+        self._liner_paths_lock = threading.Lock()
         # Server audio: the mix bus that plays rendered tracks (built at the
         # end of __init__ unless dry-run), and a
         # hook the bridge sets to hear about each track the bus starts.
@@ -1218,6 +1254,32 @@ class Player:
         """Return basic-ready music, or the legacy index when no catalog is attached."""
         collection = self._library if self._library is not None else self._sim
         return collection.entries_snapshot()
+
+    def _is_liner(self, entry: IndexEntry) -> bool:
+        """Whether *entry* is voice audio, using the library's cached snapshot."""
+        library = self._library
+        if library is None:
+            return False
+        entries = library.entries_snapshot("liner")
+        if entries is not self._liner_entries_snapshot:
+            with self._liner_paths_lock:
+                entries = library.entries_snapshot("liner")
+                if entries is not self._liner_entries_snapshot:
+                    self._liner_entries_snapshot = entries
+                    self._liner_paths = frozenset(item.path for item in entries)
+        return entry.path in self._liner_paths
+
+    def music_playback_rate(self, entry: IndexEntry | None) -> float:
+        """The configured pitch-changing playback rate for music, or unity for voice."""
+        if entry is None or self._is_liner(entry):
+            return 1.0
+        playback = getattr(self._cfg, "playback", None)
+        raw_percent = getattr(playback, "music_speed_percent", 0.0)
+        if isinstance(raw_percent, bool) or not isinstance(raw_percent, int | float):
+            return 1.0
+        percent = float(raw_percent)
+        rate = 1.0 + percent / 100.0
+        return rate if math.isfinite(rate) and rate > 0.0 else 1.0
 
     @property
     def _ledger(self) -> Any:
@@ -2090,15 +2152,14 @@ class Player:
             logger.debug("No saved cues for %s; timing its whole length", current.path)
             start, segue = 0.0, float(current.length or 0.0)
         offset = getattr(self, "_pending_offset", 0)
-        when = self._now() + max(0.0, segue - max(start, offset / SAMPLE_RATE))
+        when = self._now() + max(0.0, segue - max(start, offset / SAMPLE_RATE)) / max(
+            self.music_playback_rate(current), 1e-9
+        )
         playing = getattr(self, "_playing_render", None)
         if lead_s is not None:
             when += max(0.0, lead_s)
         elif playing is not None and playing.next_entry is current:
-            when += max(
-                0.0,
-                (len(playing.audio) + playing.start_offset - self._playback_pos[0]) / SAMPLE_RATE,
-            )
+            when += self._playing_remaining_s()
         return when
 
     def _clock_liner_fits(
@@ -2124,7 +2185,8 @@ class Player:
         overlap = cues.get("overlap_start")
         from autodj.playout import liner_release_frames
 
-        intro = max(0.0, (self.saved_points(upcoming).get("intro") or start) - start)
+        rate = max(self.music_playback_rate(upcoming), 1e-9)
+        intro = max(0.0, (self.saved_points(upcoming).get("intro") or start) - start) / rate
         release = (
             liner_release_frames(round(main * SAMPLE_RATE), round(intro * SAMPLE_RATE), overlap)
             / SAMPLE_RATE
@@ -2135,8 +2197,10 @@ class Player:
             current_start, current_segue = self._clock_music_span(current)
             outro = self.saved_points(current).get("outro")
             if outro is not None:
-                lead = max(0.0, current_segue - max(current_start, outro))
-        if segue > start and when + max(0.0, release - lead) + segue - start <= boundary:
+                lead = max(0.0, current_segue - max(current_start, outro)) / max(
+                    self.music_playback_rate(current), 1e-9
+                )
+        if segue > start and when + max(0.0, release - lead) + (segue - start) / rate <= boundary:
             return True
         self._clock_status = (
             "Skipping liner: the liner and following track do not fit before the reset"
@@ -2288,7 +2352,9 @@ class Player:
             return (), ""
         key = f"{current.path}\n{upcoming.path}"
         points = self.saved_points(current)
-        seconds = float(points.get("segue") or points.get("outro") or current.length)
+        seconds = float(points.get("segue") or points.get("outro") or current.length) / max(
+            self.music_playback_rate(current), 1e-9
+        )
         name = plan(key, tracks_ahead=1, seconds_ahead=seconds)
         if name:
             record = self._library.record_for_id(name)
@@ -2376,13 +2442,19 @@ class Player:
             return None
         entry = track.entry
         bpm = trusted_bpm(entry.bpm, getattr(entry, "tempo_confidence", 0.0))
+        effective_bpm = bpm * track.playback_rate if bpm else 0.0
         beats: list[int] = []
         if bpm:
             meta = self._peek_incoming_meta(entry)
             if meta is not None:
-                beats = [round(t * SAMPLE_RATE) - track.start_offset for t in meta.beats]
-        frames = tail_frames(start, bpm, beats)
-        beat = round(60.0 / bpm * SAMPLE_RATE) if bpm else 0
+                beats = [
+                    _music_output_frame(
+                        round(t * SAMPLE_RATE) - track.start_offset, track.playback_rate
+                    )
+                    for t in meta.beats
+                ]
+        frames = tail_frames(start, effective_bpm, beats)
+        beat = round(60.0 / effective_bpm * SAMPLE_RATE) if effective_bpm else 0
         return SkipTail(track, start, render_tail(style, track.audio, start, frames, beat))
 
     def _run_stream(self) -> None:
@@ -2862,8 +2934,7 @@ class Player:
         playing = self._playing_render
         if playing is None:
             return 0.0
-        end = playing.start_offset + len(playing.audio)
-        return max(0.0, (end - self._playback_pos[0]) / SAMPLE_RATE)
+        return max(0.0, (len(playing.audio) - self._playback_output_pos[0]) / SAMPLE_RATE)
 
     def _plan_slot(self, ready: RenderedTrack) -> None:
         with self._clock_selection_lock:
@@ -3003,7 +3074,9 @@ class Player:
         else:
             lead = self._playing_remaining_s() + plan.before_s
         start, segue = self._clock_music_span(plan.ending)
-        lead += max(0.0, segue - max(start, plan.ending_offset_s))
+        lead += max(0.0, segue - max(start, plan.ending_offset_s)) / max(
+            self.music_playback_rate(plan.ending), 1e-9
+        )
         return tuple(desk.take(plan.slot_id, time.time() + lead))
 
     def _pinned_before(self, track: RenderedTrack) -> bool:
@@ -3048,7 +3121,7 @@ class Player:
         desk = self.break_desk
         if finished is None or not finished.break_events or desk is None:
             return
-        reached = self._playback_pos[0] - finished.start_offset
+        reached = self._playback_output_pos[0]
         for _at, break_id, end in finished.break_events:
             if break_id in self._heard_break_ends:
                 continue
@@ -3079,7 +3152,9 @@ class Player:
             return None, 0.0, 0.0
         remaining = self._playing_remaining_s()
         start, segue = self._clock_music_span(plan.ending)
-        body = max(0.0, segue - max(start, plan.ending_offset_s))
+        body = max(0.0, segue - max(start, plan.ending_offset_s)) / max(
+            self.music_playback_rate(plan.ending), 1e-9
+        )
         playing = self._playing_render
         if playing is not None and playing.entry is plan.before:
             return plan, 0.0, remaining + body
@@ -3196,6 +3271,7 @@ class Player:
             self._state.next_track = None
             self._last_clock_step = None
             self._playback_pos[0] = 0
+            self._playback_output_pos[0] = 0
             self._playback_len = 0
             self._current_lyrics = []
             self._current_lyrics_plain = ""
@@ -3242,7 +3318,9 @@ class Player:
             if track is not None and self._skip_next_intro:
                 self._skip_next_intro = False
                 if track.full_audio is not None:
-                    prefix = track.start_offset - track.source_start_offset
+                    prefix = _music_output_frame(
+                        track.start_offset - track.source_start_offset, track.playback_rate
+                    )
                     track = replace(
                         track,
                         audio=track.full_audio,
@@ -3268,7 +3346,7 @@ class Player:
         """An early skip starts the next song at Start, before any unheard overlap."""
         track = self._playing_render
         if track is not None and track.full_audio is not None:
-            relative = self._playback_pos[0] - track.start_offset
+            relative = self._playback_output_pos[0]
             self._skip_next_intro = relative < len(track.audio) - track.overlap_frames
         if self.bus is not None:
             self.bus.skip()
@@ -3323,9 +3401,21 @@ class Player:
         """
         if track.next_pick_mode == "clock" and track.next_clock_revision != self._clock_revision:
             return True
+        # A booked break is committed to this handoff; defer speed until after it.
         if track.break_events or self._pinned_before(track):
             return False
-        if self._library is not None and self._cfg.playback.transition_mode == "saved_points":
+        if track.playback_rate != self.music_playback_rate(track.entry):
+            return True
+        if (
+            track.overlap_frames > 0
+            and track.next_entry is not None
+            and track.next_playback_rate != self.music_playback_rate(track.next_entry)
+        ):
+            return True
+        saved_points = (
+            self._library is not None and self._cfg.playback.transition_mode == "saved_points"
+        )
+        if saved_points:
             liners, head = self._station_queue(
                 track.entry if track.from_queue else None, track.reserved_liners
             )
@@ -3385,6 +3475,7 @@ class Player:
         self._settle_breaks(finished)
         self._settle_intros(finished)
         self._playing_render = rendered
+        self._playback_output_pos[0] = 0
         self._heard_liner_events: set[int] = set()
         self._heard_break_starts = set()
         self._heard_break_ends = set()
@@ -3410,7 +3501,9 @@ class Player:
         self._state.next_track = rendered.next_entry
         self._current_sr = SAMPLE_RATE
         self._playback_pos[0] = rendered.start_offset
-        self._playback_len = rendered.start_offset + len(rendered.audio)
+        self._playback_len = rendered.start_offset + round(
+            len(rendered.audio) * rendered.playback_rate
+        )
         # How this track came in, from the previous render's overlap: the
         # render's own transition_fx and beatmatch_ratio describe the
         # NEXT track, which its tail mixes in.
@@ -3427,9 +3520,12 @@ class Player:
                 self._state.track_number += 1
 
     def _on_position(self, frames: int) -> None:
-        """Record mix-bus progress, in the playing track's own timeline."""
+        """Record output progress and its source-file position."""
         playing = self._playing_render
-        self._playback_pos[0] = frames + (playing.start_offset if playing else 0)
+        self._playback_output_pos[0] = frames
+        self._playback_pos[0] = (
+            playing.start_offset + round(frames * playing.playback_rate) if playing else frames
+        )
         if playing is not None:
             if (
                 playing.next_entry is not None
@@ -3530,6 +3626,7 @@ class Player:
                     * _DEFAULT_SR,
                 )
                 self._playback_pos[0] = 0
+                self._playback_output_pos[0] = 0
         if seed_playing:
             # Browser-driven mode never renders on the server, so lyrics and
             # DJ meta (cue points, intro_end_s, outro_start_s, beat grid)
@@ -4314,22 +4411,27 @@ class Player:
         end = min(len(source), round((points.get("end") or current.length) * SAMPLE_RATE))
         if start >= end:
             return None
+        rate_a = self.music_playback_rate(current)
+        source = resample_music(source, rate_a)
+        source_start_out = _music_output_frame(source_start, rate_a)
+        start_out = _music_output_frame(start, rate_a)
+        end_out = min(len(source), _music_output_frame(end, rate_a))
+        points_out = _music_output_points(points, rate_a)
         processing = self._cfg.playback.loudness_processing or ""
         if next_entry is None:
             return RenderedTrack(
                 current,
-                source[start:end],
+                source[start_out:end_out],
                 None,
                 0,
                 "",
                 start_offset=start,
                 loudness_processing=processing,
-                full_audio=source[source_start:end],
+                full_audio=source[source_start_out:end_out],
                 source_start_offset=source_start,
+                playback_rate=rate_a,
             )
-        is_liner = self._library is not None and any(
-            entry.path == current.path for entry in self._library.entries_snapshot("liner")
-        )
+        is_liner = self._is_liner(current)
         clips, events, release = [], [], 0.0
         negative_constraints, zero_constraints = [], []
         has_negative_overlap = has_ordinary_overlap = False
@@ -4434,16 +4536,20 @@ class Player:
                     with self._state.queue_lock:
                         self._commit_queue_pick(liner_entry)
         incoming_points = self.saved_points(next_entry)
+        rate_b = self.music_playback_rate(next_entry)
+        incoming_points_out = _music_output_points(incoming_points, rate_b)
         spoken: list[tuple[int, str, int]] = []
         if breaks:
-            spoken = self._add_breaks(breaks, incoming_points, add_clip)
-        # The intro matched to the next song (#127) goes last: it leads into it.
-        introduced = self._add_intro(intro, incoming_points, add_clip) if intro is not None else []
+            spoken = self._add_breaks(breaks, incoming_points_out, add_clip)
+        # The matched intro leads into the song and keeps its native voice speed.
+        introduced = (
+            self._add_intro(intro, incoming_points_out, add_clip) if intro is not None else []
+        )
         voiced = [*spoken, *((at, intro_id, end) for at, intro_id, end, _label in introduced)]
         duck_db = self._break_duck_db() if voiced else 0.0
         incoming_intro = max(
             0.0,
-            (incoming_points.get("intro") or 0.0) - (incoming_points.get("start") or 0.0),
+            (incoming_points_out.get("intro") or 0.0) - (incoming_points_out.get("start") or 0.0),
         )
         if has_negative_overlap:
             from autodj.playout import liner_release_frames
@@ -4468,9 +4574,9 @@ class Player:
         release = max(release, main_frames / SAMPLE_RATE - incoming_intro)
         handoff = render_handoff(
             np.zeros((1, 2), dtype=np.float32) if is_liner else source,
-            {"start": 0, "end": 0, "segue": 0} if is_liner else points,
-            incoming_points,
-            start_offset=0 if is_liner else source_start,
+            {"start": 0, "end": 0, "segue": 0} if is_liner else points_out,
+            incoming_points_out,
+            start_offset=0 if is_liner else source_start_out,
             fade_seconds=self._cfg.playback.crossfade_seconds,
             liner=np.concatenate(clips) if clips else None,
             overlap_start=release,
@@ -4483,42 +4589,50 @@ class Player:
         # A view of handoff.full_audio: adding the head here completes the render.
         tail = handoff.next_overlay
         next_offset = handoff.next_start_offset + overlap
+        next_source_offset = _music_source_frame(next_offset, rate_b)
         if overlap:
             try:
-                incoming = (
+                incoming_source = (
                     incoming_decode.result()[1]
                     if incoming_decode is not None
                     else self._load_playout_audio(next_entry)
                 )
+                incoming = resample_music(incoming_source, rate_b)
                 incoming_end = min(
                     len(incoming),
-                    round((incoming_points.get("end") or next_entry.length) * SAMPLE_RATE),
+                    _music_output_frame(
+                        round((incoming_points.get("end") or next_entry.length) * SAMPLE_RATE),
+                        rate_b,
+                    ),
                 )
                 head = incoming[handoff.next_start_offset : min(next_offset, incoming_end)]
                 if handoff.overlay_gain is not None:
                     head = head * handoff.overlay_gain[: len(head), None]
                 tail[: len(head)] += head
                 next_offset = handoff.next_start_offset + len(head)
+                next_source_offset = min(
+                    len(incoming_source), _music_source_frame(next_offset, rate_b)
+                )
             except (OSError, ValueError, RuntimeError):
                 logger.exception("Cannot prepare incoming track %s", next_entry.path)
         full_audio = handoff.full_audio
-        audio = full_audio[start - source_start :]
+        audio = full_audio[start_out - source_start_out :]
         liner_start = (
             0
             if handoff.liner_s is None
             else round(handoff.liner_s * SAMPLE_RATE)
             - handoff.start_offset
-            - (start - source_start)
+            - (start_out - source_start_out)
         )
         return RenderedTrack(
             current,
             audio,
             next_entry,
-            next_offset,
+            next_source_offset,
             "none",
             start_offset=start,
             overlap_frames=overlap,
-            next_entry_offset=handoff.next_start_offset,
+            next_entry_offset=_music_source_frame(handoff.next_start_offset, rate_b),
             liner_events=tuple(
                 (liner_start + frame, entry, queued) for frame, entry, queued in events
             ),
@@ -4533,6 +4647,8 @@ class Player:
             loudness_processing=processing,
             full_audio=full_audio,
             source_start_offset=source_start,
+            playback_rate=rate_a,
+            next_playback_rate=rate_b,
         )
 
     def _add_breaks(
@@ -5317,8 +5433,14 @@ class Player:
         target_samples = int(max(0.0, seconds) * sr)
         target_samples = max(start, min(target_samples, max_samples))
         self._playback_pos[0] = target_samples
+        output_target = (
+            _music_output_frame(target_samples - start, playing.playback_rate)
+            if playing is not None
+            else target_samples
+        )
+        self._playback_output_pos[0] = output_target
         if self.bus is not None:
-            self.bus.seek(target_samples - start)
+            self.bus.seek(output_target)
         return target_samples / sr
 
     def seek_relative(self, delta_seconds: float) -> float:
@@ -6080,6 +6202,7 @@ class Player:
             return None
         if start_offset >= len(audio_a_full):
             return None
+        rate_a = self.music_playback_rate(current)
         # No lyrics here: this runs ahead of time, and the lyrics shown must
         # be the playing track's (_on_track_start loads them).
         self._ensure_dj_cache()
@@ -6090,12 +6213,13 @@ class Player:
         if next_entry is None:
             return RenderedTrack(
                 current,
-                audio_a,
+                resample_music(audio_a, rate_a),
                 None,
                 0,
                 "",
                 start_offset=start_offset,
                 loudness_processing=processing,
+                playback_rate=rate_a,
             )
         meta_b = self._peek_incoming_meta(next_entry)
         eff_s = self._effective_crossfade_seconds(meta_a, meta_b, current.length)
@@ -6103,12 +6227,13 @@ class Player:
         if crossfade >= len(audio_a):
             return RenderedTrack(
                 current,
-                audio_a,
+                resample_music(audio_a, rate_a),
                 next_entry,
                 0,
                 "",
                 start_offset=start_offset,
                 loudness_processing=processing,
+                playback_rate=rate_a,
             )
         # meta_a's outro/beat markers are absolute positions in the FULL
         # track, so the crossfade start must be located there too -- not in
@@ -6120,14 +6245,84 @@ class Player:
             # Too long to mix in: play this track out; the next render skips it.
             return RenderedTrack(
                 current,
-                audio_a,
+                resample_music(audio_a, rate_a),
                 next_entry,
                 0,
                 "",
                 start_offset=start_offset,
                 loudness_processing=processing,
+                playback_rate=rate_a,
             )
         intro = self._skip_incoming_silence_samples(audio_b_loaded, SAMPLE_RATE, meta_b=meta_b)
+        liner_a = self._is_liner(current)
+        liner_b = self._is_liner(next_entry)
+        rate_b = self.music_playback_rate(next_entry)
+        if (liner_a or liner_b) and (rate_a != 1.0 or rate_b != 1.0):
+            # The regular planner works in source coordinates, so keep its
+            # chosen fade point and wall-clock crossfade. Do not run voice
+            # through tempo matching or transition effects: rate-adjust only
+            # each music stem and use a plain fade across the shared overlap.
+            a_start = max(0, a_start_full - start_offset)
+            available_b = len(audio_b_loaded) - intro
+            if not liner_b:
+                available_b = round(available_b / rate_b)
+            if liner_a:
+                crossfade = min(crossfade, max(0, len(audio_a) - a_start))
+            crossfade = min(crossfade, max(0, available_b))
+            if crossfade > 0:
+                if liner_a:
+                    a_prefix = audio_a[:a_start]
+                    a_tail = audio_a[a_start : a_start + crossfade]
+                    current_rate = 1.0
+                else:
+                    a_tail_source_frames = min(len(audio_a), max(0, round(crossfade * rate_a)))
+                    # Move the fade earlier if its source-time tail would
+                    # otherwise run past the end of the outgoing track.
+                    a_start = min(a_start, len(audio_a) - a_tail_source_frames)
+                    a_prefix = resample_music(audio_a[:a_start], rate_a)
+                    a_tail = _music_segment(
+                        audio_a[a_start : a_start + a_tail_source_frames], rate_a, crossfade
+                    )
+                    current_rate = rate_a
+                if liner_b:
+                    b_head = audio_b_loaded[intro : intro + crossfade]
+                    incoming_consumed = crossfade
+                else:
+                    incoming_consumed = min(
+                        len(audio_b_loaded) - intro, max(0, round(crossfade * rate_b))
+                    )
+                    b_head = _music_segment(
+                        audio_b_loaded[intro : intro + incoming_consumed],
+                        rate_b,
+                        crossfade,
+                    )
+                a_trimmed = np.concatenate((a_prefix, a_tail), axis=0)
+                mixed = _apply_crossfade(a_trimmed, b_head, crossfade)
+                return RenderedTrack(
+                    current,
+                    mixed,
+                    next_entry,
+                    intro + incoming_consumed,
+                    "none",
+                    start_offset=start_offset,
+                    overlap_frames=crossfade,
+                    next_entry_offset=intro,
+                    loudness_processing=processing,
+                    playback_rate=current_rate,
+                    next_playback_rate=rate_b,
+                )
+            return RenderedTrack(
+                current,
+                audio_a if liner_a else resample_music(audio_a, rate_a),
+                next_entry,
+                0,
+                "none",
+                start_offset=start_offset,
+                next_entry_offset=intro,
+                loudness_processing=processing,
+                playback_rate=rate_a,
+                next_playback_rate=rate_b,
+            )
         drop = self._drop_mix(
             current,
             next_entry,
@@ -6177,12 +6372,13 @@ class Player:
         if crossfade == 0 or len(audio_b) < crossfade:
             return RenderedTrack(
                 current,
-                a_trimmed,
+                resample_music(a_trimmed, rate_a),
                 next_entry,
                 intro,
                 "",
                 start_offset=start_offset,
                 loudness_processing=processing,
+                playback_rate=rate_a,
             )
         glide = self._incoming_glide(audio_b_loaded, intro, match, crossfade)
         if glide is not None:
@@ -6217,16 +6413,19 @@ class Player:
             ),
         )
         mixed = self._mix_overlap(a_trimmed, b_head, crossfade, SAMPLE_RATE, extra)
+        output_audio = resample_music(to_stereo(mixed), rate_a)
         return RenderedTrack(
             current,
-            to_stereo(mixed),
+            output_audio,
             next_entry,
             glide.origin if glide else intro + crossfade,
             fx_name,
             glide.ratio if glide else 1.0,
             start_offset=start_offset,
             next_glide=glide,
-            overlap_frames=crossfade,
+            overlap_frames=round(crossfade / rate_a),
             next_entry_offset=intro,
             loudness_processing=processing,
+            playback_rate=rate_a,
+            next_playback_rate=rate_a,
         )
