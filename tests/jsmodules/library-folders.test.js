@@ -331,6 +331,8 @@ describe("clock folder and points controls", () => {
     installLibraryFolders({ document, request, getCurrentTrack: () => ({ path: "M:/song.flac" }) });
     const preview = document.getElementById("points-preview");
     Object.defineProperty(preview, "play", { configurable: true, value: vi.fn(async () => {}) });
+    const pause = vi.fn();
+    Object.defineProperty(preview, "pause", { configurable: true, value: pause });
     document.getElementById("edit-current-points").click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(document.querySelector('[data-point="intro"]').value).toBe("0:12");
@@ -344,7 +346,11 @@ describe("clock folder and points controls", () => {
     expect(preview.play).toHaveBeenCalledOnce();
     document.querySelector('[data-set-current="intro"]').click();
     expect(document.querySelector('[data-point="intro"]').value).toBe("2:50");
+    pause.mockClear();
+    preview.currentTime = 170;
     document.getElementById("points-save").click();
+    expect(pause).toHaveBeenCalledOnce();
+    expect(preview.currentTime).toBe(170);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(request).toHaveBeenCalledWith("/api/library/points", expect.objectContaining({ method: "POST" }));
   });
@@ -605,11 +611,17 @@ describe("clock folder and points controls", () => {
     const request = trackRequest();
     const controls = installLibraryFolders({ document, request });
     await controls.openEditor("M:/one.flac");
+    const preview = document.getElementById("points-preview");
+    const pause = vi.fn();
+    Object.defineProperty(preview, "pause", { configurable: true, value: pause });
+    preview.currentTime = 17;
     document.querySelector('[data-point="intro"]').value = "0:10";
     request.mockRejectedValueOnce(new Error("Offline"));
     const switching = controls.openEditor("M:/two.flac");
     document.getElementById("track-info-save").click();
     await vi.waitFor(() => expect(document.getElementById("track-info-error").textContent).toContain("Offline"));
+    expect(pause).toHaveBeenCalledOnce();
+    expect(preview.currentTime).toBe(17);
     expect(document.getElementById("track-info-dialog").open).toBe(true);
     expect(document.getElementById("points-path").value).toBe("M:/one.flac");
     expect(document.querySelector('[data-point="intro"]').value).toBe("0:10");

@@ -437,6 +437,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Track info preview audio stops when leaving the tab or saving cue points, while keeping
+  its position available for further editing (#186).
+
 - Several stations on one server (#70, #141):
   - Restarting audio processing releases finished process objects and their Windows handles
     during playback instead of retaining them until the station stops.

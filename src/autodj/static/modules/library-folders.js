@@ -401,6 +401,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
   }
   async function savePoints(errorTarget = null) {
     if (saving || !currentPath) return false;
+    doc.getElementById("points-preview")?.pause();
     saving = true;
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;

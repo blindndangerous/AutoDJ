@@ -56,6 +56,29 @@ describe("card headings", () => {
 });
 
 describe("tab arrow keys", () => {
+  it("pauses the cue preview when leaving Track info and keeps its position", async () => {
+    installIndex();
+    window.location.hash = "#track-info";
+    vi.resetModules();
+    const { initViewRouter: freshRouter } = await import(
+      "../../src/autodj/static/modules/tabs.js");
+    try {
+      const preview = document.getElementById("points-preview");
+      const pause = vi.fn();
+      Object.defineProperty(preview, "pause", { configurable: true, value: pause });
+      Object.defineProperty(preview, "currentTime", { configurable: true, writable: true, value: 42 });
+      freshRouter();
+      document.querySelector("#tab-track-info").focus();
+      document.querySelector("#tab-track-info").dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+      expect(pause).toHaveBeenCalledOnce();
+      expect(preview.currentTime).toBe(42);
+      expect(document.querySelector("#panel-history").hidden).toBe(false);
+    } finally {
+      window.location.hash = "";
+    }
+  });
+
   it("focuses the destination heading if a Return target disconnects before hashchange", async () => {
     installIndex();
     window.location.hash = "#track-info";
