@@ -35,6 +35,11 @@
 //         its help, 24 px targets, a described button, a visible reason
 //         where the browser cannot choose a device, and a change said
 //         politely without moving focus;
+//       - Settings > Analysis workers, Machine tokens: the Station choice
+//         is hidden until Token use is an announcer, then shows as a
+//         named select with linked help and 24 px targets, focus staying
+//         on Token use; it is measured in every theme mode (axe-core and
+//         non-text contrast) and at 320 px with that choice shown;
 //       - the status message stays while the pointer is over it, goes
 //         after the pointer leaves, lets a click on its frame (outside the
 //         message and the button) through to the page underneath, and its
@@ -564,6 +569,12 @@ async function auditTheme(browser, mode, out) {
         record("toast", target, await toastProblems(page));
       }
       if (target === "settings/display") record("toast", target, await toastProblems(page));
+      if (target === "settings/workers") {
+        await chooseAnnouncer(page);
+        record("axe", `${target} announcer`, await axeViolations(page));
+        record("nonText", `${target} announcer`, await controlBoundaryProblems(page));
+        await chooseAnnouncer(page, false);
+      }
       if (SHOTS) {
         // A message showing in every shot, so the toast is seen in both
         // themes; on Now Playing the wheel lit as well.
@@ -766,6 +777,53 @@ async function toastBehaviourProblems(page) {
 }
 
 // The preview output device setting, in whatever this engine supports.
+// Settings > Analysis workers with an announcer token chosen: the Station
+// choice shows (#88).  Back to the default choice with `false`.
+async function chooseAnnouncer(page, announcer = true) {
+  await page.locator("#token-scope").selectOption(announcer ? "announcer" : "analysis-worker");
+  await page.locator("#token-station-row").waitFor({ state: announcer ? "visible" : "hidden" });
+}
+
+async function tokenScopeProblems(page) {
+  await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
+  await page.locator("#tab-settings").click();
+  await page.locator("#stab-workers").click();
+  const scope = page.locator("#token-scope");
+  await scope.waitFor({ state: "visible" });
+  const problems = [];
+  const shown = () => page.evaluate(() => {
+    const row = document.getElementById("token-station-row");
+    const select = document.getElementById("token-station");
+    const help = document.getElementById("token-station-desc");
+    const box = (node) => node.getBoundingClientRect().toJSON();
+    return {
+      visible: Boolean(row.getClientRects().length && help.getClientRects().length),
+      label: select.labels?.[0]?.textContent.trim(),
+      describedBy: select.getAttribute("aria-describedby") || "",
+      options: select.options.length,
+      select: box(select),
+      scope: box(document.getElementById("token-scope")),
+      focus: document.activeElement?.id,
+    };
+  });
+  if ((await shown()).visible) problems.push("the station choice shows for a worker token");
+  await scope.focus();
+  await chooseAnnouncer(page);
+  const info = await shown();
+  if (!info.visible) problems.push("the station choice does not show for an announcer token");
+  if (info.label !== "Station") problems.push(`station label is ${JSON.stringify(info.label)}`);
+  if (info.describedBy !== "token-station-desc") problems.push("station help is not linked");
+  if (info.options < 1) problems.push("no station to choose");
+  if (info.focus !== "token-scope") problems.push(`choosing moved focus to ${info.focus}`);
+  for (const [what, rect] of [["station", info.select], ["token use", info.scope]]) {
+    if (rect.width < 24 || rect.height < 24) {
+      problems.push(`${what} select is ${Math.round(rect.width)}x${Math.round(rect.height)}`);
+    }
+  }
+  await chooseAnnouncer(page, false);
+  return problems;
+}
+
 async function previewOutputProblems(page) {
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   await page.locator("#tab-settings").click();
@@ -848,6 +906,8 @@ export async function audit(name, launcher) {
     if (toast.length) out.behaviour.toast = toast;
     const preview = await previewOutputProblems(page);
     if (preview.length) out.behaviour.previewOutput = preview;
+    const tokenScope = await tokenScopeProblems(page);
+    if (tokenScope.length) out.behaviour.tokenScope = tokenScope;
     // 200 % text at the same window width.
     await wide.addInitScript(() => {
       document.addEventListener("DOMContentLoaded", () => {
@@ -867,6 +927,12 @@ export async function audit(name, launcher) {
     await eachTarget(phone, async (target) => {
       const overflow = await horizontalOverflow(phone);
       if (overflow) out.reflow320[target] = overflow;
+      if (target === "settings/workers") {
+        await chooseAnnouncer(phone);
+        const shown = await horizontalOverflow(phone);
+        if (shown) out.reflow320[`${target} announcer`] = shown;
+        await chooseAnnouncer(phone, false);
+      }
     });
     await narrow.close();
     return out;

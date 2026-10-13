@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 # open, and MP3, where it recovers frames libsndfile rejects and keeps
 # libsndfile's native diagnostics off the terminal.
 FFMPEG_FORMATS = frozenset({".mp3", ".aac", ".m4a", ".mp4"})
+#: FFmpeg input options for every file it reads: only local files and pipes,
+#: so a file that probes as a playlist (HLS, concat) cannot reach the network.
+SAFE_FFMPEG_INPUT: tuple[str, ...] = ("-protocol_whitelist", "file,pipe")
 
 # FFmpeg prints this for every MP3 without a Xing/VBRI header.  The decode is
 # complete and correct; only the container's duration estimate is approximate.
@@ -147,7 +150,8 @@ def load_with_ffmpeg(
         raise RuntimeError(
             f"FFmpeg is required to decode {Path(path).suffix or 'this audio format'} files"
         )
-    command = [ffmpeg, "-v", "warning", "-nostdin", "-i", str(path), "-map", "0:a:0"]
+    command = [ffmpeg, "-v", "warning", "-nostdin", *SAFE_FFMPEG_INPUT, "-i", str(path)]
+    command += ["-map", "0:a:0"]
     command += ["-ac", str(channels)]
     if sample_rate is not None:
         command += ["-ar", str(sample_rate)]

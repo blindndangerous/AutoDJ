@@ -43,6 +43,7 @@ from autodj.indexer import FEATURE_DIM, file_fingerprint
 from autodj.machine_tokens import (
     KNOWN_SCOPES,
     SCOPE_ANALYSIS_WORKER,
+    STATION_SCOPES,
     MachineToken,
     MachineTokenStore,
 )
@@ -130,9 +131,11 @@ class TokenCreateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(max_length=200)
     scopes: list[str] = Field(min_length=1, max_length=len(KNOWN_SCOPES))
+    # The station an announcer token works for.
+    station: str | None = Field(default=None, max_length=40)
 
 
-class _RateLimiter:
+class RateLimiter:
     """At most *limit* requests per token in any *window* seconds."""
 
     def __init__(
@@ -183,9 +186,14 @@ def _token_view(token: MachineToken) -> dict[str, object]:
         "token_id": token.token_id,
         "name": token.name,
         "scopes": list(token.scopes),
+        "station": token.station,
         "created_at": token.created_at,
         "last_used_at": token.last_used_at,
     }
+
+
+def _default_stations() -> list[tuple[str, str]]:
+    return [("default", "This station")]
 
 
 def install_worker_api(
@@ -195,6 +203,7 @@ def install_worker_api(
     library: Callable[[], LibraryManager | None],
     identity: Callable[[], dict[str, object]],
     rate_limit: int = RATE_LIMIT_PER_MINUTE,
+    stations: Callable[[], list[tuple[str, str]]] = _default_stations,
 ) -> None:
     """Add the worker and token-management routes to *app*.
 
@@ -206,8 +215,10 @@ def install_worker_api(
         identity: What results must be made with
             (:func:`~autodj.indexer.analysis_identity`).
         rate_limit: Requests per token per minute.
+        stations: ``(slug, name)`` of every configured station, for
+            announcer tokens.
     """
-    limiter = _RateLimiter(rate_limit, 60.0)
+    limiter = RateLimiter(rate_limit, 60.0)
 
     def server_identity() -> dict[str, object]:
         """This server's identity, or 409 when it cannot check results at all."""
@@ -408,11 +419,15 @@ def install_worker_api(
 
     @app.get("/api/machine-tokens")
     async def api_machine_tokens() -> JSONResponse:
-        """List the active machine tokens and the scopes a new one may have."""
+        """List the active machine tokens, the scopes a new one may have and the stations."""
         found = await asyncio.to_thread(lambda: tokens().list_tokens())
         return JSONResponse(
             {
-                "scopes": [{"id": key, "label": label} for key, label in KNOWN_SCOPES.items()],
+                "scopes": [
+                    {"id": key, "label": label, "station": key in STATION_SCOPES}
+                    for key, label in KNOWN_SCOPES.items()
+                ],
+                "stations": [{"slug": slug, "name": name} for slug, name in stations()],
                 "tokens": [_token_view(token) for token in found],
             },
             headers=_NO_STORE,
@@ -421,11 +436,20 @@ def install_worker_api(
     @app.post("/api/machine-tokens", status_code=201)
     async def api_machine_token_create(body: TokenCreateBody) -> JSONResponse:
         """Create a token and return its text, which is never shown again."""
+        if body.station and body.station not in {slug for slug, _name in stations()}:
+            raise HTTPException(status_code=422, detail="No station has that name")
         try:
-            token, secret = await asyncio.to_thread(lambda: tokens().create(body.name, body.scopes))
+            token, secret = await asyncio.to_thread(
+                lambda: tokens().create(body.name, body.scopes, body.station)
+            )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        logger.info("Machine token %r created with scopes %s", token.name, ", ".join(token.scopes))
+        logger.info(
+            "Machine token %r created with scopes %s%s",
+            token.name,
+            ", ".join(token.scopes),
+            f" for station {token.station}" if token.station else "",
+        )
         return JSONResponse(
             {"token": _token_view(token), "secret": secret}, status_code=201, headers=_NO_STORE
         )
@@ -476,6 +500,7 @@ __all__ = [
     "RESULT_BODY_MAX_BYTES",
     "SMALL_BODY_MAX_BYTES",
     "WORKER_PREFIX",
+    "RateLimiter",
     "decode_vector",
     "install_worker_api",
 ]

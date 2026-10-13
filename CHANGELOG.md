@@ -10,6 +10,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Announcer breaks (#88): an announcer program on the station's machine, such as radiodj, can
+  send a station DJ breaks, news, weather and music news through a new breaks API, with no
+  AzuraCast in between. AutoDJ prepares each song change one song ahead, so it now also picks the
+  song after the next one and offers that song change as the open slot; the program writes a
+  break for that pair of songs and uploads it. A DJ break talks up the next song (the speech ends
+  as its vocal starts, over its intro) when the song has an intro of at least two seconds, and
+  otherwise plays between the songs; `[breaks] dj_placement` chooses. News, weather and music
+  news play between the songs. The music drops by `[breaks] duck_db` under the voice, or by the
+  liners' duck depth. A booked break keeps its next song whatever the queue does. AutoDJ trims the
+  silence after the speech, reports each break as queued, rendered, on the air, aired, dropped or
+  expired with the reason in words, and deletes the file afterwards. Breaks are off until
+  `[breaks] enabled = true`, need saved-point playback, and work per station. Uploads are capped
+  in size, length and number before their body is read, limited to 192 kHz and two channels,
+  decoded away from the playout within a memory budget, and checked before they are accepted.
+  Operations has the API with example requests.
+- Announcer tokens: in Settings, Analysis workers, Machine tokens, **Token use** now offers
+  Announcer, with a **Station** choice that shows only for it. An announcer token works for that
+  one station and only for the breaks API.
+  `autodj tokens create NAME --scope announcer --station SLUG` does the same, and
+  `autodj tokens list` names a token's station.
 - A rotation tester (#125): Settings > Song picking > **Test rotation**, or
   `autodj simulate --days 7`, plays a span of time (up to 30 days) or a number of songs (up to
   20,000) through the station's own song picker, with its clockwheel, categories and their hours,
@@ -512,6 +532,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   or reads `index/.stream-secret`. It does not delete an existing one; the file is unused and you
   can delete it.
 - The librosa file-loading fallback. Librosa still detects beats, tempo and audio features.
+
+### Security
+
+- FFmpeg may now open only local files and pipes whenever AutoDJ asks it to read a song, a liner,
+  a cart clip or a break (`-protocol_whitelist file,pipe`). A file that FFmpeg took for a playlist
+  could otherwise make it fetch addresses on the network.
+- A machine token (an analysis worker's or an announcer's) is refused on plain HTTP when the
+  request carries a `Forwarded`, `X-Forwarded-*` or `X-Real-IP` header, even from the same
+  machine: a reverse proxy there may have carried it in from the network unencrypted. Through a
+  proxy, machine tokens need TLS at the proxy and `X-Forwarded-Proto: https` from a proxy the
+  server trusts. With `[stream] trusted_proxies` empty, a streaming server now trusts a proxy on
+  its own machine (`127.0.0.1`, `::1`), as a server that does not stream always has, so a TLS
+  reverse proxy on the same host keeps working; a list you set is used as it is.
+- AutoDJ now needs python-multipart 0.0.32 or later, which refuses a form part with more than
+  eight headers or a header over about 4 KiB.
 
 ## [0.20.0] - 2026-10-11
 

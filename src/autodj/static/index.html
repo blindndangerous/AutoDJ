@@ -1780,24 +1780,47 @@
     <p class="card-desc">
       A computer with a graphics card can analyse new songs for this server far faster than the server can.  Create a token below, then run <code>autodj worker</code> on that computer with this server's address and the token.  The worker downloads each song from this server, so it needs no copy of the music.  While a worker is connected, this server pauses its own analysis.
     </p>
+    <p class="card-desc">
+      An announcer program on this computer, such as radiodj, sends a station DJ breaks, news and weather with an announcer token.  Breaks also need <code>[breaks] enabled = true</code> in config.toml.
+    </p>
     <div id="workers-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     <h4 id="workers-heading">Workers</h4>
     <p id="workers-queue">Loading…</p>
     <ul id="workers-list" aria-labelledby="workers-heading"></ul>
     <button type="button" id="workers-refresh">Refresh workers</button>
 
-    <h4>Worker tokens</h4>
+    <h4>Machine tokens</h4>
     <fieldset>
       <legend>Create a token</legend>
       <div class="settings-row">
         <label for="token-name">Token name</label>
         <input type="text" id="token-name" maxlength="64" autocomplete="off"
                aria-describedby="token-name-desc">
-        <button type="button" id="token-create">Create token</button>
       </div>
       <span class="setting-desc" id="token-name-desc">
-        Name the computer that will use it, such as Alienware.  A worker token can only analyse songs: it cannot play, change settings or read anything else.
+        Name the computer or program that will use it, such as Alienware or radiodj.
       </span>
+      <div class="settings-row">
+        <label for="token-scope">Token use</label>
+        <select id="token-scope" aria-describedby="token-scope-desc">
+          <option value="analysis-worker">Analysis worker</option>
+          <option value="announcer">Announcer</option>
+        </select>
+      </div>
+      <span class="setting-desc" id="token-scope-desc">
+        A worker token can only analyse songs.  An announcer token can only read one station's coming songs and send that station breaks; choosing Announcer shows a Station choice below.  Neither can play, change settings or read anything else.
+      </span>
+      <!-- Shown only for an announcer token: it works for one station. -->
+      <div class="settings-row" id="token-station-row" hidden>
+        <label for="token-station">Station</label>
+        <select id="token-station" aria-describedby="token-station-desc">
+          <option value="">Choose a station</option>
+        </select>
+      </div>
+      <span class="setting-desc" id="token-station-desc" hidden>
+        The station this announcer token sends breaks to.  It works for no other station.
+      </span>
+      <button type="button" id="token-create">Create token</button>
     </fieldset>
     <!-- The token is shown once.  Creating it moves focus here and
          #workers-status says it will not be shown again. -->

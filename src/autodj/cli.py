@@ -745,8 +745,9 @@ def cmd_tokens_list(ctx: click.Context) -> None:
         return datetime.fromtimestamp(seconds).strftime("%Y-%m-%d %H:%M")
 
     for token in tokens:
+        station = f"  station: {token.station}" if token.station else ""
         click.echo(
-            f"{token.token_id}  {token.name}  scopes: {', '.join(token.scopes)}  "
+            f"{token.token_id}  {token.name}  scopes: {', '.join(token.scopes)}{station}  "
             f"created {when(token.created_at)}  last used {when(token.last_used_at)}"
         )
 
@@ -761,12 +762,22 @@ def cmd_tokens_list(ctx: click.Context) -> None:
     type=click.Choice(sorted(KNOWN_SCOPES)),
     help="What the token may do; give it once per scope.",
 )
+@click.option(
+    "--station",
+    default=None,
+    metavar="SLUG",
+    help="The station an announcer token works for: default, or a [stations.<slug>] name.",
+)
 @click.pass_context
-def cmd_tokens_create(ctx: click.Context, name: str, scopes: tuple[str, ...]) -> None:
+def cmd_tokens_create(
+    ctx: click.Context, name: str, scopes: tuple[str, ...], station: str | None
+) -> None:
     """Create a token NAME and print it once."""
-    _cfg, store = _token_store(ctx)
+    cfg, store = _token_store(ctx)
+    if station is not None and station not in {"default", *(s.slug for s in cfg.stations)}:
+        raise click.ClickException(f"No station is named {station!r}.")
     try:
-        token, secret = store.create(name, scopes)
+        token, secret = store.create(name, scopes, station)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     # stdout carries only the token, for scripts; the rest goes to stderr.
