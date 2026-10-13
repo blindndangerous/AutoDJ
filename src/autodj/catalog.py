@@ -1428,7 +1428,9 @@ class LibraryCatalog:
                 if not self._editing[normalized]:
                     del self._editing[normalized]
 
-    def retag(self, path: str | Path, fields: dict[str, Any]) -> bool:
+    def retag(
+        self, path: str | Path, fields: dict[str, Any], *, remember_manual: bool = True
+    ) -> bool:
         """Store a recording's edited tags and its file's new identity (#53).
 
         Only the tags changed, not the audio, so the vector, cue points,
@@ -1437,7 +1439,9 @@ class LibraryCatalog:
         the rewritten file, so neither a scan nor ``autodj index`` takes it
         for a new recording and analyses it again.  A key or BPM set here is
         remembered in ``user_tags`` so a later analysis keeps it; clearing
-        it hands it back to the analysis.
+        it hands it back to the analysis.  ``remember_manual=False`` is for
+        imported embedded tags: manual BPM/key overrides stay untouched, and
+        unchanged tag values do not cause a database write.
 
         Args:
             path: The recording, already rewritten on disk.
@@ -1464,23 +1468,35 @@ class LibraryCatalog:
             try:
                 db.execute("BEGIN IMMEDIATE")
                 row = db.execute(
-                    "SELECT id,size,fingerprint,embedded_at,loudness,user_tags FROM catalog_entries "
-                    "WHERE path=?",
+                    "SELECT id,size,fingerprint,embedded_at,loudness,user_tags,"
+                    "title,artist,album,genre,year,bpm,key,mode FROM catalog_entries WHERE path=?",
                     (normalized,),
                 ).fetchone()
                 if row is None:
                     db.rollback()
                     return False
+                manual_tags = set(_user_tags(row["user_tags"], row["fingerprint"]))
+                if not remember_manual:
+                    protected = manual_tags | ({"mode"} if "key" in manual_tags else set())
+                    fields = {
+                        name: value
+                        for name, value in fields.items()
+                        if name not in protected and value != row[name]
+                    }
+                    if not fields:
+                        db.rollback()
+                        return True
                 values: dict[str, Any] = {**fields, "size": size, "fingerprint": fingerprint}
-                manual = set(_user_tags(row["user_tags"], row["fingerprint"]))
                 for name in _USER_TAGS:
                     if name in fields:
                         # A key is 0 to 11, -1 when cleared; a BPM 0 when cleared.
-                        if fields[name] >= 0 if name == "key" else fields[name] > 0:
-                            manual.add(name)
+                        if remember_manual and (
+                            fields[name] >= 0 if name == "key" else fields[name] > 0
+                        ):
+                            manual_tags.add(name)
                         else:
-                            manual.discard(name)
-                values["user_tags"] = json.dumps(dict.fromkeys(sorted(manual), fingerprint))
+                            manual_tags.discard(name)
+                values["user_tags"] = json.dumps(dict.fromkeys(sorted(manual_tags), fingerprint))
                 if row["embedded_at"]:
                     values["embedded_at"] = stat.st_mtime
                 try:
