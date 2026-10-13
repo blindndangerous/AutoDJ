@@ -2457,6 +2457,76 @@ describe("static accessibility contracts", () => {
     expect(height).toBeTruthy();
   });
 
+  it("gives Track info's matched intros labelled native fields, named lists and one status", () => {
+    installDocument({ html: htmlSource });
+    const section = document.querySelector("#panel-track-info #intros-editor");
+    expect(section.hidden).toBe(true);
+    expect(section.getAttribute("aria-labelledby")).toBe("intros-heading");
+    expect(document.getElementById("intros-heading").tagName).toBe("H3");
+    // Two lists, each named by its own heading, and still lists in Safari.
+    for (const kind of ["song", "artist"]) {
+      const list = document.getElementById(`intros-${kind}-list`);
+      expect(list.getAttribute("role")).toBe("list");
+      const heading = document.getElementById(list.getAttribute("aria-labelledby"));
+      expect(heading.tagName).toBe("H4");
+      expect(list.closest("[aria-live], [role=status]")).toBeNull();
+    }
+    const form = section.querySelector("form#intros-form");
+    expect(form.hasAttribute("novalidate")).toBe(true);
+    expect(form.querySelector("legend").textContent.trim()).toBe("Add an intro");
+    const fields = [
+      ["file", "Audio file", "file"], ["label", "Label", "text"], ["chance", "Chance (percent)", "text"],
+      ["cooldown", "Wait between plays (minutes)", "text"], ["not-before", "Not before", "date"],
+      ["not-after", "Do not play after", "date"],
+    ];
+    for (const [name, label, type] of fields) {
+      const input = document.getElementById(`intro-${name}`);
+      expect(input.getAttribute("type"), name).toBe(type);
+      expect(input.hasAttribute("aria-label"), name).toBe(false);
+      expect(form.querySelector(`label[for="intro-${name}"]`).textContent.trim()).toBe(label);
+      // Help is linked; the error is words on the page, hidden, linked only
+      // while it is shown, and never live.
+      const described = (input.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean);
+      expect(described.length, name).toBeGreaterThan(0);
+      for (const id of described) expect(document.getElementById(id).classList.contains("setting-desc")).toBe(true);
+      const error = document.getElementById(`intro-${name}-error`);
+      expect(error.classList.contains("field-error")).toBe(true);
+      expect(error.hidden).toBe(true);
+      expect(error.hasAttribute("role")).toBe(false);
+      expect(error.closest("[aria-live]")).toBeNull();
+      expect(described).not.toContain(error.id);
+    }
+    expect(document.getElementById("intro-file").getAttribute("accept")).toMatch(/\.mp3.*\.aac/);
+    // Where it plays is a native radio group with a legend.
+    const applies = document.getElementById("intro-applies");
+    expect(applies.tagName).toBe("FIELDSET");
+    expect(applies.querySelector("legend").textContent.trim()).toBe("Plays on");
+    const radios = [...applies.querySelectorAll('input[type="radio"]')];
+    expect(radios.map((radio) => [radio.value, document.querySelector(`label[for="${radio.id}"]`).textContent.trim()]))
+      .toEqual([["song", "This song"], ["artist", "Any song by the artist"]]);
+    expect(radios[0].checked).toBe(true);
+    for (const radio of radios) expect(radio.parentElement.classList.contains("settings-check")).toBe(true);
+    const upload = document.getElementById("intro-upload");
+    expect(upload.getAttribute("type")).toBe("submit");
+    expect(upload.textContent).toBe("Upload intro");
+    // Listen plays a hidden preview player, never shown with its own controls.
+    const player = document.getElementById("intro-playback");
+    expect(player.tagName).toBe("AUDIO");
+    expect(player.hidden).toBe(true);
+    expect(player.hasAttribute("controls")).toBe(false);
+    expect(player.hasAttribute("data-preview-output")).toBe(true);
+    // One polite status, not nested in another live region.
+    const live = [...section.querySelectorAll("[aria-live], [role='status'], [role='alert']")];
+    expect(live.map((node) => node.id)).toEqual(["intros-status"]);
+    expect(live[0].getAttribute("aria-live")).toBe("polite");
+    expect(live[0].getAttribute("aria-atomic")).toBe("true");
+    expect(live[0].parentElement.closest("[aria-live], [role=status]")).toBeNull();
+    // The layout uses the shared tokens only: no colour of its own.
+    const rules = stripCssComments(cssSource).match(/[^{}]*(?:\.intro-list|#intro-applies|#intros-form)[^{}]*\{[^{}]*\}/g);
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
+  });
+
   it("gives the preview output device a labelled native select and silent help", () => {
     installDocument({ html: htmlSource });
     const select = document.getElementById("preview-device");
@@ -2494,10 +2564,10 @@ describe("static accessibility contracts", () => {
     expect(status.getAttribute("role")).toBe("status");
     expect(status.getAttribute("aria-live")).toBe("polite");
     expect(appSource).toMatch(/installPreviewOutput\(\{\s*announce: \(message, options\) => announceStatus\(settingsStatus/);
-    // Only the cue point player and the voice tracker's Listen back are
-    // previews; the decks and Listen here are not.
+    // Only the cue point player, Listen on a matched intro and the voice
+    // tracker's Listen back are previews; the decks and Listen here are not.
     expect([...document.querySelectorAll("audio[data-preview-output]")].map((audio) => audio.id))
-      .toEqual(["points-preview", "vt-playback"]);
+      .toEqual(["points-preview", "intro-playback", "vt-playback"]);
     // The module never moves focus, and the note lines up under the select.
     const moduleSource = readFileSync(staticPath("modules", "preview-output.js"), "utf8");
     expect(moduleSource).not.toMatch(/\.focus\(/);

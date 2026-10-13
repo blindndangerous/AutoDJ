@@ -92,6 +92,7 @@ from autodj.listener_access import (
     normalize_address,
 )
 from autodj.machine_tokens import MachineTokenStore
+from autodj.matched_intros_api import UPLOAD_PATH as INTRO_UPLOAD_PATH
 from autodj.model_identity import CachedModelCommit
 from autodj.pairing import DeviceRegistry
 from autodj.scheduler import system_timezone
@@ -970,6 +971,8 @@ def create_app(
         "/api/pair": lambda: PAIRING_BODY_MAX_BYTES,
         "/api/liners/upload": lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
         "/api/carts/upload": lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
+        # Matched intros (#127) have the liner upload's cap.
+        INTRO_UPLOAD_PATH: lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
         "/api/stereo-tool-presets/upload": lambda: MAX_PRESET_BYTES + _MULTIPART_OVERHEAD_BYTES,
         "/api/schedule": lambda: _SCHEDULE_BODY_MAX_BYTES,
         "/api/machine-tokens": lambda: SMALL_BODY_MAX_BYTES,

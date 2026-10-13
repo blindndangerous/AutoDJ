@@ -478,6 +478,79 @@
       <audio id="points-preview" controls preload="none" aria-label="Song point preview" data-preview-output></audio>
     </section>
     <p id="points-status" role="status" aria-live="polite" aria-atomic="true"></p>
+    <!-- Matched intros (modules/matched-intros.js, #127): voice clips that
+         play as this song starts.  The lists change in place; a refused
+         field is marked invalid with its error linked to it and focused;
+         any other result is said once in #intros-status. -->
+    <section id="intros-editor" aria-labelledby="intros-heading" hidden>
+      <h3 id="intros-heading">Matched intros</h3>
+      <p class="setting-desc" id="intros-help">Short voice clips that play as this song starts, such as “Here’s the new one from this artist”. When the song’s intro, from Start to Intro, is long enough, the voice talks it up and ends as the singing starts; otherwise it plays just before the song. An intro for this song comes first; an intro for the artist plays on any of the artist’s songs. A matched intro takes the place of the automatic liner at that song change.</p>
+      <p class="setting-desc" id="intros-inactive" hidden></p>
+      <h4 id="intros-song-heading">For this song</h4>
+      <p id="intros-song-empty">No intros for this song.</p>
+      <!-- role="list": list-style none drops the list role in Safari. -->
+      <ul id="intros-song-list" class="intro-list" role="list" aria-labelledby="intros-song-heading"></ul>
+      <h4 id="intros-artist-heading">For the artist</h4>
+      <p id="intros-artist-empty">No intros for the artist.</p>
+      <ul id="intros-artist-list" class="intro-list" role="list" aria-labelledby="intros-artist-heading"></ul>
+      <!-- Played by Listen, never shown.  A preview, so it plays on the
+           Preview output device (modules/preview-output.js). -->
+      <audio id="intro-playback" preload="none" hidden data-preview-output></audio>
+      <form id="intros-form" novalidate>
+        <fieldset>
+          <legend>Add an intro</legend>
+          <div class="settings-row tag-field">
+            <label for="intro-file">Audio file</label>
+            <input type="file" id="intro-file" accept=".mp3,.wav,.ogg,.m4a,.flac,.aac,audio/*" aria-describedby="intro-file-help">
+            <span class="setting-desc" id="intro-file-help">MP3, WAV, Ogg, M4A, FLAC or AAC, up to one minute long. AutoDJ trims the silence before and after the voice.</span>
+            <p id="intro-file-error" class="field-error" hidden></p>
+          </div>
+          <fieldset id="intro-applies">
+            <legend>Plays on</legend>
+            <div class="settings-check">
+              <input type="radio" name="intro-applies" id="intro-applies-song" value="song" checked>
+              <label for="intro-applies-song">This song</label>
+            </div>
+            <div class="settings-check">
+              <input type="radio" name="intro-applies" id="intro-applies-artist" value="artist">
+              <label for="intro-applies-artist" id="intro-applies-artist-label">Any song by the artist</label>
+            </div>
+            <p id="intro-applies-error" class="field-error" hidden></p>
+          </fieldset>
+          <div class="settings-row tag-field">
+            <label for="intro-label">Label</label>
+            <input type="text" id="intro-label" maxlength="120" autocomplete="off" aria-describedby="intro-label-help">
+            <span class="setting-desc" id="intro-label-help">Optional. What the intro says, so you can tell intros apart.</span>
+            <p id="intro-label-error" class="field-error" hidden></p>
+          </div>
+          <div class="settings-row tag-field">
+            <label for="intro-chance">Chance (percent)</label>
+            <input type="text" id="intro-chance" value="100" inputmode="numeric" autocomplete="off" spellcheck="false" aria-describedby="intro-chance-help">
+            <span class="setting-desc" id="intro-chance-help">From 1 to 100. At 50 the intro plays about every other time its song comes up.</span>
+            <p id="intro-chance-error" class="field-error" hidden></p>
+          </div>
+          <div class="settings-row tag-field">
+            <label for="intro-cooldown">Wait between plays (minutes)</label>
+            <input type="text" id="intro-cooldown" value="60" inputmode="numeric" autocomplete="off" spellcheck="false" aria-describedby="intro-cooldown-help">
+            <span class="setting-desc" id="intro-cooldown-help">From 0 to 10080 (a week). After it plays, the intro waits this long before it plays again.</span>
+            <p id="intro-cooldown-error" class="field-error" hidden></p>
+          </div>
+          <div class="settings-row tag-field">
+            <label for="intro-not-before">Not before</label>
+            <input type="date" id="intro-not-before" aria-describedby="intro-dates-help">
+            <p id="intro-not-before-error" class="field-error" hidden></p>
+          </div>
+          <div class="settings-row tag-field">
+            <label for="intro-not-after">Do not play after</label>
+            <input type="date" id="intro-not-after" aria-describedby="intro-dates-help">
+            <p id="intro-not-after-error" class="field-error" hidden></p>
+          </div>
+          <span class="setting-desc" id="intro-dates-help">Optional. Both days are included, in the station’s time zone.</span>
+          <button type="submit" id="intro-upload">Upload intro</button>
+        </fieldset>
+      </form>
+      <p id="intros-status" role="status" aria-live="polite" aria-atomic="true"></p>
+    </section>
   </section>
   <!-- ============================================================
        View: History — session play log, most-recent first

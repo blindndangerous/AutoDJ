@@ -42,6 +42,10 @@
 //         named select with linked help and 24 px targets, focus staying
 //         on Token use; it is measured in every theme mode (axe-core and
 //         non-text contrast) and at 320 px with that choice shown;
+//       - Track info with a song open, its server answers stood in for: the
+//         Tags form, a refused save with its errors, the Save or Discard
+//         dialog, and Matched intros with a song intro (skipped now) and an
+//         artist intro, then Upload intro refused with its error linked;
 //       - Voice tracks, with the microphone and recorder stubbed and the
 //         open song change stood in for: shown idle, recording, with a
 //         take, and with the microphone refused (its error linked to
@@ -167,11 +171,29 @@ const TRACK_TAGS = {
   album: "Example Album", genre: "Ambient", year: "1999", bpm: "120", key: "Am", isrc: "",
 };
 const TRACK_RECORD = {
-  path: TRACK_PATH, kind: "music", ...TRACK_TAGS, year: 1999, bpm: 120, length: 215.4,
+  id: "a".repeat(32), path: TRACK_PATH, kind: "music", ...TRACK_TAGS, year: 1999, bpm: 120, length: 215.4,
   last_played: 0, key_label: "8A", analysis: "ready", loudness_ready: true, allow_outro: false,
   points: { start: 0, intro: 8, outro: 200, segue: 210, end: 215 },
   point_sources: { start: "analysis", intro: "analysis", outro: "analysis", segue: "analysis", end: "analysis" },
   tags: TRACK_TAGS, tags_writable: true, beets_writeback: true,
+};
+// Its matched intros (#127): one for the song, with dates and skipped now,
+// and one for the artist with a long unbroken label, for the reflow checks.
+const TRACK_INTROS = {
+  station: "default", active: true, reason: null,
+  limits: { max_bytes: 40 * 1024 * 1024, max_seconds: 60, extensions: [".mp3", ".wav"] },
+  track: { id: TRACK_RECORD.id, title: TRACK_TAGS.title, artist: TRACK_TAGS.artist },
+  song: [{
+    id: "b".repeat(32), applies_to: "song", label: "Brand new from Example Artist",
+    rules_text: "Plays about 50% of the times this song comes up, at most once every 1 hour.",
+    dates_text: "Plays until 26 December 2026", playable: false,
+    unplayable_text: "expired after 26 December 2026", speech_s: 4.2,
+  }],
+  artist: [{
+    id: "c".repeat(32), applies_to: "artist", label: "An_Unbroken_Intro_Label_Without_Any_Spaces_0001",
+    rules_text: "Plays every time a song by Example Artist comes up, with no wait between plays.",
+    dates_text: "", playable: true, unplayable_text: "", speech_s: 2,
+  }],
 };
 const trackPages = new WeakSet();
 
@@ -183,6 +205,9 @@ async function standInForTrackInfo(page) {
   }));
   await page.route("**/api/library/tags", (route) => route.fulfill({
     status: 200, contentType: "application/json", body: JSON.stringify({ ...TRACK_RECORD, beets: "updated" }),
+  }));
+  await page.route("**/api/intros?*", (route) => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify(TRACK_INTROS),
   }));
 }
 
@@ -198,6 +223,12 @@ async function openTrackTags(page, visit) {
   await page.locator("#tags-save").click();
   await page.locator("#tag-year-error").waitFor({ state: "visible" });
   await visit("track-info/tags-errors");
+  // Matched intros: both lists shown, then Upload intro with no file chosen,
+  // its error shown under the field and linked to it.
+  await page.locator("#intros-artist-list li").first().waitFor({ state: "visible" });
+  await page.locator("#intro-upload").click();
+  await page.locator("#intro-file-error").waitFor({ state: "visible" });
+  await visit("track-info/intros-error");
   // Choosing another song with those edits unsaved opens Save, Discard or
   // Keep editing; Keep editing closes it again with the edits kept.
   await page.evaluate((path) => document.dispatchEvent(new CustomEvent("autodj:edit-points",
