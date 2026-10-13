@@ -526,9 +526,7 @@ def pick_slot(
         selected, reason = choose(
             slot,
             matches,
-            f"{slot.kind} conditions"
-            if slot.conditions
-            else f"{slot.kind} slot {slot.folder}",
+            f"{slot.kind} conditions" if slot.conditions else f"{slot.kind} slot {slot.folder}",
         )
         if reason:
             skipped.append(f"Step {index + 1}: {reason}")

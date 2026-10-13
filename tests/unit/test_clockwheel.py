@@ -332,9 +332,7 @@ def test_runtime_picker_numbers_repeat_blocked_folder_before_next_success():
         lambda entry: entry is allowed,
     )
     assert pick.entry is allowed
-    assert pick.skipped == [
-        r"Step 1: music slot C:\music: all 1 matching entries blocked by rules"
-    ]
+    assert pick.skipped == [r"Step 1: music slot C:\music: all 1 matching entries blocked by rules"]
 
 
 def test_clock_validation_rejects_missing_music_and_consecutive_liners_across_wrap():
