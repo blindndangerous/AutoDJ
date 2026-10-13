@@ -47,6 +47,8 @@ function fakeServer() {
   const listing = () => ({
     categories: copy(server.categories), playlists: ["A.m3u8", "B.m3u", "Gold/C.m3u8"],
     playlists_folder: "D:\\Radio\\playlists", beets: true,
+    folders: [{ id: "music", kind: "music", path: "D:\\Music", recursive: true }],
+    genres: ["Rock", "Pop"], beets_fields: ["mood"],
   });
   server.request = vi.fn(async (url, options = {}) => {
     const method = options.method || "GET";
@@ -106,7 +108,8 @@ describe("categories markup", () => {
     expect(byId("categories-playlist").getAttribute("aria-describedby")).toBe("categories-playlist-help");
     expect(byId("categories-check").getAttribute("aria-describedby")).toBe("categories-match");
     expect(byId("categories-list").getAttribute("aria-labelledby")).toBe("categories-list-heading");
-    expect(byId("categories-match").getAttribute("aria-live")).toBeNull();
+    expect(byId("categories-match").getAttribute("aria-live")).toBe("off");
+    expect(byId("categories-match").getAttribute("aria-hidden")).toBeNull();
     expect(section.querySelector("[aria-controls]")).toBeNull();
     expect(byId("categories-form").hidden).toBe(true);
     const ids = [...document.querySelectorAll('[id^="categories-"]')].map((node) => node.id);
@@ -140,6 +143,47 @@ describe("categories list", () => {
 });
 
 describe("categories form", () => {
+  it("reports incomplete filter conditions from Check and Save", async () => {
+    const server = await open();
+    byId("categories-add").click();
+    byId("categories-name").value = "Filtered";
+    byId("categories-source-filters").checked = true;
+    byId("categories-source-filters").dispatchEvent(new Event("change"));
+    const row = byId("categories-filter-conditions").firstElementChild;
+    row.querySelector("select").value = "artist";
+    row.querySelector("select").dispatchEvent(new Event("change"));
+    byId("categories-check").click();
+    expect(byId("categories-form-error").textContent).toContain("Enter a value for artist.");
+    byId("categories-save").click();
+    expect(byId("categories-form-error").textContent).toContain("Enter a value for artist.");
+    expect(server.calls.some((call) => call.method === "POST" && call.url === "/api/categories")).toBe(false);
+  });
+
+  it("saves shared filter conditions and checks unsaved matches after a pause", async () => {
+    const server = await open();
+    byId("categories-add").click();
+    byId("categories-name").value = "Late night";
+    byId("categories-source-filters").checked = true;
+    byId("categories-source-filters").dispatchEvent(new Event("change"));
+    const row = byId("categories-filter-conditions").firstElementChild;
+    const selects = row.querySelectorAll("select");
+    selects[0].value = "beets";
+    selects[0].dispatchEvent(new Event("change"));
+    expect([...selects[2].options].map((option) => option.value)).toContain("is_not");
+    selects[0].value = "bpm";
+    selects[0].dispatchEvent(new Event("change"));
+    selects[2].value = "not_eq";
+    row.querySelectorAll('input[type="text"]')[1].value = "90";
+    byId("categories-filter-match").value = "any";
+    byId("categories-save").click();
+    await vi.waitFor(() => expect(server.calls.some((call) => call.method === "POST" && call.url === "/api/categories")).toBe(true));
+    const saved = server.calls.find((call) => call.method === "POST" && call.url === "/api/categories").body;
+    expect(saved).toMatchObject({
+      name: "Late night", source: "filters", match: "any",
+      conditions: [{ field: "bpm", operator: "not_eq", value: 90 }],
+    });
+  });
+
   it("adds a query category: Check counts it, Save lists it and moves focus to it", async () => {
     const changed = vi.fn();
     const server = await open(fakeServer(), { onChange: changed });
@@ -166,6 +210,18 @@ describe("categories form", () => {
     expect(changed).toHaveBeenCalledTimes(1);
   });
 
+  it("announces a settled background count once without announcing edits", async () => {
+    const server = await open();
+    byId("categories-add").click();
+    byId("categories-name").value = "Rock gold";
+    byId("categories-name").dispatchEvent(new Event("input", { bubbles: true }));
+    byId("categories-query").value = "genre:rock";
+    byId("categories-query").dispatchEvent(new Event("input", { bubbles: true }));
+    expect(status()).toBe("");
+    await vi.waitFor(() => expect(status()).toContain("match the selection before playback restrictions."), { timeout: 1500 });
+    expect(server.calls.filter((call) => call.url === "/api/categories/check")).toHaveLength(1);
+  });
+
   it("edits a playlist category with the playlist choice, and Cancel goes back to its Edit button", async () => {
     const server = await open();
     rowButton(1, "edit").click();
@@ -174,7 +230,7 @@ describe("categories form", () => {
     expect(byId("categories-query-field").hidden).toBe(true);
     expect(byId("categories-playlist-field").hidden).toBe(false);
     expect(byId("categories-playlist").value).toBe("A.m3u8");
-    expect(byId("categories-match").textContent).toBe("Saved: 300 songs; 7 playlist lines match no library track.");
+    expect(byId("categories-match").textContent).toBe("Matching selection: 300 songs; 7 playlist lines match no library track before playback restrictions.");
     byId("categories-cancel").click();
     expect(document.activeElement).toBe(rowButton(1, "edit"));
     await vi.waitFor(() => expect(status()).toBe("Cancelled. Nothing was saved."));

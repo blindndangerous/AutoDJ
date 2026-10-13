@@ -190,6 +190,8 @@ const FIELDS = [
     read: (st) => Boolean(st.playback) && st.playback.prefetch_next_track !== false },
   { key: "pbSilenceTrigger", field: "silence_trigger_crossfade",
     read: (st) => Boolean(st.playback) && st.playback.silence_trigger_crossfade !== false },
+  { key: "pbMusicSpeed", field: "music_speed_percent",
+    read: (st) => st.playback?.music_speed_percent ?? 0 },
 ];
 
 function pushedValue(spec, control, st) {
@@ -300,6 +302,7 @@ export function applySettingsState(st, els) {
   for (const spec of FIELDS) {
     const control = els[spec.key];
     if (!control) continue;
+    if (spec.key === "pbMusicSpeed" && doc.activeElement === els.pbMusicSpeedSlider) continue;
     const value = pushedValue(spec, control, st);
     if (value == null || saveHolds(control, value)) continue;
     if (isToggle(control)) control.checked = value;

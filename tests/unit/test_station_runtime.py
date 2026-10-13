@@ -293,7 +293,7 @@ def test_a_station_that_fails_to_start_is_torn_down_and_left_stopped(
     log: list[str] = []
 
     def refuse(_registry: StationRegistry) -> _Runtime:
-        raise StationControlError("Daybreak is set to use Stereo Tool")
+        raise StationControlError("Daybreak's processor could not start")
 
     registry = StationRegistry(
         _Runtime("default", log),  # type: ignore[arg-type]
@@ -313,10 +313,10 @@ def test_a_station_that_fails_to_start_is_torn_down_and_left_stopped(
         in message
         for message in messages
     )
-    assert "Station daybreak did not start: Daybreak is set to use Stereo Tool" in messages
+    assert "Station daybreak did not start: Daybreak's processor could not start" in messages
 
 
-def test_one_stereo_tool_and_every_stations_preset(tmp_path: Path) -> None:
+def test_stereo_tool_diagnostics_and_every_stations_preset(tmp_path: Path) -> None:
     log: list[str] = []
     registry = StationRegistry(
         _Runtime("default", log, stereo=True),  # type: ignore[arg-type]
@@ -395,37 +395,22 @@ def test_another_stations_settings_are_saved_in_its_folder(tmp_path: Path, cfg: 
     assert _bridge(tmp_path).m3u_path == "/stream.m3u"
 
 
-def test_stereo_tool_in_use_elsewhere_is_refused_before_any_change(tmp_path: Path) -> None:
-    bridge = _bridge(tmp_path, stereo_tool_elsewhere=lambda: "AutoDJ")
+def test_switching_to_stereo_tool_is_not_blocked_by_another_station(tmp_path: Path) -> None:
+    bridge = _bridge(tmp_path)
     bridge.player._cfg.playback.loudness_processing = "smooth"
     body = PlaybackSettingsBody(loudness_processing="stereotool", crossfade_seconds=5.0)
-    with pytest.raises(ValueError, match="Stereo Tool is already processing AutoDJ"):
-        bridge.set_playback_settings(body)
-    assert bridge.player._cfg.playback.loudness_processing == "smooth"
-    # Restoring saved settings is checked when the station starts instead.
-    bridge.set_playback_settings(body, restoring=True)
+    bridge.set_playback_settings(body)
     assert bridge.player._cfg.playback.loudness_processing == "stereotool"
-    # Free: allowed.
-    free = _bridge(tmp_path, stereo_tool_elsewhere=lambda: None)
-    free.set_playback_settings(PlaybackSettingsBody(loudness_processing="stereotool"))
 
 
-def test_two_stations_switching_to_stereo_tool_at_once_cannot_both_get_it(
+def test_two_stations_switching_to_stereo_tool_at_once_are_independent(
     tmp_path: Path,
 ) -> None:
-    lock = threading.RLock()
-    first = _bridge(tmp_path, stereo_tool_lock=lock)
-    second = _bridge(tmp_path, stereo_tool_lock=lock)
+    first = _bridge(tmp_path)
+    second = _bridge(tmp_path)
     for bridge in (first, second):
         bridge.player._cfg.playback.loudness_processing = "smooth"
 
-    def user(bridge: PlayerBridge, name: str) -> str | None:
-        return name if bridge.player._cfg.playback.loudness_processing == "stereotool" else None
-
-    first.stereo_tool_elsewhere = lambda: user(second, "Second")
-    second.stereo_tool_elsewhere = lambda: user(first, "First")
-    # The first station has passed its check and is half-way through
-    # applying when the second asks.
     entered, go = threading.Event(), threading.Event()
     apply = first._set_playback_settings
 
@@ -441,7 +426,7 @@ def test_two_stations_switching_to_stereo_tool_at_once_cannot_both_get_it(
     def switch(bridge: PlayerBridge) -> None:
         try:
             bridge.set_playback_settings(body)
-        except ValueError as exc:
+        except Exception as exc:  # pragma: no cover - a failure is reported below
             errors.append(exc)
 
     one = threading.Thread(target=switch, args=(first,))
@@ -449,16 +434,13 @@ def test_two_stations_switching_to_stereo_tool_at_once_cannot_both_get_it(
     assert entered.wait(5)
     two = threading.Thread(target=switch, args=(second,))
     two.start()
-    two.join(0.2)  # without the lock, the second would finish here, unchecked
+    two.join(0.2)
     go.set()
     one.join(5)
     two.join(5)
     assert first.player._cfg.playback.loudness_processing == "stereotool"
-    assert second.player._cfg.playback.loudness_processing == "smooth"
-    assert [str(exc) for exc in errors] == [
-        "Stereo Tool is already processing First, and AutoDJ runs one Stereo Tool at a time. "
-        "Choose Smooth for this station, or move the other station off Stereo Tool first."
-    ]
+    assert second.player._cfg.playback.loudness_processing == "stereotool"
+    assert errors == []
 
 
 def _playback(processing: str, name: str) -> Any:
@@ -468,15 +450,12 @@ def _playback(processing: str, name: str) -> Any:
     )
 
 
-def test_a_station_being_started_holds_stereo_tool(tmp_path: Path) -> None:
+def test_a_station_being_started_is_included_in_processor_diagnostics(tmp_path: Path) -> None:
     log: list[str] = []
-    claims: list[str | None] = []
 
     def build(registry: StationRegistry) -> _Runtime:
-        claims.append(registry.claim_stereo_tool("nightowl", _playback("stereotool", "Owl")))
-        # While it starts, nobody else may take Stereo Tool.
+        registry.mark_starting("nightowl", _playback("stereotool", "Owl"))
         assert registry.stereo_tool_user(exclude="default") == "Owl"
-        claims.append(registry.claim_stereo_tool("daybreak", _playback("stereotool", "Day")))
         return _Runtime("nightowl", log, stereo=True)
 
     registry = StationRegistry(
@@ -484,10 +463,20 @@ def test_a_station_being_started_holds_stereo_tool(tmp_path: Path) -> None:
         [_extra("nightowl", build, tmp_path, autostart=False)],
     )
     asyncio.run(registry.start("nightowl"))
-    assert claims == [None, "Owl"]
     # Running now: it counts as a running station, no longer as a starting one.
     assert registry._starting == {}
     assert registry.stereo_tool_user(exclude="default") == "Nightowl"
+
+
+def test_multiple_stations_can_be_recorded_as_starting(tmp_path: Path) -> None:
+    log: list[str] = []
+    registry = StationRegistry(
+        _Runtime("default", log),  # type: ignore[arg-type]
+        [_extra("nightowl", lambda _r: _Runtime("nightowl", log), tmp_path)],
+    )
+    registry.mark_starting("default", _playback("stereotool", "AutoDJ"))
+    registry.mark_starting("nightowl", _playback("stereotool", "Night Owl"))
+    assert set(registry._starting) == {"default", "nightowl"}
 
 
 class _Library:
@@ -750,7 +739,8 @@ def test_stereo_tool_held_by_a_stopping_station_says_so(tmp_path: Path) -> None:
         assert held == (
             "Nightowl, which is still stopping (try again in a few seconds, once it has stopped)"
         )
-        assert registry.claim_stereo_tool("default", _playback("stereotool", "AutoDJ")) == held
+        registry.mark_starting("default", _playback("stereotool", "AutoDJ"))
+        assert registry.stereo_tool_user(exclude="default") == held
         gate.set()
         await stopping
         assert registry.stereo_tool_user(exclude="default") is None
@@ -930,7 +920,7 @@ def test_a_check_from_another_thread_always_finds_the_licence_holder(tmp_path: P
             await super().close()
 
     def build(registry: StationRegistry) -> _Runtime:
-        assert registry.claim_stereo_tool("nightowl", cfg) is None
+        registry.mark_starting("nightowl", cfg)
         held.set()
         return _Licensed("nightowl", log, stereo=True)
 

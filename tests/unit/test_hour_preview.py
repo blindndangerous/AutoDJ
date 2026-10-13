@@ -26,6 +26,7 @@ from autodj.hour_preview import (
     Item,
     Point,
     PreviewError,
+    _remaining,
     build_preview,
     check_minutes,
     clock_text,
@@ -301,6 +302,51 @@ def test_browser_playback_lists_fixed_then_predicted(tmp_path: Path) -> None:
     assert view["stopped"] is None
 
 
+def test_browser_queue_uses_music_rate_but_liners_keep_their_source_time(tmp_path: Path) -> None:
+    source, _power, gold = _station(
+        tmp_path, playback={"pick_mode": "clock", "music_speed_percent": 10}
+    )
+    player = source.player
+    liner_entry = source.library.entries_snapshot("liner")[0]
+    _playing(source, gold[0], NOW - 50)
+    player._playback_pos[0] = 55 * SR  # 50 wall seconds at 1.1x
+    player._state.next_track = gold[1]
+    player._state.queue.extend([liner_entry, gold[2]])
+
+    decided = read_station(player, now=NOW)
+    rows = [item for item in decided.items if item.kind in {"song", "liner"}]
+
+    assert rows[0].seconds == pytest.approx(200 / 1.1)
+    assert rows[1].seconds == pytest.approx(200 / 1.1)
+    assert rows[2].kind == "liner"
+    assert rows[2].seconds == pytest.approx(liner_entry.length)
+    assert rows[3].seconds == pytest.approx(200 / 1.1)
+
+
+def test_saved_cue_span_stays_source_time_and_is_converted_to_wall_time() -> None:
+    player = SimpleNamespace(
+        _cfg=SimpleNamespace(
+            playback=SimpleNamespace(transition_mode="saved_points", music_speed_percent=10)
+        ),
+        _clock_music_span=lambda _entry: (20.0, 180.0),
+    )
+    entry = SimpleNamespace(length=220.0)
+
+    assert song_seconds(player, entry, 240.0) == 160.0
+    assert _remaining(player, entry, 30.0, 240.0) == pytest.approx(150.0 / 1.1)
+
+
+def test_forecast_cache_signature_includes_music_speed(tmp_path: Path) -> None:
+    source, _power, gold = _station(tmp_path)
+    _playing(source, gold[0], NOW - 50)
+
+    regular = read_station(source.player, now=NOW).signature()
+    source.player._cfg.playback.music_speed_percent = 10
+    faster = read_station(source.player, now=NOW).signature()
+
+    assert regular != faster
+
+
 def test_a_preview_changes_nothing_on_the_air(tmp_path: Path) -> None:
     source, power, gold = _station(tmp_path, dmca=True)
     player = source.player
@@ -559,6 +605,98 @@ def test_an_ad_break_not_yet_booked_is_predicted_and_timed(tmp_path: Path) -> No
     assert not [
         item for item in build_preview(source, 60, now=NOW)["items"] if item["kind"] == "break"
     ]
+
+
+def test_server_render_cursor_maps_source_elapsed_to_output_event_time(tmp_path: Path) -> None:
+    source, _power, gold = _station(tmp_path)
+    player = source.player
+    liner_entry = source.library.entries_snapshot("liner")[0]
+    _playing(source, gold[0], NOW - 50)
+    playing = _render(
+        gold[0],
+        200,
+        gold[1],
+        5,
+        playback_rate=1.1,
+        liner_events=((190 * SR, liner_entry, False),),
+    )
+    player.bus = object()
+    player._playing_render = playing
+    player._playback_pos[0] = 55 * SR  # source frames: 50 output seconds at 1.1x
+
+    decided = read_station(player, now=NOW)
+    on_air = next(item for item in decided.items if item.status == "on_air")
+    event = next(item for item in decided.items if item.kind == "liner")
+
+    assert on_air.starts == pytest.approx(NOW - 50)
+    assert event.starts == pytest.approx(NOW + 140)
+
+
+def test_fixed_render_keeps_its_actual_rate_after_the_setting_changes(tmp_path: Path) -> None:
+    source, _power, gold = _station(
+        tmp_path, playback={"pick_mode": "clock", "music_speed_percent": 10}
+    )
+    player = source.player
+    _playing(source, gold[0], NOW - 50)
+    playing = _render(gold[0], 200, gold[1], 5, playback_rate=0.9)
+    ready = _render(gold[1], 190, gold[2], 5, playback_rate=1.2, next_playback_rate=0.8)
+    player.bus = object()
+    player._playing_render = playing
+    player._playback_pos[0] = round(50 * 0.9 * SR)
+    player._render_ahead._ready = ready
+    player._pending_entry = gold[2]
+    player._pending_offset = round(5 * SR)
+    player._cursor_serial = 7
+
+    decided = read_station(player, now=NOW)
+
+    assert decided.last is gold[2]
+    assert decided.last_rate == pytest.approx(0.8)
+    assert decided.last_rate != pytest.approx(1.1)  # the new setting is for unrendered music
+
+
+@pytest.mark.parametrize(("outgoing_rate", "incoming_rate"), [(0.9, 1.1), (1.1, 0.9)])
+def test_preview_liner_placement_scales_music_cues_but_keeps_voice_time(
+    tmp_path: Path,
+    monkeypatch,
+    outgoing_rate: float,
+    incoming_rate: float,
+) -> None:
+    source, _power, gold = _station(
+        tmp_path, playback={"pick_mode": "clock", "music_speed_percent": 10}
+    )
+    player = source.player
+    liners = source.library.entries_snapshot("liner")
+    rates = {gold[0].path: outgoing_rate, gold[1].path: incoming_rate}
+    monkeypatch.setattr(player, "music_playback_rate", lambda entry: rates[entry.path])
+    points = {
+        gold[0].path: {"start": 0, "outro": 7, "segue": 8, "end": 12},
+        liners[0].path: {"start": 0.5, "segue": 2.5, "end": 3.5, "overlap_start": None},
+        liners[1].path: {"start": 0.25, "segue": 1, "end": 2, "overlap_start": 0},
+        gold[1].path: {"start": 0, "intro": 4, "end": 12},
+    }
+    monkeypatch.setattr(source.library.catalog, "points", lambda path: points.get(path, {}))
+    monkeypatch.setattr(
+        source.library.catalog, "record_for_path", lambda _path: {"allow_outro": True}
+    )
+
+    def audio(entry):
+        return np.zeros((round(entry.length * SR), 2), dtype=np.float32)
+
+    monkeypatch.setattr(player, "_playout_audio", lambda entry, _decode: audio(entry))
+    monkeypatch.setattr(player, "_load_playout_audio", audio)
+    actual = player._render_saved_track(
+        gold[0], gold[1], 0, ((liners[0], False), (liners[1], False))
+    )
+
+    rows, delay = hour_preview._preview_liner_group(
+        player, gold[0], gold[1], liners, NOW + 8 / outgoing_rate
+    )
+
+    actual_incoming = len(actual.audio) - actual.overlap_frames
+    assert delay == pytest.approx(actual_incoming / SR - 8 / outgoing_rate, abs=2 / SR)
+    assert rows[0][1] == pytest.approx(NOW + actual.liner_events[0][0] / SR)
+    assert rows[1][1] == pytest.approx(NOW + actual.liner_events[1][0] / SR)
 
 
 def test_a_render_under_way_leaves_only_the_next_song_fixed(tmp_path: Path) -> None:
@@ -1126,3 +1264,19 @@ def test_ads_on_with_no_break_due_leave_the_preview_as_with_ads_off(tmp_path: Pa
     with_ads = build_preview(source, 120, now=NOW)
     assert with_ads["items"] == plain["items"]
     assert with_ads["points"] == plain["points"]
+
+
+@pytest.mark.parametrize("percent", [-10, 10])
+def test_browser_forecast_uses_live_position_after_seek(tmp_path: Path, percent: float) -> None:
+    source, power, _gold = _station(
+        tmp_path, playback={"pick_mode": "clock", "music_speed_percent": percent}
+    )
+    player = source.player
+    current = power[0]
+    _playing(source, current, NOW - 30)
+    player._current_sr = SR
+    player._playback_pos[0] = round(150 * SR)
+    found = hour_preview._read_browser(player, NOW, 180)
+    assert found is not None
+    remaining = _remaining(player, current, 150, 180)
+    assert found[4] == pytest.approx(NOW + remaining)

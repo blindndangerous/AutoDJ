@@ -93,6 +93,10 @@ class RenderedTrack:
             voice starts and where its speech ends.  A render with breaks
             keeps its next track whatever the queue does, because the
             break names it.
+        playback_rate: Playback speed of this track's music (source frames per
+            output frame). Source positions remain in the original file's units.
+        next_playback_rate: Playback speed used for *next_entry*'s music head
+            in this buffer.
         intro_events: ``(start, intro_id, end, label)`` for the intro
             matched to *next_entry* (#127) mixed into the handoff: where its
             voice starts and its speech ends in *audio*, and its label.
@@ -137,6 +141,8 @@ class RenderedTrack:
     liner_plan_key: str = ""
     full_audio: np.ndarray | None = None
     source_start_offset: int = 0
+    playback_rate: float = 1.0
+    next_playback_rate: float = 1.0
 
 
 @dataclass(frozen=True)

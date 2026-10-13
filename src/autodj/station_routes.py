@@ -294,6 +294,13 @@ class ClockBody(BaseModel):
     resync_minutes: list[Any] = PydanticField(max_length=60)
 
 
+class ClockStepCheckBody(BaseModel):
+    """One unsaved music or liner step to count in its matching pool."""
+
+    model_config = ConfigDict(extra="forbid")
+    step: dict[str, Any]
+
+
 class PalImportBody(BaseModel):
     """PAL text is parsed as a small declarative subset, never executed."""
 
@@ -1714,6 +1721,67 @@ def install_station_routes(router: StationRouter) -> None:
             return _clock_store(station).save(clock, overwrite=False)
         except (ValueError, OSError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.post("/library/clock/check")
+    async def api_library_clock_check(station: StationDep, body: ClockStepCheckBody) -> dict:
+        library = _catalog_library(station)
+
+        def count() -> dict:
+            try:
+                from autodj.clockwheel import ClockSlot, condition_paths
+                from autodj.clockwheel_store import resolve_conditions, validate_step
+
+                step = validate_step(body.step)
+                if step["type"] == "settings":
+                    return {"tracks": None, "error": None}
+                sources = {source["id"]: source for source in library.catalog.sources()}
+                if step["type"] == "track":
+                    source = step_source(step, sources, 1)
+                    target = source_folder(source["path"], step["path"])
+                    return {
+                        "tracks": int(library.entry_for_path(target) is not None),
+                        "error": None,
+                    }
+                if step["type"] == "category":
+                    _, results = library.categories.resolutions()
+                    result = results.get(step["category"])
+                    if result is None:
+                        raise ValueError("Its category is unavailable; choose a saved category")
+                    if result.error:
+                        raise ValueError(result.error)
+                    return {"tracks": result.count, "error": None}
+                _validate_step_conditions(station, library, step, sources, 1)
+                conditions = resolve_conditions(step, sources, 1)
+                entries = library.entries_snapshot("liner" if step["type"] == "liner" else "music")
+                fields = [c["name"] for c in conditions if c["field"] == "beets"]
+                _, beets, error = _clock_beets(station, library).snapshot(fields)
+                if error and fields:
+                    raise ValueError(error)
+                categories_index = getattr(library, "categories", None)
+                from autodj.clockwheel_store import step_categories
+
+                if categories_index and any(c["field"] == "category" for c in conditions):
+                    _, results = categories_index.resolutions()
+                    for category_id in step_categories(step):
+                        result = results.get(category_id)
+                        if result is None:
+                            raise ValueError("A referenced category is unavailable")
+                        if result.error:
+                            raise ValueError(result.error)
+                categories = (
+                    categories_index.members()
+                    if step["type"] == "music" and categories_index
+                    else None
+                )
+                slot = ClockSlot(
+                    kind=step["type"], conditions=conditions, match=step.get("match", "all")
+                )
+                paths = condition_paths(slot, entries, beets, categories)
+                return {"tracks": len(paths), "error": None}
+            except (ValueError, OSError) as exc:
+                return {"tracks": None, "error": str(exc)}
+
+        return await asyncio.to_thread(count)
 
     @router.post("/library/clock/active")
     async def api_library_select_clock(station: StationDep, body: ClockNameBody) -> dict:

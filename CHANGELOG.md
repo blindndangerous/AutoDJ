@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Multiple stations can use independent Stereo Tool processing instances when configured with the
+  required per-instance licences and executable paths (#163).
+
 ### Added
 
 - Scheduled ad breaks with reports (#51): a new **Ads** tab keeps spots (an audio file with its
@@ -36,6 +41,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[ads] max_upload_mb` before the body is read and decoded one at a time off the event loop with
   the breaks' bounded decoder. Routes: `/api/ads` and `/api/stations/<name>/ads`. See
   [Ad breaks](docs/operations.md#ad-breaks).
+- Music speed (#162): Settings > Sound > Music speed has a slider and exact numeric field for
+  10% slower to 10% faster. Speed and pitch change together. Browser music changes speed when
+  safe; voice liners and previews stay at their normal speed. In stream and server-audio modes,
+  the new speed takes effect at the next unrendered audio-buffer boundary. Cue points, lyrics,
+  catalog durations and playback progress remain on the source-file timeline.
 - Daypart and hourpart song separation (#129): two new repeat rules in Settings > Song picking >
   Repeats keep a song from playing at the same time every day. **Prevent a song from playing in
   the same daypart** holds back a song that played in the daypart the next song starts in (such
@@ -49,7 +59,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `config.toml` they are the `daypart` and `hourpart` tables of `[playback.repeat_rules]`; unknown
   keys there are ignored with a warning. See
   [Time of day](docs/track-selection.md#time-of-day).
-
 - Saving edits to the active clockwheel can now apply at its next restart, immediately from
   step 1, or immediately continuing at the next step number. A song already playing and its
   committed handoff finish normally. With no restart minutes, deferred edits apply when the
@@ -122,6 +131,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is back in Settings > Voice liners. Search, folders and History share arrow-key navigation.
   Action cells focus their buttons and checkboxes so screen readers can announce their roles
   and checked state. Folder saves and table refreshes preserve focus.
+- Categories and Music clockwheel steps share folder, genre, year, BPM, duration, text and Beets
+  filters, with Match all / Match any and exclusions. Categories can be saved filter selections,
+  while existing Beets-query and M3U categories keep working; category references remain available
+  to steps, but categories cannot nest. Unknown metadata never passes an exclusion, and a genre
+  exclusion rejects a track if any label matches. Both editors show a debounced unique-track count
+  before playback restrictions; each settled count is announced once.
 - Clockwheel Music steps can combine categories with folder and metadata conditions. Use
   Match any to combine categories, or Match all to narrow a category by year, BPM or other
   fields. Songs matching more than one condition are included once. Existing category steps
@@ -134,7 +149,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   random picks choose a song before a version, least recently played dates a song by its latest
   played version, and similarity keeps the best version of each song. The track limits hold back
   every version of a song that played. The rotation tester counts the versions as one song.
-
 - Related tracks (#101). Settings > Picking > Repeats has a **Use related tracks** checkbox, off
   by default, with its own Tracks and Minutes limits (20 tracks to start with). It holds back
   tracks that sound alike on air, such as a song and one that samples it, listed as

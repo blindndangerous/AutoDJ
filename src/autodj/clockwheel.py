@@ -51,8 +51,14 @@ class ClockSlot:
                         raise ValueError("Category conditions are only available for music steps")
                     validate_category_condition(condition)
                 elif condition.get("field") == "folder":
-                    if set(condition) != {"field", "folder", "recursive"}:
+                    if set(condition) - {"field", "folder", "recursive", "operator"} or not {
+                        "field",
+                        "folder",
+                        "recursive",
+                    } <= set(condition):
                         raise ValueError("Invalid resolved folder condition")
+                    if condition.get("operator", "is") not in {"is", "is_not"}:
+                        raise ValueError("Invalid folder condition operator")
                     ClockSlot(folder=condition["folder"], recursive=condition["recursive"])
                 else:
                     validate_metadata_condition(condition)
@@ -285,9 +291,19 @@ def condition_paths(
             matched = _slot_entries(
                 ClockSlot(folder=condition["folder"], recursive=condition["recursive"]), entries
             )
+            if condition.get("operator") == "is_not":
+                paths = {item.path for item in matched}
+                matched = [entry for entry in entries if entry.path not in paths]
         elif condition["field"] == "category":
-            _, members = (categories or {}).get(condition["category"], ("", frozenset()))
-            matched = [entry for entry in entries if entry.path in members]
+            if not categories or condition["category"] not in categories:
+                matched = []
+            else:
+                _, members = categories[condition["category"]]
+                matched = [
+                    entry
+                    for entry in entries
+                    if (entry.path in members) == (condition.get("operator") != "is_not")
+                ]
         elif condition["field"] == "beets" and beets:
             test = condition_matcher(condition)
             matched = [

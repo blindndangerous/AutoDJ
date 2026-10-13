@@ -540,6 +540,7 @@ def test_the_expected_start_is_when_the_song_ahead_reaches_its_handoff() -> None
         next_entry=current, audio=[0] * (44100 * 40), start_offset=0
     )
     player._playback_pos = [44100 * 10]
+    player._playback_output_pos = [44100 * 10]
     assert player._handoff_time(current) == 1210.0
 
     def unreadable(_entry: Any) -> tuple[float, float]:
