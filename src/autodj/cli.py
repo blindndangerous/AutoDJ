@@ -115,21 +115,11 @@ def _analyse_catalog_dj_meta(
     from autodj.dj_meta import get_cache
     from autodj.indexer import backfill_dj_meta
 
-    try:
-        root = cfg.library.music_dir.resolve()
-        eligible = [entry for entry in entries if Path(entry.path).is_relative_to(root)]
-    except (AttributeError, OSError):
-        eligible = entries
-    if len(eligible) < len(entries):
-        console.print(
-            f"[yellow]DJ-meta cache can analyse {len(eligible)} tracks under the configured music folder; "
-            f"{len(entries) - len(eligible)} external-folder tracks are skipped.[/]"
-        )
-    backfill_dj_meta(cfg, eligible, limit=limit, prune=False)
+    backfill_dj_meta(cfg, entries, limit=limit, prune=False)
     cache = get_cache(cfg.index.active_dir, music_dir=cfg.library.music_dir)
     if cache is None:
         return
-    for entry in eligible:
+    for entry in entries:
         meta = cache.get(entry.path)
         if meta is None or not meta.analysed:
             continue
@@ -1198,13 +1188,11 @@ def cmd_index(
 
     if not skip_analyse:
         try:
-            # The portable DJ cache still belongs to the configured music root.
             library.refresh()
             entries = [
                 entry
                 for entry in library.entries_snapshot()
-                if Path(entry.path).is_relative_to(cfg.library.music_dir.resolve())
-                and any(
+                if any(
                     source["advanced"]
                     for source in library.catalog.sources_for_path(entry.path, "music")
                 )
@@ -1581,8 +1569,7 @@ def cmd_analyse(
     is missing or has ``analysed=False``, merges cues imported from DJ
     software (``[playback] import_external_cues``), and publishes automatic
     intro/outro suggestions. Skips completed analyses and preserves manual
-    cue points. The portable DJ-meta cache supports tracks under the
-    configured ``music_dir``; other registered roots are reported as skipped.
+    cue points. Tracks from every registered library folder are included.
 
     No GPU and no MuQ model required -- pure CPU work via librosa +
     numpy.  Run this on the NAS / listening host after a GPU host has

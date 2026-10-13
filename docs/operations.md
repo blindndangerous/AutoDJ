@@ -121,9 +121,9 @@ A stale manifest is ignored when the catalog already exists. For an unreadable l
 `index --force` can build a catalog from the configured folders without importing that index.
 `migrate-index` remains available for older formats. `analyse`, `enrich`, and `stats` use the
 current catalog: Analyse backfills CPU intro/outro and beat data without MuQ, Enrich refreshes
-beets metadata without re-embedding, and Stats prints the detailed catalog report. CPU DJ-meta
-cache keys remain relative to the configured `music_dir`, so Analyse reports and skips songs
-registered only under other roots. The Library panel's **Remove missing tracks** action is
+beets metadata without re-embedding, and Stats prints the detailed catalog report. Analyse covers all registered folders. New DJ-meta cache entries use full track paths; existing
+relative cache entries remain readable with the old `music_dir` setting. That setting does not
+limit which registered folders can be analysed. The Library panel's **Remove missing tracks** action is
 available after a successful rescan; it previews catalog records missing from mounted sources,
 requires confirmation, asks again above the 20% safety threshold, deletes saved catalog cues and
 analysis data for those records, and preserves audio files and play history. Disconnected sources

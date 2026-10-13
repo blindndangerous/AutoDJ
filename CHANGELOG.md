@@ -14,7 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   required per-instance licences and executable paths (#163).
 - Library Analyse, Enrich and Detailed Stats now read the current catalog. Analyse runs CPU DJ-meta
   work without MuQ, publishes automatic cues while preserving manual cues, and skips completed
-  tracks. The web summary stats remain separate. The web no longer starts the legacy prune job.
+  tracks across all registered folders. Existing DJ-meta cache entries are preserved. The web summary
+  stats remain separate. The web no longer starts the legacy prune job.
 - The Library panel can preview and confirm removal of tracks missing from available source folders.
   A clean scan and unchanged preview are required; more than 20% missing requires a second
   confirmation. Catalog cues and vectors are removed with the record, while audio files and play
