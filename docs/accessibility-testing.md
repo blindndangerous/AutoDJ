@@ -122,8 +122,10 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   saying the count once and landing on the category's Edit button; Cancel returning to the
   button that opened the form; Delete naming the clockwheels that use the category and landing
   on the next Edit button or Add category; and the list never spoken on its 15-second refresh.
-  In Clockwheels, "Music from a category" showing the Category choice and the step read as
-  "music from category A".
+  In Clockwheels, a Music condition with Field Category showing the named Category choice;
+  multiple categories read with the chosen Match all/any; a legacy category step opening as
+  Music with its category selected; a missing category named as unavailable; Category absent
+  from voice liner conditions.
 - Library tools, Clockwheels: the conditions read as a group named Conditions, each with its
   numbered legend; Value and Upper value reading the wildcard and MM:SS help; Add condition
   focusing the new condition and saying "Condition 2 added"; Remove condition 2 focusing the

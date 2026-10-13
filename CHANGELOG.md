@@ -10,6 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Clockwheel Music steps can combine categories with folder and metadata conditions. Use
+  Match any to combine categories, or Match all to narrow a category by year, BPM or other
+  fields. Songs matching more than one condition are included once. Existing category steps
+  open in the same condition editor and keep their selection and repeat settings. Category
+  hours and the list of clockwheels using each category still apply.
+
 - Related tracks (#101). Settings > Picking > Repeats has a **Use related tracks** checkbox, off
   by default, with its own Tracks and Minutes limits (20 tracks to start with). It holds back
   tracks that sound alike on air, such as a song and one that samples it, listed as
