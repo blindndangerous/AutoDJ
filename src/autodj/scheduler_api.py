@@ -234,7 +234,7 @@ def build_scheduler(
         song_playing=lambda: bridge.player._state.current_track is not None,
         song_remaining=lambda: bridge.player._current_song_remaining_s(),
     )
-    bridge.player._hour_fit_events = lambda: tuple(scheduler.events.copy().values())
+    bridge.player._hour_fit_events = scheduler.hard_events
     bridge.player._hour_fit_timezone = timezone
     for action in _builtin_actions(
         bridge, apply_profile, profile_names, liner_names, clock_names, select_clock

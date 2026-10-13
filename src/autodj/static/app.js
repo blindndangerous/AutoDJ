@@ -31,6 +31,7 @@ import { tableRow } from "./modules/table-row.js";
 import { installTableNavigation } from "./modules/table-navigation.js";
 import { installLibraryFolders } from "./modules/library-folders.js";
 import { installCategoriesPanel } from "./modules/categories-panel.js";
+import { installShowsPanel } from "./modules/shows-panel.js";
 import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
 import { describeStep } from "./modules/clockwheel-step.js";
 import { installRotationTest } from "./modules/rotation-test.js";
@@ -40,6 +41,7 @@ import { installCartWall } from "./modules/cart-wall.js";
 import { installVoiceTracker } from "./modules/voice-tracker.js";
 import { createStreamMode, createStreamSettings } from "./modules/stream-mode.js";
 import { createRecordingControls } from "./modules/recording-controls.js";
+import { installRelaySettings } from "./modules/relay-settings.js";
 import { installNowPlayingSettings } from "./modules/nowplaying-settings.js";
 import { createListenerControls } from "./modules/listener-controls.js";
 import { initSubtabs } from "./modules/subtabs.js";
@@ -183,6 +185,16 @@ const streamMode = createStreamMode({
   // The stream never starts before it has the page's volume and mute.
   beforePlay: () => applyPageLevel(),
 });
+const relaySettings = installRelaySettings({
+  doc: document,
+  request: requestJson,
+  post: (url, body, control, options) => postSettings(url, body, control, options),
+  remove: async (url) => {
+    try { await requestJson(url, { method: "DELETE" }); return true; }
+    catch (err) { announceStatus(settingsStatus, `Could not remove relay: ${err.message}`, { tone: "error", force: true }); return false; }
+  },
+  announce: (message, error = false) => announceStatus(settingsStatus, message, { tone: error ? "error" : "success", force: true }),
+});
 // Whether the listener has started playback with Play or Pause (or its
 // hotkey), or pressed Listen here, on this page since signing in.  A page
 // plays only after that: server pushes never start a deck
@@ -210,7 +222,11 @@ const streamSettings = createStreamSettings({
     postSettings("/api/stream/settings", { continuous: value }, control),
   saveStationName: (value, control) =>
     postSettings("/api/stream/settings", { station_name: value }, control),
-  setAvailable: (available) => settingsTabs.setTabHidden("stream", !available),
+  setAvailable: (available) => {
+    settingsTabs.setTabHidden("stream", !available);
+    relaySettings.setAvailable(available);
+  },
+  onRelays: (relays) => relaySettings.applyStatuses(relays),
   focusAway: () => settingsTabs.focusSelected(),
   srStatus: document.getElementById("sr-status"),
   settingsStatus,
@@ -247,6 +263,7 @@ let authExpiryHandled = false;
 let libraryFoldersControls = null;
 let clockwheelPanelControls = null;
 let categoriesPanelControls = null;
+let showsPanelControls = null;
 let schedulerPanelControls = null;
 let rotationTestControls = null;
 let hourPreviewControls = null;
@@ -284,6 +301,7 @@ function stopProtectedPlayback() {
 function clearStationViews() {
   _seekController?.cancel();
   streamSettings.reset();
+  relaySettings.reset();
   recordingControls.reset();
   nowPlayingSettings?.reset();
   listenerControls.reset();
@@ -332,6 +350,8 @@ function clearStationViews() {
   resetSettingsState(_settingsEls());
   settingsStatus.textContent = "";
   clockwheelPanelControls?.clearProtectedData();
+  // Shows are the station's own (#106).
+  showsPanelControls?.clearProtectedData();
   schedulerPanelControls?.clear();
   rotationTestControls?.clear();
   hourPreviewControls?.clear();
@@ -1394,6 +1414,10 @@ function connectWS({ quiet = false } = {}) {
         cartWallControls?.event(message);
       } else if (message.type === "schedule_changed" || message.type === "schedule_run") {
         void schedulerPanelControls?.refresh();
+        // A schedule event may play a show: its list says which events do.
+        void showsPanelControls?.refresh();
+      } else if (message.type === "shows_changed") {
+        void showsPanelControls?.refresh();
       } else applyState(message);
     } catch (_) {}
   };
@@ -1449,6 +1473,7 @@ function connectWS({ quiet = false } = {}) {
           libraryFoldersControls?.resume();
           clockwheelPanelControls?.resume();
           categoriesPanelControls?.resume();
+          showsPanelControls?.resume();
           void schedulerPanelControls?.refresh();
           void rotationTestControls?.refresh();
           hourPreviewControls?.resume();
@@ -1640,6 +1665,7 @@ function refreshStationPanels() {
   void nowPlayingSettings?.load();
   clockwheelPanelControls?.resume();
   void clockwheelPanelControls?.refresh();
+  showsPanelControls?.resume();
   void schedulerPanelControls?.refresh();
   void rotationTestControls?.refresh();
   hourPreviewControls?.resume();
@@ -2837,6 +2863,7 @@ libraryFoldersControls = installLibraryFolders({
 clockwheelPanelControls = installClockwheelPanel();
 // A saved or deleted category reaches the clockwheel step form at once.
 categoriesPanelControls = installCategoriesPanel({ onChange: () => clockwheelPanelControls?.refresh() });
+showsPanelControls = installShowsPanel();
 schedulerPanelControls = installSchedulerPanel();
 rotationTestControls = installRotationTest();
 hourPreviewControls = installHourPreview();
@@ -2944,6 +2971,7 @@ function startAuthenticatedApp(initialState) {
   libraryFoldersControls?.resume();
   clockwheelPanelControls?.resume();
   categoriesPanelControls?.resume();
+  showsPanelControls?.resume();
   void schedulerPanelControls?.refresh();
   void rotationTestControls?.refresh();
   hourPreviewControls?.resume();

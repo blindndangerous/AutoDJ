@@ -43,6 +43,7 @@ from autodj.clockwheel_store import (
     validate_clockwheel,
     validate_name,
 )
+from autodj.config import MAX_RELAYS, RelayConfig, _relay_target
 from autodj.playlog import (
     missing_fields,
     parse_bound,
@@ -52,6 +53,13 @@ from autodj.playlog import (
     soundexchange_report,
 )
 from autodj.recorder import Recorder
+from autodj.relay import resolve_safe_relay_addresses, source_port
+from autodj.relay_settings import (
+    credential_is_missing,
+    password_variable,
+    public_relay,
+    save_relays,
+)
 from autodj.scheduler import Action
 from autodj.settings_bodies import (
     BpmRangeBody,
@@ -229,6 +237,25 @@ class ProfileSaveBody(BaseModel):
         return self
 
 
+class RelaySettingsBody(BaseModel):
+    """One relay definition submitted from Settings > Stream."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = PydanticField(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9_-]+$")
+    type: Literal["icecast", "shoutcast1", "shoutcast2"]
+    host: str = PydanticField(min_length=1, max_length=253)
+    port: int = PydanticField(ge=1, le=65535, strict=True)
+    password: str | None = PydanticField(default=None, max_length=255)
+    mount: str | None = PydanticField(default=None, max_length=255)
+    user: str | None = PydanticField(default=None, max_length=255)
+    stream_id: int | None = PydanticField(default=None, ge=1, le=2_147_483_647, strict=True)
+    bitrate: Literal[128, 192, 256, 320] | None = None
+    public: StrictBool = False
+    enabled: StrictBool = True
+    is_edit: StrictBool = False
+
+
 @contextlib.contextmanager
 def _profile_http_errors() -> Iterator[None]:
     """Answer a bad profile name or file with 400 and a missing profile with 404."""
@@ -270,6 +297,24 @@ class QueueReorderBody(BaseModel):
     """
 
     paths: list[str]
+    # The queue as the page showed it, and each new slot's place in it: with
+    # both, the entries themselves move (a show's copy and a listener's
+    # request of the same file keep who they are, #106).
+    from_paths: list[str] | None = None
+    order: list[int] | None = None
+
+
+class QueueRemoveBody(BaseModel):
+    """Request body for POST /api/queue/remove.
+
+    Attributes:
+        path: The track to remove.
+        position: Its place in the queue as the page showed it; that entry
+            goes when the queue still has *path* there.
+    """
+
+    path: str
+    position: int | None = None
 
 
 class LinerTestBody(BaseModel):
@@ -341,6 +386,138 @@ def _require_stream_mode(station: StationRuntime) -> ListenerAccess:
     if not station.bridge.stream_mode or station.listener_access is None:
         raise HTTPException(status_code=404, detail="Not Found")
     return station.listener_access
+
+
+def _refresh_relay_metadata(station: StationRuntime, registry: Any) -> None:
+    with registry.relay_lock:
+        station.bridge.relays.reconfigure(station.cfg.stream.relays.values(), restart_all=True)
+
+
+def _persist_relay_set(station: StationRuntime, proposed: dict[str, RelayConfig]) -> None:
+    """Save the authoritative set before changing live relays; restore bytes on failure."""
+    from autodj.secret_files import write_private_file
+
+    path = station.paths.relays
+    try:
+        previous = path.read_bytes() if path.exists() else None
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="Could not save relay settings.") from exc
+    try:
+        save_relays(path, proposed, station.slug)
+    except (OSError, ValueError) as exc:
+        logger.error("Could not save relay settings", exc_info=True)
+        raise HTTPException(status_code=503, detail="Could not save relay settings.") from exc
+    try:
+        station.bridge.relays.reconfigure(proposed.values())
+    except Exception as exc:
+        logger.error("Could not apply relay settings", exc_info=True)
+        try:
+            if previous is None:
+                path.unlink(missing_ok=True)
+            else:
+                write_private_file(path, previous)
+        except (OSError, UnicodeError):
+            logger.error("Could not restore prior relay settings", exc_info=True)
+        raise HTTPException(status_code=503, detail="Could not apply relay settings.") from exc
+    station.cfg.stream.relays = proposed
+
+
+def _save_stream_relay(station: StationRuntime, body: RelaySettingsBody, registry: Any) -> dict:
+    # Keep serialization in the worker even if its HTTP request is cancelled.
+    with registry.relay_lock:
+        return _save_stream_relay_locked(station, body, registry)
+
+
+def _save_stream_relay_locked(
+    station: StationRuntime, body: RelaySettingsBody, registry: Any
+) -> dict:
+    old = station.cfg.stream.relays.get(body.name)
+    if old is not None and not body.is_edit:
+        raise HTTPException(status_code=409, detail="A relay with this name already exists.")
+    if body.is_edit and old is None:
+        raise HTTPException(status_code=404, detail="Relay not found.")
+    variable = password_variable(station.slug, body.name)
+    managed = variable in os.environ
+    if managed and body.password:
+        raise HTTPException(
+            status_code=409, detail="This relay password is managed by the environment."
+        )
+    same_destination = old is not None and (
+        old.host.lower().rstrip(".") == body.host.lower().rstrip(".")
+        and old.port == body.port
+        and old.type == body.type
+    )
+    if managed and old is not None and not same_destination:
+        raise HTTPException(
+            status_code=409,
+            detail="The environment-managed password cannot be reused for a changed destination.",
+        )
+    password = (
+        os.environ[variable]
+        if managed
+        else old.password
+        if old is not None and same_destination and not body.password
+        else body.password
+    )
+    if not password:
+        raise HTTPException(status_code=422, detail="Enter a source password.")
+    if credential_is_missing(password) and body.enabled:
+        raise HTTPException(
+            status_code=422, detail="Enter a source password before enabling this relay."
+        )
+    try:
+        relay = RelayConfig.from_table(
+            body.name,
+            {
+                "type": body.type,
+                "host": body.host,
+                "port": body.port,
+                "password": password,
+                "mount": body.mount,
+                "user": body.user,
+                "stream_id": body.stream_id,
+                "bitrate": body.bitrate,
+                "public": body.public,
+                "enabled": body.enabled,
+            },
+        )
+        resolve_safe_relay_addresses(relay.host, source_port(relay))
+        proposed = dict(station.cfg.stream.relays)
+        proposed[body.name] = relay
+        if len(proposed) > MAX_RELAYS:
+            raise ValueError("too many relays")
+        targets = [_relay_target(item) for item in proposed.values()]
+        if len(targets) != len(set(targets)):
+            raise ValueError("duplicate destination")
+        for slug, other_relays in registry.relay_configs().items():
+            if slug == station.slug:
+                continue
+            other_targets = {_relay_target(item) for item in other_relays.values()}
+            if other_targets.intersection(targets):
+                raise ValueError("duplicate destination across stations")
+    except OSError as exc:
+        raise HTTPException(
+            status_code=422, detail="Relay host could not be resolved to a public address."
+        ) from exc
+    except (TypeError, ValueError, KeyError) as exc:
+        raise HTTPException(status_code=422, detail=f"{body.name}: {exc}") from exc
+    _persist_relay_set(station, proposed)
+    statuses = {item["name"]: item for item in station.bridge.relay_status()}
+    return {"relay": public_relay(relay, statuses.get(body.name, {}), station.slug)}
+
+
+def _remove_stream_relay(station: StationRuntime, name: str, registry: Any) -> dict:
+    with registry.relay_lock:
+        return _remove_stream_relay_locked(station, name)
+
+
+def _remove_stream_relay_locked(station: StationRuntime, name: str) -> dict:
+    if name not in station.cfg.stream.relays:
+        raise HTTPException(status_code=404, detail="Relay not found.")
+    proposed = dict(station.cfg.stream.relays)
+    proposed.pop(name)
+    _persist_relay_set(station, proposed)
+    return {"removed": name}
 
 
 def _profile_store(station: StationRuntime) -> Any:
@@ -806,6 +983,29 @@ def equip_station(
     station.time_checks = TimeChecks(station.cfg, station.timezone, station.paths)
     schedule.register(time_check_action(station.time_checks, bridge))
 
+    from autodj.shows import ShowRunner, ShowStore, show_action
+
+    # Shows (#106): a list of songs prepared ahead that a schedule event airs.
+    station.shows = ShowStore(station.paths.shows)
+    station.show_runner = ShowRunner(
+        bridge, station.shows, publish, state_path=station.paths.show_on_air
+    )
+    schedule.register(show_action(station.show_runner, station.shows))
+
+    def show_starts_within(within_s: float) -> str | None:
+        # Called from the request desk's threads: only show events, copied
+        # under the scheduler's lock.
+        from datetime import timedelta
+
+        for _when, event in schedule.runs_within("show", timedelta(seconds=within_s)):
+            show = station.shows.get(str(event.params.get("show", "")))
+            return show.name if show is not None else event.name
+        return None
+
+    station.show_runner.starts_within = show_starts_within
+    # A remove or reorder by path never takes the show's own copy by mistake.
+    bridge.show_entry = station.show_runner.is_show_entry
+
     from autodj.breaks import BreakDesk
 
     station.breaks = BreakDesk(lambda: station.cfg.breaks, station.paths.announcements)
@@ -830,7 +1030,10 @@ def equip_station(
             tokens=FORM_TOKENS,
             track_ids=TrackIds(TRACK_SECRET),
             on_queued=station.nowplaying.refresh,
+            shows=station.show_runner,
         )
+        # A show that starts ahead of queued requests updates their notes.
+        station.show_runner.on_started = station.requests.show_started
 
     from autodj.categories import station_wall
     from autodj.matched_intros import MatchedIntros
@@ -908,6 +1111,7 @@ def install_station_routes(router: StationRouter) -> None:
     from autodj.requests_api import install_requests
     from autodj.rotation_api import install_rotation_test
     from autodj.scheduler_api import install_scheduler
+    from autodj.shows_api import install_shows
     from autodj.time_checks import install_time_checks
 
     @router.get("/status")
@@ -1024,6 +1228,31 @@ def install_station_routes(router: StationRouter) -> None:
         _require_stream_mode(station)
         return station.bridge.stream_info()
 
+    @router.get("/stream/relays")
+    async def api_stream_relays(station: StationDep) -> dict:
+        _require_stream_mode(station)
+        statuses = {item["name"]: item for item in station.bridge.relay_status()}
+        return {
+            "relays": [
+                public_relay(cfg, statuses.get(name, {}), station.slug)
+                for name, cfg in station.cfg.stream.relays.items()
+            ]
+        }
+
+    @router.post("/stream/relays")
+    async def api_stream_relay_save(
+        station: StationDep, body: RelaySettingsBody, request: Request
+    ) -> dict:
+        _require_stream_mode(station)
+        registry = request.app.state.stations
+        return await asyncio.to_thread(_save_stream_relay, station, body, registry)
+
+    @router.delete("/stream/relays/{name}")
+    async def api_stream_relay_remove(station: StationDep, name: str, request: Request) -> dict:
+        _require_stream_mode(station)
+        registry = request.app.state.stations
+        return await asyncio.to_thread(_remove_stream_relay, station, name, registry)
+
     @router.get("/recording")
     async def api_recording_status(station: StationDep) -> dict[str, object]:
         return await _recording_route(station, Recorder.status)
@@ -1119,11 +1348,18 @@ def install_station_routes(router: StationRouter) -> None:
         return {"address": address}
 
     @router.post("/stream/settings")
-    async def api_stream_settings(station: StationDep, body: StreamSettingsBody) -> dict:
+    async def api_stream_settings(
+        station: StationDep, body: StreamSettingsBody, request: Request
+    ) -> dict:
         """Change the stream bitrate (listeners reconnect), continuous play or name."""
         access = _require_stream_mode(station)
         bridge = station.bridge
         cfg = station.cfg
+        metadata_changed = any(
+            getattr(cfg.stream, field) != getattr(body, field)
+            for field in ("station_name", "genre", "description", "url")
+            if getattr(body, field) is not None
+        )
         if body.show_next and cfg.dmca.enabled:
             raise HTTPException(
                 status_code=409,
@@ -1139,6 +1375,10 @@ def install_station_routes(router: StationRouter) -> None:
         if body.station_name is not None:
             # Read per stream request, so each player shows it when it next connects.
             cfg.stream.station_name = body.station_name
+        for field in ("genre", "description", "url"):
+            value = getattr(body, field)
+            if value is not None:
+                setattr(cfg.stream, field, value)
         if body.show_next is not None:
             cfg.nowplaying.show_next = body.show_next
         station.nowplaying.refresh()
@@ -1146,6 +1386,8 @@ def install_station_routes(router: StationRouter) -> None:
             cfg.stream.max_listeners_per_address = body.max_listeners_per_address
             access.max_per_address = body.max_listeners_per_address
         await asyncio.to_thread(bridge.save_persistent_state)
+        if metadata_changed and bridge.relays is not None:
+            await asyncio.to_thread(_refresh_relay_metadata, station, request.app.state.stations)
         return bridge.stream_info()
 
     # ------------------------------------------------------------------
@@ -1501,9 +1743,9 @@ def install_station_routes(router: StationRouter) -> None:
         return {"ok": True}
 
     @router.post("/queue/remove")
-    async def api_queue_remove(station: StationDep, body: PlayNextBody) -> dict[str, bool]:
+    async def api_queue_remove(station: StationDep, body: QueueRemoveBody) -> dict[str, bool]:
         """Remove a track from the user-ordered queue."""
-        removed = station.bridge.queue_remove(body.path)
+        removed = station.bridge.queue_remove(body.path, body.position)
         if removed:
             station.nowplaying.refresh()
         return {"ok": removed}
@@ -1511,7 +1753,9 @@ def install_station_routes(router: StationRouter) -> None:
     @router.post("/queue/reorder")
     async def api_queue_reorder(station: StationDep, body: QueueReorderBody) -> dict[str, bool]:
         """Reorder the user-ordered queue."""
-        changed = station.bridge.queue_reorder(body.paths)
+        changed = station.bridge.queue_reorder(
+            body.paths, from_paths=body.from_paths, order=body.order
+        )
         if changed:
             station.nowplaying.refresh()
         return {"ok": changed}
@@ -1829,6 +2073,7 @@ def install_station_routes(router: StationRouter) -> None:
     install_breaks(router)
     install_requests(router)
     install_matched_intros(router)
+    install_shows(router)
     install_rotation_test(router)
     install_hour_preview(router)
 

@@ -428,13 +428,28 @@ def test_duplicate_ids_make_the_file_bad(tmp_path: Path) -> None:
     assert len(list(tmp_path.glob("schedule.json.bad-*"))) == 1
 
 
-def test_an_event_for_an_unknown_action_is_dropped_and_the_file_kept(tmp_path: Path) -> None:
+def test_an_event_for_an_unknown_action_is_kept_as_it_was_but_never_runs(tmp_path: Path) -> None:
+    """Another version's action (#106: an older AutoDJ and Play a show) survives a save."""
     path = tmp_path / "schedule.json"
-    write_schedule(path, [stored("a" * 32), stored("b" * 32, action="cart")])
+    other = stored("b" * 32, action="cart", params={"page": "1"})
+    write_schedule(path, [stored("a" * 32), other])
     rig = Rig(path)
     rig.schedule.start()
     assert list(rig.schedule.events) == ["a" * 32]
-    assert len(list(tmp_path.glob("schedule.json.bad-*"))) == 1
+    assert list(tmp_path.glob("schedule.json.bad-*")) == []
+    # A save after any change writes it back unchanged.
+    rig.add(name="Evening", time="19:00")
+    events = json.loads(path.read_text(encoding="utf-8"))["events"]
+    saved = next(event for event in events if event["id"] == "b" * 32)
+    assert saved == {
+        key: value
+        for key, value in other.model_dump(mode="json").items()
+        if (key not in ("start_date", "end_date") or value is not None)
+        and (key != "wait_seconds" or value)
+    }
+    rig.tick_at("2026-10-12 07:00")
+    assert "b" * 32 not in {run.event_id for run in rig.schedule.runs}
+    assert "a" * 32 in {run.event_id for run in rig.schedule.runs}
 
 
 def test_actions_register_before_start_only(tmp_path: Path) -> None:
@@ -723,3 +738,45 @@ def test_failed_audio_preparation_does_not_interrupt(tmp_path: Path) -> None:
     assert result.result == "error"
     assert result.message == "The selected liner is gone"
     assert rig.calls == ["prepare"]
+
+
+def test_an_action_can_run_hard_events_itself_and_soft_ones_at_once(tmp_path: Path) -> None:
+    rig = Rig(tmp_path / "schedule.json", playing=True)
+
+    async def queue(_params: dict[str, str]) -> None:
+        rig.calls.append("queue")
+
+    async def now(_params: dict[str, str]) -> None:
+        rig.calls.append("now")
+
+    rig.schedule.register(
+        Action("show", "Play a show", queue, interrupt="none", hard=now, soft_waits=False)
+    )
+    rig.schedule.start()
+    rig.add(action="show", time="12:01")
+    rig.add(action="show", time="12:02", timing="hard", name="Hard")
+    # Soft: at once, though a song is playing, and without a skip.
+    rig.tick_at("2026-10-11 12:01")
+    assert rig.calls == ["queue"]
+    assert rig.schedule.pending == []
+    # Hard: the action's own run, which does its own interrupting.
+    rig.tick_at("2026-10-11 12:02")
+    assert rig.calls == ["queue", "now"]
+    assert [run.result for run in rig.schedule.runs] == ["ok", "ok"]
+    # A show never fades the song out, so a wait does not hold it back.
+    rig.add(action="show", time="12:03", timing="hard", name="Waits", wait_seconds=60)
+    rig.remaining = 20
+    rig.tick_at("2026-10-11 12:03")
+    assert rig.calls == ["queue", "now", "now"]
+    assert rig.schedule.pending == []
+    assert [event.name for event in rig.schedule.hard_events()] == ["Hard", "Waits"]
+
+
+def test_a_known_action_with_bad_settings_is_set_aside_as_before(tmp_path: Path) -> None:
+    path = tmp_path / "schedule.json"
+    write_schedule(path, [stored("a" * 32), stored("b" * 32, params={"extra": "1"})])
+    rig = Rig(path)
+    rig.schedule.start()
+    assert list(rig.schedule.events) == ["a" * 32]
+    assert rig.schedule.kept == []
+    assert len(list(tmp_path.glob("schedule.json.bad-*"))) == 1

@@ -42,6 +42,19 @@ AutoDJ is a single-user local music player with these exposed surfaces:
   8 previews wait (one more gets 503), the dry run stops at 80 songs or after about 4 seconds
   (checked before each pick), and a preview is reused for 45 seconds while what is fixed stays
   the same. Shutdown joins the worker and leaves the library open if it has not stopped.
+- Shows (`/api/shows`, #106) are browser routes like every other change: the signed-in session
+  and an allowed `Origin`, never a machine token. A show's list holds file paths, but a song can
+  only be added when it is a song in the library, and on the air each path is looked up in the
+  library again, so a path edited into `shows.json` never reaches the player. Generating a list
+  is the rotation tester's dry run on a copy of the player (its own clock, history and random
+  generator, nothing written), one at a time for the whole server (409 for another), on its own
+  thread below normal priority, for at most 20 seconds, cancelled at shutdown. A show holds at
+  most 500 songs and a station at most 200 shows; request bodies are capped before they are read
+  (8 KiB, 1 MiB for a list of songs), for PUT as for POST. On the air a show only queues its songs, a
+  couple at a time, from the event loop's worker threads, holding `queue_lock` only to compare
+  and insert; in DMCA mode a song that would break a limit is skipped, never played.
+  `shows.json` is written atomically; an invalid show is skipped and kept, a file that is not a
+  file of shows is set aside, and one that cannot be read just now is never written over.
 - Machine tokens let a program on another computer use one narrow API without a browser. The
   only scope so far is "analysis worker" (`autodj worker`); see "Machine tokens and analysis
   workers" below.
@@ -50,6 +63,13 @@ AutoDJ is a single-user local music player with these exposed surfaces:
   sent to the browser.
   Recording status and controls are paired routes; the public stream cannot control recording.
   Backups include the recording settings and running state, not the recorded files.
+- Paired Stream settings can manage relay destinations and source passwords. Relay definitions
+  live in a station-local `relays.json`; the file is atomically written with mode 0600 on POSIX
+  (on Windows the inherited directory ACL governs access; `chmod(0o600)` only sets read-only)
+  and excluded from backups. Relay APIs and status files expose connection details and safe errors,
+  never passwords. Environment passwords override saved passwords and are read-only in the UI.
+  Relay source connections do not support TLS, so passwords sent to those servers are not encrypted
+  by AutoDJ; use a trusted network or a server that protects its source connection separately.
 
 Cloud sync, multi-user roles, billing, and public Internet hosting are out of scope. Use TLS for any
 network where observers could read HTTP traffic, and terminate it in AutoDJ itself with
