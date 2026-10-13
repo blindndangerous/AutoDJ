@@ -64,6 +64,33 @@ logger = logging.getLogger(__name__)
 SLUG_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?\Z")
 
 
+def public_feed_path(slug: str, *, by_name: bool = True) -> str:
+    """The address of station *slug*'s public now-playing feed.
+
+    By name it is ``/api/stations/<slug>/nowplaying``; the default
+    station's own address, ``/api/nowplaying``, otherwise.
+    """
+    return f"/api/stations/{slug}/nowplaying" if by_name else "/api/nowplaying"
+
+
+def public_addresses(slug: str, *, streams: bool) -> dict[str, str | None]:
+    """Station *slug*'s public addresses: its status page, feed, stream and playlist.
+
+    The default station keeps the addresses it always had (``/status``,
+    ``/api/nowplaying``, ``/stream.mp3``); every other station's are
+    under its name.  The stream and playlist are ``None`` for a station
+    that does not stream.
+    """
+    by_name = slug != DEFAULT_SLUG
+    stream = f"/stations/{slug}.mp3" if by_name else "/stream.mp3"
+    return {
+        "status_path": f"/stations/{slug}/status" if by_name else "/status",
+        "nowplaying_path": public_feed_path(slug, by_name=by_name),
+        "stream_path": stream if streams else None,
+        "m3u_path": stream.removesuffix(".mp3") + ".m3u" if streams else None,
+    }
+
+
 class StationPaths:
     """Where one station keeps its state files and folders.
 
@@ -771,7 +798,7 @@ class StationRuntime:
             "state": state,
             "listeners": int(stream.listener_count) if stream is not None else 0,
             "title": getattr(track, "display_name", None) if track is not None else None,
-            "stream_path": bridge.stream_path if bridge.stream_mode else None,
+            **public_addresses(self.slug, streams=bool(bridge.stream_mode)),
         }
 
     @property
@@ -1115,7 +1142,7 @@ class StoppedStation:
             "state": self.state,
             "listeners": 0,
             "title": None,
-            "stream_path": f"/stations/{self.slug}.mp3",
+            **public_addresses(self.slug, streams=True),
         }
 
 

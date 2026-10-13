@@ -147,6 +147,28 @@ async def current_station(request: Request) -> StationRuntime:
 StationDep = Annotated[StationRuntime, Depends(current_station)]
 
 
+async def public_station(request: Request) -> StationRuntime:
+    """:func:`current_station` for a public route: a stopped station is 503 "off air".
+
+    Listeners and outside sites see the same answer from a stopped
+    station's feed as from its stream; the controls' 409 is for the page.
+    """
+    try:
+        return await current_station(request)
+    except HTTPException as exc:
+        if exc.status_code != 409:
+            raise
+        # Readable by other sites, like the feed itself.
+        raise HTTPException(
+            status_code=503,
+            detail="That station is off air",
+            headers={"Cache-Control": "no-cache", "Access-Control-Allow-Origin": "*"},
+        ) from None
+
+
+PublicStationDep = Annotated[StationRuntime, Depends(public_station)]
+
+
 # ---------------------------------------------------------------------------
 # Request bodies
 # ---------------------------------------------------------------------------
@@ -856,7 +878,7 @@ def install_station_routes(router: StationRouter) -> None:
         return JSONResponse(state)
 
     @router.api_route("/nowplaying", methods=["GET", "HEAD"])
-    async def api_nowplaying(station: StationDep) -> JSONResponse:
+    async def api_nowplaying(station: PublicStationDep) -> JSONResponse:
         """Return public metadata with no file paths or pairing details."""
         return JSONResponse(
             station.nowplaying.snapshot(),

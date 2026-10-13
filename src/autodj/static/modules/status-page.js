@@ -1,5 +1,6 @@
-// The public status page (/status, rendered by status_page.py): keeps its
-// plain-text values current by polling the public now-playing feed.
+// The public status pages (/status and /stations/<slug>/status, rendered
+// by status_page.py): keep their plain-text values current by polling the
+// station's public now-playing feed, named by data-feed on the body.
 //
 // Speech rules (docs/accessibility-testing.md, Announcement contract):
 //   - Only the now-playing line is a live region (polite, atomic), and it
@@ -11,12 +12,16 @@
 //     and without JavaScript.
 //   - Pause updates (WCAG 2.2.2) keeps a fixed name; only aria-pressed
 //     changes, so a screen reader says "pressed" or "not pressed".
+//   - A stopped station's feed answers 503: the now-playing line then says
+//     the station is off air (once), and says the song again when it is
+//     back on air.
 
 import { requestJson } from "./api-client.js";
 
-const FEED_URL = "/api/nowplaying";
+const DEFAULT_FEED_URL = "/api/nowplaying";
 const POLL_MS = 15000;
 export const NOTHING_PLAYING = "Nothing is playing right now.";
+export const OFF_AIR = "Not on air";
 export const UPDATING_TEXT = "Updates every 15 seconds.";
 export const UNREACHABLE_TEXT = "Could not reach the station. Trying again every 15 seconds.";
 export const PAUSED_TEXT = "Updates paused.";
@@ -35,6 +40,33 @@ export function trackText(track, empty) {
   const album = String(track.album || "").trim();
   if (album) text += `, from the album ${album}`;
   return `${text}.`;
+}
+
+export function offAirText(station) {
+  return `${station} is off air right now.`;
+}
+
+// The station's feed: a path on this site under /api/ from data-feed, else
+// the default station's.  Anything that could reach another host is
+// refused: a backslash (browsers read "/\host" as "//host"), written out or
+// percent-encoded, a scheme or "//", or any address that does not resolve
+// to this page's own origin.
+export function feedUrl(doc) {
+  const feed = doc.body?.dataset?.feed || "";
+  if (!feed.startsWith("/") || feed.startsWith("//") || /\\|%5c/i.test(feed)) {
+    return DEFAULT_FEED_URL;
+  }
+  const here = doc.location?.href || "http://localhost/";
+  let url;
+  try {
+    url = new URL(feed, here);
+  } catch {
+    return DEFAULT_FEED_URL;
+  }
+  if (url.origin !== new URL(here).origin || !url.pathname.startsWith("/api/")) {
+    return DEFAULT_FEED_URL;
+  }
+  return url.pathname + url.search;
 }
 
 export function listenersText(value) {
@@ -61,13 +93,13 @@ function trackKey(track) {
 }
 
 // The feed sends Cache-Control: no-cache, so each poll revalidates.
-function fetchFeed() {
-  return requestJson(FEED_URL, { cache: "no-cache", headers: { Accept: "application/json" } });
+function fetchFeed(url) {
+  return requestJson(url, { cache: "no-cache", headers: { Accept: "application/json" } });
 }
 
 export function startStatusPage({
   doc = document,
-  load = fetchFeed,
+  load = () => fetchFeed(feedUrl(doc)),
   setTimer = (callback, ms) => setTimeout(callback, ms),
   clearTimer = (id) => clearTimeout(id),
 } = {}) {
@@ -123,20 +155,37 @@ export function startStatusPage({
     if (stopped || paused) return;
     if (!doc.hidden) {
       let feed = null;
+      let offAir = false;
       try {
         feed = await load();
-      } catch (_) {
+      } catch (error) {
         feed = null;
+        offAir = error?.status === 503;
       }
       if (mine !== run || stopped || paused) return;
       if (feed) {
         apply(feed);
+        setText(els.updated, UPDATING_TEXT);
+      } else if (offAir) {
+        applyOffAir();
         setText(els.updated, UPDATING_TEXT);
       } else {
         setText(els.updated, UNREACHABLE_TEXT);
       }
     }
     timer = setTimer(poll, POLL_MS);
+  }
+
+  // A stopped station: no song, no listeners; the station's name stays.
+  function applyOffAir() {
+    const station = els.station?.textContent || "AutoDJ";
+    if (lastKey !== OFF_AIR) {
+      lastKey = OFF_AIR;
+      setText(els.now, offAirText(station));
+    }
+    if (els.nextSection && !els.nextSection.hidden) els.nextSection.hidden = true;
+    setText(els.listeners, listenersText(0));
+    setText(els.uptime, OFF_AIR);
   }
 
   if (els.pause) {
