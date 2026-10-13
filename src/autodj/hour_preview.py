@@ -54,6 +54,7 @@ from autodj.rotation_sim import (
     _Schedule,
     average_length,
     lower_thread_priority,
+    music_rate,
     snapshot_player,
     song_seconds,
 )
@@ -109,8 +110,9 @@ BREAK_KINDS = {"dj": "DJ", "news": "News", "weather": "Weather", "music_news": "
 NOTES = (
     "Predicted songs come from a dry run of the station's own picker, starting where the fixed "
     "part ends. They change as the real picks are made.",
-    "Times are estimates: each song runs from its saved start to its segue, or its length less "
-    "the crossfade, and liners and booked breaks add their full length.",
+    "Times are estimates: music runs from its saved start to its segue, or its length less the "
+    "crossfade, at the configured music speed; cues stay in source time, and liners and booked "
+    "breaks add their full length.",
     "Automatic liners, time checks and carts are left out; a scheduled change of song picking "
     "applies from the first song after its time.",
 )
@@ -147,6 +149,7 @@ class Item:
     status: str
     entry: Any = None
     label: str = ""
+    playback_rate: float = 1.0
 
     @property
     def fixed(self) -> bool:
@@ -179,6 +182,8 @@ class Decided:
     clock_name: str | None = None
     clock_boundary: float | None = None
     reason: str | None = None
+    last_rate: float = 1.0
+    speed_signature: str = ""
 
     def signature(self) -> str:
         """What is fixed, without the times: the same while nothing new is decided."""
@@ -187,10 +192,13 @@ class Decided:
             for item in self.items
         ]
         parts.append(f"clock:{self.clock_name}:{self.clock_cursor}")
+        parts.append(f"speed:{self.speed_signature}")
         return "\n".join(parts)
 
 
-def _remaining(player: Any, entry: Any, offset_s: float, average: float) -> float:
+def _remaining(
+    player: Any, entry: Any, offset_s: float, average: float, *, rate: float | None = None
+) -> float:
     """How long *entry* plays from *offset_s* seconds into its file until the next song."""
     try:
         seconds = song_seconds(player, entry, average)
@@ -202,7 +210,7 @@ def _remaining(player: Any, entry: Any, offset_s: float, average: float) -> floa
     except Exception:
         # A cue that cannot be read must not stop the preview: the whole song counts.
         seconds = float(entry.length or average) - max(0.0, offset_s)
-    return max(0.0, seconds)
+    return max(0.0, seconds) / (music_rate(player, entry) if rate is None else rate)
 
 
 def _break_label(desk: Any, break_id: str) -> str:
@@ -322,9 +330,12 @@ def _read_position(player: Any) -> tuple[Any, int, bool]:
         playing = getattr(player, "_playing_render", None)
         position = int(player._playback_pos[0])
         again = getattr(player, "_playing_render", None)
+        playback_rate = max(0.01, float(getattr(playing, "playback_rate", 1.0) or 1.0))
         if playing is again and (
             playing is None
-            or playing.start_offset <= position <= playing.start_offset + len(playing.audio)
+            or playing.start_offset
+            <= position
+            <= playing.start_offset + round(len(playing.audio) * playback_rate)
         ):
             return playing, position, True
         time.sleep(0.002)
@@ -386,11 +397,21 @@ def read_station(player: Any, desk: Any = None, *, now: float | None = None) -> 
             moment += length
             continue
         seconds = _remaining(player, entry, 0.0, average)
-        items.append(Item("song", moment, seconds, "queued", entry))
+        items.append(
+            Item("song", moment, seconds, "queued", entry, playback_rate=music_rate(player, entry))
+        )
         unplayed.append((entry, moment))
         last = entry
         moment += seconds
     cursor, clock_name, boundary = clock
+    last_rate = next(
+        (
+            item.playback_rate
+            for item in reversed(items)
+            if item.kind == "song" and item.entry is last
+        ),
+        music_rate(player, last) if last is not None else 1.0,
+    )
     return Decided(
         now=now,
         items=tuple(sorted(items, key=lambda item: item.starts)),
@@ -400,6 +421,8 @@ def read_station(player: Any, desk: Any = None, *, now: float | None = None) -> 
         clock_cursor=cursor,
         clock_name=clock_name,
         clock_boundary=boundary,
+        last_rate=last_rate,
+        speed_signature=str(getattr(player._cfg.playback, "music_speed_percent", 0.0)),
     )
 
 
@@ -422,7 +445,11 @@ def _read_bus(player: Any, desk: Any, now: float, average: float) -> _Found | No
     items: list[Item] = []
     unplayed: list[tuple[Any, float]] = []
     queued: list[Any] = []
-    frame = min(max(0, live.position - playing.start_offset), len(playing.audio))
+    playback_rate = max(0.01, float(getattr(playing, "playback_rate", 1.0) or 1.0))
+    frame = min(
+        max(0, round((live.position - playing.start_offset) / playback_rate)),
+        len(playing.audio),
+    )
     base = now - frame / SAMPLE_RATE
     total = len(playing.audio) / SAMPLE_RATE
     record = _last_record(player)
@@ -432,7 +459,16 @@ def _read_bus(player: Any, desk: Any, now: float, average: float) -> _Found | No
         enters = base + (len(playing.audio) - playing.overlap_frames) / SAMPLE_RATE
     else:
         enters = base + total
-    items.append(Item("song", started, max(0.0, enters - started), "on_air", playing.entry))
+    items.append(
+        Item(
+            "song",
+            started,
+            max(0.0, enters - started),
+            "on_air",
+            playing.entry,
+            playback_rate=playback_rate,
+        )
+    )
     items.extend(_mixed_in(playing, base, now, desk, "ready", queued))
     clock = (live.cursor, live.clock_name, live.boundary)
     if following is None:
@@ -455,19 +491,54 @@ def _read_bus(player: Any, desk: Any, now: float, average: float) -> _Found | No
         else:
             offset_s = playing.next_start_offset / SAMPLE_RATE
             clock = (None, None, live.boundary)
-        handoff = ready_at + _remaining(player, following, offset_s, average)
-        items.append(Item("song", enters, max(0.0, handoff - enters), "picked", following))
+        following_rate = music_rate(player, following)
+        handoff = ready_at + _remaining(player, following, offset_s, average, rate=following_rate)
+        items.append(
+            Item(
+                "song",
+                enters,
+                max(0.0, handoff - enters),
+                "picked",
+                following,
+                playback_rate=following_rate,
+            )
+        )
         unplayed.append((following, enters))
         return items, unplayed, queued, following, handoff, clock
     # The next song is rendered, with the head of the one after it.
     after = ready.next_entry
+    ready_rate = max(0.01, float(getattr(ready, "playback_rate", 1.0) or 1.0))
+    after_rate = max(
+        0.01,
+        float(getattr(ready, "next_playback_rate", music_rate(player, after)) or 1.0),
+    )
     after_enters = ready_at + (len(ready.audio) - ready.overlap_frames) / SAMPLE_RATE
-    items.append(Item("song", enters, max(0.0, after_enters - enters), "ready", following))
+    items.append(
+        Item(
+            "song",
+            enters,
+            max(0.0, after_enters - enters),
+            "ready",
+            following,
+            playback_rate=ready_rate,
+        )
+    )
     unplayed.append((following, enters))
     items.extend(_mixed_in(ready, ready_at, now, desk, "ready", queued))
     after_starts = ready_at + len(ready.audio) / SAMPLE_RATE
-    handoff = after_starts + _remaining(player, after, live.offset / SAMPLE_RATE, average)
-    items.append(Item("song", after_enters, max(0.0, handoff - after_enters), "picked", after))
+    handoff = after_starts + _remaining(
+        player, after, live.offset / SAMPLE_RATE, average, rate=after_rate
+    )
+    items.append(
+        Item(
+            "song",
+            after_enters,
+            max(0.0, handoff - after_enters),
+            "picked",
+            after,
+            playback_rate=after_rate,
+        )
+    )
     unplayed.append((after, after_enters))
     if ready.next_from_queue:
         queued.append(after)
@@ -494,7 +565,11 @@ def _read_bus(player: Any, desk: Any, now: float, average: float) -> _Found | No
                 moment += speech
     upcoming = plan.upcoming
     seconds = _remaining(player, upcoming, 0.0, average)
-    items.append(Item("song", moment, seconds, "picked", upcoming))
+    items.append(
+        Item(
+            "song", moment, seconds, "picked", upcoming, playback_rate=music_rate(player, upcoming)
+        )
+    )
     unplayed.append((upcoming, moment))
     if plan.mode == "queue":
         queued.append(upcoming)
@@ -506,6 +581,7 @@ def _read_browser(player: Any, now: float, average: float) -> _Found | None:
     """The fixed part when the page plays the audio: the song playing and the next one."""
     state = player._state
     current = state.current_track
+    current_rate = music_rate(player, current)
     record = _last_record(player)
     noted = getattr(player, "_browser_started", None)
     if noted is not None and noted[0] is current:
@@ -514,9 +590,17 @@ def _read_browser(player: Any, now: float, average: float) -> _Found | None:
         started = record.started
     else:
         rate = max(1, int(getattr(player, "_current_sr", SAMPLE_RATE) or SAMPLE_RATE))
-        started = now - player._playback_pos[0] / rate
-    ends = max(now, started + _remaining(player, current, 0.0, average))
-    items = [Item("song", started, ends - started, "on_air", current)]
+        started = now - player._playback_pos[0] / rate / current_rate
+    source_offset = player._playback_pos[0] / max(
+        1, int(getattr(player, "_current_sr", SAMPLE_RATE) or SAMPLE_RATE)
+    )
+    remaining = _remaining(player, current, source_offset, average, rate=current_rate)
+    full_length = _remaining(player, current, 0.0, average, rate=current_rate)
+    ends = max(
+        now,
+        now + remaining if source_offset > 0 else started + full_length,
+    )
+    items = [Item("song", started, ends - started, "on_air", current, playback_rate=current_rate)]
     unplayed: list[tuple[Any, float]] = []
     clock = (
         getattr(player, "_pending_clock_cursor", None),
@@ -528,7 +612,11 @@ def _read_browser(player: Any, now: float, average: float) -> _Found | None:
     if following is None:
         return items, unplayed, [], current, ends, clock
     seconds = _remaining(player, following, 0.0, average)
-    items.append(Item("song", ends, seconds, "picked", following))
+    items.append(
+        Item(
+            "song", ends, seconds, "picked", following, playback_rate=music_rate(player, following)
+        )
+    )
     unplayed.append((following, ends))
     # After a queue edit the page's next song is the queue's head, which
     # stays queued until it plays: it is listed once, as the next song.
@@ -581,6 +669,7 @@ def _predict(
     handoff = decided.handoff
     if current is None or handoff >= end:
         return [], handoff, None
+    current_rate = max(0.01, float(decided.last_rate or music_rate(source.player, current)))
     player = _copy_player(source, snapshot, decided.now, random.Random(seed), _ignore)
     entries = tuple(entry for entry in player.playable_entries() if not entry.is_silent)
     if not entries:
@@ -623,7 +712,7 @@ def _predict(
             break
         # As the station does: the pick reads the clock at the playing song's
         # start, and dayparting the hours at the next song's.
-        player._sim_now = handoff - song_seconds(player, current, average)
+        player._sim_now = handoff - song_seconds(player, current, average) / current_rate
         for _at, event in schedule.due(handoff):
             _apply_event(player, bridge, event)
         context = player._pick_context(at=handoff)
@@ -644,8 +733,9 @@ def _predict(
             record(liner, moment)
             moment += length
         record(entry, moment)
-        seconds = song_seconds(player, entry, average)
-        found.append(Item("song", moment, seconds, "predicted", entry))
+        current_rate = music_rate(player, entry)
+        seconds = song_seconds(player, entry, average) / current_rate
+        found.append(Item("song", moment, seconds, "predicted", entry, playback_rate=current_rate))
         current, handoff = entry, moment + seconds
         songs += 1
         time.sleep(_PICK_PAUSE_S)
