@@ -1404,9 +1404,7 @@ class Player:
         condition_errors = {}
         if self._clock_category_error:
             for index, slot in enumerate(slots):
-                if slot.kind == "category" or any(
-                    condition["field"] == "category" for condition in slot.conditions
-                ):
+                if any(condition["field"] == "category" for condition in slot.conditions):
                     condition_errors[index] = self._clock_category_error
         fields = {
             condition["name"]
@@ -1681,8 +1679,6 @@ class Player:
         A clock with folders, tracks or explicit conditions is left as it was,
         unless dayparting alone holds its songs back.
         """
-        if getattr(self, "_clock_category_error", None):
-            return None
         slots = getattr(self, "_clock_slots", None) or ()
         # Dayparting alone emptied the clock: its songs exist but are outside
         # their hours, so an allowed song plays, whatever the steps are.
