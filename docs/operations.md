@@ -1848,9 +1848,8 @@ Copy only the files needed by the old format from `index/<name>/`:
 - The generation files named in `index-manifest.json`: `tracks.g<number>.db` and
   `vectors.g<number>.index`. The number is the manifest's `generation` written with 20 digits.
 - `dj_meta.db`, the intro, outro, beat grid and cue cache.
-- `index-manifest.json` last, after the files it names are in place. AutoDJ loads only what the
-  manifest names and checks both files against the SHA-256 in it, so a missing or half-copied file
-  is refused with an error instead of being served.
+- `index-manifest.json` last, after the files it names are in place. The migration command checks
+  both files against the SHA-256 values in the manifest and refuses missing or half-copied files.
 
 Do not copy machine-specific data:
 
