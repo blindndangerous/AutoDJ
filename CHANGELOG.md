@@ -499,6 +499,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Analysis worker status counts waiting songs without sorting or building a list of their
+  paths (#166).
+
 - History exports load details only for the requested dates, while retaining the next play
   needed to calculate duration (#165). Reports use a separate database snapshot so they do not
   hold up play-history writes. Stored history remains unlimited.
