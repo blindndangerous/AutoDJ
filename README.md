@@ -139,6 +139,10 @@ The public `/api/nowplaying` JSON feed lets pages show the station's current son
 recent plays and listener count, and the public `/status` page shows the same to listeners as plain text. With several stations, each has its own feed and page, at `/api/stations/<slug>/nowplaying` and `/stations/<slug>/status`. The upcoming song is hidden unless you turn on `[nowplaying] show_next`. Track-change
 webhooks can send the same metadata to other services or Discord; configure their URLs in
 `config.local.toml`. See [Operations](docs/operations.md#now-playing-feed-and-webhooks).
+An optional public player page (`/player`) lets listeners press Play to hear the station in the
+browser, and an embeddable version (`/embed`) puts the same player on another website; both are
+off until `[player_page]` turns them on. See
+[Operations](docs/operations.md#player-page-and-embeddable-player).
 
 DMCA mode (`[dmca] enabled = true`) keeps the station inside the US statutory webcasting
 licence's performance complement: album, artist and box set limits in any three hours, in every
@@ -526,7 +530,10 @@ own limits. The page shows its fixed location, `index/<name>/related-artists.tom
 **Use related tracks**, off by default, does the same for groups of tracks that sound alike,
 such as a song and one that samples it, written as "Artist - Title" in
 `index/<name>/related-tracks.toml`. AutoDJ copies a sample of each file there on first use and
-leaves your edits alone on upgrades. After editing a file, save the repeat settings to reload it. See [repeat rules](docs/track-selection.md#repeat-avoidance-and-discovery).
+leaves your edits alone on upgrades. After editing a file, save the repeat settings to reload it.
+**Count versions as one song**, also off by default, treats a radio edit, a remix and other
+versions by the same lead artist as one song: it comes up as often as a song with one file, and
+the track limit holds back all of its versions. See [repeat rules](docs/track-selection.md#repeat-avoidance-and-discovery).
 
 ### Multi-machine / NAS setups
 

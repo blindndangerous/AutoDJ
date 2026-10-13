@@ -1178,6 +1178,7 @@ const _repeatEls = {
   relatedTrackMinutes: document.getElementById("repeat-related-track-minutes"),
   useRelatedArtists: document.getElementById("repeat-use-related-artists"),
   useRelatedTracks: document.getElementById("repeat-use-related-tracks"),
+  versionsAsOneSong: document.getElementById("repeat-versions-as-one-song"),
   defaultFile: document.getElementById("repeat-related-default"),
   fileStatus: document.getElementById("repeat-related-status"),
   tracksDefaultFile: document.getElementById("repeat-related-tracks-default"),

@@ -28,6 +28,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   worker thread, stop after 80 songs or about 4 seconds, and are shared and reused for 45 seconds
   while nothing new is fixed.
 
+- A public player page and an embeddable player (#52), each off until `[player_page]` turns it
+  on, per station. `/player` (or `/stations/<slug>/player`) has a Play button that becomes Stop,
+  a labelled Volume slider remembered in the browser, the song playing, the next song when that is
+  shown publicly, and the recent songs. Nothing plays until Play is pressed, and Stop closes the
+  connection so no listener slot is held. A stall says "Buffering." once, a stream that has not
+  started 15 seconds after Play stops with a reason, and where the browser fixes the volume
+  (iPhone and iPad) a note replaces the slider. `/embed` (or `/stations/<slug>/embed`) is a compact
+  version for an `<iframe>` on another site: `embed_origins` lists the sites allowed to show it,
+  and `?theme=light` or `?theme=dark` matches the site's colours. The song line is the only live
+  region and speaks once per song; playback results are said once in a status line; both pages
+  work at 320 px, in light, dark and forced colours, and without JavaScript through the
+  browser's own audio controls. They carry nothing the public feed does not, send a strict
+  Content-Security-Policy, and the full page cannot be framed. `GET /api/stations` lists each
+  station's `player_path` and `embed_path`.
 - Queue & Search uses one paginated library table with Music or Voice liners, folder filtering
   and text search. Folder management is shown as a table in Library tools; liner file maintenance
   is back in Settings > Voice liners. Search, folders and History share arrow-key navigation.
@@ -38,6 +52,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   fields. Songs matching more than one condition are included once. Existing category steps
   open in the same condition editor and keep their selection and repeat settings. Category
   hours and the list of clockwheels using each category still apply.
+
+- Count versions as one song (#177). Settings > Picking > Repeats has a **Count versions as one
+  song** checkbox under the track limits, off by default. Versions of a song by the same lead
+  artist, such as a radio edit and a remix, then come up as often as a song with one version:
+  random picks choose a song before a version, least recently played dates a song by its latest
+  played version, and similarity keeps the best version of each song. The track limits hold back
+  every version of a song that played. The rotation tester counts the versions as one song.
+
 - Related tracks (#101). Settings > Picking > Repeats has a **Use related tracks** checkbox, off
   by default, with its own Tracks and Minutes limits (20 tracks to start with). It holds back
   tracks that sound alike on air, such as a song and one that samples it, listed as
@@ -458,6 +480,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Audio prepared before a clockwheel edit no longer restores the old step position or restart
   time when it begins playing (#153).
+- Clock skip logs now include the step number and reason for every skipped step, including
+  folders blocked by repeat filters (#188). Repeated reasons are logged once and reported again
+  after a pick has no skips.
+
 - A `[model] manual_path` folder whose weights are rewritten at the same size within one tick of
   the filesystem clock (two seconds on FAT and exFAT drives) gets a new digest instead of keeping
   the old one, so the server and a remote worker can no longer look as if they run the same
@@ -751,6 +777,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- No page AutoDJ serves can be shown inside another site's frame any more, so a hostile page
+  cannot overlay the web UI or a public page to trick a click (clickjacking). Every response now
+  carries `Content-Security-Policy: frame-ancestors 'none'` (added to the page's own policy where
+  it has one) and `X-Frame-Options: DENY`. The one exception is the new embeddable player, which
+  may be framed only by the sites in `[player_page] embed_origins`.
 - FFmpeg may now open only local files and pipes whenever AutoDJ asks it to read a song, a liner,
   a cart clip or a break (`-protocol_whitelist file,pipe`). A file that FFmpeg took for a playlist
   could otherwise make it fetch addresses on the network.

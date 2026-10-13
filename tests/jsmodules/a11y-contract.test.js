@@ -2629,3 +2629,42 @@ describe("public status page contracts", () => {
     expect(statusScript).not.toMatch(/aria-live/);
   });
 });
+
+describe("public player page contracts", () => {
+  const playerCss = stripCssComments(readFileSync(staticPath("modules", "player-page.css"), "utf8"));
+  // The code only: its comments explain these rules in the same words.
+  const playerScript = readFileSync(staticPath("modules", "player-page.js"), "utf8")
+    .replace(/^\s*\/\/.*$/gm, "");
+
+  it("draws every colour from the system palette, so light, dark and forced colours all hold", () => {
+    expect(playerCss).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
+    expect(playerCss).toMatch(/:root\s*\{\s*color-scheme: light dark;/);
+    expect(playerCss).toMatch(/:root\[data-theme="light"\]\s*\{\s*color-scheme: light;/);
+    expect(playerCss).toMatch(/:root\[data-theme="dark"\]\s*\{\s*color-scheme: dark;/);
+    expect(playerCss).not.toMatch(/ButtonFace|ButtonText/);
+    // The slider keeps its own system colours under forced colours, so its
+    // thumb is never repainted to the background colour.
+    expect(playerCss).toMatch(/input\[type="range"\]\s*\{[^}]*forced-color-adjust: none;/);
+  });
+
+  it("keeps a visible focus ring and a large enough target on every control", () => {
+    expect(playerCss).toMatch(
+      /button:focus-visible,\s*a:focus-visible,\s*input:focus-visible\s*\{\s*outline: 3px solid currentcolor;/,
+    );
+    expect(playerCss).toMatch(/button\s*\{[^}]*min-height: 44px;/);
+    // The slider itself is the 24 px target (2.5.8), outlined 3:1 or more (1.4.11).
+    expect(playerCss).toMatch(/input\[type="range"\]\s*\{[^}]*height: 24px;[^}]*border: 2px solid CanvasText;/);
+    // hidden wins over the flex layouts, so the browser's controls and the
+    // script's never show together.
+    expect(playerCss).toMatch(/\[hidden\]\s*\{\s*display: none !important;/);
+  });
+
+  it("never plays, moves focus or adds a live region on its own", () => {
+    expect(playerScript).not.toMatch(/\.focus\(/);
+    expect(playerScript).not.toMatch(/aria-live|autoplay/);
+    expect(playerScript).not.toMatch(/aria-pressed/);
+    // play() is called from one place: the Play button's handler.
+    expect(playerScript.match(/\.play\(\)/g)).toHaveLength(1);
+    expect(playerScript).toMatch(/url\.origin !== new URL\(here\)\.origin/);
+  });
+});

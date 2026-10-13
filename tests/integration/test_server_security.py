@@ -1200,3 +1200,63 @@ class TestLibraryJobRunSnapshot:
         assert resp.json()["name"] == "stats"
         assert mgr.start in offloaded
         mgr.start.assert_called_once_with("stats", [])
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("get", "/"),
+        ("get", "/app.js"),
+        ("get", "/modules/status-page.css"),
+        ("get", "/healthz"),
+        ("get", "/api/nowplaying"),
+        ("get", "/api/status"),  # 401 without a session
+        ("post", "/api/skip"),  # 401
+        ("get", "/nope"),  # 404
+        ("get", "/player"),  # 404 while it is off
+    ],
+)
+def test_no_response_can_be_framed_by_another_page(method: str, path: str) -> None:
+    """Clickjacking: frame-ancestors 'none' and X-Frame-Options: DENY on every response."""
+    client = _security_client()
+    response = client.request(method.upper(), path)
+    assert response.headers["x-frame-options"] == "DENY", path
+    policy = response.headers["content-security-policy"]
+    assert policy.count("frame-ancestors") == 1
+    assert policy.endswith("frame-ancestors 'none'")
+
+
+def test_a_page_with_its_own_policy_keeps_it_and_gains_the_frame_rule() -> None:
+    client = _security_client()
+    status = client.get("/status")
+    policy = status.headers["content-security-policy"]
+    assert policy.startswith("default-src 'none'; script-src 'self'")
+    assert policy.endswith("form-action 'none'; frame-ancestors 'none'")
+    assert status.headers.get_list("x-frame-options") == ["DENY"]
+    # A disallowed Host is turned away by the middleware itself, framed or not.
+    rejected = client.get("/", headers={"Host": "evil.example"})
+    assert rejected.status_code == 403
+    assert rejected.headers["x-frame-options"] == "DENY"
+
+
+def test_only_the_embed_can_be_framed_and_only_where_allowed() -> None:
+    from autodj.config import PlayerPageConfig
+
+    player = _make_player_mock()
+    player._cfg.server = ServerConfig(
+        access_token=_TEST_ACCESS_TOKEN,
+        allowed_hosts=["testserver"],
+        allowed_origins=["http://testserver"],
+    )
+    player._cfg.player_page = PlayerPageConfig(
+        enabled=True, embed=True, embed_origins=["https://blog.example.org"]
+    )
+    client = TestClient(create_app(PlayerBridge(player=player, sim=_make_sim_mock())))
+    embed = client.get("/embed")
+    assert "x-frame-options" not in embed.headers
+    assert embed.headers["content-security-policy"].endswith(
+        "frame-ancestors 'self' https://blog.example.org"
+    )
+    page = client.get("/player")
+    assert page.headers.get_list("x-frame-options") == ["DENY"]
+    assert page.headers["content-security-policy"].count("frame-ancestors") == 1
