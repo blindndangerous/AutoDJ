@@ -216,6 +216,7 @@ def _player(tmp_path, setting, sources):
         _library=SimpleNamespace(catalog=catalog),
     )
     player._clock_lock = threading.RLock()
+    player._clock_selection_lock = threading.RLock()
     player._clock_revision = 0
     player._clock = None
     player._pending_clock_update = None

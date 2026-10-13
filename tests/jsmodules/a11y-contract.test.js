@@ -1740,11 +1740,12 @@ describe("static accessibility contracts", () => {
     // source-order form layout.
     installDocument();
     for (const id of [
-      "source-folder-path", "library-browse-query", "clock-name",
+      "source-folder-path", "source-folder-override-tags", "search-input", "clock-name",
       "clock-step-type", "listener-ban-address", "token-secret",
     ]) {
       expect(document.getElementById(id).closest(".flow-form"), id).not.toBeNull();
     }
+    expect(document.getElementById("source-folder-override-tags").checked).toBe(false);
   });
 
   it("keeps durable playback evidence separate from scoped announcements", () => {
@@ -2212,6 +2213,43 @@ describe("static accessibility contracts", () => {
     expect(rule).toContain('input[type="time"]');
   });
 
+  it("gives a category season labelled native date inputs inside its dayparting fieldset", () => {
+    installDocument({ html: htmlSource });
+    const group = document.querySelector("#categories-daypart");
+    for (const [id, label] of [["categories-not-before", "Not before"], ["categories-not-after", "Do not play after"]]) {
+      const input = document.getElementById(id);
+      expect(input.closest("#categories-daypart")).toBe(group);
+      expect(input.getAttribute("type")).toBe("date");
+      expect(input.hasAttribute("required")).toBe(false);
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+    }
+    expect(document.getElementById(group.getAttribute("aria-describedby")).textContent).toContain("dates");
+  });
+
+  it("gives a clockwheel step labelled native day and time controls and an error to link", () => {
+    installDocument({ html: htmlSource });
+    const group = document.querySelector("#clock-step-hours");
+    expect(group.tagName).toBe("FIELDSET");
+    expect(group.querySelector(":scope > legend").textContent.trim()).toBe("When this step plays");
+    expect(document.getElementById(group.getAttribute("aria-describedby")).textContent).toMatch(/^\s*Optional\./);
+    const days = group.querySelector("#clock-step-days");
+    expect(days.querySelector(":scope > legend").textContent).toBe("Days");
+    const boxes = [...days.querySelectorAll('input[type="checkbox"]')];
+    expect(boxes.map((box) => document.querySelector(`label[for="${box.id}"]`).textContent))
+      .toEqual(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]);
+    for (const [id, label] of [["clock-step-hours-from", "Allowed from"], ["clock-step-hours-until", "Allowed until"]]) {
+      const input = document.getElementById(id);
+      expect(input.getAttribute("type")).toBe("time");
+      expect(input.hasAttribute("required")).toBe(false);
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+    }
+    const error = document.querySelector("#clock-step-hours-error");
+    expect(error.classList.contains("field-error")).toBe(true);
+    expect(error.hasAttribute("aria-live")).toBe(false);
+    // It sits before Add step, so the fields are reached before the button.
+    expect(group.compareDocumentPosition(document.querySelector("#clock-add-step")) & 4).toBeTruthy(); // DOCUMENT_POSITION_FOLLOWING
+  });
+
   it("gives the schedule date range native labelled date inputs and a target-size rule", () => {
     installDocument({ html: htmlSource });
     const group = document.querySelector("#schedule-range");
@@ -2237,6 +2275,36 @@ describe("static accessibility contracts", () => {
       .find((block) => block.includes('input[type="text"]') && block.includes("padding"));
     expect(rule).toContain('input[type="date"]');
     expect(rule).toContain('input[type="time"]');
+  });
+
+  it("gives voice pack play dates a fieldset, labelled native date inputs and an error to link", () => {
+    installDocument({ html: htmlSource });
+    const group = document.querySelector("#tc-dates");
+    expect(group.tagName).toBe("FIELDSET");
+    expect(group.closest("#spanel-time-checks")).not.toBeNull();
+    expect(group.querySelector(":scope > legend").textContent.trim()).toBe("Voice pack play dates");
+    expect(document.getElementById(group.getAttribute("aria-describedby")).textContent)
+      .toMatch(/^\s*Optional\./);
+    expect(document.querySelector('label[for="tc-dates-pack"]').textContent.trim()).toBe("Voice pack");
+    for (const [id, label] of [["tc-not-before", "Not before"], ["tc-not-after", "Do not play after"]]) {
+      const input = document.getElementById(id);
+      expect(input.getAttribute("type")).toBe("date");
+      expect(input.hasAttribute("required")).toBe(false);
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+    }
+    // The error is text on the page with an ID, not a live region of its own:
+    // the status region says it once and the field links to it.
+    const error = document.querySelector("#tc-dates-error");
+    expect(error.classList.contains("field-error")).toBe(true);
+    expect(error.hasAttribute("aria-live")).toBe(false);
+    expect(document.querySelector("#tc-dates-save").getAttribute("type")).toBe("button");
+  });
+
+  it("hides the schedule date range for one-time events in the script, not the markup", () => {
+    installDocument({ html: htmlSource });
+    // Shown in the markup, so it never hides a range a saved event has.
+    expect(document.querySelector("#schedule-range").hidden).toBe(false);
+    expect(document.querySelector("#schedule-range").hasAttribute("data-repeat")).toBe(false);
   });
 
   it("gives the rotation test labelled native controls, one polite status and list results", () => {
@@ -2289,6 +2357,52 @@ describe("static accessibility contracts", () => {
     expect(rules.length).toBeGreaterThan(0);
     for (const rule of rules) expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgb|hsl/i);
     expect(rules.join("\n")).toContain("accent-color: var(--accent)");
+  });
+
+  it("gives the hour preview a headed table, one polite status and token colours", () => {
+    installDocument({ html: htmlSource });
+    const card = document.querySelector("#hour-preview-card");
+    expect(card.tagName).toBe("DETAILS");
+    expect(card.closest("#panel-now")).not.toBeNull();
+    // Closed until opened: each preview runs a dry run on the server.
+    expect(card.open).toBe(false);
+    expect(card.querySelector(":scope > summary > h2").textContent.trim()).toBe("Hour preview");
+    const span = document.getElementById("hour-preview-span");
+    expect(span.tagName).toBe("SELECT");
+    expect(document.querySelector('label[for="hour-preview-span"]').textContent.trim()).toBe("Show");
+    expect([...span.options].map((option) => option.textContent))
+      .toEqual(["Next 30 minutes", "Next hour", "Next 2 hours", "Next 3 hours"]);
+    expect(span.value).toBe("60");
+    const help = document.getElementById(span.getAttribute("aria-describedby"));
+    expect(help.textContent).toContain("Fixed items");
+    expect(help.textContent).toContain("Predicted items");
+    expect(help.textContent).toContain("Nothing on air changes.");
+    const button = document.getElementById("hour-preview-refresh");
+    expect(button.getAttribute("type")).toBe("button");
+    expect(button.textContent.trim()).toBe("Refresh preview");
+    // One polite status, for Refresh preview; the summary, the backtiming
+    // list and the table refresh silently.
+    const live = [...card.querySelectorAll("[aria-live], [role='status'], [role='alert'], [role='log']")];
+    expect(live.map((node) => node.id)).toEqual(["hour-preview-status"]);
+    expect(live[0].getAttribute("aria-live")).toBe("polite");
+    for (const id of ["hour-preview-summary", "hour-preview-points", "hour-preview-table"]) {
+      expect(document.getElementById(id).closest("[aria-live], [role=status]")).toBeNull();
+    }
+    // A real table: a caption and a header for each column.
+    const table = document.getElementById("hour-preview-table");
+    expect(table.querySelector("caption").textContent.trim()).toBe("What plays next");
+    expect([...table.querySelectorAll("thead th")].map((th) => [th.textContent.trim(), th.getAttribute("scope")]))
+      .toEqual([["Starts", "col"], ["What", "col"], ["Length", "col"], ["Status", "col"]]);
+    const backtiming = document.getElementById("hour-preview-backtiming");
+    expect(document.getElementById(backtiming.getAttribute("aria-labelledby")).tagName).toBe("H3");
+    // Shift+H is in the shortcut list.
+    expect(document.querySelector("#hotkey-help-modal").textContent).toContain("Shift+H");
+    // Colours come from the theme tokens only, so both themes follow.
+    const rules = stripCssComments(cssSource).match(/#hour-preview-[^{]*\{[^}]*\}/g);
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgb|hsl/i);
+    // Predicted rows look different, but the Status column says so in words too.
+    expect(rules.join("\n")).toMatch(/tr\.is-predicted td\s*\{[^}]*font-style: italic/);
   });
 
   it("gives Track info's tag editor labelled native fields, linkable errors and one status", () => {
@@ -2380,9 +2494,10 @@ describe("static accessibility contracts", () => {
     expect(status.getAttribute("role")).toBe("status");
     expect(status.getAttribute("aria-live")).toBe("polite");
     expect(appSource).toMatch(/installPreviewOutput\(\{\s*announce: \(message, options\) => announceStatus\(settingsStatus/);
-    // Only the cue point player is a preview; the decks and Listen here are not.
+    // Only the cue point player and the voice tracker's Listen back are
+    // previews; the decks and Listen here are not.
     expect([...document.querySelectorAll("audio[data-preview-output]")].map((audio) => audio.id))
-      .toEqual(["points-preview"]);
+      .toEqual(["points-preview", "vt-playback"]);
     // The module never moves focus, and the note lines up under the select.
     const moduleSource = readFileSync(staticPath("modules", "preview-output.js"), "utf8");
     expect(moduleSource).not.toMatch(/\.focus\(/);
@@ -2390,10 +2505,127 @@ describe("static accessibility contracts", () => {
       .toMatch(/\.settings-row \+ \.setting-desc \+ \.setting-desc\s*\{\s*margin-left: 10rem;/);
   });
 
+  it("gives machine tokens a labelled use and a station choice hidden until it applies", () => {
+    installDocument({ html: htmlSource });
+    const fieldset = document.getElementById("token-name").closest("fieldset");
+    expect(fieldset.querySelector("legend").textContent.trim()).toBe("Create a token");
+    const scope = document.getElementById("token-scope");
+    const station = document.getElementById("token-station");
+    for (const [select, label] of [[scope, "Token use"], [station, "Station"]]) {
+      expect(select.tagName).toBe("SELECT");
+      expect(select.closest("fieldset")).toBe(fieldset);
+      expect(document.querySelector(`label[for="${select.id}"]`).textContent.trim()).toBe(label);
+      expect(select.hasAttribute("aria-label")).toBe(false);
+      const help = document.getElementById(select.getAttribute("aria-describedby"));
+      expect(help.classList.contains("setting-desc")).toBe(true);
+      expect(help.hasAttribute("aria-live")).toBe(false);
+    }
+    // Both uses are written out, and what each token cannot do is said.
+    expect([...scope.options].map((option) => option.textContent))
+      .toEqual(["Analysis worker", "Announcer"]);
+    expect(document.getElementById("token-scope-desc").textContent)
+      .toMatch(/Neither can play, change settings or read anything else/);
+    // Token use says the Station choice appears, and Station starts with a
+    // placeholder, so no station is chosen silently.
+    expect(document.getElementById("token-scope-desc").textContent)
+      .toMatch(/choosing Announcer shows a Station choice below/);
+    expect([...station.options].map((option) => [option.value, option.textContent]))
+      .toEqual([["", "Choose a station"]]);
+    // The station choice and its help start hidden, together.
+    expect(document.getElementById("token-station-row").hidden).toBe(true);
+    expect(document.getElementById("token-station-desc").hidden).toBe(true);
+    // Reading order is name, use, station, then the button that acts on them.
+    const order = [...fieldset.querySelectorAll("input, select, button")].map((node) => node.id);
+    expect(order).toEqual(["token-name", "token-scope", "token-station", "token-create"]);
+    expect(document.getElementById("token-create").getAttribute("type")).toBe("button");
+  });
+
+  it("gives the voice tracker named native controls, one polite status and a silent timer", () => {
+    installDocument({ html: htmlSource });
+    const panel = document.getElementById("panel-voice");
+    expect(panel.getAttribute("role")).toBe("tabpanel");
+    expect(panel.getAttribute("aria-labelledby")).toBe("tab-voice");
+    expect(document.getElementById("tab-voice").textContent).toBe("Voice tracks");
+    expect([...panel.children].find((child) => child.tagName === "H2").id).toBe("voice-heading");
+    const tracker = document.getElementById("voice-tracker");
+    for (const button of tracker.querySelectorAll("button")) {
+      expect(button.getAttribute("type"), button.id).toBe("button");
+      expect(button.textContent.trim(), button.id).not.toBe("");
+    }
+    // Record is a toggle with a fixed name: the pressed state says recording.
+    const record = document.getElementById("vt-record");
+    expect(record.textContent).toBe("Record");
+    expect(record.getAttribute("aria-pressed")).toBe("false");
+    expect(document.getElementById(record.getAttribute("aria-describedby")).textContent).toMatch(/Alt\+R/);
+    // One polite region says the recording state; the timer, the time left
+    // and the open song change are on the page and never live.
+    const live = [...tracker.querySelectorAll("[aria-live], [role='status'], [role='alert'], [role='log']")];
+    expect(live.map((node) => node.id)).toEqual(["vt-status"]);
+    expect(live[0].getAttribute("aria-live")).toBe("polite");
+    expect(live[0].getAttribute("aria-atomic")).toBe("true");
+    for (const id of ["vt-timer", "vt-slot", "vt-closes", "vt-airs", "vt-unavailable", "vt-error", "vt-list"]) {
+      expect(document.getElementById(id).closest("[aria-live], [role=status], [role=alert]"), id).toBeNull();
+    }
+    // An error is words on the page that a control can be described by.
+    const error = document.getElementById("vt-error");
+    expect(error.classList.contains("field-error")).toBe(true);
+    expect(error.hidden).toBe(true);
+    const placement = document.getElementById("vt-placement");
+    expect(document.querySelector('label[for="vt-placement"]').textContent).toBe("Placement");
+    expect(placement.getAttribute("aria-describedby")).toBe("vt-placement-desc");
+    expect([...placement.options].map((option) => option.value)).toEqual(["auto", "talk_up", "standalone"]);
+    const outro = document.getElementById("vt-allow-outro");
+    expect(outro.getAttribute("type")).toBe("checkbox");
+    expect(outro.parentElement.classList.contains("settings-check")).toBe(true);
+    expect(document.querySelector('label[for="vt-allow-outro"]').textContent).toBe("Start over the ending song's outro");
+    expect(outro.getAttribute("aria-describedby")).toBe("vt-allow-outro-desc");
+    // Listen back is a named toggle; the player itself is never shown.
+    const player = document.getElementById("vt-playback");
+    expect(player.tagName).toBe("AUDIO");
+    expect(player.hasAttribute("controls")).toBe(false);
+    expect(player.hidden).toBe(true);
+    expect(document.getElementById("vt-listen").getAttribute("aria-pressed")).toBe("false");
+    expect([...tracker.querySelectorAll(".vt-actions button")].map((button) => button.textContent))
+      .toEqual(["Listen back", "Book voice track", "Discard recording"]);
+    expect(document.getElementById("vt-list").getAttribute("role")).toBe("list");
+    // The shortcut is listed with the others, in words.
+    const keys = [...document.querySelectorAll("#hotkey-help-modal dt kbd")].map((kbd) => kbd.textContent);
+    expect(keys).toContain("Alt+R");
+  });
+
   it("keeps the transition effect description to one sentence", () => {
     // The per-effect list, about 450 words, was read on every focus.
     installDocument({ html: htmlSource });
     const desc = document.querySelector("#transition-desc").textContent.trim();
     expect(desc.split(/\s+/).length).toBeLessThan(20);
+  });
+});
+
+describe("public status page contracts", () => {
+  const statusCss = stripCssComments(readFileSync(staticPath("modules", "status-page.css"), "utf8"));
+  const statusScript = readFileSync(staticPath("modules", "status-page.js"), "utf8");
+
+  it("draws every colour from the system palette, so light, dark and forced colours all hold", () => {
+    // No literal colours: Canvas, CanvasText and LinkText follow the theme
+    // the reader or the web UI chose.  Not ButtonFace and ButtonText:
+    // WebKit keeps them light under a dark colour scheme.
+    expect(statusCss).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
+    expect(statusCss).toMatch(/:root\[data-theme="light"\]\s*\{\s*color-scheme: light;/);
+    expect(statusCss).toMatch(/:root\[data-theme="dark"\]\s*\{\s*color-scheme: dark;/);
+    expect(statusCss).not.toMatch(/ButtonFace|ButtonText/);
+  });
+
+  it("keeps a visible focus ring and a large enough target on every control", () => {
+    expect(statusCss).toMatch(/button:focus-visible,\s*a:focus-visible\s*\{\s*outline: 3px solid currentcolor;/);
+    expect(statusCss).toMatch(/button\s*\{[^}]*min-height: 44px;/);
+    // One column on a phone, so nothing scrolls sideways at 320 px.
+    expect(statusCss).toMatch(/@media \(max-width: 24rem\)\s*\{\s*dl\s*\{\s*grid-template-columns: 1fr;/);
+  });
+
+  it("polls only the station's own same-site feed and never moves focus", () => {
+    expect(statusScript).toMatch(/url\.origin !== new URL\(here\)\.origin/);
+    expect(statusScript).not.toMatch(/\.focus\(/);
+    // Off air is said in the one live line, not a second region.
+    expect(statusScript).not.toMatch(/aria-live/);
   });
 });

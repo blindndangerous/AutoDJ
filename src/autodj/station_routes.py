@@ -147,6 +147,28 @@ async def current_station(request: Request) -> StationRuntime:
 StationDep = Annotated[StationRuntime, Depends(current_station)]
 
 
+async def public_station(request: Request) -> StationRuntime:
+    """:func:`current_station` for a public route: a stopped station is 503 "off air".
+
+    Listeners and outside sites see the same answer from a stopped
+    station's feed as from its stream; the controls' 409 is for the page.
+    """
+    try:
+        return await current_station(request)
+    except HTTPException as exc:
+        if exc.status_code != 409:
+            raise
+        # Readable by other sites, like the feed itself.
+        raise HTTPException(
+            status_code=503,
+            detail="That station is off air",
+            headers={"Cache-Control": "no-cache", "Access-Control-Allow-Origin": "*"},
+        ) from None
+
+
+PublicStationDep = Annotated[StationRuntime, Depends(public_station)]
+
+
 # ---------------------------------------------------------------------------
 # Request bodies
 # ---------------------------------------------------------------------------
@@ -356,7 +378,12 @@ def _validate_step_conditions(
 ) -> None:
     from autodj.clockwheel_store import resolve_conditions
 
+    categories = _category_names(library)
     for condition in resolve_conditions(step, sources, number):
+        if condition["field"] == "category" and condition["category"] not in categories:
+            raise ValueError(
+                f"Step {number}: its category is not saved; choose one in Library tools, Categories"
+            )
         if condition["field"] == "beets":
             known, _, error = _clock_beets(station, library).snapshot()
             if error:
@@ -624,14 +651,39 @@ _NO_DATES: dict[str, Any] = {
 }
 
 
-async def _forget_liner_dates(station: StationRuntime, liner_id: str) -> None:
-    """Drop a deleted liner's play dates, so a new file of that name starts without them."""
+async def _forget_new_liner_dates(station: StationRuntime, target: Path) -> None:
+    """Forget dates left by an earlier liner at *target*: by its name and its catalog ID.
+
+    Raises:
+        OSError: The dates file could not be read, so nothing was forgotten.
+    """
+    library = station.bridge.library
+    ids = [target.name]
+    if library is not None:
+        record = await asyncio.to_thread(library.catalog.record_for_path, target)
+        if record is not None:
+            ids.append(str(record["id"]))
+    await asyncio.to_thread(station.liner_gate.store.forget, ids)
+
+
+async def _forget_liner_dates(station: StationRuntime, liner_id: str) -> dict[str, str]:
+    """Drop a deleted liner's play dates, so a new file of that name starts without them.
+
+    Returns:
+        Nothing when that worked; otherwise a ``message`` for the page,
+        saying the dates stay until the dates file can be read again.
+    """
     from autodj.clip_dates import ClipDates
 
     try:
         await asyncio.to_thread(station.liner_gate.store.set, liner_id, ClipDates())
     except OSError:
         logger.warning("Could not forget the play dates of liner %s", liner_id, exc_info=True)
+        return {
+            "message": "Its play dates could not be forgotten just now, because the dates file "
+            "could not be read; a scan forgets them later"
+        }
+    return {}
 
 
 def _liner_names(station: StationRuntime) -> list[str]:
@@ -697,7 +749,13 @@ def equip_station(
     bridge = station.bridge
     api_root = "/api" if station.slug == DEFAULT_SLUG else f"/api/stations/{station.slug}"
     station.carts = StationCarts(
-        bridge, publish, lambda: station.paths.liners, station.paths.state_dir, api_root
+        bridge,
+        publish,
+        lambda: station.paths.liners,
+        station.paths.state_dir,
+        api_root,
+        # Looked up at each call: the registry sets it after this.
+        owns_liner=lambda path: station.owns_liner(path),
     )
 
     async def profile(name: str) -> dict:
@@ -740,6 +798,11 @@ def equip_station(
 
     station.time_checks = TimeChecks(station.cfg, station.timezone, station.paths)
     schedule.register(time_check_action(station.time_checks, bridge))
+
+    from autodj.breaks import BreakDesk
+
+    station.breaks = BreakDesk(lambda: station.cfg.breaks, station.paths.announcements)
+    bridge.player.break_desk = station.breaks
 
 
 # ---------------------------------------------------------------------------
@@ -799,7 +862,9 @@ class StationRouter:
 
 def install_station_routes(router: StationRouter) -> None:
     """Register every station route, with paths relative to the API root (``/skip``, ...)."""
+    from autodj.breaks_api import install_breaks
     from autodj.carts import install_carts
+    from autodj.hour_preview import install_hour_preview
     from autodj.rotation_api import install_rotation_test
     from autodj.scheduler_api import install_scheduler
     from autodj.time_checks import install_time_checks
@@ -813,7 +878,7 @@ def install_station_routes(router: StationRouter) -> None:
         return JSONResponse(state)
 
     @router.api_route("/nowplaying", methods=["GET", "HEAD"])
-    async def api_nowplaying(station: StationDep) -> JSONResponse:
+    async def api_nowplaying(station: PublicStationDep) -> JSONResponse:
         """Return public metadata with no file paths or pairing details."""
         return JSONResponse(
             station.nowplaying.snapshot(),
@@ -1181,6 +1246,28 @@ def install_station_routes(router: StationRouter) -> None:
         )
 
         name = file.filename or ""
+        if not replace:
+            # A new file starts without dates, even where a liner of that name
+            # was deleted outside AutoDJ and its dates were left behind.  They
+            # are forgotten first: when the dates file cannot be read, the
+            # upload waits, so the new file can never take the old dates.
+            from autodj.liner_files import validate_liner_name
+
+            try:
+                validate_liner_name(name)
+            except InvalidLinerName as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            planned = station.paths.liners / name
+            if not await asyncio.to_thread(planned.exists):
+                try:
+                    await _forget_new_liner_dates(station, planned)
+                except OSError as exc:
+                    logger.warning("Liner upload refused: %s", exc)
+                    raise HTTPException(
+                        status_code=503,
+                        detail="The liner play dates could not be read just now, so the upload "
+                        "was not saved; try again in a moment",
+                    ) from exc
         try:
             target, size = await store_liner_upload(
                 station.paths.liners,
@@ -1218,14 +1305,13 @@ def install_station_routes(router: StationRouter) -> None:
                     raise FileNotFoundError(path.name)
                 path.unlink()
                 await asyncio.to_thread(library.refresh)
-                await _forget_liner_dates(station, name)
             except InvalidLinerName as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             except FileNotFoundError as exc:
                 raise HTTPException(status_code=404, detail="Liner not found") from exc
             except OSError as exc:
                 raise HTTPException(status_code=500, detail="Unable to delete liner") from exc
-            return {"deleted": path.name}
+            return {"deleted": path.name, **await _forget_liner_dates(station, name)}
 
         try:
             await asyncio.to_thread(delete_liner_file, station.paths.liners, name)
@@ -1235,8 +1321,7 @@ def install_station_routes(router: StationRouter) -> None:
             raise HTTPException(status_code=404, detail="Liner not found") from exc
         except OSError as exc:
             raise HTTPException(status_code=500, detail="Unable to delete liner") from exc
-        await _forget_liner_dates(station, name)
-        return {"deleted": name}
+        return {"deleted": name, **await _forget_liner_dates(station, name)}
 
     @router.put("/liners/dates/{liner_id}", response_model=None)
     async def api_liner_dates(
@@ -1256,6 +1341,12 @@ def install_station_routes(router: StationRouter) -> None:
             return JSONResponse(
                 status_code=400, content={"detail": exc.message, "field": exc.field}
             )
+        except OSError as exc:
+            logger.warning("Could not save liner dates: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail="The liner dates file could not be read just now; nothing was saved",
+            ) from exc
         return {**item, **dates.view(station_today(station.cfg))}
 
     @router.get("/liners/file/{name}")
@@ -1309,6 +1400,11 @@ def install_station_routes(router: StationRouter) -> None:
             return {"played": None, "message": "Nobody is listening, so the liner was not played."}
         if state == "paused":
             return {"played": None, "message": "Playback is paused, so the liner was not played."}
+        # Test never plays a liner outside its play dates, as the automatic
+        # liners skip it; the page says why.
+        refused = await asyncio.to_thread(scheduler.refusal, body.name) if body.name else None
+        if isinstance(refused, str) and refused:
+            return {"played": None, "message": f"That liner was skipped: it is {refused}."}
         played = await asyncio.to_thread(scheduler.fire, body.name)
         return {"played": played}
 
@@ -1628,7 +1724,9 @@ def install_station_routes(router: StationRouter) -> None:
     install_carts(router)
     install_scheduler(router)
     install_time_checks(router)
+    install_breaks(router)
     install_rotation_test(router)
+    install_hour_preview(router)
 
 
 __all__ = [

@@ -150,6 +150,7 @@ max_listeners = 8
 # Limit simultaneous connections from one resolved address; 0 disables this limit.
 max_listeners_per_address = 0
 # Only these direct proxy peers may supply X-Forwarded-For and X-Forwarded-Proto.
+# Empty trusts a proxy on this machine (127.0.0.1 and ::1), as when not streaming.
 trusted_proxies = []
 # Optional listener_user and listener_password belong in config.local.toml only.
 
@@ -218,13 +219,15 @@ stereotool_preset = "included"
 crossfade_seconds = 3.0
 
 # Repeat rules are edited in Settings > Picking > Repeats and saved in
-# index/<name>/web_state.json. Each artist, album, track and title rule has
-# a track count and a minute limit; 0 disables that limit. Both can be set.
+# index/<name>/web_state.json. Each artist, related artist, album, track, title and
+# related track rule has a track count and a minute limit; 0 disables that limit.
+# Both can be set.
 # Older repeat keys are rejected. Remove them by hand and re-enter limits in
 # Settings > Picking > Repeats. Optional starting values use the same structure:
-# repeat_rules = { track = { tracks = 50, minutes = 0 }, artist = { tracks = 8, minutes = 0 }, album = { tracks = 0, minutes = 0 }, title = { tracks = 0, minutes = 0 }, use_related_artists = false }
-# Artist, album and title track counts are capped at 5000. The related-artist file is fixed at
-# index/<name>/related-artists.toml and is read only when enabled.
+# repeat_rules = { track = { tracks = 50, minutes = 0 }, artist = { tracks = 8, minutes = 0 }, related_artist = { tracks = 8, minutes = 0 }, album = { tracks = 0, minutes = 0 }, title = { tracks = 0, minutes = 0 }, related_track = { tracks = 20, minutes = 0 }, use_related_artists = false, use_related_tracks = false }
+# Track counts other than the track rule's are capped at 5000. The related-artist file is
+# fixed at index/<name>/related-artists.toml and the related-track file at
+# index/<name>/related-tracks.toml; each is read only when enabled.
 # AutoDJ copies the shipped sample only if that file does not exist.
 
 # When false, AutoDJ loads no lyrics and the web UI hides the lyric card.
@@ -390,6 +393,34 @@ rule = "off"                             # "off" or "after_hour_song"
 # tts_command = ["piper", "--model", "/path/to/model.onnx", "--output_file", "{out}"]
 # voice_packs = ["~/Voices/Studio", "~/Voices/Night"]   # every one ticked until Settings says otherwise
 pack_order = "rotate"                    # "rotate" (take turns) or "random"
+
+# ---------------------------------------------------------------------------
+# Announcer breaks: DJ breaks, news and weather from another program
+# ---------------------------------------------------------------------------
+# An announcer program on this machine (such as radiodj) can send this
+# station spoken breaks through the breaks API, with a machine token made in
+# Settings, Analysis workers (or `autodj tokens create NAME --scope announcer
+# --station default`).  AutoDJ prepares each song change one song ahead, so a
+# break joins the change after the next song.  Breaks need saved-point
+# playback (transition mode "saved_points").  docs/operations.md, "Announcer
+# breaks", has the API with example requests.
+[breaks]
+enabled = false
+dj_placement = "auto"          # "auto": talk up the next song's intro when it
+                               # is at least min_intro_seconds long, otherwise
+                               # play between the songs; "talk_up"; "standalone"
+min_intro_seconds = 2.0
+# duck_db = -6.0               # music level under the voice; unset uses
+                               # [playback] liners_duck_db
+max_upload_mb = 40             # largest break file (at most 200)
+max_seconds = 300.0            # longest break (at most 900); decoding takes
+                               # about 0.35 MB of memory per second of it
+max_queued = 6                 # breaks waiting to air at once
+max_per_slot = 2               # breaks one song change can take
+default_expires_seconds = 1800 # a break not on the air by then is dropped
+max_expires_seconds = 7200
+quota_mb = 400                 # disk space the waiting break files may use
+requests_per_minute = 120      # per token
 
 # ---------------------------------------------------------------------------
 # ReplayGain loudness normalisation
@@ -602,7 +633,7 @@ history_limit = 5
 #
 # A station starts from the defaults, not from the sections above: set
 # everything it needs here.  Its sections are playback, djmix, transitions,
-# replaygain, stream, recording, nowplaying, time_checks, dmca and presets.*;
+# replaygain, stream, recording, nowplaying, time_checks, breaks, dmca and presets.*;
 # library, index, model, huggingface and server are shared and read only from
 # the root.  Another station always streams (stream.enabled is ignored), and
 # stream.trusted_proxies comes from the root [stream] section.  Its recording

@@ -345,3 +345,22 @@ def test_the_commented_examples_load(tmp_path: Path) -> None:
     assert station.stream.listener_user == "owl"
     assert station.stream.relays["main"].password == "that station's source password"
     assert len(station.webhooks) == 1
+
+
+def test_a_station_without_a_name_is_called_by_its_slug(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    unnamed = BASE + NIGHTOWL.replace('station_name = "Night Owl Radio"\n', "")
+    (spec,) = _load(tmp_path, unnamed).stations
+    # Not "AutoDJ", the default station's name.
+    assert spec.name == spec.cfg.stream.station_name == "nightowl"
+    named = _load(tmp_path, BASE + NIGHTOWL).stations[0]
+    assert named.name == "Night Owl Radio"
+
+    same = BASE + NIGHTOWL.replace('"Night Owl Radio"', '"autodj "')
+    with caplog.at_level(logging.WARNING, logger="autodj.config"):
+        assert _load(tmp_path, same).stations[0].name == "autodj "
+    assert any(
+        "Stations default and nightowl are both called" in record.getMessage()
+        for record in caplog.records
+    )

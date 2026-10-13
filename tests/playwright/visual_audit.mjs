@@ -17,6 +17,8 @@
 //         against the bar, and the Camelot wheel lit for 8A: every wedge
 //         edge, the compatible outline and the current wedge 3:1 against
 //         their neighbours, its numbers 4.5:1;
+//       - Now Playing's Hour preview opened, with a stood-in answer: its
+//         table of fixed and predicted rows and its backtiming list;
 //       - the status message with its Dismiss button, as a confirmation
 //         and as an error, through axe-core as well;
 //   - in the System light mode only (layout does not change with colour):
@@ -35,11 +37,31 @@
 //         its help, 24 px targets, a described button, a visible reason
 //         where the browser cannot choose a device, and a change said
 //         politely without moving focus;
+//       - Settings > Analysis workers, Machine tokens: the Station choice
+//         is hidden until Token use is an announcer, then shows as a
+//         named select with linked help and 24 px targets, focus staying
+//         on Token use; it is measured in every theme mode (axe-core and
+//         non-text contrast) and at 320 px with that choice shown;
+//       - Voice tracks, with the microphone and recorder stubbed and the
+//         open song change stood in for: shown idle, recording, with a
+//         take, and with the microphone refused (its error linked to
+//         Record); Record by keyboard keeps focus and says "Recording"
+//         once, Alt+R from another control stops it without moving focus
+//         and lets the microphone go, a refused booking is shown,
+//         linked to Book voice track, focus staying there, and leaving
+//         the tab stops a recording and says so once;
 //       - the status message stays while the pointer is over it, goes
 //         after the pointer leaves, lets a click on its frame (outside the
 //         message and the button) through to the page underneath, and its
 //         Dismiss button works by mouse and by keyboard, putting focus
 //         back where it was.
+//
+//   - the public status pages: /status, and each station's
+//     /stations/<slug>/status that /api/stations lists (a stopped
+//     station's "off air" page too), in every theme mode: axe-core's
+//     WCAG 2.2 A/AA rules, the theme applied, and every focus stop's
+//     outline 3:1; in the System light mode reflow at 320 px and 200 %
+//     text.
 //
 // Set AUTODJ_URL=http://host:port before running, e.g.:
 //   AUTODJ_URL=http://localhost:8080 node tests/playwright/visual_audit.mjs
@@ -59,7 +81,7 @@ const SHOTS = process.env.AUTODJ_SCREENSHOTS || "";
 const CPU_THROTTLE = Number(process.env.AUTODJ_CPU_THROTTLE || 0);
 const AXE = fileURLToPath(import.meta.resolve("axe-core/axe.min.js"));
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
-const VIEWS = ["now", "queue", "carts", "track-info", "history", "settings", "library"];
+const VIEWS = ["now", "queue", "carts", "voice", "track-info", "history", "settings", "library"];
 const MAX_TAB_STOPS = 80;
 // Focus rings measured per target in the Light and System modes.  Every
 // stop is measured in the Dark mode (fullFocus) and in the layout pass,
@@ -187,6 +209,186 @@ async function openTrackTags(page, visit) {
   await page.locator("#track-info-dialog").waitFor({ state: "hidden" });
 }
 
+// Settings > Time checks with two voice packs, one with play dates and
+// outside them, so the pack list and the Voice pack play dates form are
+// shown (the audit server has no packs).  Only reading is stood in for.
+const TIME_CHECKS = {
+  enabled: true, hour_format: "12", rule: "after_hour_song", enabled_packs: ["Studio", "Christmas"],
+  pack_order: "rotate", missing_minutes: 1440, missing_examples: [], tts_available: false,
+  timezone: "UTC", duck_db: -12,
+  packs: [
+    { name: "Studio", enabled: true, minutes_covered: 1440, summary: "1440 of 1440 minutes covered.",
+      not_before: null, not_after: null, dates_text: "", playable: true, unplayable_text: "" },
+    { name: "Christmas", enabled: true, minutes_covered: 1440, summary: "1440 of 1440 minutes covered.",
+      not_before: "2026-12-01", not_after: "2026-12-26",
+      dates_text: "Plays from 1 December 2026 until 26 December 2026", playable: false,
+      unplayable_text: "not playable before 1 December 2026" },
+  ],
+};
+const timeCheckPages = new WeakSet();
+
+// Now Playing, Hour preview (#126), opened: the server's answer is stood
+// in for, so its table, with fixed and predicted rows, and its backtiming
+// list are measured on an empty library.  One title has no spaces, for
+// the reflow checks.
+const HOUR_PREVIEW_ITEM = (title, status, fixed, starts, words) => ({
+  kind: "song",
+  status,
+  fixed,
+  status_text: fixed ? { on_air: "Fixed: on the air", ready: "Fixed: ready to play", queued: "Fixed: in the queue" }[status] : "Predicted",
+  title,
+  starts_text: starts,
+  starts_words: words,
+  seconds: 200,
+  length_text: "3:20",
+  length_words: "3 minutes 20 seconds",
+});
+const HOUR_PREVIEW = {
+  station: "default",
+  minutes: 60,
+  reason: null,
+  summary: "Top of the hour, 1 PM: lands about 35 seconds early, at the song change into Example Artist, Song 4 (predicted) at 12:59 PM and 25 seconds. That song runs 2 minutes 45 seconds past 1 PM. Next hour: 3 fixed and 2 predicted, until 1:10 PM.",
+  items: [
+    HOUR_PREVIEW_ITEM("Example Artist, Song 1", "on_air", true, "12:49:10 PM", "12:49 PM and 10 seconds"),
+    HOUR_PREVIEW_ITEM("Another Example, An_Exceptionally_Long_Title_Without_Any_Spaces_From_A_Tagless_File_0001", "ready", true, "12:52:30 PM", "12:52 PM and 30 seconds"),
+    HOUR_PREVIEW_ITEM("Example Artist, Song 3", "queued", true, "12:55:50 PM", "12:55 PM and 50 seconds"),
+    HOUR_PREVIEW_ITEM("Example Artist, Song 4", "predicted", false, "12:59:25 PM", "12:59 PM and 25 seconds"),
+    HOUR_PREVIEW_ITEM("Example Artist, Song 5", "predicted", false, "1:02:45 PM", "1:02 PM and 45 seconds"),
+  ],
+  points: [{ kind: "hour", text: "Top of the hour, 1 PM: lands about 35 seconds early." }],
+  counts: { fixed: 3, predicted: 2 },
+  stopped: null,
+  notes: ["Predicted songs come from a dry run of the station's own picker."],
+};
+const hourPreviewPages = new WeakSet();
+
+async function standInForHourPreview(page) {
+  if (hourPreviewPages.has(page)) return;
+  hourPreviewPages.add(page);
+  await page.route("**/api/hour-preview*", (route) => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify(HOUR_PREVIEW),
+  }));
+}
+
+async function standInForTimeChecks(page) {
+  if (timeCheckPages.has(page)) return;
+  timeCheckPages.add(page);
+  await page.route("**/api/time-checks", (route) => (route.request().method() === "GET"
+    ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(TIME_CHECKS) })
+    : route.continue()));
+}
+
+// A backwards date range: the error shown on the page, linked to Do not
+// play after and focused, as a refused save shows it.
+async function openPackDatesError(page, visit) {
+  await page.locator("#tc-dates").waitFor({ state: "visible" });
+  await page.locator("#tc-not-before").fill("2026-12-26");
+  await page.locator("#tc-not-after").fill("2026-12-01");
+  await page.locator("#tc-dates-save").click();
+  await page.locator("#tc-dates-error").waitFor({ state: "visible" });
+  await visit("settings/time-checks/dates-error");
+  await page.locator("#tc-not-after").fill("2026-12-31");
+}
+
+// Library tools: a category's season and a clockwheel step's hours, each
+// refused with its error on the page, linked to the field and focused.
+async function openDaypartErrors(page, visit) {
+  await page.locator("#categories-add").click();
+  await page.locator("#categories-name").fill("Christmas");
+  await page.locator("#categories-query").fill("genre:Christmas");
+  await page.locator("#categories-not-before").fill("2026-12-26");
+  await page.locator("#categories-not-after").fill("2026-12-01");
+  await page.locator("#categories-save").click();
+  await page.locator("#categories-form-error").waitFor({ state: "visible" });
+  await visit("library/category-dates-error");
+  await page.locator("#categories-cancel").click();
+  await page.locator("#clock-name").fill("Audit");
+  await page.locator("#clock-create").click();
+  await page.locator("#clock-step-hours-from").fill("22:00");
+  await page.locator("#clock-add-step").click();
+  await page.locator("#clock-step-hours-error").waitFor({ state: "visible" });
+  await visit("library/step-hours-error");
+}
+
+// Voice tracks (#128): the open song change and a booked list are stood
+// in for (the audit server takes no breaks), and the microphone and the
+// recorder are stubbed before any page script, so Record works with no
+// device and no permission prompt.  window.__micRefusal names the error
+// the next request for the microphone fails with.
+const VOICE_CONTEXT = {
+  station: "default", accepting: true, reason: null, now: null, next: null,
+  slot: {
+    slot_id: "a".repeat(32), closes_in_s: 125, airs_in_s: 330, upcoming_intro_s: 8.5,
+    pinned: true, breaks_booked: 1, auto_placement: "talk_up", auto_note: null,
+    ending: { id: "song-c", title: "An_Exceptionally_Long_Title_Without_Any_Spaces_From_A_Tagless_File_0002", artist: "Example Artist", album: "", year: null, duration_s: 214 },
+    upcoming: { id: "song-d", title: "Fourth Song", artist: "Another Example", album: "", year: null, duration_s: 187 },
+  },
+  limits: { max_bytes: 41943040, max_seconds: 300, sample_rate: 44100, dj_placement: "auto", min_intro_s: 2, max_per_slot: 2 },
+  tracks: [
+    { break_id: "b".repeat(32), label: "Third Song into Fourth Song", state: "queued", slot_id: "a".repeat(32),
+      mixed_as: null, reason: null, eta: null, source: "voice_track" },
+    { break_id: "c".repeat(32), label: "Second Song into Third Song", state: "dropped", slot_id: "e".repeat(32),
+      mixed_as: null, reason: "cancelled in the voice tracker", eta: null, source: "voice_track" },
+  ],
+};
+const voicePages = new WeakSet();
+
+async function standInForVoiceTracker(page) {
+  if (voicePages.has(page)) return;
+  voicePages.add(page);
+  await page.addInitScript(() => {
+    const stream = { getTracks: () => [{ stop() { window.__micStopped = (window.__micStopped || 0) + 1; } }] };
+    Object.defineProperty(window.Navigator.prototype, "mediaDevices", {
+      configurable: true,
+      get: () => ({
+        getUserMedia: async () => {
+          if (window.__micRefusal) throw new window.DOMException("refused", window.__micRefusal);
+          return stream;
+        },
+      }),
+    });
+    window.MediaRecorder = class extends window.EventTarget {
+      constructor() {
+        super();
+        this.mimeType = "audio/webm";
+        this.state = "inactive";
+      }
+
+      start() { this.state = "recording"; }
+
+      stop() {
+        this.state = "inactive";
+        const data = new Event("dataavailable");
+        data.data = new window.Blob(["voice"], { type: "audio/webm" });
+        this.dispatchEvent(data);
+        this.dispatchEvent(new Event("stop"));
+      }
+    };
+  });
+  await page.route("**/api/voice-tracks", (route) => (route.request().method() === "GET"
+    ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(VOICE_CONTEXT) })
+    : route.continue()));
+}
+
+// Voice tracks while recording, with a take to book, and with the
+// microphone refused: its error on the page, linked to Record.
+async function openVoiceStates(page, visit) {
+  await page.locator("#vt-slot").waitFor({ state: "visible" });
+  const record = page.locator("#vt-record");
+  await record.click();
+  await page.waitForFunction(() => document.getElementById("vt-record").getAttribute("aria-pressed") === "true");
+  await visit("voice/recording");
+  await record.click();
+  await page.waitForFunction(() => /^Recorded/.test(document.getElementById("vt-timer").textContent));
+  await visit("voice/recorded");
+  await page.locator("#vt-discard").click();
+  await page.evaluate(() => { window.__micRefusal = "NotAllowedError"; });
+  await record.click();
+  await page.locator("#vt-error").waitFor({ state: "visible" });
+  await visit("voice/error");
+  await page.evaluate(() => { window.__micRefusal = ""; });
+}
+
 async function openEveryCard(page) {
   await page.evaluate(() => {
     for (const details of document.querySelectorAll("details")) details.open = true;
@@ -222,6 +424,9 @@ async function newPage(context) {
 async function eachTarget(page, visit) {
   await standInForRotationTest(page);
   await standInForTrackInfo(page);
+  await standInForTimeChecks(page);
+  await standInForHourPreview(page);
+  await standInForVoiceTracker(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   for (const view of VIEWS) {
     await page.locator(`#tab-${view}`).click();
@@ -231,9 +436,14 @@ async function eachTarget(page, visit) {
     await page.waitForTimeout(100);
     if (view !== "settings") {
       await openEveryCard(page);
+      if (view === "now") {
+        await page.locator("#hour-preview-table").waitFor({ state: "visible", timeout: 10000 });
+      }
       await settle(page);
       await visit(view);
       if (view === "track-info") await openTrackTags(page, visit);
+      if (view === "library") await openDaypartErrors(page, visit);
+      if (view === "voice") await openVoiceStates(page, visit);
       continue;
     }
     const ids = await page.$$eval("#settings-tabs [role='tab']:not([hidden])",
@@ -245,6 +455,7 @@ async function eachTarget(page, visit) {
       await settle(page);
       await visit(`settings/${id.replace(/^stab-/, "")}`);
       if (id === "stab-picking") await openRotationTest(page, visit);
+      if (id === "stab-time-checks") await openPackDatesError(page, visit);
     }
   }
 }
@@ -564,6 +775,12 @@ async function auditTheme(browser, mode, out) {
         record("toast", target, await toastProblems(page));
       }
       if (target === "settings/display") record("toast", target, await toastProblems(page));
+      if (target === "settings/workers") {
+        await chooseAnnouncer(page);
+        record("axe", `${target} announcer`, await axeViolations(page));
+        record("nonText", `${target} announcer`, await controlBoundaryProblems(page));
+        await chooseAnnouncer(page, false);
+      }
       if (SHOTS) {
         // A message showing in every shot, so the toast is seen in both
         // themes; on Now Playing the wheel lit as well.
@@ -730,11 +947,18 @@ async function toastBehaviourProblems(page) {
   // message, Tab once to Dismiss (so the ring is the keyboard one), then
   // Enter.  Focus must go back to that stop.
   const start = await page.evaluate(() => {
+    const hiddenInClosedDetails = (element) => {
+      const closed = element.parentElement?.closest("details:not([open])");
+      return Boolean(closed) && !(element.tagName === "SUMMARY" && element.parentElement === closed);
+    };
     const box = document.getElementById("status-toast-box");
     const stops = [...document.querySelectorAll(
       "a[href], button, input, select, textarea, summary, [tabindex]",
     )].filter((element) => element.tabIndex >= 0 && !element.disabled
       && !box.contains(element) && element.getClientRects().length
+      // Inside a closed <details> only its summary takes focus, though some
+      // engines still give the hidden content boxes.
+      && !hiddenInClosedDetails(element)
       && !(element.type === "radio" && !element.checked)
       && (box.compareDocumentPosition(element) & window.Node.DOCUMENT_POSITION_PRECEDING));
     const last = stops.at(-1);
@@ -766,6 +990,125 @@ async function toastBehaviourProblems(page) {
 }
 
 // The preview output device setting, in whatever this engine supports.
+// Settings > Analysis workers with an announcer token chosen: the Station
+// choice shows (#88).  Back to the default choice with `false`.
+async function chooseAnnouncer(page, announcer = true) {
+  await page.locator("#token-scope").selectOption(announcer ? "announcer" : "analysis-worker");
+  await page.locator("#token-station-row").waitFor({ state: announcer ? "visible" : "hidden" });
+}
+
+async function tokenScopeProblems(page) {
+  await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
+  await page.locator("#tab-settings").click();
+  await page.locator("#stab-workers").click();
+  const scope = page.locator("#token-scope");
+  await scope.waitFor({ state: "visible" });
+  const problems = [];
+  const shown = () => page.evaluate(() => {
+    const row = document.getElementById("token-station-row");
+    const select = document.getElementById("token-station");
+    const help = document.getElementById("token-station-desc");
+    const box = (node) => node.getBoundingClientRect().toJSON();
+    return {
+      visible: Boolean(row.getClientRects().length && help.getClientRects().length),
+      label: select.labels?.[0]?.textContent.trim(),
+      describedBy: select.getAttribute("aria-describedby") || "",
+      options: select.options.length,
+      select: box(select),
+      scope: box(document.getElementById("token-scope")),
+      focus: document.activeElement?.id,
+    };
+  });
+  if ((await shown()).visible) problems.push("the station choice shows for a worker token");
+  await scope.focus();
+  await chooseAnnouncer(page);
+  const info = await shown();
+  if (!info.visible) problems.push("the station choice does not show for an announcer token");
+  if (info.label !== "Station") problems.push(`station label is ${JSON.stringify(info.label)}`);
+  if (info.describedBy !== "token-station-desc") problems.push("station help is not linked");
+  if (info.options < 1) problems.push("no station to choose");
+  if (info.focus !== "token-scope") problems.push(`choosing moved focus to ${info.focus}`);
+  for (const [what, rect] of [["station", info.select], ["token use", info.scope]]) {
+    if (rect.width < 24 || rect.height < 24) {
+      problems.push(`${what} select is ${Math.round(rect.width)}x${Math.round(rect.height)}`);
+    }
+  }
+  await chooseAnnouncer(page, false);
+  return problems;
+}
+
+// The voice tracker by keyboard: Record keeps focus and says "Recording"
+// once; Alt+R from another control stops it without moving focus and lets
+// the microphone go; a refused booking is words on the page, linked to
+// Book voice track, with focus still there.
+async function voiceTrackerProblems(page) {
+  await standInForVoiceTracker(page);
+  await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
+  await page.locator("#tab-voice").click();
+  await page.locator("#vt-slot").waitFor({ state: "visible" });
+  const problems = [];
+  await page.evaluate(() => {
+    window.__voiceSaid = [];
+    const region = document.getElementById("vt-status");
+    new window.MutationObserver(() => {
+      if (region.textContent) window.__voiceSaid.push(region.textContent);
+    }).observe(region, { childList: true, characterData: true, subtree: true });
+  });
+  const state = () => page.evaluate(() => ({
+    pressed: document.getElementById("vt-record").getAttribute("aria-pressed"),
+    focus: document.activeElement?.id || document.activeElement?.tagName.toLowerCase(),
+    said: [...window.__voiceSaid],
+    stopped: window.__micStopped || 0,
+  }));
+  await page.locator("#vt-record").focus();
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(300);
+  let now = await state();
+  if (now.pressed !== "true") problems.push("Enter on Record did not start recording");
+  if (now.focus !== "vt-record") problems.push(`starting moved focus to ${now.focus}`);
+  if (now.said.length !== 1 || !/^Recording\./.test(now.said[0])) problems.push(`starting said ${JSON.stringify(now.said)}`);
+  await page.locator("#vt-placement").focus();
+  await page.keyboard.press("Alt+KeyR");
+  await page.waitForTimeout(300);
+  now = await state();
+  if (now.pressed !== "false") problems.push("Alt+R did not stop recording");
+  if (now.focus !== "vt-placement") problems.push(`Alt+R moved focus to ${now.focus}`);
+  if (now.stopped < 1) problems.push("the microphone was not let go");
+  if (now.said.length !== 2 || !/^Recording stopped/.test(now.said[1])) problems.push(`stopping said ${JSON.stringify(now.said)}`);
+  await page.locator("#vt-book").focus();
+  await page.keyboard.press("Enter");
+  await page.locator("#vt-error").waitFor({ state: "visible", timeout: 5000 }).catch(() => {});
+  const refused = await page.evaluate(() => ({
+    error: document.getElementById("vt-error").textContent.trim(),
+    shown: !document.getElementById("vt-error").hidden,
+    linked: (document.getElementById("vt-book").getAttribute("aria-describedby") || "").split(" "),
+    focus: document.activeElement?.id,
+  }));
+  if (!refused.shown || !refused.error) problems.push("a refused booking shows no error");
+  if (!refused.linked.includes("vt-error")) problems.push("the error is not linked to Book voice track");
+  if (refused.focus !== "vt-book") problems.push(`a refused booking moved focus to ${refused.focus}`);
+  await page.locator("#vt-discard").click();
+  // Leaving the tab stops a recording and lets the microphone go, said
+  // once in the page-wide region (the tab's own is hidden with it).
+  await page.locator("#vt-error").waitFor({ state: "hidden", timeout: 5000 }).catch(() => {});
+  const before = (await state()).stopped;
+  await page.locator("#vt-record").click();
+  await page.waitForFunction(() => document.getElementById("vt-record").getAttribute("aria-pressed") === "true");
+  await page.locator("#tab-carts").click();
+  await page.waitForTimeout(300);
+  const left = await page.evaluate(() => ({
+    pressed: document.getElementById("vt-record").getAttribute("aria-pressed"),
+    stopped: window.__micStopped || 0,
+    said: document.getElementById("sr-status").textContent,
+  }));
+  if (left.pressed !== "false") problems.push("leaving the tab did not stop recording");
+  if (left.stopped <= before) problems.push("leaving the tab kept the microphone");
+  if (!/^You left the Voice tracks tab/.test(left.said)) problems.push(`leaving the tab said ${JSON.stringify(left.said)}`);
+  await page.locator("#tab-voice").click();
+  await page.locator("#vt-discard").click();
+  return problems;
+}
+
 async function previewOutputProblems(page) {
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   await page.locator("#tab-settings").click();
@@ -821,15 +1164,103 @@ async function previewOutputProblems(page) {
   return problems;
 }
 
+// The public status pages to audit: the default station's, and each
+// station's that the station list names (a paired or open server lists
+// them; otherwise only /status is audited).
+async function statusPagePaths(page) {
+  await page.goto(`${BASE}/status`, { waitUntil: "networkidle", timeout: 20000 });
+  const listed = await page.evaluate(async () => {
+    try {
+      const response = await fetch("/api/stations", { headers: { Accept: "application/json" } });
+      if (!response.ok) return [];
+      const body = await response.json();
+      return (body.stations || []).map((station) => station.status_path).filter(Boolean);
+    } catch {
+      return [];
+    }
+  });
+  return [...new Set(["/status", ...listed])];
+}
+
+function statusThemeState(page) {
+  return page.evaluate(() => {
+    const [r, g, b] = (window.getComputedStyle(document.body).backgroundColor.match(/\d+/g) || [])
+      .map(Number);
+    return {
+      theme: document.documentElement.getAttribute("data-theme"),
+      dark: (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 < 0.5,
+    };
+  });
+}
+
+// Every status page in every theme mode, then the layout checks.
+async function auditStatusPages(browser, out) {
+  const probe = await browser.newContext({ bypassCSP: true });
+  const paths = await statusPagePaths(await probe.newPage());
+  await probe.close();
+  out.statusPaths = paths;
+  for (const mode of THEME_MODES) {
+    const context = await themeContext(browser, mode);
+    const page = await newPage(context);
+    page.on("pageerror", (error) => out.pageerrors.push(`${mode.name} status: ${error.message}`));
+    try {
+      for (const path of paths) {
+        const where = `${mode.name} ${path}`;
+        // A stopped station's page answers 503 and is still a whole page.
+        await page.goto(`${BASE}${path}`, { waitUntil: "networkidle", timeout: 20000 });
+        await settle(page);
+        const problems = [];
+        for (const violation of await axeViolations(page)) {
+          problems.push(`axe ${violation.id}: ${violation.targets.join(", ")}`);
+        }
+        const state = await statusThemeState(page);
+        if (state.theme !== mode.stored) problems.push(`data-theme ${state.theme}`);
+        if (state.dark !== (mode.theme === "dark")) problems.push(`background not ${mode.theme}`);
+        await installContrastHelpers(page);
+        problems.push(...await focusProblems(page, "body", { measureColour: true }));
+        if (problems.length) out.statusPage[where] = problems;
+      }
+    } finally {
+      await context.close();
+    }
+  }
+  for (const [label, viewport, fontSize] of [
+    ["reflow 320", { width: 320, height: 640 }, ""],
+    ["text 200%", { width: 1280, height: 800 }, "200%"],
+  ]) {
+    const context = await browser.newContext({ viewport, reducedMotion: "reduce",
+      colorScheme: "light", bypassCSP: true });
+    if (fontSize) {
+      await context.addInitScript((size) => {
+        document.addEventListener("DOMContentLoaded", () => {
+          document.documentElement.style.fontSize = size;
+        });
+      }, fontSize);
+    }
+    const page = await newPage(context);
+    try {
+      for (const path of paths) {
+        await page.goto(`${BASE}${path}`, { waitUntil: "networkidle", timeout: 20000 });
+        const overflow = await horizontalOverflow(page);
+        if (overflow) out.statusPage[`${label} ${path}`] = [JSON.stringify(overflow)];
+      }
+    } finally {
+      await context.close();
+    }
+  }
+}
+
 export async function audit(name, launcher) {
   const browser = await launcher.launch();
   const out = {
     browser: name, axe: {}, nonText: {}, focusColour: {}, toast: {}, themeState: {},
-    reflow320: {}, text200: {}, smallChoices: {}, focus: {}, behaviour: {}, pageerrors: [],
+    reflow320: {}, text200: {}, smallChoices: {}, focus: {}, behaviour: {}, statusPage: {},
+    statusPaths: [], pageerrors: [],
   };
   if (SHOTS) mkdirSync(SHOTS, { recursive: true });
   try {
     for (const mode of THEME_MODES) await auditTheme(browser, mode, out);
+    await auditStatusPages(browser, out);
 
     const wide = await browser.newContext({ viewport: { width: 1280, height: 800 },
       reducedMotion: "reduce", colorScheme: "light", bypassCSP: true });
@@ -848,6 +1279,10 @@ export async function audit(name, launcher) {
     if (toast.length) out.behaviour.toast = toast;
     const preview = await previewOutputProblems(page);
     if (preview.length) out.behaviour.previewOutput = preview;
+    const tokenScope = await tokenScopeProblems(page);
+    if (tokenScope.length) out.behaviour.tokenScope = tokenScope;
+    const voiceTracker = await voiceTrackerProblems(page);
+    if (voiceTracker.length) out.behaviour.voiceTracker = voiceTracker;
     // 200 % text at the same window width.
     await wide.addInitScript(() => {
       document.addEventListener("DOMContentLoaded", () => {
@@ -867,6 +1302,12 @@ export async function audit(name, launcher) {
     await eachTarget(phone, async (target) => {
       const overflow = await horizontalOverflow(phone);
       if (overflow) out.reflow320[target] = overflow;
+      if (target === "settings/workers") {
+        await chooseAnnouncer(phone);
+        const shown = await horizontalOverflow(phone);
+        if (shown) out.reflow320[`${target} announcer`] = shown;
+        await chooseAnnouncer(phone, false);
+      }
     });
     await narrow.close();
     return out;
@@ -879,7 +1320,7 @@ export function validateVisualAudit(name, result) {
   const failures = [];
   for (const key of [
     "axe", "nonText", "focusColour", "toast", "themeState",
-    "reflow320", "text200", "smallChoices", "focus", "behaviour",
+    "reflow320", "text200", "smallChoices", "focus", "behaviour", "statusPage",
   ]) {
     const entries = Object.entries(result[key]);
     if (entries.length) failures.push(`${key}: ${JSON.stringify(Object.fromEntries(entries))}`);

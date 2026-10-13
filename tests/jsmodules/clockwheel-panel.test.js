@@ -53,8 +53,9 @@ function fakeServer({
   beets_fields = ["mood"],
   beets_error = null,
   pending_update = false,
+  active = "Morning",
 } = {}) {
-  const server = { clocks: { Morning: copy(MORNING) }, active: "Morning", calls: [], fail: null };
+  const server = { clocks: { Morning: copy(MORNING) }, active, pending_update, calls: [], fail: null };
   server.request = vi.fn(async (url, options = {}) => {
     const method = options.method || "GET";
     const body = options.body ? JSON.parse(options.body) : undefined;
@@ -65,7 +66,7 @@ function fakeServer({
       names: names(), active: server.active, sources: SOURCES, presets: ["night", "wakeup"], categories,
       genres, beets_fields, beets_error,
       types: ["liner", "music", "settings", "track"], cursor: 1, last_status: "Ready", notice,
-      pending_update,
+      pending_update: server.pending_update,
     });
     if (url === "/api/library/clock" && method === "GET") return snapshot();
     if (url === "/api/library/clock" && method === "POST") { server.clocks[body.name] = body; return body; }
@@ -137,42 +138,92 @@ describe("clockwheel markup", () => {
 });
 
 describe("clockwheel editor", () => {
-  it("adds a step that plays music from a category and names the category", async () => {
+  it("names category steps and selects music categories as conditions", async () => {
     expect(describeStep({ type: "category", category: "gone", selection: "least_recent" }, [], []))
       .toBe("music from a category that no longer exists, least recently played");
+    expect(describeStep({ type: "music", match: "all", conditions: [{ field: "category", category: "c1" }], selection: "least_recent" }, [], [{ id: "c1", name: "Rock gold" }]))
+      .toBe("music from category Rock gold, least recently played");
     const server = await open(fakeServer({ categories: [{ id: "c1", name: "Rock gold" }, { id: "c2", name: "2000s" }] }));
     const type = byId("clock-step-type");
-    type.value = "category";
+    expect([...type.options].map((option) => option.value)).not.toContain("category");
+    type.value = "music";
     type.dispatchEvent(new Event("change"));
-    const field = (id) => byId(id).closest(".clock-step-field");
-    expect(field("clock-step-category").hidden).toBe(false);
-    expect(field("clock-step-selection").hidden).toBe(false);
-    expect(field("clock-step-source").hidden).toBe(true);
-    expect(field("clock-step-conditions").hidden).toBe(true);
-    expect([...byId("clock-step-category").options].map((option) => option.textContent)).toEqual(["Rock gold", "2000s"]);
-    byId("clock-step-category").value = "c2";
-    byId("clock-step-selection").value = "random";
+    const first = byId("clock-step-conditions").firstElementChild;
+    const field = first.querySelector("select");
+    field.value = "category";
+    field.dispatchEvent(new Event("change"));
+    const category = first.querySelectorAll("select")[5];
+    expect(category.previousElementSibling.textContent).toBe("Music category");
+    expect([...category.options].map((option) => option.textContent)).toEqual(["Rock gold", "2000s"]);
+    category.value = "c2";
+    byId("clock-add-condition").click();
+    const second = byId("clock-step-conditions").lastElementChild;
+    second.querySelector("select").value = "category";
+    second.querySelector("select").dispatchEvent(new Event("change"));
+    second.querySelectorAll("select")[5].value = "c1";
+    byId("clock-step-match").value = "any";
     byId("clock-add-step").click();
-    expect(rowText(3)).toBe("music from category 2000s, at random");
-    await vi.waitFor(() => expect(status()).toBe("Added Step 4 of 4, music from category 2000s, at random. Not saved yet."));
-    rowButton(3, "edit").click();
-    expect(byId("clock-step-category").value).toBe("c2");
-    expect(document.activeElement).toBe(type);
+    expect(rowText(3)).toBe("music from category 2000s or category Rock gold, least recently played");
     byId("clock-save").click();
     await vi.waitFor(() => expect(server.calls.some((call) => call.method === "PUT")).toBe(true));
-    const put = server.calls.find((call) => call.method === "PUT");
-    expect(put.body.steps[3]).toEqual({ type: "category", category: "c2", selection: "random", enforce_rules: true });
+    expect(server.calls.find((call) => call.method === "PUT").body.steps[3]).toEqual({
+      type: "music", match: "any", conditions: [{ field: "category", category: "c2" }, { field: "category", category: "c1" }],
+      selection: "least_recent", enforce_rules: true,
+    });
+    await vi.waitFor(() => expect(status()).toContain("Saved Morning, 4 steps."));
+    rowButton(3, "edit").click();
+    expect(byId("clock-add-step").textContent).toBe("Update step 4");
+    type.value = "liner";
+    type.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(status()).toBe("Music category conditions changed to empty folder conditions for liner steps."));
+    expect([...byId("clock-step-conditions").firstElementChild.querySelector("select").options]
+      .map((option) => option.value)).not.toContain("category");
+    expect(byId("clock-step-conditions").firstElementChild.querySelector("select").value).toBe("folder");
+    const linerFolder = byId("clock-step-conditions").firstElementChild.querySelectorAll("select")[1];
+    expect(linerFolder.hidden).toBe(false);
+    expect(byId("clock-step-conditions").firstElementChild.querySelectorAll("select")[5].hidden).toBe(true);
+    byId("clock-add-step").click();
+    await vi.waitFor(() => expect(status()).toContain("Updated Step 4 of 4, liner from Liners or Liners"));
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toContain("Saved Morning, 4 steps."));
+    expect(server.calls.filter((call) => call.method === "PUT").at(-1).body.steps[3]).toMatchObject({
+      type: "liner", conditions: [
+        { field: "folder", source: "ids", folder: "" }, { field: "folder", source: "ids", folder: "" },
+      ],
+    });
   });
 
-  it("asks for a category first when none is saved", async () => {
-    await open(fakeServer());
-    const type = byId("clock-step-type");
-    type.value = "category";
-    type.dispatchEvent(new Event("change"));
+  it("opens and saves a legacy category step as a music condition with its settings", async () => {
+    const server = fakeServer();
+    server.clocks.Morning.steps[0] = { type: "category", category: "old", selection: "random", enforce_rules: false };
+    await open(server);
+    rowButton(0, "edit").click();
+    expect(byId("clock-step-type").value).toBe("music");
+    expect(byId("clock-step-match").value).toBe("all");
+    expect(byId("clock-step-conditions").firstElementChild.querySelector("select").value).toBe("category");
+    const category = byId("clock-step-conditions").firstElementChild.querySelectorAll("select")[5];
+    expect(category.value).toBe("old");
+    expect(category.selectedOptions[0].textContent).toBe("old (unavailable)");
+    expect(byId("clock-step-selection").value).toBe("random");
+    expect(byId("clock-step-enforce-rules").checked).toBe(false);
     byId("clock-add-step").click();
-    expect(document.activeElement).toBe(byId("clock-step-category"));
-    await vi.waitFor(() => expect(status()).toBe("Add a category under Categories first."));
-    expect(rows()).toHaveLength(3);
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(server.calls.some((call) => call.method === "PUT")).toBe(true));
+    expect(server.calls.find((call) => call.method === "PUT").body.steps[0]).toEqual({
+      type: "music", match: "all", conditions: [{ field: "category", category: "old" }],
+      selection: "random", enforce_rules: false,
+    });
+  });
+
+  it("says a step's days and hours in words", async () => {
+    const { stepHoursText } = await import("../../src/autodj/static/modules/step-hours.js");
+    expect(stepHoursText({})).toBe("");
+    expect(stepHoursText({ days: [0, 1, 2, 3, 4] })).toBe("only on weekdays");
+    expect(stepHoursText({ days: [6, 5] })).toBe("only at weekends");
+    expect(stepHoursText({ days: [0, 1, 2, 3, 4, 5, 6] })).toBe("");
+    expect(stepHoursText({ hours_from: "06:00", hours_until: "10:00" })).toBe("only every day from 06:00 until 10:00");
+    expect(stepHoursText({ days: [0, 2], hours_from: "06:00:00", hours_until: "10:00:00" }))
+      .toBe("only on Monday and Wednesday from 06:00 until 10:00");
   });
 
   it("validates restart minutes and describes steps in words", () => {
@@ -186,6 +237,15 @@ describe("clockwheel editor", () => {
     expect(describeStep({ ...MUSIC, recursive: true, source: "gone" }, SOURCES)).toBe("music from a folder that is no longer registered, with subfolders, least recently played");
     expect(describeStep({ type: "settings", preset: "night" })).toBe("switch to preset night");
     expect(describeStep({ type: "time_check" })).toBe("time check step");
+  });
+
+  it("shares step hours in descriptions used by the list and Why this track", async () => {
+    const { describeStep: sharedDescribeStep } = await import("../../src/autodj/static/modules/clockwheel-step.js");
+    expect(describeStep).toBe(sharedDescribeStep);
+    expect(sharedDescribeStep({ ...MUSIC, days: [0, 1, 2, 3, 4], hours_from: "06:00", hours_until: "10:00" }, SOURCES))
+      .toBe("music from Rock, least recently played, only on weekdays from 06:00 until 10:00");
+    expect(sharedDescribeStep({ type: "settings", preset: "night", days: [5, 6] }))
+      .toBe("switch to preset night, only at weekends");
   });
 
   it("says how every clockwheel music step chooses among its matches", () => {
@@ -351,7 +411,7 @@ describe("clockwheel editor", () => {
     expect(status()).toBe("");
   });
 
-  it("navigates step names with arrows, edits with Enter and asks before Delete removes a step", async () => {
+  it("navigates step names with arrows, edits with Enter and deletes like the button", async () => {
     await open(fakeServer());
     rowCell(1, "edit").focus();
     rowCell(1, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
@@ -376,14 +436,10 @@ describe("clockwheel editor", () => {
     rowCell(2, "edit").focus();
     rowCell(2, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     expect(byId("clock-step-legend").textContent).toBe("Edit step 3");
+    byId("clock-cancel-edit").click();
     rowCell(2, "edit").focus();
     rowCell(2, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }));
-    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
-    expect(byId("confirm-title").textContent).toBe("Delete step 3, track Album/Song.flac?");
-    expect(byId("confirm-accept").textContent).toBe("Delete step");
-    expect(document.activeElement).toBe(byId("confirm-cancel"));
-    expect(rows()).toHaveLength(3);
-    byId("confirm-accept").click();
+    expect(byId("confirm-dialog").open).toBe(false);
     await vi.waitFor(() => expect(status()).toBe("Deleted step 3, track Album/Song.flac. 2 steps remain. Not saved yet."));
     expect(byId("confirm-dialog").open).toBe(false);
     expect(rows()).toHaveLength(2);
@@ -431,32 +487,121 @@ describe("clockwheel editor", () => {
     expect([...byId("clock-slots").querySelectorAll('[role="gridcell"]')].filter((item) => item.tabIndex === 0)).toEqual([rowCell(1, "duplicate")]);
   });
 
-  it("keeps the step when the Delete key's question is cancelled", async () => {
-    await open(fakeServer());
-    rowCell(0, "duplicate").focus();
-    rowCell(0, "duplicate").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }));
-    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
-    expect(byId("confirm-title").textContent).toBe("Delete step 1, music from Rock, least recently played?");
-    expect(document.activeElement).toBe(byId("confirm-cancel"));
-    byId("confirm-cancel").click();
-    await vi.waitFor(() => expect(document.activeElement).toBe(rowCell(0, "duplicate")));
-    expect(rows()).toHaveLength(3);
+  it("undoes either Delete path and restores the removed step's focus without saving", async () => {
+    const server = await open(fakeServer());
+    expect(byId("clock-undo").disabled).toBe(true);
+    rowButton(0, "delete").click();
+    expect(rows()).toHaveLength(2);
+    expect(byId("confirm-dialog").open).toBe(false);
+    expect(byId("clock-undo").disabled).toBe(false);
+    byId("clock-undo").click();
     expect(rowText(0)).toBe("music from Rock, least recently played");
-    expect(byId("clock-next").textContent).not.toBe("Save to play these changes.");
-    expect(status()).toBe("");
+    expect(document.activeElement).toBe(rowCell(0, "edit"));
+    expect(byId("clock-undo").disabled).toBe(true);
+    rowCell(0, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }));
+    document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true }));
+    expect(rows()).toHaveLength(3);
+    expect(document.activeElement).toBe(rowCell(0, "edit"));
+    await vi.waitFor(() => expect(status()).toBe("Undid the last step change. Not saved yet."));
+    expect(server.calls.every((call) => call.method === "GET")).toBe(true);
   });
 
-  it("deletes the last step after the Delete key's question and moves focus to the step type", async () => {
+  it("refuses Delete and Undo while a step edit is open and keeps the form values", async () => {
+    await open(fakeServer());
+    rowButton(0, "delete").click();
+    rowButton(1, "edit").click();
+    byId("clock-step-path").value = "Unsaved/Path";
+    expect(byId("clock-undo").disabled).toBe(true);
+    expect(rowButton(0, "delete").disabled).toBe(true);
+
+    rowButton(0, "delete").click();
+    rowCell(0, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }));
+    byId("clock-undo").click();
+    const undo = new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true });
+    byId("clock-step-path").dispatchEvent(undo);
+
+    expect(undo.defaultPrevented).toBe(false);
+    expect(rows()).toHaveLength(2);
+    expect(byId("clock-step-path").value).toBe("Unsaved/Path");
+    expect(byId("clock-step-legend").textContent).toBe("Edit step 2");
+    byId("clock-cancel-edit").click();
+    expect(byId("clock-undo").disabled).toBe(false);
+    byId("clock-undo").click();
+    expect(rows()).toHaveLength(3);
+  });
+
+  it("keeps an unsaved edit on its own step when an earlier step is duplicated or moved", async () => {
+    await open(fakeServer());
+    rowButton(2, "edit").click();
+    byId("clock-step-path").value = "Unsaved/Path.flac";
+    rowButton(0, "duplicate").click();
+    expect(byId("clock-step-legend").textContent).toBe("Edit step 4");
+    expect(byId("clock-add-step").textContent).toBe("Update step 4");
+    rowButton(3, "move-up").click();
+    expect(byId("clock-step-legend").textContent).toBe("Edit step 3");
+    expect(byId("clock-step-path").value).toBe("Unsaved/Path.flac");
+    byId("clock-step-type").dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true }));
+    expect(rows()).toHaveLength(4);
+    byId("clock-add-step").click();
+    expect(rowText(2)).toBe("track Unsaved/Path.flac");
+    expect(rowText(3)).toContain("liner from Top");
+  });
+
+  it("restores the last deleted step with Ctrl+Z from Step type", async () => {
     const server = fakeServer();
     server.clocks.Morning.steps = [MUSIC];
     await open(server);
-    rowCell(0, "edit").focus();
     rowCell(0, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }));
-    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
-    byId("confirm-accept").click();
-    await vi.waitFor(() => expect(status()).toBe("Deleted step 1, music from Rock, least recently played. No steps are left. Not saved yet."));
     expect(rows()).toHaveLength(0);
     expect(document.activeElement).toBe(byId("clock-step-type"));
+    document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true }));
+    expect(rows()).toHaveLength(1);
+    expect(document.activeElement).toBe(rowCell(0, "edit"));
+  });
+
+  it("undoes move, duplicate, add and update in order, without intercepting text undo", async () => {
+    await open(fakeServer());
+    rowButton(0, "move-down").click();
+    rowButton(1, "duplicate").click();
+    byId("clock-step-type").value = "settings";
+    byId("clock-step-type").dispatchEvent(new Event("change"));
+    byId("clock-step-preset").value = "night";
+    byId("clock-add-step").click();
+    rowButton(4, "edit").click();
+    byId("clock-step-preset").value = "wakeup";
+    byId("clock-add-step").click();
+    expect(rowText(4)).toBe("switch to preset wakeup");
+    const textUndo = new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true });
+    byId("clock-name").dispatchEvent(textUndo);
+    expect(textUndo.defaultPrevented).toBe(false);
+    expect(rows()).toHaveLength(5);
+    byId("clock-undo").click();
+    expect(rowText(4)).toBe("switch to preset night");
+    byId("clock-undo").click();
+    expect(rows()).toHaveLength(4);
+    byId("clock-undo").click();
+    expect(rows()).toHaveLength(3);
+    byId("clock-undo").click();
+    expect(rowText(0)).toBe("music from Rock, least recently played");
+    expect(byId("clock-undo").disabled).toBe(true);
+  });
+
+  it("keeps undo across refresh and failed saves, and clears it on save or sign-out", async () => {
+    const server = await open(fakeServer());
+    rowButton(0, "delete").click();
+    await controls.refresh();
+    expect(byId("clock-undo").disabled).toBe(false);
+    server.fail = new Error("Could not save");
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toBe("Could not save"));
+    expect(byId("clock-undo").disabled).toBe(false);
+    server.fail = null;
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toContain("Saved Morning, 2 steps."));
+    expect(byId("clock-undo").disabled).toBe(true);
+    rowButton(0, "delete").click();
+    controls.clearProtectedData();
+    expect(byId("clock-undo").disabled).toBe(true);
   });
 
   it("moves a step with Alt+Down, keeps focus on it and says the new position", async () => {
@@ -503,6 +648,15 @@ describe("clockwheel editor", () => {
   it("shows when saved active-wheel changes are waiting for restart", async () => {
     await open(fakeServer({ pending_update: true }));
     expect(byId("clock-next").textContent).toBe("Saved changes are waiting for the next clock restart.");
+    expect(status()).toBe("Saved changes are waiting for the next clock restart.");
+  });
+
+  it("hides Apply timing for an inactive wheel", async () => {
+    const server = await open(fakeServer());
+    expect(byId("clock-apply-timing").hidden).toBe(false);
+    server.active = "Night";
+    await controls.refresh();
+    expect(byId("clock-apply-timing").hidden).toBe(true);
   });
 
   it("moves with the buttons and moves focus to the other move button at an end", async () => {
@@ -571,6 +725,58 @@ describe("clockwheel editor", () => {
     byId("clock-cancel-edit").click();
     expect(document.activeElement).toBe(rowCell(2, "edit"));
     expect(byId("clock-add-step").textContent).toBe("Add step");
+  });
+
+  it("gives a step days and hours, says them in its name and fills them in on Edit", async () => {
+    const server = await open(fakeServer());
+    rowButton(2, "edit").click();
+    expect(byId("clock-step-day-4").checked).toBe(false);
+    byId("clock-step-day-4").checked = true;
+    byId("clock-step-day-5").checked = true;
+    byId("clock-step-hours-from").value = "22:00";
+    byId("clock-step-hours-until").value = "02:00";
+    byId("clock-add-step").click();
+    expect(rowText(2)).toBe("track Album/Song.flac, only on Friday and Saturday from 22:00 until 02:00");
+    expect(byId("clock-step-day-4").checked).toBe(false); // the form is cleared for the next step
+    expect(byId("clock-step-hours-from").value).toBe("");
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toContain("Saved Morning, 3 steps."));
+    const put = server.calls.find((call) => call.method === "PUT");
+    expect(put.body.steps[2]).toEqual({
+      type: "track", source: "jazz", path: "Album/Song.flac",
+      days: [4, 5], hours_from: "22:00", hours_until: "02:00",
+    });
+    expect(put.body.steps[0]).not.toHaveProperty("days");
+    rowButton(2, "edit").click();
+    expect(byId("clock-step-day-5").checked).toBe(true);
+    expect(byId("clock-step-hours-until").value).toBe("02:00");
+    rowButton(0, "edit").click();
+    expect(byId("clock-step-day-5").checked).toBe(false);
+  });
+
+  it("names a half-filled time window, links the error and keeps the step out", async () => {
+    await open(fakeServer());
+    const from = byId("clock-step-hours-from");
+    from.value = "22:00";
+    byId("clock-add-step").click();
+    const until = byId("clock-step-hours-until");
+    const message = "Enter both Allowed from and Allowed until, or leave both empty.";
+    expect(document.activeElement).toBe(until);
+    expect(until.getAttribute("aria-invalid")).toBe("true");
+    expect(until.getAttribute("aria-describedby")).toBe("clock-step-hours-error");
+    expect(byId("clock-step-hours-error").textContent).toBe(message);
+    expect(byId("clock-step-hours-error").hidden).toBe(false);
+    await vi.waitFor(() => expect(status()).toBe(message));
+    expect(rows()).toHaveLength(3);
+    until.value = "22:00";
+    until.dispatchEvent(new Event("input"));
+    expect(until.hasAttribute("aria-invalid")).toBe(false);
+    byId("clock-add-step").click();
+    expect(byId("clock-step-hours-error").textContent).toBe("Allowed until must differ from Allowed from.");
+    until.value = "02:00";
+    byId("clock-add-step").click();
+    expect(byId("clock-step-hours-error").hidden).toBe(true);
+    expect(rows()).toHaveLength(4);
   });
 
   it("shows only the fields of the chosen step type and refuses paths that leave the folder", async () => {
@@ -771,6 +977,7 @@ describe("clockwheel step conditions, for screen readers", () => {
     expect(host.hasAttribute("aria-label")).toBe(false);
     expect(byId(host.getAttribute("aria-labelledby")).textContent).toBe("Conditions");
     const help = byId("clock-step-conditions-help");
+    expect(help.textContent).toContain("Library tools, Categories");
     expect(help.textContent).toContain("MM:SS");
     expect(help.textContent).toContain("*");
     const [row] = conditions();
@@ -849,6 +1056,19 @@ describe("clockwheel step conditions, for screen readers", () => {
     ]);
   });
 
+  it("rejects negative clockwheel durations now that signed cue times are accepted", async () => {
+    await open(fakeServer());
+    startMusicStep();
+    const [row] = conditions();
+    setField(row, "duration");
+    setOperator(row, "gte");
+    const value = row.querySelectorAll("input[type=text]")[1];
+    value.value = "-3";
+    byId("clock-add-step").click();
+    await vi.waitFor(() => expect(status()).toBe("Duration must be non-negative."));
+    expect(value.getAttribute("aria-invalid")).toBe("true");
+  });
+
   it("clears marks on rows after the one that fails", async () => {
     await open(fakeServer());
     startMusicStep();
@@ -897,5 +1117,25 @@ describe("clockwheel step conditions, for screen readers", () => {
     await controls.refresh();
     expect([...genre.options].map((option) => option.value)).toEqual(["Rock", "Jazz", "Ambient"]);
     expect(genre.value).toBe("Jazz");
+  });
+
+  it("leaves a focused category list alone until focus leaves it", async () => {
+    const categories = [{ id: "c1", name: "Rock" }, { id: "c2", name: "Jazz" }];
+    await open(fakeServer({ categories }));
+    startMusicStep();
+    const [row] = conditions();
+    setField(row, "category");
+    const category = row.querySelectorAll("select")[5];
+    category.value = "c2";
+    category.focus();
+    const before = [...category.options];
+    categories.push({ id: "c3", name: "Ambient" });
+    await controls.refresh();
+    expect([...category.options]).toEqual(before);
+    expect(document.activeElement).toBe(category);
+    category.blur();
+    await controls.refresh();
+    expect([...category.options].map((option) => option.value)).toEqual(["c1", "c2", "c3"]);
+    expect(category.value).toBe("c2");
   });
 });

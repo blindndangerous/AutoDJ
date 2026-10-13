@@ -607,6 +607,66 @@ class TestLiners:
         body = tc.get("/api/liners").json()
         assert "hello.mp3" in body["files"]
 
+    def test_a_new_liner_upload_does_not_inherit_left_behind_dates(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        from autodj.clip_dates import ClipDates, LinerDates
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(tmp_path / "active")
+        tc = TestClient(create_app(bridge))
+        store = LinerDates(tc.app.state.stations.default.paths.liner_dates)
+        # promo.mp3 was deleted outside AutoDJ; its dates stayed behind.
+        store.set("promo.mp3", ClipDates(not_after="2000-01-01"))
+        store.set("id.wav", ClipDates(not_after="2000-01-01"))
+        files = {"file": ("promo.mp3", b"audio-bytes", "audio/mpeg")}
+        assert tc.post("/api/liners/upload", files=files).status_code == 200
+        assert set(store.all()) == {"id.wav"}
+        listed = {entry["id"]: entry for entry in tc.get("/api/liners").json()["items"]}
+        assert listed["promo.mp3"]["playable"] is True
+        # Replacing a liner on purpose keeps its dates.
+        (folder / "id.wav").write_bytes(b"\x00")
+        replaced = tc.post(
+            "/api/liners/upload?replace=true",
+            files={"file": ("id.wav", b"new-bytes", "audio/wav")},
+        )
+        assert replaced.status_code == 200, replaced.text
+        assert set(store.all()) == {"id.wav"}
+
+    def test_an_upload_waits_while_the_dates_file_cannot_be_read(
+        self, bridge, tmp_path, monkeypatch
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        from autodj.clip_dates import ClipDates, LinerDates
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        (folder / "id.wav").write_bytes(b"\x00")
+        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(tmp_path / "active")
+        tc = TestClient(create_app(bridge))
+        store = tc.app.state.stations.default.liner_gate.store
+        store.set("promo.mp3", ClipDates(not_after="2000-01-01"))
+        store.set("id.wav", ClipDates(not_after="2000-01-01"))
+
+        def unreadable(*_args: object) -> None:
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(LinerDates, "forget", unreadable)
+        monkeypatch.setattr(LinerDates, "set", unreadable)
+        files = {"file": ("promo.mp3", b"audio-bytes", "audio/mpeg")}
+        refused = tc.post("/api/liners/upload", files=files)
+        assert refused.status_code == 503
+        assert "could not be read just now" in refused.json()["detail"]
+        assert not (folder / "promo.mp3").exists()
+        deleted = tc.delete("/api/liners/file/id.wav")
+        assert deleted.status_code == 200
+        assert deleted.json()["deleted"] == "id.wav"
+        assert "could not be forgotten just now" in deleted.json()["message"]
+
     def test_liner_upload_enforces_configured_limit(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
@@ -736,7 +796,13 @@ class TestRepeatSettings:
         response = client.post("/api/playback-settings", json=payload)
 
         assert response.status_code == 200
-        assert response.json()["playback"]["repeat_rules"] == payload["repeat_rules"]
+        # Without their own limits, related artists keep the artist rule's.
+        assert response.json()["playback"]["repeat_rules"] == {
+            **payload["repeat_rules"],
+            "related_artist": payload["repeat_rules"]["artist"],
+            "related_track": {"tracks": 20, "minutes": 0.0},
+            "use_related_tracks": False,
+        }
         assert bridge.player._state.rules.related.related_to("alpha") == {"beta"}
 
         path.write_text('[related]\n"Alpha" = ["Gamma"]\n', encoding="utf-8")
@@ -785,6 +851,51 @@ class TestRepeatSettings:
         assert bridge.get_settings()["playback"]["related_artists_problem"].startswith(
             "The related artists file is not valid"
         )
+
+    def test_related_tracks_load_on_save_with_their_own_limits(self, bridge, tmp_path) -> None:
+        client = self._client(bridge, tmp_path)
+        path = bridge.player._cfg.index.active_dir / "related-tracks.toml"
+        path.write_text('[related]\n"Alpha - One" = ["Beta - Two"]\n', encoding="utf-8")
+        payload = self._payload()
+        payload["repeat_rules"]["related_track"] = {"tracks": 7, "minutes": 15}
+        payload["repeat_rules"]["use_related_tracks"] = True
+
+        response = client.post("/api/playback-settings", json=payload)
+
+        assert response.status_code == 200
+        rules = bridge.player._state.rules
+        assert rules.related_tracks.related_to(("beta", "two")) == {("alpha", "one")}
+        assert (rules.related_track_window, rules.related_track_minutes) == (7, 15.0)
+        playback = response.json()["playback"]
+        assert playback["repeat_rules"]["use_related_tracks"] is True
+        assert playback["related_tracks_problem"] is None
+        assert playback["related_tracks_default_file"] == str(path.resolve())
+
+    def test_invalid_related_tracks_file_keeps_live_repeat_settings(self, bridge, tmp_path) -> None:
+        client = self._client(bridge, tmp_path)
+        path = bridge.player._cfg.index.active_dir / "related-tracks.toml"
+        path.write_text('[related]\n"Alpha - One" = ["Beta - Two"]\n', encoding="utf-8")
+        payload = self._payload()
+        payload["repeat_rules"]["use_related_tracks"] = True
+        assert client.post("/api/playback-settings", json=payload).status_code == 200
+        state_rules = bridge.player._state.rules
+        bridge.save_persistent_state.reset_mock()
+        path.write_text('[related]\n"Alpha" = ["Beta - Two"]\n', encoding="utf-8")
+
+        response = client.post("/api/playback-settings", json=payload)
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "The related tracks file is not valid."
+        assert bridge.player._state.rules is state_rules
+        bridge.save_persistent_state.assert_not_called()
+        assert bridge.get_settings()["playback"]["related_tracks_problem"] == (
+            "The related tracks file is not valid."
+        )
+
+        # Turned off, the broken file is not read and the save goes through.
+        payload["repeat_rules"]["use_related_tracks"] = False
+        assert client.post("/api/playback-settings", json=payload).status_code == 200
+        assert not bridge.player._state.rules.related_tracks.links
 
     def test_api_rejects_related_file_path(self, bridge, tmp_path) -> None:
         client = self._client(bridge, tmp_path)
@@ -2958,7 +3069,7 @@ class TestPostQueueSeed:
         # _pick_next called for prefetch refresh after pop -> seed = nxt
         # (the just-played queued track), not pre_queue_seed (which is
         # None in last_queued mode).
-        bridge.player._pick_next.assert_called_with(last_queued)
+        assert bridge.player._pick_next.call_args.args == (last_queued,)
 
     def test_pre_queue_mode_rewinds_to_pre_queue_track(self, bridge) -> None:
         bridge.player._dry_run = True
@@ -2971,7 +3082,7 @@ class TestPostQueueSeed:
         bridge.player._pick_next.return_value = _make_entry(99)
         bridge.advance_now()
         # Queue drained -> _pick_next seed should be pre_queue, not target.
-        bridge.player._pick_next.assert_called_with(pre_queue)
+        assert bridge.player._pick_next.call_args.args == (pre_queue,)
         assert bridge.player._state.pre_queue_seed is None
 
     def test_pre_queue_seed_cleared_when_queue_manually_emptied(self, bridge) -> None:

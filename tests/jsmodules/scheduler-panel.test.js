@@ -209,8 +209,25 @@ describe("Schedule panel", () => {
       repeat.value = value;
       repeat.dispatchEvent(new Event("change", { bubbles: true }));
       expect(visible()).toEqual(fields);
+      expect(byId("schedule-range").hidden).toBe(value === "once");
       expect(document.activeElement).toBe(repeat);
     }
+  });
+
+  it("keeps a one-time event's saved date range in view, to keep or clear", async () => {
+    await openPanel(fakeServer());
+    byId("schedule-add").click();
+    const repeat = byId("schedule-repeat");
+    byId("schedule-start-date").value = "2026-11-27";
+    repeat.value = "once";
+    repeat.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(byId("schedule-range").hidden).toBe(false);
+    byId("schedule-start-date").value = "";
+    repeat.value = "daily";
+    repeat.dispatchEvent(new Event("change", { bubbles: true }));
+    repeat.value = "once";
+    repeat.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(byId("schedule-range").hidden).toBe(true);
   });
 
   it("builds an action's fields again when the action changes", async () => {

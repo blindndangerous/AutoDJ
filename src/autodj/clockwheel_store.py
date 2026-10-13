@@ -17,6 +17,12 @@ absolute path and a browser never sends one.  ``folder`` is ``""`` for the
 source folder itself.  A category step names a rotation category by its ID
 (see :mod:`autodj.categories`), so renaming the category keeps the step.
 
+Any step may also keep to chosen days and hours: ``days`` (0 is Monday),
+``hours_from`` and ``hours_until`` ("22:00"), with the rule rotation
+categories use (:func:`autodj.categories.daypart_refusal`).  Outside them
+the step is skipped, as an empty one is.  A step without them is written
+without the keys, so an older AutoDJ still reads the file.
+
 Step types live in a registry, like the scheduler's actions.  Loading a
 clockwheel with a type nobody registered fails with an error that names
 the type.  A feature adds its own type (carts, time checks, ad breaks)
@@ -135,10 +141,12 @@ def _selection(value: Mapping[str, Any]) -> tuple[str, bool]:
 
 
 def _condition(value: Any) -> dict[str, Any]:
-    from autodj.clock_conditions import validate_metadata_condition
+    from autodj.clock_conditions import validate_category_condition, validate_metadata_condition
 
     if not isinstance(value, dict) or not isinstance(value.get("field"), str):
         raise ValueError("Each condition needs a field")
+    if value["field"] == "category":
+        return validate_category_condition(value)
     if value["field"] != "folder":
         return validate_metadata_condition(value)
     if set(value) - {"field", "source", "folder", "recursive"}:
@@ -176,7 +184,10 @@ def _folder_step(value: Mapping[str, Any]) -> dict[str, Any]:
         match = value.get("match", "all")
         if match not in ("all", "any"):
             raise ValueError("Choose Match all or Match any for the step")
-        step.update(match=match, conditions=[_condition(item) for item in conditions])
+        normalized = [_condition(item) for item in conditions]
+        if value["type"] != "music" and any(c["field"] == "category" for c in normalized):
+            raise ValueError("Category conditions are only available for music steps")
+        step.update(match=match, conditions=normalized)
     else:
         condition = _condition(
             {
@@ -188,6 +199,13 @@ def _folder_step(value: Mapping[str, Any]) -> dict[str, Any]:
     if require_following:
         step["require_following"] = True
     return step
+
+
+def step_categories(step: Mapping[str, Any]) -> set[str]:
+    """The category references in either a legacy step or its conditions."""
+    if step["type"] == "category":
+        return {step["category"]}
+    return {c["category"] for c in step.get("conditions", ()) if c["field"] == "category"}
 
 
 def step_conditions(step: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -273,9 +291,16 @@ def validate_step(value: Any) -> dict[str, Any]:
             f"{', '.join(step_types())}; a clockwheel that uses {kind!r} needs the "
             "AutoDJ version that added it"
         )
-    validated = validator(value)
+    # Days and hours belong to every step type, so they are checked here and
+    # the type's own validator never sees them.
+    from autodj.categories import STEP_HOURS_KEYS, parse_step_hours
+
+    hours = parse_step_hours(value)
+    validated = validator({key: item for key, item in value.items() if key not in STEP_HOURS_KEYS})
     if not isinstance(validated, dict) or validated.get("type") != kind:
         raise ValueError(f"The {kind!r} step validator returned an invalid step")
+    if hours is not None:
+        validated.update(hours.to_json())
     return validated
 
 

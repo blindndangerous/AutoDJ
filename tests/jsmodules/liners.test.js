@@ -666,6 +666,10 @@ describe("liner play dates", () => {
         return Promise.resolve(reply);
       }
       if (url === "/api/liners/test") return Promise.resolve(json({ played: JSON.parse(options.body).name }));
+      if (url.startsWith("/api/liners/file/") && options.method === "DELETE") {
+        items = items.filter((item) => `/api/liners/file/${encodeURIComponent(item.id)}` !== url);
+        return Promise.resolve(json({ deleted: "id.wav", message: "Its play dates could not be forgotten just now" }));
+      }
       return Promise.reject(new Error(`Unexpected request: ${url}`));
     });
     vi.stubGlobal("fetch", fetchImpl);
@@ -724,6 +728,87 @@ describe("liner play dates", () => {
       const names = fetchImpl.mock.calls.filter(([url]) => url === "/api/liners/test")
         .map(([, options]) => JSON.parse(options.body).name);
       expect(new Set(names)).toEqual(new Set(["id.wav"]));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("says Skipped now when the station's day changes, in place and without a sound", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval"] });
+    try {
+      vi.setSystemTime(new Date("2026-12-27T06:50:00Z")); // 23:50 on 26 December in Denver
+      const open = { ...PROMO, playable: true, unplayable_text: "" };
+      const listed = { timezone: "America/Denver", today: "2026-12-26", items: [open, ID] };
+      const { list, fetchImpl, status } = await install(undefined, listed);
+      const row = list.querySelector('li[data-liner-id="promo.mp3"]');
+      expect(row.firstElementChild.textContent).toBe("promo.mp3. Plays until 26 December 2026");
+      const button = datesButton(list, "promo.mp3");
+      button.focus();
+      const said = status.textContent;
+      vi.advanceTimersByTime(60_000); // the same day: nothing is asked
+      expect(fetchImpl.mock.calls.filter(([url]) => url === "/api/liners")).toHaveLength(1);
+      vi.setSystemTime(new Date("2026-12-27T07:01:00Z"));
+      Object.assign(listed, { today: "2026-12-27", items: [PROMO, ID] }); // as the server says then
+      vi.advanceTimersByTime(60_000);
+      await vi.waitFor(() => expect(row.firstElementChild.textContent).toBe(
+        "promo.mp3. Plays until 26 December 2026. Skipped now: expired after 26 December 2026"));
+      expect(list.querySelector('li[data-liner-id="promo.mp3"]')).toBe(row); // not redrawn
+      expect(document.activeElement).toBe(button);
+      expect(status.textContent).toBe(said);
+      vi.advanceTimersByTime(60_000);
+      expect(fetchImpl.mock.calls.filter(([url]) => url === "/api/liners")).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps focus on the same liner when a midnight refresh finds the list changed", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval"] });
+    try {
+      vi.setSystemTime(new Date("2026-12-27T06:50:00Z"));
+      const open = { ...PROMO, playable: true, unplayable_text: "" };
+      const listed = { timezone: "America/Denver", today: "2026-12-26", items: [open, ID] };
+      const { list } = await install(undefined, listed);
+      datesButton(list, "id.wav").focus();
+      // A liner was added outside this page meanwhile, so the rows are drawn again.
+      const added = { ...ID, id: "new.wav", name: "new.wav" };
+      Object.assign(listed, { today: "2026-12-27", items: [added, PROMO, ID] });
+      vi.setSystemTime(new Date("2026-12-27T07:01:00Z"));
+      vi.advanceTimersByTime(60_000);
+      await vi.waitFor(() => expect(list.querySelectorAll("li")).toHaveLength(3));
+      await vi.waitFor(() => expect(document.activeElement).toBe(datesButton(list, "id.wav")));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("says when a deleted liner's play dates could not be forgotten", async () => {
+    const { list, status } = await install();
+    const dialog = document.getElementById("confirm-dialog");
+    dialog.showModal = () => { dialog.open = true; };
+    dialog.close = (value = "") => {
+      dialog.returnValue = value;
+      dialog.open = false;
+      dialog.dispatchEvent(new Event("close"));
+    };
+    list.querySelector('button[aria-label="Delete id.wav"]').click();
+    await vi.waitFor(() => expect(dialog.open).toBe(true));
+    document.getElementById("confirm-accept").click();
+    await vi.waitFor(() => expect(status.textContent).toBe(
+      "Deleted id.wav. Its play dates could not be forgotten just now."));
+  });
+
+  it("puts focus on the list heading when a midnight redraw leaves no liner", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval"] });
+    try {
+      vi.setSystemTime(new Date("2026-12-27T06:50:00Z"));
+      const listed = { timezone: "America/Denver", today: "2026-12-26", items: [ID] };
+      const { list } = await install(undefined, listed);
+      datesButton(list, "id.wav").focus();
+      Object.assign(listed, { today: "2026-12-27", items: [], files: [] });
+      vi.setSystemTime(new Date("2026-12-27T07:01:00Z"));
+      vi.advanceTimersByTime(60_000);
+      await vi.waitFor(() => expect(document.activeElement?.id).toBe("ln-files-heading"));
     } finally {
       vi.useRealTimers();
     }

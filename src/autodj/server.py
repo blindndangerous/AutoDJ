@@ -77,7 +77,10 @@ from starlette.types import Receive, Scope, Send
 
 # PlayerBridge lives in autodj._bridge; it is re-exported here.
 from autodj._bridge import PlayerBridge
+from autodj.breaks_api import ANNOUNCER_SCOPES, UPLOAD_PATH, VOICE_UPLOAD_PATH
+from autodj.breaks_api import MULTIPART_OVERHEAD_BYTES as BREAK_MULTIPART_OVERHEAD
 from autodj.categories_api import install_categories
+from autodj.config import BreaksConfig
 from autodj.icy import METAINT
 from autodj.indexer import analysis_identity
 from autodj.lan import PAIRING_ON_REQUEST_HINT, format_lan_banner, lan_urls, running_in_container
@@ -85,8 +88,8 @@ from autodj.listener_access import (
     AddressLimitError,
     BannedAddressError,
     ListenerAuthLimiter,
+    forwarded_allow_ips,
     normalize_address,
-    proxy_allowlist,
 )
 from autodj.machine_tokens import MachineTokenStore
 from autodj.model_identity import CachedModelCommit
@@ -103,7 +106,12 @@ from autodj.security import (
     new_request_id,
     peer_address,
 )
-from autodj.station_log import CURRENT_STATION, install_log_prefix, station_thread
+from autodj.station_log import (
+    CURRENT_STATION,
+    DEFAULT_SLUG,
+    install_log_prefix,
+    station_thread,
+)
 from autodj.station_routes import (
     STATION_PREFIX,
     StationRouter,
@@ -113,16 +121,20 @@ from autodj.station_routes import (
 )
 from autodj.station_routes import audio_mime as _audio_mime
 from autodj.stations import (
+    AbandonedPlayer,
     ExtraStation,
     SharedLibrary,
     StationControlError,
     StationPaths,
     StationRegistry,
     StationRuntime,
+    StoppedStation,
+    public_feed_path,
     quiesce_cache_writers,
     tick_stream_workers,
 )
-from autodj.status_page import STATUS_PAGE_CSP, render_status_page
+from autodj.status_page import STATUS_PAGE_CSP, render_off_air_page, render_status_page
+from autodj.stereo import SAFE_FFMPEG_INPUT
 from autodj.stereotool_presets import MAX_PRESET_BYTES
 from autodj.stream import EncoderUnavailableError, ListenerLimitError
 from autodj.tags_api import TAG_BODY_MAX_BYTES, install_tag_editor, tag_form
@@ -529,6 +541,13 @@ class LibraryFolderUpdateBody(BaseModel):
     advanced: bool | None = None
 
 
+class LibraryRescanBody(BaseModel):
+    """Options for an explicit library rescan."""
+
+    model_config = ConfigDict(extra="forbid")
+    override_tags: StrictBool = False
+
+
 class SongPointsBody(BaseModel):
     """Editable points; the catalog validates their times against the recording."""
 
@@ -576,6 +595,7 @@ async def _start_alac_transcoder(executable: str, source: BinaryIO) -> Any:
         executable,
         "-loglevel",
         "error",
+        *SAFE_FFMPEG_INPUT,
         "-i",
         "pipe:0",
         "-c:a",
@@ -823,7 +843,30 @@ def create_app(
                     "A rotation test was still running %.2f seconds after it was cancelled",
                     _SHUTDOWN_TIMEOUT_S,
                 )
-            writers_quiesced, cache_closed = await stations.shutdown(library, _SHUTDOWN_TIMEOUT_S)
+            # So does an hour preview (#126): it ends within its own time limit,
+            # and a worker that has not stopped keeps the library open.
+            hour_previews = getattr(app.state, "hour_previews", None)
+            readers_stopped = True
+            if hour_previews is not None and not await asyncio.to_thread(
+                hour_previews.shutdown, _SHUTDOWN_TIMEOUT_S
+            ):
+                readers_stopped = False
+                logger.error(
+                    "An hour preview was still reading the library %.2f seconds after "
+                    "shutdown began; the library is left open rather than closed under it",
+                    _SHUTDOWN_TIMEOUT_S,
+                )
+            writers_quiesced, cache_closed = await stations.shutdown(
+                library, _SHUTDOWN_TIMEOUT_S, readers_stopped=readers_stopped
+            )
+            from autodj.mastering import kill_leftover_processes
+
+            # A player that would not stop kept its mastering process; no
+            # Stereo Tool may outlive the server.  In a worker thread: it
+            # waits up to 2 seconds for each process it kills.
+            loop = asyncio.get_running_loop()
+            if killed := await loop.run_in_executor(None, kill_leftover_processes):
+                logger.warning("Stopped %d mastering process(es) left running", killed)
             if writers_quiesced and cache_closed:
                 logger.info("Server stopped cleanly.")
             elif not writers_quiesced:
@@ -863,7 +906,18 @@ def create_app(
         client.  A rejected ``NaN``/``Infinity`` cannot be re-encoded, so the
         echo itself would raise and turn a validation error into a 500.  Only
         the type, location and message are returned.
+
+        Only an error marked ``reports_field`` (a cart's backwards play
+        dates, :class:`autodj.carts.CartDatesError`) answers with its message
+        and ``field``, so the cart editor can link the error to the field;
+        every other endpoint keeps this list format.
         """
+        for error in exc.errors():
+            cause = (error.get("ctx") or {}).get("error")
+            named = getattr(cause, "field", None)
+            if getattr(cause, "reports_field", False) is True and isinstance(named, str) and named:
+                message = str(getattr(cause, "message", "") or cause)
+                return JSONResponse(status_code=422, content={"detail": message, "field": named})
         detail = [
             {
                 "type": str(error.get("type", "")),
@@ -919,6 +973,9 @@ def create_app(
         "/api/stereo-tool-presets/upload": lambda: MAX_PRESET_BYTES + _MULTIPART_OVERHEAD_BYTES,
         "/api/schedule": lambda: _SCHEDULE_BODY_MAX_BYTES,
         "/api/machine-tokens": lambda: SMALL_BODY_MAX_BYTES,
+        # The largest break any station takes; each station checks its own.
+        UPLOAD_PATH: lambda: _break_upload_cap(stations),
+        VOICE_UPLOAD_PATH: lambda: _break_upload_cap(stations),
         "/api/rotation-test": lambda: SMALL_BODY_MAX_BYTES,
         "/api/library/tags": lambda: TAG_BODY_MAX_BYTES,
         WORKER_PREFIX + "result": lambda: RESULT_BODY_MAX_BYTES,
@@ -944,7 +1001,7 @@ def create_app(
         SecurityMiddleware,
         policy=policy,
         body_limits=body_limits,
-        machine_scopes=MACHINE_SCOPES,
+        machine_scopes={**MACHINE_SCOPES, **ANNOUNCER_SCOPES},
         machine_auth=lambda token, scope: machine_tokens().authenticate(token, scope),
         station_slugs=stations.slugs,
     )
@@ -954,6 +1011,7 @@ def create_app(
         tokens=machine_tokens,
         library=lambda: getattr(bridge, "library", None),
         identity=lambda: analysis_identity(bridge.player._cfg.model.name, model_commit()),
+        stations=lambda: _station_names(stations),
     )
     # Compresses the page, scripts and JSON; audio, cover art and Range
     # replies pass through as is.
@@ -1228,11 +1286,35 @@ def create_app(
             return {"status": "ok"}
         return {"status": "ok", "tracks": bridge.sim.ntotal}
 
-    @app.api_route("/status", methods=["GET", "HEAD"], response_class=HTMLResponse)
-    async def get_status_page() -> HTMLResponse:
-        """Serve the public station status page, built from the same feed."""
+    def status_page(station: StationRuntime | StoppedStation, *, by_name: bool) -> HTMLResponse:
+        """A station's public status page; a stopped station's says it is off air (503)."""
+        slug = station.slug
+        feed_url = public_feed_path(slug, by_name=by_name)
+        stream_path = f"/stations/{slug}.mp3" if by_name else "/stream.mp3"
+        m3u_path = stream_path.removesuffix(".mp3") + ".m3u"
+        playlist_name = f"{slug}.m3u" if slug != DEFAULT_SLUG else "autodj.m3u"
+        if isinstance(station, StoppedStation):
+            html = render_off_air_page(
+                station.name,
+                feed_url=feed_url,
+                stream_path=stream_path,
+                m3u_path=m3u_path,
+                playlist_name=playlist_name,
+            )
+            status = 503
+        else:
+            html = render_status_page(
+                station.nowplaying.snapshot(),
+                stream_mode=station.bridge.stream_mode,
+                feed_url=feed_url,
+                stream_path=stream_path,
+                m3u_path=m3u_path,
+                playlist_name=playlist_name,
+            )
+            status = 200
         return HTMLResponse(
-            render_status_page(runtime.nowplaying.snapshot(), stream_mode=bridge.stream_mode),
+            html,
+            status_code=status,
             headers={
                 "Cache-Control": "no-cache",
                 "Content-Security-Policy": STATUS_PAGE_CSP,
@@ -1240,6 +1322,20 @@ def create_app(
                 "Referrer-Policy": "no-referrer",
             },
         )
+
+    @app.api_route("/status", methods=["GET", "HEAD"], response_class=HTMLResponse)
+    async def get_status_page() -> HTMLResponse:
+        """Serve the default station's public status page, built from its feed."""
+        return status_page(stations.default, by_name=False)
+
+    @app.api_route("/stations/{slug}/status", methods=["GET", "HEAD"], response_class=HTMLResponse)
+    async def get_station_status_page(slug: str) -> HTMLResponse:
+        """Serve any station's public status page by name; 503 "off air" while it is stopped."""
+        try:
+            station = stations.get(slug)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Not Found") from None
+        return status_page(station, by_name=True)
 
     # ------------------------------------------------------------------
     # Radio stream (stream mode only; 404 otherwise)
@@ -1407,12 +1503,13 @@ def create_app(
     async def api_station_stop(slug: str) -> dict[str, Any]:
         """Stop a station other than the default: listeners, encoders, relays and player."""
         try:
-            await stations.stop(slug)
+            warnings = await stations.stop(slug)
         except KeyError:
             raise HTTPException(status_code=404, detail="No station has that name") from None
         except StationControlError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return stations.get(slug).summary()
+        # Stopped either way; what went wrong is said beside it.
+        return {**stations.get(slug).summary(), "warnings": warnings}
 
     @app.get("/api/search")
     async def api_search(q: str = "", limit: int = 100) -> dict[str, list]:
@@ -1600,9 +1697,9 @@ def create_app(
         return library.snapshot()
 
     @app.post("/api/library/rescan")
-    async def api_library_rescan() -> dict:
+    async def api_library_rescan(body: LibraryRescanBody | None = None) -> dict:
         library = _catalog_library()
-        library.start_scan()
+        library.start_scan(override_tags=body.override_tags if body else False)
         return library.snapshot()
 
     @app.get("/api/library/points")
@@ -1897,6 +1994,32 @@ def create_app(
     return app
 
 
+def _station_names(stations: StationRegistry) -> list[tuple[str, str]]:
+    """``(slug, name)`` of every configured station, the default first."""
+    first = stations.default.slug
+    names = []
+    for slug in (first, *sorted(stations.slugs() - {first})):
+        try:
+            name = str(stations.get(slug).name)
+        except Exception:  # a station whose configuration cannot say
+            name = slug
+        names.append((slug, name))
+    return names
+
+
+def _break_upload_cap(stations: StationRegistry) -> int:
+    """The request-body cap of a break upload: the largest any running station takes."""
+    caps = [
+        getattr(getattr(station.cfg, "breaks", None), "max_upload_bytes", None)
+        for station in stations.all()
+    ]
+    largest = max(
+        (cap for cap in caps if isinstance(cap, int)),
+        default=BreaksConfig().max_upload_bytes,
+    )
+    return largest + BREAK_MULTIPART_OVERHEAD
+
+
 def _share_station(stations: StationRegistry, station: StationRuntime) -> None:
     """Give *station* what it shares with the other stations.
 
@@ -2023,21 +2146,36 @@ def _extra_station(
                 "AutoDJ runs one Stereo Tool at a time (one licence): set this station's "
                 "loudness processing to Smooth."
             )
-        _attach_master(player, cfg)
-        if cfg.playback.import_external_cues:
-            station_thread(target=player.load_library_cues, name="autodj-library-cues").start()
-        player_thread = station_thread(
-            target=player.run, kwargs={"seed_entry": None}, name="autodj-player"
-        )
-        player_thread.start()
-        return StationRuntime(
-            bridge,
-            timezone=timezone,
-            player_thread=player_thread,
-            stream_mode=True,
-            slug=slug,
-            paths=paths,
-        )
+        # The mastering process and the player thread start from here; a
+        # failure after that stops them again before it is raised.
+        player_thread: threading.Thread | None = None
+        try:
+            _attach_master(player, cfg)
+            if cfg.playback.import_external_cues:
+                station_thread(target=player.load_library_cues, name="autodj-library-cues").start()
+            player_thread = station_thread(
+                target=player.run, kwargs={"seed_entry": None}, name="autodj-player"
+            )
+            player_thread.start()
+            return StationRuntime(
+                bridge,
+                timezone=timezone,
+                player_thread=player_thread,
+                stream_mode=True,
+                slug=slug,
+                paths=paths,
+            )
+        except BaseException:
+            thread = player_thread
+            _abandon_player(
+                player,
+                thread,
+                registry.stop_timeout_s,
+                on_stuck=lambda: registry.hold_until_player_ends(
+                    AbandonedPlayer(slug, spec.name, player, thread, cfg)  # type: ignore[arg-type]
+                ),
+            )
+            raise
 
     return ExtraStation(
         slug=slug,
@@ -2047,6 +2185,56 @@ def _extra_station(
         preset=spec.cfg.playback.stereotool_preset,
         build=build,
     )
+
+
+def _abandon_player(
+    player: Any,
+    player_thread: threading.Thread | None,
+    timeout_s: float,
+    on_stuck: Callable[[], None] | None = None,
+) -> None:
+    """Stop a player whose station failed to build: its thread, then its master.
+
+    A player still running after *timeout_s* may still write to its
+    master, so both are then left alone, logged, and handed to
+    *on_stuck* (the registry holds the station, and its Stereo Tool,
+    until the player ends).  Nothing here raises; the build's own error
+    is the one reported.
+    """
+    try:
+        player._state.should_stop = True
+        player._skip_event.set()
+        if player_thread is not None and player_thread.is_alive():
+            player_thread.join(timeout_s)
+    except Exception:
+        logger.exception("A station that failed to start: stopping its player failed")
+    if player_thread is not None and player_thread.is_alive():
+        logger.warning(
+            "A station that failed to start: its player did not finish within %.0f seconds; "
+            "its player and mastering process are left running",
+            timeout_s,
+        )
+        if on_stuck is not None:
+            try:
+                on_stuck()
+            except Exception:
+                logger.exception("A station that failed to start: holding its player failed")
+        return
+    master = getattr(player, "_continuous_master", None)
+    gone = True
+    if master is not None:
+        try:
+            gone = master.close() is not False
+        except Exception:
+            logger.exception("A station that failed to start: closing its master failed")
+            gone = False
+    if not gone and on_stuck is not None:
+        # Its mastering process outlived the close: held, with Stereo Tool,
+        # until it has ended.
+        try:
+            on_stuck()
+        except Exception:
+            logger.exception("A station that failed to start: holding its master failed")
 
 
 def _missing_audio_modules() -> list[str]:
@@ -2237,9 +2425,11 @@ def serve(
         audio_mode = "server-audio" if not no_playback else "browser-driven"
     for extra in extra_stations:
         logger.info(
-            "Station %s (%s): %s/stations/%s.mp3%s",
+            "Station %s (%s): %s/stations/%s.mp3, status page %s/stations/%s/status%s",
             extra.slug,
             extra.name,
+            advertised_origin,
+            extra.slug,
             advertised_origin,
             extra.slug,
             "" if extra.autostart else " (stopped until started)",
@@ -2271,7 +2461,8 @@ def serve(
         uvicorn_kwargs["http"] = "h11"
         # Uvicorn rewrites request.client and scheme only for configured proxy peers.
         uvicorn_kwargs["proxy_headers"] = True
-        uvicorn_kwargs["forwarded_allow_ips"] = proxy_allowlist(cfg.stream.trusted_proxies)
+        # Empty means a proxy on this machine, as Uvicorn trusts by default.
+        uvicorn_kwargs["forwarded_allow_ips"] = forwarded_allow_ips(cfg.stream.trusted_proxies)
         uvicorn_kwargs["timeout_graceful_shutdown"] = _STREAM_SHUTDOWN_GRACE_SECONDS
     reloaders: list[CertificateReloader] = []
     if ssl_certfile is not None and ssl_keyfile is not None:

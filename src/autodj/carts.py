@@ -21,6 +21,7 @@ the cart is skipped with the reason in words, whether pressed or scheduled.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -36,7 +37,7 @@ from fastapi import File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from autodj.clip_dates import ClipDates, station_today
+from autodj.clip_dates import ClipDates, ClipDatesError, parse_dates, station_today, station_zone
 from autodj.liner_files import (
     InvalidLinerName,
     LinerConflictError,
@@ -67,6 +68,17 @@ def _clean_name(value: str) -> str:
     return value
 
 
+class CartDatesError(ClipDatesError):
+    """A cart's play dates refused, naming the field.
+
+    ``reports_field`` marks it for the server's 422 handler, which answers
+    ``{"detail": ..., "field": ...}`` for it alone; every other 422 keeps
+    its list of problems.
+    """
+
+    reports_field = True
+
+
 class CartSlot(BaseModel):
     """One assigned clip and how it plays."""
 
@@ -91,7 +103,12 @@ class CartSlot(BaseModel):
     def _upload_name(self) -> CartSlot:
         if self.source == "upload":
             validate_liner_name(self.clip)
-        self.dates()  # Do not play after must not come before Not before.
+        # Do not play after must not come before Not before.  The error names
+        # its field, so the cart routes' 422 can point the page at it.
+        try:
+            parse_dates({"not_before": self.not_before, "not_after": self.not_after})
+        except ClipDatesError as exc:
+            raise CartDatesError(exc.field, exc.message) from None
         return self
 
     def dates(self) -> ClipDates:
@@ -265,17 +282,21 @@ class StationCarts:
         liner_folder: Callable[[], Path],
         state_dir: Path,
         api_root: str = "/api",
+        owns_liner: Callable[[str], bool] | None = None,
     ) -> None:
         """Load the wall from *state_dir*; *publish* tells the station's pages of changes.
 
         *api_root* is where the station's routes answer (``/api`` for the
         default station, ``/api/stations/<slug>`` for another), so a clip
-        URL fetches from this station's carts and liners.
+        URL fetches from this station's carts and liners.  *owns_liner*
+        says whether a registered liner is this station's; every one is
+        when omitted.
         """
         self.bridge = bridge
         self.publish = publish
         self.liner_folder = liner_folder
         self.api_root = api_root
+        self.owns_liner = owns_liner
         self.store = CartStore(state_dir)
         # The cart that is playing, as (page, slot, spoken label), and its end timer.
         self._cart: tuple[int, int, str] | None = None
@@ -412,6 +433,19 @@ class StationCarts:
             "url": None if scheduler is not None else self.clip_url(assigned),
         }
 
+    async def close(self) -> None:
+        """Forget the cart playing and cancel its end timer, telling nobody.
+
+        Called as the station stops, before its player goes: the timer
+        must not fire, and announce the cart's end, after that.
+        """
+        timer, self._timer = self._timer, None
+        self._cart = None
+        if timer is not None and timer is not asyncio.current_task():
+            timer.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await timer
+
     async def stop(self) -> bool:
         """Stop the cart that is playing; ``False`` if none was."""
         scheduler = self.bridge.liner_scheduler
@@ -424,7 +458,10 @@ class StationCarts:
         liners: list[dict[str, str]] = []
         library = self.bridge.library
         if library is not None:
+            owns = self.owns_liner
             for entry in library.entries_snapshot("liner"):
+                if owns is not None and not owns(entry.path):
+                    continue  # another station's liner folder
                 record = library.catalog.record_for_path(entry.path)
                 if record and record.get("kind") == "liner":
                     liners.append({"id": record["id"], "name": Path(record["path"]).name})
@@ -467,6 +504,8 @@ def install_carts(router: StationRouter) -> None:
             "wall": carts.store.wall.model_dump(mode="json"),
             # The station's day, so the page can say which carts are outside their dates.
             "today": station_today(station.cfg).isoformat(),
+            # So a page left open past midnight can tell when the day changes.
+            "timezone": station_zone(station.cfg),
             **choices,
         }
 

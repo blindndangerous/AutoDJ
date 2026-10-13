@@ -364,6 +364,30 @@ def app_client(tmp_path: Path) -> Iterator[TestClient]:
         yield client
 
 
+def test_backwards_cart_dates_name_their_field(app_client: TestClient) -> None:
+    body = {"name": "Promo", "source": "upload", "clip": "promo.wav"}
+    backwards = app_client.put(
+        "/api/carts/pages/1/slots/3",
+        json={**body, "not_before": "2026-12-26", "not_after": "2026-11-27"},
+    )
+    # The words and the field, so the page links the error to Do not play after.
+    assert backwards.status_code == 422
+    assert backwards.json() == {
+        "detail": "Do not play after must be on or after the Not before date",
+        "field": "not_after",
+    }
+    # Other refusals keep their list of problems, without the input echoed.
+    other = app_client.put("/api/carts/pages/1/slots/3", json={**body, "mode": "loud"})
+    assert other.status_code == 422
+    assert isinstance(other.json()["detail"], list)
+    assert "field" not in other.json()
+    # Another endpoint's 422 is the list it always was.
+    elsewhere = app_client.put("/api/time-checks", json={"enabled": "yes please"})
+    assert elsewhere.status_code == 422
+    assert isinstance(elsewhere.json()["detail"], list)
+    assert "field" not in elsewhere.json()
+
+
 def test_a_profile_shows_its_cart_page(app_client: TestClient) -> None:
     assert app_client.put("/api/carts/pages/2/name", json={"name": "Breakfast"}).status_code == 200
     assert app_client.put("/api/carts/active-page/2").status_code == 200
@@ -417,6 +441,7 @@ def test_a_cart_outside_its_play_dates_is_skipped_in_words(tmp_path: Path) -> No
         assert assigned.json()["slot"]["not_after"] == "2000-01-01"
         listed = rig.client.get("/api/carts").json()
         assert listed["today"] > "2000-01-01"
+        assert listed["timezone"]  # the page works out the station day from it
         assert listed["wall"]["pages"][0]["slots"][2]["not_after"] == "2000-01-01"
         refused = rig.play()
         assert refused.status_code == 409
@@ -436,3 +461,55 @@ def test_a_cart_outside_its_play_dates_is_skipped_in_words(tmp_path: Path) -> No
         saved = json.loads((tmp_path / "carts.json").read_text(encoding="utf-8"))
         # Without dates the slot is written as before, so an older AutoDJ reads it.
         assert "not_after" not in saved["pages"][0]["slots"][2]
+
+
+def test_liners_in_another_stations_folder_are_not_offered(tmp_path: Path) -> None:
+    own = tmp_path / "liners" / "own.wav"
+    theirs = tmp_path / "liners" / "nightowl" / "owl.wav"
+    records = {
+        str(own): {"id": "rec-own", "kind": "liner", "path": str(own)},
+        str(theirs): {"id": "rec-owl", "kind": "liner", "path": str(theirs)},
+    }
+    library = SimpleNamespace(
+        entries_snapshot=lambda kind: [SimpleNamespace(path=path) for path in records],
+        catalog=SimpleNamespace(record_for_path=records.get),
+    )
+
+    async def publish(_message: dict[str, Any]) -> None:
+        return None
+
+    carts = StationCarts(
+        SimpleNamespace(library=library),
+        publish,
+        lambda: tmp_path / "liners",
+        tmp_path,
+        owns_liner=lambda path: "nightowl" not in Path(path).parts,
+    )
+    assert carts.clip_choices()["liners"] == [{"id": "rec-own", "name": "own.wav"}]
+
+
+def test_closing_the_carts_cancels_the_end_timer_without_announcing(tmp_path: Path) -> None:
+    import asyncio
+
+    events: list[dict[str, Any]] = []
+
+    async def publish(message: dict[str, Any]) -> None:
+        events.append(message)
+
+    async def scenario() -> None:
+        carts = StationCarts(SimpleNamespace(), publish, lambda: tmp_path, tmp_path)
+        carts._cart = (1, 3, "Cart 3, Station ID")
+
+        async def ends() -> None:
+            await asyncio.sleep(0.05)
+            await carts.finish("end")
+
+        timer = asyncio.create_task(ends())
+        carts._timer = timer
+        await carts.close()
+        assert timer.cancelled()
+        await asyncio.sleep(0.1)
+        await carts.close()  # nothing playing: nothing to do
+
+    asyncio.run(scenario())
+    assert events == []

@@ -5,7 +5,7 @@ categories?" before the rules go on air.  A simulation plays a span of time
 (such as a week) or a number of songs through the station's own picker: the
 clockwheel and its steps, the rotation categories and their days and hours,
 the schedule's song-picking changes and their date ranges, the repeat rules
-(related artists included), the DMCA limits, every relaxation and the
+(related artists and related tracks included), the DMCA limits, every relaxation and the
 fallbacks.  Nothing on air changes: the dry run picks with a copy of the
 player that has its own configuration, play history, last-played times,
 clock and random generator, and it never writes to the library.
@@ -82,6 +82,7 @@ RULES = (
     "related artist",
     "same album",
     "same title",
+    "related track",
     "track repeat window",
     "dayparting",
     "back to back",
@@ -200,6 +201,7 @@ class PlayerSnapshot:
     clock_status: str | None
     liner_filter: Any
     station_paths: Any = None
+    related_tracks: Any = None
 
 
 def snapshot_player(player: Any) -> PlayerSnapshot:
@@ -217,9 +219,11 @@ def snapshot_player(player: Any) -> PlayerSnapshot:
         cfg = copy.deepcopy(player._cfg)
         settings = {name: getattr(player, name) for name in _COPIED if hasattr(player, name)}
         clock = getattr(player, "_clock", None)
-        snapshot_clock = dict(clock) if clock else None
+        # Deep, so nothing the copy holds (the restart minutes) is shared.
+        snapshot_clock = copy.deepcopy(clock) if clock else None
         clock_status = getattr(player, "_clock_status", None)
         related = getattr(player, "_related_artists", None)
+        related_tracks = getattr(player, "_related_tracks", None)
         liner_filter = getattr(player, "liner_filter", None)
         station_paths = getattr(player, "station_paths", None)
         discovery = bool(player._state.discovery_enabled)
@@ -238,6 +242,7 @@ def snapshot_player(player: Any) -> PlayerSnapshot:
         clock_status=clock_status,
         liner_filter=liner_filter,
         station_paths=station_paths,
+        related_tracks=related_tracks,
     )
 
 
@@ -537,6 +542,8 @@ def _copy_player(
     player._state.clock = lambda: player._sim_now
     if snapshot.related_artists is not None:
         player._related_artists = snapshot.related_artists
+    if snapshot.related_tracks is not None:
+        player._related_tracks = snapshot.related_tracks
     for name, value in snapshot.settings.items():
         setattr(player, name, value)
     player._state.discovery_enabled = snapshot.discovery_enabled
@@ -586,6 +593,7 @@ def _liner_filter(source: SimulationSource, snapshot: PlayerSnapshot, player: _S
         _ReadOnlyLinerDates(source.liner_dates),
         lambda: station_wall(player._cfg, player._sim_now).date(),
         liner_id,
+        lambda at: station_wall(player._cfg, at).date(),
     )
     return gate.playable
 
@@ -778,6 +786,30 @@ class Progress:
     fraction: float = 0.0
 
 
+def average_length(entries: Iterable[Any]) -> float:
+    """The average length of *entries* that have one: what a song without a length counts as."""
+    lengths = [entry.length for entry in entries if entry.length > 0]
+    return sum(lengths) / len(lengths) if lengths else _FALLBACK_LENGTH_S
+
+
+def song_seconds(player: Player, entry: Any, average: float) -> float:
+    """How long *entry* plays before the next song starts, as a dry run times it.
+
+    From its saved start to its segue or outro with saved-point
+    transitions, its length less the crossfade otherwise; *average* when
+    that comes to a second or less.  The hour preview times its songs the
+    same way (:mod:`autodj.hour_preview`).
+    """
+    playback = player._cfg.playback
+    if playback.transition_mode == "saved_points":
+        begin, segue = player._clock_music_span(entry)
+        seconds = segue - begin
+    else:
+        crossfade = float(getattr(playback, "crossfade_seconds", 0.0) or 0.0)
+        seconds = (entry.length or 0.0) - crossfade
+    return seconds if seconds > 1.0 else average
+
+
 def simulate(
     source: SimulationSource,
     request: SimulationRequest,
@@ -828,27 +860,20 @@ def _simulate(
         hours = DEFAULT_HOURS
     limit = request.picks if request.picks is not None else MAX_PICKS
     end = start + (hours if hours is not None else MAX_HOURS) * 3600.0
-    lengths = [entry.length for entry in entries if entry.length > 0]
-    average = sum(lengths) / len(lengths) if lengths else _FALLBACK_LENGTH_S
-    crossfade = float(getattr(player._cfg.playback, "crossfade_seconds", 0.0) or 0.0)
+    average = average_length(entries)
     from autodj._bridge import PlayerBridge
 
     bridge = PlayerBridge(player=player, sim=player._sim, library=library, ledger=player._ledger)
     schedule = _Schedule(source.events, source.timezone, start)
     initial_mode = "random" if player._pure_shuffle else player._cfg.playback.pick_mode
     initial_clock = (player._clock or {}).get("name") if initial_mode == "clock" else None
-    categories = player._category_members()
+    categories = player._category_members() or {}
 
     def station_mode() -> bool:
         return player._cfg.playback.transition_mode == "saved_points"
 
     def duration(entry: Any) -> float:
-        if station_mode():
-            begin, segue = player._clock_music_span(entry)
-            seconds = segue - begin
-        else:
-            seconds = (entry.length or 0.0) - crossfade
-        return seconds if seconds > 1.0 else average
+        return song_seconds(player, entry, average)
 
     def when(stamp: float) -> str:
         return datetime.fromtimestamp(stamp, schedule.zone).isoformat(timespec="minutes")
@@ -875,7 +900,8 @@ def _simulate(
         player._seed_clock_cursor = None
         player._seed_clock_name = None
         try:
-            context = player._pick_context()
+            # A first song starts as it is picked, as the live start pick does.
+            context = player._pick_context(at=now)
             entry = player._random_start_entry()
         except Exception:
             return None
@@ -936,7 +962,8 @@ def _simulate(
         player._sim_now = now
         apply_schedule(now)
         tally.pending_skips = []
-        context = player._pick_context()
+        # As the station does, dayparting reads the hours at the song's start.
+        context = player._pick_context(at=handoff)
         liners: tuple[tuple[Any, bool], ...] = ()
         try:
             if station_mode():

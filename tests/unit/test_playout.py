@@ -136,6 +136,73 @@ def test_explicit_overlap_overrides_liner_segue():
     assert handoff.incoming_s == pytest.approx(10.3)
 
 
+@pytest.mark.parametrize("intro, requested_delay, expected_delay", [(5, 3, 3), (3, 3, 1)])
+def test_negative_overlap_starts_after_music_within_intro_and_keeps_tail(
+    intro, requested_delay, expected_delay
+):
+    handoff = render_handoff(
+        audio(12),
+        {"outro": 4, "segue": 8, "end": 12},
+        {"start": 0, "intro": intro},
+        liner=audio(2, 0.2),
+        overlap_start=-requested_delay,
+        outro_lead_limit=None,
+    )
+    assert handoff.incoming_s == pytest.approx(8)
+    assert handoff.liner_s == pytest.approx(8 + expected_delay)
+    assert len(handoff.next_overlay) == expected_delay * SAMPLE_RATE + 2 * SAMPLE_RATE
+    assert handoff.next_overlay[-1, 0] == pytest.approx(0.2)
+
+
+def test_negative_overlap_falls_back_to_liner_first_when_main_exceeds_intro():
+    handoff = render_handoff(
+        audio(12),
+        {"outro": 4, "segue": 8, "end": 12},
+        {"intro": 1},
+        liner=audio(3, 0.2),
+        overlap_start=-3,
+        outro_lead_limit=None,
+    )
+    assert handoff.liner_s == pytest.approx(6)
+    assert handoff.incoming_s == pytest.approx(8)
+
+
+@pytest.mark.parametrize("incoming", [{}, {"intro": 0}])
+def test_negative_overlap_with_missing_or_zero_intro_uses_liner_first(incoming):
+    handoff = render_handoff(
+        audio(12),
+        {"outro": 4, "segue": 8, "end": 12},
+        incoming,
+        liner=audio(2, 0.2),
+        overlap_start=-3,
+        outro_lead_limit=None,
+    )
+    assert handoff.liner_s == pytest.approx(6)
+    assert handoff.incoming_s == pytest.approx(8)
+
+
+def test_negative_overlap_keeps_tail_after_a_short_liner_segue():
+    handoff = render_handoff(
+        audio(12),
+        {"outro": 4, "segue": 8, "end": 12},
+        {"intro": 5},
+        liner=audio(5, 0.2),
+        overlap_start=-3,
+        liner_segue=2,
+        outro_lead_limit=None,
+    )
+    assert handoff.liner_s == pytest.approx(11)
+    assert handoff.incoming_s == pytest.approx(8)
+    assert len(handoff.next_overlay) == 8 * SAMPLE_RATE
+    assert handoff.next_overlay[-1, 0] == pytest.approx(0.2)
+
+
+@pytest.mark.parametrize("overlap", [-15.01, float("nan"), float("inf")])
+def test_invalid_negative_overlap_is_rejected(overlap):
+    with pytest.raises(ValueError, match="overlap_start"):
+        render_handoff(audio(4), {}, {}, liner=audio(1), overlap_start=overlap)
+
+
 def test_outro_after_segue_does_not_move_music_entry_and_seek_past_it_is_empty():
     points = {"start": 0, "segue": 4, "outro": 8, "end": 9}
     handoff = render_handoff(audio(9), points, {}, start_offset=6 * SAMPLE_RATE)
@@ -207,3 +274,58 @@ def test_chunk_and_overlay_are_views_of_one_buffer() -> None:
     np.testing.assert_array_equal(
         handoff.full_audio, np.concatenate((handoff.audio, handoff.next_overlay))
     )
+
+
+def test_duck_envelope_drops_inside_spans_with_slopes_outside():
+    from autodj.playout import duck_envelope
+
+    envelope = duck_envelope(100, ((40, 60),), 0.25, 10)
+    assert envelope is not None
+    assert np.all(envelope[40:60] == pytest.approx(0.25))
+    assert envelope[:30].tolist() == [1.0] * 30 and envelope[70:].tolist() == [1.0] * 30
+    assert 0.25 < envelope[35] < 1.0 and 0.25 < envelope[65] < 1.0
+    assert np.all(np.diff(envelope[30:41]) <= 0) and np.all(np.diff(envelope[59:71]) >= 0)
+    # Spans at the edges, empty spans, and nothing to duck.
+    assert duck_envelope(20, ((-5, 3), (15, 99)), 0.5, 4)[[0, 2, 15, 19]].tolist() == [0.5] * 4
+    assert duck_envelope(20, ((5, 5),), 0.5, 4).tolist() == [1.0] * 20
+    assert duck_envelope(20, (), 0.5, 4) is None
+    assert duck_envelope(20, ((1, 2),), 1.0, 4) is None
+
+
+def test_a_ducked_voice_lowers_the_music_and_reports_the_overlay_gain():
+    voice = np.zeros((2 * SAMPLE_RATE, 2), dtype=np.float32)
+    voice[:, 1] = 0.5
+    music = audio(6)
+    music[:, 1] = 0.0
+    handoff = render_handoff(
+        music,
+        {"start": 0, "end": 6, "segue": 4},
+        {"start": 0, "intro": 1},
+        fade_seconds=1.5,
+        liner=voice,
+        overlap_start=1.0,
+        duck_spans=((0.0, 1.0),),
+        duck_db=-20.0,
+    )
+    # The voice starts at the segue (4 s); the music under it drops to a tenth.
+    full = handoff.full_audio
+    index = round((4.5 - handoff.start_offset / SAMPLE_RATE) * SAMPLE_RATE)
+    assert full[index, 1] == pytest.approx(0.5)
+    assert 0 < full[index, 0] < 0.1
+    assert full[round(3.5 * SAMPLE_RATE) - handoff.start_offset, 0] > 0.5
+    assert handoff.overlay_gain is not None
+    assert len(handoff.overlay_gain) == len(handoff.next_overlay)
+    # The next song enters at 5 s, as the ducked span ends: it rises back.
+    assert handoff.overlay_gain[0] == pytest.approx(0.1, rel=1e-3)
+    assert handoff.overlay_gain[-1] == pytest.approx(1.0)
+    with pytest.raises(ValueError):
+        render_handoff(
+            audio(6),
+            {"segue": 4},
+            {},
+            liner=voice,
+            duck_spans=((0.0, 1.0),),
+            duck_db=float("-inf"),
+        )
+    plain = render_handoff(audio(6), {"segue": 4}, {}, liner=voice, duck_db=-20.0)
+    assert plain.overlay_gain is None

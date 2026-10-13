@@ -9,6 +9,7 @@ nothing outside the test process runs.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -49,6 +50,7 @@ model_dir = "{root}/models"
 allowed_hosts = ["testserver"]
 allowed_origins = ["http://testserver"]
 station_timezone = "UTC"
+{server_extra}
 
 [stream]
 enabled = true
@@ -103,8 +105,12 @@ def _write_config(tmp_path: Path, **values: str) -> Path:
         "default_processing": "smooth",
         "owl_processing": "smooth",
         "autostart": "true",
+        "server_extra": "",
         **values,
     }
+    local = settings.pop("local", None)
+    if local is not None:
+        (tmp_path / "config.local.toml").write_text(local, encoding="utf-8")
     (tmp_path / "Music").mkdir(exist_ok=True)
     path = tmp_path / "config.toml"
     path.write_text(
@@ -208,7 +214,10 @@ def test_two_stations_run_side_by_side(rig: Any) -> None:
         "state": "idle",
         "listeners": 0,
         "title": None,
+        "status_path": "/stations/nightowl/status",
+        "nowplaying_path": "/api/stations/nightowl/nowplaying",
         "stream_path": "/stations/nightowl.mp3",
+        "m3u_path": "/stations/nightowl.m3u",
     }
     stream = client.get(f"{OWL}/stream").json()
     assert (stream["path"], stream["m3u_path"]) == (
@@ -434,37 +443,81 @@ def test_a_preset_any_station_uses_cannot_be_deleted(rig: Any) -> None:
     assert client.delete("/api/stereo-tool-presets/Owl.sts").status_code == 409
 
 
-SOAK_SECONDS = float(os.environ.get("AUTODJ_SOAK_SECONDS", "0"))
+# How long the soak runs: a few seconds in every test run, or as long as
+# AUTODJ_SOAK_SECONDS says (hours on the machine that will run the stations).
+SOAK_SECONDS = float(os.environ.get("AUTODJ_SOAK_SECONDS", "0") or 0)
+_BRIEF_SOAK_SECONDS = 4.0
 
 
-@pytest.mark.skipif(
-    not SOAK_SECONDS, reason="Set AUTODJ_SOAK_SECONDS to measure two stations rendering at once"
-)
-@pytest.mark.timeout(SOAK_SECONDS + 120)
-def test_soak_two_stations_rendering_at_once_keep_their_buses_on_time(rig: Any) -> None:
-    """Both mix buses keep time while both stations render, sharing one GIL.
+def _soak_setting(name: str, brief: float, long: float) -> float:
+    value = os.environ.get(name, "")
+    return float(value) if value else (long if SOAK_SECONDS else brief)
+
+
+def _rss_mb() -> float | None:
+    """The test process's resident memory in MB; Linux only, else ``None``."""
+    try:
+        with open("/proc/self/statm", encoding="ascii") as statm:
+            pages = int(statm.read().split()[1])
+        return round(pages * os.sysconf("SC_PAGE_SIZE") / 2**20, 1)
+    except (OSError, ValueError, AttributeError, IndexError):
+        return None
+
+
+class _BusClock:
+    """A mix-bus output that counts the 20 ms blocks it is sent and the longest gap."""
+
+    def __init__(self) -> None:
+        self.blocks = 0
+        self.longest_gap = 0.0
+        self._last: float | None = None
+        self.seconds = 0.0  # how long it was attached, once detached
+
+    def write(self, _block: np.ndarray) -> None:
+        now = time.monotonic()
+        if self._last is not None:
+            self.longest_gap = max(self.longest_gap, now - self._last)
+        self._last = now
+        self.blocks += 1
+
+    def close(self) -> None:
+        pass
+
+
+@pytest.mark.timeout(max(SOAK_SECONDS, _BRIEF_SOAK_SECONDS) * 2 + 120)
+def test_soak_two_stations_keep_time_through_renders_and_restarts(rig: Any) -> None:
+    """Both mix buses keep time while both stations render and one restarts.
 
     Each station's render-ahead work is stood in for by a decode-sized
-    buffer time-stretched with scipy, back to back, for the whole run.
-    Every 20 ms block each bus emits is counted; the bus drops blocks only
-    after falling more than 8 behind, so a shortfall means an underrun.
+    buffer time-stretched with scipy, back to back, for the whole run,
+    while Night Owl is stopped and started again every cycle.  Every 20 ms
+    block each bus emits is counted; the bus drops blocks only after
+    falling more than 8 behind, so a shortfall means an underrun.  Each
+    stop must leave none of the station's threads or encoders behind.
+
+    It runs for a few seconds in every test run.  For the long run on the
+    machine that hosts the stations, see "Several stations" in
+    docs/operations.md: ``AUTODJ_SOAK_SECONDS`` sets the length,
+    ``AUTODJ_SOAK_CYCLE_SECONDS`` how often Night Owl restarts,
+    ``AUTODJ_SOAK_SAMPLE_SECONDS`` how often memory and CPU are sampled,
+    and ``AUTODJ_SOAK_REPORT`` a file the samples are written to, one JSON
+    object per line.
     """
     from scipy.signal import resample_poly
 
     client, *_ = rig
-    stations = client.app.state.stations.all()
+    registry = client.app.state.stations
+    seconds = SOAK_SECONDS or _BRIEF_SOAK_SECONDS
+    cycle = _soak_setting("AUTODJ_SOAK_CYCLE_SECONDS", seconds / 2, 600.0)
+    sample_every = _soak_setting("AUTODJ_SOAK_SAMPLE_SECONDS", 0.5, 30.0)
+    # A four-minute song in the long run; shorter in the brief one, to spare CI.
+    track_frames = 44100 * (240 if SOAK_SECONDS else 20)
+    # The bus timing is measured only in a run asked for: a few seconds on
+    # a shared CI machine says little about underruns, and would be flaky.
+    # The brief run still checks restarts and leaks.
+    least = 0.99 if SOAK_SECONDS else 0.0
+    report_path = os.environ.get("AUTODJ_SOAK_REPORT")
     period = 882 / 44100
-    stamps: dict[str, list[float]] = {station.slug: [] for station in stations}
-
-    class Clock:
-        def __init__(self, slug: str) -> None:
-            self.slug = slug
-
-        def write(self, _block: np.ndarray) -> None:
-            stamps[self.slug].append(time.monotonic())
-
-        def close(self) -> None:
-            pass
 
     stop = threading.Event()
     renders = [0]
@@ -472,33 +525,105 @@ def test_soak_two_stations_rendering_at_once_keep_their_buses_on_time(rig: Any) 
     def render() -> None:
         rng = np.random.default_rng(0)
         while not stop.is_set():
-            track = rng.standard_normal((44100 * 240, 2), dtype=np.float32)
+            track = rng.standard_normal((track_frames, 2), dtype=np.float32)
             stretched = resample_poly(track, 51, 50, axis=0)
             fade = np.linspace(0.0, 1.0, len(stretched), dtype=np.float32)
             stretched *= fade[:, None]
             renders[0] += 1
 
-    outputs = {station.slug: Clock(station.slug) for station in stations}
-    for station in stations:
-        station.player.bus.add_output(outputs[station.slug])
-    workers = [threading.Thread(target=render, daemon=True) for _ in stations]
+    default_clock = _BusClock()
+    registry.default.player.bus.add_output(default_clock)
+    owl_clocks: list[_BusClock] = []
+
+    def attach_owl() -> tuple[Any, float]:
+        owl = registry.get("nightowl")
+        owl_clocks.append(_BusClock())
+        owl.player.bus.add_output(owl_clocks[-1])
+        return owl, time.monotonic()
+
+    def detach_owl(owl: Any, since: float) -> None:
+        owl.player.bus.remove_output(owl_clocks[-1])
+        owl_clocks[-1].seconds = time.monotonic() - since
+
+    samples: list[dict[str, Any]] = []
+    # Night Owl's threads, running; the same after every restart.  (The
+    # process's whole count also has the render stand-ins and threads
+    # other tests left to finish.)
+    owl_threads_at_start = len(_station_threads("nightowl"))
+    workers = [threading.Thread(target=render, daemon=True) for _ in range(2)]
     started = time.monotonic()
+    cpu_then, wall_then = time.process_time(), started
+    owl, owl_since = attach_owl()
+    next_cycle, next_sample = started + cycle, started
+    restarts = 0
     for worker in workers:
         worker.start()
-    time.sleep(SOAK_SECONDS)
-    stop.set()
+    try:
+        while (now := time.monotonic()) < started + seconds:
+            if now >= next_sample:
+                cpu_now = time.process_time()
+                samples.append(
+                    {
+                        "seconds": round(now - started, 1),
+                        "rss_mb": _rss_mb(),
+                        "cpu_percent": round(
+                            100 * (cpu_now - cpu_then) / max(now - wall_then, 1e-6)
+                        ),
+                        "threads": threading.active_count(),
+                        "restarts": restarts,
+                    }
+                )
+                cpu_then, wall_then = cpu_now, now
+                next_sample = now + sample_every
+            if now >= next_cycle:
+                detach_owl(owl, owl_since)
+                old = owl
+                assert client.post(f"{OWL}/stop").json()["state"] == "stopped"
+                # Nothing of the stopped station is left running.
+                _wait_for(lambda: not _station_threads("nightowl"), "Night Owl's threads to end")
+                assert not old.bridge.stream._encoder.alive
+                assert old.player._continuous_master.closed
+                assert client.post(f"{OWL}/start").status_code == 200
+                owl, owl_since = attach_owl()
+                restarts += 1
+                next_cycle = time.monotonic() + cycle
+            time.sleep(0.05)
+    finally:
+        stop.set()
+        for worker in workers:
+            worker.join(60)
+    detach_owl(owl, owl_since)
     elapsed = time.monotonic() - started
-    for worker in workers:
-        worker.join(60)
-    for station in stations:
-        station.player.bus.remove_output(outputs[station.slug])
-    report = {}
-    for slug, times in stamps.items():
-        gaps = np.diff(times) if len(times) > 1 else np.array([0.0])
-        report[slug] = (len(times), round(float(gaps.max()) * 1000), renders[0])
-    print(f"\nsoak {elapsed:.0f} s, expected {elapsed / period:.0f} blocks each: {report}")
-    for slug, times in stamps.items():
-        assert len(times) >= 0.99 * (elapsed / period), (slug, report)
+    registry.default.player.bus.remove_output(default_clock)
+    default_clock.seconds = elapsed
+
+    owl_blocks = sum(clock.blocks for clock in owl_clocks)
+    owl_seconds = sum(clock.seconds for clock in owl_clocks)
+    summary = {
+        "seconds": round(elapsed),
+        "restarts": restarts,
+        "renders": renders[0],
+        "default": (default_clock.blocks, round(elapsed / period)),
+        "nightowl": (owl_blocks, round(owl_seconds / period)),
+        "longest_gap_ms": {
+            "default": round(default_clock.longest_gap * 1000),
+            "nightowl": round(max(clock.longest_gap for clock in owl_clocks) * 1000),
+        },
+        "rss_mb": [sample["rss_mb"] for sample in (samples[0], samples[-1])],
+        "nightowl_threads": (owl_threads_at_start, len(_station_threads("nightowl"))),
+    }
+    print(f"\nsoak: {json.dumps(summary)}")
+    if report_path:
+        with open(report_path, "a", encoding="utf-8") as report:
+            for sample in samples:
+                report.write(json.dumps(sample) + "\n")
+            report.write(json.dumps({"summary": summary}) + "\n")
+    assert restarts >= 1
+    assert default_clock.blocks >= least * (elapsed / period), summary
+    assert owl_blocks >= least * (owl_seconds / period), summary
+    # Restarting leaks no threads (one more is allowed: the liner worker
+    # starts with the first song).
+    assert len(_station_threads("nightowl")) <= owl_threads_at_start + 1, summary
 
 
 def test_a_socket_accepted_as_its_station_stops_is_closed(
@@ -528,3 +653,277 @@ def test_a_socket_accepted_as_its_station_stops_is_closed(
         assert owl.ws_clients == set()
     finally:
         owl.stopped = False
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_a_start_that_fails_after_the_encoder_started_closes_it(
+    rig: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, *_ = rig
+    encoders: list[FakeEncoder] = []
+
+    class CountedEncoder(FakeEncoder):
+        def __init__(self, bitrate: int) -> None:
+            super().__init__(bitrate)
+            encoders.append(self)
+
+    def broken_liners(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("the liner folder could not be read")
+
+    import autodj.liner_scheduler
+
+    monkeypatch.setattr("autodj.stream.FfmpegEncoder", CountedEncoder)
+    working = autodj.liner_scheduler.LinerScheduler
+    # The stream's encoder is running by the time the liners are set up.
+    monkeypatch.setattr(autodj.liner_scheduler, "LinerScheduler", broken_liners)
+    refused = client.post(f"{OWL}/start")
+    assert refused.status_code == 409
+    assert "the liner folder could not be read" in refused.json()["detail"]
+    assert len(encoders) == 1
+    assert not encoders[0].alive
+    assert FakeMaster.instances[-1].closed
+    _wait_for(lambda: not _station_threads("nightowl"), "the station's threads to end")
+    monkeypatch.setattr(autodj.liner_scheduler, "LinerScheduler", working)
+    assert client.post(f"{OWL}/start").status_code == 200
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_a_station_that_fails_to_build_stops_its_player_and_master(
+    rig: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, *_ = rig
+
+    def broken_runtime(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("the listener bans could not be read")
+
+    # The mastering process and the player thread are running by then.
+    monkeypatch.setattr(server, "StationRuntime", broken_runtime)
+    refused = client.post(f"{OWL}/start")
+    assert refused.status_code == 409
+    assert "the listener bans could not be read" in refused.json()["detail"]
+    assert FakeMaster.instances[-1].closed
+    assert _station_threads("nightowl") == []
+    assert _stations(client)["nightowl"]["state"] == "stopped"
+
+
+def test_stopping_a_station_cancels_its_cart_timer(rig: Any) -> None:
+    client, *_ = rig
+    owl = client.app.state.stations.get("nightowl")
+    carts = owl.carts
+    fired: list[str] = []
+
+    async def arm() -> None:
+        async def ends() -> None:
+            await asyncio.sleep(0.2)
+            fired.append("end")
+
+        carts._cart = (1, 1, "Cart 1, Station ID")
+        carts._timer = asyncio.create_task(ends())
+
+    client.portal.call(arm)
+    timer = carts._timer
+    assert client.post(f"{OWL}/stop").status_code == 200
+    assert timer.cancelled()
+    time.sleep(0.3)
+    assert fired == []
+
+
+TOKEN = "multi-station-public-test-token-32b"
+
+
+@pytest.mark.parametrize("rig", [{"server_extra": f'access_token = "{TOKEN}"'}], indirect=True)
+def test_each_station_has_its_own_public_status_page_and_feed(rig: Any, tmp_path: Path) -> None:
+    """What a listener sees, unpaired: each station's page, feed and stream; nothing private."""
+    client, *_ = rig
+    registry = client.app.state.stations
+    public = {
+        "/status": 200,
+        "/stations/default/status": 200,
+        "/stations/nightowl/status": 200,
+        "/api/nowplaying": 200,
+        "/api/stations/default/nowplaying": 200,
+        "/api/stations/nightowl/nowplaying": 200,
+        "/stations/nightowl.m3u": 200,
+        # Only a configured station's public addresses are public.
+        "/stations/daybreak/status": 401,
+        "/api/stations/daybreak/nowplaying": 401,
+        "/stations/nightowl/status/x": 401,
+        "/stations/nightowl/stream": 401,
+        "/api/stations/nightowl/status": 401,
+        "/api/stations/nightowl/stream": 401,
+        "/api/stations": 401,
+    }
+    for path, status in public.items():
+        assert client.get(path).status_code == status, path
+    assert client.head("/stations/nightowl/status").status_code == 200
+    assert client.post("/stations/nightowl/status").status_code == 405  # as /status
+
+    page = client.get("/stations/nightowl/status")
+    assert page.headers["content-type"].startswith("text/html")
+    assert "script-src 'self'" in page.headers["content-security-policy"]
+    html = page.text
+    assert "<title>Night Owl Radio: station status</title>" in html
+    assert 'data-feed="/api/stations/nightowl/nowplaying"' in html
+    assert '<a href="/stations/nightowl.mp3">' in html
+    assert 'download="nightowl.m3u"' in html
+    default_page = client.get("/status").text
+    assert "<title>AutoDJ: station status</title>" in default_page
+    assert 'data-feed="/api/nowplaying"' in default_page
+    assert '<a href="/stream.mp3">' in default_page
+
+    feed = client.get("/api/stations/nightowl/nowplaying")
+    assert feed.json()["station_name"] == "Night Owl Radio"
+    assert feed.json()["stream_path"] == "/stations/nightowl.mp3"
+    assert client.get("/api/nowplaying").json()["station_name"] == "AutoDJ"
+    for text in (html, default_page, feed.text):
+        assert TOKEN not in text
+        assert str(tmp_path) not in text and tmp_path.as_posix() not in text
+        assert "testserver" not in text
+
+    # Stopped: every public address says "off air" (503); only its name shows.
+    client.portal.call(registry.stop, "nightowl")
+    off = client.get("/stations/nightowl/status")
+    assert off.status_code == 503
+    assert "Night Owl Radio is off air right now." in off.text
+    assert 'data-feed="/api/stations/nightowl/nowplaying"' in off.text
+    stopped_feed = client.get("/api/stations/nightowl/nowplaying")
+    assert stopped_feed.status_code == 503
+    assert stopped_feed.json() == {"detail": "That station is off air"}
+    assert stopped_feed.headers["access-control-allow-origin"] == "*"
+    assert client.get("/stations/nightowl.mp3").status_code == 503
+    assert client.get("/stations/daybreak/status").status_code == 401
+    # The default station is untouched.
+    assert client.get("/status").status_code == 200
+    assert client.get("/api/nowplaying").status_code == 200
+
+
+def test_the_station_list_reports_each_stations_public_addresses(rig: Any) -> None:
+    client, *_ = rig
+    listing = _stations(client)
+    assert {
+        key: listing["default"][key] for key in ("state", "status_path", "nowplaying_path")
+    } == {
+        "state": "idle",
+        "status_path": "/status",
+        "nowplaying_path": "/api/nowplaying",
+    }
+    assert (listing["default"]["stream_path"], listing["default"]["m3u_path"]) == (
+        "/stream.mp3",
+        "/stream.m3u",
+    )
+    assert client.post(f"{OWL}/stop").status_code == 200
+    owl = _stations(client)["nightowl"]
+    assert owl["state"] == "stopped"
+    assert owl["status_path"] == "/stations/nightowl/status"
+    assert owl["nowplaying_path"] == "/api/stations/nightowl/nowplaying"
+    # Each listed address answers as the station's state says.
+    for key in ("status_path", "nowplaying_path", "stream_path"):
+        assert client.get(owl[key]).status_code == 503, key
+    for key in ("status_path", "nowplaying_path", "m3u_path"):
+        assert client.get(listing["default"][key]).status_code == 200, key
+
+
+OWL_SECRETS = """
+[stations.nightowl.stream]
+listener_user = "owl"
+listener_password = "night-owl-listener-secret"
+
+[[stations.nightowl.webhooks]]
+url = "https://hooks.example.net/night-owl-private-path"
+"""
+
+
+@pytest.mark.parametrize("rig", [{"local": OWL_SECRETS}], indirect=True)
+def test_listener_credentials_and_webhooks_are_each_stations_own(rig: Any) -> None:
+    import base64
+
+    client, *_ = rig
+    stations = client.app.state.stations
+    owl = stations.get("nightowl")
+    # Night Owl's listener password guards its stream only.
+    assert client.head("/stations/nightowl.mp3").status_code == 401
+    good = base64.b64encode(b"owl:night-owl-listener-secret").decode()
+    authorised = client.head("/stations/nightowl.mp3", headers={"Authorization": f"Basic {good}"})
+    assert authorised.status_code == 200
+    assert client.head("/stream.mp3").status_code == 200
+    # Its status page and feed stay public, and say nothing of the secrets.
+    for path in ("/stations/nightowl/status", "/api/stations/nightowl/nowplaying"):
+        response = client.get(path)
+        assert response.status_code == 200, path
+        assert "night-owl-listener-secret" not in response.text
+        assert "night-owl-private-path" not in response.text
+        assert "hooks.example.net" not in response.text
+    # Night Owl's webhook is its own: the default station has none.
+    assert client.get(f"{OWL}/webhooks").json()[0]["host"] == "hooks.example.net"
+    assert client.get("/api/webhooks").json() == []
+    assert [config.url for config in owl.webhooks.configs] == [
+        "https://hooks.example.net/night-owl-private-path"
+    ]
+    assert stations.default.webhooks.configs == ()
+
+
+# Every field the public feed may carry, and in each song and history row.
+FEED_FIELDS = {
+    "schema",
+    "station_name",
+    "current_track",
+    "next_track",
+    "history",
+    "listener_count",
+    "stream_path",
+    "peak_listeners_today",
+    "uptime_seconds",
+}
+TRACK_FIELDS = {"artist", "title", "album", "duration", "started_at", "elapsed"}
+HISTORY_FIELDS = {"artist", "title", "duration", "played_at"}
+
+
+def test_every_public_feed_carries_only_public_fields_to_any_site(rig: Any) -> None:
+    client, _library, _cfg, song, _closes = rig
+    owl = client.app.state.stations.get("nightowl")
+    # A song playing and one in the history, so every part of the feed is filled.
+    owl.player._state.current_track = song
+    owl.bridge.on_track_started(song)
+    owl.nowplaying.refresh()
+    for path in ("/api/nowplaying", "/api/stations/default/nowplaying", f"{OWL}/nowplaying"):
+        for method in ("GET", "HEAD"):
+            response = client.request(method, path)
+            assert response.status_code == 200, (method, path)
+            assert response.headers["access-control-allow-origin"] == "*", (method, path)
+            assert response.headers["cache-control"] == "no-cache", (method, path)
+        feed = client.get(path).json()
+        assert set(feed) == FEED_FIELDS, path
+        for track in (feed["current_track"], feed["next_track"]):
+            assert track is None or set(track) <= TRACK_FIELDS, path
+        for row in feed["history"]:
+            assert set(row) <= HISTORY_FIELDS, path
+    owl_feed = client.get(f"{OWL}/nowplaying").json()
+    assert owl_feed["current_track"]["title"] == song.title
+    assert song.path not in client.get(f"{OWL}/nowplaying").text
+
+
+def test_a_stop_that_meets_a_problem_still_stops_and_says_what_failed(
+    rig: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    client, *_ = rig
+    owl = client.app.state.stations.get("nightowl")
+    recorder = owl.recorder
+    real_close = recorder.close
+
+    def broken_close() -> None:
+        real_close()
+        raise OSError("the recording state could not be saved")
+
+    recorder.close = broken_close
+    with caplog.at_level(logging.INFO):
+        response = client.post(f"{OWL}/stop")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["state"] == "stopped"
+    assert body["warnings"] == ["Closing its recorder failed; the server log has the details."]
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("stopped with problems: Closing its recorder failed" in m for m in messages)
+    assert not any(m.endswith("Station nightowl (Night Owl Radio) stopped") for m in messages)
+    # A clean stop has no warnings.
+    assert client.post(f"{OWL}/start").status_code == 200
+    assert client.post(f"{OWL}/stop").json()["warnings"] == []

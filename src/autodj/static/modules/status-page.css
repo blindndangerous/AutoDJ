@@ -65,9 +65,12 @@ button {
   min-height: 44px;
   padding: 0.25rem 0.75rem;
   font: inherit;
-  color: ButtonText;
-  background: ButtonFace;
-  border: 2px solid ButtonText;
+  /* The page's own colours, not ButtonFace and ButtonText: WebKit keeps
+     those light under a dark colour scheme, so the button's text fell
+     below 4.5:1 in the dark theme. */
+  color: CanvasText;
+  background: Canvas;
+  border: 2px solid CanvasText;
   border-radius: 4px;
 }
 

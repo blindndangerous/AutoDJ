@@ -360,3 +360,27 @@ def test_security_middleware_unknown_peer_and_malformed_length() -> None:
     assert SecurityMiddleware._declared_body_too_large(
         {"type": "http", "headers": [(b"content-length", b"invalid")]}, 4096
     )
+
+
+@pytest.mark.parametrize(
+    ("scheme", "client", "headers", "allowed"),
+    [
+        ("https", "192.168.1.9", [], True),
+        ("http", "127.0.0.1", [], True),
+        ("http", "::1", [], True),
+        ("http", "192.168.1.9", [], False),
+        # A reverse proxy on this machine may have carried it in the clear.
+        ("http", "127.0.0.1", [(b"x-forwarded-for", b"192.168.1.9")], False),
+        ("http", "127.0.0.1", [(b"X-Forwarded-Proto", b"https")], False),
+        ("http", "127.0.0.1", [(b"forwarded", b"for=192.168.1.9")], False),
+        ("http", "127.0.0.1", [(b"x-real-ip", b"192.168.1.9")], False),
+        ("http", "127.0.0.1", [(b"x-forwarded-port", b"443")], False),
+        # A trusted proxy's TLS made the request HTTPS here.
+        ("https", "127.0.0.1", [(b"x-forwarded-for", b"192.168.1.9")], True),
+    ],
+)
+def test_machine_tokens_need_tls_or_an_unproxied_loopback(scheme, client, headers, allowed):
+    from autodj.security import machine_transport_allowed
+
+    scope = {"type": "http", "scheme": scheme, "client": (client, 5), "headers": headers}
+    assert machine_transport_allowed(scope) is allowed

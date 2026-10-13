@@ -32,7 +32,7 @@ releases.
 
 CI includes selected static accessibility contracts and JavaScript behavior checks. These checks cover live-region markup, durable descriptions, keyboard interactions, color boundaries, reduced-motion styles, and forced-colors styles. Passing CI does not establish WCAG conformance and does not prove what a screen reader will speak.
 
-The visual audit (`npm run audit:visual`, part of `audit:ci`) loads every view and every Settings subtab the server shows, with every card opened, in Chromium and Firefox. It does so in four theme modes: Light and Dark chosen in Settings (each against the opposite system preference, so the choice has to win) and System under a light and under a dark system preference. In each mode it checks that the stored theme is on the page before any module script runs, runs axe-core's WCAG 2.2 A and AA rules at 1280 px (text contrast, target size, label in name and the rest), and measures non-text contrast (1.4.11) itself: every enabled control's border or fill against what is behind it, the focus rings (every stop in the Dark mode, the first stops in the others), the progress fill against its rail, a tick of every cue kind against the bar, and the Camelot wheel lit for 8A (each wedge edge, the compatible outline and the current wedge 3:1 against their neighbours, the numbers 4.5:1, and the edges heavier from idle to compatible to current). The status message is shown, as a confirmation and as an error, and axe-core runs again with it and its Dismiss button on screen. Once per engine it also fails if the page scrolls sideways at 320 px wide or with 200 % text at 1280 px, requires every checkbox and radio button to be at least 24 by 24 px, tabs through each view requiring a solid focus outline at least 2 px wide, 3:1 against what is behind it, on a control scrolled fully into the window (so every focus ring is measured in both themes), switches the Theme setting to Dark and back (at once, with no live-region text, kept over a reload), and checks the status message stays while the pointer is over it, goes after the pointer leaves, passes a click on its frame (outside the message and the button) through to a control underneath, and is closed by Dismiss with the mouse and with Enter reached by Tab from the stop before it, focus going back to that stop. Every measurement waits for running CSS transitions to end, because under reduced motion each change still takes one 0.01 ms transition, and on a busy runner a focus ring was otherwise read mid-change in the control's text colour. `AUTODJ_CPU_THROTTLE=<rate>` slows Chromium's CPU to imitate a loaded runner. `AUTODJ_SCREENSHOTS=<folder>` also saves a full-page screenshot of every view and subtab in every mode for review by eye. It runs on the empty-library server, so lists that only fill with music, listeners or saved items are not covered, and Stream is covered only when the server runs in stream mode. Card, fieldset and divider edges (`--border`) are decoration, not control boundaries, and are not held to 3:1. It does not check forced colours, which the static contracts cover; `tests/jsmodules/a11y-contract.test.js` also checks every theme token pair in both themes.
+The visual audit (`npm run audit:visual`, part of `audit:ci`) loads every view and every Settings subtab the server shows, with every card opened, in Chromium, Firefox and WebKit (the engine of Safari). CI runs it in Chromium and Firefox only, so run WebKit locally before merging web UI changes: install it once with `npx playwright install webkit`, start AutoDJ on an empty library, and run `AUTODJ_URL=http://127.0.0.1:<port> AUTODJ_BROWSERS=webkit npm run audit:visual` (leaving `AUTODJ_BROWSERS` unset runs all three). It does so in four theme modes: Light and Dark chosen in Settings (each against the opposite system preference, so the choice has to win) and System under a light and under a dark system preference. In each mode it checks that the stored theme is on the page before any module script runs, runs axe-core's WCAG 2.2 A and AA rules at 1280 px (text contrast, target size, label in name and the rest), and measures non-text contrast (1.4.11) itself: every enabled control's border or fill against what is behind it, the focus rings (every stop in the Dark mode, the first stops in the others), the progress fill against its rail, a tick of every cue kind against the bar, and the Camelot wheel lit for 8A (each wedge edge, the compatible outline and the current wedge 3:1 against their neighbours, the numbers 4.5:1, and the edges heavier from idle to compatible to current). The status message is shown, as a confirmation and as an error, and axe-core runs again with it and its Dismiss button on screen. Once per engine it also fails if the page scrolls sideways at 320 px wide or with 200 % text at 1280 px, requires every checkbox and radio button to be at least 24 by 24 px, tabs through each view requiring a solid focus outline at least 2 px wide, 3:1 against what is behind it, on a control scrolled fully into the window (so every focus ring is measured in both themes), switches the Theme setting to Dark and back (at once, with no live-region text, kept over a reload), and checks the status message stays while the pointer is over it, goes after the pointer leaves, passes a click on its frame (outside the message and the button) through to a control underneath, and is closed by Dismiss with the mouse (focus staying on the control that had it, which WebKit, not focusing a clicked button, used to drop to the page body) and with Enter reached by Tab from the stop before it, focus going back to that stop. Every measurement waits for running CSS transitions to end, because under reduced motion each change still takes one 0.01 ms transition, and on a busy runner a focus ring was otherwise read mid-change in the control's text colour. `AUTODJ_CPU_THROTTLE=<rate>` slows Chromium's CPU to imitate a loaded runner. `AUTODJ_SCREENSHOTS=<folder>` also saves a full-page screenshot of every view and subtab in every mode for review by eye. Now It Playing's also Hour audits preview the public status pages: `/status`, and each station's `/stations/<slug>/status` that `/api/stations` lists, including a stopped station's "off air" page. In each of the four theme modes it runs axe-core's WCAG 2.2 A and AA rules, checks that the chosen theme is opened applied and the background is light or dark to match, and tabs through every stop requiring a 2 px focus outline 3:1 against what is behind it; it also fails if a status page scrolls sideways at 320 px or with the 200 server's % answer stood in for, so its table, with fixed and predicted rows and a long unbroken title, is measured too. text. It runs on the empty-library server, so lists that only fill with music, listeners or saved items are not covered, and Stream is covered only when the server runs in stream mode. Settings > Time checks is shown with two stood-in voice packs, one outside its play dates, and visited again with a backwards date range refused, its error on the page and focus on the field. Library tools is visited again with a category's backwards season refused and with a new clockwheel's half-filled step hours refused, each error on the page and focus on its field. Voice tracks is shown with a stood-in open song change and booked list and with the microphone and recorder stubbed in the page, so no device or permission prompt is needed: idle, recording, with a take, and with the microphone refused, its error on the page and linked to Record. Once per engine it also records by keyboard: Enter on Record must keep focus there and put "Recording" in the status region once, Alt+R from the Placement select must stop the recording without moving focus and stop the stubbed microphone, a refused booking must show its error linked to Book voice track with focus still there, and leaving the tab while recording must stop the recording, stop the microphone and say so once in the page-wide status region. Card, fieldset and divider edges (`--border`) are decoration, not control boundaries, and are not held to 3:1. It does not check forced colours, which the static contracts cover; `tests/jsmodules/a11y-contract.test.js` also checks every theme token pair in both themes.
 
 Checkboxes and radio buttons are a deliberate exception to the authored control-boundary rule. In the default color mode they keep the browser and operating system's native appearance; AutoDJ does not replace that appearance or draw a custom border. The forced-colors rules may apply system colors such as `CanvasText` and `Highlight`, but they do not disable the native appearance. Test both checked and unchecked states during release sampling when a sampled flow contains these controls.
 
@@ -101,16 +101,23 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   Library opening the confirm dialog with the limit in words and focus on Cancel, Queue anyway
   (or Play anyway) saying the song was queued over the limit, Cancel saying it was not, and
   focus back on the button pressed either way.
-- The public status page (`/status`): read with headings and the definition list, with and
-  without JavaScript; the song line said once, politely, when the song changes, and nothing said
-  on a poll that finds the same song; the next song shown only while it is allowed.
+- The public status page (`/status`, and `/stations/<slug>/status` for another station): read
+  with headings and the definition list, with and without JavaScript; the song line said once,
+  politely, when the song changes, and nothing said on a poll that finds the same song; the next
+  song shown only while it is allowed. With a station stopped, its page says it is off air, and
+  an open page says so once when the station stops and says the song once when it is back.
 - Voice liners: uploading a liner, Test now, and each rotation mode, including the spoken
   result when an upload or test fails.
-- Queue & Search, browsing: Tab moving from Search to Browse library (Folder, Search text, Browse,
-  the list, Previous and Next) and on to Browse voice liners; the track count said once per Browse
-  and per page, with focus staying on Previous or Next (or moving to the other one when the page
-  ends); Delete on a liner saying the result once and focus moving to the next liner or the list;
-  and Track info from either list, with Return to Queue & Search putting focus back on its button.
+- Library tools, folder table: arrow onto each checkbox and hear its name and checked state;
+  toggle it once, keep focus while saving and after the next poll, and confirm only one save.
+  After a failed save, check that the saved value is restored and focus stays on the checkbox.
+  Search and History action cells focus their buttons and announce the button role without
+  repeating the track name; returning from Track info leaves arrow navigation working.
+- Queue & Search, browsing: Tab to Type, Folder, Search text and Search; one result grid with
+  arrows, Home and End, and Enter or Space activating each action; the track count said once per
+  search and page, with focus staying on Previous or Next (or moving to the other when a page ends);
+  and Track info returning focus to its result. Under Settings > Voice liners, check Delete and
+  Play dates with focus moving to the next liner or the list.
 - Track info, Tags: each field read with its label and, for Year, BPM, Key and ISRC, its help;
   Save tags with a refused field marking it invalid, focusing the first one and reading its
   error; a save said once with focus staying on Save tags; and switching tracks with unsaved tags
@@ -122,8 +129,10 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   saying the count once and landing on the category's Edit button; Cancel returning to the
   button that opened the form; Delete naming the clockwheels that use the category and landing
   on the next Edit button or Add category; and the list never spoken on its 15-second refresh.
-  In Clockwheels, "Music from a category" showing the Category choice and the step read as
-  "music from category A".
+  In Clockwheels, a Music condition with Field Category showing the named Category choice;
+  multiple categories read with the chosen Match all/any; a legacy category step opening as
+  Music with its category selected; a missing category named as unavailable; Category absent
+  from voice liner conditions.
 - Library tools, Clockwheels: the conditions read as a group named Conditions, each with its
   numbered legend; Value and Upper value reading the wildcard and MM:SS help; Add condition
   focusing the new condition and saying "Condition 2 added"; Remove condition 2 focusing the
@@ -135,12 +144,20 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   the first step name (a grid cell, not a button); Up and Down moving between names and Left,
   Right, Home and End along a row without leaving focus mode; Enter and Space pressing the focused
   cell's button; Alt+Up and Alt+Down moving the step and saying its new position once; and the
-  Delete key asking with Cancel focused first, with focus back in the list after either answer.
+  Delete key behaving like the Delete button; Delete and Undo disabled while a step is being
+  edited, with its unsaved fields preserved; Undo step change and Ctrl+Z restoring the step and
+  its focus, including after deleting the last step; and Ctrl+Z still undoing text in inputs.
 - EQ: each band's slider, its spoken value, and resetting the bands.
 - History: the History tab's table read with table navigation, its pagination, the empty state,
   and a new song added to the top of page 1 without the reading position moving or anything said.
 - Why this track: reading the reasons for the current pick, and confirming they are not read
   again on their own when the track changes.
+- Now Playing, Hour preview: the table read with table navigation (column headers Starts, What,
+  Length and Status), each start time and length read in words, Fixed or Predicted said in the
+  Status column; Refresh preview saying the summary once with focus staying on it; nothing said
+  by the 30-second refresh or a song change, with the reading position kept; and Shift+H saying
+  the summary from another tab; a new span under Show said once with its summary; and a failed
+  automatic refresh said once, not on every retry.
 
 For that release, record the date, exact screen reader and browser versions, flows sampled, results, and defects found. Keep this record with the release evidence so readers can find any limits or unresolved defects.
 

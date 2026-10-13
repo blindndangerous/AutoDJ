@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sys
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -287,14 +288,37 @@ def test_action_check_describe_and_metadata() -> None:
     }
 
 
+def test_the_system_zone_is_asked_for_once_and_warns_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    asked = []
+
+    def unknown() -> str:
+        asked.append(1)
+        return "Mars/Base"
+
+    system_timezone.cache_clear()
+    monkeypatch.setitem(sys.modules, "tzlocal", SimpleNamespace(get_localzone_name=unknown))
+    try:
+        with caplog.at_level(logging.WARNING, logger="autodj.scheduler"):
+            assert [system_timezone() for _ in range(5)] == ["UTC"] * 5
+    finally:
+        system_timezone.cache_clear()
+    assert len(asked) == 1
+    assert caplog.text.count("Could not identify the system time zone") == 1
+
+
 def test_station_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
     def zone_named(name: str) -> SimpleNamespace:
         return SimpleNamespace(get_localzone_name=lambda: name)
 
+    system_timezone.cache_clear()
     monkeypatch.setitem(sys.modules, "tzlocal", zone_named("America/Denver"))
     assert system_timezone() == "America/Denver"
+    system_timezone.cache_clear()
     monkeypatch.setitem(sys.modules, "tzlocal", zone_named("Mars/Base"))
     assert system_timezone() == "UTC"
+    system_timezone.cache_clear()
     assert ServerConfig(station_timezone="America/Denver").station_timezone == "America/Denver"
     for bad in ("Mars/Base", "", "../etc/passwd", 5):
         with pytest.raises(ValueError, match="IANA time zone"):

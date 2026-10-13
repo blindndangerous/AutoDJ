@@ -79,11 +79,12 @@ In a terminal, analysis commands show completed-track progress. Redirected outpu
 logs keep plain progress messages.
 
 In the web page, add, remove and rescan music and voice liner folders in the **Library tools**
-tab. Browse what they hold in **Queue & Search**, after Search: **Browse library** lists all
-music, all voice liners or one registered folder, 100 tracks a page, and **Browse voice liners**
-lists the liner files with Delete, Track info and Play dates (see
-[Liner and cart play dates](#liner-and-cart-play-dates)). Track info's Return to Queue & Search button
-puts focus back on the button that opened it.
+tab. Its folder table shows each folder's type, path and scan options. **Queue & Search** uses one
+paginated list: choose Music or Voice liners, choose all folders or one folder, and optionally
+search by artist or title. Each result has Play now, Play next, Add to queue and Track info.
+Manage liner files, including Delete and Play dates, under **Settings > Voice liners** (see
+[Liner and cart play dates](#liner-and-cart-play-dates)). Track info's Return button puts focus
+back on the result that opened it.
 
 With `[playback] import_external_cues` on (the default), intro and outro markers set in Mixxx,
 Rekordbox or Traktor take the place of the detected intro and outro, so the crossfade follows
@@ -592,7 +593,12 @@ working, since no field was removed or renamed.
   time zone (`[server] station_timezone`, the one the scheduler uses; the computer's time zone
   when it is not set). It is kept in memory only, so it starts again from the current count when
   AutoDJ restarts.
-- `uptime_seconds` counts whole seconds since this AutoDJ server started.
+- `uptime_seconds` counts whole seconds since this station started: for the default station,
+  since this AutoDJ server started; for another station, since it was last started.
+
+Each station has its own feed, with its own name, songs, listeners and stream path:
+`/api/nowplaying` for the default station, `/api/stations/<slug>/nowplaying` for any station
+(the default one is `default`). See [Several stations](#several-stations).
 
 `current_track` and `next_track` are `null` when unavailable. History is newest first.
 The feed never contains local file paths, internal IDs, credentials or pairing state.
@@ -630,10 +636,12 @@ separately if you need to restore secrets.
 
 `GET /status` is a public page for listeners, in the spirit of an Icecast status page: the
 station name, the song playing, the next song when **Show the next song publicly** is on, the
-number of listeners now, today's peak and how long AutoDJ has been running. It needs
+number of listeners now, today's peak and how long the station has been on air (**Uptime**, which
+says "Not on air" while the station is stopped). Every station
+has one at `/stations/<slug>/status`; `/status` is the default station's. It needs
 no pairing and does not load the paired app. The server writes every value into the page as
 plain text, so it works without JavaScript; with JavaScript, `/modules/status-page.js` polls
-`/api/nowplaying` every 15 seconds (skipping polls while the tab is hidden) and updates the
+the station's own feed every 15 seconds (skipping polls while the tab is hidden) and updates the
 text. Only the now-playing line is a live region: screen readers hear it, politely, when the
 song changes, and nothing else on a poll. A **Pause updates** toggle stops the polling until
 pressed again. In stream mode the page also links to the stream and
@@ -1057,6 +1065,9 @@ The rules:
   set it.
 - **Each relay target belongs to one station.** Two stations pushing to the same host, port and
   mount (or Shoutcast stream) are refused.
+- **A station without a `stream.station_name` is called by its slug**, for example `nightowl`, in
+  stream metadata and on its pages, so it never takes the default station's "AutoDJ". Two
+  stations given the same name are warned about at startup: listeners could not tell them apart.
 - **Unknown keys are warned about and ignored**, as in the root sections; the warning names the
   station's table. `autodj doctor` offers to remove an unknown key from a station section.
 - **Errors name the station**, for example
@@ -1078,27 +1089,80 @@ the addresses. These are public like `/stream.mp3`, and the station's own `liste
 `/status`, and also answers at `/stations/default.mp3`. A station's stream needs ffmpeg, even when
 the default station is browser-driven.
 
+Each station also has its own public status page and now-playing feed, for listeners and for
+other sites:
+
+- `/stations/<slug>/status`, the status page, with the station's name, song, listeners and links
+  to its stream and playlist. It polls the station's own feed, and only a feed on this server.
+- `/api/stations/<slug>/nowplaying`, the now-playing feed, in the same form as `/api/nowplaying`
+  (see [Now-playing feed and webhooks](#now-playing-feed-and-webhooks)).
+- Both are public without pairing, like the stream, but only for a configured station: any
+  other name needs a paired browser and then answers 404. The station's listener password
+  protects only its stream, not these.
+- The default station keeps `/status` and `/api/nowplaying`, and also answers as `default`
+  (`/stations/default/status`, `/api/stations/default/nowplaying`).
+- While a station is stopped, its stream, its feed and its status page all answer 503, "off air".
+  The page still shows the station's name and says it is off air right now; an open page notices
+  when the station is back on air and shows the song again. The feed answers
+  `{"detail": "That station is off air"}`.
+- Each station sends its own track-change webhooks, set in `config.local.toml` under
+  `[[stations.<slug>.webhooks]]`, with only that station's feed.
+
 Every control route of a station answers under `/api/stations/<slug>/`, for example
 `/api/stations/nightowl/status`, `/api/stations/nightowl/skip` or
 `/api/stations/nightowl/queue/add`; the default station keeps its `/api/...` addresses. These
 need a paired browser, like the default station's.
 
-- `GET /api/stations` lists every configured station: its slug, name, state (`stopped`, `idle`,
-  `playing` or `paused`), listener count, current song and stream address.
+- `GET /api/stations` lists every configured station: its slug, name, state (`stopped`,
+  `stopping`, `stuck stopping`, `idle`, `playing` or `paused`), listener count and current
+  song, and its public addresses: `status_path`, `nowplaying_path`, `stream_path` and
+  `m3u_path`. The stream and playlist are `null` for a default station that does not stream. For
+  example:
+
+  ```json
+  {"slug": "nightowl", "name": "Night Owl Radio", "state": "playing", "listeners": 3,
+   "title": "Artist — Song", "status_path": "/stations/nightowl/status",
+   "nowplaying_path": "/api/stations/nightowl/nowplaying",
+   "stream_path": "/stations/nightowl.mp3", "m3u_path": "/stations/nightowl.m3u"}
+  ```
 - `POST /api/stations/<slug>/start` builds and starts a stopped station. Starting a running
   station changes nothing.
 - `POST /api/stations/<slug>/stop` stops a station completely: its listeners are disconnected,
   its encoder, relays, recorder and mastering process are closed and its player ends, so it uses
   no memory or processor time. Its routes then answer 409 and its stream answers 503, "off air".
-  The default station cannot be stopped.
+  This starts as soon as the stop is asked for: while the player finishes its work, which can
+  take several seconds, the station is listed as `stopping`, its routes already answer 409, a
+  start request is refused at once with 409, and a second stop request returns at once. Its
+  open pages are told at once. Other stations can be started and stopped meanwhile. If the
+  stopping station used Stereo Tool, it keeps it until it has stopped, and another station asking
+  for it is told to try again in a few seconds. The default station cannot be stopped.
+- The stop reply is the station's entry, as in `GET /api/stations`, plus `warnings`: a list of
+  what went wrong, in plain words, such as "Closing its recorder failed; the server log has the
+  details.". It is empty when everything stopped cleanly. The station is stopped either way.
+- If a station's player has not finished 30 seconds after a stop, the station is listed as
+  `stuck stopping`, and the stop's `warnings` say so. Its player and mastering process keep
+  running, because closing the mastering process under a running player is unsafe, so it keeps
+  Stereo Tool, and it cannot be started again. The log says every minute that it is still stuck;
+  only a restart of AutoDJ frees a player that never ends. When the player ends, the mastering
+  process is closed, and closed again every few seconds until it has really ended; only then is
+  the station `stopped` and Stereo Tool free. The same holds for a station that failed to start.
+- On a normal shutdown, and when Python exits, AutoDJ kills any mastering process still running,
+  after making sure none can start again. On Windows each mastering process (Stereo Tool and its
+  FFmpeg limiter, or the FFmpeg master) is also tied to AutoDJ's own process with a job object,
+  so it ends even when AutoDJ is killed outright or crashes. On Linux and macOS, a hard kill of
+  AutoDJ (such as `kill -9`) can leave one running; stop it by hand.
 
 A station that cannot start, with the server or when asked, says why: in the log at startup, and
-in the reply to a start request. The default station and the other stations keep running.
+in the reply to a start request. Whatever it had already started (its player, mastering process,
+encoders and relays) is stopped again. The default station and the other stations keep running.
 
 Each station starts with its saved settings (its `web_state.json`), its active clockwheel and its
 own play history. The first time a station runs, its liner folder is added to Library folders as
 a liner source. A station plays only the liners in its own folder; the default station plays every
-other registered liner, as before.
+other registered liner, as before. When one station's liner folder sits inside another's (for
+example `liners/nightowl` inside the default station's `liners`), the inner folder's liners belong
+to the inner station only. This holds for automatic liners, clockwheel liner steps, the Liners
+list and the clips a cart can use.
 
 ### Stereo Tool: one station at a time
 
@@ -1135,12 +1199,47 @@ Each running station is a complete playout chain in the same process:
 - **An idle station still runs** its mix bus, mastering and encoder on silence. Stopping a
   station is the real saving.
 - **One process, one interpreter lock.** A heavy render on one station could make another
-  station's mix bus late. To measure it on your own machine, run the soak test with a duration in
-  seconds; it reports the blocks each station's bus emitted while both render at once:
+  station's mix bus late. The soak test below measures it.
 
-  ```bash
-  AUTODJ_SOAK_SECONDS=60 uv run pytest tests/integration/test_multi_station.py -k soak -s
-  ```
+### Soak test
+
+`tests/integration/test_multi_station.py` has a soak test with two stations, the default one and
+Night Owl Radio. Both mix buses run while two threads do song-sized time-stretches back to back,
+standing in for each station's render-ahead work, and Night Owl is stopped and started again
+every cycle. The test counts the 20 ms blocks each bus sends out. It fails if a stop leaves any
+of the station's threads, encoders or mastering process behind, and, in a long run, if either bus
+falls short (an underrun). ffmpeg and Stereo Tool are replaced by stand-ins, so it measures AutoDJ's own
+work.
+
+Every test run, including CI, runs it for 4 seconds with one restart. To run it for longer, on the
+machine that will host the stations, set `AUTODJ_SOAK_SECONDS`. This runs it for four hours,
+restarts Night Owl every 10 minutes, and samples memory and processor use every 30 seconds:
+
+```bash
+AUTODJ_SOAK_SECONDS=14400 AUTODJ_SOAK_REPORT=soak.jsonl \
+  uv run pytest tests/integration/test_multi_station.py -k soak -s -p no:cacheprovider
+```
+
+The settings, all optional:
+
+- `AUTODJ_SOAK_SECONDS`: how long to run. A long run uses four-minute songs for the render
+  stand-ins and fails if a bus sends fewer than 99% of the blocks it should. The short default
+  run uses 20-second songs and only reports the block counts: a few seconds on a shared CI
+  machine is too short to judge underruns, so there it checks the restart and leaks only.
+- `AUTODJ_SOAK_CYCLE_SECONDS`: how often Night Owl is stopped and started (default 600 in a long
+  run).
+- `AUTODJ_SOAK_SAMPLE_SECONDS`: how often memory and processor use are sampled (default 30 in a
+  long run).
+- `AUTODJ_SOAK_REPORT`: a file the samples are added to, one JSON object per line. Each has the
+  seconds since the start, `rss_mb` (resident memory, on Linux only), `cpu_percent` (processor
+  time as a percentage of one core since the last sample), `threads` and `restarts`. The last
+  line is the summary.
+
+At the end the test prints a summary line: the blocks each bus sent against the number expected,
+the longest gap between blocks in milliseconds, the number of restarts and renders, memory at the
+start and the end, and Night Owl's thread count before and after. Memory that keeps climbing from
+one restart to the next, or a thread count that grows, points to a leak; attach the report file to
+an issue.
 
 ## Windows PowerShell setup
 
@@ -1358,8 +1457,9 @@ it with `--ca-cert`.
 
 ### 2. Create a token
 
-On any paired browser, open Settings, Analysis workers. Type a name for the computer, such as
-Alienware, and choose Create token. The token appears once, in a read-only field with a Copy token
+On any paired browser, open Settings, Analysis workers. Under Machine tokens, type a name for the
+computer, such as Alienware, leave Token use at Analysis worker, and choose Create token. The
+token appears once, in a read-only field with a Copy token
 button; copy it now, because it is never shown again. Choose Done to hide it. If it is lost,
 choose Revoke on its row and create another. A worker token can only claim songs, download those
 songs and post their analysis.
@@ -1483,6 +1583,314 @@ as it runs.
    the `--idle-exit 10` command above on the Alienware. You can start it at the same time as the
    Rescan: it analyses songs as the scan finds them, and exits once nothing new has turned up for
    ten minutes, starting the text-to-speech container again.
+
+## Announcer breaks (DJ breaks, news and weather)
+
+An announcer program on the station's own machine can send a station spoken breaks: a DJ talking
+about the songs, news, weather or music news. It asks AutoDJ which song change is still open,
+writes a break for that pair of songs, and uploads it. AutoDJ mixes the break into that song
+change, reports when it airs, and deletes the file afterwards.
+
+AutoDJ prepares each song change one song ahead: while one song plays, the next one is already
+rendered together with its handoff. So a break cannot join the change that is coming up; it joins
+the one after, the *open slot*. As soon as the next song is rendered, AutoDJ also picks the song
+that follows it, so the open slot names both songs: the one the break follows (*ending*) and the
+one it leads into (*upcoming*). A break booked for the slot pins that pair: the upcoming song
+stays, whatever happens to the queue, because the break names it. A song queued after the booking
+plays after the upcoming song. News and weather therefore air about one song later than a system
+that splices them in at once.
+
+### Turning breaks on
+
+Breaks need saved-point playback (Transition mode: Use saved segue points, or Clockwheel) and are
+off by default. Turn them on for each station that takes them:
+
+```toml
+[breaks]
+enabled = true
+dj_placement = "auto"
+```
+
+For another station, the same keys go under `[stations.<slug>.breaks]`. With breaks off, AutoDJ
+picks songs exactly as before and the API says so. The other `[breaks]` keys, with their
+defaults, are in `config.toml.example`:
+
+- `dj_placement`: where a DJ break goes when its request says `auto`. `"auto"` talks up the
+  upcoming song when its intro (Start to Intro) is at least `min_intro_seconds` long (2 seconds),
+  and otherwise plays the break between the songs. `"talk_up"` talks up any intro; with no intro
+  point the break still plays between the songs. `"standalone"` always plays it between the songs.
+- `duck_db`: how far the music drops under a break's voice, -30 to 0 dB. Unset, it is
+  `[playback] liners_duck_db`.
+- `max_upload_mb` (40), `max_seconds` (300), `max_queued` (6 breaks waiting per station),
+  `max_per_slot` (2), `quota_mb` (400 MB of waiting files): the limits on uploads.
+- `default_expires_seconds` (1800) and `max_expires_seconds` (7200): how long a break may wait.
+- `requests_per_minute` (120): requests one token may make.
+
+### Placement
+
+- **Talk-up**: the break's speech ends just as the upcoming song's vocal starts, with the song's
+  intro playing under the voice. The voice starts at the ending song's Segue, or earlier over its
+  Outro when the request allows it (`allow_outro`).
+- **Standalone**: the ending song fades, the break plays, and the upcoming song starts when the
+  speech ends.
+
+News, weather and music news are always standalone. When one song change has several breaks,
+the standalone ones play first, and only the last DJ break can talk up the song. Liners the clock
+or the queue put in the same change play before the breaks. AutoDJ finds where a break's speech
+starts and ends, so trailing silence in the file does not delay the music; it keeps a short tail
+under the music. With Smooth or Stereo Tool processing, a break gets the same voice processing
+as a voice liner.
+
+### The token
+
+An announcer token can read one station's coming songs and send that station breaks, and nothing
+else. It works for one station only. In Settings, Analysis workers, Machine tokens, type a name,
+choose Token use: Announcer, choose the Station, and choose Create
+token. Copy the token when it appears; it is never shown again. From the command line:
+
+```bash
+uv run autodj tokens create announcer --scope announcer --station default
+uv run autodj tokens create nightowl-announcer --scope announcer --station nightowl
+```
+
+Keep the token out of logs and shell history, for example in an environment variable read from a
+file only the announcer's account can read. AutoDJ stores only a digest of it and never logs it.
+Revoking the token in Settings or with `autodj tokens revoke <id>` stops it at its next request.
+
+The token travels in the `Authorization: Bearer` header. AutoDJ accepts it over plain HTTP only
+from the same machine (`127.0.0.1` or `::1`) and only when no proxy carried the request: a plain
+HTTP request with a `Forwarded`, `X-Forwarded-*` or `X-Real-IP` header is refused (403) even from
+loopback, because a reverse proxy on the same machine may have brought it in from the network in
+the clear. From anywhere else, or through a reverse proxy, it needs HTTPS. A reverse proxy must
+terminate TLS itself and send `X-Forwarded-Proto: https`, and AutoDJ must trust that proxy: the
+addresses in `[stream] trusted_proxies` when that list is set, otherwise a proxy on the same
+machine (`127.0.0.1` or `::1`), so a TLS proxy on the station's own host needs no setting. A
+request with no proxy headers is treated as before. A request with an `Origin` header, as every
+browser sends, is refused: these routes are for programs only.
+
+### API reference
+
+The routes answer under `/api/announcer/` for the default station and under
+`/api/stations/<slug>/announcer/` for any station by name; a token for another station gets 403.
+Every reply is JSON and is not cached. In the examples `$TOKEN` holds the token and the server
+listens on port 8080.
+
+Songs are described as objects with `id` (the library's id for the song, stable across
+restarts), `title`, `artist`, `album`, `year` and `duration_s`.
+
+#### GET context
+
+What is playing, what is next, and the open slot.
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/announcer/context
+```
+
+```json
+{
+  "station": "default",
+  "accepting": true,
+  "reason": null,
+  "now": {"id": "4be1…", "title": "First Song", "artist": "First Artist", "album": "First Album",
+          "year": 1999, "duration_s": 212.4, "elapsed_s": 31.0, "remaining_s": 181.4},
+  "next": {"id": "9a0c…", "title": "Second Song", "artist": "Second Artist", "…": "…"},
+  "slot": {
+    "slot_id": "5f2d0c9e8b7a6f5e4d3c2b1a09f8e7d6",
+    "ending": {"id": "77aa…", "title": "Third Song", "…": "…"},
+    "upcoming": {"id": "c3d4…", "title": "Fourth Song", "…": "…"},
+    "closes_in_s": 181.4,
+    "airs_in_s": 402.0,
+    "upcoming_intro_s": 9.5,
+    "pinned": false,
+    "breaks_booked": 0
+  },
+  "history": [{"id": "…", "title": "…", "artist": "…", "album": "…", "played_at": 1760000000.0}],
+  "requests": [{"id": "…", "title": "…", "…": "…"}],
+  "limits": {"kinds": ["dj", "news", "weather", "music_news"],
+             "extensions": [".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac"],
+             "max_bytes": 41943040, "max_seconds": 300.0, "max_queued": 6, "max_per_slot": 2,
+             "default_expires_s": 1800, "max_expires_s": 7200, "dj_placement": "auto"}
+}
+```
+
+- `slot` is `null` and `accepting` is `false` while no change is open: breaks are off, the station
+  does not use saved-point playback, nothing is playing, or the next song is still being rendered.
+  `reason` says which in words; ask again a few seconds later.
+- `closes_in_s` is how long until the slot's change is rendered and the slot closes; plan to
+  upload well before then. `airs_in_s` is roughly when the song change itself happens.
+- `upcoming_intro_s` is the upcoming song's intro in seconds, or `null` without an intro point:
+  what a talk-up has to fit.
+- `history` is the latest plays, newest first; `requests` is the queue.
+
+#### POST breaks
+
+Upload one break for the open slot as `multipart/form-data`:
+
+- `file` (required): the audio, one of the `limits.extensions` types, at most `limits.max_bytes`
+  and `limits.max_seconds`.
+- `kind` (required): `dj`, `news`, `weather` or `music_news`.
+- `slot_id`, `ending_id`, `upcoming_id` (required): the slot and the ids of its two songs, as the
+  context gave them.
+- `placement`: `auto` (the default, following `dj_placement`), `talk_up` or `standalone`. Only a
+  DJ break may ask for `talk_up`.
+- `allow_outro`: `true` lets the voice start over the ending song's outro. Default `false`.
+- `expires_s`: how long the break may wait, 30 seconds to `limits.max_expires_s`. A break whose
+  song change would air later than that is dropped. Default `limits.default_expires_s`.
+- `label`: a short description for logs and status, such as "Weather, 3 pm".
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" \
+  -F kind=dj -F slot_id=5f2d0c9e8b7a6f5e4d3c2b1a09f8e7d6 \
+  -F ending_id=77aa… -F upcoming_id=c3d4… \
+  -F label="Link into Fourth Song" -F file=@break.wav \
+  http://127.0.0.1:8080/api/announcer/breaks
+```
+
+`201` books the break:
+
+```json
+{"break_id": "0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a", "kind": "dj", "label": "Link into Fourth Song",
+ "state": "queued", "reason": null, "slot_id": "5f2d…", "ending_id": "77aa…",
+ "upcoming_id": "c3d4…", "placement": "auto", "mixed_as": null, "allow_outro": false,
+ "speech_s": 11.8, "created_at": 1760000000.0, "expires_at": 1760001800.0, "eta": null,
+ "aired_at": null, "updated_at": 1760000000.0, "airs_in_s": 401.2}
+```
+
+Refusals:
+
+- `409` with `"reason": "slot_closed"` (the slot was rendered or replaced) or `"pair_changed"`
+  (the ids do not match the slot's songs), and `"slot"` holding the slot that is open now, or
+  `null`. Write the break again for that slot. `409` with `"slot_full"` when the slot already
+  holds `max_per_slot` breaks, and a plain `409` while breaks are off.
+- `429` when the station already holds `max_queued` waiting breaks, or the token sent more than
+  `requests_per_minute` requests; wait for `Retry-After` seconds.
+- `413` for a file over `max_upload_mb` (refused from the declared `Content-Length` before the
+  body is read), `415` for a file type that is not allowed, `422` for a file AutoDJ cannot decode,
+  one whose contents do not match its extension, one over 192 kHz or with more than two channels,
+  one longer than `max_seconds`, one with less than half a second of sound, a missing file, an
+  unknown field or a field out of range.
+- `503` with `Retry-After` while other breaks are being decoded; `507` when the waiting files
+  would pass `quota_mb`; `408` when the body takes longer than 60 seconds plus one second per
+  256 KiB of its declared length to arrive.
+- `401` for a missing, wrong or revoked token, `403` for a token for another station, a request
+  from another machine over plain HTTP, or a request with an `Origin` header.
+
+A refused upload leaves no file behind.
+
+#### GET breaks and GET breaks/{break_id}
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:8080/api/announcer/breaks/0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a
+```
+
+`GET breaks` lists the announcer's breaks still waiting, then the finished ones, newest first, as
+`{"breaks": [...]}`. Voice tracks booked in the web UI are not listed, and an announcer token
+cannot look them up or cancel them (404). A break's `state` is one of:
+
+- `queued`: booked, waiting for its song change to be rendered.
+- `rendered`: mixed into the song change; it will air. `mixed_as` says `talk_up` or `standalone`
+  and `eta` when it should air.
+- `on_air`: its voice is playing.
+- `aired`: its speech has finished; `aired_at` is when it started.
+- `dropped`: it will not air; `reason` says why, for example "cancelled by the announcer", "the
+  song before it changed", "the station jumped to another song", "skipped before it aired" or
+  "its file could not be decoded".
+- `expired`: it was not on the air in time; `reason` says so.
+
+AutoDJ keeps the last 200 finished breaks. Breaks do not survive a restart: after one, ask for the
+context again.
+
+#### DELETE breaks/{break_id}
+
+Drops a break that is still `queued`; the reply is the dropped break. A break already rendered
+into the stream cannot be taken back: the reply is `409` with its state in `reason`.
+
+```bash
+curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:8080/api/announcer/breaks/0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a
+```
+
+### What happens to the files
+
+Uploads go to the station's `announcements` folder (`<index_dir>/<name>/announcements`, or
+`stations/<slug>/announcements` beneath it for another station) under a name AutoDJ makes up. That
+folder is never part of liner rotation. A break's file is deleted once it has aired, been dropped
+or expired, and any file left by a previous run is deleted when the station starts (an upload
+still arriving is left alone). Room for an upload (its place in `max_queued` and `max_per_slot`
+and its bytes in `quota_mb`) is held from before its body is read until it is booked or refused,
+so uploads sent together cannot pass the limits together. Decoding an upload happens away from the
+playout, one upload at a time, so a burst of uploads never holds up the audio or the next render.
+
+A break is decoded with limits a library song does not need: the file's header is read first, and
+a file over 192 kHz, with more than two channels, or longer than `max_seconds` is refused before
+any sample is decoded. FFmpeg is told the format from the extension instead of guessing it, may
+open only local files and pipes, and its output (stereo at 44.1 kHz) is read against a byte
+budget. The break is decoded again the same way when it is mixed in, and where its speech starts
+and ends is found again in the audio that plays, so Smooth or Stereo Tool processing cannot move
+the voice off its marks. A break mixed into a render that is thrown away unplayed (the station
+jumped, or the render was replaced) is dropped at once; one that has still not started ten
+minutes after its expected air time expires.
+
+The log records each break by the first eight characters of its id: when it is booked, mixed in,
+aired, dropped or expired, and why.
+
+## Voice tracking from the browser
+
+The **Voice tracks** tab records a DJ break with your microphone and books it for the open song
+change, the same as an announcer program's break (see [Announcer breaks](#announcer-breaks-dj-breaks-news-and-weather)).
+It needs breaks turned on for the station (`[breaks] enabled = true`, with saved-point playback);
+otherwise the tab says why it cannot take a voice track. No token is needed: the tab uses your
+signed-in browser.
+
+The browser lets a page use the microphone only over a secure connection: open AutoDJ over HTTPS,
+or at `http://localhost:<port>` on the station's own computer. On a plain `http://` address from
+another computer the tab says so instead of recording.
+
+The tab shows the open song change: the ending song, the next song, how long the next song's
+intro is, the time left to book it and roughly when it airs. That change is the one after the next
+song, because the next one is already mixed. The time left counts down on the page; it is not
+read out on its own.
+
+1. Choose **Record**. The first time, the browser asks to use the microphone. Speak, then choose
+   **Record** again to stop. **Alt+R** starts and stops recording from anywhere in the tab without
+   moving focus, which suits a screen reader user who wants to stay on another control.
+2. Choose **Listen back** to hear the take, on the Preview output device when one is chosen in
+   Settings, Sound (headphones, say). **Record** again replaces it; **Discard recording**
+   throws it away.
+3. Choose the **Placement**: **Automatic** (follows `[breaks] dj_placement`; the description under
+   it says what it will do for this change), **Talk up the next song's intro** (your voice ends as
+   the vocal starts), or **Standalone, between the songs**. For a talk-up, **Start over the ending
+   song's outro** lets your voice begin while the ending song plays out.
+4. Choose **Book voice track**. The browser turns the take into a mono WAV at 44.1 kHz and
+   uploads it; AutoDJ trims the silence before and after your voice as it does for any break.
+
+The recording state is said once when recording starts and stops, then once a minute, and 30
+seconds before the length limit or before the song change closes. Recording stops by itself at
+three minutes, or sooner at the station's `max_seconds`, or when `max_upload_mb` could not hold
+that much WAV (about 5 MB per minute). Three minutes is the browser's own cap: booking decodes the
+whole take in the page, so the length is what keeps the page's memory down (about 80 MB at most).
+Recording also stops, keeping the take and letting the microphone go, when you leave the Voice
+tracks tab or the page is hidden (another browser tab, a minimised window); that is said once.
+
+If the song change moves on before you book, the tab says which change is open now. When the open
+change has the same two songs (it was planned again), **Book voice track** books the take there.
+When it has other songs, the take is not booked: record again for those songs, or, if what you
+said still fits, use **Listen back** and then choose **Book voice track** again. Errors, such as a
+blocked or missing microphone or a Cancel that failed, are shown under the Record heading and
+linked to the control they are about.
+
+**Booked voice tracks** lists what became of each voice track (waiting, mixed in, on the air,
+aired, dropped or expired, with the reason). **Cancel** drops one that is still waiting for its
+song change. Voice tracks share the station's break limits and quota with announcer breaks:
+`max_queued`, `max_per_slot` and `quota_mb`. Uploads and cancels count against
+`requests_per_minute` for the station.
+
+For scripts and other stations, the routes are `GET`, `POST` and `DELETE` under
+`/api/voice-tracks` and `/api/stations/<slug>/voice-tracks`. They take the browser session and the
+page's `Origin`, never an announcer token. `POST` takes the announcer upload's fields (`slot_id`,
+`ending_id`, `upcoming_id`, `placement`, `allow_outro` and `file`), with no `kind`: a voice track is
+always a DJ break.
 
 ## Play log export
 
@@ -1632,7 +2040,9 @@ Repeat limits are edited in Settings > Picking > Repeats and stored in
 `web_state.json`. Old repeat keys in `config.toml` or `web_state.json` are
 ignored with a warning; re-enter any limits that still use those keys in that panel. The related
 artists file is `index/<name>/related-artists.toml` and is read only when
-**Use related artists** is enabled. It must be at most 1 MiB.
+**Use related artists** is enabled. The related tracks file is
+`index/<name>/related-tracks.toml` and is read only when **Use related tracks** is enabled.
+Each must be at most 1 MiB.
 
 ## Testing the rotation
 
@@ -1643,7 +2053,7 @@ before the rules go live.
 
 It uses everything the station picks with: the pick mode or the active clockwheel and its place,
 the rotation categories and their days and hours, the schedule's song-picking changes (with their
-date ranges), the repeat rules including related artists, and the DMCA limits. It starts from the
+date ranges), the repeat rules including related artists and related tracks, and the DMCA limits. It starts from the
 station's real play history and last-played times. The run picks with a private copy of the
 player, with its own clock and its own random choices, so the on-air player, its history, the
 clockwheel place and the library are never touched.
@@ -1664,6 +2074,11 @@ zone (`[server] station_timezone`) and must fall between
 a run song for song, in every pick mode. Runs are capped at 30 days or 20,000 songs, and at ten
 minutes of work: a run that reaches that limit stops with the songs picked so far, and the report
 says so.
+
+With `[breaks] enabled = true`, the station picks the song after the next one a song early so
+announcer breaks can name it (see [Announcer breaks](#announcer-breaks-dj-breaks-news-and-weather)),
+and a booked break keeps that song whatever the queue does. The rotation tester does not model
+either: it picks each song when the one before it ends, as a station with breaks off does.
 
 `autodj simulate` can run beside a running server. It opens `library.db` read-only: no write
 lock, no migration, and the file itself is never written, though SQLite may create the
@@ -1687,7 +2102,7 @@ The report, in words or JSON, gives:
   played;
 - songs never played, with a count and the first ten, overall and per category;
 - how often each rule had to be relaxed, and which: same artist, related artist, same album, same
-  title, the track repeat window, dayparting and back-to-back repeats, plus fallbacks to a random
+  title, related track, the track repeat window, dayparting and back-to-back repeats, plus fallbacks to a random
   song. A clockwheel step set not to enforce the rules is counted apart;
 - clockwheel steps that were skipped or came up empty, with the reason, such as "all matching
   entries blocked by rules" or "outside its hours";
@@ -1711,6 +2126,71 @@ How long a run takes grows with the library. On a synthetic 77,000-song library 
 categories and a seven-step clockwheel, an older four-core PC (2018) simulated a week (about 2,500
 songs) in about two minutes, and in a little over three with the DMCA limits on.
 
+## Hour preview and backtiming
+
+Now Playing > **Hour preview** lists what the station plays next, with the time each item is
+expected to start, and says how the hour lands: how early or late the song changes fall against
+the top of the hour, each clockwheel restart and each scheduled event. Choose the next 30
+minutes, hour, 2 hours or 3 hours under **Show**.
+
+Each row says in its Status column whether it is fixed or predicted:
+
+- **Fixed: on the air**: the song playing now, with the liners and breaks mixed into it.
+- **Fixed: ready to play**: what the server has already rendered, with its liners and breaks
+  (server audio and stream mode only).
+- **Fixed: picked**: the song chosen to follow, and with `[breaks] enabled = true` the song after
+  it (the open song change) and its liners.
+- **Fixed: booked break**: an announcer break booked on the open song change.
+- **Fixed: in the queue**: the request queue, which plays before any pick.
+- **Predicted**: the rest, from a dry run of the station's own picker that starts where the
+  fixed part ends, with the station's clockwheel place, play history, repeat rules, DMCA limits,
+  categories and schedule. It is the same dry run the rotation tester uses (see
+  [Testing the rotation](#testing-the-rotation)), so it never touches the air: the station's
+  random choices, clockwheel place, history and library are only read.
+
+Backtiming goes to each fixed point in the span:
+
+- **Top of the hour**: the nearer song change counts. "Lands about 35 seconds early" means the
+  song change nearest the hour comes 35 seconds before it; the sentence names the song that
+  causes it and whether that song is fixed or predicted. Liners and breaks that run straight into
+  a song start its song change.
+- **Clockwheel restart**: the station restarts the clockwheel at the nearer song change, as it
+  does on the air, so the preview says how early or late that is.
+- **Scheduled events**: a soft event waits for the song playing to end, so the preview says how
+  late it runs; a hard event runs on time and the preview says how much of the song it cuts.
+
+The first top of the hour (or clockwheel restart) is the card's summary. **Refresh preview** says
+it once; **Shift+H** says it from any tab. While the card is open and Now Playing is showing, the
+table refreshes every 30 seconds and shortly after the song changes, changing cells in place,
+saying nothing and leaving focus where it is; if those refreshes start failing, the failure is
+said once, and not again until one succeeds. Choosing another span under **Show** says the new
+summary once. If more than 24 fixed points fall in the span, the first 24 are timed and the card
+says so. Times show as "2:04:30 PM" and read as "2:04 PM and
+30 seconds"; lengths show as "3:45" and read as "3 minutes 45 seconds". Times are in the station
+time zone (`[server] station_timezone`); clockwheel restarts are worked out in the computer's own
+time zone, as the player does.
+
+The page asks the server only while the card is open. Each preview runs on one worker thread
+below normal priority, never on the web server's event loop and never on the audio threads. The
+dry run stops after 80 songs, or once it has worked about 4 seconds, and says so; the time limit
+is checked before each pick, so one slow pick can run a little past it. A preview is reused for
+45 seconds while nothing new is fixed, longer than the page's 30-second refresh, so an open card
+costs no dry run until a song changes. Several pages asking for the same station and span at once
+share one preview, at most 8 different previews wait for the worker, and one more is answered
+with 503 and "try again in a few seconds". At shutdown the server waits for the worker; if it has
+not stopped, the server logs an error and leaves the library open rather than close it under the
+preview. The same fixed part always gives the same prediction, so a refresh does not reshuffle
+the predicted songs. Every station has its own:
+`GET /api/hour-preview?minutes=60` for the default station and
+`GET /api/stations/<name>/hour-preview` for any station, each answering with JSON that holds the
+items, the fixed points with their sentences, and the summary.
+
+What it approximates, as the rotation tester does: a song runs from its saved start to its segue,
+or its length less the crossfade; liners and booked breaks add their full length; automatic
+liners, time checks and carts are left out; and a scheduled change of song picking applies from
+the first song after its time. It shows where the last songs of the hour land; it does not yet
+choose them to fit.
+
 ## Backup
 
 `autodj backup` writes one ZIP file holding:
@@ -1719,7 +2199,7 @@ songs) in about two minutes, and in a little over three with the DMCA limits on.
   `vectors.g<number>.index` files it names.
 - `dj_meta.db`, the intro, outro, beat grid and cue cache.
 - `web_state.json`, the settings chosen in the web page.
-- `related-artists.toml` in the active index folder.
+- `related-artists.toml` and `related-tracks.toml` in the active index folder.
 - `recording.json`, the broadcast recording settings and whether it was running. The recorded
   MP3 files are not included; archive the recordings folder yourself.
 - `library.db`, the station's registered folders, track data and cues, last-played times and
@@ -1826,6 +2306,23 @@ These steps apply to a native installation from a source checkout.
 7. Start loopback-only and check that the version in the page footer is the release you checked
    out before enabling LAN access.
 
+### Going back to an older release
+
+Restore the backup you made before the upgrade. A newer AutoDJ writes some settings that an older
+one reads differently:
+
+- An every-N-minutes schedule event that keeps to chosen days: AutoDJ 0.20.0 and older ignore its
+  days and run it every day. Edit the event, or delete it, before going back.
+- A schedule event with a date range, a category with days, hours or dates, a clockwheel step with
+  days or hours, or a cart with play dates:
+  an older AutoDJ that does not know these fields refuses the whole file. It sets
+  `schedule.json`, `categories.json` (a category with dates included) or `carts.json` aside as
+  damaged and starts without it, and leaves such a clockwheel off. Files saved without
+  these settings load in either version. Liner play dates are in a file of their own,
+  `liner_dates.json`, which an older AutoDJ does not read.
+- Voice pack play dates are kept beside the time check switches in `time_checks.json`; an older
+  AutoDJ ignores them and lets every ticked pack speak.
+
 ## Cart wall
 
 The **Carts** tab, after Queue & Search, holds four pages of twelve numbered carts for station
@@ -1872,7 +2369,7 @@ such as a promotion that must stop after the event. Both days are included, and 
 read in the station time zone (`[server] station_timezone`). Leave both empty to play the clip
 on any day.
 
-- **Voice liners:** in Queue & Search, **Browse voice liners**, press **Play dates** on a liner.
+- **Voice liners:** in **Settings > Voice liners**, press **Play dates** on a liner.
   Outside its dates, automatic liners (in the browser and on the server), clockwheel liner steps
   and scheduled liner events skip it, and a scheduled event's run says why in Recent runs. The
   liner list says the dates in words, such as "Plays until 26 December 2026", and adds "Skipped
@@ -1883,12 +2380,36 @@ on any day.
   is expired after 26 December 2026", and the cart button ends with "expired" or "not playable
   yet".
 
+A page left open past midnight follows the station's day: the liner list adds or drops "Skipped
+now", and the cart buttons and the editor's cart list add or drop "expired" and "not playable
+yet", in place. Only the words change, so focus stays where it is and nothing is announced. A
+refused date in the cart editor is shown under the editor and linked to its field, whether the
+page or the server refused it.
+
 Liner dates are kept in `liner_dates.json` in the active index folder, by the ID Browse voice
 liners uses (the library ID of a registered liner, or the file name of one in the liner folder),
-and are included in backups. Deleting a liner forgets its dates. Cart dates are kept with the
-cart in `carts.json`. A liner or cart without dates is saved as before, so an older AutoDJ still
-reads both files. Time check voice packs have no dates yet: their files are the hours and
-minutes of a voice rather than clips that run out.
+and are included in backups. Deleting a liner forgets its dates. So does a library scan for a
+liner deleted outside AutoDJ: a registered liner whose file the scan found gone from a folder
+that is there, or a liner folder file that is no longer in the folder. A liner on a share that is
+not mounted keeps its dates, and so does every liner after a scan that could not read one of its
+folders, or when the liner folder cannot be listed: such a scan marks nothing gone and forgets
+nothing. A file listed but not reachable for a moment is not gone either. Dates kept by a library
+ID that is no longer in the library are kept too. A liner folder that a scan finds empty forgets
+its liners' dates only when the next scan finds it empty as well, and names are compared as the
+file system compares them (without case on Windows). When `liner_dates.json` cannot be read just
+now, or its folder is away (a dropped share says "not found" as a missing file does), the dates
+last read are used, a save is refused with a message, and the file is never set aside or written
+over; only a file that is not valid dates is set aside. An upload under a free name waits (it
+answers that the dates could not be read) until they can be read, so it never takes an old
+liner's dates, and deleting a liner says when its dates could not be forgotten yet. A liner uploaded under a name that is not in use starts without
+dates, even where an earlier file of that name left some; uploading over an existing liner with
+Replace keeps them. Cart dates are kept with the cart in `carts.json`. A liner or cart without
+dates is saved as before, so an older AutoDJ still reads both files.
+
+With **Pick in order** (sequential), a liner outside its dates is passed over and the rotation
+keeps its place: the liner after it still comes next. Talk-up liners planned ahead pass over it
+too, judged by the day they air, and so do clockwheel liner steps, by the day the next song
+starts. **Test** on the server refuses a liner outside its dates and says why. Time check voice packs have dates of their own; see [Voice packs](#voice-packs).
 
 ## Scheduler
 
@@ -1898,7 +2419,9 @@ have an active window, such as 22:00 until 02:00; a window may cross midnight, a
 Without a window the count starts again at local midnight. An every-N-minutes event can also keep
 to chosen days; leave every day unchecked to run every day.
 
-Any event can have a **Date range**: an optional start date, end date, or both. The event runs
+Any repeating event can have a **Date range**: an optional start date, end date, or both. A
+one-time event's date is its whole range, so the form hides **Date range** for it, unless the
+event was saved with a range: then the dates stay in view to keep or clear. The event runs
 only on dates from the start date to the end date, both included, in the station time zone, and
 the **Next events** list skips the dates outside it. An active window that crosses midnight
 belongs to the day it starts: a Friday 18:00 until 02:00 window whose end date is that Friday
@@ -1970,9 +2493,6 @@ Step types:
 - **Music** or **Voice liner** matching the conditions in the step. Choose least recently played
   or random, and whether to follow the repeat rules. A liner uses its saved overlap points with
   the next music step; two liner steps cannot be next to each other.
-- **Music from a category**: a rotation category such as A, B or "Remembering the 2000s" (see
-  [Rotation categories](#rotation-categories)). It chooses the least recently played or a random
-  song of the category and follows or ignores the repeat rules, like a folder step.
 - **A specific track**, by its path inside a registered music folder. It follows the repeat rules;
   when they hold it back, the clockwheel moves on to the next step.
 - **Switch preset**: the next song is picked and mixed with that preset.
@@ -1986,6 +2506,14 @@ B) and year before 2000` are not supported yet.
 
 Available conditions:
 
+- **Category** (Music steps): choose a saved [rotation category](#rotation-categories). With
+  Match all, a song must belong to every selected category and meet the other conditions. With
+  Match any, belonging to any selected category or matching another condition is enough. For
+  example, Category Gold and BPM above 100 narrows Gold to faster songs; Category Gold or
+  Category Current hits combines those groups. A song matching several conditions is included
+  once, so it gets no extra chance of being picked. Category hours still apply even when another
+  condition also matches the song. Categories are music groups, so this condition is not offered
+  for voice liners.
 - **Folder**: a registered music or liner folder, or a subfolder such as `Rock/Live`. Include
   subfolders applies to that condition. The registered folder must include subfolders before a
   condition can use one of them.
@@ -2008,15 +2536,29 @@ a step that needs it. If it becomes unavailable during playback, that step is sk
 status message. Other valid steps can still play.
 
 Repeat rules apply after the conditions have selected their pool. Relaxing repeats never removes
-those conditions. If no step can supply a song, a clock containing conditions does not fall back
-to unfiltered music. Existing folder steps still work and open as one folder condition; editing
-one saves it in the new form. Category steps keep their saved category and selection rules.
+those conditions. When explicit conditions have no matches, including category conditions, the
+step is skipped and does not use unfiltered music. The existing dayparting-only fallback remains
+when matched songs are held back only by their allowed days or hours. Unedited legacy category
+steps keep their old empty-pool fallback; editing and saving one converts it to an explicit
+category condition. Existing folder steps also open in the Music or Voice liner form and keep
+their selection and repeat-rule settings.
+
+A deleted category skips the affected step, even with Match any, and the status says why. An
+existing category with no songs contributes no matches; other Match any conditions can still
+supply a song. Saving or activating a step with a missing category asks you to choose a saved one.
 
 The editor lists numbered steps with their names as Edit buttons. With focus in the step list,
-Up and Down move to the previous or next step name, Enter on a name edits it, and Delete asks
-before it removes that step (Cancel has focus first, and focus returns to the list either way). Left and Right move between the actions in a row; Home and End go to its first or
-last available action, and Enter or Space presses it. Tab leaves the step list. Alt+Up and Alt+Down still reorder the focused
-step, and focus moves with it. Move up, Move down, Duplicate and Delete buttons remain available; the Delete button removes the step without asking.
+Up and Down move to the previous or next step name. Left and Right move between the actions in a
+row; Home and End go to its first or last available action. Enter or Space presses that action.
+Delete removes the step immediately, just like its Delete button. Tab leaves the step list.
+Alt+Up and Alt+Down reorder the focused step, and focus moves with it.
+
+**Undo step change** or **Ctrl+Z** restores the last step you added, edited, moved, duplicated or
+deleted. Delete and Undo are unavailable while a step is being edited; update or cancel the edit
+first. You can undo several changes in order, until you save or open another clockwheel.
+Ctrl+Z in a text field keeps the browser's usual text undo. Undo changes the working copy;
+press **Save clockwheel** to keep the result.
+
 These list keys do not replace the playback or spoken-status shortcuts. Nothing is saved until you press **Save clockwheel**; opening
 another clockwheel with unsaved changes asks first. **Restart at these minutes past each hour**
 sends the clockwheel back to step 1 at the song change nearest each minute.
@@ -2024,7 +2566,8 @@ sends the clockwheel back to step 1 at the song change nearest each minute.
 When you save edits to the active clockwheel, **Apply saved changes** defaults to **At the next
 clock restart**. The current clock keeps playing until its next scheduled restart, and the saved
 edit becomes the new step 1 there. If the restart-minute list is empty, the next restart is the
-wheel's natural wrap to step 1. The editor says when a saved edit is waiting. Choose **Immediately, start at step 1**
+wheel's natural wrap to step 1. The editor announces when a saved edit begins waiting. If AutoDJ
+restarts while an edit is waiting, it loads the latest saved definition at step 1. Choose **Immediately, start at step 1**
 to use the new steps for the earliest selection that has not already been lined up; the current
 track and an already committed handoff stay in place. Choose **Immediately, continue at next step**
 to keep the next step number when it still exists in the edited wheel; otherwise playback starts at
@@ -2053,8 +2596,8 @@ leaves the clock off while the station keeps playing:
     {"type": "liner", "source": "<library folder ID>", "folder": "",
      "recursive": false, "selection": "random", "enforce_rules": false},
     {"type": "track", "source": "<library folder ID>", "path": "Album/Song.flac"},
-    {"type": "category", "category": "<category ID>",
-     "selection": "least_recent", "enforce_rules": true},
+    {"type": "music", "conditions": [{"field": "category", "category": "<category ID>"}],
+     "match": "all", "selection": "least_recent", "enforce_rules": true},
     {"type": "settings", "preset": "winddown"}
   ],
   "resync_minutes": [0]
@@ -2064,6 +2607,28 @@ leaves the clock off while the station keeps playing:
 `source` is the ID of a registered library folder, so the file never holds a full path; removing
 that folder from the library stops the clockwheel until you edit its steps. Later features (carts,
 time checks, ad breaks) add their own step types through `autodj.clockwheel_store.register_step_type`.
+
+**When this step plays.** Any step can keep to chosen days, to hours (**Allowed from** and
+**Allowed until**), or both, in the step form's **When this step plays** fields, with the rule
+categories use: wall-clock times in the station time zone, the start included and the end not,
+and a window that crosses midnight belongs to the day it starts. Outside them the step is skipped
+as an empty step is, and the clockwheel moves on to its next step; a voice liner step outside
+its hours leaves the following song without its liner, and a Switch preset step outside its hours
+switches nothing. The hours are checked for when the song is expected to start, as the
+categories' are. The step list says them after the step, such as "music from Rock, only on
+Friday and Saturday from 22:00 until 02:00", the clockwheel status and the server log say why a
+step was skipped ("Step 3: outside its hours: plays only ...", or "outside its days" on a day it
+does not keep), and the rotation tester counts those skips. A clockwheel whose every song step is
+outside its hours does what it does when no step has a song: one with category steps plays a song
+from the whole library, and one of folder, condition or track steps plays nothing until a step
+opens, as before. The whole-library song that a category's own hours allow is only for songs held
+back by their categories, not by a step's hours. A voice liner step and the song step after it
+are both judged at the song change; a liner that started after the song (#159) would still be
+judged then. In the
+file a step has `"days": [4, 5], "hours_from": "22:00", "hours_until": "02:00"`; a step without
+them is written as before, so an older AutoDJ still reads the clockwheel. Use this for a step or
+two that differ at night; for a different clockwheel at night, a schedule event that switches
+clockwheels is simpler.
 
 **Import .PAL** turns a SAM Broadcaster `.PAL` file into a new clockwheel, once; the `.PAL` file
 is not used after that. Only `Dir[...]` and `SubDir[...]` lines with `QueueBottom` are read, and
@@ -2081,7 +2646,9 @@ press **Activate**.
 A rotation category is a named set of songs that clockwheel steps pick from, the way professional
 stations schedule music: rotation A for current hits, B and C for recurrents, D for gold, or a
 themed set such as "Remembering the 2000s". There is no separate weighted pick mode; how often a
-category plays is set by how many steps of the clockwheel use it.
+category plays is set by how many steps of the clockwheel use it. Choose **Music**, add a
+**Category** condition, and select its name. You can use several categories or combine a category
+with folder and metadata conditions in the same step; the category itself stays unchanged.
 
 Keep them in the **Library tools** tab, **Categories**, next to the clockwheels that use them. The
 list says how many songs each category holds, how many playlist lines match no library track,
@@ -2107,7 +2674,8 @@ A category's songs come from one of two sources:
   - A bare word matches artist, title, album, album artist, genre or comments.
   - Every term must match. Regular expressions (`field::re`), exact matches (`field:=x`),
     alternatives with commas, sorting, date ranges, path queries and plugin queries are refused
-    with a message that names the term; make a category per alternative instead.
+    with a message that names the term; make a category per alternative and combine them with
+    Match any in the clockwheel step.
 - **An M3U or M3U8 file** in the playlists folder (`[library] playlists_folder`, by default
   `playlists/` in the active index folder). Each line that is not a comment is matched to a
   library song by its full path, or by a path from the playlist's own folder or from
@@ -2128,13 +2696,13 @@ few file-time checks before each clockwheel pick tell it; the songs are never re
 every pick. When a playlist is being rewritten or beets is busy importing, a category keeps the
 songs it held last time and the server log says why.
 
-**At play time.** A category step picks like a folder step: it follows the repeat rules when the
-step says so, relaxing them rather than going silent, and in DMCA mode it keeps the DMCA limits;
-when no song of the category keeps them, a song from the whole library that does plays instead,
-as for folder steps. When a step's category has no songs or was deleted, the server log
-says so once and the clockwheel moves on to its next step. When no step of a clockwheel with
-category steps has a song to play, the station plays a song from the whole library, as the other
-pick modes do when they cannot pick, rather than going silent; the clockwheel keeps its place.
+**At play time.** An explicit category condition picks from its category members and follows the
+step's repeat rules, relaxing them rather than going silent; in DMCA mode it keeps the DMCA
+limits. If no song matches its conditions, the step is skipped, including when a Match any step's
+category is missing or empty. An unedited legacy category step keeps its old whole-library
+fallback when all steps fail; saving it from the editor converts it to an explicit condition.
+The dayparting-only fallback also remains when matched songs are held back only by their allowed
+days or hours. The clockwheel keeps its place in each case.
 
 **Dayparting.** Under **When the songs may play**, a category can allow its songs only on chosen
 days, only between two times (**Allowed from** and **Allowed until**), or both, such as Friday and
@@ -2151,13 +2719,32 @@ that category is skipped with "outside its hours" in the clockwheel status and t
 song in several categories plays only while every one of them allows it. Relaxing the repeat rules
 or the DMCA limits never brings such a song back. When nothing else at all can play, the station
 plays one anyway rather than going silent, and the server log says so. A song you queue yourself
-plays at any time. The list says each category's days and hours in words and when it is outside
-them now. The hours are checked when a song is picked, which in server audio and stream modes
-can be a few minutes before it plays.
+plays at any time. The list says each category's days and hours in words, such as "Plays only on
+Friday and Saturday from 22:00 until 02:00", and when it is outside them now; with all seven days
+ticked and no times it says "Plays every day, at any hour".
+
+The hours are checked for when the song is expected to start, not when it is picked: the song
+after this one is picked while this one plays, so a pick at 01:58 with four minutes of this song
+to go checks the hours at 02:02, and a window that ends at 02:00 no longer lets its songs start
+just after it closes. The rotation tester checks them the same way. Which songs are outside their
+hours is worked out once a minute, so a pick only looks them up. Without `[server]
+station_timezone`, the system time zone is asked for once, when AutoDJ starts; a host with no
+known zone uses UTC and logs one warning. When every song is outside its hours, the warning that
+one plays anyway is logged once, and again only after the hours change.
 
 For dayparting single songs, make a category from a beets query on a field you set, such as
 `beet modify daypart=night` and the query `daypart:night`, and give it the hours. Categories that
 have no days or hours are saved as before, so an older AutoDJ still reads the file.
+
+**Seasons.** The same fields take a **Not before** and a **Do not play after** date, both
+included, in the station time zone, such as 1 December until 26 December for Christmas songs.
+Outside them the category's songs are left out exactly as outside its hours, and a clockwheel
+step for it is skipped with "outside its dates" (or "outside its days" on a day it does not keep).
+The server log names what holds the songs back, such as "every song is outside its category's
+dates". Dates combine with days and hours: a Friday
+22:00 until 02:00 window whose last date is that Friday still plays until 02:00 on Saturday. The
+list says the season in words, such as "Plays only between 1 December 2026 and 26 December
+2026", and "Outside its dates now." A category without dates is saved without the two fields.
 
 The categories are kept in `categories.json` in the active index folder, written atomically and
 included in `autodj backup`; a damaged file is set aside as `categories.json.bad-<id>` and the
@@ -2264,6 +2851,19 @@ pack cannot say the minute, the other ticked packs are tried before the recorded
 **Voice to test** picks one pack, ticked or not, for **Play a time check now**; when the
 server plays it, the result says which source spoke. The browser only ever sends a pack's name; the folders stay
 in `config.toml`.
+
+A pack can have play dates, such as a holiday voice from 1 to 26 December. Under **Voice pack
+play dates**, choose the pack, enter **Not before**, **Do not play after** or both, and press
+**Save play dates**. Both days are included, in the station time zone. Outside its dates a ticked
+pack is passed over and the other ticked packs speak; **Voice to test** still plays it. Each
+pack's description says its dates in words and "Skipped now" when it is outside them. A refused
+date is shown under the form and linked to its field. The dates are kept beside the switches in
+`time_checks.json` under `pack_dates`, written only when a pack has dates, and are kept for a
+pack taken out of `config.toml` until it comes back. Dates that cannot be read, and keys this
+version does not know, are logged and not used, and are written back as they were on the next
+save. Each save reads the file again first, so what another process wrote is kept. While the file
+cannot be read, saves are refused with a message rather than written over it; a file that is not
+valid JSON is set aside as `time_checks.json.bad-<id>` before the next save.
 
 AutoDJ reads only the files directly in the folder, with the extension `.wav`, `.mp3`, `.flac`
 or `.ogg`, and compares letters without regard to case. It recognises these names:

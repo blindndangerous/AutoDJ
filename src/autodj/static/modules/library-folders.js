@@ -1,6 +1,8 @@
 // Music and liner source folders plus the saved song-points editor.
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { fmtTrack } from "./dom-helpers.js";
+import { tableRow } from "./table-row.js";
+import { installTableNavigation } from "./table-navigation.js";
 import { lastSeenWords } from "./devices.js";
 import { formatPlayedAt } from "./history-format.js";
 import { announceStatus } from "./live-region.js";
@@ -12,39 +14,38 @@ const POINTS = ["start", "intro", "outro", "segue", "end", "overlap_start"];
 export function parsePointTime(value) {
   const text = String(value ?? "").trim();
   if (!text) return null;
-  if (/^\d+(?:\.\d+)?$/.test(text)) {
+  if (/^-?\d+(?:\.\d+)?$/.test(text)) {
     const seconds = Number(text);
     if (Number.isFinite(seconds)) return seconds;
   }
-  const match = /^(\d+):([0-5]?\d(?:\.\d+)?)$/.exec(text);
+  const match = /^(-?)(\d+):([0-5]?\d(?:\.\d+)?)$/.exec(text);
   if (match) {
-    const seconds = Number(match[1]) * 60 + Number(match[2]);
-    if (Number.isFinite(seconds)) return seconds;
+    const seconds = Number(match[2]) * 60 + Number(match[3]);
+    if (Number.isFinite(seconds)) return match[1] ? -seconds : seconds;
   }
   throw new Error("Enter seconds or minutes:seconds, for example 5.3 or 1:05.");
 }
 
 export function formatPointTime(value) {
   if (value == null) return "";
-  const centiseconds = Math.round(value * 100);
+  const sign = value < 0 ? "-" : "";
+  const centiseconds = Math.round(Math.abs(value) * 100);
   const minutes = Math.floor(centiseconds / 6000);
   const seconds = Math.floor(centiseconds / 100) % 60;
   const fractionValue = centiseconds % 100;
   const whole = String(seconds).padStart(2, "0");
   const fraction = fractionValue ? `.${String(fractionValue).padStart(2, "0").replace(/0$/, "")}` : "";
-  return `${minutes}:${whole}${fraction}`;
+  return `${sign}${minutes}:${whole}${fraction}`;
 }
 
-const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 
 export function installLibraryFolders({ document: doc = document, request = requestJson, getCurrentTrack = () => null, getCurrentPosition = () => null, onFolders }) {
   const panel = doc.getElementById("panel-library");
-  // Browse library sits in Queue & Search, and its folder choice comes from
-  // this list: one load each time that tab is shown keeps it current
-  // without polling there.
-  const browsePanel = doc.getElementById("library-browse-folder")?.closest("section[data-view]") || null;
-  let browseShown = false;
+  const searchPanel = doc.getElementById("library-kind")?.closest("section[data-view]") || null;
+  let searchShown = false;
   const list = doc.getElementById("source-folders");
+  const tableNavigation = installTableNavigation(list);
+  const pendingFolderEdits = new Set();
   const status = doc.getElementById("source-folders-status");
   status.textContent = "";
   status.setAttribute("role", "status");
@@ -120,7 +121,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       announceStatus(doc.getElementById("sr-status"), {
         "queue-list": "That track is no longer in the queue.",
         "search-results": "That track is no longer in the search results.",
-        "library-browse-results": "That track is no longer in the library list.",
+        "library-results-table": "That track is no longer in the library list.",
         "history-table": "That play is no longer in History.",
         "ln-file-list": "That liner is no longer in the list.",
       }[returnContainer?.id] || "That track is no longer in this list.",
@@ -182,23 +183,32 @@ export function installLibraryFolders({ document: doc = document, request = requ
   function renderFolders(data) {
     const folders = data.folders || [];
     const signature = JSON.stringify(folders.map(({ id, path, kind, recursive, advanced }) => ({ id, path, kind, recursive, advanced })));
-    if (signature !== folderSignature) {
+    if (signature !== folderSignature && pendingFolderEdits.size === 0) {
       const focused = list.contains(doc.activeElement) ? {
-        id: doc.activeElement.closest("li")?.dataset.id,
-        field: doc.activeElement.dataset.field,
-        action: doc.activeElement.dataset.action,
+        id: doc.activeElement.closest("tr")?.dataset.id,
+        column: doc.activeElement.closest("td")?.cellIndex,
       } : null;
-      list.innerHTML = folders.map((folder) => `<li data-id="${esc(folder.id)}">
-        <strong>${folder.kind === "liner" ? "Voice liner" : "Music"}:</strong> ${esc(folder.path)}
-        <label><input type="checkbox" data-field="recursive" ${folder.recursive ? "checked" : ""}> Add subfolders</label>
-        ${folder.kind === "music" ? `<label><input type="checkbox" data-field="advanced" ${folder.advanced ? "checked" : ""}> Perform advanced analysis</label>` : ""}
-        <button type="button" data-action="remove">Remove folder</button>
-      </li>`).join("") || "<li>No folders added yet.</li>";
+      list.replaceChildren(...(folders.length ? folders.map((folder) => {
+        const recursive = doc.createElement("input");
+        recursive.type = "checkbox"; recursive.dataset.field = "recursive"; recursive.checked = !!folder.recursive;
+        const recursiveLabel = doc.createElement("label"); recursiveLabel.append(recursive, " Add subfolders");
+        let advancedLabel = "";
+        if (folder.kind === "music") {
+          const advanced = doc.createElement("input");
+          advanced.type = "checkbox"; advanced.dataset.field = "advanced"; advanced.checked = !!folder.advanced;
+          advancedLabel = doc.createElement("label"); advancedLabel.append(advanced, " Perform advanced analysis");
+        }
+        const remove = doc.createElement("button"); remove.type = "button"; remove.dataset.action = "remove"; remove.textContent = "Remove folder";
+        const row = tableRow(doc, [folder.kind === "liner" ? "Voice liner" : "Music", folder.path, recursiveLabel, advancedLabel, remove], { rowHeaderIndex: 1 });
+        row.dataset.id = folder.id;
+        return row;
+      }) : [tableRow(doc, ["No folders added yet."], { colspan: [5] })]));
       folderSignature = signature;
+      tableNavigation.refresh();
       onFolders?.(folders);
       if (focused) {
-        const selector = focused.field ? `input[data-field="${focused.field}"]` : `button[data-action="${focused.action}"]`;
-        const replacement = [...list.querySelectorAll("li")].find((row) => row.dataset.id === focused.id)?.querySelector(selector);
+        const cell = [...list.querySelectorAll("tr")].find((row) => row.dataset.id === focused.id)?.cells[focused.column];
+        const replacement = cell?.querySelector("button:not(:disabled), input:not(:disabled)") || cell;
         (replacement || doc.getElementById("source-folder-add")).focus();
       }
     }
@@ -212,7 +222,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     }
   }
   async function refresh() {
-    if (suspended || ((!panel || panel.hidden) && (!browsePanel || browsePanel.hidden))) return;
+    if (suspended || ((!panel || panel.closest("[hidden]")) && (!searchPanel || searchPanel.closest("[hidden]")))) return;
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
     try {
@@ -222,11 +232,11 @@ export function installLibraryFolders({ document: doc = document, request = requ
       if (requestCurrent(epoch, generation)) progress.textContent = `Could not load folders: ${error.message}`;
     }
   }
-  function visible() { return !suspended && !panel.hidden && !doc.hidden; }
+  function visible() { return !suspended && !!panel && !panel.closest("[hidden]") && !doc.hidden; }
   function updatePolling() {
-    const browsing = !suspended && !!browsePanel && !browsePanel.hidden && !doc.hidden;
-    if (browsing && !browseShown && !visible()) void refresh();
-    browseShown = browsing;
+    const searching = !suspended && !!searchPanel && !searchPanel.closest("[hidden]") && !doc.hidden;
+    if (searching && !searchShown && !visible()) void refresh();
+    searchShown = searching;
     if (visible() && timer == null) {
       void refresh();
       timer = setInterval(refresh, 3000);
@@ -266,42 +276,49 @@ export function installLibraryFolders({ document: doc = document, request = requ
   list.addEventListener("change", async (event) => {
     if (suspended) return;
     const input = event.target.closest("input[data-field]");
-    if (!input) return;
-    const row = input.closest("li");
+    if (!input || pendingFolderEdits.has(input)) return;
+    const row = input.closest("tr");
     const body = { [input.dataset.field]: input.checked };
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
-    input.disabled = true;
+    pendingFolderEdits.add(input);
+    input.setAttribute("aria-disabled", "true");
     try {
       await request(`/api/library/folders/${encodeURIComponent(row.dataset.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (requestCurrent(epoch, generation)) announceAction("Folder settings saved.");
     } catch (error) {
-      if (requestCurrent(epoch, generation)) { announceAction(`Could not save folder settings: ${error.message}`, true); await refresh(); }
+      if (requestCurrent(epoch, generation)) { input.checked = !body[input.dataset.field]; announceAction(`Could not save folder settings: ${error.message}`, true); }
     } finally {
-      if (requestCurrent(epoch, generation)) input.disabled = false;
+      pendingFolderEdits.delete(input);
+      if (requestCurrent(epoch, generation)) { input.removeAttribute("aria-disabled"); await refresh(); }
     }
   });
   list.addEventListener("click", async (event) => {
     if (suspended) return;
+    if (event.target.closest('[aria-disabled="true"]')) { event.preventDefault(); return; }
     const button = event.target.closest('button[data-action="remove"]');
     if (!button) return;
-    const row = button.closest("li");
+    const row = button.closest("tr");
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
-    button.disabled = true;
+    pendingFolderEdits.add(button);
+    button.setAttribute("aria-disabled", "true");
     try {
       await request(`/api/library/folders/${encodeURIComponent(row.dataset.id)}`, { method: "DELETE" });
       if (!requestCurrent(epoch, generation)) return;
       announceAction("Folder removed from the library.");
-      await refresh();
     } catch (error) { if (requestCurrent(epoch, generation)) announceAction(`Could not remove folder: ${error.message}`, true); }
-    finally { if (requestCurrent(epoch, generation)) button.disabled = false; }
+    finally {
+      pendingFolderEdits.delete(button);
+      if (requestCurrent(epoch, generation)) { button.removeAttribute("aria-disabled"); await refresh(); }
+    }
   });
   doc.getElementById("source-folder-rescan").addEventListener("click", async () => {
     if (suspended) return;
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
-    try { await request("/api/library/rescan", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); if (requestCurrent(epoch, generation)) { announceAction("Rescan started."); await refresh(); } }
+    const overrideTags = doc.getElementById("source-folder-override-tags").checked;
+    try { await request("/api/library/rescan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ override_tags: overrideTags }) }); if (requestCurrent(epoch, generation)) { announceAction(overrideTags ? "Rescan started; populated file tags will be refreshed." : "Rescan started."); await refresh(); } }
     catch (error) { if (requestCurrent(epoch, generation)) announceAction(`Could not start rescan: ${error.message}`, true); }
   });
 
@@ -323,6 +340,23 @@ export function installLibraryFolders({ document: doc = document, request = requ
       if (provenance) provenance.textContent = sources[name] ? ` (${String(sources[name]).replaceAll("_", " ")})` : " (not set)";
     }
     savedFields = fieldSnapshot();
+    updateNegativeOverlapHelp();
+  }
+  function updateNegativeOverlapHelp() {
+    const negative = currentKind === "liner"
+      && doc.querySelector('[data-point="overlap_start"]').value.trim().startsWith("-");
+    const help = doc.getElementById("negative-overlap-help");
+    if (help) {
+      const changed = help.hidden === negative;
+      help.hidden = !negative;
+      if (changed) announceStatus(doc.getElementById("points-status"), negative
+        ? help.textContent
+        : "Preview and Use preview position are available again.");
+    }
+    for (const selector of ['[data-preview="overlap_start"]', '[data-set-current="overlap_start"]']) {
+      const button = doc.querySelector(selector);
+      if (button) button.disabled = negative;
+    }
   }
   function fieldSnapshot() {
     return JSON.stringify([...POINTS.map((name) => doc.querySelector(`[data-point="${name}"]`).value), allowOutro?.checked ?? false]);
@@ -376,7 +410,15 @@ export function installLibraryFolders({ document: doc = document, request = requ
       const points = {};
       for (const name of POINTS) {
         const field = doc.querySelector(`[data-point="${name}"]`);
-        if (!field.closest("label").hidden) points[name] = parsePointTime(field.value);
+        if (!field.closest("label").hidden) {
+          points[name] = parsePointTime(field.value);
+          if (points[name] < 0 && (currentKind !== "liner" || name !== "overlap_start")) {
+            throw new Error("Only a liner Overlap start can be negative.");
+          }
+          if (name === "overlap_start" && points[name] < -15) {
+            throw new Error("Overlap start cannot be less than -15 seconds.");
+          }
+        }
       }
       const body = { path: currentPath, points };
       if (currentKind === "liner" && allowOutro) body.allow_outro = allowOutro.checked;
@@ -527,6 +569,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
   doc.addEventListener("autodj:edit-points", onEditPoints);
   doc.getElementById("points-load")?.addEventListener("click", () => void openEditor(pointPath.value.trim(), currentKind));
   doc.getElementById("points-save").addEventListener("click", () => void savePoints());
+  doc.querySelector('[data-point="overlap_start"]').addEventListener("input", updateNegativeOverlapHelp);
   editor.addEventListener("click", async (event) => {
     const setButton = event.target.closest("button[data-set-current]");
     if (setButton) {
@@ -571,12 +614,13 @@ export function installLibraryFolders({ document: doc = document, request = requ
   doc.addEventListener("visibilitychange", updatePolling);
   updatePolling();
   function clearProtectedData() {
+    pendingFolderEdits.clear();
     suspended = true;
     protectedGeneration += 1;
     actionAnnouncement += 1;
     if (timer != null) clearInterval(timer);
     timer = null;
-    browseShown = false;
+    searchShown = false;
     opening = saving = false;
     const dialog = doc.getElementById("track-info-dialog");
     if (dialog?.open) dialog.close();
