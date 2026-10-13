@@ -295,6 +295,24 @@ def test_restore_refuses_corrupt_catalog_before_overwrite(tmp_path: Path) -> Non
         assert conn.execute("SELECT title FROM play_history").fetchall() == [("Kept",)]
 
 
+def test_restore_refuses_valid_sqlite_that_is_not_a_catalog_before_overwrite(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    catalog = _catalog(cfg)
+    catalog.close()
+    unrelated = sqlite3.connect(":memory:")
+    unrelated.execute("CREATE TABLE unrelated (value TEXT)")
+    archive = _archive(tmp_path / "non-catalog.zip", {"index/library.db": unrelated.serialize()})
+    unrelated.close()
+
+    with pytest.raises(BackupError, match=r"not a current AutoDJ catalog.*migrate-index --apply"):
+        restore_backup(cfg, archive, force=True)
+
+    with closing(sqlite3.connect(cfg.index.active_dir / "library.db")) as conn:
+        assert conn.execute("SELECT title FROM play_history").fetchall() == [("Kept",)]
+
+
 def test_restore_says_not_to_serve_when_doctor_fails(tmp_path: Path) -> None:
     archive = tmp_path / "backup.zip"
     archive.touch()
@@ -353,25 +371,22 @@ def test_restore_refuses_unsafe_member_names(tmp_path: Path, name: str) -> None:
 
 def test_restore_ignores_legacy_generations_in_a_catalog_backup(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    catalog = sqlite3.connect(":memory:")
-    catalog.executescript(
-        "CREATE TABLE catalog_entries(id TEXT); INSERT INTO catalog_entries VALUES ('current');"
-    )
+    catalog = _catalog(cfg)
+    catalog.close()
     files = {
-        "index/library.db": catalog.serialize(),
+        "index/library.db": (cfg.index.active_dir / "library.db").read_bytes(),
         "index/tracks.g00000000000000000001.db": b"old",
         "index/vectors.g00000000000000000001.index": b"old",
         "index/index-manifest.json": b'{"schema_version":2}',
     }
     archive = _archive(tmp_path / "old.zip", files)
-    catalog.close()
 
     restore_backup(cfg, archive, force=True)
 
     assert not (cfg.index.active_dir / "index-manifest.json").exists()
     assert not list(cfg.index.active_dir.glob("tracks.g*"))
     with closing(sqlite3.connect(cfg.index.active_dir / "library.db")) as conn:
-        assert conn.execute("SELECT id FROM catalog_entries").fetchall() == [("current",)]
+        assert conn.execute("SELECT title FROM catalog_entries").fetchall() == [("Kept",)]
 
 
 def test_backup_ignores_legacy_generation_files(tmp_path: Path) -> None:
@@ -397,6 +412,19 @@ def test_backup_requires_a_current_catalog(tmp_path: Path) -> None:
     (cfg.index.active_dir / "library.db").unlink()
 
     with pytest.raises(BackupError, match=r"no catalog database.*autodj index"):
+        create_backup(cfg, tmp_path / "backup.zip", force=False)
+
+    assert not (tmp_path / "backup.zip").exists()
+
+
+def test_backup_refuses_valid_sqlite_that_is_not_a_catalog(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    database = cfg.index.active_dir / "library.db"
+    database.unlink()
+    with closing(sqlite3.connect(database)) as unrelated:
+        unrelated.execute("CREATE TABLE unrelated (value TEXT)")
+
+    with pytest.raises(BackupError, match=r"not a current AutoDJ catalog.*migrate-index --apply"):
         create_backup(cfg, tmp_path / "backup.zip", force=False)
 
     assert not (tmp_path / "backup.zip").exists()

@@ -355,6 +355,7 @@ def _snapshot(cfg: AutoDJConfig, roots: dict[str, Path], snapshot: Path) -> dict
         raise BackupError(
             f"there is no catalog database at {active / 'library.db'}; run `autodj index` first"
         )
+    _check_catalog(active / "library.db")
     with im.publication_lock(active):
         for member, original in _state_sources(cfg, roots):
             copy = snapshot / member
@@ -405,6 +406,22 @@ def _check_sqlite(path: Path) -> None:
             path.with_name(path.name + suffix).unlink(missing_ok=True)
     if result != ["ok"]:
         raise BackupError(f"{path} failed SQLite integrity_check: {'; '.join(map(str, result))}")
+
+
+def _check_catalog(path: Path) -> None:
+    """Refuse a healthy SQLite file that does not hold the current catalog schema."""
+    try:
+        from autodj.catalog import catalog_counts
+
+        catalog_counts(path)
+        with closing(sqlite3.connect(readonly_uri(path), uri=True)) as conn:
+            conn.execute("SELECT key, value FROM catalog_settings LIMIT 0")
+            conn.execute("SELECT id, path, kind, recursive, advanced FROM catalog_sources LIMIT 0")
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        raise BackupError(
+            f"{path} is not a current AutoDJ catalog; restore it with a compatible older "
+            "release, then run `autodj migrate-index --apply`"
+        ) from exc
 
 
 def _file_size(path: Path) -> int:
@@ -948,6 +965,8 @@ def _restore(
                     database = stages["index"] / name
                     if database.is_file():
                         _check_sqlite(database)
+                        if name == "library.db":
+                            _check_catalog(database)
             try:
                 _install(swap, files, roots, stages)
             except BaseException as exc:
