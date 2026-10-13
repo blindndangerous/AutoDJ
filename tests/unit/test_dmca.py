@@ -471,6 +471,7 @@ def test_a_category_of_only_breaking_songs_plays_a_safe_one_from_the_library(cap
 
 def test_an_empty_or_failing_category_never_stops_the_station(caplog) -> None:
     player = _with_category_clock(_player("clock"), set())
+    player._dry_run = False
     current = _play_first_three(player)
     with caplog.at_level(logging.WARNING, logger="autodj.player"):
         for _ in range(3):

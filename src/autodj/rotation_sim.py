@@ -728,7 +728,7 @@ _ALL_MATCHING = re.compile(r"all \d[\d,]* matching entries")
 
 def _step_key(reason: str) -> str:
     """A skipped-step reason without the count that changes from pick to pick."""
-    return _ALL_MATCHING.sub("all matching entries", reason)
+    return _ALL_MATCHING.sub("all matching entries", re.sub(r"^Step \d+: ", "", reason))
 
 
 def _dmca_limit(text: str) -> str:

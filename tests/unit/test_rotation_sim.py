@@ -209,9 +209,7 @@ def test_long_repeat_rules_starve_a_small_category(tmp_path: Path) -> None:
     power = next(row for row in report["categories"] if row["name"] == "Power")
     assert power["skipped"] > 0
     reasons = {item["reason"]: item["count"] for item in report["skipped_steps"]}
-    assert (
-        reasons["Step 2: category Power: all matching entries blocked by rules"] == power["skipped"]
-    )
+    assert reasons["category Power: all matching entries blocked by rules"] == power["skipped"]
     # The clock moved on to Current and Gold instead, so no rule had to be relaxed.
     assert power["plays"] == 6
     assert report["relaxed"] == {}
@@ -350,7 +348,7 @@ def test_dayparting_keeps_a_category_to_its_hours(tmp_path: Path) -> None:
     assert rows["Late night"]["skipped"] > 0
     reasons = [item["reason"] for item in afternoon["skipped_steps"]]
     assert reasons == [
-        "Step 1: category Late night: outside its hours: plays only every day from 22:00 until 02:00"
+        "category Late night: outside its hours: plays only every day from 22:00 until 02:00"
     ]
     assert "dayparting" not in afternoon["relaxed"]
     night = simulate(source, SimulationRequest(hours=4, start=_at("2026-10-12 22:00"), seed=1))
@@ -1181,3 +1179,11 @@ def test_the_first_pick_after_a_fresh_start_takes_the_next_clock_step(tmp_path: 
     played = [path for _, path in _sequence(source, 4, picks=6)]
     ones = {entry.path for entry in first}
     assert [path in ones for path in played] == [True, False, True, False, True, False]
+
+
+def test_step_tallies_combine_same_reason_across_steps():
+    from autodj.rotation_sim import _step_key
+
+    assert _step_key("Step 1: all 20 matching entries blocked by rules") == _step_key(
+        "Step 4: all 15 matching entries blocked by rules"
+    )
