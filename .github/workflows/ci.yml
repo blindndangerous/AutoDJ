@@ -178,10 +178,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/music" "$RUNNER_TEMP/index" "$RUNNER_TEMP/models"
+          # The public player pages are off by default; turn them on so the
+          # visual audit covers them.
+          printf '[player_page]\nenabled = true\nembed = true\n' >"$RUNNER_TEMP/config.toml"
           AUTODJ_LIBRARY_MUSIC_DIR="$RUNNER_TEMP/music" \
           AUTODJ_INDEX_DIR="$RUNNER_TEMP/index" \
           AUTODJ_MODEL_DIR="$RUNNER_TEMP/models" \
-          uv run autodj serve >"$RUNNER_TEMP/autodj.log" 2>&1 &
+          uv run autodj --config "$RUNNER_TEMP/config.toml" serve >"$RUNNER_TEMP/autodj.log" 2>&1 &
           server_pid=$!
           printf '%s\n' "$server_pid" >"$RUNNER_TEMP/autodj.pid"
           for _attempt in $(seq 1 30); do
