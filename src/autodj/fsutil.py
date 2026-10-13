@@ -57,3 +57,24 @@ def atomic_write(path: Path, data: str | bytes, *, mode: int = 0o666) -> None:
             temporary.unlink(missing_ok=True)
         raise
     fsync_directory(path.parent)
+
+
+def confirm_missing(path: Path, error: FileNotFoundError) -> None:
+    """Re-raise *error* unless *path* is truly not there.
+
+    ``FileNotFoundError`` also comes from a share that dropped: Windows maps
+    ``ERROR_BAD_NETPATH`` (53) and ``ERROR_BAD_NET_NAME`` (67) to ``ENOENT``,
+    as it does a missing file.  A file counts as missing only when the
+    folder that should hold it is there and can be opened; otherwise the
+    error is raised as it was, so a caller never takes "cannot see it" for
+    "it is not there" and writes over saved state.
+
+    Raises:
+        FileNotFoundError: *error*, when the folder is not there or cannot
+            be opened.
+    """
+    try:
+        with os.scandir(path.parent):
+            pass
+    except OSError:
+        raise error from None
