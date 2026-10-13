@@ -192,7 +192,7 @@ non-loopback address, and `localhost`, `127.0.0.1` and `::1`. With TLS files set
 (`[server] ssl_certfile` and `ssl_keyfile`, or `--ssl-certfile` and `--ssl-keyfile`) it allows
 the matching `https://` origins too. It uses a configured
 `access_token` or `AUTODJ_ACCESS_TOKEN` when there is one; otherwise it loads or creates
-`<index_dir>/.access-token`. On Linux and macOS only you can read that file. On Windows it gets the index folder's permissions, and if the index folder is on a network share, anyone who can read the share can read the token. Deleting `.access-token` makes the next start create a new
+`<index_dir>/.access-token`. Only you can read that file: on Windows it gets an access list granting your account alone, not the index folder's permissions. Deleting `.access-token` makes the next start create a new
 token, which ends every paired session; each browser must pair again. Startup prints the addresses
 to open and, while no browser is paired, a pairing code with how long it stays valid; it never
 prints the token. After that no code is printed or usable until someone asks for one:
@@ -1058,11 +1058,11 @@ list is stored in the station's `relays.json`, including an empty list if every 
 removed; saved definitions and passwords then take precedence over TOML. A blank password
 keeps the saved one only when editing the same relay destination (host, port and type).
 Environment passwords take precedence over both files and cannot be edited in the web form.
-`relays.json` contains credentials and is deliberately excluded from AutoDJ backups; keep a
-separate private copy if needed. Unreadable saved relay settings leave relays off and block
-web saves until the file is repaired. On POSIX systems the file is written with mode 0600.
-On Windows, Python's `chmod(0o600)` sets the read-only attribute; access is governed by the
-directory's inherited Windows ACL, which administrators must restrict to trusted users.
+`relays.json` contains credentials and is included in AutoDJ backups, which are not
+encrypted. Unreadable saved relay settings leave relays off and block web saves until the
+file is repaired. Only the account AutoDJ runs as can read the file: it has mode 0600 on
+Linux and macOS, and on Windows an access list granting that user alone, with nothing
+inherited from the folder.
 Station metadata is saved with the other web settings in `web_state.json`.
 
 For initial configuration, describe each server as a named table in `config.toml`:

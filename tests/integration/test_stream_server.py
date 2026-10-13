@@ -118,6 +118,11 @@ def test_stream_needs_no_session_when_authentication_is_on(bridge, tmp_path: Pat
     assert client.post("/api/stream/bans", json={"address": "192.0.2.4"}).status_code == 401
     assert client.get("/stream.m3u").status_code == 200
     assert client.head("/stream.m3u").status_code == 200
+    assert client.head("/stream.mp3").status_code == 200
+    with client.stream("GET", "/stream.mp3", headers={"Accept-Encoding": "gzip"}) as response:
+        assert response.status_code == 200
+        assert "content-encoding" not in response.headers
+        assert next(response.iter_bytes())[:2] == b"\xff\xfb"
 
 
 def test_web_relay_save_persists_privately_and_never_returns_password(stream_app, bridge) -> None:
@@ -174,11 +179,6 @@ def test_web_relay_failed_private_save_keeps_live_configuration(
     assert not bridge.player._cfg.stream.relays
     manager.reconfigure.assert_not_called()
     assert "source-secret" not in response.text
-    assert client.head("/stream.mp3").status_code == 200
-    with client.stream("GET", "/stream.mp3", headers={"Accept-Encoding": "gzip"}) as response:
-        assert response.status_code == 200
-        assert "content-encoding" not in response.headers
-        assert next(response.iter_bytes())[:2] == b"\xff\xfb"
 
 
 def test_old_keyed_links_need_a_session_and_then_are_not_found(bridge, tmp_path: Path) -> None:
