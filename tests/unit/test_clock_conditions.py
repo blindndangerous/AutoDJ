@@ -26,6 +26,13 @@ def test_text_case_and_wildcards(field):
     assert not matches_condition(
         {"field": field, "operator": "matches", "value": "[]"}, {field: "a"}
     )
+    assert not matches_condition({"field": field, "operator": "is_not", "value": "Bono"}, {})
+    assert not matches_condition(
+        {"field": field, "operator": "is_not", "value": "Bono"}, {field: "Bono"}
+    )
+    assert matches_condition(
+        {"field": field, "operator": "is_not", "value": "Bono"}, {field: "Someone else"}
+    )
 
 
 def test_numeric_inclusive_boundaries_and_missing_values():
@@ -68,6 +75,16 @@ def test_beets_custom_text_and_original_year():
     )
     assert not matches_condition(
         {"field": "beets", "name": "mood", "operator": "is", "value": "happy"}, {}, None
+    )
+    assert matches_condition(
+        {"field": "beets", "name": "mood", "operator": "is_not", "value": "sad"},
+        {},
+        {"mood": "happy"},
+    )
+    assert not matches_condition(
+        {"field": "beets", "name": "mood", "operator": "is_not", "value": "sad"},
+        {},
+        {"mood": "sad"},
     )
 
 
@@ -123,3 +140,21 @@ def test_contains_finds_text_inside_a_numeric_beets_column():
     condition = {"field": "beets", "name": "bpm", "operator": "contains", "value": "12"}
     assert matches_condition(condition, {}, {"bpm": 120})
     assert not matches_condition(condition, {}, {"bpm": 130})
+
+
+def test_negative_conditions_require_known_metadata_and_exclude_any_matching_genre():
+    assert not matches_condition({"field": "bpm", "operator": "not_eq", "value": 90}, {})
+    assert matches_condition({"field": "bpm", "operator": "not_eq", "value": 90}, {"bpm": 91})
+    assert not matches_condition(
+        {"field": "genre", "operator": "is_not", "value": "slow jam"}, {"genre": "Pop;Slow Jam"}
+    )
+    assert matches_condition(
+        {"field": "genre", "operator": "is_not", "value": "slow jam"}, {"genre": "Pop;Rock"}
+    )
+    assert not matches_condition({"field": "artist", "operator": "not_contains", "value": "x"}, {})
+    assert not matches_condition(
+        {"field": "year", "operator": "outside", "value": 2000, "upper": 2010}, {"year": 2005}
+    )
+    assert matches_condition(
+        {"field": "year", "operator": "outside", "value": 2000, "upper": 2010}, {"year": 1999}
+    )

@@ -122,9 +122,11 @@ class CategorySpec(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     name: str = Field(min_length=1, max_length=NAME_MAX)
-    source: Literal["query", "m3u"]
+    source: Literal["query", "m3u", "filters"]
     query: str = Field(default="", max_length=500)
     playlist: str = Field(default="", max_length=1024)
+    conditions: list[dict[str, Any]] = Field(default_factory=list, max_length=32)
+    match: Literal["all", "any"] = "all"
     # Dayparting: the weekdays (0 is Monday) and the hours the songs may
     # play.  No days means every day; no hours means all day.
     days: list[StrictInt] = Field(default_factory=list, max_length=7)
@@ -143,6 +145,21 @@ class CategorySpec(BaseModel):
 
     @model_validator(mode="after")
     def _source(self) -> Self:
+        if self.source == "filters":
+            if self.query or self.playlist or not self.conditions:
+                raise ValueError("A filter category needs conditions and no query or playlist")
+            from autodj.clockwheel_store import _condition
+
+            normalized = []
+            for condition in self.conditions:
+                item = _condition(condition)
+                if item["field"] == "category":
+                    raise ValueError("Categories cannot refer to other categories")
+                normalized.append(item)
+            self.conditions = normalized
+            return self
+        if self.conditions or self.match != "all":
+            raise ValueError("Only a filter category can have conditions or Match any")
         if self.source == "query":
             if self.playlist:
                 raise ValueError("A query category has no playlist file")
@@ -203,6 +220,7 @@ _FIELD_NAMES = {
     "name": "Name",
     "source": "Source",
     "query": "Beets query",
+    "conditions": "Conditions",
     "playlist": "Playlist file",
     "days": "Days",
     "hours_from": "Allowed from",
@@ -422,13 +440,22 @@ def spec_error(exc: ValidationError) -> CategoryError:
         name, message = "query", str(cause)
     elif not name and isinstance(cause, ValueError):
         text = str(cause)
-        name = "query" if "query" in text else "playlist" if "playlist" in text else ""
+        folded = text.casefold()
+        name = (
+            "conditions"
+            if "condition" in folded or "categor" in folded
+            else "query"
+            if "query" in folded
+            else "playlist"
+            if "playlist" in folded
+            else ""
+        )
     if error.get("type") in {"string_too_short", "missing"} and name == "name":
         message = "Enter a name for the category"
     elif error.get("type") == "string_too_long" and name:
         message = f"{_FIELD_NAMES[name]} is too long"
     elif error.get("type") == "literal_error" and name == "source":
-        message = "Choose a beets query or a playlist file as the source"
+        message = "Choose shared filters, a beets query or a playlist file as the source"
     elif error.get("type") == "extra_forbidden":
         message = f"Unknown field {location[-1] if location else ''}".strip()
     return CategoryError(name or "name", message)
@@ -497,6 +524,12 @@ class CategoryStore:
         # A category without days or hours is written without the three keys,
         # so an older AutoDJ, which refuses unknown keys, still reads the file.
         for category in document["categories"]:
+            # Older AutoDJ releases reject unknown keys in the categories
+            # file.  Filter-only defaults must not be written for legacy
+            # query and playlist categories.
+            if category["source"] != "filters":
+                category.pop("conditions", None)
+                category.pop("match", None)
             for key, empty in (
                 ("days", []),
                 ("hours_from", None),
@@ -759,6 +792,7 @@ class _Sources:
     items: list[tuple[Any, dict[str, Any]]] | None = None
     known: frozenset[str] = field(default_factory=frozenset)
     beets_error: str | None = None
+    beets_items: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def lookup(self) -> dict[str, Any]:
         if self.by_path is None:
@@ -780,6 +814,7 @@ class _Sources:
             except (OSError, sqlite3.Error) as exc:
                 self.beets_error = f"The beets database could not be read: {exc}"
         self.known = frozenset(known)
+        self.beets_items = overlay
         items = []
         for entry in self.entries:
             if getattr(entry, "is_silent", False):
@@ -799,6 +834,7 @@ def resolve_all(
     beets: BeetsSource | None,
     music_dir: Path | None,
     folder: Path,
+    sources_by_id: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[Resolution]:
     """Work out every category in *categories*, reading beets once for all of them."""
     sources = _Sources(entries, beets, music_dir, folder)
@@ -807,11 +843,18 @@ def resolve_all(
     for query in queries:
         if query is not None:
             fields |= query.fields()
-    if any(query is not None for query in queries):
+    for spec in categories:
+        fields.update(
+            condition["name"] for condition in spec.conditions if condition["field"] == "beets"
+        )
+    if any(query is not None for query in queries) or any(
+        c.source == "filters" and any(x["field"] == "beets" for x in c.conditions)
+        for c in categories
+    ):
         sources.read(fields)
     results: list[Resolution] = []
     for spec, query in zip(categories, queries, strict=True):
-        if query is None:
+        if spec.source == "m3u":
             try:
                 target = playlist_file(folder, spec.playlist)
             except (OSError, ValueError) as exc:
@@ -819,14 +862,48 @@ def resolve_all(
                 continue
             results.append(resolve_playlist(target, sources.lookup(), music_dir))
             continue
-        if sources.beets_error:
+        if sources.beets_error and (
+            query is not None or any(c["field"] == "beets" for c in spec.conditions)
+        ):
             results.append(Resolution(error=sources.beets_error))
             continue
-        problem = _unknown_field_error(query, sources.known, beets is not None)
-        if problem:
-            results.append(Resolution(error=problem))
+        if query is not None:
+            problem = _unknown_field_error(query, sources.known, beets is not None)
+            if problem:
+                results.append(Resolution(error=problem))
+                continue
+            results.append(resolve_query(query, sources.items or []))
             continue
-        results.append(resolve_query(query, sources.items or []))
+        from autodj.clockwheel import ClockSlot, condition_paths
+        from autodj.clockwheel_store import resolve_conditions
+
+        try:
+            step = {"type": "music", "conditions": spec.conditions, "match": spec.match}
+            conditions = resolve_conditions(step, dict(sources_by_id or {}), 1)
+            slot = ClockSlot(kind="music", conditions=conditions, match=spec.match)
+        except (ValueError, KeyError) as exc:
+            results.append(Resolution(error=f"A filter folder is unavailable: {exc}"))
+            continue
+        beets_by_path = sources.beets_items
+        if any(c["field"] == "beets" for c in spec.conditions):
+            if beets is None:
+                results.append(
+                    Resolution(error="Configure a Beets database to use Beets field conditions.")
+                )
+                continue
+            problem = next(
+                (
+                    f"No song in the library has a field named {c['name']}"
+                    for c in spec.conditions
+                    if c["field"] == "beets" and c["name"] not in sources.known
+                ),
+                None,
+            )
+            if problem:
+                results.append(Resolution(error=problem))
+                continue
+        music_entries = [entry for entry in entries if not getattr(entry, "is_silent", False)]
+        results.append(Resolution(frozenset(condition_paths(slot, music_entries, beets_by_path))))
     return results
 
 
@@ -875,9 +952,15 @@ class CategoryIndex:
             the library changes, the same one otherwise.
     """
 
-    def __init__(self, cfg: AutoDJConfig, entries: Callable[[], Sequence[Any]]) -> None:
+    def __init__(
+        self,
+        cfg: AutoDJConfig,
+        entries: Callable[[], Sequence[Any]],
+        folders: Callable[[], Sequence[Mapping[str, Any]]] = lambda: (),
+    ) -> None:
         self._cfg = cfg
         self._entries = entries
+        self._folders = folders
         self.store = CategoryStore(store_path(cfg))
         self._lock = threading.Lock()
         self._resolved: _Resolved | None = None
@@ -896,6 +979,10 @@ class CategoryIndex:
             self._loaded = (stamp, tuple(self.store.load()))
         return self._loaded[1]
 
+    def folders(self) -> list[dict[str, Any]]:
+        """Registered music folders, with the IDs filter definitions store."""
+        return [dict(source) for source in self._folders() if source.get("kind") == "music"]
+
     def save(self, categories: Sequence[Category]) -> None:
         """Write *categories* and forget what was worked out."""
         with self._lock:
@@ -906,7 +993,11 @@ class CategoryIndex:
     def _signature(self, categories: Sequence[Category], entries: Sequence[Any]) -> tuple:
         folder = self.folder
         beets = self._cfg.library.beets_db
-        uses_beets = beets is not None and any(c.source == "query" for c in categories)
+        uses_beets = beets is not None and any(
+            c.source == "query"
+            or (c.source == "filters" and any(x["field"] == "beets" for x in c.conditions))
+            for c in categories
+        )
         playlists = []
         for category in categories:
             if category.source == "m3u":
@@ -917,6 +1008,10 @@ class CategoryIndex:
         return (
             tuple(category.model_dump_json() for category in categories),
             len(entries),
+            tuple(
+                (s.get("id"), s.get("kind"), s.get("path"), s.get("recursive"))
+                for s in self._folders()
+            ),
             _stat(Path(beets)) if uses_beets and beets else None,
             _stat(Path(f"{beets}-wal")) if uses_beets and beets else None,
             tuple(playlists),
@@ -948,6 +1043,7 @@ class CategoryIndex:
                 beets=beets_source(self._cfg),
                 music_dir=self._cfg.library.music_dir,
                 folder=self.folder,
+                sources_by_id={source["id"]: source for source in self._folders()},
             )
             by_id: dict[str, Resolution] = {}
             previous = resolved.results if resolved is not None else {}
@@ -975,7 +1071,13 @@ class CategoryIndex:
     def members(self) -> dict[str, tuple[str, frozenset[str]]]:
         """Each category's ID mapped to its name and the paths of its songs."""
         categories, results = self.resolutions()
-        return {category.id: (category.name, results[category.id].paths) for category in categories}
+        # Keep stale paths in ``resolutions`` for the UI to display during a
+        # transient source failure, but never let playback treat them as current.
+        return {
+            category.id: (category.name, results[category.id].paths)
+            for category in categories
+            if not results[category.id].error
+        }
 
     def closed_now(self, wall: datetime) -> tuple[frozenset[str], dict[str, str]]:
         """The songs that may not play at local wall time *wall*, and why.
@@ -1017,4 +1119,5 @@ class CategoryIndex:
             beets=beets_source(self._cfg),
             music_dir=self._cfg.library.music_dir,
             folder=self.folder,
+            sources_by_id={source["id"]: source for source in self._folders()},
         )[0]

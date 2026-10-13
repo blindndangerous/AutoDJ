@@ -44,6 +44,18 @@ def test_clockwheel_routes_need_pairing_and_strict_bodies(tmp_path):
         assert client.get("/api/library/clock/..%5Csecrets").status_code == 400
         assert client.get("/api/library/clock/CON").status_code == 400
         assert client.get("/api/library/clock/Nothing").status_code == 404
+        counted = client.post(
+            "/api/library/clock/check",
+            json={
+                "step": {
+                    "type": "music",
+                    "match": "all",
+                    "conditions": [{"field": "genre", "operator": "is_not", "value": "Slow Jam"}],
+                }
+            },
+        )
+        assert counted.status_code == 200
+        assert counted.json() == {"tracks": 0, "error": None}
         unknown = client.post(
             "/api/library/clock",
             json={"version": 1, "name": "X", "steps": [], "resync_minutes": [0], "path": "C:/"},
