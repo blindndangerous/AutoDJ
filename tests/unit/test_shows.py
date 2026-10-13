@@ -338,7 +338,7 @@ def test_stopping_a_show_takes_its_songs_out_of_the_queue(tmp_path: Path) -> Non
         assert len(_queue(source)) == AHEAD
         return await runner.stop()
 
-    assert asyncio.run(run()) == "Remembering the 2000s"
+    assert asyncio.run(run()) == {"name": "Remembering the 2000s", "done": True}
     assert _queue(source) == []
     assert runner.status() is None
 
@@ -499,9 +499,11 @@ def test_a_hard_start_in_browser_playback_keeps_the_operators_play_next(tmp_path
     )
     source.ledger.remember_history = lambda _row: None
     asyncio.run(runner.start(show_id, now=True))
-    # The operator's Play next song is not dropped: it plays, then the show.
-    assert state.current_track is gold[7]
-    assert [state.next_track.path, *_queue(source)][:2] == [hits[0].path, hits[1].path]
+    # The show's first song plays at once; the operator's Play next song is
+    # kept and plays right after it, as with server audio.
+    assert state.current_track.path == hits[0].path
+    assert state.next_track is gold[7]
+    assert _queue(source)[0] == hits[1].path
 
 
 def test_stopping_leaves_a_listeners_request_for_the_same_song(tmp_path: Path) -> None:
@@ -537,7 +539,9 @@ def test_the_show_on_the_air_resumes_after_a_restart(tmp_path: Path) -> None:
     # A restart: the queue is gone, a new runner reads the saved place.
     state.queue.clear()
     again = ShowRunner(bridge, store, published, state_path=tmp_path / "show_on_air.json")
-    assert again.status() is None
+    # Said before the next song: it will resume, and from where.
+    pending = again.status()
+    assert (pending["pending_resume"], pending["resume_at"], pending["total"]) == (True, 2, 5)
     _settle(again)
     assert again.status()["played"] == 1
     assert _queue(source) == songs[1 : 1 + AHEAD]
@@ -603,3 +607,112 @@ def test_the_preview_shows_a_scheduled_show_song_dmca_would_skip(tmp_path: Path)
         "Skipped from show Remembering the 2000s: it would break a DMCA limit"
     )
     assert rows[-1]["seconds"] == 0
+
+
+def test_a_restart_resumes_at_the_earliest_waiting_song_past_skips(tmp_path: Path) -> None:
+    """Songs skipped after a waiting one never make a restart lose it."""
+    source, hits, gold = _station(tmp_path)
+    state = source.player._state
+    _playing(source, gold[0], time.time() - 30)
+    songs = [hits[0].path, hits[1].path, "/gone/x.flac", "/gone/y.flac", hits[2].path]
+    runner, bridge, store, show_id, published = _runner(source, tmp_path, songs)
+    asyncio.run(runner.start(show_id))
+    state.queue.pop(0)
+    _playing(source, hits[0], time.time())
+    _settle(runner)
+    # Waiting: hits[1] (place 1) and hits[2] (place 4); places 2 and 3 skipped.
+    assert _queue(source) == [hits[1].path, hits[2].path]
+    saved = json.loads((tmp_path / "show_on_air.json").read_text(encoding="utf-8"))
+    assert saved["next_index"] == 1
+    state.queue.clear()
+    again = ShowRunner(bridge, store, published, state_path=tmp_path / "show_on_air.json")
+    _settle(again)
+    assert _queue(source) == [hits[1].path, hits[2].path]
+
+
+def test_stop_cancels_a_pending_resume_and_never_resumes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, hits, gold = _station(tmp_path)
+    _playing(source, gold[0], time.time() - 30)
+    runner, bridge, store, show_id, published = _runner(
+        source, tmp_path, [entry.path for entry in hits[:4]]
+    )
+    asyncio.run(runner.start(show_id))
+    source.player._state.queue.clear()
+    state_file = tmp_path / "show_on_air.json"
+    again = ShowRunner(bridge, store, published, state_path=state_file)
+    assert again.status()["pending_resume"] is True
+    # The file is held open: Stop leaves a stopped marker instead.
+    original = Path.unlink
+
+    def held(self: Path, missing_ok: bool = False) -> None:
+        if self == state_file:
+            raise PermissionError("in use")
+        original(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", held)
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+    assert asyncio.run(again.stop()) == {"name": "Remembering the 2000s", "done": True}
+    assert again.status() is None
+    assert json.loads(state_file.read_text(encoding="utf-8"))["stopped"] is True
+    third = ShowRunner(bridge, store, published, state_path=state_file)
+    assert third.status() is None
+    _settle(third)
+    assert _queue(source) == []
+    # Once the file can go, the next song change removes it.
+    monkeypatch.setattr(Path, "unlink", original)
+    _settle(again)
+    assert not state_file.exists()
+
+
+def test_a_stop_that_cannot_take_the_songs_out_keeps_trying(tmp_path: Path) -> None:
+    source, hits, gold = _station(tmp_path)
+    _playing(source, gold[0], time.time() - 30)
+    runner, bridge, _store, show_id, _published = _runner(
+        source, tmp_path, [entry.path for entry in hits[:4]]
+    )
+    asyncio.run(runner.start(show_id))
+    real = bridge.queue_remove_if
+    bridge.queue_remove_if = lambda _index, _view: False  # the queue keeps changing
+    assert asyncio.run(runner.stop()) == {"name": "Remembering the 2000s", "done": False}
+    status = runner.status()
+    assert (status["stopping"], status["waiting"]) == (True, AHEAD)
+    assert runner.on_air_name() is None
+    # Nothing more is fed while it stops; the next song change takes them out.
+    bridge.queue_remove_if = real
+    _settle(runner)
+    assert runner.status() is None
+    assert _queue(source) == []
+
+
+def test_queue_edits_by_path_never_take_the_shows_own_copy(tmp_path: Path) -> None:
+    source, hits, gold = _station(tmp_path)
+    state = source.player._state
+    _playing(source, gold[0], time.time() - 30)
+    runner, bridge, _store, show_id, _published = _runner(
+        source, tmp_path, [entry.path for entry in hits[:3]]
+    )
+    bridge.show_entry = runner.is_show_entry
+    asyncio.run(runner.start(show_id))
+    show_copy = state.queue[0]
+    state.queue.append(hits[0])  # a listener's request of the same file
+    # A remove by path alone takes the request, not the show's copy.
+    assert bridge.queue_remove(hits[0].path)
+    assert state.queue[0] is show_copy
+    assert not any(entry is hits[0] for entry in state.queue)
+    # A remove at the place the page showed takes that very entry.
+    state.queue.append(hits[0])
+    assert bridge.queue_remove(hits[0].path, position=2)
+    assert [e is show_copy for e in state.queue] == [True, False]
+    # A reorder that drops one of two entries of a file keeps the show's copy.
+    state.queue.append(hits[0])
+    assert bridge.queue_reorder([hits[0].path, hits[1].path])
+    assert state.queue[0] is show_copy
+    # With the page's view and order, the very entries move.
+    state.queue.append(hits[0])
+    shown = [e.path for e in state.queue]
+    assert bridge.queue_reorder(
+        [hits[0].path, hits[1].path, hits[0].path], from_paths=shown, order=[2, 1, 0]
+    )
+    assert state.queue[0] is hits[0] and state.queue[2] is show_copy

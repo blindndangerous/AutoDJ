@@ -278,12 +278,16 @@ def install_shows(router: StationRouter) -> None:
 
     @router.delete("/shows/on-air")
     async def shows_stop(station: StationDep) -> dict[str, Any]:
-        """Take the show on the air off; its waiting songs leave the queue."""
+        """Take the show on the air off (or forget one waiting to resume).
+
+        ``done`` is false while some of its songs could not be taken out of the
+        queue yet; that is tried again at each song change.
+        """
         runner = getattr(station, "show_runner", None)
-        name = await runner.stop() if runner is not None else None
-        if name is None:
+        stopped = await runner.stop() if runner is not None else None
+        if stopped is None:
             raise HTTPException(status_code=409, detail="No show is on the air")
-        return {"stopped": name}
+        return {"stopped": stopped["name"], "done": stopped["done"]}
 
     @router.get("/shows/{show_id}")
     async def shows_get(station: StationDep, show_id: str) -> dict[str, Any]:
@@ -331,13 +335,6 @@ def install_shows(router: StationRouter) -> None:
         """Save a show's list, in order; 409 while the list is being generated."""
         _check_id(show_id)
         store = _store(station)
-        if _generations(request).generating(station.slug, show_id):
-            return _rejected(
-                "",
-                "The list is being generated; your change was not saved. "
-                "Try again when it is done.",
-                409,
-            )
 
         def save() -> dict[str, Any]:
             current = store.get(show_id)
@@ -350,8 +347,16 @@ def install_shows(router: StationRouter) -> None:
             store.update(show_id, lambda show: with_songs(show, body.songs))
             return _one_view(station, show_id)
 
+        busy = (
+            "The list is being generated or changed; your change was not saved. "
+            "Try again when that is done."
+        )
         try:
-            return await asyncio.to_thread(save)
+            # The check and the save are one step: a generation waits (409) meanwhile.
+            with _generations(request).reserved(station.slug, show_id, busy):
+                return await asyncio.to_thread(save)
+        except ShowBusy as exc:
+            return _rejected(exc.field, exc.message, 409)
         except KeyError:
             raise _gone() from None
         except ShowError as exc:

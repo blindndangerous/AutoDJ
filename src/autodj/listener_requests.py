@@ -784,6 +784,30 @@ class RequestDesk:
             return placement
         return replace(placement, note=f"After the show {show}. {placement.note}")
 
+    def show_started(self, name: str) -> None:
+        """A show went on the air ahead of the queued requests (#106): their notes say so.
+
+        Requests still waiting in the queue now play after the show, so the
+        operator's list stops promising where they fit.  Listeners were told
+        only roughly, once, and are not told again.
+        """
+        waiting = {entry.path for entry in self.bridge.coming_up()}
+        changed = False
+        with self.book.lock:
+            for request in self.book.recent():
+                if (
+                    request.status == QUEUED
+                    and request.path in waiting
+                    and not request.note.startswith("After the show")
+                ):
+                    request.note = f"After the show {name}. {request.note}".strip()
+                    changed = True
+            if changed:
+                try:
+                    self.book.save()
+                except OSError:
+                    logger.warning("Could not save the listener requests", exc_info=True)
+
     def _placement(self, entry: IndexEntry) -> Placement:
         return self._placed(entry, self.bridge.request_slots(entry, self._horizon()))
 

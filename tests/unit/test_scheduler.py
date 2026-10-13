@@ -660,3 +660,13 @@ def test_an_action_can_run_hard_events_itself_and_soft_ones_at_once(tmp_path: Pa
     rig.tick_at("2026-10-11 12:02")
     assert rig.calls == ["queue", "now"]
     assert [run.result for run in rig.schedule.runs] == ["ok", "ok"]
+
+
+def test_a_known_action_with_bad_settings_is_set_aside_as_before(tmp_path: Path) -> None:
+    path = tmp_path / "schedule.json"
+    write_schedule(path, [stored("a" * 32), stored("b" * 32, params={"extra": "1"})])
+    rig = Rig(path)
+    rig.schedule.start()
+    assert list(rig.schedule.events) == ["a" * 32]
+    assert rig.schedule.kept == []
+    assert len(list(tmp_path.glob("schedule.json.bad-*"))) == 1

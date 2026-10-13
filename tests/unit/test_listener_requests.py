@@ -592,3 +592,17 @@ def test_a_show_about_to_start_also_holds_back_the_promise(tmp_path: Path) -> No
     desk.shows.ahead = lambda _within_s: "Remembering the 2000s"  # type: ignore[method-assign]
     outcome = desk.submit(ids.shown(bridge.entries[3].path), "Sam", "192.0.2.1")
     assert outcome.detail.endswith("If it is approved, it should play after the station's show.")
+
+
+def test_a_show_that_starts_says_queued_requests_now_follow_it(tmp_path: Path) -> None:
+    desk, bridge, ids, _ = _desk(tmp_path, approval="auto")
+    desk.submit(ids.shown(bridge.entries[4].path), "", "192.0.2.1")
+    assert desk.book.recent()[0].note.startswith("Fits after")
+    desk.show_started("Remembering the 2000s")
+    note = desk.book.recent()[0].note
+    assert note.startswith("After the show Remembering the 2000s. Fits after")
+    # Said once, however often a show starts.
+    desk.show_started("Remembering the 2000s")
+    assert desk.book.recent()[0].note == note
+    saved = json.loads((tmp_path / "requests.json").read_text(encoding="utf-8"))
+    assert "After the show" in json.dumps(saved)

@@ -1151,3 +1151,20 @@ def test_each_stations_shows_are_backed_up_and_restored(tmp_path: Path) -> None:
     restore_backup(cfg, archive, force=True)
     for path, document in shows.items():
         assert json.loads(path.read_text(encoding="utf-8")) == document, path
+
+
+def test_a_restore_forgets_every_stations_show_on_the_air(tmp_path: Path) -> None:
+    """show_on_air.json (#106) is runtime state: never backed up, cleared by a restore."""
+    cfg = _config(tmp_path)
+    marks = [
+        cfg.index.active_dir / "show_on_air.json",
+        _station_dir(cfg, "nightowl") / "show_on_air.json",
+    ]
+    for mark in marks:
+        mark.parent.mkdir(parents=True, exist_ok=True)
+        mark.write_text('{"version": 1}', encoding="utf-8")
+    archive = create_backup(cfg, tmp_path / "air.zip", force=False)
+    with zipfile.ZipFile(archive) as opened:
+        assert not any(name.endswith("show_on_air.json") for name in opened.namelist())
+    restore_backup(cfg, archive, force=True)
+    assert not any(mark.exists() for mark in marks)

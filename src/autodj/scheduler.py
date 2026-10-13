@@ -21,6 +21,7 @@ import calendar
 import functools
 import json
 import logging
+import threading
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -562,6 +563,9 @@ class Scheduler:
         # Events this version cannot run (an action it does not have), kept
         # as they were so a save never loses them.
         self.kept: list[ScheduledEvent] = []
+        # Held while the events dict changes, so another thread (the request
+        # desk asking when the next show starts) can copy it safely.
+        self.lock = threading.Lock()
         # Soft events waiting for the current song to end, in due order.
         self.pending: list[str] = []
         self.started = False
@@ -613,24 +617,29 @@ class Scheduler:
         except (OSError, ValueError) as exc:
             self._keep_bad_copy(str(exc).splitlines()[0])
             return
+        dropped = []
         for event in data.events:
             action = self.actions.get(event.action)
-            try:
-                if action is None:
-                    raise EventError("action", f"unknown action {event.action}")
-                event.params = action.check(event.params)
-            except EventError as exc:
+            if action is None:
                 # Another version's action (a newer one's, say): never run,
                 # never shown, but written back as it was with every save.
                 logger.warning(
-                    "Scheduled event %r is kept but cannot run in this version: %s",
+                    "Scheduled event %r is kept but cannot run in this version: unknown action %s",
                     event.name,
-                    exc,
+                    event.action,
                 )
                 self.kept.append(event)
                 continue
-            self.events[event.id] = event
+            try:
+                event.params = action.check(event.params)
+            except EventError as exc:
+                dropped.append(f"{event.name}: {exc}")
+                continue
+            with self.lock:
+                self.events[event.id] = event
         self.runs = data.runs[-MAX_RUNS:]
+        if dropped:
+            self._keep_bad_copy("; ".join(dropped))
 
     def save(self) -> None:
         """Write the schedule atomically."""
@@ -689,7 +698,8 @@ class Scheduler:
             raise EventError("", f"The schedule holds at most {MAX_EVENTS} events")
         params = await self._checked(spec)
         event = ScheduledEvent(**{**spec.model_dump(), "params": params, "id": uuid.uuid4().hex})
-        self.events[event.id] = event
+        with self.lock:
+            self.events[event.id] = event
         await self._changed()
         return event
 
@@ -699,14 +709,16 @@ class Scheduler:
             raise KeyError(event_id)
         params = await self._checked(spec)
         event = ScheduledEvent(**{**spec.model_dump(), "params": params, "id": event_id})
-        self.events[event_id] = event
+        with self.lock:
+            self.events[event_id] = event
         self._forget_pending(event_id)
         await self._changed()
         return event
 
     async def remove(self, event_id: str) -> ScheduledEvent:
         """Delete an event; raise ``KeyError`` for an unknown ID."""
-        event = self.events.pop(event_id)
+        with self.lock:
+            event = self.events.pop(event_id)
         self._forget_pending(event_id)
         await self._changed()
         return event
@@ -845,6 +857,23 @@ class Scheduler:
             event = self.events.get(event_id)
             if event is not None:
                 await self.run(event)
+
+    def runs_within(self, action: str, within: timedelta) -> list[tuple[datetime, ScheduledEvent]]:
+        """The next run of each enabled *action* event within *within* from now (any thread).
+
+        Only those events are looked at, copied under :attr:`lock`.
+        """
+        with self.lock:
+            events = [
+                event for event in self.events.values() if event.enabled and event.action == action
+            ]
+        now = self._clock()
+        found = []
+        for event in events:
+            when = next_run(event, now, self.zone)
+            if when is not None and when - now <= within:
+                found.append((when, event))
+        return sorted(found, key=lambda row: row[0])
 
     def upcoming(self, count: int) -> list[tuple[datetime, ScheduledEvent]]:
         """Return the next *count* runs across every enabled event, soonest first."""

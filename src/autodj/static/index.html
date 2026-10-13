@@ -1746,7 +1746,7 @@
           </select>
         </div>
         <span class="setting-desc" id="schedule-timing-desc">
-          Soft waits for the current song to end.  Hard runs on time and, except for stream events, fades the current song out.  A show starts at once with Hard. With Soft it is queued at its time to follow the current song; with server audio or a stream it can start one song later, because the song after the current one may already be mixed in.
+          Soft waits for the current song to end.  Hard runs on time and, except for stream events, fades the current song out.  A show starts at once with Hard, and a Play next song you chose plays right after its first song. With Soft it is queued at its time to follow the current song; with server audio or a stream it can start one song later, because the song after the current one may already be mixed in.
         </span>
         <div class="settings-check">
           <input type="checkbox" id="schedule-enabled">
@@ -2643,7 +2643,7 @@
            the totals are plain text, not live regions: each result of a
            button is said once through #shows-status.  A refused field gets
            aria-invalid, the error linked to it and focus. -->
-      <p>A show is a list of songs you prepare ahead, such as Remembering the 2000s, and air at a set time. AutoDJ picks the list from a category or a clockwheel with the station's own repeat rules and DMCA limits; you can then reorder it, remove songs, add others or generate it again. To air a show, add an event with the action Play a show under Settings, Schedule. Hard timing starts it at its time; Soft lets the current song finish, and with server audio or a stream the show can start one song later. While a show plays, its songs go ahead of songs already in the queue, listener requests included.</p>
+      <p>A show is a list of songs you prepare ahead, such as Remembering the 2000s, and air at a set time. AutoDJ picks the list from a category or a clockwheel with the station's own repeat rules and DMCA limits; you can then reorder it, remove songs, add others or generate it again. To air a show, add an event with the action Play a show under Settings, Schedule. Hard timing starts it at its time, with a Play next song you chose right after its first song; Soft lets the current song finish, and with server audio or a stream the show can start one song later. While a show plays, its songs go ahead of songs already in the queue, listener requests included.</p>
       <p id="shows-problem" class="field-error" hidden></p>
       <div id="shows-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
       <p id="shows-on-air">No show is on the air.</p>

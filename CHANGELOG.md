@@ -28,15 +28,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the rest of a show on the air, and a scheduled show's songs from its time, as fixed, and a
   song the DMCA limits would skip as skipped. Shows are
   kept per station in `shows.json` (a damaged entry is skipped and kept, as with matched intros)
-  and included in every station's backup. A show cut short by a restart resumes at its first
-  unplayed song while its list would still be running. While a show is on the air (or about to
+  and included in every station's backup. A show cut short by a restart resumes at its earliest
+  unplayed song while its list would still be running; the card says so until then, and Stop
+  show cancels it. `show_on_air.json`, which holds that place, is left out of backups and cleared
+  by a restore. Queue & Search removes and moves the very entry pressed, so a listener's
+  request and a show song of the same file never swap. While a show is on the air (or about to
   start) listener requests go after its songs and are told "after the station's show" rather
   than a time. A song may be listed twice, with a warning. Routes: `/api/shows` and
   `/api/stations/<name>/shows`, with request bodies capped for POST and PUT. See
   [Shows](docs/operations.md#shows).
 - A schedule event whose action this version does not have, such as one a newer AutoDJ added,
   is now kept exactly as it was with every save instead of being set aside, so moving between
-  versions loses no event.
+  versions loses no event. An event with settings its action does not accept is still set
+  aside as before.
 - Saving edits to the active clockwheel can now apply at its next restart, immediately from
   step 1, or immediately continuing at the next step number. A song already playing and its
   committed handoff finish normally. With no restart minutes, deferred edits apply when the

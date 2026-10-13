@@ -213,6 +213,9 @@ class PlayerBridge:
     stereo_tool_elsewhere: Callable[[], str | None] | None = None
     # Held across that check and the change it allows (the registry's).
     stereo_tool_lock: Any = None
+    # Whether a queue entry is a show's own copy (#106): a remove or reorder
+    # aimed by path at another entry of the same file never takes it.
+    show_entry: Callable[[Any], bool] | None = None
     # The viewer keeps 500 rows; the catalog retains the full play log.
     _play_history: deque = field(
         default_factory=lambda: deque(maxlen=500),
@@ -1662,22 +1665,61 @@ class PlayerBridge:
         with state.queue_lock:
             return list(state.queue)
 
-    def queue_remove(self, path: str) -> bool:
-        """Remove the first matching path from the queue."""
+    def _is_show_entry(self, entry: Any) -> bool:
+        check = self.show_entry
+        return bool(check is not None and check(entry))
+
+    def queue_remove(self, path: str, position: int | None = None) -> bool:
+        """Remove one queued *path*: the one at *position* when it is there, else the first.
+
+        *position* is the entry's place in the queue as the page showed it;
+        when the queue still has *path* there, that very entry goes.  Without
+        it (or when the queue has moved), the first entry with *path* goes,
+        passing over a show's own copy (#106) when another entry has the path.
+        """
         state = self.player._state
         with state.queue_lock:
             q = state.queue
-            for i, e in enumerate(q):
-                if e.path == path:
-                    del q[i]
-                    if not q and state.queued_next is None:
-                        state.pre_queue_seed = None
-                    self._refresh_bus_queue()
-                    self._sync_next_for_prefetch()
-                    return True
-        return False
+            if position is not None and 0 <= position < len(q) and q[position].path == path:
+                index: int | None = position
+            else:
+                found = [i for i, e in enumerate(q) if e.path == path]
+                others = [i for i in found if not self._is_show_entry(q[i])]
+                if not found:
+                    return False
+                index = (others or found)[0]
+            del q[index]
+            if not q and state.queued_next is None:
+                state.pre_queue_seed = None
+            self._refresh_bus_queue()
+            self._sync_next_for_prefetch()
+            return True
 
-    def queue_reorder(self, paths: list[str]) -> bool:
+    def requeue_play_next(self, position: int) -> bool:
+        """Move a waiting "play next" song into the user queue at *position*; whether one moved.
+
+        A show that starts at once in browser playback (#106) plays its first
+        song first and the operator's "play next" song right after it.
+        """
+        state = self.player._state
+        with state.queue_lock:
+            waiting = state.queued_next
+            if waiting is None:
+                return False
+            state.queued_next = None
+            queue = state.queue
+            queue.insert(max(0, min(position, len(queue))), waiting)
+            self._refresh_bus_queue()
+            self._sync_next_for_prefetch()
+        return True
+
+    def queue_reorder(
+        self,
+        paths: list[str],
+        *,
+        from_paths: list[str] | None = None,
+        order: list[int] | None = None,
+    ) -> bool:
         """Reorder the queue to match the given list of paths.
 
         Tracks present in the queue but missing from *paths* are dropped.
@@ -1685,6 +1727,13 @@ class PlayerBridge:
         :meth:`queue_add`).  A track queued more than once keeps one slot
         per occurrence of its path in *paths*, up to the number of times it
         was queued.
+
+        With *from_paths* (the queue as the page showed it) and *order* (each
+        new slot's place in *from_paths*), and the queue still as shown, the
+        entries themselves are moved, so two entries of one file (a listener's
+        request and a show's copy, #106) keep who they are.  Otherwise, when a
+        file has fewer slots than entries, a show's own copy is kept before
+        the others.
         """
         state = self.player._state
         # Read, rebuild and write back under the queue lock.  Without it the
@@ -1693,10 +1742,34 @@ class PlayerBridge:
         # twice.
         with state.queue_lock:
             q = state.queue
-            by_path: dict[str, deque[IndexEntry]] = {}
-            for entry in q:
-                by_path.setdefault(entry.path, deque()).append(entry)
-            q[:] = [by_path[p].popleft() for p in paths if by_path.get(p)]
+            if (
+                from_paths is not None
+                and order is not None
+                and [entry.path for entry in q] == list(from_paths)
+                and len(order) == len(paths)
+                and len(set(order)) == len(order)
+                and all(
+                    0 <= i < len(q) and q[i].path == p for i, p in zip(order, paths, strict=True)
+                )
+            ):
+                q[:] = [q[i] for i in order]
+            else:
+                by_path: dict[str, deque[IndexEntry]] = {}
+                for entry in q:
+                    by_path.setdefault(entry.path, deque()).append(entry)
+                wanted: dict[str, int] = {}
+                for p in paths:
+                    wanted[p] = wanted.get(p, 0) + 1
+                for p, entries in by_path.items():
+                    extra = len(entries) - wanted.get(p, 0)
+                    if extra <= 0:
+                        continue
+                    # Drop the others first, from the end; a show's copy last.
+                    shows = [self._is_show_entry(entry) for entry in entries]
+                    ranked = sorted(range(len(entries)), key=lambda i: (shows[i], -i))
+                    dropped = set(ranked[:extra])
+                    by_path[p] = deque(e for i, e in enumerate(entries) if i not in dropped)
+                q[:] = [by_path[p].popleft() for p in paths if by_path.get(p)]
             if not q and state.queued_next is None:
                 state.pre_queue_seed = None
             self._refresh_bus_queue()

@@ -47,6 +47,14 @@ export function describeShow(show) {
 // The show on the air, in words.
 export function describeOnAir(onAir) {
   if (!onAir) return "No show is on the air.";
+  if (onAir.pending_resume) {
+    return `${onAir.name} was on the air before AutoDJ restarted and will resume at the next song, `
+      + `from song ${number(onAir.resume_at)} of ${number(onAir.total)}. Stop show cancels it.`;
+  }
+  if (onAir.stopping) {
+    return `${onAir.name} is stopping: ${plural(onAir.waiting, "song is", "songs are")} still in the queue, `
+      + "and AutoDJ takes them out at the next song.";
+  }
   const parts = [
     `${plural(onAir.played, "song", "songs")} of ${number(onAir.total)} played`,
     `${number(onAir.waiting)} waiting in the queue`,
@@ -676,12 +684,15 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   async function stopShow() {
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
     try {
+      const wasResuming = Boolean(data.on_air?.pending_resume);
       const answer = await send("/api/shows/on-air", "DELETE");
       if (!current(epoch, mine)) return;
-      // Focus leaves the Stop button before it is hidden.
-      addButton.focus();
+      // Focus moves to Add show only if Stop show is hidden (renderOnAir).
       await load();
-      say(`Stopped ${answer.stopped}. Its waiting songs left the queue; normal programming resumes.`);
+      if (wasResuming) say(`${answer.stopped} will not resume.`);
+      else if (answer.done === false) {
+        say(`Stopping ${answer.stopped}: some of its songs could not be taken out of the queue yet. AutoDJ tries again at the next song.`);
+      } else say(`Stopped ${answer.stopped}. Its waiting songs left the queue; normal programming resumes.`);
     } catch (error) {
       if (current(epoch, mine)) say(`Could not stop the show: ${error.message}`, true);
     }

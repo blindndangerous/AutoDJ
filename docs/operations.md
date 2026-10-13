@@ -2979,7 +2979,9 @@ writes the file atomically and includes it in `autodj backup`. A damaged schedul
 to `schedule.json.bad-<id>` and left out, so the server still starts. An event whose action this
 version does not have (one a newer AutoDJ added) never runs and is not listed, but it is logged
 and written back exactly as it was with every save, so going back and forth between versions
-loses no event; it counts toward the 100 events. Events are not replayed after downtime: a one-time event whose
+loses no event; it counts toward the 100 events. An event for an action this version has, but
+with settings it does not accept, is copied to `schedule.json.bad-<id>` and left out, as
+before. Events are not replayed after downtime: a one-time event whose
 time passed while AutoDJ was stopped is disabled and recorded as missed, and an event more than
 two minutes late (the computer slept) is recorded as missed instead of running. The schedule
 holds at most 100 events.
@@ -3369,9 +3371,14 @@ after this song**, in the open list, airs it now, to test it.
   A listener request accepted while a show is on the air, or due to start within the request
   window, is placed after the show's waiting songs and the listener is told only that it plays
   "after the station's show", never a time; the operator's card says "After the show" and its
-  name. A request queued earlier waits until the show ends.
-- With hard timing in browser playback, a song the operator chose with **Play next** still plays
-  first, then the show.
+  name. A request queued earlier waits until the show ends, and when a show starts the
+  operator's card adds "After the show" and its name to every request still in the queue, so it
+  promises no place it cannot keep. (A listener is told only once, when sending the request.)
+- A hard start is the same in every playback mode: the show's first song plays at once, and a
+  song the operator chose with **Play next** plays right after it, then the rest of the show.
+- The show's songs in the queue are its own entries. Removing or moving a song in Queue & Search
+  acts on the very entry you pressed, so a listener's request for the same song never takes a
+  show song's place, and a show song is never removed by mistake.
 - Show songs are pre-approved: the repeat rules do not hold them back, as with any song you
   queue. The DMCA limits are never broken: in DMCA mode each song is checked where it would play
   just before it joins the queue, and the waiting songs again at every song change. A song that
@@ -3379,15 +3386,23 @@ after this song**, in the open list, airs it now, to test it.
 - When the list ends, the show is over and the station's own picking resumes. A new show
   replaces the one on the air, whose waiting songs leave the queue.
 - The card says which show is on the air, how many songs have played, are waiting and are to
-  come, and what was skipped and why. **Stop show** takes its waiting songs out of the queue;
-  a song already mixed into the one playing still plays.
+  come, and what was skipped and why. **Stop show** takes its waiting songs out of the queue,
+  and only those; a song already mixed into the one playing still plays. If the queue keeps
+  changing and a song cannot be taken out at once, the card says the show is stopping, nothing
+  more is queued, and AutoDJ tries again at each song change until they are out.
 - The show plays its list as it was when it started; changes made meanwhile count the next time.
 - A restart resumes the show on the air: AutoDJ saves the show and its place in
-  `show_on_air.json` in the station's state folder as it goes, and once a song plays again it
-  goes on from the first song that had not started (the queue itself is not kept over a
-  restart). It is not resumed when its list would have ended by then: the time it started plus
-  the length of its songs plus 15 minutes. **Stop show** and the end of the list remove the
-  file.
+  `show_on_air.json` in the station's state folder as it goes. Until a song plays again, the
+  card says the show will resume at the next song, and from which song; **Stop show** cancels
+  that. Then it goes on from the earliest song that had not started, songs it had queued
+  included (the queue itself is not kept over a restart). It is not resumed when its list would
+  have ended by then: the time it started plus the length of its songs plus 15 minutes. **Stop
+  show** and the end of the list remove the file; if it cannot be removed (held open), AutoDJ
+  writes a stopped marker into it, which is never resumed, and removes it at a later song
+  change.
+- `show_on_air.json` is runtime state and is left out of backups on purpose. A restore removes
+  every station's `show_on_air.json`, so no show from before the restore resumes; restore warns
+  if one cannot be removed.
 
 The hour preview lists the rest of a show on the air as "Fixed: show" and its name, and a
 scheduled show's songs the same way from the first song change after the event's time. A song the

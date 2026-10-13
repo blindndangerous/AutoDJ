@@ -348,3 +348,25 @@ describe("review fixes", () => {
     expect(byId("shows-summary").textContent).not.toContain("Warning");
   });
 });
+
+describe("a show waiting to resume or stopping", () => {
+  it("says a pending resume and a show still being taken out of the queue", () => {
+    expect(describeOnAir({ name: "Remembering the 2000s", pending_resume: true, resume_at: 4, total: 15 }))
+      .toBe("Remembering the 2000s was on the air before AutoDJ restarted and will resume at the next song, "
+        + "from song 4 of 15. Stop show cancels it.");
+    expect(describeOnAir({ name: "Remembering the 2000s", stopping: true, waiting: 2 }))
+      .toBe("Remembering the 2000s is stopping: 2 songs are still in the queue, and AutoDJ takes them out at the next song.");
+  });
+
+  it("cancels a pending resume with Stop show and says so once", async () => {
+    const server = await open();
+    server.onAir = { name: "Remembering the 2000s", pending_resume: true, resume_at: 2, total: 3 };
+    await controls.refresh();
+    expect(byId("shows-stop").hidden).toBe(false);
+    byId("shows-stop").focus();
+    byId("shows-stop").click();
+    await vi.waitFor(() => expect(status()).toBe("Remembering the 2000s will not resume."));
+    expect(byId("shows-stop").hidden).toBe(true);
+    expect(document.activeElement).toBe(byId("shows-add"));
+  });
+});

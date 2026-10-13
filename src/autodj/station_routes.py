@@ -270,6 +270,24 @@ class QueueReorderBody(BaseModel):
     """
 
     paths: list[str]
+    # The queue as the page showed it, and each new slot's place in it: with
+    # both, the entries themselves move (a show's copy and a listener's
+    # request of the same file keep who they are, #106).
+    from_paths: list[str] | None = None
+    order: list[int] | None = None
+
+
+class QueueRemoveBody(BaseModel):
+    """Request body for POST /api/queue/remove.
+
+    Attributes:
+        path: The track to remove.
+        position: Its place in the queue as the page showed it; that entry
+            goes when the queue still has *path* there.
+    """
+
+    path: str
+    position: int | None = None
 
 
 class LinerTestBody(BaseModel):
@@ -809,17 +827,18 @@ def equip_station(
     schedule.register(show_action(station.show_runner, station.shows))
 
     def show_starts_within(within_s: float) -> str | None:
-        # Called from the request desk's threads, which only read the schedule.
-        from datetime import UTC, datetime
+        # Called from the request desk's threads: only show events, copied
+        # under the scheduler's lock.
+        from datetime import timedelta
 
-        now = datetime.now(UTC)
-        for when, event in schedule.upcoming(5):
-            if event.action == "show" and (when - now).total_seconds() <= within_s:
-                show = station.shows.get(str(event.params.get("show", "")))
-                return show.name if show is not None else event.name
+        for _when, event in schedule.runs_within("show", timedelta(seconds=within_s)):
+            show = station.shows.get(str(event.params.get("show", "")))
+            return show.name if show is not None else event.name
         return None
 
     station.show_runner.starts_within = show_starts_within
+    # A remove or reorder by path never takes the show's own copy by mistake.
+    bridge.show_entry = station.show_runner.is_show_entry
 
     from autodj.breaks import BreakDesk
 
@@ -847,6 +866,8 @@ def equip_station(
             on_queued=station.nowplaying.refresh,
             shows=station.show_runner,
         )
+        # A show that starts ahead of queued requests updates their notes.
+        station.show_runner.on_started = station.requests.show_started
 
     from autodj.categories import station_wall
     from autodj.matched_intros import MatchedIntros
@@ -1518,9 +1539,9 @@ def install_station_routes(router: StationRouter) -> None:
         return {"ok": True}
 
     @router.post("/queue/remove")
-    async def api_queue_remove(station: StationDep, body: PlayNextBody) -> dict[str, bool]:
+    async def api_queue_remove(station: StationDep, body: QueueRemoveBody) -> dict[str, bool]:
         """Remove a track from the user-ordered queue."""
-        removed = station.bridge.queue_remove(body.path)
+        removed = station.bridge.queue_remove(body.path, body.position)
         if removed:
             station.nowplaying.refresh()
         return {"ok": removed}
@@ -1528,7 +1549,9 @@ def install_station_routes(router: StationRouter) -> None:
     @router.post("/queue/reorder")
     async def api_queue_reorder(station: StationDep, body: QueueReorderBody) -> dict[str, bool]:
         """Reorder the user-ordered queue."""
-        changed = station.bridge.queue_reorder(body.paths)
+        changed = station.bridge.queue_reorder(
+            body.paths, from_paths=body.from_paths, order=body.order
+        )
         if changed:
             station.nowplaying.refresh()
         return {"ok": changed}
