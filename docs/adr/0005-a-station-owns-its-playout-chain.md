@@ -52,9 +52,10 @@ uploaded Stereo Tool presets.
 
 - One library, index and DJ metadata cache in memory, whatever the number of stations, and one
   writer on each database.
-- Each running station costs about ten threads, two to four subprocesses and 150 to 250 MB of
-  audio buffers (see "Cost of each running station" in `docs/operations.md`). An idle station
-  still runs its mix bus, mastering and encoder; stopping it is the real saving.
+- Each running station adds its own threads, two to four subprocesses and its own audio
+  buffers. "Cost of each running station" in `docs/operations.md` estimates about ten threads
+  and 150 to 250 MB; these are estimates, so measure on the machine itself with the soak test.
+  An idle station still runs its mix bus, mastering and encoder; stopping it is the real saving.
 - Every station shares one Python interpreter lock. A heavy render on one station could make
   another station's bus late; the soak test in `tests/integration/test_multi_station.py`
   measures it.
