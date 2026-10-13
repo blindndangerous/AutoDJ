@@ -849,7 +849,22 @@ def create_app(
                     "A rotation test was still running %.2f seconds after it was cancelled",
                     _SHUTDOWN_TIMEOUT_S,
                 )
-            writers_quiesced, cache_closed = await stations.shutdown(library, _SHUTDOWN_TIMEOUT_S)
+            # So does an hour preview (#126): it ends within its own time limit,
+            # and a worker that has not stopped keeps the library open.
+            hour_previews = getattr(app.state, "hour_previews", None)
+            readers_stopped = True
+            if hour_previews is not None and not await asyncio.to_thread(
+                hour_previews.shutdown, _SHUTDOWN_TIMEOUT_S
+            ):
+                readers_stopped = False
+                logger.error(
+                    "An hour preview was still reading the library %.2f seconds after "
+                    "shutdown began; the library is left open rather than closed under it",
+                    _SHUTDOWN_TIMEOUT_S,
+                )
+            writers_quiesced, cache_closed = await stations.shutdown(
+                library, _SHUTDOWN_TIMEOUT_S, readers_stopped=readers_stopped
+            )
             from autodj.mastering import kill_leftover_processes
 
             # A player that would not stop kept its mastering process; no

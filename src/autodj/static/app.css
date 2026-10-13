@@ -668,6 +668,65 @@
     #hist-goto { width: 5rem; }
     #hist-refresh { margin-bottom: 0.75rem; }
 
+    /* ---- Now Playing, Hour preview (#126): a table like History's.
+       Predicted rows are italic and dimmer, but the Status column says
+       "Fixed" or "Predicted" in words on every row, so neither the style
+       nor the colour carries the meaning alone. ---- */
+    #hour-preview-refresh { margin: 0.25rem 0 0.75rem; }
+    #hour-preview-summary { margin-bottom: 0.75rem; }
+    #hour-preview-stopped { margin-bottom: 0.75rem; }
+    #hour-preview-backtiming h3 { font-size: 1rem; margin: 0.25rem 0 0.5rem; }
+    #hour-preview-points,
+    #hour-preview-notes {
+      margin: 0 0 1rem 1.25rem;
+    }
+    #hour-preview-points li + li,
+    #hour-preview-notes li + li { margin-top: 0.35rem; }
+    #hour-preview-table {
+      width: 100%;
+      /* As History: fixed layout keeps the table inside a narrow window. */
+      table-layout: fixed;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+      margin-bottom: 0.75rem;
+    }
+    #hour-preview-table caption {
+      text-align: left;
+      font-weight: 600;
+      padding-bottom: 0.4rem;
+    }
+    #hour-preview-table col.hp-starts { width: 24%; }
+    #hour-preview-table col.hp-what   { width: 42%; }
+    #hour-preview-table col.hp-length { width: 12%; }
+    #hour-preview-table col.hp-status { width: 22%; }
+    #hour-preview-table th,
+    #hour-preview-table td {
+      padding: 0.5rem 0.7rem;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--border);
+      overflow-wrap: anywhere;
+    }
+    #hour-preview-table thead th {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+    }
+    #hour-preview-table tbody tr:nth-child(even) { background: var(--tint); }
+    #hour-preview-table tbody tr:last-child td { border-bottom: none; }
+    #hour-preview-table td:first-child,
+    #hour-preview-table td:nth-child(3) {
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    #hour-preview-table tr.is-on-air td { font-weight: 600; }
+    #hour-preview-table tr.is-predicted td {
+      font-style: italic;
+      color: var(--text-dim);
+    }
+
     /* ---- Queue: Clear queue sits under the rows ---- */
     #queue-clear { margin-top: 0.75rem; }
 
@@ -1477,6 +1536,14 @@
       }
       #history-table td:first-child,
       #history-table td:last-child {
+        white-space: normal;
+      }
+      #hour-preview-table th,
+      #hour-preview-table td {
+        padding: 0.45rem 0.4rem;
+      }
+      #hour-preview-table td:first-child,
+      #hour-preview-table td:nth-child(3) {
         white-space: normal;
       }
 

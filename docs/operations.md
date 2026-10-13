@@ -2172,6 +2172,71 @@ How long a run takes grows with the library. On a synthetic 77,000-song library 
 categories and a seven-step clockwheel, an older four-core PC (2018) simulated a week (about 2,500
 songs) in about two minutes, and in a little over three with the DMCA limits on.
 
+## Hour preview and backtiming
+
+Now Playing > **Hour preview** lists what the station plays next, with the time each item is
+expected to start, and says how the hour lands: how early or late the song changes fall against
+the top of the hour, each clockwheel restart and each scheduled event. Choose the next 30
+minutes, hour, 2 hours or 3 hours under **Show**.
+
+Each row says in its Status column whether it is fixed or predicted:
+
+- **Fixed: on the air**: the song playing now, with the liners and breaks mixed into it.
+- **Fixed: ready to play**: what the server has already rendered, with its liners and breaks
+  (server audio and stream mode only).
+- **Fixed: picked**: the song chosen to follow, and with `[breaks] enabled = true` the song after
+  it (the open song change) and its liners.
+- **Fixed: booked break**: an announcer break booked on the open song change.
+- **Fixed: in the queue**: the request queue, which plays before any pick.
+- **Predicted**: the rest, from a dry run of the station's own picker that starts where the
+  fixed part ends, with the station's clockwheel place, play history, repeat rules, DMCA limits,
+  categories and schedule. It is the same dry run the rotation tester uses (see
+  [Testing the rotation](#testing-the-rotation)), so it never touches the air: the station's
+  random choices, clockwheel place, history and library are only read.
+
+Backtiming goes to each fixed point in the span:
+
+- **Top of the hour**: the nearer song change counts. "Lands about 35 seconds early" means the
+  song change nearest the hour comes 35 seconds before it; the sentence names the song that
+  causes it and whether that song is fixed or predicted. Liners and breaks that run straight into
+  a song start its song change.
+- **Clockwheel restart**: the station restarts the clockwheel at the nearer song change, as it
+  does on the air, so the preview says how early or late that is.
+- **Scheduled events**: a soft event waits for the song playing to end, so the preview says how
+  late it runs; a hard event runs on time and the preview says how much of the song it cuts.
+
+The first top of the hour (or clockwheel restart) is the card's summary. **Refresh preview** says
+it once; **Shift+H** says it from any tab. While the card is open and Now Playing is showing, the
+table refreshes every 30 seconds and shortly after the song changes, changing cells in place,
+saying nothing and leaving focus where it is; if those refreshes start failing, the failure is
+said once, and not again until one succeeds. Choosing another span under **Show** says the new
+summary once. If more than 24 fixed points fall in the span, the first 24 are timed and the card
+says so. Times show as "2:04:30 PM" and read as "2:04 PM and
+30 seconds"; lengths show as "3:45" and read as "3 minutes 45 seconds". Times are in the station
+time zone (`[server] station_timezone`); clockwheel restarts are worked out in the computer's own
+time zone, as the player does.
+
+The page asks the server only while the card is open. Each preview runs on one worker thread
+below normal priority, never on the web server's event loop and never on the audio threads. The
+dry run stops after 80 songs, or once it has worked about 4 seconds, and says so; the time limit
+is checked before each pick, so one slow pick can run a little past it. A preview is reused for
+45 seconds while nothing new is fixed, longer than the page's 30-second refresh, so an open card
+costs no dry run until a song changes. Several pages asking for the same station and span at once
+share one preview, at most 8 different previews wait for the worker, and one more is answered
+with 503 and "try again in a few seconds". At shutdown the server waits for the worker; if it has
+not stopped, the server logs an error and leaves the library open rather than close it under the
+preview. The same fixed part always gives the same prediction, so a refresh does not reshuffle
+the predicted songs. Every station has its own:
+`GET /api/hour-preview?minutes=60` for the default station and
+`GET /api/stations/<name>/hour-preview` for any station, each answering with JSON that holds the
+items, the fixed points with their sentences, and the summary.
+
+What it approximates, as the rotation tester does: a song runs from its saved start to its segue,
+or its length less the crossfade; liners and booked breaks add their full length; automatic
+liners, time checks and carts are left out; and a scheduled change of song picking applies from
+the first song after its time. It shows where the last songs of the hour land; it does not yet
+choose them to fit.
+
 ## Backup
 
 `autodj backup` writes one ZIP file holding:

@@ -20,7 +20,7 @@
 // Lowercase n = skip, uppercase N (Shift+N) = speak next track.
 // Shift+L speaks the current lyric line; lowercase l is unused.
 // s/S and m/M are shuffle and mute in either case, so no status key may
-// use them.  Status keys: T N R B K L E V Q J.
+// use them.  Status keys: T N R B K L E V Q J H.
 // Stations (#70): lowercase c moves focus to the station switcher while
 // the server has several stations; Shift+C says which station the page
 // controls.  With several stations the status keys about the station
@@ -149,6 +149,8 @@ export function installHotkeys({
   seekDelta, getBpm,
   getTrack, getNextTrack, getRemaining, getLyricLine,
   getPosition, getQueue, getJobStatus,
+  // Shift+H: says how the hour lands, from the hour preview (#126).
+  speakHour = null,
   isEnabled = () => true,
   shortcutToggle = null,
   // Stations (#70): focus the switcher (false when there is none), the
@@ -309,6 +311,10 @@ export function installHotkeys({
       case "C":
         if (!getStationText) return;
         srSpeak(getStationText());
+        break;
+      case "H":
+        if (speakHour) void speakHour();
+        else speakForStation("No hour preview yet.");
         break;
       case "?":
         if (!toggleShortcutsModal()) return;
