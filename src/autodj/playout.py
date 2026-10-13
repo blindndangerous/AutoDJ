@@ -95,7 +95,9 @@ def liner_release_frames(main_frames: int, intro_frames: int, overlap_start: flo
         )
     if overlap_start == 0:
         return max(0, main_frames - intro_frames)
-    return min(main_frames, _frames(overlap_start, "overlap_start"))
+    return max(
+        main_frames - intro_frames, min(main_frames, _frames(overlap_start, "overlap_start"))
+    )
 
 
 def _audio(value: np.ndarray | None, name: str, *, optional: bool = False) -> np.ndarray | None:
@@ -223,11 +225,7 @@ def render_handoff(
             )
             incoming_frame = max(segue_frame, liner_start + main_frames - incoming_intro_frames)
         else:
-            release = (
-                main_frames
-                if overlap_start is None
-                else min(main_frames, _frames(overlap_start, "overlap_start"))
-            )
+            release = liner_release_frames(main_frames, incoming_intro_frames, overlap_start)
             liner_start = max(safe_outro, segue_frame - release)
             incoming_frame = max(segue_frame, liner_start + release)
 
