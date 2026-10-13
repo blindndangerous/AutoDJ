@@ -135,7 +135,9 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   the first step name (a grid cell, not a button); Up and Down moving between names and Left,
   Right, Home and End along a row without leaving focus mode; Enter and Space pressing the focused
   cell's button; Alt+Up and Alt+Down moving the step and saying its new position once; and the
-  Delete key asking with Cancel focused first, with focus back in the list after either answer.
+  Delete key behaving like the Delete button; Delete and Undo disabled while a step is being
+  edited, with its unsaved fields preserved; Undo step change and Ctrl+Z restoring the step and
+  its focus, including after deleting the last step; and Ctrl+Z still undoing text in inputs.
 - EQ: each band's slider, its spoken value, and resetting the bands.
 - History: the History tab's table read with table navigation, its pagination, the empty state,
   and a new song added to the top of page 1 without the reading position moving or anything said.

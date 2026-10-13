@@ -2312,10 +2312,17 @@ to unfiltered music. Existing folder steps still work and open as one folder con
 one saves it in the new form. Category steps keep their saved category and selection rules.
 
 The editor lists numbered steps with their names as Edit buttons. With focus in the step list,
-Up and Down move to the previous or next step name, Enter on a name edits it, and Delete asks
-before it removes that step (Cancel has focus first, and focus returns to the list either way). Left and Right move between the actions in a row; Home and End go to its first or
-last available action, and Enter or Space presses it. Tab leaves the step list. Alt+Up and Alt+Down still reorder the focused
-step, and focus moves with it. Move up, Move down, Duplicate and Delete buttons remain available; the Delete button removes the step without asking.
+Up and Down move to the previous or next step name. Left and Right move between the actions in a
+row; Home and End go to its first or last available action. Enter or Space presses that action.
+Delete removes the step immediately, just like its Delete button. Tab leaves the step list.
+Alt+Up and Alt+Down reorder the focused step, and focus moves with it.
+
+**Undo step change** or **Ctrl+Z** restores the last step you added, edited, moved, duplicated or
+deleted. Delete and Undo are unavailable while a step is being edited; update or cancel the edit
+first. You can undo several changes in order, until you save or open another clockwheel.
+Ctrl+Z in a text field keeps the browser's usual text undo. Undo changes the working copy;
+press **Save clockwheel** to keep the result.
+
 These list keys do not replace the playback or spoken-status shortcuts. Nothing is saved until you press **Save clockwheel**; opening
 another clockwheel with unsaved changes asks first. **Restart at these minutes past each hour**
 sends the clockwheel back to step 1 at the song change nearest each minute.
