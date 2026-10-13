@@ -134,6 +134,26 @@ def _station_threads(slug: str) -> list[threading.Thread]:
     return [thread for thread in threading.enumerate() if named.match(thread.name)]
 
 
+def _running_threads(slug: str) -> list[str]:
+    """The names of *slug*'s threads once its player has started its mix bus.
+
+    The player thread starts the render-ahead worker and the bus's stop
+    watcher only after it opens its cue cache, so a count taken as soon as
+    the station starts can miss both; a slow machine (Windows CI) did.
+    """
+    started = {f"autodj-render-ahead-{slug}", f"autodj-bus-stop-{slug}"}
+    _wait_for(
+        lambda: started <= {thread.name for thread in _station_threads(slug)},
+        f"{slug}'s mix bus to start",
+    )
+    return sorted(thread.name for thread in _station_threads(slug))
+
+
+def _without_liner_workers(names: list[str]) -> list[str]:
+    # The liner worker starts with the first song, so a restart may not have it yet.
+    return [name for name in names if not name.startswith("autodj-liner-")]
+
+
 def _wait_for(predicate: Any, what: str) -> None:
     deadline = time.monotonic() + WAIT
     while not predicate():
@@ -393,13 +413,29 @@ def test_a_station_without_autostart_waits_to_be_started(rig: Any) -> None:
     _wait_for(lambda: _station_threads("nightowl"), "the station's threads")
 
 
+def test_a_restarted_station_runs_the_same_threads_each_once(rig: Any) -> None:
+    client, *_ = rig
+    running = _without_liner_workers(_running_threads("nightowl"))
+    assert len(running) == len(set(running))
+    for _ in range(3):
+        assert client.post(f"{OWL}/stop").json()["state"] == "stopped"
+        _wait_for(lambda: not _station_threads("nightowl"), "Night Owl's threads to end")
+        assert client.post(f"{OWL}/start").status_code == 200
+        assert _without_liner_workers(_running_threads("nightowl")) == running
+
+
 @pytest.mark.parametrize(
-    "rig", [{"autostart": "false", "default_processing": "stereotool"}], indirect=True
+    "rig",
+    [
+        {"autostart": "false"},
+        {"autostart": "false", "default_processing": "stereotool"},
+    ],
+    indirect=True,
 )
 def test_a_station_that_fails_half_way_through_starting_leaves_nothing_running(
     rig: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    client, *_ = rig
+    client, _library, cfg, *_ = rig
     default_master = client.app.state.stations.default.player._continuous_master
 
     def broken_recorder(*_args: Any, **_kwargs: Any) -> None:
@@ -417,7 +453,10 @@ def test_a_station_that_fails_half_way_through_starting_leaves_nothing_running(
     _wait_for(lambda: not _station_threads("nightowl"), "the station's threads to end")
     assert _stations(client)["nightowl"]["state"] == "stopped"
     assert not default_master.closed
-    assert client.app.state.stations.default.cfg.playback.loudness_processing == "stereotool"
+    assert (
+        client.app.state.stations.default.cfg.playback.loudness_processing
+        == cfg.playback.loudness_processing
+    )
     monkeypatch.setattr(autodj.recorder, "Recorder", working)
     assert client.post(f"{OWL}/start").status_code == 200
 
@@ -600,7 +639,8 @@ def test_soak_two_stations_keep_time_through_renders_and_restarts(rig: Any) -> N
     # Night Owl's threads, running; the same after every restart.  (The
     # process's whole count also has the render stand-ins and threads
     # other tests left to finish.)
-    owl_threads_at_start = len(_station_threads("nightowl"))
+    owl_running = _running_threads("nightowl")
+    owl_threads_at_start = len(owl_running)
     workers = [threading.Thread(target=render, daemon=True) for _ in range(2)]
     started = time.monotonic()
     cpu_then, wall_then = time.process_time(), started
@@ -635,6 +675,10 @@ def test_soak_two_stations_keep_time_through_renders_and_restarts(rig: Any) -> N
                 assert not old.bridge.stream._encoder.alive
                 assert old.player._continuous_master.closed
                 assert client.post(f"{OWL}/start").status_code == 200
+                # The restarted station runs the same threads, each once.
+                assert _without_liner_workers(_running_threads("nightowl")) == (
+                    _without_liner_workers(owl_running)
+                )
                 owl, owl_since = attach_owl()
                 restarts += 1
                 next_cycle = time.monotonic() + cycle
