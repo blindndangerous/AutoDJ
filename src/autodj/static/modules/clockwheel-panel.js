@@ -250,7 +250,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       if (isFolder || f === "genre" || f === "category") choices = [["is", "is"], ["is_not", "is not"]];
       else if (numeric) choices = NUMERIC_OPERATORS;
       else if (f === "beets") {
-        choices = [["is", "Is (text)"], ...TEXT_OPERATORS.slice(1), ["eq", "Equals (number)"], ...NUMERIC_OPERATORS.slice(1)];
+        choices = [["is", "Is (text)"], ["is_not", "Is not (text)"], ...TEXT_OPERATORS.slice(2), ["eq", "Equals (number)"], ...NUMERIC_OPERATORS.slice(1)];
       }
       const previousOperator = operator.value || selectedOperator;
       operator.replaceChildren(...choices.map(([v, text]) => {

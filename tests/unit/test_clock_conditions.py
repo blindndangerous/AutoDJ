@@ -26,6 +26,13 @@ def test_text_case_and_wildcards(field):
     assert not matches_condition(
         {"field": field, "operator": "matches", "value": "[]"}, {field: "a"}
     )
+    assert not matches_condition({"field": field, "operator": "is_not", "value": "Bono"}, {})
+    assert not matches_condition(
+        {"field": field, "operator": "is_not", "value": "Bono"}, {field: "Bono"}
+    )
+    assert matches_condition(
+        {"field": field, "operator": "is_not", "value": "Bono"}, {field: "Someone else"}
+    )
 
 
 def test_numeric_inclusive_boundaries_and_missing_values():
@@ -68,6 +75,12 @@ def test_beets_custom_text_and_original_year():
     )
     assert not matches_condition(
         {"field": "beets", "name": "mood", "operator": "is", "value": "happy"}, {}, None
+    )
+    assert matches_condition(
+        {"field": "beets", "name": "mood", "operator": "is_not", "value": "sad"}, {}, {"mood": "happy"}
+    )
+    assert not matches_condition(
+        {"field": "beets", "name": "mood", "operator": "is_not", "value": "sad"}, {}, {"mood": "sad"}
     )
 
 

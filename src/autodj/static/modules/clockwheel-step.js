@@ -2,7 +2,7 @@ import { stepHoursText } from "./step-hours.js";
 
 const FOLDER_TYPES = new Set(["music", "liner"]);
 export const NUMERIC_OPERATORS = [["eq", "is"], ["not_eq", "is not"], ["lt", "less than"], ["lte", "at most"], ["gt", "greater than"], ["gte", "at least"], ["between", "between"], ["outside", "outside range"]];
-export const TEXT_OPERATORS = [["is", "is"], ["contains", "contains"], ["not_contains", "does not contain"], ["matches", "matches"], ["not_matches", "does not match"]];
+export const TEXT_OPERATORS = [["is", "is"], ["is_not", "is not"], ["contains", "contains"], ["not_contains", "does not contain"], ["matches", "matches"], ["not_matches", "does not match"]];
 
 function lastPart(path) {
   const parts = String(path).split(/[\\/]/).filter(Boolean);
@@ -25,17 +25,19 @@ export function describeCondition(condition, sources = [], categories = []) {
     const source = sources.find((item) => item.id === condition.source);
     const folder = source ? condition.folder || lastPart(source.path)
       : `${condition.source || "A folder"} (no longer registered)`;
-    return `${folder}${condition.recursive ? " (with subfolders)" : ""}${condition.operator === "is_not" ? " is not" : ""}`;
+    const described = `${folder}${condition.recursive ? " (with subfolders)" : ""}`;
+    return condition.operator === "is_not" ? `folder is not ${described}` : described;
   }
   if (condition.field === "category") {
     const category = categories.find((item) => item.id === condition.category);
-    return `category ${category?.name || "that no longer exists"}${condition.operator === "is_not" ? " is not" : ""}`;
+    const described = category?.name || "that no longer exists";
+    return condition.operator === "is_not" ? `category is not ${described}` : `category ${described}`;
   }
   const field = condition.field === "beets" ? `Beets ${beetsFieldName(condition.name)}`
     : condition.field === "duration" ? "Duration (seconds)"
       : condition.field === "bpm" ? "BPM"
         : condition.field[0].toUpperCase() + condition.field.slice(1);
-  const operator = [...NUMERIC_OPERATORS, ...TEXT_OPERATORS, ["is_not", "is not"]].find(([value]) => value === condition.operator)?.[1] || condition.operator;
+  const operator = [...NUMERIC_OPERATORS, ...TEXT_OPERATORS].find(([value]) => value === condition.operator)?.[1] || condition.operator;
   return `${field} ${operator} ${condition.value}${["between", "outside"].includes(condition.operator) ? ` and ${condition.upper}` : ""}`;
 }
 

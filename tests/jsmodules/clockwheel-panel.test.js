@@ -147,6 +147,19 @@ describe("clockwheel editor", () => {
     expect(call.body.step.conditions).toEqual([{ field: "genre", operator: "is", value: "Rock" }]);
   });
 
+  it("offers exact negative text matching for library and Beets fields", async () => {
+    await open(fakeServer());
+    const row = byId("clock-step-conditions").firstElementChild;
+    const field = row.querySelector("select");
+    const operator = row.querySelectorAll("select")[2];
+    field.value = "artist";
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+    expect([...operator.options].map((option) => option.value)).toContain("is_not");
+    field.value = "beets";
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+    expect([...operator.options].map((option) => option.value)).toContain("is_not");
+  });
+
   it("names category steps and selects music categories as conditions", async () => {
     expect(describeStep({ type: "category", category: "gone", selection: "least_recent" }, [], []))
       .toBe("music from a category that no longer exists, least recently played");
@@ -1072,6 +1085,15 @@ describe("clockwheel step conditions, for screen readers", () => {
       { field: "beets", name: "rg_track_gain", operator: "lt", value: -3 },
       { field: "artist", operator: "is", value: "Björk" },
     ]))).toBe("music from Beets rg track gain less than -3 or Artist is Björk, least recently played");
+  });
+
+  it("describes exact negative text, folder and category conditions naturally", () => {
+    expect(describeStep({ ...MUSIC, conditions: [{ field: "artist", operator: "is_not", value: "Björk" }] }, SOURCES))
+      .toBe("music from Artist is not Björk, least recently played");
+    expect(describeStep({ ...MUSIC, conditions: [{ field: "folder", source: "rock", folder: "Live", operator: "is_not" }] }, SOURCES))
+      .toBe("music from folder is not Live, least recently played");
+    expect(describeStep({ ...MUSIC, conditions: [{ field: "category", category: "c1", operator: "is_not" }] }, [], [{ id: "c1", name: "Rock gold" }]))
+      .toBe("music from category is not Rock gold, least recently played");
   });
 
   it("leaves a focused genre list alone until focus leaves it", async () => {

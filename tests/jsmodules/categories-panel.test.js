@@ -150,6 +150,9 @@ describe("categories form", () => {
     byId("categories-source-filters").dispatchEvent(new Event("change"));
     const row = byId("categories-filter-conditions").firstElementChild;
     const selects = row.querySelectorAll("select");
+    selects[0].value = "beets";
+    selects[0].dispatchEvent(new Event("change"));
+    expect([...selects[2].options].map((option) => option.value)).toContain("is_not");
     selects[0].value = "bpm";
     selects[0].dispatchEvent(new Event("change"));
     selects[2].value = "not_eq";

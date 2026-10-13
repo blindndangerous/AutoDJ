@@ -86,16 +86,19 @@ def validate_metadata_condition(value: Mapping[str, Any]) -> dict[str, Any]:
         normalized["value"] = wanted.strip()
         return normalized
     if field in _TEXT or (
-        field == "beets" and op in {"is", "contains", "matches", "not_contains", "not_matches"}
+        field == "beets"
+        and op in {"is", "is_not", "contains", "matches", "not_contains", "not_matches"}
     ):
         if (
-            op not in {"is", "contains", "matches", "not_contains", "not_matches"}
+            op not in {"is", "is_not", "contains", "matches", "not_contains", "not_matches"}
             or not isinstance(wanted, str)
             or not wanted.strip()
             or len(wanted) > _MAX_VALUE
             or "upper" in value
         ):
-            raise ValueError("text fields require is, contains, or matches and a nonempty string")
+            raise ValueError(
+                "text fields require is, is not, contains, or matches and a nonempty string"
+            )
         normalized["value"] = wanted
         return normalized
     if op not in _OPS:

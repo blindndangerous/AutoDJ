@@ -244,7 +244,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
       let choices = TEXT_OPERATORS;
       if (isFolder || f === "genre") choices = [["is", "is"], ["is_not", "is not"]];
       else if (numeric) choices = NUMERIC_OPERATORS;
-      else if (f === "beets") choices = [["is", "Is (text)"], ...TEXT_OPERATORS.slice(1), ["eq", "Equals (number)"], ...NUMERIC_OPERATORS.slice(1)];
+      else if (f === "beets") choices = [["is", "Is (text)"], ["is_not", "Is not (text)"], ...TEXT_OPERATORS.slice(2), ["eq", "Equals (number)"], ...NUMERIC_OPERATORS.slice(1)];
       const previous = operator.value || selected;
       operator.replaceChildren(...choices.map(([v, text]) => { const option = doc.createElement("option"); option.value = v; option.textContent = text; return option; }));
       operator.value = choices.some(([v]) => v === previous) ? previous : choices[0][0]; selected = operator.value;
