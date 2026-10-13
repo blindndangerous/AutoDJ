@@ -6,7 +6,8 @@ that wrote it and the list of files) and these members:
 - ``index/index-manifest.json`` and the two generation files it names
   (``tracks.gN.db`` and ``vectors.gN.index``): the live index generation.
 - ``index/dj_meta.db``, ``index/library.db``, ``index/web_state.json``,
-  ``index/related-artists.toml``, ``index/schedule.json``, ``index/carts.json``,
+  ``index/related-artists.toml``, ``index/related-tracks.toml``, ``index/schedule.json``,
+  ``index/carts.json``,
   ``index/time_checks.json``, ``index/listener_bans.json``, ``index/recording.json``,
   ``index/categories.json`` and ``index/liner_dates.json`` from the active index folder.
 - ``liners/...``, ``carts/...``, ``time_checks/...``, ``profiles/...`` and
@@ -46,6 +47,7 @@ INDEX_FILES = (
     "library.db",
     "web_state.json",
     "related-artists.toml",
+    "related-tracks.toml",
     "schedule.json",
     "carts.json",
     "time_checks.json",
@@ -110,9 +112,10 @@ def _snapshot_index(active: Path, snapshot: Path) -> None:
         ):
             source.backup(target)
         _check_sqlite(snapshot / name)
-    related_artists = active / "related-artists.toml"
-    if related_artists.is_file():
-        shutil.copyfile(related_artists, snapshot / related_artists.name)
+    for name in ("related-artists.toml", "related-tracks.toml"):
+        related = active / name
+        if related.is_file():
+            shutil.copyfile(related, snapshot / name)
 
 
 def _check_sqlite(path: Path) -> None:
