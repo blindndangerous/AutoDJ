@@ -281,6 +281,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   running for", since each station counts its own, and a stopped station's says "Not on air".
   In Safari and other WebKit browsers, the status page's Pause updates button is now readable in
   the dark theme; its text had too little contrast.
+- `autodj backup` and `autodj restore` cover every station (#70). Each other station's settings,
+  schedule, carts, time checks, listener bans, recording state, liner dates, liners, cart clips,
+  time check clips, clockwheels and profiles are stored under `stations/<slug>/` in the archive,
+  and the default station's keep their names. A folder two stations share is stored once.
+  Restore puts each station's files back in its own folder, and refuses a backup holding a
+  station the configuration does not define ("add [stations.<slug>] to config.toml first")
+  before it changes anything. A shared folder restored where the configuration keeps it apart is
+  restored once, with a warning. Folders that hold one another, or a station's own folder, are
+  refused, and a station's `liners_folder` or `clips_folder` that holds its own folder is a
+  configuration error.
+- Backup and restore are safer for every installation (#70). Restore is all or nothing: every
+  file and folder it replaces is set aside first and put back if any replacement fails, so a
+  failure part way no longer leaves a mix of old and new files. It checks the archive's size
+  against a 256 GiB cap and the free space before unpacking, and refuses file names Windows
+  reserves for devices, holding `* ? " < > |` or ending in a dot or a space. Each step is
+  written to a journal first: a restore stopped by a crash is reported by `autodj doctor`, which
+  offers to roll it back (asking first and moving rather than deleting), and `autodj serve`
+  refuses to start until it is. Restore refuses while `autodj serve` holds its new lock on the
+  index folder. SQLite journal and WAL files beside a replaced database are set aside with it. Old
+  copies that cannot be deleted at the end no longer fail a finished restore. A backup copies every
+  station's state files with the index generation under the index's lock, checks the free space
+  first and skips AutoDJ's own temporary files; restored files keep their saved permissions.
+  `autodj doctor --station` runs only that station's repairs, and an index rebuild is always asked
+  for, even with `--fix`. A link that leaves its folder,
+  including a Windows junction, makes the backup fail with its name instead of copying outside
+  files (#193); a link within the folder is saved as a file. Restore refuses links in an archive
+  and destinations that a link takes elsewhere. Hard-linked files are refused because their other
+  names may be outside the backup folder.
+- `autodj doctor` checks every station (#70). Each other station gets its own lines, starting
+  "Station <slug>," (and a `station` field in `--json`): its folder, saved settings, stream,
+  relays, time checks and voice packs, DMCA mode, recording folder and liner folder.
+  `--station <slug>` checks one station (`default` for the default one) beside the server
+  checks. New for every station: `recording` (can its folder be written) and `liners` (is a
+  configured liner folder there). New server checks: `config-keys` lists the keys and tables in
+  the config files that AutoDJ ignores, including those under `[stations.<slug>]`, and
+  `station-folders` names station folders no `[stations.<slug>]` table uses any more, which are
+  never deleted and not backed up. Doctor offers to clean up a station's saved settings (with a
+  backup) and to make a station's folder, each only after asking, or with `--fix`.
 
 - Schedule events can have a date range: an optional start date and end date, both included, in
   the station time zone. Outside the range an event does not run, and Next events skips it. An
@@ -529,6 +567,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the old one, so the server and a remote worker can no longer look as if they run the same
   weights when they do not. A digest is only remembered once every weight file is more than two
   seconds old.
+- Backups refuse links to files outside a configured backup folder and linked subfolders,
+  including Windows junctions, for both default and named stations. Restore also checks
+  linked destinations before replacing any files (#193).
 
 - Several stations on one server (#70, #141):
   - Restarting audio processing releases finished process objects and their Windows handles

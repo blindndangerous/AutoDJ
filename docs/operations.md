@@ -66,7 +66,11 @@ FFmpeg is not on the PATH: advanced analysis cannot process `.mp3`, `.m4a`, `.mp
 files, and stream mode cannot start. The `categories` check warns about rotation categories with no
 songs, playlist lines that match no library track (naming the first few), and a query or playlist
 that cannot be read; its detail counts each category's songs and the songs placed by their release
-year (see [Rotation categories](#rotation-categories)).
+year (see [Rotation categories](#rotation-categories)). The `config-keys` check lists the keys and
+tables in `config.toml` and `config.local.toml` that AutoDJ ignores. The `recording` check warns
+when the recording folder cannot be written or made, and the `liners` check when a configured
+liner folder is missing. With several stations, each station is checked on its own lines (see
+[Backups and doctor](#backups-and-doctor)).
 
 ## Indexing and DJ analysis
 
@@ -1248,7 +1252,8 @@ The rules:
   stream metadata and on its pages, so it never takes the default station's "AutoDJ". Two
   stations given the same name are warned about at startup: listeners could not tell them apart.
 - **Unknown keys are warned about and ignored**, as in the root sections; the warning names the
-  station's table. `autodj doctor` offers to remove an unknown key from a station section.
+  station's table. `autodj doctor` lists them in its `config-keys` check and offers to remove an
+  unknown key from a station section, with a backup of the file.
 - **Errors name the station**, for example
   `[stations.nightowl] playback.crossfade_seconds must be between 0 and 20, got 99.0`.
 
@@ -1348,6 +1353,63 @@ other registered liner, as before. When one station's liner folder sits inside a
 example `liners/nightowl` inside the default station's `liners`), the inner folder's liners belong
 to the inner station only. This holds for automatic liners, clockwheel liner steps, the Liners
 list and the clips a cart can use.
+
+### Backups and doctor
+
+Backup refuses file links that point outside their configured backup folder and linked
+subfolders (including Windows junctions). This prevents unrelated files from entering an
+archive through a link. File links to another file inside the same folder are saved as
+ordinary files. Hard-linked files are refused because their other names may be outside the
+backup folder; use an independent copy instead. Uploaded Stereo Tool preset links are still excluded. Configure a folder
+directly if it is an intended backup source. Restore refuses linked archive entries and
+destinations that point outside their configured folder.
+
+`autodj backup` includes every configured station. The default station's files keep their names
+in the archive; another station's are under `stations/<slug>/`, for example
+`stations/nightowl/index/web_state.json` and `stations/nightowl/liners/...`. A folder two
+stations share, such as one liner folder for both, is stored once, under the default station's
+name, and the archive notes that it was shared. If you restore it with a configuration that gives
+that station a folder of its own, the folder is restored to the default station's place only, and
+restore prints a warning naming both folders: copy the files across yourself if the station
+should have them. Folders that hold one another (one station's liner folder inside another's, or
+a folder that holds a station's own folder) are refused, because restoring one would replace the
+other; give each station folders side by side. Take a new backup after adding a station, and
+check that its `stations/<slug>/` files are in it:
+
+```bash
+uv run autodj backup backups/after-nightowl.zip
+unzip -l backups/after-nightowl.zip | grep stations/nightowl
+```
+
+Restore puts each station's files back in that station's folder. A backup that holds a station
+your configuration does not define is refused before anything changes: add its
+`[stations.<slug>]` tables to `config.toml` first (copy them from the old machine's
+configuration), then restore again. Removing a station from the configuration does not delete
+its folder; doctor names such a folder, and backups leave it out.
+
+`autodj doctor` checks the server once and every station separately. The default station's
+lines look as before; another station's start with its slug:
+
+```text
+[PASS] Station nightowl, station-folder: /srv/autodj/index/default/stations/nightowl
+[PASS] Station nightowl, saved-settings: saved settings valid
+[PASS] Station nightowl, stream: stream mode on at 192 kbps
+[WARN] Station nightowl, relay-main: Icecast at radio.example.net:8000/owl: cannot reach the server
+```
+
+Each station is checked for its folder (can it be written), its saved settings, its stream
+(ffmpeg), its relays (from its own `relay-status.json`), its time checks and voice packs, DMCA
+mode, its recording folder and its liner folder. `autodj doctor --station nightowl` checks only
+that station beside the server; `--station default` checks only the default station. In
+`--json`, a station's checks carry `"station": "nightowl"`.
+
+Doctor changes nothing unless you agree. In a terminal it offers to make a missing station
+folder (a station also makes it when it first starts) and to clean up a station's saved settings
+the same way as the default station's, saving a backup beside the file first. `--fix` agrees to
+each; `--no-fix` and `--json` only report. A configuration with a reserved or badly formed
+station name, two stations sharing a recording folder or relay target, or a station's webhooks in
+`config.toml` does not load at all, so doctor reports it as a configuration failure and names the
+problem.
 
 ### Stereo Tool: one station at a time
 
@@ -2481,7 +2543,10 @@ choose them to fit.
 - `categories.json`, the rotation categories. Their playlist files are not included; the script
   that writes them can write them again.
 - `liner_dates.json`, the voice liners' play dates.
-- `manifest.json`, which records the AutoDJ version that made the archive and lists its files.
+- Every other station's state files and folders, under `stations/<slug>/` (see
+  [Backups and doctor](#backups-and-doctor)).
+- `manifest.json`, which records the AutoDJ version that made the archive, lists its files and
+  names the stations it holds.
 
 Backups do not include `config.toml` or `config.local.toml`. Copy those yourself
 and keep them with the archive. Backups also leave out the pairing secret and the paired browsers, so
@@ -2512,8 +2577,12 @@ For an archive made by 0.19, restore it with 0.19 first, then upgrade and conver
 needed. Version 0.20 can open an existing schema-4 index directly; the application version bump
 does not change that index format. Make a new backup after upgrading to include the station catalog.
 
-Stop AutoDJ, and any `autodj index` or `autodj analyse` run, before you restore. Restore cannot
-tell whether AutoDJ is running, and a running AutoDJ would keep using the files it replaces.
+Stop AutoDJ, and any `autodj index` or `autodj analyse` run, before you restore: a running AutoDJ
+would keep using the files a restore replaces. `autodj serve` holds a lock file,
+`.autodj-serve.lock`, in the index folder it serves for as long as it runs, and restore refuses
+while it is held ("AutoDJ is serving ...; stop it before restoring"). The operating system drops
+the lock when the server ends, however it ends. Restore cannot see an `autodj index` or
+`autodj analyse` run, so stop those yourself.
 
 ```bash
 # Linux/WSL2 Bash
@@ -2534,7 +2603,18 @@ Restore only accepts an archive made by the same major and minor version of Auto
 backup restores on any 0.19.x release and on no other. To roll back to an earlier release, check
 out that release's tag as in the [upgrade checklist](#upgrade-checklist), then restore a backup made
 by that release. Restore also refuses an archive whose file names are absolute or contain `..`,
-files the manifest does not list, and an index made by an older AutoDJ.
+files the manifest does not list, and an index made by an older AutoDJ. It also refuses file
+names Windows cannot hold, such as `CON`, `nul.mp3` or `COM1`, or a name ending in a dot or a
+space.
+
+Backup refuses a link that leaves its folder: a file link pointing outside the liner, cart or
+other folder it sits in, a state file that is a link to somewhere else, and any linked subfolder
+(a symbolic link or a Windows junction). This keeps unrelated files out of an archive. A file
+link to another file in the same folder is saved as an ordinary file. Uploaded Stereo Tool
+preset links are still left out. Configure a folder directly if it is meant to be backed up.
+Hard-linked files are refused because another name may be outside the backup folder.
+Restore refuses links stored in an archive and destinations that a link takes outside their
+folder.
 
 Without `--force`, restore refuses when anything it would replace already exists. With it:
 
@@ -2542,10 +2622,29 @@ Without `--force`, restore refuses when anything it would replace already exists
 - `dj_meta.db` and `web_state.json` are replaced when the archive has them.
 - The liners folder and `index/profiles` are replaced whole: files that are not in the backup are
   deleted. Parts the archive does not hold are left alone.
+- Each station's files and folders go back to that station's folder; a station the archive does
+  not hold is left alone. A station the configuration does not define is refused, and nothing is
+  restored.
 
-Restore unpacks every file into a temporary folder beside its destination and checks the index
-before it replaces anything, so a damaged archive changes nothing. If the replacement itself is
-interrupted, run the same restore again. Restore then runs `autodj doctor` and says so if doctor
+Restore first checks that the archive fits: it refuses one that unpacks to more than 256 GiB,
+or to more than the free space beside its destinations. It unpacks every file into a temporary
+folder beside its destination and checks the index before it replaces anything, so a damaged
+archive changes nothing. It then sets every file and folder it replaces aside under a hidden name
+(`.<name>.old-<id>`), together with any SQLite journal or WAL files beside a database, puts the
+new ones in, and deletes what it set aside only once all are in. If any replacement fails,
+everything is put back as it was and restore says nothing was changed. If an old copy cannot be
+deleted at the end, the restore still succeeds and names the copy; `autodj doctor` can move it out
+of the way.
+
+Each step is written first to a journal, `.autodj-restore.json` in the index folder, which is
+deleted when the restore finishes. If AutoDJ, the machine or the power stops part way, the
+journal is left behind: `autodj serve` refuses to start while a restore is half done, restore
+refuses to start another, and `autodj doctor` reports it and, in a terminal, offers to roll it
+back, putting every old file back where it was. A restore that stopped after every new file was
+in place only has old copies left, and doctor offers to move them away. Doctor also reports
+hidden `.old-` and `.restore-` copies no journal names. It always asks first, even with `--fix`,
+and it deletes nothing: whatever it moves goes into `restore-leftovers-<time>` in the index
+folder, for you to delete when AutoDJ looks right. Restore then runs `autodj doctor` and says so if doctor
 finds a required failure; do not serve until doctor passes. Use the same configuration for backup,
 restore, and doctor that the previous `serve` process used. Keep the archive until playback,
 profiles and liners look right.

@@ -2013,6 +2013,27 @@ def unknown_config_keys(raw: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
     return unknown
 
 
+def unknown_config_sections(raw: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return the tables AutoDJ ignores, by dotted name, root and station.
+
+    A root table that is no section (``"radio"``) and a station's table that
+    is no station section (``"stations.nightowl.server"``) are listed;
+    loading warns about the same ones.
+    """
+    known = {t.SECTION for t in _SECTION_TYPES} | {"presets", "webhooks", "stations"}
+    unknown = [name for name in raw if name not in known]
+    stations = raw.get("stations")
+    if isinstance(stations, Mapping):
+        for slug, table in stations.items():
+            if isinstance(table, Mapping):
+                unknown += [
+                    f"stations.{slug}.{name}"
+                    for name, value in table.items()
+                    if name not in _STATION_KEYS and isinstance(value, Mapping)
+                ]
+    return tuple(sorted(unknown))
+
+
 def _unknown_section_keys(
     raw: Mapping[str, Any], section_types: Iterable[type[_Section]], prefix: str
 ) -> dict[str, tuple[str, ...]]:
@@ -2215,6 +2236,8 @@ def _check_station_conflicts(root: AutoDJConfig, specs: Iterable[StationSpec]) -
                 f"{cfg.recording.folder}; give each station its own recording.folder"
             )
         folders[folder] = slug
+        if slug != "default":
+            _check_own_folder(slug, cfg)
         for relay in cfg.stream.relays.values():
             target = _relay_target(relay)
             other = targets.get(target)
@@ -2224,6 +2247,30 @@ def _check_station_conflicts(root: AutoDJConfig, specs: Iterable[StationSpec]) -
                     f"{relay.mount or ''}; each station needs its own relay target"
                 )
             targets[target] = slug
+
+
+def _check_own_folder(slug: str, cfg: AutoDJConfig) -> None:
+    """Refuse a station folder setting that holds the station's own state folder.
+
+    Restoring that folder would replace the station's settings, schedule and
+    carts with it, and its files would be backed up twice.
+
+    Raises:
+        ValueError: Naming the setting and the folders.
+    """
+    state = os.path.normcase(os.path.abspath(Path(cfg.index.active_dir) / "stations" / slug))
+    for setting, value in (
+        ("playback.liners_folder", cfg.playback.liners_folder),
+        ("time_checks.clips_folder", cfg.time_checks.clips_folder),
+    ):
+        if not value:
+            continue
+        folder = os.path.normcase(os.path.abspath(value))
+        if state == folder or state.startswith(folder.rstrip(os.sep) + os.sep):
+            raise ValueError(
+                f"[stations.{slug}] {setting} {value} holds the station's own folder {state}; "
+                "choose a folder beside it"
+            )
 
 
 def _relay_target(relay: RelayConfig) -> tuple[object, ...]:
