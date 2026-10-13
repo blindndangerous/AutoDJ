@@ -205,6 +205,11 @@ def test_the_player_page_has_labelled_native_controls_and_one_song_region() -> N
     assert volume["id"] == "player-volume"
     assert '<label for="player-volume">Volume</label>' in html
     assert volume["aria-valuetext"] == "100%"
+    # Shown instead of the slider where the browser fixes the volume (iOS).
+    assert (
+        '<p id="player-volume-note" hidden>The volume follows your device\'s own volume '
+        "control.</p>"
+    ) in html
     live = [attrs for _tag, attrs in outline.tags if "aria-live" in attrs]
     assert [attrs["id"] for attrs in live] == ["status-now"]
     assert [attrs.get("id") for _t, attrs in outline.tags if attrs.get("role") == "status"] == [

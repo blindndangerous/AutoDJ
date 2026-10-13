@@ -609,6 +609,52 @@ def peer_address(scope: Scope) -> str:
     return "<unknown>"
 
 
+#: What every response says about frames unless it chose for itself.
+NO_FRAMES = "frame-ancestors 'none'"
+
+
+def frame_guard(send: Send) -> Send:
+    """Wrap *send* so no response can be shown in another page's frame (clickjacking).
+
+    A response without a Content-Security-Policy gets ``frame-ancestors
+    'none'``; one with a policy that does not mention frames has it added.
+    Either way, and for a policy that already says ``frame-ancestors
+    'none'``, ``X-Frame-Options: DENY`` is added for older browsers.  Only a
+    response whose own policy lets some site frame it (the embeddable
+    player) is left as it is.
+    """
+
+    async def guarded(message: Message) -> None:
+        if message["type"] == "http.response.start":
+            headers = list(message.get("headers", []))
+            index = next(
+                (
+                    i
+                    for i, (key, _value) in enumerate(headers)
+                    if key.lower() == b"content-security-policy"
+                ),
+                None,
+            )
+            framed = False
+            if index is None:
+                headers.append((b"content-security-policy", NO_FRAMES.encode("ascii")))
+            else:
+                policy = headers[index][1].decode("latin-1")
+                if "frame-ancestors" not in policy:
+                    headers[index] = (
+                        b"content-security-policy",
+                        f"{policy}; {NO_FRAMES}".encode("latin-1"),
+                    )
+                else:
+                    framed = NO_FRAMES not in policy
+            if not framed and not any(key.lower() == b"x-frame-options" for key, _ in headers):
+                headers.append((b"x-frame-options", b"DENY"))
+            message["headers"] = headers
+        await send(message)
+
+    return guarded
+
+
 class SecurityMiddleware:
     """Enforce HTTP request policy before any downstream body consumer."""
 
@@ -712,6 +758,7 @@ class SecurityMiddleware:
             await self.app(scope, receive, send)
             return
 
+        send = frame_guard(send)
         request_id = new_request_id()
         state = scope.setdefault("state", {})
         state["request_id"] = request_id

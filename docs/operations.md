@@ -678,8 +678,13 @@ stream could not be played. Stop closes the connection, so a stopped page does n
 slot, and Play joins the live stream again. The volume is remembered in that browser. The song
 line is the only part a screen reader hears on its own, once per song, as on the status page;
 **Pause updates** stops the page following the station. Without JavaScript the browser's own audio
-controls play the stream instead. The page uses the system's light or dark colours, or the Theme
-chosen in the web UI in that browser, and cannot be shown inside another site's frame.
+controls play the stream instead. If the stream stalls while playing, the line says
+"Buffering." once and "Playing." when the sound is back; if nothing has started 15 seconds after
+Play, it stops and says the stream could not be played. Where the browser does not let a page set
+the volume (Safari on iPhone and iPad), the slider is replaced by a note that the device's own
+volume applies. The page uses the system's light or dark colours, or the Theme chosen in the web
+UI in that browser, and cannot be shown inside another site's frame. Like the rest of AutoDJ, both
+pages are in English (`lang="en"`); there is no language setting.
 
 **The embeddable player** (`/embed`) has the station's name, the song playing, Play, Volume,
 Pause updates and, when the player page is on, a link that opens it in a new tab. Put it on a web

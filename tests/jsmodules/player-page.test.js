@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  BUFFERING_TEXT,
   CONNECTING_TEXT,
   ENDED_TEXT,
   PLAYING_TEXT,
   PLAY_FAILED_TEXT,
+  START_TIMEOUT_MS,
   STOPPED_TEXT,
   VOLUME_KEY,
   historyRenderer,
@@ -24,9 +26,12 @@ function mount(page = "player") {
     <audio id="player-audio" controls preload="none" src="/stations/nightowl.mp3"></audio>
     <div id="player-controls" class="player-controls" hidden>
       <button type="button" id="player-toggle">Play</button>
+      <div id="player-volume-group">
       <label for="player-volume">Volume</label>
       <input type="range" id="player-volume" min="0" max="100" step="5" value="100" aria-valuetext="100%">
       <span id="player-volume-value" aria-hidden="true">100%</span>
+      </div>
+      <p id="player-volume-note" hidden>The volume follows your device's own volume control.</p>
     </div>
     <p id="player-state" role="status"></p>
     <p id="status-now" aria-live="polite" aria-atomic="true">Song by Artist.</p>
@@ -226,6 +231,63 @@ describe("player controls", () => {
     startPlayer({ doc: document, storage: memoryStorage({ [VOLUME_KEY]: "250" }) });
     expect(byId("player-volume").value).toBe("100");
     expect(byId("player-volume").getAttribute("aria-valuetext")).toBe("100%");
+  });
+
+  it("gives up when nothing has started 15 seconds after Play", () => {
+    const timers = [];
+    player = startPlayer({
+      doc: document,
+      storage,
+      setTimer: (callback, ms) => { timers.push({ callback, ms }); return timers.length; },
+      clearTimer: vi.fn(),
+    });
+    byId("player-toggle").click();
+    expect(timers.at(-1).ms).toBe(START_TIMEOUT_MS);
+    timers.at(-1).callback();
+    expect(byId("player-state").textContent).toBe(PLAY_FAILED_TEXT);
+    expect(byId("player-toggle").textContent).toBe("Play");
+    expect(audio.hasAttribute("src")).toBe(false);
+    // Once sound has started, the timer changes nothing.
+    byId("player-toggle").click();
+    audio.dispatchEvent(new Event("playing"));
+    timers.at(-1).callback();
+    expect(byId("player-state").textContent).toBe(PLAYING_TEXT);
+    expect(player.playing).toBe(true);
+  });
+
+  it("says Buffering once during a stall, and Playing when the sound is back", () => {
+    start();
+    byId("player-toggle").click();
+    // Before any sound, a wait is still connecting.
+    audio.dispatchEvent(new Event("waiting"));
+    expect(byId("player-state").textContent).toBe(CONNECTING_TEXT);
+    audio.dispatchEvent(new Event("playing"));
+    const write = vi.spyOn(byId("player-state"), "textContent", "set");
+    audio.dispatchEvent(new Event("waiting"));
+    audio.dispatchEvent(new Event("stalled"));
+    audio.dispatchEvent(new Event("waiting"));
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(byId("player-state").textContent).toBe(BUFFERING_TEXT);
+    audio.dispatchEvent(new Event("playing"));
+    expect(byId("player-state").textContent).toBe(PLAYING_TEXT);
+    // After Stop, a late stall says nothing.
+    byId("player-toggle").click();
+    audio.dispatchEvent(new Event("stalled"));
+    expect(byId("player-state").textContent).toBe(STOPPED_TEXT);
+  });
+
+  it("hides the slider where the browser fixes the volume, and says why", () => {
+    Object.defineProperty(audio, "volume", { configurable: true, get: () => 1, set: () => {} });
+    start();
+    expect(byId("player-volume-group").hidden).toBe(true);
+    expect(byId("player-volume-note").hidden).toBe(false);
+    expect(byId("player-volume-note").textContent).toContain("device's own volume");
+  });
+
+  it("keeps the slider where the volume can be set", () => {
+    start();
+    expect(byId("player-volume-group").hidden).toBe(false);
+    expect(byId("player-volume-note").hidden).toBe(true);
   });
 
   it("adds no live region of its own", () => {

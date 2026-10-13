@@ -14,6 +14,9 @@ Play button and Volume slider, and ``/modules/status-page.js`` keeps the
 song current from the station's public feed.  Nothing plays until the
 listener presses Play.  The pages carry only what the public feed already
 shows: no file paths, credentials or internal addresses.
+
+The pages are in English, like the rest of AutoDJ (``lang="en"``); there
+is no station or server language setting to take another from.
 """
 
 from __future__ import annotations
@@ -121,11 +124,12 @@ def _listen(name: str, addresses: PageAddresses, *, links: bool) -> str:
     return f"""<audio id="player-audio" controls preload="none" src="{stream}"></audio>
 <div id="player-controls" class="player-controls" hidden>
 <button type="button" id="player-toggle">Play</button>
-<div class="player-volume">
+<div class="player-volume" id="player-volume-group">
 <label for="player-volume">Volume</label>
 <input type="range" id="player-volume" min="0" max="100" step="5" value="100" aria-valuetext="100%">
 <span id="player-volume-value" aria-hidden="true">100%</span>
 </div>
+<p id="player-volume-note" hidden>The volume follows your device's own volume control.</p>
 </div>
 <p id="player-state" role="status"></p>
 {more}"""

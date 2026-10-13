@@ -15,6 +15,11 @@
 //     and Play joins the live stream again rather than resuming old audio.
 //   - The Volume slider is a native range input with a visible label; its
 //     value is read as a percentage and remembered in this browser only.
+//     Where the browser will not let a page set the volume (iOS), the
+//     slider is hidden and a note says the device's own volume applies.
+//   - A stall while playing says "Buffering." once, and "Playing." again
+//     when the sound is back; a stream that has not started 15 seconds
+//     after Play stops and says it could not be played.
 //   - The song line is the only other live region (status-page.js rewrites
 //     it only when the song changes); the recent songs list is plain text.
 //   - Focus never moves.
@@ -27,6 +32,9 @@ export const STOPPED_TEXT = "Stopped.";
 export const PLAY_FAILED_TEXT =
   "The stream could not be played. The station may be off air or full. Try again later.";
 export const ENDED_TEXT = "The stream ended. Press Play to listen again.";
+export const BUFFERING_TEXT = "Buffering.";
+// Play gives up when nothing has started this long after it was pressed.
+export const START_TIMEOUT_MS = 15000;
 export const VOLUME_KEY = "autodj.player.volume";
 const HISTORY_EMPTY_TEXT = "No songs have finished playing yet.";
 
@@ -65,13 +73,36 @@ function defaultStorage() {
   }
 }
 
-export function startPlayer({ doc = document, storage = defaultStorage() } = {}) {
+// Whether this browser lets a page change an element's volume: iOS keeps
+// it at 1 whatever is set.
+function volumeSettable(audio) {
+  const before = audio.volume;
+  try {
+    audio.volume = before === 0.5 ? 0.25 : 0.5;
+  } catch {
+    return false;
+  }
+  const settable = audio.volume !== before;
+  try {
+    audio.volume = before;
+  } catch { /* unchanged */ }
+  return settable;
+}
+
+export function startPlayer({
+  doc = document,
+  storage = defaultStorage(),
+  setTimer = (callback, ms) => setTimeout(callback, ms),
+  clearTimer = (id) => clearTimeout(id),
+} = {}) {
   const audio = doc.getElementById("player-audio");
   const controls = doc.getElementById("player-controls");
   const toggle = doc.getElementById("player-toggle");
   const volume = doc.getElementById("player-volume");
   const volumeValue = doc.getElementById("player-volume-value");
   const state = doc.getElementById("player-state");
+  const volumeGroup = doc.getElementById("player-volume-group");
+  const volumeNote = doc.getElementById("player-volume-note");
   const src = streamUrl(doc);
   if (!audio || !controls || !toggle || !src) return null;
 
@@ -82,8 +113,16 @@ export function startPlayer({ doc = document, storage = defaultStorage() } = {})
   audio.removeAttribute("src");
   audio.load();
   controls.hidden = false;
-  // Whether the listener has asked to listen.
+  // Whether the listener has asked to listen, and whether sound has
+  // started since.
   let wanted = false;
+  let started = false;
+  let startTimer = null;
+
+  function clearStartTimer() {
+    if (startTimer !== null) clearTimer(startTimer);
+    startTimer = null;
+  }
 
   function say(text) {
     if (state && state.textContent !== text) state.textContent = text;
@@ -102,6 +141,8 @@ export function startPlayer({ doc = document, storage = defaultStorage() } = {})
 
   function stop(message) {
     wanted = false;
+    started = false;
+    clearStartTimer();
     release();
     setToggle("Play");
     say(message);
@@ -112,14 +153,19 @@ export function startPlayer({ doc = document, storage = defaultStorage() } = {})
     setToggle("Stop");
     say(CONNECTING_TEXT);
     audio.src = src;
-    let started;
+    clearStartTimer();
+    startTimer = setTimer(() => {
+      startTimer = null;
+      if (wanted && !started) stop(PLAY_FAILED_TEXT);
+    }, START_TIMEOUT_MS);
+    let playing;
     try {
-      started = audio.play();
+      playing = audio.play();
     } catch {
       stop(PLAY_FAILED_TEXT);
       return;
     }
-    started?.catch?.((error) => {
+    playing?.catch?.((error) => {
       // Stop pressed before it started: nothing to report.
       if (!wanted || error?.name === "AbortError") return;
       stop(PLAY_FAILED_TEXT);
@@ -138,7 +184,13 @@ export function startPlayer({ doc = document, storage = defaultStorage() } = {})
     return level;
   }
 
-  applyVolume(storedVolume(storage));
+  if (volume && !volumeSettable(audio)) {
+    // The slider would do nothing: say so instead of offering it.
+    if (volumeGroup) volumeGroup.hidden = true;
+    if (volumeNote) volumeNote.hidden = false;
+  } else {
+    applyVolume(storedVolume(storage));
+  }
   volume?.addEventListener("input", () => {
     const level = applyVolume(volume.value);
     try {
@@ -151,8 +203,17 @@ export function startPlayer({ doc = document, storage = defaultStorage() } = {})
     else play();
   });
   audio.addEventListener("playing", () => {
-    if (wanted) say(PLAYING_TEXT);
+    if (!wanted) return;
+    started = true;
+    clearStartTimer();
+    say(PLAYING_TEXT);
   });
+  // A stall once sound has started; before that it is still connecting.
+  for (const name of ["waiting", "stalled"]) {
+    audio.addEventListener(name, () => {
+      if (wanted && started) say(BUFFERING_TEXT);
+    });
+  }
   audio.addEventListener("error", () => {
     if (wanted) stop(PLAY_FAILED_TEXT);
   });

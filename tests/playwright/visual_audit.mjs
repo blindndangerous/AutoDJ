@@ -65,7 +65,8 @@
 //   - the player pages, where the server has them turned on: /player and
 //     /embed, and each listed station's /stations/<slug>/player and
 //     /embed: the same checks, plus every control's boundary 3:1
-//     (1.4.11).  The embed follows the system theme, not the web UI's
+//     (1.4.11).  Every public page must also not scroll sideways at
+//     320 px with 200 % text.  The embed follows the system theme, not the web UI's
 //     stored choice, and ?theme=light or ?theme=dark pins it.  Once per
 //     page: nothing plays or loads on its own, the browser's own audio
 //     controls are swapped for a Play button and a labelled Volume slider
@@ -1325,6 +1326,8 @@ async function auditStatusPages(browser, out) {
   for (const [label, viewport, fontSize] of [
     ["reflow 320", { width: 320, height: 640 }, ""],
     ["text 200%", { width: 1280, height: 800 }, "200%"],
+    // Both at once, as on a phone with large text.
+    ["reflow 320 text 200%", { width: 320, height: 640 }, "200%"],
   ]) {
     const context = await browser.newContext({ viewport, reducedMotion: "reduce",
       colorScheme: "light", bypassCSP: true });

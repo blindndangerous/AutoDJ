@@ -87,6 +87,12 @@ half-copied or mismatched pair is refused and the previous certificate keeps bei
 
 ## Web request policy
 
+No response can be framed by another page (clickjacking): `SecurityMiddleware` adds
+`frame-ancestors 'none'` to every response's Content-Security-Policy (a response without a policy
+gets one with only that directive) and `X-Frame-Options: DENY`, including its own rejections and
+404s. Only a response whose own policy names other frame ancestors keeps it unchanged: today that
+is the embeddable player alone (see "Radio stream listening").
+
 Default loopback mode is anonymous. For a non-loopback bind, startup validation requires a token or
 explicit insecure-LAN acknowledgement. Wildcard binds also require nonempty exact allowed-host and
 allowed-origin lists.
@@ -467,7 +473,7 @@ operator- or file-controlled text), sends `Content-Security-Policy: default-src 
 script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'`,
 `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`, and loads only
 `/modules/status-page.js` and `/modules/status-page.css`, which were already public with the
-rest of `/modules/`. It has no forms or controls, so framing it elsewhere gains nothing.
+rest of `/modules/`. Like every response, it cannot be framed by another site.
 
 Every station has the same two public surfaces under its own name:
 `GET|HEAD /api/stations/<slug>/nowplaying` and `GET|HEAD /stations/<slug>/status`. The default
