@@ -1289,7 +1289,7 @@ class TestRenderTrackFeatures:
         with patch.object(
             player,
             "_load_playout_audio",
-            side_effect=[current_audio, short_audio],
+            side_effect=lambda entry: current_audio if entry.path == current.path else short_audio,
         ):
             rendered = player._render_track(current, following, 0)
         assert rendered is not None
@@ -1309,7 +1309,7 @@ class TestRenderTrackFeatures:
         with patch.object(
             player,
             "_load_playout_audio",
-            side_effect=[current_audio, short_audio],
+            side_effect=lambda entry: current_audio if entry.path == current.path else short_audio,
         ):
             rendered = player._render_track(current, following, 0)
         assert rendered is not None
