@@ -1885,7 +1885,7 @@ describe("static accessibility contracts", () => {
     expect(fieldset.previousElementSibling.textContent).toBe("Stream");
     expect(document.querySelector("#stab-stream").hidden).toBe(true);
     expect([...fieldset.querySelectorAll("h4")].map((heading) => heading.textContent.trim()))
-      .toEqual(["Listeners", "Bans", "Listener statistics"]);
+      .toEqual(["Relays", "Listeners", "Bans", "Listener statistics"]);
 
     const name = document.querySelector("#stream-station-name");
     expect(name.getAttribute("type")).toBe("text");

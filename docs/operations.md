@@ -1147,7 +1147,24 @@ connections. Relays run in stream mode only. Supported servers:
 - Shoutcast 1 (DNAS 1.9).
 - Shoutcast 2 (DNAS 2), through its Shoutcast 1 source login with a stream ID.
 
-Describe each server as a named table in `config.toml`:
+In **Settings > Stream**, add or edit relays, enable or disable them, and check their
+connection status. Set the station name, genre, description and website there too; relays
+inherit this metadata. Saving metadata reconnects enabled relays, but leaves direct stream
+listeners connected. Changing one relay reconnects that relay only.
+
+Until the first web relay save, the list comes from `config.toml`. After that, the complete
+list is stored in the station's `relays.json`, including an empty list if every relay is
+removed; saved definitions and passwords then take precedence over TOML. A blank password
+keeps the saved one only when editing the same relay destination (host, port and type).
+Environment passwords take precedence over both files and cannot be edited in the web form.
+`relays.json` contains credentials and is deliberately excluded from AutoDJ backups; keep a
+separate private copy if needed. Unreadable saved relay settings leave relays off and block
+web saves until the file is repaired. On POSIX systems the file is written with mode 0600.
+On Windows, Python's `chmod(0o600)` sets the read-only attribute; access is governed by the
+directory's inherited Windows ACL, which administrators must restrict to trusted users.
+Station metadata is saved with the other web settings in `web_state.json`.
+
+For initial configuration, describe each server as a named table in `config.toml`:
 
 ```toml
 [stream.relays.main]
@@ -1496,7 +1513,9 @@ destinations that point outside their configured folder.
 
 `autodj backup` includes every configured station. The default station's files keep their names
 in the archive; another station's are under `stations/<slug>/`, for example
-`stations/nightowl/index/web_state.json` and `stations/nightowl/liners/...`. A folder two
+`stations/nightowl/index/web_state.json`, `stations/nightowl/index/relays.json` and
+`stations/nightowl/liners/...`. Relay settings include source passwords. Backups are plain ZIP
+files without encryption, so store them with the same care as those credentials. A folder two
 stations share, such as one liner folder for both, is stored once, under the default station's
 name, and the archive notes that it was shared. If you restore it with a configuration that gives
 that station a folder of its own, the folder is restored to the default station's place only, and

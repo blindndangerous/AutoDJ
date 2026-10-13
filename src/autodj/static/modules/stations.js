@@ -54,6 +54,8 @@ export const STATION_ROUTES = Object.freeze([
   "/stream/stats",
   "/stream/stats/export",
   "/stream/settings",
+  "/stream/relays",
+  "/stream/relays/{name}",
   "/recording",
   "/recording/start",
   "/recording/stop",

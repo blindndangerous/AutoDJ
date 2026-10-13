@@ -60,6 +60,9 @@ _OWN_ROUTE_PLAYBACK_FIELDS = frozenset(
         "stream_bitrate",
         "stream_continuous",
         "stream_station_name",
+        "stream_genre",
+        "stream_description",
+        "stream_url",
         "nowplaying_show_next",
         "stream_max_listeners_per_address",
         "stream_aac_bitrate",
@@ -233,6 +236,15 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
         )
         if name is not _INVALID and name is not None:
             player._cfg.stream.station_name = name
+    for field, key in (
+        ("genre", "stream_genre"),
+        ("description", "stream_description"),
+        ("url", "stream_url"),
+    ):
+        if key in playback:
+            value = _checked(StreamSettingsBody, field, playback[key], key)
+            if value is not _INVALID and value is not None:
+                setattr(player._cfg.stream, field, value)
     if "nowplaying_show_next" in playback:
         show_next = _checked(
             StreamSettingsBody,

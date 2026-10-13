@@ -40,6 +40,7 @@ import { installCartWall } from "./modules/cart-wall.js";
 import { installVoiceTracker } from "./modules/voice-tracker.js";
 import { createStreamMode, createStreamSettings } from "./modules/stream-mode.js";
 import { createRecordingControls } from "./modules/recording-controls.js";
+import { installRelaySettings } from "./modules/relay-settings.js";
 import { installNowPlayingSettings } from "./modules/nowplaying-settings.js";
 import { createListenerControls } from "./modules/listener-controls.js";
 import { installStreamFormats } from "./modules/stream-formats.js";
@@ -185,6 +186,16 @@ const streamMode = createStreamMode({
   // The stream never starts before it has the page's volume and mute.
   beforePlay: () => applyPageLevel(),
 });
+const relaySettings = installRelaySettings({
+  doc: document,
+  request: requestJson,
+  post: (url, body, control, options) => postSettings(url, body, control, options),
+  remove: async (url) => {
+    try { await requestJson(url, { method: "DELETE" }); return true; }
+    catch (err) { announceStatus(settingsStatus, `Could not remove relay: ${err.message}`, { tone: "error", force: true }); return false; }
+  },
+  announce: (message, error = false) => announceStatus(settingsStatus, message, { tone: error ? "error" : "success", force: true }),
+});
 // Whether the listener has started playback with Play or Pause (or its
 // hotkey), or pressed Listen here, on this page since signing in.  A page
 // plays only after that: server pushes never start a deck
@@ -225,7 +236,11 @@ const streamSettings = createStreamSettings({
     postSettings("/api/stream/settings", { continuous: value }, control),
   saveStationName: (value, control) =>
     postSettings("/api/stream/settings", { station_name: value }, control),
-  setAvailable: (available) => settingsTabs.setTabHidden("stream", !available),
+  setAvailable: (available) => {
+    settingsTabs.setTabHidden("stream", !available);
+    relaySettings.setAvailable(available);
+  },
+  onRelays: (relays) => relaySettings.applyStatuses(relays),
   focusAway: () => settingsTabs.focusSelected(),
   srStatus: document.getElementById("sr-status"),
   settingsStatus,
@@ -307,6 +322,7 @@ function clearStationViews() {
   _seekController?.cancel();
   streamSettings.reset();
   streamFormats.reset();
+  relaySettings.reset();
   recordingControls.reset();
   nowPlayingSettings?.reset();
   listenerControls.reset();

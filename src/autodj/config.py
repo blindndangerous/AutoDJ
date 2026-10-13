@@ -1321,6 +1321,9 @@ class StreamConfig(_Section):
     listener_user: str = ""
     listener_password: str = field(default="", repr=False)
     station_name: str = "AutoDJ"
+    genre: str = ""
+    description: str = ""
+    url: str = ""
     relays: dict[str, RelayConfig] = field(default_factory=dict)
     aac_bitrate: int = 0
     opus_bitrate: int = 0
@@ -1396,6 +1399,19 @@ class StreamConfig(_Section):
         if not self.station_name.isprintable():
             # It is sent as an HTTP header (icy-name): no control characters.
             raise ValueError("stream.station_name must not contain control characters")
+        for key in ("genre", "description", "url"):
+            value = getattr(self, key)
+            limit = 2048 if key == "url" else 255
+            if not isinstance(value, str) or len(value) > limit or not value.isprintable():
+                raise ValueError(
+                    f"stream.{key} must be at most {limit} characters without control characters"
+                )
+        if self.url:
+            from urllib.parse import urlsplit
+
+            parsed = urlsplit(self.url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError("stream.url must be an HTTP or HTTPS URL")
         self.idle_grace_seconds = float(self.idle_grace_seconds)
 
 
