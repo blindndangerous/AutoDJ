@@ -349,7 +349,8 @@ def _upgrade_settings_and_sources(
 
         with LibraryCatalog(index_dir / "library.db") as catalog:
             catalog.migrate_legacy_history()
-            sources_changed = catalog.seed_sources(music_dir, liner_dir) or sources_changed
+            if sources_changed:
+                sources_changed = catalog.seed_sources(music_dir, liner_dir) or sources_changed
     return settings_changed, history_changed, sources_changed
 
 

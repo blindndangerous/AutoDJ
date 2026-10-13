@@ -503,6 +503,30 @@ def test_migrate_upgrades_catalog_only_legacy_state(tmp_path: Path) -> None:
     assert json.loads((index_dir / "web_state.json").read_text())["djmix"]["harmonic_mode"] == "off"
 
 
+def test_settings_migration_preserves_existing_catalog_source_roots(tmp_path: Path) -> None:
+    index_dir = tmp_path / "index"
+    index_dir.mkdir()
+    configured_music = tmp_path / "configured-music"
+    configured_liners = tmp_path / "configured-liners"
+    chosen_music = tmp_path / "chosen-music"
+    chosen_liners = tmp_path / "chosen-liners"
+    for folder in (configured_music, configured_liners, chosen_music, chosen_liners):
+        folder.mkdir()
+    with LibraryCatalog(index_dir / "library.db") as catalog:
+        catalog.add_source(chosen_music, "music", recursive=False, advanced=False)
+        catalog.add_source(chosen_liners, "liner", recursive=False, advanced=False)
+    state = index_dir / "web_state.json"
+    state.write_text('{"schema_version":1,"djmix":{"harmonic_mixing":false}}')
+
+    index_migration.migrate_catalog(index_dir, configured_music, configured_liners, {}, apply=True)
+
+    with LibraryCatalog(index_dir / "library.db") as catalog:
+        assert {(source["path"], source["kind"]) for source in catalog.sources()} == {
+            (str(chosen_music.resolve()).casefold(), "music"),
+            (str(chosen_liners.resolve()).casefold(), "liner"),
+        }
+
+
 def test_migrate_imports_schema4_and_resumes_after_interruption(tmp_path: Path) -> None:
     index_dir, music_dir = _fixture(tmp_path, paths=("old.flac",))
     (music_dir / "old.flac").write_bytes(b"audio bytes")
