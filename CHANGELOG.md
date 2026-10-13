@@ -492,6 +492,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Track info preview audio stops when leaving the tab or saving cue points, while keeping
+  its position available for further editing (#186).
 - Audio prepared before a clockwheel edit no longer restores the old step position or restart
   time when it begins playing (#153).
 - Clock skip logs now include the step number and reason for every skipped step, including
