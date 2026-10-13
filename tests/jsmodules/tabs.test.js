@@ -75,27 +75,47 @@ describe("tab arrow keys", () => {
     }
   });
 
-  it("places Carts, then Track info, after Queue & Search in cached markup and keyboard order", async () => {
+  it("places Carts, Voice tracks, then Track info, after Queue & Search in cached markup and keyboard order", async () => {
     installIndex();
     const carts = document.getElementById("tab-carts");
+    const voice = document.getElementById("tab-voice");
     const info = document.getElementById("tab-track-info");
     expect(document.getElementById("tab-queue").nextElementSibling).toBe(carts);
-    expect(carts.nextElementSibling).toBe(info);
+    expect(carts.nextElementSibling).toBe(voice);
+    expect(voice.nextElementSibling).toBe(info);
     // A cached page with the tabs in another order is put right.
-    info.parentElement.append(carts, info);
+    info.parentElement.append(voice, carts, info);
     vi.resetModules();
     const { initViewRouter: freshRouter } = await import(
       "../../src/autodj/static/modules/tabs.js");
     freshRouter();
     const queue = document.getElementById("tab-queue");
     expect(queue.nextElementSibling).toBe(carts);
-    expect(carts.nextElementSibling).toBe(info);
+    expect(carts.nextElementSibling).toBe(voice);
+    expect(voice.nextElementSibling).toBe(info);
     queue.focus();
     queue.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     expect(document.activeElement).toBe(carts);
     expect(document.getElementById("panel-carts").hidden).toBe(false);
     carts.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(document.activeElement).toBe(voice);
+    expect(document.getElementById("panel-voice").hidden).toBe(false);
+    voice.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     expect(document.activeElement).toBe(info);
+    window.location.hash = "";
+  });
+
+  it("focuses the Voice tracks heading when the tab is chosen", async () => {
+    installIndex();
+    window.location.hash = "#now";
+    vi.resetModules();
+    const { initViewRouter: freshRouter } = await import(
+      "../../src/autodj/static/modules/tabs.js");
+    freshRouter();
+    document.querySelector("#tab-voice").click();
+    await vi.waitFor(() => expect(document.querySelector("#panel-voice").hidden).toBe(false));
+    expect(document.activeElement.id).toBe("voice-heading");
+    expect(window.location.hash).toBe("#voice");
     window.location.hash = "";
   });
 

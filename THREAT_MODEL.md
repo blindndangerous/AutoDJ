@@ -385,7 +385,8 @@ What an announcer can do with a valid token:
   same checks run again when the break is mixed in. FFmpeg's demuxers still parse
   the upload, so a malformed file reaches them; the scope only lets a program the operator trusts
   do this.
-- Look up and cancel its station's breaks, by their random ids.
+- Look up and cancel its station's announcer breaks, by their random ids. Voice tracks that
+  operators booked in the web UI are not listed to it and answer 404 to it.
 
 It cannot change the queue, settings, clockwheels, liners or anything else. A booked break pins
 the song after it, so a token can keep one song in place for one song change; it cannot choose
@@ -401,6 +402,31 @@ the station's once-a-second upkeep, off the event loop (a file still held open i
 half minute until it goes);
 files a previous run left are deleted when the station starts, except an upload still arriving
 (its name is held, and part files younger than ten minutes are left).
+
+### Voice tracks from the browser
+
+The voice tracker (#128) books the same breaks from the web UI. Its routes,
+`/api/voice-tracks` and `/api/stations/<slug>/voice-tracks`, are browser routes: they need the
+signed-in session cookie when `access_token` is set and, for an upload or a cancel, an allowed
+`Origin`, like every other change. They are outside the announcer prefix, so a machine token is
+never accepted there, and an announcer token never reaches them by another address. The upload
+takes the announcer path described above: the middleware's body cap (the same as an announcer
+upload), the declared length checked against the station's own limit before the body is read,
+the room held in the station's caps, the 60-second body deadline, the server's own file name, the
+one-at-a-time decode with the header checked first, and the quota, slot and per-slot limits,
+which announcer breaks and voice tracks share. A voice track is always a DJ break. Uploads and
+cancels count against the station's `requests_per_minute`, shared by every open page; reading
+the open slot does not. A cancel finds only voice tracks, so a page cannot drop an announcer's
+break, and the announcer routes list, look up and cancel only announcer breaks, so an announcer
+token cannot see or drop an operator's voice track. Anyone who can sign in to the web UI can already control the station, so a voice track
+gives them no new power over it.
+
+In the browser, the microphone is asked for only when Record is pressed, and every track of the
+stream is stopped when the recording stops, is discarded, or the page signs out, and recording
+stops by itself when the Voice tracks tab is left or the page is hidden, so the microphone is
+never left open in the background. The browser
+needs a secure context for the microphone: HTTPS, or `localhost` on the same computer. The take
+stays in the page until it is booked, and only the WAV made from it is sent.
 
 On-air safety: nothing an announcer does runs on the audio thread or waits for it. The breaks are
 mixed by the render-ahead worker one song ahead, as liners are; the mix bus only marks a break

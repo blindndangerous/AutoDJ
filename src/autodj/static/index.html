@@ -83,6 +83,7 @@
     <button type="button" role="tab" id="tab-now"      data-view="now"      aria-selected="true"  tabindex="0">Now Playing</button>
     <button type="button" role="tab" id="tab-queue"    data-view="queue"    aria-selected="false" tabindex="-1">Queue &amp; Search</button>
     <button type="button" role="tab" id="tab-carts"    data-view="carts"    aria-selected="false" tabindex="-1">Carts</button>
+    <button type="button" role="tab" id="tab-voice"    data-view="voice"    aria-selected="false" tabindex="-1">Voice tracks</button>
     <button type="button" role="tab" id="tab-track-info" data-view="track-info" aria-selected="false" tabindex="-1">Track info</button>
     <button type="button" role="tab" id="tab-history"  data-view="history"  aria-selected="false" tabindex="-1">History</button>
     <button type="button" role="tab" id="tab-settings" data-view="settings" aria-selected="false" tabindex="-1">Settings</button>
@@ -1170,7 +1171,7 @@
         <button type="button" id="preview-device-choose" aria-describedby="preview-device-choose-desc">Show preview device names</button>
       </div>
       <span class="setting-desc" id="preview-device-desc">
-        Where the cue point preview in Track info plays, for example headphones, so you can listen to a song before it airs. Previews never go through the station’s mix, so they are never on the stream or in a recording, and they reach the same speakers as the browser mix only when both use the same device. On a device of its own the preview has its own volume, in its player, and the page’s volume and Mute leave it alone. The choice is saved in this browser.
+        Where the cue point preview in Track info and Listen back in Voice tracks play, for example headphones, so you can listen to a song or your recording before it airs. Previews never go through the station’s mix, so they are never on the stream or in a recording, and they reach the same speakers as the browser mix only when both use the same device. On a device of its own the preview has its own volume, in its player, and the page’s volume and Mute leave it alone. The choice is saved in this browser.
         <span id="preview-device-choose-desc">Show preview device names asks for the microphone once, only to read the device names, and stops it straight away.</span>
       </span>
       <p class="setting-desc" id="preview-device-note" hidden></p>
@@ -2052,6 +2053,82 @@
     </div>
   </section>
   <!-- ============================================================
+       View: Voice tracks -- record a DJ break in the browser for the
+       open song change and book it (modules/voice-tracker.js, #128).
+       The module finds everything inside #voice-tracker.  The timer and
+       the time left are on the page, never live: the recording state is
+       said once through #vt-status.
+       ============================================================ -->
+  <section data-view="voice" id="panel-voice" role="tabpanel" hidden aria-labelledby="tab-voice">
+    <h2 id="voice-heading">Voice tracks</h2>
+    <div id="voice-tracker">
+      <p id="vt-help">
+        Record a DJ break for the open song change, listen back, then book it.
+        The song change after the next song is the one still open: the next one is already mixed.
+        Your voice plays over the next song's intro (a talk-up) or between the songs.
+        Alt+R starts and stops recording from anywhere in this tab without moving focus.
+      </p>
+
+      <section class="card" aria-labelledby="vt-slot-heading">
+        <h3 id="vt-slot-heading">Open song change</h3>
+        <p id="vt-unavailable">Loading the open song change.</p>
+        <dl id="vt-slot" class="vt-facts" hidden>
+          <dt>Ending song</dt><dd id="vt-ending"></dd>
+          <dt>Next song</dt><dd id="vt-upcoming"></dd>
+          <dt>Intro of the next song</dt><dd id="vt-intro"></dd>
+          <dt>Time left to book</dt><dd id="vt-closes"></dd>
+          <dt>Airs in about</dt><dd id="vt-airs"></dd>
+        </dl>
+      </section>
+
+      <section class="card" aria-labelledby="vt-record-heading">
+        <h3 id="vt-record-heading">Record</h3>
+        <!-- A refusal in words, linked to the control it is about. -->
+        <p id="vt-error" class="field-error" hidden></p>
+        <button type="button" id="vt-record" aria-pressed="false" aria-describedby="vt-record-desc">Record</button>
+        <span class="setting-desc" id="vt-record-desc">
+          Press to start recording from your microphone, and again (or Alt+R) to stop.
+          The browser asks for the microphone the first time. Recording stops at 3 minutes,
+          or when you leave this tab or the page is hidden.
+        </span>
+        <p id="vt-timer">Not recording.</p>
+        <!-- Played by Listen back, never shown: one named toggle instead of
+             the browser's own player controls.  A preview, so it plays on
+             the Preview output device (modules/preview-output.js). -->
+        <audio id="vt-playback" preload="auto" hidden data-preview-output></audio>
+        <div class="settings-row">
+          <label for="vt-placement">Placement</label>
+          <select id="vt-placement" aria-describedby="vt-placement-desc">
+            <option value="auto">Automatic</option>
+            <option value="talk_up">Talk up the next song's intro</option>
+            <option value="standalone">Standalone, between the songs</option>
+          </select>
+        </div>
+        <span class="setting-desc" id="vt-placement-desc"></span>
+        <div class="settings-check">
+          <input type="checkbox" id="vt-allow-outro" aria-describedby="vt-allow-outro-desc">
+          <label for="vt-allow-outro">Start over the ending song's outro</label>
+        </div>
+        <span class="setting-desc" id="vt-allow-outro-desc">
+          For a talk-up: your voice may begin while the ending song plays out, not only after it.
+        </span>
+        <div class="vt-actions">
+          <button type="button" id="vt-listen" aria-pressed="false">Listen back</button>
+          <button type="button" id="vt-book">Book voice track</button>
+          <button type="button" id="vt-discard">Discard recording</button>
+        </div>
+        <div id="vt-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+      </section>
+
+      <section class="card" aria-labelledby="vt-booked-heading">
+        <h3 id="vt-booked-heading">Booked voice tracks</h3>
+        <p id="vt-none">No voice tracks yet.</p>
+        <!-- role="list": list-style none drops the list role in Safari. -->
+        <ul id="vt-list" role="list"></ul>
+      </section>
+    </div>
+  </section>
+  <!-- ============================================================
        View: Library tools — music and voice liner folders, index /
        enrich / analyse / prune / stats jobs and the index stats, run from
        the web UI.  Browsing is in Queue & Search.
@@ -2438,6 +2515,7 @@
     <dt><kbd>Esc</kbd></dt><dd>Close this dialog</dd>
     <dt style="margin-top:0.5rem">Number keys 1 to 9 and 0, <kbd><span aria-hidden="true">-</span><span class="visually-hidden">minus</span></kbd>, <kbd><span aria-hidden="true">=</span><span class="visually-hidden">equals</span></kbd></dt><dd style="margin-top:0.5rem">Play carts 1 to 12 on the cart page shown. Only with focus on the cart wall, in the Carts tab.</dd>
     <dt><kbd>Page Up</kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd>Page Down</kbd></dt><dd>Previous <span aria-hidden="true">/</span><span class="visually-hidden">or</span> next cart page. Only with focus on the cart wall.</dd>
+    <dt><kbd>Alt+R</kbd></dt><dd>Start <span aria-hidden="true">/</span><span class="visually-hidden">or</span> stop recording a voice track. Only while the Voice tracks tab shows; focus stays where it is.</dd>
     <dt style="margin-top:0.5rem"><kbd>Shift+T</kbd></dt><dd style="margin-top:0.5rem">Speak current track (artist – title)</dd>
     <dt><kbd>Shift+N</kbd></dt><dd>Speak next track (artist, title, BPM)</dd>
     <dt><kbd>Shift+R</kbd></dt><dd>Speak time remaining</dd>

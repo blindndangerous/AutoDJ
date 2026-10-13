@@ -1784,8 +1784,9 @@ curl -s -H "Authorization: Bearer $TOKEN" \
   http://127.0.0.1:8080/api/announcer/breaks/0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a
 ```
 
-`GET breaks` lists the breaks still waiting, then the finished ones, newest first, as
-`{"breaks": [...]}`. A break's `state` is one of:
+`GET breaks` lists the announcer's breaks still waiting, then the finished ones, newest first, as
+`{"breaks": [...]}`. Voice tracks booked in the web UI are not listed, and an announcer token
+cannot look them up or cancel them (404). A break's `state` is one of:
 
 - `queued`: booked, waiting for its song change to be rendered.
 - `rendered`: mixed into the song change; it will air. `mixed_as` says `talk_up` or `standalone`
@@ -1833,6 +1834,63 @@ minutes after its expected air time expires.
 
 The log records each break by the first eight characters of its id: when it is booked, mixed in,
 aired, dropped or expired, and why.
+
+## Voice tracking from the browser
+
+The **Voice tracks** tab records a DJ break with your microphone and books it for the open song
+change, the same as an announcer program's break (see [Announcer breaks](#announcer-breaks-dj-breaks-news-and-weather)).
+It needs breaks turned on for the station (`[breaks] enabled = true`, with saved-point playback);
+otherwise the tab says why it cannot take a voice track. No token is needed: the tab uses your
+signed-in browser.
+
+The browser lets a page use the microphone only over a secure connection: open AutoDJ over HTTPS,
+or at `http://localhost:<port>` on the station's own computer. On a plain `http://` address from
+another computer the tab says so instead of recording.
+
+The tab shows the open song change: the ending song, the next song, how long the next song's
+intro is, the time left to book it and roughly when it airs. That change is the one after the next
+song, because the next one is already mixed. The time left counts down on the page; it is not
+read out on its own.
+
+1. Choose **Record**. The first time, the browser asks to use the microphone. Speak, then choose
+   **Record** again to stop. **Alt+R** starts and stops recording from anywhere in the tab without
+   moving focus, which suits a screen reader user who wants to stay on another control.
+2. Choose **Listen back** to hear the take, on the Preview output device when one is chosen in
+   Settings, Sound (headphones, say). **Record** again replaces it; **Discard recording**
+   throws it away.
+3. Choose the **Placement**: **Automatic** (follows `[breaks] dj_placement`; the description under
+   it says what it will do for this change), **Talk up the next song's intro** (your voice ends as
+   the vocal starts), or **Standalone, between the songs**. For a talk-up, **Start over the ending
+   song's outro** lets your voice begin while the ending song plays out.
+4. Choose **Book voice track**. The browser turns the take into a mono WAV at 44.1 kHz and
+   uploads it; AutoDJ trims the silence before and after your voice as it does for any break.
+
+The recording state is said once when recording starts and stops, then once a minute, and 30
+seconds before the length limit or before the song change closes. Recording stops by itself at
+three minutes, or sooner at the station's `max_seconds`, or when `max_upload_mb` could not hold
+that much WAV (about 5 MB per minute). Three minutes is the browser's own cap: booking decodes the
+whole take in the page, so the length is what keeps the page's memory down (about 80 MB at most).
+Recording also stops, keeping the take and letting the microphone go, when you leave the Voice
+tracks tab or the page is hidden (another browser tab, a minimised window); that is said once.
+
+If the song change moves on before you book, the tab says which change is open now. When the open
+change has the same two songs (it was planned again), **Book voice track** books the take there.
+When it has other songs, the take is not booked: record again for those songs, or, if what you
+said still fits, use **Listen back** and then choose **Book voice track** again. Errors, such as a
+blocked or missing microphone or a Cancel that failed, are shown under the Record heading and
+linked to the control they are about.
+
+**Booked voice tracks** lists what became of each voice track (waiting, mixed in, on the air,
+aired, dropped or expired, with the reason). **Cancel** drops one that is still waiting for its
+song change. Voice tracks share the station's break limits and quota with announcer breaks:
+`max_queued`, `max_per_slot` and `quota_mb`. Uploads and cancels count against
+`requests_per_minute` for the station.
+
+For scripts and other stations, the routes are `GET`, `POST` and `DELETE` under
+`/api/voice-tracks` and `/api/stations/<slug>/voice-tracks`. They take the browser session and the
+page's `Origin`, never an announcer token. `POST` takes the announcer upload's fields (`slot_id`,
+`ending_id`, `upcoming_id`, `placement`, `allow_outro` and `file`), with no `kind`: a voice track is
+always a DJ break.
 
 ## Play log export
 

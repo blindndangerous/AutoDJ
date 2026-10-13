@@ -2448,9 +2448,10 @@ describe("static accessibility contracts", () => {
     expect(status.getAttribute("role")).toBe("status");
     expect(status.getAttribute("aria-live")).toBe("polite");
     expect(appSource).toMatch(/installPreviewOutput\(\{\s*announce: \(message, options\) => announceStatus\(settingsStatus/);
-    // Only the cue point player is a preview; the decks and Listen here are not.
+    // Only the cue point player and the voice tracker's Listen back are
+    // previews; the decks and Listen here are not.
     expect([...document.querySelectorAll("audio[data-preview-output]")].map((audio) => audio.id))
-      .toEqual(["points-preview"]);
+      .toEqual(["points-preview", "vt-playback"]);
     // The module never moves focus, and the note lines up under the select.
     const moduleSource = readFileSync(staticPath("modules", "preview-output.js"), "utf8");
     expect(moduleSource).not.toMatch(/\.focus\(/);
@@ -2491,6 +2492,59 @@ describe("static accessibility contracts", () => {
     const order = [...fieldset.querySelectorAll("input, select, button")].map((node) => node.id);
     expect(order).toEqual(["token-name", "token-scope", "token-station", "token-create"]);
     expect(document.getElementById("token-create").getAttribute("type")).toBe("button");
+  });
+
+  it("gives the voice tracker named native controls, one polite status and a silent timer", () => {
+    installDocument({ html: htmlSource });
+    const panel = document.getElementById("panel-voice");
+    expect(panel.getAttribute("role")).toBe("tabpanel");
+    expect(panel.getAttribute("aria-labelledby")).toBe("tab-voice");
+    expect(document.getElementById("tab-voice").textContent).toBe("Voice tracks");
+    expect([...panel.children].find((child) => child.tagName === "H2").id).toBe("voice-heading");
+    const tracker = document.getElementById("voice-tracker");
+    for (const button of tracker.querySelectorAll("button")) {
+      expect(button.getAttribute("type"), button.id).toBe("button");
+      expect(button.textContent.trim(), button.id).not.toBe("");
+    }
+    // Record is a toggle with a fixed name: the pressed state says recording.
+    const record = document.getElementById("vt-record");
+    expect(record.textContent).toBe("Record");
+    expect(record.getAttribute("aria-pressed")).toBe("false");
+    expect(document.getElementById(record.getAttribute("aria-describedby")).textContent).toMatch(/Alt\+R/);
+    // One polite region says the recording state; the timer, the time left
+    // and the open song change are on the page and never live.
+    const live = [...tracker.querySelectorAll("[aria-live], [role='status'], [role='alert'], [role='log']")];
+    expect(live.map((node) => node.id)).toEqual(["vt-status"]);
+    expect(live[0].getAttribute("aria-live")).toBe("polite");
+    expect(live[0].getAttribute("aria-atomic")).toBe("true");
+    for (const id of ["vt-timer", "vt-slot", "vt-closes", "vt-airs", "vt-unavailable", "vt-error", "vt-list"]) {
+      expect(document.getElementById(id).closest("[aria-live], [role=status], [role=alert]"), id).toBeNull();
+    }
+    // An error is words on the page that a control can be described by.
+    const error = document.getElementById("vt-error");
+    expect(error.classList.contains("field-error")).toBe(true);
+    expect(error.hidden).toBe(true);
+    const placement = document.getElementById("vt-placement");
+    expect(document.querySelector('label[for="vt-placement"]').textContent).toBe("Placement");
+    expect(placement.getAttribute("aria-describedby")).toBe("vt-placement-desc");
+    expect([...placement.options].map((option) => option.value)).toEqual(["auto", "talk_up", "standalone"]);
+    const outro = document.getElementById("vt-allow-outro");
+    expect(outro.getAttribute("type")).toBe("checkbox");
+    expect(outro.parentElement.classList.contains("settings-check")).toBe(true);
+    expect(document.querySelector('label[for="vt-allow-outro"]').textContent).toBe("Start over the ending song's outro");
+    expect(outro.getAttribute("aria-describedby")).toBe("vt-allow-outro-desc");
+    // Listen back is a named toggle; the player itself is never shown.
+    const player = document.getElementById("vt-playback");
+    expect(player.tagName).toBe("AUDIO");
+    expect(player.hasAttribute("controls")).toBe(false);
+    expect(player.hidden).toBe(true);
+    expect(document.getElementById("vt-listen").getAttribute("aria-pressed")).toBe("false");
+    expect([...tracker.querySelectorAll(".vt-actions button")].map((button) => button.textContent))
+      .toEqual(["Listen back", "Book voice track", "Discard recording"]);
+    expect(document.getElementById("vt-list").getAttribute("role")).toBe("list");
+    // The shortcut is listed with the others, in words.
+    const keys = [...document.querySelectorAll("#hotkey-help-modal dt kbd")].map((kbd) => kbd.textContent);
+    expect(keys).toContain("Alt+R");
   });
 
   it("keeps the transition effect description to one sentence", () => {
