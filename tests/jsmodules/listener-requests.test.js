@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  ANNOUNCE_DELAY_MS,
   installListenerRequests,
   requestedText,
   songText,
@@ -22,10 +23,13 @@ function mount() {
     </section>`;
 }
 
+const A = "a".repeat(32);
+const B = "b".repeat(32);
+const C = "c".repeat(32);
 const WAITING = [
-  { id: "a".repeat(32), title: "Song", artist: "Artist", name: "Sam", requested_at: 100,
+  { id: A, title: "Song", artist: "Artist", name: "Sam", requested_at: 100,
     fit: "Fits after Other: same key.", can_approve: true },
-  { id: "b".repeat(32), title: "Two", artist: "", name: "", requested_at: 200,
+  { id: B, title: "Two", artist: "", name: "", requested_at: 200,
     fit: "No place in the window keeps the rules: same artist.", can_approve: false },
 ];
 const STATE = {
@@ -34,6 +38,7 @@ const STATE = {
 
 const byId = (id) => document.getElementById(id);
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+const row = (id) => [...byId("requests-list").children].find((li) => li.dataset.id === id);
 
 describe("listener request words", () => {
   it("names songs, requesters and the day's count in plain words", () => {
@@ -53,17 +58,25 @@ describe("listener request words", () => {
 describe("listener requests card", () => {
   let request;
   let timers;
+  let delayed;
 
   const install = () => installListenerRequests({
     doc: document,
     request,
     setTimer: (callback) => { timers.push(callback); return 1; },
+    later: (callback, ms) => { delayed.push({ callback, ms }); return 1; },
     formatTime: () => "2:05 PM",
   });
+  const runDelayed = () => {
+    const due = delayed;
+    delayed = [];
+    for (const { callback } of due) callback();
+  };
 
   beforeEach(() => {
     mount();
     timers = [];
+    delayed = [];
     request = vi.fn(async () => STATE);
   });
 
@@ -92,61 +105,116 @@ describe("listener requests card", () => {
     expect(byId("requests-recent-heading").hidden).toBe(true);
   });
 
-  it("refreshes silently, only while open, and keeps focus on the same button", async () => {
+  it("updates rows in place on a refresh, never replacing what has focus", async () => {
     install();
     await flush();
-    const button = byId("requests-list").querySelector('[data-action="reject"]');
-    button.focus();
+    const first = row(A);
+    const reject = first.querySelector('[data-action="reject"]');
+    reject.focus();
     const list = byId("requests-list");
     const replace = vi.spyOn(list, "replaceChildren");
+    const third = { ...WAITING[1], id: C, title: "Three", requested_at: 300 };
+    request.mockResolvedValue({
+      ...STATE,
+      today: 3,
+      pending: [{ ...WAITING[0], fit: "Fits after Else." }, { ...WAITING[1], can_approve: true }, third],
+    });
     timers[0]();
     await flush();
     expect(replace).not.toHaveBeenCalled();
-    request.mockResolvedValue({ ...STATE, today: 3 });
+    expect(row(A)).toBe(first);
+    expect(first.querySelector('[data-action="reject"]')).toBe(reject);
+    expect(document.activeElement).toBe(reject);
+    expect(first.textContent).toContain("Fits after Else.");
+    // Approve appears where it now fits, before the other buttons.
+    expect([...row(B).querySelectorAll("button")].map((b) => b.dataset.action))
+      .toEqual(["approve", "play-next", "reject"]);
+    expect([...list.children].map((li) => li.dataset.id)).toEqual([A, B, C]);
+    expect(byId("requests-status").textContent).toBe("");
+  });
+
+  it("keeps a row that holds focus until focus leaves it", async () => {
+    install();
+    await flush();
+    const held = row(A).querySelector('[data-action="approve"]');
+    held.focus();
+    // Decided elsewhere (another browser): gone from the list.
+    request.mockResolvedValue({ ...STATE, pending: [WAITING[1]] });
     timers[0]();
     await flush();
-    expect(replace).toHaveBeenCalledTimes(1);
-    expect(document.activeElement.dataset.action).toBe("reject");
-    expect(document.activeElement.dataset.id).toBe("a".repeat(32));
+    expect(row(A)).toBeTruthy();
+    expect(document.activeElement).toBe(held);
+    row(B).querySelector("button").focus();
+    // As a browser does when focus moves on (happy-dom may not).
+    held.dispatchEvent(new Event("focusout", { bubbles: true }));
+    runDelayed();
+    expect(row(A)).toBeUndefined();
+  });
+
+  it("refreshes only while the card is open", async () => {
+    install();
+    await flush();
     byId("requests-card").open = false;
     const calls = request.mock.calls.length;
     timers[0]();
     await flush();
     expect(request.mock.calls.length).toBe(calls);
-    expect(byId("requests-status").textContent).toBe("");
   });
 
-  it("says the result once and moves focus to the next request", async () => {
+  it("moves focus to the next request first, then says the result", async () => {
+    const third = { ...WAITING[0], id: C, title: "Three" };
+    request = vi.fn(async (url, options) => (options?.method === "POST"
+      ? { ...STATE, pending: [WAITING[1], third], recent: [{ ...WAITING[0], status: "queued", note: "Fits after Other." }] }
+      : { ...STATE, pending: [WAITING[0], WAITING[1], third] }));
     install();
     await flush();
-    request.mockImplementation(async (url, options) => (options?.method === "POST"
-      ? { ...STATE, pending: [WAITING[1]], recent: [{ ...WAITING[0], status: "queued", note: "Fits after Other." }] }
-      : STATE));
-    byId("requests-list").querySelector('[data-action="approve"]').click();
+    row(A).querySelector('[data-action="approve"]').click();
+    await vi.waitFor(() => expect(row(A)).toBeUndefined());
+    expect(request).toHaveBeenCalledWith(`/api/requests/${A}/approve`, expect.objectContaining({ method: "POST" }));
+    // Two has no Approve (nothing fits), so focus lands on its first button.
+    expect(document.activeElement.dataset.id).toBe(B);
+    expect(document.activeElement.dataset.action).toBe("play-next");
+    // Said only after the move, so the focus speech does not cut it off.
+    expect(byId("requests-status").textContent).toBe("");
+    const said = delayed.find(({ ms }) => ms === ANNOUNCE_DELAY_MS);
+    expect(said).toBeTruthy();
+    said.callback();
     await vi.waitFor(() => expect(byId("requests-status").textContent).toBe("Queued Song by Artist."));
-    expect(request).toHaveBeenCalledWith(`/api/requests/${"a".repeat(32)}/approve`, expect.objectContaining({ method: "POST" }));
-    expect(document.activeElement.dataset.id).toBe("b".repeat(32));
     expect(byId("requests-recent").textContent).toBe("Queued: Song by Artist. Fits after Other.");
     expect(byId("requests-recent-heading").hidden).toBe(false);
   });
 
-  it("puts focus on the heading when the last request is decided", async () => {
+  it("lands on the next request's Approve where it is offered", async () => {
+    const third = { ...WAITING[0], id: C, title: "Three" };
+    request = vi.fn(async (url, options) => (options?.method === "POST"
+      ? { ...STATE, pending: [third] }
+      : { ...STATE, pending: [WAITING[0], third] }));
+    install();
+    await flush();
+    row(A).querySelector('[data-action="reject"]').click();
+    await vi.waitFor(() => expect(row(A)).toBeUndefined());
+    expect(document.activeElement.dataset.id).toBe(C);
+    expect(document.activeElement.dataset.action).toBe("approve");
+  });
+
+  it("puts focus on the card's summary when the last request is decided", async () => {
     request = vi.fn(async (url, options) => (options?.method === "POST"
       ? { ...STATE, pending: [], recent: [] }
       : { ...STATE, pending: [WAITING[0]] }));
     install();
     await flush();
-    byId("requests-list").querySelector('[data-action="reject"]').click();
-    await vi.waitFor(() => expect(byId("requests-status").textContent).toBe("Turned down Song by Artist."));
-    expect(document.activeElement).toBe(byId("requests-heading"));
+    row(A).querySelector('[data-action="reject"]').click();
+    await vi.waitFor(() => expect(document.activeElement).toBe(byId("requests-heading")));
     expect(byId("requests-list").hidden).toBe(true);
+    delayed.find(({ ms }) => ms === ANNOUNCE_DELAY_MS).callback();
+    await vi.waitFor(() => expect(byId("requests-status").textContent).toBe("Turned down Song by Artist."));
   });
 
   it("says why when the server refuses, and keeps the request", async () => {
     install();
     await flush();
     request.mockRejectedValue(new Error("Song cannot be queued within the next 30 minutes: same album."));
-    const button = byId("requests-list").querySelector('[data-action="approve"]');
+    const button = row(A).querySelector('[data-action="approve"]');
     button.click();
     await vi.waitFor(() => expect(byId("requests-status").textContent)
       .toBe("Song cannot be queued within the next 30 minutes: same album."));

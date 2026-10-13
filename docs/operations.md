@@ -478,9 +478,11 @@ tunnel, port forwarding or any other proxy: AutoDJ's pairing is built for a home
 strangers on the internet. After the Access login, pair each remote browser as usual. Every
 request through the tunnel reaches AutoDJ from the `cloudflared` machine's address, so the
 per-address limit on wrong pairing codes counts all remote browsers together unless
-`[stream] trusted_proxies` includes that direct peer in stream mode. This setting affects client
-addresses on all routes in stream mode, including pairing and audit logs. Set it only when the proxy appends or replaces
-`X-Forwarded-For` correctly.
+`[stream] trusted_proxies` includes that direct peer. This setting affects client addresses on all
+routes in every mode, including pairing, the listener request limits and audit logs. Set it only
+when the proxy appends the address it saw to `X-Forwarded-For`, or overwrites the header with it.
+A proxy that passes a client's own `X-Forwarded-For` through unchanged lets any client choose its
+address.
 
 The radio stream link (`/stream.mp3`) works at home. Through the tunnel it is behind
 Access too, so players that cannot log in, such as Sonos, cannot use it from outside.
@@ -764,7 +766,9 @@ happened, so a screen reader hears it as the page loads. It is one of:
 - **Already on the way**.
 - **Too many requests**: that address's limit, with how many it may make.
 - **No more requests today**.
-- **This form has expired**: the form is good for two hours.
+- **This form has expired**: the form is good for two hours, for the song it was opened for.
+- **The station is busy**: too many searches or requests at once, across all stations. Try again
+  in a few seconds.
 
 The page needs no JavaScript and works without pairing. A listener is only ever told roughly when
 a song may play ("within the next half hour", "within the next hour or so"), never a set time.
@@ -772,8 +776,11 @@ a song may play ("within the next half hour", "within the next hour or so"), nev
 **What the station checks**, in this order:
 
 1. The form's token.
-2. The address's limits: 30 searches a minute, 10 form posts in ten minutes, and `per_listener`
-   accepted requests per `per_listener_minutes`. A refused request does not use up the allowance.
+2. The address's limits. Each address may run 30 searches a minute and send 10 forms in ten
+   minutes, whatever becomes of them. Only accepted requests count toward `per_listener` per
+   `per_listener_minutes`; a request turned away, for example by the repeat rules, does not. An
+   IPv6 address counts together with its whole /64, since one home is usually given a /64 and could
+   otherwise step through its addresses. An IPv4 address written as IPv6 counts as itself.
 3. The daily cap.
 4. That the song is in the library, is not blocked, and is not playing, coming up or waiting
    already.
@@ -787,7 +794,8 @@ artist, album, title, and related tracks and artists) as of then, and in
 [DMCA mode](#dmca-mode) the DMCA limits too. Of the places that break nothing, it picks the one
 where the song joins its neighbours most smoothly. It weighs sound (the embeddings), tempo (half
 and double time count as a match), Camelot key and the step in energy, and the sooner place wins a
-tie. A request is a song in the queue like any other. It never takes the place of a station ID, a
+tie. Working out the place and adding the song there happen as one step, so the queue cannot
+change in between. A request is a song in the queue like any other. It never takes the place of a station ID, a
 liner, a break or a time check, which play between songs.
 
 **What you do.** While requests are on, Queue & Search has a **Listener requests** card. It says
@@ -797,19 +805,25 @@ Artist: same key, 2 BPM apart.") or what stops it. Each request has three button
 
 - **Approve** queues it at that place, checked again at that moment. It is left out while no place
   keeps the rules.
-- **Play next** queues it first, whatever fits. DMCA limits still hold.
+- **Play next** queues it first, after the song playing and any "play next" song, whatever fits.
+  DMCA limits still hold, counting that "play next" song.
 - **Turn down**.
 
-The result is said once, and focus moves to the next request. Recent decisions are listed below.
-The card refreshes every 15 seconds while it is open, without speaking. A request still waiting
-after three hours expires. The same actions are available as paired routes: `GET /api/requests`,
+Focus moves to the next request's Approve button (its first button when Approve is not offered),
+or to the card's title when none is left, and the result is said once just after that. Recent
+decisions are listed below. The card refreshes every 15 seconds while it is open, without
+speaking: rows are updated in place, and a row that has focus stays until focus leaves it. A
+request still waiting after three hours expires, and can no longer be approved. The same actions are available as paired routes: `GET /api/requests`,
 and `POST /api/requests/<id>/approve`, `/play-next` and `/reject` (each also under
 `/api/stations/<slug>/` for a station by name). The web UI's card shows the default station's
 requests.
 
 Requests are kept in `listener_requests.json` in the station's state folder: waiting requests and
-the last 50 decisions, with titles, names and times. It never holds an address, and it is not part
-of backups. Listener addresses are kept in memory only, for the limits, and are forgotten when
+the last 50 decisions, with titles, names and times. A listener's name is removed 30 days after
+the decision, however many decisions there are. The file never holds an address, and it is not
+part of backups. At most four searches or request checks run at once, across all stations, and
+the same search within 30 seconds is answered from memory, so a flood of requests cannot take the
+server's time from the music. Listener addresses are kept in memory only, for the limits, and are forgotten when
 AutoDJ restarts. Requests do not yet get bridge songs to lead into them, and are not yet matched to
 clockwheel categories.
 
@@ -882,9 +896,11 @@ and uses the first untrusted address. It does not use the RFC 7239 `Forwarded` h
 this setting, AutoDJ uses the socket peer and ignores forwarded headers. Set trusted proxies
 before enabling a per-address limit or bans behind a proxy or Cloudflare Tunnel; otherwise every
 listener shares the proxy's address. A trusted proxy's `X-Forwarded-Proto: https` also keeps
-playlist URLs on HTTPS. In stream mode, the trusted proxy setting changes client addresses on all routes,
-including pairing and audit logs. Only trust proxies that append or replace these headers
-correctly. Restart after changing trusted proxies.
+playlist URLs on HTTPS. The trusted proxy setting changes client addresses on all routes in every
+mode, not only in stream mode, including pairing, the listener request limits and audit logs.
+Only trust a proxy that appends the address it saw to `X-Forwarded-For`, or overwrites the header
+with it; never one that passes a client's own `X-Forwarded-For` through, which would let any
+client choose its address. Restart after changing trusted proxies.
 
 Settings, Stream lists each direct listener's address, player name and connection time. Use
 **Disconnect** to end one connection, or **Ban** to block an address or CIDR for one hour, one day,

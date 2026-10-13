@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import replace
 
@@ -100,3 +101,41 @@ def test_similarity_is_the_cosine_of_two_embeddings() -> None:
     assert index.similarity(entries[0].path, entries[1].path) == np.float32(0.6)
     assert index.similarity(entries[0].path, entries[2].path) == 0.0
     assert index.similarity(entries[0].path, "missing") is None
+
+
+def test_insert_request_places_and_queues_in_one_step(bridge) -> None:
+    _ready(bridge)
+    state = bridge.player._state
+    seen = []
+
+    def choose(slots):
+        # The queue's lock is held while choosing: another thread cannot
+        # take it, so nothing can change the queue in between.
+        got: list[bool] = []
+        other = threading.Thread(
+            target=lambda: got.append(state.queue_lock.acquire(blocking=False))
+        )
+        other.start()
+        other.join()
+        assert got == [False]
+        seen.append([slot.position for slot in slots])
+        return slots[1]
+
+    chosen = bridge.insert_request(_song(5), 3600, choose)
+    assert chosen.position == 1
+    assert [e.title for e in state.queue] == ["Song 1", "Song 5", "Song 2"]
+    assert seen == [[0, 1, 2]]
+    assert bridge.insert_request(_song(6), 3600, lambda slots: None) is None
+    assert len(state.queue) == 3
+
+
+def test_dmca_problems_are_kept_apart(bridge) -> None:
+    _ready(bridge)
+    bridge.player._cfg.dmca = DmcaConfig(enabled=True)
+    state = bridge.player._state
+    state.queue.clear()
+    state.current_track = replace(_make_entry(4), artist="A4")
+    state.queued_next = replace(_make_entry(5), artist="A5")
+    (first,) = bridge.request_slots(replace(_make_entry(3), artist="A3"), horizon_s=0)
+    assert first.dmca and set(first.dmca) <= set(first.problems)
+    assert first.before.title == "Song 5"  # after the "play next" song

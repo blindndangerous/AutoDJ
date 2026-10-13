@@ -30,10 +30,12 @@ from autodj.listener_requests import (
     MAX_QUERY,
     MIN_QUERY,
     TRACK_ID,
+    Busy,
     Outcome,
     RequestDesk,
     _minutes,
     _songs,
+    bounded,
     clean_name,
 )
 from autodj.station_log import CURRENT_STATION
@@ -306,19 +308,43 @@ def install_request_pages(app: FastAPI, stations: StationRegistry) -> None:
 
     async def show(request: Request, slug: str | None) -> HTMLResponse:
         station, by_name = lookup(slug)
+        try:
+            return await _show(request, station, by_name)
+        except Busy:
+            return busy(station, by_name)
+
+    async def send(request: Request, slug: str | None) -> HTMLResponse:
+        station, by_name = lookup(slug)
+        try:
+            return await _send(request, station, by_name)
+        except Busy:
+            return busy(station, by_name)
+
+    def busy(station: StationRuntime | StoppedStation, by_name: bool) -> HTMLResponse:
+        outcome = Outcome(
+            503, "The station is busy", "Many people are using this page. Please try again soon."
+        )
+        desk = station.requests if not isinstance(station, StoppedStation) else None
+        return respond(station, by_name, 503, 10, desk=desk, outcome=outcome)
+
+    async def _show(
+        request: Request, station: StationRuntime | StoppedStation, by_name: bool
+    ) -> HTMLResponse:
         desk = enabled_desk(station)
         if desk is None:
             return respond(station, by_name, 503, desk=None, off_air=True)
         params = request.query_params
         track = params.get("track")
         if track is not None:
-            entry = await asyncio.to_thread(desk.song, track) if TRACK_ID.fullmatch(track) else None
+            entry = None
+            if TRACK_ID.fullmatch(track):
+                entry = await asyncio.to_thread(bounded, lambda: desk.song(track))
             if entry is None:
                 outcome = Outcome(
                     404, "Song not found", "That song cannot be requested. Please search again."
                 )
                 return respond(station, by_name, 404, desk=desk, outcome=outcome)
-            token = desk.tokens.issue(station.slug)
+            token = desk.tokens.issue(station.slug, track)
             return respond(station, by_name, desk=desk, confirm=(track, entry), token=token)
         query = params.get("q")
         if query is None:
@@ -336,11 +362,12 @@ def install_request_pages(app: FastAPI, stations: StationRegistry) -> None:
         if (wait := desk.searches.hit(_address(request))) is not None:
             outcome = Outcome(429, "Too many searches", "Please wait a minute, then search again.")
             return respond(station, by_name, 429, wait, desk=desk, query=query, outcome=outcome)
-        results = await asyncio.to_thread(desk.search, query)
+        results = await asyncio.to_thread(bounded, lambda: desk.search(query))
         return respond(station, by_name, desk=desk, query=query, results=results)
 
-    async def send(request: Request, slug: str | None) -> HTMLResponse:
-        station, by_name = lookup(slug)
+    async def _send(
+        request: Request, station: StationRuntime | StoppedStation, by_name: bool
+    ) -> HTMLResponse:
         desk = enabled_desk(station)
         if desk is None:
             return respond(station, by_name, 503, desk=None, off_air=True)
@@ -351,14 +378,14 @@ def install_request_pages(app: FastAPI, stations: StationRegistry) -> None:
         form = await _form(request)
         if set(form) - {"token", "track", "name"}:
             raise HTTPException(status_code=400, detail="Invalid request form")
-        if not desk.tokens.valid(form.get("token", ""), station.slug):
+        track = form.get("track", "")
+        if not desk.tokens.valid(form.get("token", ""), station.slug, track):
             outcome = Outcome(
                 403,
                 "This form has expired",
                 "Please search for the song again and send a new request.",
             )
             return respond(station, by_name, 403, desk=desk, outcome=outcome)
-        track = form.get("track", "")
         name = clean_name(form.get("name", ""))
         if name is None or not TRACK_ID.fullmatch(track):
             outcome = Outcome(
@@ -369,7 +396,7 @@ def install_request_pages(app: FastAPI, stations: StationRegistry) -> None:
             )
             return respond(station, by_name, 400, desk=desk, outcome=outcome)
         # Off the event loop: it reads the library and projects the queue.
-        outcome = await asyncio.to_thread(desk.submit, track, name, address)
+        outcome = await asyncio.to_thread(bounded, lambda: desk.submit(track, name, address))
         return respond(
             station, by_name, outcome.status, outcome.retry_after, desk=desk, outcome=outcome
         )

@@ -2012,6 +2012,10 @@ class TestServeFunction:
         assert captured["create_app_kwargs"]["stream_mode"] is False
         assert captured["create_app_kwargs"]["extra_stations"] == []
         assert "timeout_graceful_shutdown" not in captured["uvicorn_kwargs"]
+        # Trusted proxies apply in every mode (the request limits key on the
+        # client address); empty means a proxy on this machine only.
+        assert captured["uvicorn_kwargs"]["proxy_headers"] is True
+        assert "127.0.0.1/32" in captured["uvicorn_kwargs"]["forwarded_allow_ips"]
         assert not (tmp_path / ".stream-secret").exists()
 
     def test_serve_stream_leaves_an_old_secret_file_alone(self, tmp_path) -> None:

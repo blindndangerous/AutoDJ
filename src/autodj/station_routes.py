@@ -807,7 +807,13 @@ def equip_station(
 
     requests_cfg = station.cfg.requests
     if requests_cfg.enabled is True:
-        from autodj.listener_requests import FORM_TOKENS, TRACK_IDS, RequestBook, RequestDesk
+        from autodj.listener_requests import (
+            FORM_TOKENS,
+            TRACK_SECRET,
+            RequestBook,
+            RequestDesk,
+            TrackIds,
+        )
 
         station.requests = RequestDesk(
             station.slug,
@@ -816,7 +822,7 @@ def equip_station(
             RequestBook(station.paths.listener_requests, timezone=station.timezone),
             music_dir=Path(station.cfg.library.music_dir),
             tokens=FORM_TOKENS,
-            track_ids=TRACK_IDS,
+            track_ids=TrackIds(TRACK_SECRET),
             on_queued=station.nowplaying.refresh,
         )
 

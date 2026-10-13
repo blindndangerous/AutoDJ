@@ -36,6 +36,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import math
@@ -45,7 +46,7 @@ import secrets
 import threading
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -80,6 +81,16 @@ PENDING_HOURS = 3
 KEEP_DECIDED = 50
 #: A form token is good for this long.
 TOKEN_SECONDS = 2 * 3600
+#: Listener names are dropped from decided requests after this many days.
+NAME_DAYS = 30
+#: Searches and request checks running at once, across every station; more
+#: wait up to WORK_WAIT_SECONDS, then get "busy", so a flood cannot take
+#: every worker thread from the player.
+WORK_SLOTS = threading.BoundedSemaphore(4)
+WORK_WAIT_SECONDS = 2.0
+#: How long, and how many, recent searches are answered from memory.
+SEARCH_CACHE_SECONDS = 30.0
+SEARCH_CACHE_SIZE = 256
 
 TRACK_ID = re.compile(r"[0-9a-f]{24}\Z")
 REQUEST_ID = re.compile(r"[0-9a-f]{32}\Z")
@@ -93,8 +104,47 @@ PENDING, QUEUED, REJECTED, EXPIRED = "pending", "queued", "rejected", "expired"
 # ---------------------------------------------------------------------------
 
 
+def limit_key(address: str) -> str:
+    """The key an address's limits count under.
+
+    An IPv4 address counts alone, and so does an IPv4-mapped IPv6 address,
+    as its IPv4 address.  An IPv6 address counts with its whole /64: one
+    host is usually given a /64 and can use any address in it, so counting
+    single addresses would let it rotate past every limit.
+    """
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return address
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            return str(ip.ipv4_mapped)
+        return str(ipaddress.IPv6Network((ip, 64), strict=False))
+    return str(ip)
+
+
+class Busy(RuntimeError):
+    """Too many searches or requests are being worked on at once."""
+
+
+def bounded[T](work: Callable[[], T]) -> T:
+    """Run *work* in one of :data:`WORK_SLOTS`.
+
+    Raises:
+        Busy: No slot came free within :data:`WORK_WAIT_SECONDS`.
+    """
+    if not WORK_SLOTS.acquire(timeout=WORK_WAIT_SECONDS):
+        raise Busy
+    try:
+        return work()
+    finally:
+        WORK_SLOTS.release()
+
+
 class AddressLimiter:
     """At most *limit* events per *window_s* seconds for each address.
+
+    Addresses are counted by :func:`limit_key`: an IPv6 address with its /64.
 
     Each address keeps the times of its events in the window.  Addresses
     with nothing left in the window are forgotten, and at most *max_keys*
@@ -128,6 +178,7 @@ class AddressLimiter:
 
     def retry_after(self, address: str) -> int | None:
         """Seconds until *address* may go again, or ``None`` if it may now (not counted)."""
+        address = limit_key(address)
         with self._lock:
             now = self._clock()
             events = self._live(address, now)
@@ -137,6 +188,7 @@ class AddressLimiter:
 
     def hit(self, address: str) -> int | None:
         """Count one event for *address*; seconds to wait instead when it is over the limit."""
+        address = limit_key(address)
         with self._lock:
             now = self._clock()
             events = self._live(address, now)
@@ -153,10 +205,11 @@ class AddressLimiter:
 class FormTokens:
     """Signed, time-limited tokens for a public form that has no session.
 
-    A token is ``<issued>.<mac>``, the mac an HMAC of the station's name and
-    the time it was issued, under a key made when the server starts.  A
-    form posted from another site cannot carry one (the page is
-    same-origin), and a token from one station does not work on another.
+    A token is ``<issued>.<mac>``, the mac an HMAC of the station's name,
+    the song's id and the time it was issued, under a key made when the
+    server starts.  A form posted from another site cannot carry one (the
+    page is same-origin), and a token works only for the station and the
+    song it was issued for.
     """
 
     def __init__(
@@ -170,17 +223,17 @@ class FormTokens:
         self._clock = clock
         self._max_age = max_age
 
-    def _mac(self, scope: str, issued: int) -> str:
-        message = f"form:{scope}:{issued}".encode()
+    def _mac(self, scope: str, track_id: str, issued: int) -> str:
+        message = f"form:{scope}:{track_id}:{issued}".encode()
         return hmac.new(self._secret, message, hashlib.sha256).hexdigest()[:32]
 
-    def issue(self, scope: str) -> str:
-        """A new token for the form of *scope* (a station's name)."""
+    def issue(self, scope: str, track_id: str) -> str:
+        """A new token for the request form of *track_id* on *scope* (a station's name)."""
         issued = int(self._clock())
-        return f"{issued}.{self._mac(scope, issued)}"
+        return f"{issued}.{self._mac(scope, track_id, issued)}"
 
-    def valid(self, token: str, scope: str) -> bool:
-        """Whether *token* was issued for *scope* within the last two hours."""
+    def valid(self, token: str, scope: str, track_id: str) -> bool:
+        """Whether *token* was issued for *track_id* on *scope* within the last two hours."""
         issued_text, dot, mac = token.partition(".")
         if not dot or not issued_text.isdecimal() or len(issued_text) > 12 or len(mac) != 32:
             return False
@@ -188,7 +241,7 @@ class FormTokens:
         age = self._clock() - issued
         if not -60 <= age <= self._max_age:
             return False
-        return hmac.compare_digest(mac, self._mac(scope, issued))
+        return hmac.compare_digest(mac, self._mac(scope, track_id, issued))
 
 
 class TrackIds:
@@ -472,7 +525,12 @@ class RequestBook:
             return self.today if self.day == self._today() else 0
 
     def tidy(self) -> bool:
-        """Expire requests that waited too long and drop old decisions; whether anything changed."""
+        """Expire requests that waited too long, drop old decisions and old names.
+
+        A name is kept :data:`NAME_DAYS` days after its request was decided,
+        whatever the number of decisions.  Returns whether anything changed;
+        the caller saves.
+        """
         with self.lock:
             now = self.clock()
             changed = False
@@ -480,6 +538,13 @@ class RequestBook:
                 if request.status == PENDING and now - request.requested_at > PENDING_HOURS * 3600:
                     request.status, request.decided_at = EXPIRED, now
                     request.note = "Waited too long without a decision."
+                    changed = True
+                if (
+                    request.name
+                    and request.decided_at is not None
+                    and now - request.decided_at > NAME_DAYS * 86400
+                ):
+                    request.name = ""
                     changed = True
             decided = [r for r in self.requests if r.status != PENDING]
             if len(decided) > KEEP_DECIDED:
@@ -598,18 +663,46 @@ class RequestDesk:
             cfg.per_listener, cfg.per_listener_minutes * 60.0, clock=monotonic
         )
         self._lock = threading.Lock()
+        self._monotonic = monotonic
+        # Recent searches by their words, with the library snapshot they
+        # were run on: (snapshot, when, results).
+        self._searches: OrderedDict[str, tuple[object, float, list[tuple[str, IndexEntry]]]] = (
+            OrderedDict()
+        )
+        self._search_lock = threading.Lock()
 
     # -- what listeners see -------------------------------------------------
 
     def search(self, query: str) -> list[tuple[str, IndexEntry]]:
-        """Up to :data:`SEARCH_RESULTS` requestable songs matching every word of *query*."""
+        """Up to :data:`SEARCH_RESULTS` requestable songs matching every word of *query*.
+
+        The same words within :data:`SEARCH_CACHE_SECONDS`, on the same
+        library, are answered from memory.
+        """
         tokens = query.lower().split()
+        key = " ".join(tokens)
+        indexed = self.bridge.search_index()
+        now = self._monotonic()
+        with self._search_lock:
+            cached = self._searches.get(key)
+            if (
+                cached is not None
+                and cached[0] is indexed
+                and now - cached[1] < SEARCH_CACHE_SECONDS
+            ):
+                self._searches.move_to_end(key)
+                return cached[2]
         found: list[tuple[str, IndexEntry]] = []
-        for entry, text in self.bridge.search_index():
+        for entry, text in indexed:
             if all(token in text for token in tokens) and not self.blocklist.blocks(entry):
                 found.append((self.track_ids.id_for(entry.path), entry))
                 if len(found) >= SEARCH_RESULTS:
                     break
+        with self._search_lock:
+            self._searches[key] = (indexed, now, found)
+            self._searches.move_to_end(key)
+            while len(self._searches) > SEARCH_CACHE_SIZE:
+                self._searches.popitem(last=False)
         return found
 
     def song(self, track_id: str) -> IndexEntry | None:
@@ -627,6 +720,21 @@ class RequestDesk:
 
     def _placement(self, entry: IndexEntry) -> Placement:
         return place(entry, self.bridge.request_slots(entry, self._horizon()), self._similarity)
+
+    def _queue_where_it_fits(self, entry: IndexEntry) -> Placement:
+        """Place *entry* and queue it there, as one step under the queue's lock.
+
+        Nothing else can change the queue between working out the place and
+        inserting there, so the place is never stale.
+        """
+        chosen: list[Placement] = []
+
+        def choose(slots: list[RequestSlot]) -> RequestSlot | None:
+            chosen.append(place(entry, slots, self._similarity))
+            return chosen[0].slot
+
+        self.bridge.insert_request(entry, self._horizon(), choose)
+        return chosen[0]
 
     def _coming_up(self, entry: IndexEntry) -> bool:
         return any(e.path == entry.path for e in self.bridge.coming_up())
@@ -673,7 +781,7 @@ class RequestDesk:
                 "The station has many requests waiting already. Please try again later.",
                 retry_after=600,
             )
-        placement = self._placement(entry)
+        placement = self._queue_where_it_fits(entry) if auto else self._placement(entry)
         if placement.slot is None:
             return Outcome(
                 409,
@@ -685,7 +793,6 @@ class RequestDesk:
         self.accepted.hit(address)
         if auto:
             slot = placement.slot
-            self.bridge.queue_insert(entry.path, slot.position)
             self._on_queued()
             request = self.book.add(entry, name, QUEUED, placement.note)
             logger.info("Listener request queued: %s (%s)", entry.display_name, placement.note)
@@ -731,12 +838,24 @@ class RequestDesk:
             "recent": [request.public() for request in self.book.recent()[:20]],
         }
 
-    def _waiting(self, request_id: str) -> tuple[ListenerRequest, IndexEntry]:
+    def _pending(self, request_id: str) -> ListenerRequest:
+        """The waiting request with *request_id*; one past the 3-hour rule expires first.
+
+        Raises:
+            KeyError: No request with that id is waiting (or it just expired).
+        """
         if not REQUEST_ID.fullmatch(request_id):
             raise KeyError(request_id)
-        request = self.book.get(request_id)
+        with self.book.lock:
+            if self.book.tidy():
+                self.book.save()
+            request = self.book.get(request_id)
         if request is None or request.status != PENDING:
             raise KeyError(request_id)
+        return request
+
+    def _waiting(self, request_id: str) -> tuple[ListenerRequest, IndexEntry]:
+        request = self._pending(request_id)
         entry = self.bridge.entry_for_path(request.path)
         if entry is None:
             raise LookupError("The song is no longer in the library.")
@@ -752,13 +871,12 @@ class RequestDesk:
         """
         with self._lock:
             request, entry = self._waiting(request_id)
-            placement = self._placement(entry)
+            placement = self._queue_where_it_fits(entry)
             if placement.slot is None:
                 raise ValueError(
                     f"{entry.display_name} cannot be queued within the next "
                     f"{_minutes(self.cfg.window_minutes)}: {_join(placement.problems)}."
                 )
-            self.bridge.queue_insert(entry.path, placement.slot.position)
             self._on_queued()
             self.book.decide(request, QUEUED, placement.note)
             return request
@@ -773,10 +891,19 @@ class RequestDesk:
         """
         with self._lock:
             request, entry = self._waiting(request_id)
-            broken = self.bridge.dmca_queue_limits(entry, now=False, append=False)
-            if broken:
-                raise ValueError(f"DMCA mode: playing this song next would mean {_join(broken)}.")
-            self.bridge.queue_insert(entry.path, 0)
+            # The first place, after the playing song and any "play next"
+            # song; only DMCA limits stop it there.
+            first: list[RequestSlot] = []
+
+            def choose(slots: list[RequestSlot]) -> RequestSlot | None:
+                first.append(slots[0])
+                return None if slots[0].dmca else slots[0]
+
+            self.bridge.insert_request(entry, 0.0, choose)
+            if first[0].dmca:
+                raise ValueError(
+                    f"DMCA mode: playing this song next would mean {_join(first[0].dmca)}."
+                )
             self._on_queued()
             self.book.decide(request, QUEUED, "Play next, chosen by the operator.")
             return request
@@ -788,11 +915,7 @@ class RequestDesk:
             KeyError: No request with that id is waiting.
         """
         with self._lock:
-            if not REQUEST_ID.fullmatch(request_id):
-                raise KeyError(request_id)
-            request = self.book.get(request_id)
-            if request is None or request.status != PENDING:
-                raise KeyError(request_id)
+            request = self._pending(request_id)
             self.book.decide(request, REJECTED, "Turned down by the operator.")
             return request
 
@@ -818,16 +941,21 @@ def _minutes(minutes: int) -> str:
     return f"{minutes} minutes"
 
 
-#: Made when the server starts, shared by every station (a token names its station).
+#: Made when the server starts, shared by every station (a token names its
+#: station).  Every station's desk has its own TrackIds under this one key,
+#: so a song has the same id on every station.
 FORM_TOKENS = FormTokens()
-TRACK_IDS = TrackIds()
+TRACK_SECRET = secrets.token_bytes(32)
+TRACK_IDS = TrackIds(TRACK_SECRET)
 
 
 __all__ = [
     "FORM_TOKENS",
     "TRACK_IDS",
+    "TRACK_SECRET",
     "AddressLimiter",
     "Blocklist",
+    "Busy",
     "FormTokens",
     "ListenerRequest",
     "Outcome",
@@ -835,8 +963,10 @@ __all__ = [
     "RequestBook",
     "RequestDesk",
     "TrackIds",
+    "bounded",
     "clean_name",
     "fit",
+    "limit_key",
     "place",
     "rough_wait",
 ]

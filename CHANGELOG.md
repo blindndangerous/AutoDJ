@@ -36,7 +36,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     Queue & Search, which shows where each would fit and why. The card offers Approve, Play next
     and Turn down, says each result once and moves focus to the next request.
   - Listeners are only ever told roughly when a song may play. Songs are named by opaque ids, never
-    paths. Forms carry a signed, time-limited token and must come from the server's own origin.
+    paths. Each form carries a signed, time-limited token for its own song and must come from
+    the server's own origin. Limits count an IPv6 address with its whole /64. At most four
+    searches or request checks run at once, and listener names are dropped 30 days after the
+    decision.
 - A public player page and an embeddable player (#52), each off until `[player_page]` turns it
   on, per station. `/player` (or `/stations/<slug>/player`) has a Play button that becomes Stop,
   a labelled Volume slider remembered in the browser, the song playing, the next song when that is
@@ -771,6 +774,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- `[stream] trusted_proxies` now applies in every mode, not only in stream mode, so pairing, the
+  listener request limits and the audit log see a proxied client's own address there too. Trust
+  only a proxy that appends or overwrites `X-Forwarded-For`.
 - No page AutoDJ serves can be shown inside another site's frame any more, so a hostile page
   cannot overlay the web UI or a public page to trick a click (clickjacking). Every response now
   carries `Content-Security-Policy: frame-ancestors 'none'` (added to the page's own policy where

@@ -2466,13 +2466,15 @@ def serve(
         "port": port,
         "log_level": "warning",
     }
+    # Uvicorn rewrites request.client and scheme only for configured proxy
+    # peers, in every mode: the listener limits, the pairing lockout and the
+    # request page's per-address limits all key on the client address.
+    # Empty means a proxy on this machine, as Uvicorn trusts by default.
+    uvicorn_kwargs["proxy_headers"] = True
+    uvicorn_kwargs["forwarded_allow_ips"] = forwarded_allow_ips(cfg.stream.trusted_proxies)
     if stream or extra_stations:
         # HTTP/1.0 radio players need close-delimited audio, not chunked framing.
         uvicorn_kwargs["http"] = "h11"
-        # Uvicorn rewrites request.client and scheme only for configured proxy peers.
-        uvicorn_kwargs["proxy_headers"] = True
-        # Empty means a proxy on this machine, as Uvicorn trusts by default.
-        uvicorn_kwargs["forwarded_allow_ips"] = forwarded_allow_ips(cfg.stream.trusted_proxies)
         uvicorn_kwargs["timeout_graceful_shutdown"] = _STREAM_SHUTDOWN_GRACE_SECONDS
     reloaders: list[CertificateReloader] = []
     if ssl_certfile is not None and ssl_keyfile is not None:

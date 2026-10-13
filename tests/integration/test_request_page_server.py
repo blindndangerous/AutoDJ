@@ -247,3 +247,55 @@ def test_station_request_pages_are_public_only_for_a_configured_station(
 ) -> None:
     client = _client(bridge, tmp_path, enabled=True)
     assert client.get(path).status_code == status
+
+
+def test_play_next_counts_the_play_next_song_toward_dmca_limits(bridge, tmp_path: Path) -> None:
+    """The request plays after the "play next" song, so that song counts too."""
+    client = _client(bridge, tmp_path, token=False, enabled=True)
+    track, token = _confirm(client, 4)
+    assert _send(client, track, token).status_code == 200
+    (waiting,) = client.get("/api/requests").json()["pending"]
+    bridge.player._cfg.dmca = DmcaConfig(enabled=True)
+    state = bridge.player._state
+    # The playing song is from "Album": the request after it makes two in a
+    # row, which is allowed, but a "play next" song from it in between makes
+    # three.
+    state.queued_next = _song(5)
+    refused = client.post(f"/api/requests/{waiting['id']}/play-next", headers=ORIGIN)
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"].startswith("DMCA mode: playing this song next would mean")
+    assert state.queue == []
+    state.queued_next = None
+    queued = client.post(f"/api/requests/{waiting['id']}/play-next", headers=ORIGIN)
+    assert queued.status_code == 200, queued.text
+    assert [entry.path for entry in state.queue] == [_song(4).path]
+
+
+def test_a_token_for_one_song_cannot_send_another(bridge, tmp_path: Path) -> None:
+    client = _client(bridge, tmp_path, enabled=True)
+    _track, token = _confirm(client, 2)
+    other = TRACK_IDS.id_for(_song(3).path)
+    refused = _send(client, other, token)
+    assert refused.status_code == 403
+    assert "This form has expired" in refused.text
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("2001:db8:1:2::1", "2001:db8:1:2:ffff::9"),  # one IPv6 /64
+        ("::ffff:192.0.2.9", "192.0.2.9"),  # IPv4 written as IPv6
+    ],
+)
+def test_one_listener_cannot_rotate_addresses_past_the_limit(
+    bridge, tmp_path: Path, first: str, second: str
+) -> None:
+    _client(bridge, tmp_path, enabled=True, approval="auto", per_listener=1)
+    app = create_app(bridge)
+    one = TestClient(app, client=(first, 50000))
+    track, token = _confirm(one, 2)
+    assert _send(one, track, token).status_code == 200
+    two = TestClient(app, client=(second, 50001))
+    track, token = _confirm(two, 3)
+    limited = _send(two, track, token)
+    assert limited.status_code == 429, limited.text

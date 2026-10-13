@@ -82,15 +82,29 @@ def _history_entry(entry: Any, performances: int | None) -> dict:
     }
 
 
+#: The last search index built from an index without a library, by its snapshot.
+_SIM_INDEX: tuple[object, list[tuple[IndexEntry, str]]] | None = None
+
+
 def _search_index(library: Any, sim: Any) -> list[tuple[IndexEntry, str]]:
-    """Every music entry with its lowercased "title — artist — album" text."""
+    """Every music entry with its lowercased "title — artist — album" text.
+
+    Built once per entries snapshot, so callers that key a cache on the
+    list's identity (the listener request ids) do not rebuild it each time.
+    """
+    global _SIM_INDEX
     if library is not None:
         # Lowercased once per library snapshot, not once per search.
         return library.search_index()
-    return [
-        (entry, f"{entry.title} — {entry.artist} — {entry.album}".lower())
-        for entry in sim.entries_snapshot()
+    snapshot = sim.entries_snapshot()
+    cached = _SIM_INDEX
+    if cached is not None and cached[0] is snapshot:
+        return cached[1]
+    built = [
+        (entry, f"{entry.title} — {entry.artist} — {entry.album}".lower()) for entry in snapshot
     ]
+    _SIM_INDEX = (snapshot, built)
+    return built
 
 
 @dataclass(frozen=True)
@@ -103,6 +117,7 @@ class RequestSlot:
         before: The track it would follow, or ``None``.
         after: The queued track that would follow it, or ``None``.
         problems: The rules it would break there, in words ("same artist").
+        dmca: Those of *problems* that are DMCA limits.
     """
 
     position: int
@@ -110,6 +125,7 @@ class RequestSlot:
     before: IndexEntry | None
     after: IndexEntry | None
     problems: tuple[str, ...]
+    dmca: tuple[str, ...] = ()
 
 
 @dataclass
@@ -1451,8 +1467,8 @@ class PlayerBridge:
                 problems.append("same song")
             if (why := repeat.reason(entry)) is not None:
                 problems.append(why)
-            if dmca:
-                problems.extend(complement(records, when, keys).broken(entry))
+            broken = complement(records, when, keys).broken(entry) if dmca else ()
+            problems.extend(broken)
             slots.append(
                 RequestSlot(
                     position=position,
@@ -1460,6 +1476,7 @@ class PlayerBridge:
                     before=waiting[-1] if waiting else current,
                     after=queue[position] if position < len(queue) else None,
                     problems=tuple(problems),
+                    dmca=tuple(broken),
                 )
             )
         return slots
@@ -1472,6 +1489,28 @@ class PlayerBridge:
             waiting.extend(state.queue)
         current = state.current_track
         return [current, *waiting] if current is not None else waiting
+
+    def insert_request(
+        self,
+        entry: IndexEntry,
+        horizon_s: float,
+        choose: Callable[[list[RequestSlot]], RequestSlot | None],
+    ) -> RequestSlot | None:
+        """Work out *entry*'s places, let *choose* pick one, and queue it there.
+
+        All under the queue's lock, so the queue cannot change between the
+        projection and the insert.  ``None`` (and nothing queued) when
+        *choose* picks no place.
+        """
+        state = self.player._state
+        with state.queue_lock:
+            slot = choose(self.request_slots(entry, horizon_s))
+            if slot is not None:
+                self._capture_pre_queue_seed()
+                state.queue.insert(min(slot.position, len(state.queue)), entry)
+                self._refresh_bus_queue()
+                self._sync_next_for_prefetch()
+            return slot
 
     def queue_insert(self, path: str, position: int) -> bool:
         """Put a track by path at *position* of the user queue (0 plays first)."""

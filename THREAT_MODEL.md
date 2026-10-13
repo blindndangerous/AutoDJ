@@ -63,8 +63,8 @@ its certificate against the domain (`originServerName`), with Cloudflare Access 
 one-time PIN policy) in front and `cloudflared` set to refuse requests without a valid Access
 token; see [docs/operations.md](docs/operations.md#https-with-your-own-domain). Access decides
 who reaches AutoDJ at all; AutoDJ's pairing and Host and Origin checks still apply behind it.
-Every tunnelled request arrives from the `cloudflared` machine's address. In stream mode, without
-a matching `trusted_proxies` entry, the per-address pairing lockout counts all remote browsers as one
+Every tunnelled request arrives from the `cloudflared` machine's address. Without a matching
+`[stream] trusted_proxies` entry (which applies in every mode), the per-address pairing lockout counts all remote browsers as one
 client, and someone who passed Access could use up that budget and delay other remote pairings
 for one code window. Never expose AutoDJ to
 the internet without Access, including through port forwarding.
@@ -600,7 +600,7 @@ What a visitor can do, and the limits on it:
 - **Search the library.** Results are at most 20 songs, showing only title, artist and album.
   Songs in blocked folders or by blocked artists are left out. A search needs 2 to 100 characters
   and is matched as plain words in memory, never as SQL, a pattern or a path. Each address may run
-  30 searches a minute. The library's titles become readable to anyone who can reach the page;
+  30 searches a minute, and the same words within 30 seconds are answered from memory. The library's titles become readable to anyone who can reach the page;
   the operator accepts that by turning requests on, and the blocklists keep chosen folders and
   artists out.
 - **Name a song.** Songs are named by an opaque id: a keyed BLAKE2b hash of the file path, under
@@ -613,13 +613,19 @@ What a visitor can do, and the limits on it:
   printable characters, and HTML-escaped wherever it is shown, to the operator too.
 - **Cross-site posts.** These are refused twice. Like every unsafe request, the POST must carry
   exactly one allowed `Origin`. The form also carries a signed token: an HMAC-SHA256 of the
-  station's name and the time it was issued, under a per-process key. The token is good for two
-  hours and only for that station. There is no session and no cookie, and the page sends
+  station's name, the song's id and the time it was issued, under a per-process key. The token is
+  good for two hours, only for that station and only for that song, so a token from one form
+  cannot send a request for another song. There is no session and no cookie, and the page sends
   `Cache-Control: no-store`.
 - **Abuse limits, with no CAPTCHA.** Each address may make 10 form posts per ten minutes, and
-  `per_listener` accepted requests per `per_listener_minutes`. The station has a daily cap,
+  `per_listener` accepted requests per `per_listener_minutes`. Every limit counts an IPv6 address
+  with its whole /64, so a host cannot rotate through the addresses of its own /64 to get past
+  them, and counts an IPv4-mapped IPv6 address as its IPv4 address. The station has a daily cap,
   `daily_limit`, and a cap on requests waiting, `max_pending`. Over a limit the answer is 429 with
-  `Retry-After`. The per-address tables keep at most 4096 addresses and forget idle ones.
+  `Retry-After`. The per-address tables keep at most 4096 addresses and forget idle ones. At most
+  four searches or request checks run at once across every station (a bounded semaphore); one
+  that cannot start within two seconds gets 503 "busy", so a flood cannot hold every worker thread
+  while the player needs one.
 - **What cannot be bypassed.** Each accepted request still has to keep the repeat rules and, in
   DMCA mode, the DMCA limits at the place it would play. It is never played at once or at a set
   time, and with `approval = "manual"` (the default) nothing reaches the queue until the operator
@@ -630,7 +636,9 @@ as for the listener limits, so one visitor behind a shared address can use up th
 allowance for everyone behind it. Many addresses (a botnet) can still fill the daily cap. That
 denies requests for the day but nothing else, since the operator decides in manual mode.
 Listener addresses are held in memory only, never written to `listener_requests.json` or logs.
-The file keeps titles, names, times and the decision. The page's policy is `default-src 'none';
+The file keeps titles, names, times and the decision. A listener's name is removed 30 days after
+its request was decided, whatever the number of decisions kept; pending requests expire after
+three hours and cannot be approved after that. The page's policy is `default-src 'none';
 script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors
 'none'`, with `X-Frame-Options: DENY`, `nosniff` and `no-referrer`.
 
