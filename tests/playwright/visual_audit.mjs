@@ -62,6 +62,16 @@
 //     WCAG 2.2 A/AA rules, the theme applied, and every focus stop's
 //     outline 3:1; in the System light mode reflow at 320 px and 200 %
 //     text.
+//   - the player pages, where the server has them turned on: /player and
+//     /embed, and each listed station's /stations/<slug>/player and
+//     /embed: the same checks, plus every control's boundary 3:1
+//     (1.4.11).  The embed follows the system theme, not the web UI's
+//     stored choice, and ?theme=light or ?theme=dark pins it.  Once per
+//     page: nothing plays or loads on its own, the browser's own audio
+//     controls are swapped for a Play button and a labelled Volume slider
+//     (when the station streams), the slider moves with the arrow keys
+//     and reads its value as a percentage without moving focus or
+//     announcing anything, and the song line is the only live region.
 //
 // Set AUTODJ_URL=http://host:port before running, e.g.:
 //   AUTODJ_URL=http://localhost:8080 node tests/playwright/visual_audit.mjs
@@ -1164,22 +1174,33 @@ async function previewOutputProblems(page) {
   return problems;
 }
 
-// The public status pages to audit: the default station's, and each
-// station's that the station list names (a paired or open server lists
-// them; otherwise only /status is audited).
-async function statusPagePaths(page) {
+// The public pages to audit: the default station's, and each station's
+// that the station list names (a paired or open server lists them;
+// otherwise only the default station's are audited).  Each status page,
+// and its player page and embed where the server answers for them (they
+// are off unless [player_page] turns them on, and 404 then).
+async function publicPagePaths(page) {
   await page.goto(`${BASE}/status`, { waitUntil: "networkidle", timeout: 20000 });
-  const listed = await page.evaluate(async () => {
+  return page.evaluate(async () => {
+    let listed = [];
     try {
       const response = await fetch("/api/stations", { headers: { Accept: "application/json" } });
-      if (!response.ok) return [];
-      const body = await response.json();
-      return (body.stations || []).map((station) => station.status_path).filter(Boolean);
-    } catch {
-      return [];
+      if (response.ok) {
+        const body = await response.json();
+        listed = (body.stations || []).map((station) => station.status_path).filter(Boolean);
+      }
+    } catch { /* not listed: the default station only */ }
+    const pages = [];
+    for (const status of new Set(["/status", ...listed])) {
+      pages.push({ path: status, kind: "status" });
+      for (const kind of ["player", "embed"]) {
+        const path = status.replace(/status$/, kind);
+        const response = await fetch(path, { method: "HEAD" });
+        if (response.status !== 404) pages.push({ path, kind });
+      }
     }
+    return pages;
   });
-  return [...new Set(["/status", ...listed])];
 }
 
 function statusThemeState(page) {
@@ -1193,18 +1214,86 @@ function statusThemeState(page) {
   });
 }
 
-// Every status page in every theme mode, then the layout checks.
+// A player page, once: nothing plays on its own, the script's own
+// controls replace the browser's, and the Volume slider works from the
+// keyboard without moving focus or saying anything.
+async function playerBehaviourProblems(page) {
+  const problems = [];
+  const before = await page.evaluate(() => {
+    const audio = document.getElementById("player-audio");
+    const toggle = document.getElementById("player-toggle");
+    return {
+      audio: Boolean(audio),
+      autoplay: audio?.hasAttribute("autoplay"),
+      paused: audio ? audio.paused : true,
+      // currentSrc keeps a stale value after the source is dropped; what
+      // matters is that nothing is fetched or buffered.
+      loading: audio
+        ? audio.networkState === audio.NETWORK_LOADING || audio.readyState > 0
+          || audio.hasAttribute("src")
+        : false,
+      nativeControls: audio?.hasAttribute("controls"),
+      toggle: toggle && !toggle.closest("[hidden]") ? toggle.textContent.trim() : null,
+      volumeLabel: document.querySelector('label[for="player-volume"]')?.textContent.trim(),
+      live: [...document.querySelectorAll('[aria-live]:not([aria-live="off"])')].map((node) => node.id),
+      status: [...document.querySelectorAll('[role="status"]')].map((node) => node.id),
+    };
+  });
+  if (!before.audio) {
+    // A station that does not stream says so in words instead.
+    const said = await page.evaluate(() => /not streaming right now/.test(document.body.textContent));
+    if (!said) problems.push("no player and no reason given");
+    return problems;
+  }
+  if (before.autoplay) problems.push("audio has autoplay");
+  if (!before.paused || before.loading) problems.push("audio loads or plays before Play is pressed");
+  if (before.nativeControls) problems.push("the browser's own controls still show");
+  if (before.toggle !== "Play") problems.push(`Play button reads ${JSON.stringify(before.toggle)}`);
+  if (before.volumeLabel !== "Volume") problems.push("Volume slider has no visible label");
+  if (before.live.join() !== "status-now") problems.push(`live regions ${before.live.join()}`);
+  if (before.status.join() !== "player-state") problems.push(`status regions ${before.status.join()}`);
+  // From wherever this browser left it (it is remembered per site).
+  const start = Number(await page.locator("#player-volume").inputValue());
+  const expected = String(Math.max(0, start - 10));
+  await page.locator("#player-volume").focus();
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  const after = await page.evaluate(() => {
+    const volume = document.getElementById("player-volume");
+    return {
+      focused: document.activeElement === volume,
+      value: volume.value,
+      text: volume.getAttribute("aria-valuetext"),
+      shown: document.getElementById("player-volume-value").textContent,
+      said: document.getElementById("player-state").textContent,
+    };
+  });
+  if (!after.focused) problems.push("the Volume slider lost focus");
+  if (after.value !== expected || after.text !== `${expected}%` || after.shown !== `${expected}%`) {
+    problems.push(`Volume after two Left arrows ${JSON.stringify(after)}`);
+  }
+  if (after.said) problems.push(`moving the slider said ${JSON.stringify(after.said)}`);
+  return problems;
+}
+
+// Every public page in every theme mode, then the layout checks.
 async function auditStatusPages(browser, out) {
   const probe = await browser.newContext({ bypassCSP: true });
-  const paths = await statusPagePaths(await probe.newPage());
+  const pages = await publicPagePaths(await probe.newPage());
   await probe.close();
-  out.statusPaths = paths;
+  out.statusPaths = pages.map(({ path }) => path);
   for (const mode of THEME_MODES) {
     const context = await themeContext(browser, mode);
     const page = await newPage(context);
     page.on("pageerror", (error) => out.pageerrors.push(`${mode.name} status: ${error.message}`));
+    // The embed follows its host, not the web UI's stored theme: the
+    // system's, or the one ?theme= pins against the system's.
+    const pin = mode.colorScheme === "dark" ? "light" : "dark";
+    const visits = pages.flatMap(({ path, kind }) => (kind === "embed" && !mode.stored
+      ? [{ path, kind }, { path: `${path}?theme=${pin}`, kind, pinned: pin }]
+      : [{ path, kind }]));
     try {
-      for (const path of paths) {
+      for (const { path, kind, pinned } of visits) {
         const where = `${mode.name} ${path}`;
         // A stopped station's page answers 503 and is still a whole page.
         await page.goto(`${BASE}${path}`, { waitUntil: "networkidle", timeout: 20000 });
@@ -1213,11 +1302,20 @@ async function auditStatusPages(browser, out) {
         for (const violation of await axeViolations(page)) {
           problems.push(`axe ${violation.id}: ${violation.targets.join(", ")}`);
         }
+        const theme = kind === "embed" ? pinned || null : mode.stored;
+        const dark = kind === "embed"
+          ? (pinned || mode.colorScheme) === "dark"
+          : mode.theme === "dark";
         const state = await statusThemeState(page);
-        if (state.theme !== mode.stored) problems.push(`data-theme ${state.theme}`);
-        if (state.dark !== (mode.theme === "dark")) problems.push(`background not ${mode.theme}`);
+        if (state.theme !== theme) problems.push(`data-theme ${state.theme}`);
+        if (state.dark !== dark) problems.push(`background not ${dark ? "dark" : "light"}`);
         await installContrastHelpers(page);
+        if (kind !== "status") problems.push(...await controlBoundaryProblems(page));
         problems.push(...await focusProblems(page, "body", { measureColour: true }));
+        if (kind !== "status" && mode.name === "system-light" && !pinned) {
+          await page.reload({ waitUntil: "networkidle" });
+          problems.push(...await playerBehaviourProblems(page));
+        }
         if (problems.length) out.statusPage[where] = problems;
       }
     } finally {
@@ -1239,7 +1337,7 @@ async function auditStatusPages(browser, out) {
     }
     const page = await newPage(context);
     try {
-      for (const path of paths) {
+      for (const { path } of pages) {
         await page.goto(`${BASE}${path}`, { waitUntil: "networkidle", timeout: 20000 });
         const overflow = await horizontalOverflow(page);
         if (overflow) out.statusPage[`${label} ${path}`] = [JSON.stringify(overflow)];

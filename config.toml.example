@@ -614,6 +614,17 @@ show_next = false
 # Recent completed songs in the feed, from 0 to 20.
 history_limit = 5
 
+# Public player page at /player, where listeners press Play to hear the stream
+# in the browser, and a compact version at /embed for other websites. Both off
+# by default; each answers 404 while it is off. See "Player page and embeddable
+# player" in docs/operations.md.
+[player_page]
+enabled = false
+embed = false
+# Sites that may show /embed in a frame, such as "https://nightowlradio.example",
+# or "*" for any site. Empty: only this server's own pages.
+embed_origins = []
+
 # Webhook destinations belong ONLY in config.local.toml because URLs can hold
 # tokens. Example for that file:
 # [[webhooks]]
@@ -633,7 +644,8 @@ history_limit = 5
 #
 # A station starts from the defaults, not from the sections above: set
 # everything it needs here.  Its sections are playback, djmix, transitions,
-# replaygain, stream, recording, nowplaying, time_checks, breaks, dmca and presets.*;
+# replaygain, stream, recording, nowplaying, player_page, time_checks, breaks, dmca
+# and presets.*;
 # library, index, model, huggingface and server are shared and read only from
 # the root.  Another station always streams (stream.enabled is ignored), and
 # stream.trusted_proxies comes from the root [stream] section.  Its recording

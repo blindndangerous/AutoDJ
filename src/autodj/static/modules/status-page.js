@@ -97,11 +97,16 @@ function fetchFeed(url) {
   return requestJson(url, { cache: "no-cache", headers: { Accept: "application/json" } });
 }
 
+// The player pages (player-page.js) share this loop: they pass their own
+// page title and onFeed, which gets each live feed after the text above
+// is updated.
 export function startStatusPage({
   doc = document,
   load = () => fetchFeed(feedUrl(doc)),
   setTimer = (callback, ms) => setTimeout(callback, ms),
   clearTimer = (id) => clearTimeout(id),
+  title = (station) => `${station}: station status`,
+  onFeed = () => {},
 } = {}) {
   const els = {
     station: doc.getElementById("status-station"),
@@ -129,8 +134,8 @@ export function startStatusPage({
   function apply(feed) {
     const station = String(feed.station_name || "AutoDJ");
     setText(els.station, station);
-    const title = `${station}: station status`;
-    if (doc.title !== title) doc.title = title;
+    const pageTitle = title(station);
+    if (doc.title !== pageTitle) doc.title = pageTitle;
     const key = trackKey(feed.current_track);
     if (key !== lastKey) {
       lastKey = key;
@@ -143,6 +148,7 @@ export function startStatusPage({
     setText(els.listeners, listenersText(feed.listener_count));
     setText(els.peak, listenersText(feed.peak_listeners_today));
     setText(els.uptime, uptimeText(feed.uptime_seconds));
+    onFeed(feed);
   }
 
   // Each poll owns the loop until a newer one starts (Resume, or the tab
@@ -218,6 +224,8 @@ export function startStatusPage({
   };
 }
 
-if (typeof document !== "undefined" && document.getElementById("status-now")) {
+// The status page only: the player pages carry the same ids and start the
+// loop themselves.
+if (typeof document !== "undefined" && document.body?.dataset.page === "status") {
   startStatusPage();
 }

@@ -1,6 +1,6 @@
 # Threat model: AutoDJ
 
-Last reviewed: 2026-10-11. Re-review every major release.
+Last reviewed: 2026-10-13. Re-review every major release.
 
 ## Scope and trust boundaries
 
@@ -485,6 +485,27 @@ can read it) and its page answers 503 with its name and "off air". Like the stre
 shows that the slug exists and gives the station's configured name; that is accepted, since a
 station's name is public whenever it is on air. Listener Basic credentials protect only a
 station's stream, never its feed or page, as for the default station.
+
+The player page and embeddable player (`GET|HEAD /player` and `/embed`, and
+`/stations/<slug>/player` and `/embed` for a configured slug) are public in the same way as the
+status page, but each answers 404 until the station's `[player_page] enabled` or `embed` turns it
+on, so a station exposes nothing new by default. They render the same public snapshot as the
+status page, HTML-escaped, plus the station's public stream path; never a file path, credential,
+token, internal host or pairing state. A station's listener password is never put in either page:
+the browser asks the listener, as any radio player would. The pages have no forms and no controls
+beyond listening; their script fetches only the feed named in `data-feed` and plays only the
+`.mp3` path named in `data-stream`, each refused unless it is a path that resolves to the page's
+own origin, and the policy (`default-src 'none'; script-src 'self'; style-src 'self';
+connect-src 'self'; media-src 'self'; base-uri 'none'; form-action 'none'`) refuses anything
+else. Nothing loads or plays until the listener presses Play, and Stop closes the connection, so
+an open page does not hold a listener slot; listener limits, bans and Basic credentials apply to
+the stream exactly as for any other player. The full page adds `frame-ancestors 'none'` and
+`X-Frame-Options: DENY`. The embeddable player is made to be framed: its `frame-ancestors` is
+`'self'` plus the origins in `embed_origins` (checked as canonical `http(s)://host[:port]`
+origins at startup, so a value cannot inject other directives), or `*` when the operator lists
+`"*"`. Clickjacking it can at most start or stop playback in the visitor's own browser, which
+changes nothing on the server. Its `?theme=` parameter is accepted only as `light` or `dark`,
+and anything else is ignored. The volume is kept in the visitor's own browser storage.
 
 Configured webhooks make outbound HTTP requests to operator-chosen URLs after track
 changes. Each station has its own (`[[stations.<slug>.webhooks]]`), which receive only that

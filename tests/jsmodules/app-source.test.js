@@ -2731,11 +2731,13 @@ describe("stream mode", () => {
       "modules/audio-engine.js: _master.connect(_ctx.destination);",
     ]);
     // The decks play through the master; the stream sets the page level
-    // on its element first.  A new play() must be added here on purpose.
+    // on its element first.  The public player page (not the web UI) has
+    // its own Volume slider.  A new play() must be added here on purpose.
     expect(found.plays.map((line) => line.replace(/^([^:]+):.*\| /, "$1: "))).toEqual([
       "modules/audio-engine.js: return deck.audio.play().catch((err) => {",
       "modules/audio-engine.js: await deck.audio.play();",
       "modules/library-folders.js: await preview.play();",
+      "modules/player-page.js: started = audio.play();",
       "modules/stream-mode.js: await audio.play();",
       // Listen back: a preview in the page, which follows the page level
       // or plays on the Preview output device.

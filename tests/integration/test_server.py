@@ -24,7 +24,7 @@ from urllib.parse import urlencode
 
 import pytest
 
-from autodj.config import ServerConfig, TimeChecksConfig
+from autodj.config import PlayerPageConfig, ServerConfig, TimeChecksConfig
 from autodj.repeat_settings import RepeatRule, RepeatSettings
 from autodj.server import PlayerBridge, create_app
 from autodj.settings_bodies import PlaybackSettingsBody
@@ -1988,12 +1988,15 @@ class TestServeFunction:
             cfg=SimpleNamespace(
                 index=SimpleNamespace(active_dir=tmp_path / "main"),
                 playback=SimpleNamespace(stereotool_preset="included", liners_folder=None),
+                player_page=PlayerPageConfig(enabled=True),
             ),
         )
         captured = self._serve_capturing_player(tmp_path, stations=(spec,), no_playback=True)
         (extra,) = captured["create_app_kwargs"]["extra_stations"]
         assert (extra.slug, extra.name, extra.autostart) == ("nightowl", "Night Owl Radio", False)
         assert extra.paths.state_dir == tmp_path / "main" / "stations" / "nightowl"
+        # Its pages answer while it is stopped, so the stand-in keeps its settings.
+        assert extra.player_page == PlayerPageConfig(enabled=True)
         # The default station is browser-driven, but radio players still need h11.
         assert captured["create_app_kwargs"]["stream_mode"] is False
         assert captured["uvicorn_kwargs"]["http"] == "h11"
