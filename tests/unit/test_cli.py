@@ -91,6 +91,16 @@ def _make_sim(n: int = 5) -> MagicMock:
     return sim
 
 
+@pytest.fixture(autouse=True)
+def _no_serve_lock(request):
+    """Serve tests use mock configurations: no real index folder to lock (#70)."""
+    if request.cls is not None and request.cls.__name__ == "TestClaimIndexForServe":
+        yield
+        return
+    with patch("autodj.cli._claim_index_for_serve"):
+        yield
+
+
 def _make_cfg(beets_db=None) -> MagicMock:
     cfg = MagicMock()
     cfg.library.beets_db = beets_db
@@ -1362,3 +1372,59 @@ def test_third_party_info_logs_are_quiet_unless_verbose() -> None:
     CliRunner().invoke(cli, ["-v", "doctor", "--help"])
     for name in ("faiss.loader", "httpx"):
         assert logging.getLogger(name).getEffectiveLevel() == logging.DEBUG
+
+
+# ---------------------------------------------------------------------------
+# serve: a half-restored index and the serve lock (#70)
+# ---------------------------------------------------------------------------
+
+
+class TestClaimIndexForServe:
+    def _ctx(self):
+        closers = []
+        ctx = MagicMock()
+        ctx.call_on_close.side_effect = closers.append
+        return ctx, closers
+
+    def test_holds_the_lock_until_the_command_ends(self, tmp_path: Path) -> None:
+        from autodj.backup import server_running
+        from autodj.cli import _claim_index_for_serve
+
+        ctx, closers = self._ctx()
+        _claim_index_for_serve(ctx, tmp_path / "default")
+        assert server_running(tmp_path / "default")
+        for close in closers:
+            close()
+        assert not server_running(tmp_path / "default")
+
+    def test_refuses_a_second_server_on_the_same_index(self, tmp_path: Path) -> None:
+        from autodj.cli import _claim_index_for_serve
+
+        ctx, closers = self._ctx()
+        _claim_index_for_serve(ctx, tmp_path / "default")
+        try:
+            with pytest.raises(SystemExit):
+                _claim_index_for_serve(self._ctx()[0], tmp_path / "default")
+        finally:
+            for close in closers:
+                close()
+
+    def test_refuses_a_half_restored_index(self, tmp_path: Path) -> None:
+        from autodj.cli import _claim_index_for_serve
+
+        active = tmp_path / "default"
+        active.mkdir()
+        (active / ".autodj-restore.json").write_text('{"state": "installing", "steps": []}')
+        with pytest.raises(SystemExit):
+            _claim_index_for_serve(self._ctx()[0], active)
+
+    def test_starts_with_only_old_copies_left(self, tmp_path: Path) -> None:
+        from autodj.cli import _claim_index_for_serve
+
+        active = tmp_path / "default"
+        active.mkdir()
+        (active / ".autodj-restore.json").write_text('{"state": "installed", "steps": []}')
+        ctx, closers = self._ctx()
+        _claim_index_for_serve(ctx, active)
+        for close in closers:
+            close()

@@ -589,7 +589,10 @@ What a listener can and cannot do:
   does not cover another, and the listener slots of all stations add up. Starting and stopping
   a station (`POST /api/stations/<slug>/start` and `/stop`) and the station list
   (`/api/stations`) need pairing, which is still server-wide: a paired browser controls every
-  station. Slugs are checked against a strict pattern before they name a folder.
+  station. Slugs are checked against a strict pattern before they name a folder. The web page's
+  station switcher is only a choice of addresses in that browser: it grants nothing, and each
+  request still passes the same session check. With several stations, each station's socket
+  push to its paired pages also carries the station list, the same fields as `/api/stations`.
 
 What the operator should know:
 
@@ -756,16 +759,47 @@ its publication lock and `dj_meta.db` through SQLite's backup API. The archive i
 temporary file and renamed into place, and it may not be written inside the liners, profiles or
 uploaded preset folder.
 
+With several stations, the archive also holds each other station's state files and folders
+under `stations/<slug>/`, including its `listener_bans.json` and `recording.json`, and the
+manifest lists the stations. A folder shared with another station is stored once. The backup
+may not be written inside any station's folders either. Every station's state files are copied
+under the index's publication lock together with the index generation; each SQLite database is
+copied through SQLite's backup API, which gives a consistent copy of that database a moment
+later, and the generation is checked against its digests after the lock is released. Backups skip
+AutoDJ's own temporary and set-aside files and check the free space first. A link that leaves
+its folder (a file link pointing elsewhere, a state file linked elsewhere, or any linked
+subfolder, symbolic link or Windows junction) makes the backup fail with the link's name, so a
+link cannot pull another file on the machine into an archive; a file link within the same folder
+is read as that file. Hard-linked files are also refused because their other names may be outside
+the backup folder. Restore refuses links stored in an archive and destinations that a link takes
+outside their folder, and it removes a link or junction it set aside as a link, never walking into
+its target.
+
 Restore requires a backup from the same major and minor version. It refuses member names that
 are absolute, contain `..`, backslashes or drive letters, or fall outside the known index files,
 liners, profiles and uploaded Stereo Tool presets, and it refuses an archive whose files differ
-from its manifest.
+from its manifest. A `stations/<slug>/` member is accepted only for a slug that matches the
+station-name pattern (so it can never name a folder outside `stations/`), is not `default`, and
+is configured with a `[stations.<slug>]` table; a backup holding any other station is refused
+before anything is unpacked, as is one whose folders would land in the same place or hold one
+another or a state folder. Names Windows reserves for devices (`CON`, `PRN`, `AUX`, `NUL`,
+`CONIN$`, `CONOUT$`, `CLOCK$`, `COM1` to `COM9`, `LPT1` to `LPT9`, in any case and with any
+extension), names holding `*`, `?`, `"`, `<`, `>` or `|`, and names ending in a dot or a space are
+refused. Restored files keep the permission bits they were saved with, so a private file comes
+back private on Linux and macOS. An archive that declares more than 256 GiB, or more than the free space
+beside its destinations, is refused before anything is unpacked; a member never unpacks to more
+than its declared size.
 Every file is unpacked beside its destination and the index is checked before anything is
 replaced. Restored liners, profiles and uploaded preset folders replace the current ones whole.
 The index files
-are checked against the SHA-256 digests in their manifest; other files have no digests, and there
-are no free-space checks or rollback: an interrupted restore is run again. The operator must
-stop AutoDJ first, because restore cannot tell whether it runs. Filesystem locations remain
+are checked against the SHA-256 digests in their manifest; other files have no digests. Every
+file and folder that is replaced is first set aside, and a replacement that fails puts all of
+them back. Every step is written to a journal first, so a crash part way can be rolled back by
+`autodj doctor`, which asks first and moves rather than deletes; `autodj serve` refuses to start
+while a restore is half done. SQLite journal and WAL files beside a replaced database are set aside
+with it, so a stale journal is never replayed into a restored database. `autodj serve` holds a lock
+file in the index folder it serves, and restore refuses while it is held; an `autodj index` or
+`autodj analyse` run holds no such lock, so the operator stops those first. Filesystem locations remain
 trusted through operating-system ACLs. AutoDJ does not defend against an attacker who already
 controls them and can race filesystem operations.
 

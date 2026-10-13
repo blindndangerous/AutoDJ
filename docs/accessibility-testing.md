@@ -106,6 +106,15 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   politely, when the song changes, and nothing said on a poll that finds the same song; the next
   song shown only while it is allowed. With a station stopped, its page says it is off air, and
   an open page says so once when the station stops and says the song once when it is back.
+- Several stations (#70), with two configured: the Station button read as "Station: AutoDJ",
+  menu button, collapsed; Enter opening the menu on the checked station, read with its state
+  ("AutoDJ, on air, 2 listeners") and checked; the arrows, Home, End and a letter moving without
+  switching; Enter switching, with focus staying on the button (now named after the new
+  station) and the switch said once ("Now controlling ..."), the connection status saying
+  nothing more; Escape closing without switching; Skip, Play or Pause and the queue buttons
+  read with "On <station>" after their names; `c` and Shift+C; Listen here still playing the
+  station it started on, with its "Playing ..." line; and a stopped station's "Off air" said
+  once, with Start reachable on Now Playing.
 - The listener request page (`/requests`), without JavaScript:
   - The search field is read with its label. A refused search is read with its error, and the
     page title says "Error".

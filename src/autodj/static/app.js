@@ -19,6 +19,7 @@ import {
   captureAuthenticatedRequestEpoch,
   invalidateAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
+  isStaleStationReply,
   postJsonBestEffort,
   requestJson,
   requestJsonBestEffort,
@@ -44,6 +45,25 @@ import { installNowPlayingSettings } from "./modules/nowplaying-settings.js";
 import { createListenerControls } from "./modules/listener-controls.js";
 import { initSubtabs } from "./modules/subtabs.js";
 import { installThemeSetting } from "./modules/theme.js";
+import { confirmAction } from "./modules/confirm-dialog.js";
+import {
+  DEFAULT_STATION,
+  controllingText,
+  currentStation,
+  installStationSwitcher,
+  isOnAir,
+  knownStations,
+  rememberStationInAddress,
+  selectStation,
+  setKnownStations,
+  pinnedStationApi,
+  severalStations,
+  stationContextText,
+  stationEntry,
+  stationFromAddress,
+  stationName,
+  stationWsPath,
+} from "./modules/stations.js";
 
 if (isDebug()) {
   console.log("[autodj] debug logging ENABLED " +
@@ -157,7 +177,9 @@ const streamMode = createStreamMode({
   button: btnListen,
   idleNote: document.getElementById("stream-idle-note"),
   srStatus: document.getElementById("sr-status"),
-  fetchInfo: () => requestJson("/api/stream"),
+  // Listen here plays the station it was started on, whichever station the
+  // page controls later (#70); a reconnect asks that station again.
+  fetchInfo: () => requestJson(pinnedStationApi("/api/stream", listenStation)),
   // The stream never starts before it has the page's volume and mute.
   beforePlay: () => applyPageLevel(),
 });
@@ -168,9 +190,13 @@ const streamMode = createStreamMode({
 // to any tab, restarts playback only on a page that opted in here.
 let _playOptedIn = false;
 let _listenOptedIn = false;
+// The station Listen here plays: set when it starts.
+let listenStation = DEFAULT_STATION;
 btnListen.addEventListener("click", () => {
   _listenOptedIn = true;
+  if (!streamMode.isListening()) listenStation = currentStation();
   void streamMode.toggleListen();
+  renderListenContext();
 });
 // Settings subtabs (./modules/subtabs.js).  Stream shows only in stream mode.
 const settingsTabs = initSubtabs(document.getElementById("settings-tabs"));
@@ -227,6 +253,7 @@ let rotationTestControls = null;
 let hourPreviewControls = null;
 let cartWallControls = null;
 let voiceTrackerControls = null;
+let listenerRequestControls = null;
 let reconnectGeneration = 0;
 let reconnectTimer = null;
 
@@ -251,15 +278,19 @@ function stopProtectedPlayback() {
   resetTransitionCaches();
 }
 
-function clearProtectedSessionData() {
+// What one station showed: cleared when the page switches to another
+// station (#70), and as part of clearing a session that ended.  Listen
+// here, the page's own volume and mute, search and the shared library
+// views are not the station's, so they stay.
+function clearStationViews() {
   _seekController?.cancel();
-  streamMode.stop();
   streamSettings.reset();
   recordingControls.reset();
   nowPlayingSettings?.reset();
   listenerControls.reset();
   resetTrackCaches();
   historyRequest?.abort();
+  _histPlayingPath = null;
   resetLyricState();
   renderLyricsList(_lyricEls);
   loadCoverArt(null);
@@ -280,19 +311,8 @@ function clearProtectedSessionData() {
   }
   badgesRow.replaceChildren();
   renderPlayPause(false);
-  btnMute.innerHTML = '<span aria-hidden="true">🔊</span> Mute';
-  btnMute.setAttribute("aria-pressed", "false");
   btnDiscovery.style.display = "none";
   btnDiscovery.setAttribute("aria-pressed", "false");
-  volSlider.value = volSlider.defaultValue;
-  volPct.textContent = `${volSlider.value}%`;
-  volSlider.setAttribute("aria-valuetext", `${volSlider.value}%`);
-  // Silent until the next session's first state says otherwise.
-  _pageGain = 0;
-  _pageMuted = false;
-  _pageLevelSet = false;
-  applyPageLevel();
-  volAnnounce.textContent = "";
   for (const [slider, value] of [
     [eqLow, eqLowVal], [eqMid, eqMidVal], [eqHigh, eqHighVal],
   ]) {
@@ -309,25 +329,53 @@ function clearProtectedSessionData() {
   resetRepeatSettings(_repeatEls);
   _profileEls.list.replaceChildren();
   _profileEls.status.textContent = "";
-  _accessEls.list.replaceChildren();
-  _accessEls.status.textContent = "";
   queueAnnounce.textContent = "";
   resetSettingsState(_settingsEls());
   settingsStatus.textContent = "";
-  searchInput.value = "";
-  searchInput.dispatchEvent(new Event("input"));
-  registeredLibraryFolders = [];
-  libraryKind.value = "music";
-  libraryFoldersControls?.clearProtectedData();
   clockwheelPanelControls?.clearProtectedData();
-  categoriesPanelControls?.clearProtectedData();
+  // Shows are the station's own (#106).
   showsPanelControls?.clearProtectedData();
   schedulerPanelControls?.clear();
   rotationTestControls?.clear();
   hourPreviewControls?.clear();
   cartWallControls?.clear();
-  // Signing out stops a recording and lets the microphone go.
+  // Signing out or switching stations stops a recording and lets the
+  // microphone go.
   voiceTrackerControls?.clear();
+  listenerRequestControls?.clear();
+  _linerEls.lnFileList.replaceChildren();
+  _linerEls.lnFolderDisplay.textContent = "";
+  _linerEls.lnStatus.textContent = "";
+  _linerEls.lnBrowseStatus.textContent = "";
+  updateMediaSession({ current_track: null });
+  lastNextKey = null;
+  _lastWhyKey = "";
+  _lastDuration = 0;
+  document.title = pageTitle([]);
+}
+
+function clearProtectedSessionData() {
+  streamMode.stop();
+  clearStationViews();
+  btnMute.innerHTML = '<span aria-hidden="true">🔊</span> Mute';
+  btnMute.setAttribute("aria-pressed", "false");
+  volSlider.value = volSlider.defaultValue;
+  volPct.textContent = `${volSlider.value}%`;
+  volSlider.setAttribute("aria-valuetext", `${volSlider.value}%`);
+  // Silent until the next session's first state says otherwise.
+  _pageGain = 0;
+  _pageMuted = false;
+  _pageLevelSet = false;
+  applyPageLevel();
+  volAnnounce.textContent = "";
+  _accessEls.list.replaceChildren();
+  _accessEls.status.textContent = "";
+  searchInput.value = "";
+  searchInput.dispatchEvent(new Event("input"));
+  registeredLibraryFolders = [];
+  libraryKind.value = "music";
+  libraryFoldersControls?.clearProtectedData();
+  categoriesPanelControls?.clearProtectedData();
   const browseFolder = document.getElementById("library-folder");
   if (browseFolder) {
     const option = (value, label) => {
@@ -342,17 +390,8 @@ function clearProtectedSessionData() {
   for (const element of Object.values(_libEls)) {
     if (element && !element.matches("button, input")) element.textContent = "";
   }
-  _linerEls.lnFileList.replaceChildren();
-  _linerEls.lnFolderDisplay.textContent = "";
-  _linerEls.lnStatus.textContent = "";
-  _linerEls.lnBrowseStatus.textContent = "";
-  updateMediaSession({ current_track: null });
   _playOptedIn = false;
   _listenOptedIn = false;
-  lastNextKey = null;
-  _lastWhyKey = "";
-  _lastDuration = 0;
-  document.title = "AutoDJ";
 }
 
 function expireAuthenticatedSession() {
@@ -389,6 +428,8 @@ const BACKGROUND_FAILURE_MAX_MS = 60000;
 let lastBackgroundFailure = { message: "", at: 0, windowMs: 0 };
 
 function reportBackgroundRequestError(errorValue) {
+  // A reply for the station the page has just left says nothing (#70).
+  if (isStaleStationReply(errorValue)) return;
   const message = errorValue.message || String(errorValue);
   const now = Date.now();
   const repeated = lastBackgroundFailure.at !== 0
@@ -536,16 +577,13 @@ function applyState(s) {
     lastTrackKey = trackKey;
     // Update browser titlebar: "AutoDJ - Artist - Title - Album"
     const t = s.current_track;
+    const segs = [];
     if (t) {
-      const segs = [];
       if (t.artist) segs.push(t.artist);
       if (t.title)  segs.push(t.title);
       if (t.album)  segs.push(t.album);
-      segs.push("AutoDJ");
-      document.title = segs.join(" - ");
-    } else {
-      document.title = "AutoDJ";
     }
+    document.title = pageTitle(segs);
     // Reset lyric tracking — new track may have different lyrics
     resetLyricState(_lyricEls);
     // Refresh cover art and full lyric list for the new track
@@ -1204,7 +1242,9 @@ const _profileEls = {
   list:       document.getElementById("profile-list"),
   status:     document.getElementById("profiles-status"),
 };
-installProfiles(_profileEls, { getSettings: () => _lastState?.settings || null });
+const profileControls = installProfiles(_profileEls, {
+  getSettings: () => _lastState?.settings || null,
+});
 
 const _accessEls = {
   card:     document.getElementById("spanel-access"),
@@ -1291,15 +1331,20 @@ function authenticatedInteractionEnabled() {
     && !document.getElementById("auth-dialog")?.open;
 }
 
-function connectWS() {
+// quiet: a station switch, which is announced on its own; the pill only
+// changes colour until the new station's socket is live.
+function connectWS({ quiet = false } = {}) {
   if (!authenticatedActivityActive) return;
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  const ws = new WebSocket(`${proto}://${location.host}${stationWsPath()}`);
   const socketEpoch = captureAuthenticatedRequestEpoch();
+  const socketStation = currentStation();
   _ws = ws;
 
   if (transportDown) {
     showConnProgress("connecting", "Reconnecting\u2026");
+  } else if (quiet) {
+    if (connStatus.className !== "connecting") connStatus.className = "connecting";
   } else {
     setConnStatus("connecting", "Connecting\u2026");
   }
@@ -1310,6 +1355,7 @@ function connectWS() {
       transportDown = false;
       reconnectDelayMs = RECONNECT_BASE_MS;
       setConnStatus("connected", "Live");
+      setOffAir(false);
       if (recovered) showVisibleStatus("Reconnected.");
       _unreachableProbes = 0;
       _outageNoticeSaid = false;
@@ -1324,6 +1370,10 @@ function connectWS() {
     if (_ws !== ws || !isAuthenticatedRequestCurrent(socketEpoch)) return;
     try {
       const message = JSON.parse(ev.data);
+      if (Array.isArray(message.stations)) {
+        setKnownStations(message.stations);
+        renderStationContext();
+      }
       if (message.type === "cart" || message.type === "cart_changed") {
         cartWallControls?.event(message);
       } else if (message.type === "schedule_changed" || message.type === "schedule_run") {
@@ -1337,8 +1387,17 @@ function connectWS() {
   };
 
   ws.onclose = (event) => {
+    // A switch to another station closed it; the new station's socket is
+    // already open or opening (#70).
+    if (ws.closedForSwitch || socketStation !== currentStation()) return;
     _ws = null;
     if (!authenticatedActivityActive) return;
+    // The station was stopped (4409) or is no longer configured (4404):
+    // not a dropped link.  The page says so once and looks again quietly.
+    if (event.code === 4409 || event.code === 4404) {
+      stationWentOffAir();
+      return;
+    }
     if (handleWebSocketAuthenticationClose(event, {
       auth,
       onExpired: expireAuthenticatedSession,
@@ -1390,6 +1449,7 @@ function connectWS() {
   };
 
   ws.onerror = () => {
+    if (ws.closedForSwitch || socketStation !== currentStation()) return;
     // #conn-status is the single announcement path for transport state.
     // Writing the same sentence into the track-title region as well made
     // NVDA speak the outage three or four times every three seconds and
@@ -1406,6 +1466,297 @@ function connectWS() {
     setLinkUp(false);
   };
 }
+
+// ----------------------------------------------------------------
+// Stations (#70): the switcher, and what changes with the station
+// ----------------------------------------------------------------
+
+const pageHeading = document.getElementById("page-heading");
+const mainLandmark = document.getElementById("main-content");
+const stationContext = document.getElementById("station-context");
+const sharedContext = document.getElementById("shared-context");
+const offAirBox = document.getElementById("station-off-air");
+const offAirText = document.getElementById("station-off-air-text");
+const btnStationStart = document.getElementById("station-start");
+const btnStationStop = document.getElementById("station-stop");
+const stationStopRow = document.getElementById("station-stop-row");
+// The panels that show one station; their names add the station's.
+const STATION_PANELS = ["now", "queue", "carts", "voice", "track-info", "history", "settings"];
+let offAirTimer = null;
+let stationOffAir = false;
+
+const stationSwitcher = installStationSwitcher({
+  wrap: document.getElementById("station-switcher"),
+  button: document.getElementById("station-button"),
+  menu: document.getElementById("station-menu"),
+  onChoose: (slug) => void switchStation(slug),
+});
+
+// "Artist - Title - Night Owl Radio - AutoDJ": the station is named while
+// the server has several.
+function pageTitle(segments) {
+  const parts = [...segments];
+  const name = stationName();
+  if (severalStations() && name !== "AutoDJ") parts.push(name);
+  parts.push("AutoDJ");
+  return parts.join(" - ");
+}
+
+function setTextIfChanged(element, text) {
+  if (element && element.textContent !== text) element.textContent = text;
+}
+
+// Everything that names the station this page controls.
+function renderStationContext() {
+  stationSwitcher?.render();
+  const several = severalStations();
+  const name = stationName();
+  setTextIfChanged(pageHeading, several && name !== "AutoDJ" ? `AutoDJ: ${name}` : "AutoDJ");
+  setTextIfChanged(stationContext, stationContextText());
+  setTextIfChanged(sharedContext, several ? "Shared by all stations" : "");
+  if (several) mainLandmark?.setAttribute("aria-label", name);
+  else mainLandmark?.removeAttribute("aria-label");
+  for (const view of STATION_PANELS) {
+    const panel = document.querySelector(`section[data-view="${view}"][role="tabpanel"]`);
+    if (!panel) continue;
+    const label = several ? `tab-${view} station-name-label` : `tab-${view}`;
+    if (panel.getAttribute("aria-labelledby") !== label) panel.setAttribute("aria-labelledby", label);
+  }
+  setTextIfChanged(document.getElementById("station-name-label"), several ? name : "");
+  const other = currentStation() !== DEFAULT_STATION;
+  if (stationStopRow && stationStopRow.hidden === other) stationStopRow.hidden = !other;
+  setTextIfChanged(btnStationStop, `Stop ${name}`);
+  setTextIfChanged(btnStationStart, `Start ${name}`);
+  if (stationOffAir) setTextIfChanged(offAirText, `${name} is off air.`);
+  if (_lastState) document.title = pageTitle(titleSegments(_lastState.current_track));
+  renderListenContext();
+}
+
+function titleSegments(track) {
+  return track ? [track.artist, track.title, track.album].filter(Boolean) : [];
+}
+
+// Listen here says which station it plays once the page controls another.
+function renderListenContext() {
+  const elsewhere = streamMode.isListening() && listenStation !== currentStation();
+  const text = elsewhere ? `Playing ${stationName(listenStation)}` : "";
+  const note = document.getElementById("listen-station");
+  setTextIfChanged(note, text);
+  if (note && note.hidden === Boolean(text)) note.hidden = !text;
+}
+
+function setOffAir(offAir) {
+  stationOffAir = offAir;
+  if (offAirBox && offAirBox.hidden === offAir) offAirBox.hidden = !offAir;
+  if (offAir) setTextIfChanged(offAirText, `${stationName()} is off air.`);
+  if (!offAir && offAirTimer !== null) {
+    clearTimeout(offAirTimer);
+    offAirTimer = null;
+  }
+}
+
+// Whether the list loaded; a failure keeps the list the page had.
+async function refreshStationList() {
+  let loaded = false;
+  try {
+    const body = await requestJson("/api/stations");
+    setKnownStations(body.stations);
+    loaded = true;
+  } catch (errorValue) {
+    if (errorValue?.status !== 404) reportBackgroundRequestError(errorValue);
+  }
+  renderStationContext();
+  return loaded;
+}
+
+// The last station chosen in this browser, used when the address names
+// none; the address wins.  Storage that is blocked just forgets.
+const LAST_STATION_KEY = "autodj.station";
+function rememberLastStation(slug) {
+  try {
+    if (slug === DEFAULT_STATION) globalThis.localStorage?.removeItem(LAST_STATION_KEY);
+    else globalThis.localStorage?.setItem(LAST_STATION_KEY, slug);
+  } catch (_) {
+    // Not remembered; the address still keeps it for this tab.
+  }
+}
+function lastStation() {
+  try {
+    return stationFromAddress(`?station=${encodeURIComponent(
+      globalThis.localStorage?.getItem(LAST_STATION_KEY) || "")}`);
+  } catch (_) {
+    return null;
+  }
+}
+
+// The station this page controls has stopped: the connection pill, the
+// one transport announcement, says "Off air" once; Now Playing shows
+// Start; the page looks every 10 seconds whether it is back.
+function stationWentOffAir() {
+  clearStationViews();
+  setOffAir(true);
+  setConnStatus("error", "Off air");
+  scheduleOffAirCheck();
+}
+
+function scheduleOffAirCheck() {
+  if (offAirTimer !== null) clearTimeout(offAirTimer);
+  const station = currentStation();
+  offAirTimer = setTimeout(async () => {
+    offAirTimer = null;
+    if (station !== currentStation() || !authenticatedActivityActive) return;
+    await refreshStationList();
+    if (station !== currentStation()) return;
+    if (isOnAir(stationEntry())) void loadStation({ announce: false });
+    else scheduleOffAirCheck();
+  }, 10000);
+}
+
+// The station's state, or null while it is stopped.
+async function requestStationState() {
+  try {
+    return await requestJson("/api/status");
+  } catch (errorValue) {
+    if (errorValue?.status === 409 && currentStation() !== DEFAULT_STATION) return null;
+    throw errorValue;
+  }
+}
+
+// Every panel that shows the station asks it again.
+function refreshStationPanels() {
+  streamSettings.retryIfMissing();
+  void listenerControls.refresh();
+  void nowPlayingSettings?.load();
+  clockwheelPanelControls?.resume();
+  void clockwheelPanelControls?.refresh();
+  showsPanelControls?.resume();
+  void schedulerPanelControls?.refresh();
+  void rotationTestControls?.refresh();
+  hourPreviewControls?.resume();
+  void hourPreviewControls?.refresh();
+  void cartWallControls?.refresh();
+  void timeCheckControls?.refresh();
+  void voiceTrackerControls?.refresh();
+  void linerControls?.refresh();
+  void profileControls?.refresh();
+  void fetchHistory(1);
+  void libraryFoldersControls?.refreshIntros?.();
+}
+
+// Shows the station this page now controls: its state, its socket, its
+// panels.  Returns its state, or null when it is off air.
+async function loadStation({ announce = true } = {}) {
+  const station = currentStation();
+  let state = null;
+  try {
+    state = await requestStationState();
+  } catch (errorValue) {
+    if (station !== currentStation()) return null;
+    reportBackgroundRequestError(errorValue);
+  }
+  if (station !== currentStation()) return null;
+  if (state) {
+    setOffAir(false);
+    applyState(state);
+    if (!_ws) connectWS({ quiet: true });
+  } else {
+    stationWentOffAir();
+  }
+  refreshStationPanels();
+  if (announce) {
+    // Off air is said by the connection pill; this names the station.
+    announceStatus(document.getElementById("sr-status"), state
+      ? controllingText(stationEntry(), state.current_track ? fmtTrack(state.current_track) : null)
+      : `Now controlling ${stationName()}.`,
+    { dwellMs: 6000, force: true });
+  }
+  return state;
+}
+
+// The page's browser decks play the station they started on; the server
+// would never tell them about another.  Leaving the station stops them,
+// so the page asks first.
+async function confirmLeavingDecks(name) {
+  if (!(_lastBrowserPlayback && playbackEnabled)) return true;
+  const ok = await confirmAction(document, {
+    title: `Switch to ${name}?`,
+    message: `This page is playing ${stationName()} itself. Switching stops that music on this page; the station goes on for everyone else.`,
+    confirmLabel: "Switch and stop",
+  });
+  if (!ok) return false;
+  stopAllDecks();
+  stopActiveLiners();
+  resetTransitionCaches();
+  _playOptedIn = false;
+  return true;
+}
+
+async function switchStation(slug) {
+  if (slug === currentStation() || !authenticatedActivityActive) return;
+  const entry = knownStations().find((item) => item.slug === slug);
+  if (!entry) return;
+  if (!await confirmLeavingDecks(entry.name)) return;
+  if (slug === currentStation()) return;
+  selectStation(slug);
+  rememberStationInAddress(slug);
+  rememberLastStation(slug);
+  const socket = _ws;
+  _ws = null;
+  if (socket) {
+    socket.closedForSwitch = true;
+    if (socket.readyState <= WebSocket.OPEN) socket.close(1000, "Station switched");
+  }
+  invalidateReconnectAttempt();
+  transportDown = false;
+  reconnectDelayMs = RECONNECT_BASE_MS;
+  setOffAir(false);
+  clearStationViews();
+  streamMode.forgetEvents();
+  renderStationContext();
+  await loadStation();
+}
+
+btnStationStart?.addEventListener("click", () => void withDisabled(btnStationStart, async () => {
+  const station = currentStation();
+  const name = stationName();
+  try {
+    const entry = await requestJson(`/api/stations/${encodeURIComponent(station)}/start`,
+      { method: "POST" });
+    if (station !== currentStation()) return;
+    setKnownStations(knownStations().map((item) => (item.slug === station ? entry : item)));
+    announceStatus(document.getElementById("sr-status"), `${name} started.`,
+      { dwellMs: 4000, force: true });
+    await loadStation({ announce: false });
+    if (!stationOffAir) document.getElementById("btn-pause")?.focus();
+  } catch (errorValue) {
+    announceStatus(document.getElementById("sr-status"),
+      `Could not start ${name}. ${errorValue.message}`, { dwellMs: 6000, force: true, tone: "error" });
+  }
+}));
+
+btnStationStop?.addEventListener("click", async () => {
+  const station = currentStation();
+  if (station === DEFAULT_STATION) return;
+  const name = stationName();
+  const ok = await confirmAction(document, {
+    title: `Stop ${name}?`,
+    message: `${name} goes off air: its listeners and relays are disconnected and its recording ends. Other stations keep playing.`,
+    confirmLabel: "Stop station",
+  });
+  if (!ok || station !== currentStation()) return;
+  await withDisabled(btnStationStop, async () => {
+    try {
+      const reply = await requestJson(`/api/stations/${encodeURIComponent(station)}/stop`,
+        { method: "POST" });
+      const warnings = Array.isArray(reply.warnings) ? reply.warnings.join(" ") : "";
+      announceStatus(document.getElementById("sr-status"),
+        `${name} stopped.${warnings ? ` ${warnings}` : ""}`, { dwellMs: 6000, force: true });
+    } catch (errorValue) {
+      announceStatus(document.getElementById("sr-status"),
+        `Could not stop ${name}. ${errorValue.message}`, { dwellMs: 6000, force: true, tone: "error" });
+    }
+  });
+});
 
 // Behind Cloudflare Access, a sign-in that has expired turns every
 // request into a redirect to the sign-in page, which a page script
@@ -2008,6 +2359,16 @@ installHotkeys({
   speakHour: () => hourPreviewControls?.speakSummary(),
   isEnabled: authenticatedInteractionEnabled,
   shortcutToggle: document.getElementById("hotkeys-enabled"),
+  focusStationSwitcher: () => {
+    if (!severalStations()) return false;
+    stationSwitcher?.focus();
+    return true;
+  },
+  getStationText: () => (severalStations()
+    ? controllingText(stationEntry(), _lastState?.current_track ? fmtTrack(_lastState.current_track) : null)
+      .replace(/^Now controlling/, "Controlling")
+    : `This server has one station, ${stationName()}.`),
+  getStationPrefix: () => (severalStations() ? `${stationName()}: ` : ""),
   // In stream mode Play / Pause stops the station for every listener, so
   // Space and k toggle Listen here (this page only) instead.
   togglePlay:  () => {
@@ -2454,6 +2815,7 @@ import { installTimeChecks } from "./modules/time-checks.js";
 import { installListenerRequests } from "./modules/listener-requests.js";
 
 let timeCheckControls = null;
+let linerControls = null;
 
 const _linerEls = {
   lnEnabled:       document.getElementById("ln-enabled"),
@@ -2581,8 +2943,8 @@ function startAuthenticatedApp(initialState) {
       playBrowserClip(arrayBuf, duckDb, activeLinerSources, epoch),
   };
   timeCheckControls = installTimeChecks(linerAudio);
-  installListenerRequests();
-  installLiners(_linerEls, { postSettings, ...linerAudio });
+  listenerRequestControls = installListenerRequests();
+  linerControls = installLiners(_linerEls, { postSettings, ...linerAudio });
   // When the server mixes, it plays the cart itself and the page only
   // shows and announces it.
   cartWallControls = installCartWall(undefined, {
@@ -2598,16 +2960,60 @@ function startAuthenticatedApp(initialState) {
   void cartWallControls?.refresh();
   voiceTrackerControls = installVoiceTracker();
   void voiceTrackerControls?.refresh();
-  applyState(initialState);
-  connectWS();
+  if (initialState) {
+    applyState(initialState);
+    connectWS();
+  } else {
+    stationWentOffAir();
+  }
   // Opening the page straight at #history fires no hashchange, so the
   // table would sit empty until the user left the tab and came back.
   if (historyViewShown()) void fetchHistory(1);
 }
 
+// The first state: the station list, then the station named by
+// ?station= in the address (the default station without one).  A name
+// that is not configured falls back to the default station and says so.
+// The first state: the station list, then the station named by
+// ?station= in the address, or else the last one chosen in this browser
+// (the default station without either).  A name is called unknown only
+// when the list loaded and lacks it; without the list the choice is kept
+// and the list is asked for again.
+async function initialStationState() {
+  let loaded = await refreshStationList();
+  const fromAddress = stationFromAddress(location.search);
+  const asked = fromAddress || lastStation();
+  if (asked && asked !== DEFAULT_STATION) {
+    if (!loaded) loaded = await refreshStationList();
+    if (stationEntry(asked) || !loaded) {
+      selectStation(asked);
+      if (!fromAddress) rememberStationInAddress(asked);
+      if (!loaded) retryStationList();
+    } else {
+      rememberLastStation(DEFAULT_STATION);
+      if (fromAddress) {
+        rememberStationInAddress(DEFAULT_STATION);
+        announceStatus(document.getElementById("sr-status"),
+          `No station is called ${asked}. Showing ${stationName(DEFAULT_STATION)}.`,
+          { dwellMs: 8000, force: true, tone: "error" });
+      }
+    }
+  }
+  renderStationContext();
+  return requestStationState();
+}
+
+// Asks for the station list every 10 seconds until it loads.
+function retryStationList() {
+  setTimeout(async () => {
+    if (!await refreshStationList()) retryStationList();
+  }, 10000);
+}
+
 void bootstrapAuthenticatedApp({
   auth,
   startAuthenticatedApp,
+  requestState: initialStationState,
   // Startup failures are already plain sentences (api-client.js, auth.js).
   onError: errorValue => {
     setConnStatus("error", errorValue.message);

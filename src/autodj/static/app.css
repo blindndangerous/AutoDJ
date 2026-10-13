@@ -210,6 +210,73 @@
     #conn-status.connecting  { background: #e67e22; color: #000; }
     #conn-status.error       { background: var(--danger);  color: #fff; }
 
+    /* Station switcher (#70): a menu button in the banner.  The banner
+       wraps so the button never pushes the page sideways at 320 px. */
+    header { flex-wrap: wrap; }
+    .station-switcher { position: relative; }
+    #station-button .station-switcher-name { font-weight: 600; }
+    #station-button .station-switcher-caret { margin-left: 0.25rem; }
+    #station-menu {
+      position: absolute;
+      top: calc(100% + 0.25rem);
+      left: 0;
+      z-index: 50;
+      min-width: 16rem;
+      max-width: min(28rem, calc(100vw - 2rem));
+      list-style: none;
+      padding: 0.25rem;
+      background: var(--bg-card);
+      color: var(--text);
+      border: 1px solid var(--control-border);
+      border-radius: var(--radius);
+    }
+    .station-switcher-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      min-height: 44px;
+      padding: 0.5rem 0.75rem;
+      border-radius: var(--radius);
+      cursor: pointer;
+    }
+    /* The checked station is marked by shape as well as by state: a tick
+       before its name, and room for one before the others (WCAG 1.4.1). */
+    .station-switcher-item::before {
+      content: "";
+      flex: 0 0 1rem;
+    }
+    .station-switcher-item[aria-checked="true"]::before { content: "\2713" / ""; }
+    .station-switcher-item[aria-checked="true"] { font-weight: 600; }
+    .station-switcher-item:hover,
+    .station-switcher-item:focus {
+      background: var(--tab-hover-bg);
+      color: var(--tab-hover-text);
+    }
+    .station-switcher-item:focus-visible { outline-offset: -2px; }
+    /* On a phone the menu spans the banner, so a long station name never
+       pushes it past the right edge (WCAG 1.4.10). */
+    @media (max-width: 40rem) {
+      header { position: relative; }
+      .station-switcher { position: static; }
+      #station-menu {
+        top: auto;
+        left: 0.75rem;
+        right: 0.75rem;
+        min-width: 0;
+        max-width: none;
+      }
+    }
+
+    /* The station this page controls is stopped (#70). */
+    .station-off-air {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+    }
+    .station-off-air[hidden] { display: none; }
+
     main {
       /* In rem, so the column widens with the reader's text size: at
          780 px, 200 % text squeezed every label and field into a column

@@ -64,6 +64,18 @@
 //         Dismiss button works by mouse and by keyboard, putting focus
 //         back where it was.
 //
+//   - the station switcher (#70), a menu button in the banner: with its
+//     menu open it is measured like a view in every theme mode (axe-core,
+//     non-text contrast, focus rings) and at 320 px and 200 % text; and
+//     in the System light mode it opens with Enter on the checked item,
+//     draws a 2 px focus ring 3:1 on each item and 44 px targets, closes
+//     with Escape back on the button, and, when the server really has
+//     several stations, switches to each other station (the heading and
+//     the socket follow; a stopped one shows its off-air note and Start)
+//     and back.  A server with one station gets a stand-in second station
+//     in /api/stations, so the menu is always measured; it is never
+//     switched to.
+//
 //   - the public status pages: /status, and each station's
 //     /stations/<slug>/status that /api/stations lists (a stopped
 //     station's "off air" page too), in every theme mode: axe-core's
@@ -514,6 +526,46 @@ async function openVoiceStates(page, visit) {
   await page.evaluate(() => { window.__micRefusal = ""; });
 }
 
+// The switcher shows only with two stations.  A server with one gets a
+// stopped stand-in in this page's /api/stations, which is measured but
+// never chosen.
+const STAND_IN_STATION = {
+  slug: "audit-stand-in", name: "Audit Stand-in Station", state: "stopped", listeners: 0,
+  title: null, status_path: "/stations/audit-stand-in/status",
+  nowplaying_path: "/api/stations/audit-stand-in/nowplaying", stream_path: null, m3u_path: null,
+};
+const stationPages = new WeakMap();
+
+async function standInForStations(page) {
+  if (stationPages.has(page)) return;
+  const seen = { real: [] };
+  stationPages.set(page, seen);
+  await page.route("**/api/stations", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json().catch(() => null);
+    seen.real = Array.isArray(body?.stations) ? body.stations : [];
+    if (seen.real.length >= 2) return route.fulfill({ response });
+    return route.fulfill({ response, json: { stations: [...seen.real, STAND_IN_STATION] } });
+  });
+}
+
+function realStations(page) {
+  const list = stationPages.get(page)?.real || [];
+  return list.length >= 2 ? list : [];
+}
+
+// The switcher's menu, open on the checked station, as a state of Now Playing.
+async function openStationMenu(page, visit) {
+  const button = page.locator("#station-button");
+  await button.waitFor({ state: "visible", timeout: 5000 });
+  await button.focus();
+  await page.keyboard.press("Enter");
+  await page.locator("#station-menu").waitFor({ state: "visible" });
+  await settle(page);
+  await visit("now/station-menu");
+  if (await page.locator("#station-menu").isVisible()) await page.keyboard.press("Escape");
+}
+
 async function openEveryCard(page) {
   await page.evaluate(() => {
     for (const details of document.querySelectorAll("details")) details.open = true;
@@ -553,6 +605,7 @@ async function eachTarget(page, visit) {
   await standInForHourPreview(page);
   await standInForVoiceTracker(page);
   await standInForShows(page);
+  await standInForStations(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   for (const view of VIEWS) {
     await page.locator(`#tab-${view}`).click();
@@ -573,6 +626,7 @@ async function eachTarget(page, visit) {
         await openShowStates(page, visit);
       }
       if (view === "voice") await openVoiceStates(page, visit);
+      if (view === "now") await openStationMenu(page, visit);
       continue;
     }
     const ids = await page.$$eval("#settings-tabs [role='tab']:not([hidden])",
@@ -1238,6 +1292,100 @@ async function voiceTrackerProblems(page) {
   return problems;
 }
 
+// The station switcher by keyboard (#70): the APG menu button pattern,
+// focus rings and target sizes on the items, and with real stations the
+// switch itself, there and back.
+async function stationSwitcherProblems(page) {
+  const problems = [];
+  await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
+  await installContrastHelpers(page);
+  const button = page.locator("#station-button");
+  await button.waitFor({ state: "visible", timeout: 5000 });
+  const state = () => page.evaluate(() => {
+    const element = document.activeElement;
+    const style = window.getComputedStyle(element);
+    const { parse, over, ratio, behind } = window.__contrast;
+    const back = behind(element);
+    const rect = element.getBoundingClientRect();
+    return {
+      id: element.id,
+      role: element.getAttribute("role"),
+      station: element.dataset.station || null,
+      checked: element.getAttribute("aria-checked"),
+      expanded: document.getElementById("station-button").getAttribute("aria-expanded"),
+      open: !document.getElementById("station-menu").hidden,
+      ring: style.outlineStyle !== "none" && parseFloat(style.outlineWidth) >= 2
+        ? ratio(over(parse(style.outlineColor), back), back) : 0,
+      height: rect.height,
+      inView: rect.left >= 0 && rect.right <= window.innerWidth,
+      heading: document.getElementById("page-heading").textContent,
+      offAir: !document.getElementById("station-off-air").hidden,
+    };
+  });
+  const size = await button.boundingBox();
+  if (!size || size.height < 44 || size.width < 44) {
+    problems.push(`station button ${Math.round(size?.width || 0)}x${Math.round(size?.height || 0)} px, under 44 px`);
+  }
+  await button.focus();
+  await page.keyboard.press("Enter");
+  await settle(page);
+  let now = await state();
+  if (!now.open || now.expanded !== "true") problems.push("Enter did not open the menu");
+  if (now.role !== "menuitemradio" || now.checked !== "true") {
+    problems.push(`Enter opened on ${now.station} (${now.checked}), not the checked station`);
+  }
+  const items = await page.locator("#station-menu [role='menuitemradio']").count();
+  for (let step = 0; step < items; step += 1) {
+    now = await state();
+    if (now.ring < 3) problems.push(`${now.station} focus ring ${now.ring.toFixed(2)}:1`);
+    if (now.height < 44) problems.push(`${now.station} ${Math.round(now.height)} px high`);
+    if (!now.inView) problems.push(`${now.station} not in the window`);
+    await page.keyboard.press("ArrowDown");
+    await settle(page);
+  }
+  now = await state();
+  if (now.checked !== "true") problems.push("Down Arrow did not wrap to the first station");
+  await page.keyboard.press("Escape");
+  now = await state();
+  if (now.open || now.id !== "station-button" || now.expanded !== "false") {
+    problems.push("Escape did not close the menu and return to the button");
+  }
+  const stations = realStations(page);
+  for (const [index, station] of stations.entries()) {
+    if (index === 0) continue;
+    await button.focus();
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Home");
+    for (let step = 0; step < index; step += 1) await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("Enter");
+    await page.waitForFunction((name) => document.getElementById("page-heading").textContent
+      === `AutoDJ: ${name}`, station.name, { timeout: 10000 }).catch(() => {});
+    // The heading changes at once; the station's state comes after.
+    await (station.state === "stopped"
+      ? page.locator("#station-off-air").waitFor({ state: "visible", timeout: 10000 })
+      : page.waitForFunction(() => document.getElementById("conn-status").className === "connected",
+        null, { timeout: 10000 })).catch(() => {});
+    await settle(page);
+    now = await state();
+    if (now.heading !== `AutoDJ: ${station.name}`) problems.push(`switch to ${station.slug}: heading ${now.heading}`);
+    if (now.id !== "station-button") problems.push(`switch to ${station.slug}: focus on ${now.id || now.role}`);
+    if (station.state === "stopped" && !now.offAir) problems.push(`${station.slug} off air not shown`);
+    const violations = await axeViolations(page);
+    if (violations.length) problems.push(`${station.slug}: ${JSON.stringify(violations)}`);
+  }
+  if (stations.length) {
+    await button.focus();
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Home");
+    await page.keyboard.press("Enter");
+    const home = stations[0].name === "AutoDJ" ? "AutoDJ" : `AutoDJ: ${stations[0].name}`;
+    await page.waitForFunction((text) => document.getElementById("page-heading").textContent === text,
+      home, { timeout: 10000 })
+      .catch(() => problems.push("could not switch back to the default station"));
+  }
+  return problems;
+}
+
 async function previewOutputProblems(page) {
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   await page.locator("#tab-settings").click();
@@ -1513,6 +1661,8 @@ export async function audit(name, launcher) {
     if (tokenScope.length) out.behaviour.tokenScope = tokenScope;
     const voiceTracker = await voiceTrackerProblems(page);
     if (voiceTracker.length) out.behaviour.voiceTracker = voiceTracker;
+    const switcher = await stationSwitcherProblems(page);
+    if (switcher.length) out.behaviour.stationSwitcher = switcher;
     // 200 % text at the same window width.
     await wide.addInitScript(() => {
       document.addEventListener("DOMContentLoaded", () => {
