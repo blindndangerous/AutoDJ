@@ -130,7 +130,7 @@ def test_web_relay_save_persists_privately_and_never_returns_password(stream_app
         json={
             "name": "web",
             "type": "icecast",
-            "host": "ice.example",
+            "host": "192.168.1.20",
             "port": 8000,
             "mount": "/live",
             "password": "source-secret",
@@ -164,7 +164,7 @@ def test_web_relay_failed_private_save_keeps_live_configuration(
         json={
             "name": "web",
             "type": "icecast",
-            "host": "ice.example",
+            "host": "192.168.1.20",
             "port": 8000,
             "mount": "/live",
             "password": "source-secret",
