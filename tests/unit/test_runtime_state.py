@@ -688,6 +688,7 @@ class TestRoundTrip:
             "liners_pick_mode",
             "liners_duck_db",
             "liners_talk_up",
+            "matched_intro_only_without_liner",
             "stream_bitrate",
             "stream_continuous",
             "stream_station_name",
