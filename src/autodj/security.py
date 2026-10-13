@@ -47,6 +47,9 @@ _PUBLIC_FILES = frozenset(
         "/api/nowplaying",
         # The public station status page; see status_page.py.
         "/status",
+        # The listener request page, GET and POST; 404 unless [requests]
+        # turns it on.  See request_page.py.
+        "/requests",
         "/api/pair",
     }
 )
@@ -486,7 +489,7 @@ def _is_public_path(path: str, slugs: AbstractSet[str] = frozenset()) -> bool:
     ``/stations/<slug>.mp3`` and ``.m3u`` for a configured station) does
     not require pairing; control APIs require a session.  A configured
     station's public now-playing feed is public under its station path too,
-    and so is its status page, ``/stations/<slug>/status``.
+    and so are its pages, ``/stations/<slug>/status`` and ``/requests``.
     """
     relative = station_relative(path, slugs)
     if relative is not None:
@@ -495,16 +498,20 @@ def _is_public_path(path: str, slugs: AbstractSet[str] = frozenset()) -> bool:
         path in _PUBLIC_FILES
         or path in {"/stream.mp3", "/stream.m3u"}
         or _is_station_stream(path, slugs)
-        or _is_station_status(path, slugs)
+        or _is_station_page(path, slugs)
         or _safe_public_prefix(path, "/modules/")
     )
 
 
-def _is_station_status(path: str, slugs: AbstractSet[str]) -> bool:
-    """Whether *path* is ``/stations/<slug>/status`` for a configured *slug*."""
+#: The public pages each station has under ``/stations/<slug>/``.
+_STATION_PAGES = frozenset({"status", "requests"})
+
+
+def _is_station_page(path: str, slugs: AbstractSet[str]) -> bool:
+    """Whether *path* is a public page of a configured *slug*: ``/stations/<slug>/status``..."""
     name = path.removeprefix("/stations/")
     slug, slash, rest = name.partition("/")
-    return name != path and bool(slash) and rest == "status" and slug in slugs
+    return name != path and bool(slash) and rest in _STATION_PAGES and slug in slugs
 
 
 def _is_station_stream(path: str, slugs: AbstractSet[str]) -> bool:

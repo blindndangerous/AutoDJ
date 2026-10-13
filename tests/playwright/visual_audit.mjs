@@ -62,6 +62,10 @@
 //     WCAG 2.2 A/AA rules, the theme applied, and every focus stop's
 //     outline 3:1; in the System light mode reflow at 320 px and 200 %
 //     text.
+//   - the listener request pages, where the server has them turned on:
+//     /requests and each listed station's /stations/<slug>/requests, as
+//     first shown, after a search that finds nothing and with a search
+//     refused: the same checks, plus every control's boundary 3:1.
 //
 // Set AUTODJ_URL=http://host:port before running, e.g.:
 //   AUTODJ_URL=http://localhost:8080 node tests/playwright/visual_audit.mjs
@@ -1179,7 +1183,22 @@ async function statusPagePaths(page) {
       return [];
     }
   });
-  return [...new Set(["/status", ...listed])];
+  const statuses = [...new Set(["/status", ...listed])];
+  // Each station's request page where the server has it on ([requests];
+  // 404 otherwise): as first shown, with a search that finds nothing, and
+  // with a search refused (its error tied to the field).
+  const requests = await page.evaluate(async (pages) => {
+    const found = [];
+    for (const status of pages) {
+      const path = status.replace(/status$/, "requests");
+      const response = await fetch(path, { method: "HEAD" });
+      if (response.status === 404) continue;
+      found.push(path);
+      if (response.ok) found.push(`${path}?q=zz+nothing+like+it`, `${path}?q=a`);
+    }
+    return found;
+  }, statuses);
+  return [...statuses, ...requests];
 }
 
 function statusThemeState(page) {
@@ -1217,6 +1236,7 @@ async function auditStatusPages(browser, out) {
         if (state.theme !== mode.stored) problems.push(`data-theme ${state.theme}`);
         if (state.dark !== (mode.theme === "dark")) problems.push(`background not ${mode.theme}`);
         await installContrastHelpers(page);
+        if (path.includes("/requests")) problems.push(...await controlBoundaryProblems(page));
         problems.push(...await focusProblems(page, "body", { measureColour: true }));
         if (problems.length) out.statusPage[where] = problems;
       }

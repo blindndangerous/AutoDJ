@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from autodj.indexer import IndexEntry
     from autodj.library import LibraryManager
     from autodj.listener_access import ListenerAccess
+    from autodj.listener_requests import RequestDesk
     from autodj.recorder import Recorder
     from autodj.scheduler import Scheduler
     from autodj.stream import StreamOutput
@@ -177,6 +178,11 @@ class StationPaths:
     def liner_dates(self) -> Path:
         """The voice liners' play dates."""
         return self.state_dir / "liner_dates.json"
+
+    @property
+    def listener_requests(self) -> Path:
+        """Listener requests: those waiting, and the recent decisions."""
+        return self.state_dir / "listener_requests.json"
 
     @property
     def listener_bans(self) -> Path:
@@ -721,6 +727,8 @@ class StationRuntime:
             else None
         )
         self.recorder: Recorder | None = None
+        # Listener requests, when [requests] is on (built by equip_station).
+        self.requests: RequestDesk | None = None
         self.stream_out: StreamOutput | None = None
         self.ws_clients: set[Any] = set()
         self.ws_lock = asyncio.Lock()
@@ -1081,6 +1089,8 @@ class ExtraStation:
     paths: StationPaths
     preset: str
     build: Callable[[StationRegistry], StationRuntime]
+    #: Whether its ``[requests]`` page is on, so the page answers while it is stopped.
+    requests_enabled: bool = False
 
 
 @dataclass
@@ -1129,6 +1139,7 @@ class StoppedStation:
     def __init__(self, extra: ExtraStation, *, state: str = "stopped") -> None:
         self.slug = extra.slug
         self.name = extra.name
+        self.requests_enabled = extra.requests_enabled
         # "stopped", "stopping" (closing down: its routes already answer
         # 409) or "stuck stopping" (its player outlived the stop and still
         # runs, with its mastering process, until it ends).

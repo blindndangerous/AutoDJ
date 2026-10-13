@@ -12,7 +12,7 @@ from fastapi import HTTPException
 
 from autodj.catalog import LibraryCatalog
 from autodj.clockwheel_store import OLD_CLOCK_MESSAGE
-from autodj.config import ServerConfig, StreamConfig, TimeChecksConfig
+from autodj.config import RequestsConfig, ServerConfig, StreamConfig, TimeChecksConfig
 from autodj.server import create_app
 from autodj.station_ledger import StationLedger
 from autodj.station_routes import ClockBody, ClockNameBody, NewClockNameBody, PalImportBody
@@ -29,6 +29,7 @@ def app_for(catalog, root):
         server=ServerConfig(),
         stream=StreamConfig(),
         time_checks=TimeChecksConfig(),
+        requests=RequestsConfig(),
         index=SimpleNamespace(active_dir=root),
         presets={},
     )

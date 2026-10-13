@@ -82,6 +82,36 @@ def _history_entry(entry: Any, performances: int | None) -> dict:
     }
 
 
+def _search_index(library: Any, sim: Any) -> list[tuple[IndexEntry, str]]:
+    """Every music entry with its lowercased "title — artist — album" text."""
+    if library is not None:
+        # Lowercased once per library snapshot, not once per search.
+        return library.search_index()
+    return [
+        (entry, f"{entry.title} — {entry.artist} — {entry.album}".lower())
+        for entry in sim.entries_snapshot()
+    ]
+
+
+@dataclass(frozen=True)
+class RequestSlot:
+    """One place a listener request could join the queue (:meth:`PlayerBridge.request_slots`).
+
+    Attributes:
+        position: Its index in the user queue; 0 plays first.
+        starts_in: Seconds from now until it would start, from track lengths.
+        before: The track it would follow, or ``None``.
+        after: The queued track that would follow it, or ``None``.
+        problems: The rules it would break there, in words ("same artist").
+    """
+
+    position: int
+    starts_in: float
+    before: IndexEntry | None
+    after: IndexEntry | None
+    problems: tuple[str, ...]
+
+
 @dataclass
 class PlayerBridge:
     """Thread-safe adapter between :class:`~autodj.player.Player` and FastAPI.
@@ -1173,15 +1203,7 @@ class PlayerBridge:
             return []
 
         results = []
-        if self.library is not None:
-            # Lowercased once per library snapshot, not once per search.
-            indexed = self.library.search_index()
-        else:
-            indexed = [
-                (entry, f"{entry.title} — {entry.artist} — {entry.album}".lower())
-                for entry in self.sim.entries_snapshot()
-            ]
-        for entry, haystack in indexed:
+        for entry, haystack in _search_index(self.library, self.sim):
             if all(tok in haystack for tok in tokens):
                 results.append(
                     {
@@ -1197,6 +1219,10 @@ class PlayerBridge:
                 if len(results) >= limit:
                     break
         return results
+
+    def search_index(self) -> list[tuple[IndexEntry, str]]:
+        """Every music entry with its lowercased "title — artist — album" text."""
+        return _search_index(self.library, self.sim)
 
     def entry_for_path(self, path: str) -> IndexEntry | None:
         """Resolve only a registered playable file, including basic-ready tracks."""
@@ -1381,6 +1407,81 @@ class PlayerBridge:
         with self.player._state.queue_lock:
             self._capture_pre_queue_seed()
             self.player._state.queue.append(entry)
+            self._refresh_bus_queue()
+            self._sync_next_for_prefetch()
+        return True
+
+    def request_slots(self, entry: IndexEntry, horizon_s: float) -> list[RequestSlot]:
+        """Where *entry* could join the user queue, and what each place would break.
+
+        One slot per queue position whose projected start is within
+        *horizon_s* of now (the first, after the playing track and any
+        "play next" track, always counts).  Each start is projected from
+        track lengths, and the repeat rules, the same-song window and, in
+        DMCA mode, the DMCA limits are checked as of that start.
+        """
+        from autodj.dmca import complement, projected_history
+        from autodj.repeat_rules import build_filter
+
+        player = self.player
+        state = player._state
+        with state.history_lock:
+            history = list(state.play_history)
+            recent = list(state.recently_played)
+            track_window = state.recently_played.maxlen
+        with state.queue_lock:
+            fixed = [state.queued_next] if state.queued_next is not None else []
+            queue = list(state.queue)
+        current = state.current_track
+        now = state.clock()
+        rules = state.rules
+        keys = player._track_keys()
+        dmca = bool(player._cfg.dmca.enabled)
+        slots: list[RequestSlot] = []
+        for position in range(len(queue) + 1):
+            waiting = [*fixed, *queue[:position]]
+            records, when = projected_history(history, now, current, waiting)
+            if position and when - now > horizon_s:
+                break
+            repeat, minute_paths = build_filter(records, rules, when, keys)
+            ahead = [*recent, *(e.path for e in (current, *waiting) if e is not None)]
+            window = deque(ahead, maxlen=track_window) if track_window else deque()
+            problems: list[str] = []
+            if entry.path in window or entry.path in minute_paths:
+                problems.append("same song")
+            if (why := repeat.reason(entry)) is not None:
+                problems.append(why)
+            if dmca:
+                problems.extend(complement(records, when, keys).broken(entry))
+            slots.append(
+                RequestSlot(
+                    position=position,
+                    starts_in=max(0.0, when - now),
+                    before=waiting[-1] if waiting else current,
+                    after=queue[position] if position < len(queue) else None,
+                    problems=tuple(problems),
+                )
+            )
+        return slots
+
+    def coming_up(self) -> list[IndexEntry]:
+        """The playing track, any "play next" track and the user queue, in order."""
+        state = self.player._state
+        with state.queue_lock:
+            waiting = [state.queued_next] if state.queued_next is not None else []
+            waiting.extend(state.queue)
+        current = state.current_track
+        return [current, *waiting] if current is not None else waiting
+
+    def queue_insert(self, path: str, position: int) -> bool:
+        """Put a track by path at *position* of the user queue (0 plays first)."""
+        entry = self.entry_for_path(path)
+        if entry is None:
+            return False
+        with self.player._state.queue_lock:
+            self._capture_pre_queue_seed()
+            queue = self.player._state.queue
+            queue.insert(max(0, min(position, len(queue))), entry)
             self._refresh_bus_queue()
             self._sync_next_for_prefetch()
         return True

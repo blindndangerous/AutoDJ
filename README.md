@@ -139,6 +139,10 @@ The public `/api/nowplaying` JSON feed lets pages show the station's current son
 recent plays and listener count, and the public `/status` page shows the same to listeners as plain text. With several stations, each has its own feed and page, at `/api/stations/<slug>/nowplaying` and `/stations/<slug>/status`. The upcoming song is hidden unless you turn on `[nowplaying] show_next`. Track-change
 webhooks can send the same metadata to other services or Discord; configure their URLs in
 `config.local.toml`. See [Operations](docs/operations.md#now-playing-feed-and-webhooks).
+An optional public request page (`/requests`) lets listeners search the library and request
+songs, within per-listener and daily limits, the repeat rules and DMCA limits; you approve them
+by hand or automatically in Queue & Search. It is off until `[requests]` turns it on. See
+[Operations](docs/operations.md#listener-requests).
 
 DMCA mode (`[dmca] enabled = true`) keeps the station inside the US statutory webcasting
 licence's performance complement: album, artist and box set limits in any three hours, in every

@@ -667,6 +667,94 @@ In stream mode, **Settings, Stream** has a **Now-playing feed** group:
   and points to `config.local.toml`; webhooks are added or changed there and take effect on
   restart.
 
+## Listener requests
+
+A station can take song requests from its listeners on a public page, `/requests` (and
+`/stations/<slug>/requests` for every station). It is off until you turn it on, for each station
+on its own; while it is off the page answers 404. The settings are read when AutoDJ starts:
+
+```toml
+[requests]
+enabled = true
+approval = "manual"          # or "auto": a request that keeps the rules is queued at once
+per_listener = 3             # requests one address may make ...
+per_listener_minutes = 60    # ... in this many minutes
+daily_limit = 50             # requests the station takes per day, from everyone
+max_pending = 20             # requests that may wait for you at once (manual approval)
+window_minutes = 30          # how far ahead in the queue a request may be placed
+blocked_artists = ["Night Owl Jingles"]
+blocked_folders = ["Christmas"]   # full paths, or folders inside [library] music_dir
+```
+
+For another station, write the same keys under `[stations.<slug>.requests]`.
+
+**What a listener does.** The page has a search box for title, artist or album. The songs it
+finds are links: at most 20, and never from a blocked folder or by a blocked artist. Choosing one
+opens a confirmation page with an optional "Your name" field (up to 40 characters, which you might
+say on air) and **Send request**. The answer is a page whose title and first heading say what
+happened, so a screen reader hears it as the page loads. It is one of:
+
+- **Request received**: waiting for you.
+- **Request accepted**: queued.
+- **Not right now**: it would break a repeat rule or a DMCA limit. The page does not say which
+  play caused it.
+- **Already on the way**.
+- **Too many requests**: that address's limit, with how many it may make.
+- **No more requests today**.
+- **This form has expired**: the form is good for two hours.
+
+The page needs no JavaScript and works without pairing. A listener is only ever told roughly when
+a song may play ("within the next half hour", "within the next hour or so"), never a set time.
+
+**What the station checks**, in this order:
+
+1. The form's token.
+2. The address's limits: 30 searches a minute, 10 form posts in ten minutes, and `per_listener`
+   accepted requests per `per_listener_minutes`. A refused request does not use up the allowance.
+3. The daily cap.
+4. That the song is in the library, is not blocked, and is not playing, coming up or waiting
+   already.
+5. How many requests are waiting.
+6. Where it could play.
+
+For the last check, AutoDJ looks at each place in the queue that would start within
+`window_minutes`. The first place, after the song playing and any "play next" song, always counts.
+For each place, AutoDJ projects when the song would start. It then checks the repeat rules (track,
+artist, album, title, and related tracks and artists) as of then, and in
+[DMCA mode](#dmca-mode) the DMCA limits too. Of the places that break nothing, it picks the one
+where the song joins its neighbours most smoothly. It weighs sound (the embeddings), tempo (half
+and double time count as a match), Camelot key and the step in energy, and the sooner place wins a
+tie. A request is a song in the queue like any other. It never takes the place of a station ID, a
+liner, a break or a time check, which play between songs.
+
+**What you do.** While requests are on, Queue & Search has a **Listener requests** card. It says
+how many requests are waiting and how many the station took today. Each waiting request shows who
+sent it (if they gave a name), when, and either where it would fit and why ("Fits after Song by
+Artist: same key, 2 BPM apart.") or what stops it. Each request has three buttons:
+
+- **Approve** queues it at that place, checked again at that moment. It is left out while no place
+  keeps the rules.
+- **Play next** queues it first, whatever fits. DMCA limits still hold.
+- **Turn down**.
+
+The result is said once, and focus moves to the next request. Recent decisions are listed below.
+The card refreshes every 15 seconds while it is open, without speaking. A request still waiting
+after three hours expires. The same actions are available as paired routes: `GET /api/requests`,
+and `POST /api/requests/<id>/approve`, `/play-next` and `/reject` (each also under
+`/api/stations/<slug>/` for a station by name). The web UI's card shows the default station's
+requests.
+
+Requests are kept in `listener_requests.json` in the station's state folder: waiting requests and
+the last 50 decisions, with titles, names and times. It never holds an address, and it is not part
+of backups. Listener addresses are kept in memory only, for the limits, and are forgotten when
+AutoDJ restarts. Requests do not yet get bridge songs to lead into them, and are not yet matched to
+clockwheel categories.
+
+Letting listeners choose when songs play can make a station an "interactive" service, which the
+US statutory webcasting licence does not cover. Requests therefore never play at once or at a
+promised time, each listener is limited, and in DMCA mode requests obey the album and artist
+limits. General information, not legal advice.
+
 ## Radio stream (Sonos, VLC and other players)
 
 Stream mode serves the live AutoDJ mix as an MP3 radio station that any network audio player can
@@ -1042,8 +1130,8 @@ The rules:
   webhooks, listener password and recording folder. Set everything the station needs in its own
   tables, including machine settings such as `playback.stereotool_path`.
 - **A station's own sections** are `playback`, `djmix`, `transitions`, `replaygain`, `stream`,
-  `recording`, `nowplaying`, `time_checks`, `dmca` and `presets.<name>`, plus `webhooks` in
-  `config.local.toml`. They take the same keys as the root sections.
+  `recording`, `nowplaying`, `requests`, `time_checks`, `dmca` and `presets.<name>`, plus
+  `webhooks` in `config.local.toml`. They take the same keys as the root sections.
 - **Shared sections:** `library`, `index`, `model`, `huggingface` and `server` belong to the whole
   server and are read only from the root. So are `stream.trusted_proxies` (from the root
   `[stream]`) and `server.station_timezone`.
@@ -1096,6 +1184,8 @@ other sites:
   to its stream and playlist. It polls the station's own feed, and only a feed on this server.
 - `/api/stations/<slug>/nowplaying`, the now-playing feed, in the same form as `/api/nowplaying`
   (see [Now-playing feed and webhooks](#now-playing-feed-and-webhooks)).
+- `/stations/<slug>/requests`, the listener request page, when the station's
+  `[stations.<slug>.requests]` turns it on (see [Listener requests](#listener-requests)).
 - Both are public without pairing, like the stream, but only for a configured station: any
   other name needs a paired browser and then answers 404. The station's listener password
   protects only its stream, not these.

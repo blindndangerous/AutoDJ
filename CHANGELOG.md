@@ -23,6 +23,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   worker thread, stop after 80 songs or about 4 seconds, and are shared and reused for 45 seconds
   while nothing new is fixed.
 
+- Listener requests (#49), off until `[requests]` turns them on, per station.
+  - `/requests` (or `/stations/<slug>/requests`) lets anyone who can reach the server search the
+    library by title, artist or album and request a song, with an optional name. It needs no
+    pairing and no JavaScript, and each answer is a page whose title says what happened.
+  - Every request is checked against the repeat rules and, in DMCA mode, the DMCA limits at the
+    place it would play. It is also checked against blocked artists and folders, per-address
+    limits, a daily cap and a cap on requests waiting.
+  - A request goes to the place in the next `window_minutes` of the queue where it fits its
+    neighbours best: sound, tempo (half and double time count), key and energy.
+  - With `approval = "manual"` (the default), requests wait in a new Listener requests card in
+    Queue & Search, which shows where each would fit and why. The card offers Approve, Play next
+    and Turn down, says each result once and moves focus to the next request.
+  - Listeners are only ever told roughly when a song may play. Songs are named by opaque ids, never
+    paths. Forms carry a signed, time-limited token and must come from the server's own origin.
 - Queue & Search uses one paginated library table with Music or Voice liners, folder filtering
   and text search. Folder management is shown as a table in Library tools; liner file maintenance
   is back in Settings > Voice liners. Search, folders and History share arrow-key navigation.
