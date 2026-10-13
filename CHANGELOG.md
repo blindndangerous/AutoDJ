@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Startup and backups use `library.db` without loading old index generations. Older libraries
+  must be upgraded with `migrate-index`; leftover manifests no longer affect a current catalog (#223).
+
 - Multiple stations can use independent Stereo Tool processing instances when configured with the
   required per-instance licences and executable paths (#163).
 

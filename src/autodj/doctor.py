@@ -242,12 +242,20 @@ def _saved_settings_check(cfg: AutoDJConfig, paths: StationPaths | None = None) 
             "repair-saved-settings",
         )
     version = data.get("schema_version")
-    if type(version) is not int or version not in (1, 2):
+    if type(version) is int and version == 1:
+        return DoctorCheck(
+            "saved-settings",
+            CheckStatus.FAIL,
+            "saved settings need migration",
+            f"{path}; run `autodj migrate-index --apply`",
+            "migrate-index",
+        )
+    if type(version) is not int or version != 2:
         return DoctorCheck(
             "saved-settings",
             CheckStatus.WARN,
             "unsupported saved settings schema",
-            f"schema_version must be 1 or 2, got {version!r}; runtime ignores this file",
+            f"schema_version must be 2, got {version!r}; runtime ignores this file",
         )
     return DoctorCheck("saved-settings", CheckStatus.PASS, "saved settings valid", str(path))
 
@@ -260,6 +268,13 @@ def _index_check(cfg: AutoDJConfig) -> DoctorCheck:
         from autodj.catalog import catalog_counts
 
         try:
+            from autodj.index_migration import migration_required
+
+            needed, reason = migration_required(index_dir)
+            if needed:
+                return DoctorCheck(
+                    "index", CheckStatus.FAIL, "library migration needed", reason, "migrate-index"
+                )
             ready, analyzed = catalog_counts(catalog_path)
         except (OSError, sqlite3.Error) as exc:
             return DoctorCheck("index", CheckStatus.FAIL, "library cannot be read", str(exc))

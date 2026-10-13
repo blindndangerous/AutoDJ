@@ -226,8 +226,8 @@ Every command takes `--help`, for example `uv run autodj serve --help`. The glob
   [Announcer breaks](docs/operations.md#announcer-breaks-dj-breaks-news-and-weather). The
   web UI's Voice tracks tab records and books a DJ break from the browser's microphone with no
   token; see [Voice tracking](docs/operations.md#voice-tracking-from-the-browser).
-- `autodj migrate-index` previews a schema-3 to schema-4 conversion; add `--apply` to save a
-  recovery copy and convert without repeating analysis. Interactive `serve` offers this too.
+- `autodj migrate-index` previews importing an older library and its settings; add `--apply`
+  to save a recovery copy and complete the upgrade without repeating analysis.
 - `autodj enrich` refreshes key and mode from your beets database.
 - `autodj prune` removes index entries whose audio files no longer exist.
 - `autodj stats` prints an overview of the indexed library.

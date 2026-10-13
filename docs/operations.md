@@ -56,9 +56,8 @@ serving and indexing before accepting this repair. `serve --lan` runs until stop
 change the saved configuration. Doctor redacts both server and Hugging Face tokens in its
 configuration report.
 
-The `index` check reads the current catalog when one exists. Before its first import, it checks
-the legacy index that `serve` or `index` would import. It reports catalog counts, warns when the
-library is empty, and reports an error that would prevent startup or import. The `dj-meta-db`
+The `index` check reads the current catalog. It reports catalog counts, warns when the library
+is empty, and directs older libraries to `migrate-index`. It does not load old generations. The `dj-meta-db`
 check runs SQLite's integrity check on `dj_meta.db` without changing it. The `beets-db` check
 warns when `[library] beets_db` names a file that does not exist: folder scanning still imports
 basic song records, but optional beets enrichment cannot run. The `dependencies` check warns when
@@ -115,12 +114,10 @@ with remaining songs. `--force` replaces vectors for eligible songs without dele
 history or settings; a failed embedding leaves the previous vector in place. `--workers` controls
 audio prefetch. `--no-enrich` skips the optional beets refresh.
 
-The old published-index format, including `index-manifest.json`, is deprecated. If there is no
-catalog, `index` or `serve` imports a valid old index once and keeps the originals for recovery.
-A stale manifest is ignored when the catalog already exists. For an unreadable legacy index,
-`index --force` can build a catalog from the configured folders without importing that index.
-`migrate-index` remains available for older formats. Legacy `analyse`, `prune`, and `stats`
-commands still use the old files; `enrich` uses the catalog when present.
+The old published-index format, including `index-manifest.json`, is deprecated. Stop AutoDJ
+and run `autodj migrate-index` to preview the upgrade, then add `--apply` to import the old
+data with a recovery copy. Startup and indexing use the catalog only; `index --force` does
+not bypass migration. A leftover manifest is ignored when the current catalog already exists.
 
 To give network drives a rest during a long run, set a pause before each track, in milliseconds,
 in `config.toml`:
@@ -2714,15 +2711,13 @@ choose them to fit.
 
 `autodj backup` writes one ZIP file holding:
 
-- The live index generation: `index-manifest.json` and the `tracks.g<number>.db` and
-  `vectors.g<number>.index` files it names.
 - `dj_meta.db`, the intro, outro, beat grid and cue cache.
 - `web_state.json`, the settings chosen in the web page.
 - `related-artists.toml` and `related-tracks.toml` in the active index folder.
 - `recording.json`, the broadcast recording settings and whether it was running. The recorded
   MP3 files are not included; archive the recordings folder yourself.
 - `library.db`, the station's registered folders, track data and cues, last-played times and
-  complete play history.
+  complete play history, and matching vectors.
 - Every file in the liners folder (`[playback] liners_folder`, or `index/<name>/liners`) and in
   `index/profiles`, plus uploaded presets in `index/stereo-tool-presets`.
 - `time_checks.json` and every recorded clip in `[time_checks] clips_folder` (or the default
@@ -2740,12 +2735,12 @@ and keep them with the archive. Backups also leave out the pairing secret and th
 after a restore on a new machine you pair your browsers again.
 Use the new machine's address followed by `/stream.mp3` to listen.
 
-Backup is safe while AutoDJ is serving: it copies the index under the index's own lock and
-both databases through SQLite's backup API, so it never picks up a half-written index. It refuses to
-overwrite an existing archive unless you pass `--force`, and it refuses an index made by an older
-AutoDJ; convert schema 3 with `autodj migrate-index --apply` first. That conversion saves its own
-recovery copy. Older backup archives that do not contain `library.db` leave the current station
-catalog unchanged when restored.
+Backup copies databases through SQLite's backup API, so saved records and vectors form a
+consistent database even while AutoDJ is serving. It refuses to overwrite an archive unless you
+pass `--force`. It requires `library.db` and does not include old manifests or generation files.
+An archive without `library.db` must be restored with a compatible older release, then upgraded
+with `autodj migrate-index --apply`. If an archive has both a catalog and obsolete generation
+files, restore uses the catalog and skips the generations.
 
 ```bash
 # Linux/WSL2 Bash
@@ -2790,7 +2785,7 @@ Restore only accepts an archive made by the same major and minor version of Auto
 backup restores on any 0.19.x release and on no other. To roll back to an earlier release, check
 out that release's tag as in the [upgrade checklist](#upgrade-checklist), then restore a backup made
 by that release. Restore also refuses an archive whose file names are absolute or contain `..`,
-files the manifest does not list, and an index made by an older AutoDJ. It also refuses file
+files the manifest does not list, and an archive without a current catalog. It also refuses file
 names Windows cannot hold, such as `CON`, `nul.mp3` or `COM1`, or a name ending in a dot or a
 space.
 
@@ -2805,7 +2800,8 @@ folder.
 
 Without `--force`, restore refuses when anything it would replace already exists. With it:
 
-- The index in the archive replaces the current index, including its older generations.
+- The catalog in the archive replaces `library.db`, including its records, vectors and history.
+  Old index generations are not restored.
 - `dj_meta.db` and `web_state.json` are replaced when the archive has them.
 - The liners folder and `index/profiles` are replaced whole: files that are not in the backup are
   deleted. Parts the archive does not hold are left alone.
@@ -2815,7 +2811,7 @@ Without `--force`, restore refuses when anything it would replace already exists
 
 Restore first checks that the archive fits: it refuses one that unpacks to more than 256 GiB,
 or to more than the free space beside its destinations. It unpacks every file into a temporary
-folder beside its destination and checks the index before it replaces anything, so a damaged
+folder beside its destination and checks the catalog before it replaces anything, so a damaged
 archive changes nothing. It then sets every file and folder it replaces aside under a hidden name
 (`.<name>.old-<id>`), together with any SQLite journal or WAL files beside a database, puts the
 new ones in, and deletes what it set aside only once all are in. If any replacement fails,

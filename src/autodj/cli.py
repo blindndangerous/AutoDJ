@@ -153,10 +153,18 @@ def _load_index_for_serve(
     cfg: AutoDJConfig, *, active_dir: Path | None = None
 ) -> SimilarityIndex:  # pragma: no cover
     """Start with an empty similarity view; LibraryManager loads catalog vectors."""
+    from autodj.config import station_config
     from autodj.library import require_current_library
     from autodj.similarity import SimilarityIndex
+    from autodj.stations import StationPaths
 
-    require_current_library(cfg.index.active_dir if active_dir is None else active_dir)
+    require_current_library(
+        cfg.index.active_dir if active_dir is None else active_dir,
+        (
+            StationPaths.for_station(station_config(spec.cfg, cfg), spec.slug).web_state
+            for spec in cfg.stations
+        ),
+    )
     return SimilarityIndex.empty()
 
 
@@ -1537,15 +1545,6 @@ def cmd_analyse(
 # ---------------------------------------------------------------------------
 # serve subcommand
 # ---------------------------------------------------------------------------
-
-
-def _convert_index(index_dir: Path, music_dir: Path, moves: dict[str, str], *, apply: bool) -> None:
-    from autodj.index_migration import convert
-
-    try:
-        convert(index_dir, music_dir, moves, apply)
-    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
-        raise click.ClickException(f"Index conversion failed: {exc}") from exc
 
 
 @cli.command("migrate-index")

@@ -1,7 +1,7 @@
 """Deprecated published-index format, retained for import and migration.
 
 Current serving and indexing use library.db. Existing generations remain readable
-for first-use imports, old backups and the migration commands.
+only for the explicit migration command. Normal startup and backups use library.db.
 
 An index directory holds, for its live generation *N*:
 

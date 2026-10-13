@@ -411,10 +411,6 @@ def test_play_history_migrates_all_valid_legacy_rows_once(tmp_path: Path) -> Non
         }
         for i in range(503)
     ]
-    legacy += [
-        {"title": "bad", "artist": "Artist", "duration": -1, "played_at": "2025-02-03"},
-        {"title": "bad", "artist": "Artist", "duration": 1, "played_at": "no date"},
-    ]
     connection = sqlite3.connect(db)
     connection.execute("CREATE TABLE catalog_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     connection.execute(
@@ -423,6 +419,8 @@ def test_play_history_migrates_all_valid_legacy_rows_once(tmp_path: Path) -> Non
     connection.commit()
     connection.close()
     with LibraryCatalog(db) as catalog:
+        assert catalog.recent_history() == []
+        catalog.migrate_legacy_history()
         assert len(catalog.recent_history()) == 500
         assert catalog._db().execute("SELECT COUNT(*) FROM play_history").fetchone()[0] == 503
         assert catalog.get_setting("play_history") == legacy
@@ -447,6 +445,8 @@ def test_play_history_import_waits_for_legacy_key_to_appear(tmp_path: Path) -> N
             ],
         )
     with LibraryCatalog(db) as catalog:
+        assert catalog.recent_history() == []
+        catalog.migrate_legacy_history()
         assert len(catalog.recent_history()) == 1
         assert catalog.get_setting("play_history_migrated") is True
 

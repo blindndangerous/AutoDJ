@@ -376,7 +376,6 @@ class LibraryCatalog:
             self._add_missing_columns()
             self._conn.executescript(_CHANGE_TRACKING)
             _tune(self._conn)
-            self._migrate_legacy_history()
         except BaseException:
             # Not a catalog (or unreadable): do not leave the file open.
             self._conn.close()
@@ -454,15 +453,7 @@ class LibraryCatalog:
         return value if math.isfinite(value) and value >= 0 else None
 
     def migrate_legacy_history(self) -> None:
-        """Import the old JSON play log into the complete catalog play table.
-
-        This is public so the explicit application-data migration can run it
-        before normal runtime stops performing legacy upgrades.
-        """
-        self._migrate_legacy_history(strict=True)
-
-    def _migrate_legacy_history(self, *, strict: bool = False) -> None:
-        """Convert rows, optionally refusing to discard any invalid legacy row."""
+        """Explicitly import the old JSON log, refusing to discard invalid rows."""
         db = self._db()
         with self._lock:
             try:
@@ -481,13 +472,9 @@ class LibraryCatalog:
                 try:
                     rows = json.loads(legacy[0])
                 except (TypeError, json.JSONDecodeError) as exc:
-                    if strict:
-                        raise ValueError("legacy play-history JSON is invalid") from exc
-                    rows = []
+                    raise ValueError("legacy play-history JSON is invalid") from exc
                 if not isinstance(rows, list):
-                    if strict:
-                        raise ValueError("legacy play-history must be a JSON list")
-                    rows = []
+                    raise ValueError("legacy play-history must be a JSON list")
                 valid_rows = []
                 invalid = 0
                 for row in rows:
@@ -515,7 +502,7 @@ class LibraryCatalog:
                         invalid += 1
                         continue
                     valid_rows.append((row, duration))
-                if strict and invalid:
+                if invalid:
                     raise ValueError(
                         f"legacy play-history has {invalid} invalid row(s); no history was migrated"
                     )

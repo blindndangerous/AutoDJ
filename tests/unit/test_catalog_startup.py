@@ -104,3 +104,23 @@ def test_legacy_only_startup_requires_explicit_migration_without_mutation(tmp_pa
         assert not (cfg.index.active_dir / "library.db").exists()
     assert _index_check(cfg).repair == "migrate-index"
     assert "migration needed" in _scan_index_rows(cfg.index.index_dir, "default")[0][1]
+
+
+@pytest.mark.parametrize("legacy", ["settings", "history", "pending"])
+def test_current_catalog_requires_explicit_legacy_state_upgrade(tmp_path, legacy):
+    import json
+
+    from autodj.index_manifest import IndexConsistencyError
+
+    cfg = make_config(tmp_path)
+    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+        catalog.seed_sources(cfg.library.music_dir, cfg.index.active_dir / "liners")
+        if legacy == "history":
+            catalog.set_setting("play_history", [])
+        elif legacy == "pending":
+            catalog.set_setting("published_index_import_state", {"status": "pending"})
+    if legacy == "settings":
+        (cfg.index.active_dir / "web_state.json").write_text(json.dumps({"schema_version": 1}))
+    with pytest.raises(IndexConsistencyError, match="migrate-index"):
+        LibraryManager(cfg, SimilarityIndex.empty())
+    assert _index_check(cfg).repair == "migrate-index"

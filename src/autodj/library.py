@@ -48,18 +48,22 @@ if TYPE_CHECKING:
     from autodj.model import MuqWrapper
 
 
-def require_current_library(directory: Path) -> None:
-    """Refuse an unmigrated library before creating any new database files."""
-    if (directory / "library.db").is_file():
-        return
+def require_current_library(directory: Path, station_web_states: Iterable[Path] = ()) -> None:
+    """Refuse legacy application data before creating or changing database files."""
     from autodj.index_manifest import IndexConsistencyError, has_legacy_index
+    from autodj.index_migration import migration_required
 
-    if has_legacy_index(directory):
-        raise IndexConsistencyError(
-            f"The library in {directory} needs migration. Stop AutoDJ and run "
-            "`autodj migrate-index` to preview, then `autodj migrate-index --apply`. "
-            "Your original files will be kept."
-        )
+    if not (directory / "library.db").is_file() and has_legacy_index(directory):
+        reason = "an older published index is present"
+    else:
+        needed, reason = migration_required(directory, station_web_states)
+        if not needed:
+            return
+    raise IndexConsistencyError(
+        f"The library in {directory} needs migration ({reason}). Stop AutoDJ and run "
+        "`autodj migrate-index` to preview, then `autodj migrate-index --apply`. "
+        "Your original files will be kept."
+    )
 
 
 class _ImportState(TypedDict):

@@ -82,6 +82,7 @@ def _write_index(cfg: AutoDJConfig) -> None:
     vector = np.ones((1, FEATURE_DIM), dtype=np.float32)
     vector /= np.linalg.norm(vector, axis=1, keepdims=True)
     with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+        catalog.seed_sources(cfg.library.music_dir, cfg.index.active_dir / "liners")
         catalog.seed_entries([entry])
         catalog.seed_vectors([entry], vector)
 
@@ -899,8 +900,8 @@ def test_configuration_check_shows_lan_setting(
 
 def test_empty_catalog_warns_instead_of_passing(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    with LibraryCatalog(cfg.index.active_dir / "library.db"):
-        pass
+    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+        catalog.set_setting("sources_seeded", True)
     check = doctor._index_check(cfg)
     assert check.status is doctor.CheckStatus.WARN
     assert check.summary == "0 songs; 0 analyzed"
