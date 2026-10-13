@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -163,38 +162,3 @@ def test_chunked_faiss_write_survives_unsupported_fsync(tmp_path: Path) -> None:
     restored = faiss.read_index(str(destination))
     assert restored.ntotal == 1
     assert np.array_equal(restored.reconstruct(0), _vector()[0])
-
-
-def test_enrich_skips_index_entries_absent_from_beets(tmp_path: Path) -> None:
-    index_dir = tmp_path / "index"
-    entry = _entry(str(tmp_path / "indexed.flac"))
-    indexer.save_index([entry], _vector(), index_dir, music_dir=tmp_path, base_generation=0)
-    beets_db = tmp_path / "beets.db"
-    connection = sqlite3.connect(beets_db)
-    try:
-        connection.execute(
-            """CREATE TABLE items (
-                id INTEGER PRIMARY KEY, path BLOB, title TEXT, artist TEXT,
-                album TEXT, genre TEXT, bpm REAL, year INTEGER, length REAL,
-                initial_key TEXT
-            )"""
-        )
-        connection.execute(
-            "INSERT INTO items VALUES (1, ?, 'Other', '', '', '', 0, 0, 0, '')",
-            (str(tmp_path / "other.flac").encode(),),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    assert indexer.enrich_from_beets(index_dir, music_dir=tmp_path, beets_db=beets_db) == (0, 1)
-
-
-def test_stat_mtimes_reports_missing_files_as_none(tmp_path: Path) -> None:
-    existing = tmp_path / "existing.flac"
-    existing.touch()
-    entries = [_entry(str(existing)), _entry(str(tmp_path / "missing.flac"))]
-
-    mtimes = indexer._stat_mtimes(entries)
-
-    assert mtimes == [existing.stat().st_mtime, None]

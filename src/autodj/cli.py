@@ -1178,10 +1178,8 @@ def cmd_index(
     is_flag=True,
     default=False,
     help=(
-        "Bypass the safety check that refuses to prune more than 20% of the "
-        "index in a single pass. Use only when you really did delete that "
-        "much of your library — otherwise fix [library] music_dir in "
-        "config first."
+        "Allow removal when more than 20% of catalog tracks are missing. "
+        "Check registered library folders before overriding."
     ),
 )
 @click.option(

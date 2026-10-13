@@ -850,20 +850,6 @@ def save_index(
     return manifest
 
 
-class PruneSafetyError(RuntimeError):
-    """Raised when prune would remove a suspiciously large fraction of entries.
-
-    Almost always indicates a misconfigured ``music_dir`` rather than
-    genuine library cleanup — refusing the operation prevents
-    data loss.
-    """
-
-
-# Refuse to auto-prune more than this fraction of the index without
-# explicit user opt-in via ``allow_mass_prune=True``.
-PRUNE_SAFETY_THRESHOLD: float = 0.20
-
-
 def _find_beets_row(
     entry_path: str,
     music_dir: Path | None,
@@ -1023,81 +1009,6 @@ def _enrich_entries(
         conn.close()
 
     return changed
-
-
-def _check_prune_safety(removed: int, total: int, allow_mass_prune: bool) -> None:
-    """Raise PruneSafetyError when the prune ratio would cross the threshold."""
-    if allow_mass_prune or total == 0 or removed / total <= PRUNE_SAFETY_THRESHOLD:
-        return
-    raise PruneSafetyError(
-        f"Refusing to prune {removed}/{total} tracks "
-        f"({removed / total:.0%} > {PRUNE_SAFETY_THRESHOLD:.0%} threshold).\n"
-        "This usually means [library] music_dir in your config does not "
-        "match where the indexed files actually live.\n"
-        "Fix the config first, then re-run.  If you really did delete "
-        "this many tracks, pass allow_mass_prune=True (or "
-        "`autodj prune --force` from the CLI)."
-    )
-
-
-def prune_index(
-    index_dir: Path,
-    music_dir: Path | None = None,
-    allow_mass_prune: bool = False,
-) -> tuple[int, int]:
-    """Remove index entries whose audio files no longer exist on disk.
-
-    Resolves each stored path against *music_dir*, drops every row whose
-    audio file is missing, and publishes the rest as a new generation (an
-    empty one when every track is gone).  No-op when no index exists or
-    nothing is missing.
-
-    Safety: if more than :data:`PRUNE_SAFETY_THRESHOLD` of the entries
-    would be removed, raises :class:`PruneSafetyError` instead of touching
-    the index.  Override with ``allow_mass_prune=True`` (e.g. after
-    confirming you really did delete most of your library).
-
-    Args:
-        index_dir: The index directory.
-        music_dir: Library root for resolving relative paths.
-        allow_mass_prune: If ``True``, skip the safety check and prune
-            even if it would remove most of the index.
-
-    Returns:
-        ``(removed, kept)`` — count of entries dropped and count surviving.
-
-    Raises:
-        PruneSafetyError: If the prune would exceed the safety threshold
-            and ``allow_mass_prune`` is not set.
-    """
-    try:
-        entries, loaded, manifest = load_index(index_dir, music_dir=music_dir)
-    except FileNotFoundError:
-        return (0, 0)
-
-    print(
-        f"[AutoDJ] Phase: Pruning — checking {len(entries)} indexed files on disk.",
-        flush=True,
-    )
-    keep_mask = [mtime is not None for mtime in _stat_mtimes(entries)]
-    removed = keep_mask.count(False)
-    _check_prune_safety(removed, len(entries), allow_mass_prune)
-    if removed == 0:
-        return (0, len(entries))
-
-    surviving_entries = [e for e, k in zip(entries, keep_mask, strict=True) if k]
-    # One FAISS call returns the whole (N, dim) array; a numpy mask slices it.
-    all_vectors = loaded.reconstruct_n(0, loaded.ntotal)
-    surviving_vectors = all_vectors[np.asarray(keep_mask, dtype=bool)]
-    save_index(
-        surviving_entries,
-        surviving_vectors,
-        index_dir,
-        music_dir,
-        base_generation=manifest.generation,
-    )
-    logger.info("Pruned %d missing tracks (%d remain)", removed, len(surviving_entries))
-    return (removed, len(surviving_entries))
 
 
 def load_index(
@@ -1262,26 +1173,6 @@ def backfill_dj_meta(
     cache.flush(force=True)
     _finish_decode_report(report, cfg.index.active_dir / ANALYSE_DECODE_LOG)
     print(f"[AutoDJ] DJ-meta backfill done: {done}/{total} tracks analysed.", flush=True)
-
-
-def _stat_mtimes(entries: list[IndexEntry]) -> list[float | None]:
-    """Return each entry's file mtime, or ``None`` when the file is missing.
-
-    One network round trip per file on a NAS; eight threads pipeline them.
-    """
-
-    def _mtime(p: str) -> float | None:
-        try:
-            return Path(p).stat().st_mtime
-        except OSError:
-            return None
-
-    mtimes: list[float | None] = []
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        for mtime in pool.map(_mtime, [e.path for e in entries]):
-            mtimes.append(mtime)
-            _log_progress("Checking files", len(mtimes), len(entries), _STAT_PROGRESS_EVERY)
-    return mtimes
 
 
 def _stat_size_mtime(path: str) -> tuple[int, float] | None:
