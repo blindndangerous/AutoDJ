@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Saving edits to the active clockwheel can now apply at its next restart, immediately from
+  step 1, or immediately continuing at the next step number. A song already playing and its
+  committed handoff finish normally. With no restart minutes, deferred edits apply when the
+  wheel wraps to step 1; the editor shows when an edit is waiting.
+- **Why this track?** names the clockwheel step that selected the song, with its number and the same description shown in the clockwheel list. Music and category steps say whether they choose the least recently played song or choose at random.
 - Matched intros (#127): Track info has a **Matched intros** section where you upload a short
   voice clip for that song, or for any song by its artist, such as "Here's the new one from
   Example Artist", and Listen to it or Remove it. When the song comes up, saved-point playback on
@@ -36,7 +41,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the new **Shift+H** shortcut say the summary. Every station has its own, at
   `/api/hour-preview` and `/api/stations/<name>/hour-preview`. Previews run on one low-priority
   worker thread, stop after 80 songs or about 4 seconds, and are shared and reused for 45 seconds
-  while nothing new is fixed.
+  while the timeline and picking inputs stay current. Refresh preview always rebuilds from the
+  current inputs; queued and predicted voice liners use saved overlap cues for their estimated
+  placement.
 
 - A public player page and an embeddable player (#52), each off until `[player_page]` turns it
   on, per station. `/player` (or `/stations/<slug>/player`) has a Play button that becomes Stop,
@@ -179,6 +186,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the run works in the background with a progress bar and a Cancel button, announces its end
   once, and shows the results as headings and lists. See
   [Operations](docs/operations.md#testing-the-rotation).
+
 - Editing tags from Track info (#53). A Tags section has fields for title, artist, album, genre,
   year, BPM, key and ISRC. Save tags writes only the changed fields into the file with mutagen
   (MP3, FLAC, M4A, Ogg Vorbis, Opus, WAV and AIFF) and updates the library at once, keeping the
@@ -487,6 +495,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Positive liner overlap points now respect the next song's intro, just like zero and
+  negative values. A cold opening waits until the liner's segue; its remaining tail can
+  still overlap. Some songs now start later where the old overlap would have covered
+  their vocals. Stored cue values and outgoing fades are unchanged (#194).
+- Track info preview audio stops when leaving the tab or saving cue points, while keeping
+  its position available for further editing (#186).
+- Audio prepared before a clockwheel edit no longer restores the old step position or restart
+  time when it begins playing (#153).
 - Clock skip logs now include the step number and reason for every skipped step, including
   folders blocked by repeat filters (#188). Repeated reasons are logged once and reported again
   after a pick has no skips.

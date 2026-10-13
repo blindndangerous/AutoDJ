@@ -125,12 +125,15 @@ class RenderedTrack:
     loudness_processing: str = ""
     clock_cursor: int | None = None
     next_clock_cursor: int | None = None
-    # The clockwheel both clock cursors are places in (#133).
+    # The outgoing cursor belongs to this wheel; an edit may change the incoming one.
     clock_name: str | None = None
     clock_boundary: float | None = None
     next_clock_boundary: float | None = None
     clock_step: dict | None = None
     next_clock_step: dict | None = None
+    clock_revision: int | None = None
+    next_clock_revision: int | None = None
+    next_clock_name: str | None = None
     liner_plan_key: str = ""
     full_audio: np.ndarray | None = None
     source_start_offset: int = 0

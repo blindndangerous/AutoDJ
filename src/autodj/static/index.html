@@ -437,7 +437,7 @@
     <section id="points-editor" aria-labelledby="points-heading" hidden>
       <h3 id="points-heading">Cue points</h3>
       <p>Preview this file to check its cues. Use preview position copies the preview’s time; it does not use or change the station’s playback position.</p>
-      <p id="points-liner-help" hidden>Segue marks the end of the liner’s main content; End keeps the remaining tail. A blank Overlap start uses Segue, or End when Segue is blank. With Allow start over outro unchecked, the liner starts at the outgoing song’s Segue; checked, it may start over the Outro. Set Overlap start to 0 to let the next song’s intro overlap the liner when timing allows. A positive value is the number of seconds after the liner’s saved Start at which the next song may enter. It cannot be later than the liner’s Segue. A negative value starts the liner after the next song begins, limited by its intro.</p>
+      <p id="points-liner-help" hidden>Segue marks the end of the liner’s main content; End keeps the remaining tail. A blank Overlap start uses Segue, or End when Segue is blank. With Allow start over outro unchecked, the liner starts at the outgoing song’s Segue; checked, it may start over the Outro. Set Overlap start to 0 to let the next song’s intro overlap the liner when timing allows. A positive value is the earliest time after the liner’s saved Start at which the next song may enter. Every overlap value respects the next song’s intro: with no intro, the song waits until the liner’s Segue, while its remaining tail may overlap. It cannot be later than the liner’s Segue. A negative value starts the liner after the next song begins, limited by its intro.</p>
       <label id="points-allow-outro-label" hidden><input type="checkbox" id="points-allow-outro" aria-describedby="points-liner-help"> Allow start over outro</label>
       <label for="points-path">Track path</label>
       <input id="points-path" type="text" autocomplete="off" readonly>
@@ -2574,7 +2574,14 @@
       </fieldset>
       <label for="clock-resync-minutes">Restart at these minutes past each hour</label>
       <input id="clock-resync-minutes" type="text" inputmode="numeric" value="0" autocomplete="off" aria-describedby="clock-resync-help">
-      <p id="clock-resync-help">Comma separated, 0 to 59, such as 0, 30. The clockwheel goes back to step 1 at the song change nearest each minute. Leave empty never to restart.</p>
+      <p id="clock-resync-help">Comma separated, 0 to 59, such as 0, 30. The clockwheel goes back to step 1 at the song change nearest each minute. Leave empty to restart only when the wheel wraps.</p>
+      <label for="clock-apply-timing">Apply saved changes</label>
+      <select id="clock-apply-timing" aria-describedby="clock-apply-help">
+        <option value="next_restart" selected>At the next clock restart</option>
+        <option value="immediate">Immediately, start at step 1</option>
+        <option value="continue">Immediately, continue at next step</option>
+      </select>
+      <p id="clock-apply-help">Continuing keeps the next step number. Moving or deleting steps can change what plays there. If that number no longer exists, the clock starts at step 1.</p>
       <button type="button" id="clock-save">Save clockwheel</button>
     </section>
   </section>

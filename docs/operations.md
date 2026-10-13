@@ -2716,6 +2716,17 @@ These list keys do not replace the playback or spoken-status shortcuts. Nothing 
 another clockwheel with unsaved changes asks first. **Restart at these minutes past each hour**
 sends the clockwheel back to step 1 at the song change nearest each minute.
 
+When you save edits to the active clockwheel, **Apply saved changes** defaults to **At the next
+clock restart**. The current clock keeps playing until its next scheduled restart, and the saved
+edit becomes the new step 1 there. If the restart-minute list is empty, the next restart is the
+wheel's natural wrap to step 1. The editor announces when a saved edit begins waiting. If AutoDJ
+restarts while an edit is waiting, it loads the latest saved definition at step 1. Choose **Immediately, start at step 1**
+to use the new steps for the earliest selection that has not already been lined up; the current
+track and an already committed handoff stay in place. Choose **Immediately, continue at next step**
+to keep the next step number when it still exists in the edited wheel; otherwise playback starts at
+step 1. Reordering or deleting steps can shift which step that position refers to. A server restart
+loads the latest saved clockwheel definition. API clients that omit `apply_timing` keep the immediate behavior.
+
 For a voice liner step, **Only play if the following track fits before the next reset** is off
 by default. Turn it on to leave out the liner when the liner and the selected song would run
 past the next reset. The check uses their saved cue points and overlap, through the song's
