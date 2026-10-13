@@ -810,3 +810,23 @@ def test_a_scan_during_an_edit_leaves_the_record_alone(tmp_path: Path) -> None:
         assert catalog.has_vector(song)
     finally:
         catalog.close()
+
+
+def test_imported_tags_preserve_manual_values_and_skip_unchanged_writes(tmp_path: Path) -> None:
+    song = make_audio(tmp_path, ".flac")
+    catalog = LibraryCatalog(tmp_path / "library.db")
+    try:
+        catalog.put_entry(make_entry(song))
+        catalog.retag(song, {"key": 9, "mode": 0, "bpm": 124.5})
+        changes = catalog._db().total_changes
+        assert catalog.retag(song, {"key": 2, "mode": 1, "bpm": 124}, remember_manual=False)
+        assert catalog._db().total_changes == changes
+        stored = catalog.record_for_path(song)
+        assert (stored["key"], stored["mode"], stored["bpm"]) == (9, 0, 124.5)
+        assert stored["user_tags"] == ["bpm", "key"]
+        assert catalog.retag(song, {"title": "Refreshed"}, remember_manual=False)
+        changes = catalog._db().total_changes
+        assert catalog.retag(song, {"title": "Refreshed"}, remember_manual=False)
+        assert catalog._db().total_changes == changes
+    finally:
+        catalog.close()

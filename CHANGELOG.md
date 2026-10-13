@@ -14,6 +14,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the same description shown in the clockwheel list. Music and category steps say whether they
   choose the least recently played song or choose at random. The description stays with the
   selected song when the clock changes, including the opening song.
+- Library Rescan can override saved fields with populated embedded tags; missing tags keep the
+  saved values, cue points and analysis remain intact for unchanged files.
+
 - Seasons for rotation categories (#140): under **When the songs may play**, a category can have a
   **Not before** date, a **Do not play after** date, or both, such as 1 to 26 December for
   Christmas songs. Outside them its songs are left out of every pick mode and a clockwheel step
