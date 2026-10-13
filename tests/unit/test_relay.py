@@ -47,9 +47,15 @@ def test_relay_dns_rejects_non_public_addresses(monkeypatch, host, resolved):
     monkeypatch.setattr(
         socket,
         "getaddrinfo",
-        lambda *_args, **_kwargs: [(socket.AF_INET6 if ":" in resolved else socket.AF_INET,
-                                    socket.SOCK_STREAM, 6, "", (resolved, 8000, 0, 0)
-                                    if ":" in resolved else (resolved, 8000))],
+        lambda *_args, **_kwargs: [
+            (
+                socket.AF_INET6 if ":" in resolved else socket.AF_INET,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                (resolved, 8000, 0, 0) if ":" in resolved else (resolved, 8000),
+            )
+        ],
     )
     with pytest.raises(ValueError, match="restricted"):
         resolve_safe_relay_addresses(host, 8000)
@@ -73,9 +79,13 @@ def test_metadata_update_rejects_link_local_before_http_request(monkeypatch):
         nonlocal requested
         requested = True
 
-    monkeypatch.setattr(socket, "getaddrinfo", lambda *_args, **_kwargs: [
-        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 8000))
-    ])
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 8000))
+        ],
+    )
     monkeypatch.setattr(http.client.HTTPConnection, "request", request)
     with pytest.raises(ValueError, match="restricted"):
         send_metadata(_shoutcast("shoutcast1"), "A - B")

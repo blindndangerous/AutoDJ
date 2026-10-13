@@ -28,7 +28,7 @@ import logging
 import socket
 import threading
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -135,28 +135,31 @@ def source_port(cfg: RelayConfig) -> int:
     return cfg.port if cfg.type == "icecast" else cfg.port + 1
 
 
-def resolve_safe_relay_addresses(host: str, port: int) -> list[tuple[int, int, int, str, tuple]]:
+def resolve_safe_relay_addresses(
+    host: str, port: int
+) -> Sequence[tuple[socket.AddressFamily, socket.SocketKind, int, str, tuple[Any, ...]]]:
     """Resolve a relay destination and reject unspecified, multicast and link-local IPs."""
     results = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     if not results:
         raise ValueError("relay host did not resolve")
     for _, _, _, _, address in results:
         ip = ipaddress.ip_address(address[0])
-        if ip.version == 6 and ip.ipv4_mapped:
-            ip = ip.ipv4_mapped
-        if ip.version == 6 and ip.sixtofour and (
-            ip.sixtofour.is_private
-            or ip.sixtofour.is_unspecified
-            or ip.sixtofour.is_multicast
-            or ip.sixtofour.is_link_local
-        ):
-            raise ValueError("relay host resolves to a restricted address")
-        if (
-            ip.is_unspecified
-            or ip.is_multicast
-            or ip.is_link_local
-            or ip == ipaddress.IPv6Address("fd00:ec2::254")
-        ):
+        if isinstance(ip, ipaddress.IPv6Address):
+            if ip == ipaddress.IPv6Address("fd00:ec2::254"):
+                raise ValueError("relay host resolves to a restricted address")
+            mapped = ip.ipv4_mapped
+            if mapped is not None:
+                ip = mapped
+            else:
+                sixtofour = ip.sixtofour
+                if sixtofour is not None and (
+                    sixtofour.is_private
+                    or sixtofour.is_unspecified
+                    or sixtofour.is_multicast
+                    or sixtofour.is_link_local
+                ):
+                    raise ValueError("relay host resolves to a restricted address")
+        if ip.is_unspecified or ip.is_multicast or ip.is_link_local:
             raise ValueError("relay host resolves to a restricted address")
     return results
 
@@ -345,8 +348,10 @@ def open_source(
         OSError: The connection failed.
     """
     port = source_port(cfg)
-    sock = _connect_relay(cfg.host, port) if connect is socket.create_connection else connect(
-        (cfg.host, port), timeout=CONNECT_TIMEOUT
+    sock = (
+        _connect_relay(cfg.host, port)
+        if connect is socket.create_connection
+        else connect((cfg.host, port), timeout=CONNECT_TIMEOUT)
     )
     try:
         if on_socket is not None:

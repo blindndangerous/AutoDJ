@@ -431,7 +431,7 @@ def _save_stream_relay_locked(
         os.environ[variable]
         if managed
         else old.password
-        if same_destination and not body.password
+        if old is not None and same_destination and not body.password
         else body.password
     )
     if not password:

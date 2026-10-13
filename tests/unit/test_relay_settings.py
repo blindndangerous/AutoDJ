@@ -155,9 +155,7 @@ def test_relay_password_is_not_reused_after_destination_changes(tmp_path):
     station, registry = _station(tmp_path)
     original = relay(host="8.8.8.8")
     station.cfg.stream.relays = {"main": original}
-    body = _body("main").model_copy(
-        update={"is_edit": True, "host": "1.1.1.1", "password": None}
-    )
+    body = _body("main").model_copy(update={"is_edit": True, "host": "1.1.1.1", "password": None})
     with pytest.raises(HTTPException) as error:
         _save_stream_relay(station, body, registry)
     assert error.value.status_code == 422

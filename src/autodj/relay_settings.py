@@ -91,18 +91,20 @@ def save_relays(path: Path, relays: dict[str, RelayConfig], slug: str) -> None:
             not isinstance(prior, dict)
             or prior.get("version") != 1
             or not isinstance(prior.get("relays"), list)
-            or any(not isinstance(item, dict) or not isinstance(item.get("name"), str)
-                   for item in prior["relays"])
+            or any(
+                not isinstance(item, dict) or not isinstance(item.get("name"), str)
+                for item in prior["relays"]
+            )
         ):
             raise ValueError("saved relay settings are invalid")
         try:
             names = set()
-            for item in prior["relays"]:
-                name = item["name"]
+            for prior_item in prior["relays"]:
+                name = prior_item["name"]
                 if name in names:
                     raise ValueError("duplicate relay name")
                 names.add(name)
-                password = item.get("password")
+                password = prior_item.get("password")
                 variable = password_variable(slug, name)
                 if variable in os.environ:
                     password = os.environ[variable]
@@ -110,11 +112,14 @@ def save_relays(path: Path, relays: dict[str, RelayConfig], slug: str) -> None:
                     password = _MISSING_CREDENTIAL
                 RelayConfig.from_table(
                     name,
-                    {**{key: item[key] for key in _FIELDS if key in item}, "password": password},
+                    {
+                        **{key: prior_item[key] for key in _FIELDS if key in prior_item},
+                        "password": password,
+                    },
                 )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("saved relay settings are invalid") from exc
-        old = {item["name"]: item for item in prior["relays"]}
+        old = {prior_item["name"]: prior_item for prior_item in prior["relays"]}
     entries = []
     for name, cfg in relays.items():
         item: dict[str, Any] = {"name": name, **{key: getattr(cfg, key) for key in _FIELDS}}
