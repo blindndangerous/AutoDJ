@@ -96,6 +96,7 @@ def test_actions_and_upcoming_come_from_the_server(
         "recording_split",
         "play_cart",
         "ad_break",
+        "show",
     }
     assert actions["time_check"]["fields"] == []
     assert actions["profile"]["fields"][0]["options"] == [{"value": "Evening", "label": "Evening"}]

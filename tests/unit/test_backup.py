@@ -464,3 +464,15 @@ def test_matched_intros_and_their_audio_are_backed_up_and_restored(tmp_path: Pat
     restore_backup(cfg, archive, force=True)
     assert json.loads(state.read_text(encoding="utf-8"))["schema_version"] == 1
     assert audio.read_bytes() == b"RIFF"
+
+
+def test_shows_are_backed_up_and_restored(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    state = cfg.index.active_dir / "shows.json"
+    state.write_text('{"schema_version": 1, "shows": {}}', encoding="utf-8")
+    archive = create_backup(cfg, tmp_path / "shows.zip", force=False)
+    with zipfile.ZipFile(archive) as backup:
+        assert backup.read("index/shows.json") == state.read_bytes()
+    state.unlink()
+    restore_backup(cfg, archive, force=True)
+    assert json.loads(state.read_text(encoding="utf-8")) == {"schema_version": 1, "shows": {}}

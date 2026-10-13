@@ -1136,3 +1136,45 @@ def test_undo_removes_the_folders_it_made_innermost_first(tmp_path: Path) -> Non
     assert swap.undo() == []
     assert not (tmp_path / "a").exists()
     assert not (tmp_path / "journal.json").exists()
+
+
+def test_each_stations_shows_are_backed_up_and_restored(tmp_path: Path) -> None:
+    """Shows (#106) are a station's own: each station gets its own shows.json back."""
+    cfg = _config(tmp_path)
+    assert "shows.json" in STATION_FILES
+    shows = {
+        cfg.index.active_dir / "shows.json": {"schema_version": 1, "shows": {"a" * 32: "day"}},
+        _station_dir(cfg, "nightowl") / "shows.json": {
+            "schema_version": 1,
+            "shows": {"b" * 32: "night"},
+        },
+    }
+    for path, document in shows.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(document), encoding="utf-8")
+    archive = create_backup(cfg, tmp_path / "shows.zip", force=False)
+    with zipfile.ZipFile(archive) as opened:
+        names = set(opened.namelist())
+    assert {"index/shows.json", "stations/nightowl/index/shows.json"} <= names
+    for path in shows:
+        path.unlink()
+    restore_backup(cfg, archive, force=True)
+    for path, document in shows.items():
+        assert json.loads(path.read_text(encoding="utf-8")) == document, path
+
+
+def test_a_restore_forgets_every_stations_show_on_the_air(tmp_path: Path) -> None:
+    """show_on_air.json (#106) is runtime state: never backed up, cleared by a restore."""
+    cfg = _config(tmp_path)
+    marks = [
+        cfg.index.active_dir / "show_on_air.json",
+        _station_dir(cfg, "nightowl") / "show_on_air.json",
+    ]
+    for mark in marks:
+        mark.parent.mkdir(parents=True, exist_ok=True)
+        mark.write_text('{"version": 1}', encoding="utf-8")
+    archive = create_backup(cfg, tmp_path / "air.zip", force=False)
+    with zipfile.ZipFile(archive) as opened:
+        assert not any(name.endswith("show_on_air.json") for name in opened.namelist())
+    restore_backup(cfg, archive, force=True)
+    assert not any(mark.exists() for mark in marks)

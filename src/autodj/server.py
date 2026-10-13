@@ -785,6 +785,8 @@ def _header_text(value: str) -> str:
 
 # A schedule event is a few hundred bytes; this leaves ample room.
 _SCHEDULE_BODY_MAX_BYTES = 16 * 1024
+# A show's list (#106): 500 paths, each well under 2 KiB in practice.
+SHOWS_SONGS_BODY_MAX_BYTES = 1024 * 1024
 
 
 def create_app(
@@ -874,6 +876,16 @@ def create_app(
             ):
                 logger.warning(
                     "A rotation test was still running %.2f seconds after it was cancelled",
+                    _SHUTDOWN_TIMEOUT_S,
+                )
+            # So does a show's generation (#106): it is cancelled and ends at
+            # its next pick.
+            show_generations = getattr(app.state, "show_generations", None)
+            if show_generations is not None and not await asyncio.to_thread(
+                show_generations.shutdown, _SHUTDOWN_TIMEOUT_S
+            ):
+                logger.warning(
+                    "A show's list was still being generated %.2f seconds after it was cancelled",
                     _SHUTDOWN_TIMEOUT_S,
                 )
             # So does an hour preview (#126): it ends within its own time limit,
@@ -1015,6 +1027,12 @@ def create_app(
         AD_UPLOAD_PATH: lambda: _ad_upload_cap(stations),
         AD_BREAKS_PATH: lambda: AD_JSON_BODY_MAX_BYTES,
         "/api/rotation-test": lambda: SMALL_BODY_MAX_BYTES,
+        # Shows (#106): POST and PUT; a list of up to 500 songs is the largest.
+        "/api/shows": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/shows/{show_id}": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/shows/{show_id}/songs": lambda: SHOWS_SONGS_BODY_MAX_BYTES,
+        "/api/shows/{show_id}/generate": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/shows/{show_id}/start": lambda: SMALL_BODY_MAX_BYTES,
         "/api/library/tags": lambda: TAG_BODY_MAX_BYTES,
         WORKER_PREFIX + "result": lambda: RESULT_BODY_MAX_BYTES,
         **{

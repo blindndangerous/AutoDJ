@@ -7,7 +7,9 @@ of it is already fixed and which is a guess:
 * fixed: the song on the air; what the render-ahead worker has rendered,
   with the liners and announcer breaks mixed into it; the song picked to
   follow it; the open song change and the breaks booked on it (#88), ad
-  spots among them (#51); and the request queue, which plays before any pick;
+  spots among them (#51); and the request queue, which plays before any
+  pick; and the songs of a show (#106): the rest of the one on the air, and a
+  scheduled one's from the first song after its time;
 * predicted: what the station's own picker would choose after that, from a
   dry run (:mod:`autodj.rotation_sim`) that starts where the fixed part
   ends, with the station's clockwheel place, history and schedule; and the
@@ -49,6 +51,8 @@ from zoneinfo import ZoneInfo
 from fastapi import HTTPException, Query, Request
 
 from autodj.rotation_sim import (
+    _PICKING_ACTIONS,
+    _UNSIMULATED_ACTIONS,
     PlayerSnapshot,
     SimulationSource,
     _apply_event,
@@ -105,8 +109,13 @@ STATUS_WORDS = {
     "picked": "Fixed: picked",
     "booked": "Fixed: booked break",
     "queued": "Fixed: in the queue",
+    "show": "Fixed: from a show",
+    "skipped": "Skipped: it would break a DMCA limit",
     "predicted": "Predicted",
 }
+
+# The schedule's actions the dry run follows: the picking changes, and shows.
+_PREVIEW_ACTIONS = _PICKING_ACTIONS | _UNSIMULATED_ACTIONS | {"show"}
 
 BREAK_KINDS = {
     "dj": "DJ",
@@ -128,6 +137,8 @@ NOTES = (
     "applies from the first song after its time.",
     "An ad break not yet booked is predicted at the first predicted song change at or after its "
     "time, with the spots its rules would pick now; once booked on a song change it is fixed.",
+    "A show's songs are listed as saved, from the first song after its time; on the air one "
+    "that would break a DMCA limit is skipped.",
 )
 
 NOTHING_PLAYING = "Nothing is playing, so there is nothing to time. Start playback first."
@@ -498,11 +509,19 @@ def _liner_paths(player: Any) -> set[str]:
     return {entry.path for entry in library.entries_snapshot("liner")}
 
 
-def read_station(player: Any, desk: Any = None, *, now: float | None = None) -> Decided:
+def read_station(
+    player: Any,
+    desk: Any = None,
+    *,
+    now: float | None = None,
+    show: tuple[str, Sequence[Any]] | None = None,
+) -> Decided:
     """What *player* has decided, read without changing anything.
 
     *desk* is the station's :class:`~autodj.breaks.BreakDesk`, for the
-    breaks' names and the ones booked on the open song change.
+    breaks' names and the ones booked on the open song change.  *show* is
+    the show on the air, its name and its songs not yet queued (#106): they
+    follow the queue, fixed.
     """
     now = time.time() if now is None else now
     state = player._state
@@ -579,6 +598,19 @@ def read_station(player: Any, desk: Any = None, *, now: float | None = None) -> 
         last = entry
         moment += seconds
         index += 1
+    if show is not None:
+        name, entries_left = show
+        for entry in list(entries_left)[: max(0, MAX_QUEUED - len(queued))]:
+            # As on the air: a song that would break a DMCA limit is skipped.
+            before = [song for song, _at in unplayed if song.path not in liners]
+            if _dmca_breaks(player, now, current, before, entry):
+                items.append(Item("skipped", moment, 0.0, "skipped", entry, name))
+                continue
+            seconds = _remaining(player, entry, 0.0, average)
+            items.append(Item("song", moment, seconds, "show", entry, name))
+            unplayed.append((entry, moment))
+            last = entry
+            moment += seconds
     cursor, clock_name, boundary = clock
     return Decided(
         now=now,
@@ -602,6 +634,20 @@ _Found = tuple[
     float,
     tuple[int | None, str | None, float | None],
 ]
+
+
+def _dmca_breaks(
+    player: Any, now: float, current: Any, before: Sequence[Any], entry: Any
+) -> tuple[str, ...]:
+    """The DMCA limits *entry* would break after *current* and *before*; none when the mode is off."""
+    if not player._cfg.dmca.enabled:
+        return ()
+    from autodj.dmca import complement, projected_history
+
+    with player._pick_lock:
+        history = list(player._state.play_history)
+    records, when = projected_history(history, now, current, list(before))
+    return tuple(complement(records, when, player._track_keys()).broken(entry))
 
 
 def _read_bus(player: Any, desk: Any, now: float, average: float) -> _Found | None:
@@ -872,7 +918,12 @@ def _predict(
     from autodj._bridge import PlayerBridge
 
     bridge = PlayerBridge(player=player, sim=player._sim, library=source.library, ledger=ledger)
-    schedule = _Schedule(source.events, source.timezone, decided.now)
+    schedule = _Schedule(source.events, source.timezone, decided.now, _PREVIEW_ACTIONS)
+    shows = getattr(source, "shows", None)
+    scheduled = getattr(shows, "scheduled", None) or {}
+    # The songs of a scheduled show that has started, still to play.
+    show_name = ""
+    show_songs: list[Any] = []
     found: list[Item] = []
     stopped: str | None = None
     songs = 0
@@ -887,7 +938,31 @@ def _predict(
         # start, and dayparting the hours at the next song's.
         player._sim_now = handoff - song_seconds(player, current, average) / current_rate
         for _at, event in schedule.due(handoff):
-            _apply_event(player, bridge, event)
+            if event.action == "show":
+                # As on the air: a show replaces the one before it.
+                show_name, entries = scheduled.get(str(event.params.get("show", "")), ("", ()))
+                show_songs = list(entries)
+            else:
+                _apply_event(player, bridge, event)
+        if show_songs:
+            entry = show_songs.pop(0)
+            # As on the air: a song that would break a DMCA limit is skipped.
+            limits = player._pick_context(at=handoff).complement
+            if limits is not None and limits.broken(entry):
+                found.append(Item("skipped", handoff, 0.0, "skipped", entry, show_name))
+                continue
+            # An ad break due by now joins this song change too (#51).
+            while ads and ads[0].at <= handoff:
+                run = ads.popleft()
+                if run.seconds > 0:
+                    found.append(Item("break", handoff, run.seconds, "predicted", label=run.label))
+                    handoff += run.seconds
+            record(entry, handoff)
+            seconds = song_seconds(player, entry, average)
+            found.append(Item("song", handoff, seconds, "show", entry, show_name))
+            current, handoff = entry, handoff + seconds
+            songs += 1
+            continue
         context = player._pick_context(at=handoff)
         added: tuple[tuple[Any, bool], ...] = ()
         try:
@@ -1302,7 +1377,7 @@ def build_preview(
     minutes = check_minutes(minutes)
     zone = ZoneInfo(source.timezone)
     if decided is None:
-        decided = read_station(source.player, desk, now=now)
+        decided = read_station(source.player, desk, now=now, show=_on_air_show(source))
     now = decided.now
     end = now + minutes * 60
     view: dict[str, Any] = {
@@ -1337,7 +1412,8 @@ def build_preview(
     )
     timeline = [*decided.items, *predicted]
     songs = [item for item in timeline if item.kind == "song"]
-    changes = song_changes(timeline)
+    # A skipped show song takes no time and opens no song change.
+    changes = song_changes([item for item in timeline if item.kind != "skipped"])
     if not predicted and songs:
         last = songs[-1]
         ends = max(ends, last.starts + last.seconds)
@@ -1396,12 +1472,27 @@ def _ad_forecasts(source: SimulationSource, now: float, end: float) -> list[Any]
         return []
 
 
+def _on_air_show(source: SimulationSource) -> tuple[str, Sequence[Any]] | None:
+    """The show on the air and its songs not yet queued, from *source*, or ``None``."""
+    shows = getattr(source, "shows", None)
+    return getattr(shows, "on_air", None)
+
+
+def _status_text(item: Item) -> str:
+    """What an item's status says; a show's songs name the show."""
+    if item.status == "show" and item.label:
+        return f"Fixed: show {item.label}"
+    if item.status == "skipped" and item.label:
+        return f"Skipped from show {item.label}: it would break a DMCA limit"
+    return STATUS_WORDS[item.status]
+
+
 def _item_view(item: Item, zone: ZoneInfo) -> dict[str, Any]:
     return {
         "kind": item.kind,
         "status": item.status,
         "fixed": item.fixed,
-        "status_text": STATUS_WORDS[item.status],
+        "status_text": _status_text(item),
         "title": item_title(item),
         "starts_at": _wall(item.starts, zone).isoformat(),
         "starts_text": clock_text(item.starts, zone),
@@ -1596,7 +1687,7 @@ class HourPreviews:
 
         Blocking: the worker thread calls it.
         """
-        decided = read_station(source.player, desk)
+        decided = read_station(source.player, desk, show=_on_air_show(source))
         key = (source.station, minutes)
         player = source.player
         settings = tuple(
@@ -1632,6 +1723,7 @@ class HourPreviews:
                     versions,
                     category_signature,
                     getattr(source.ads, "revision", None),
+                    source.shows.signature() if source.shows is not None else None,
                 )
             ).encode("utf-8")
         ).hexdigest()
@@ -1693,6 +1785,19 @@ def install_hour_preview(router: StationRouter) -> None:
     ) -> dict[str, Any]:
         """The station's next *minutes*: estimated start times, fixed or predicted, and backtiming."""
         source = _source(station)
+        shows = getattr(station, "shows", None)
+        if shows is not None:
+            from autodj.shows import preview_shows
+
+            # Reads the shows file: in a worker thread, never on the event loop.
+            found = await asyncio.to_thread(
+                preview_shows,
+                shows,
+                getattr(station, "show_runner", None),
+                source.events,
+                station.bridge.entry_for_path,
+            )
+            source = replace(source, shows=found)
         schedule = getattr(station, "schedule", None)
         describe = schedule.summary if schedule is not None else None
         previews = _previews(request)
