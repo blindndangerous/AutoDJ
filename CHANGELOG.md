@@ -407,7 +407,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- History exports load details only for the requested dates, while retaining the next play needed to calculate duration. Reports use a separate database snapshot so they do not hold up play-history writes. Stored history remains unlimited.
+- History exports load details only for the requested dates, while retaining the next play
+  needed to calculate duration (#165). Reports use a separate database snapshot so they do not
+  hold up play-history writes. Stored history remains unlimited.
 
 - Clockwheel picks on a large library take less work, the same songs as before: in DMCA mode a
   pick checks each song against only the few albums and artists at a limit (and none while nothing
