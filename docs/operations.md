@@ -2200,8 +2200,7 @@ out that release's tag as in the [upgrade checklist](#upgrade-checklist), then r
 by that release. Restore also refuses an archive whose file names are absolute or contain `..`,
 files the manifest does not list, and an index made by an older AutoDJ. It also refuses file
 names Windows cannot hold, such as `CON`, `nul.mp3` or `COM1`, or a name ending in a dot or a
-space. Backups never follow links: a link in a liner, cart or other folder, or a state file that
-is a link, is left out, so a backup holds only files that are really in those folders.
+space.
 
 Without `--force`, restore refuses when anything it would replace already exists. With it:
 

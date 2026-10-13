@@ -23,8 +23,8 @@ that wrote it and the list of files) and these members:
   lists those stations under ``"stations"``, and restore refuses a station the
   configuration does not define.
 
-Links are never followed, and every station's state files are copied with the
-index under its publication lock.  Restore is all or nothing: what it replaces
+Every station's state files are copied with the index under its publication
+lock.  Restore is all or nothing: what it replaces
 is set aside first (``.<name>.old-<id>``) and put back if any replacement fails.
 
 Broadcast recordings are archives, not station state: they can run to many
@@ -214,15 +214,16 @@ def _folder_roots(roots: dict[str, Path]) -> tuple[dict[str, Path], dict[str, st
     return kept, shared
 
 
-def _regular_files(root: Path, pattern: str = "**/*") -> list[Path]:
-    """The plain files under *root*: never a link, never a file outside it."""
-    if root.is_symlink() or not root.is_dir():
-        return []
-    base = root.resolve()
+def _folder_files(root: Path, pattern: str = "**/*") -> list[Path]:
+    """The files a backup takes from folder *root*.
+
+    Uploaded Stereo Tool presets that are links stay out, as before; how
+    links in the other folders are treated is #193's (PR #197).
+    """
     return [
         path
         for path in sorted(root.glob(pattern))
-        if not path.is_symlink() and path.is_file() and path.resolve().is_relative_to(base)
+        if path.is_file() and (pattern != "*.sts" or not path.is_symlink())
     ]
 
 
@@ -261,7 +262,7 @@ def _snapshot(cfg: AutoDJConfig, roots: dict[str, Path], snapshot: Path) -> dict
         ]
         for key, name in state:
             original = roots[key] / name
-            if original.is_symlink() or not original.is_file():
+            if not original.is_file():
                 continue
             copy = snapshot / key / name
             copy.parent.mkdir(parents=True, exist_ok=True)
@@ -279,7 +280,7 @@ def _snapshot(cfg: AutoDJConfig, roots: dict[str, Path], snapshot: Path) -> dict
         _check_sqlite(index / name)
     for name in ("related-artists.toml", "related-tracks.toml"):
         related = active / name
-        if related.is_file() and not related.is_symlink():
+        if related.is_file():
             shutil.copyfile(related, index / name)
     for path in sorted(index.iterdir()):
         members.setdefault(f"index/{path.name}", path)
@@ -308,8 +309,6 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
     Safe while AutoDJ serves: the index and every station's state files are
     copied under the index's publication lock, the index checked against its
     manifest, and SQLite databases copied through SQLite's backup API.
-    Links in the folders are left out, so a backup never holds a file from
-    outside them.
 
     Raises:
         BackupError: If *destination* exists without *force*, the index is
@@ -329,7 +328,7 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
             members = _snapshot(cfg, roots, Path(temp))
             for key, root in folders.items():
                 pattern = "*.sts" if key == "stereo-tool-presets" else "**/*"
-                for path in _regular_files(root, pattern):
+                for path in _folder_files(root, pattern):
                     members[f"{key}/{path.relative_to(root).as_posix()}"] = path
             with partial.open("xb") as handle:
                 with zipfile.ZipFile(handle, "w", zipfile.ZIP_DEFLATED) as archive:

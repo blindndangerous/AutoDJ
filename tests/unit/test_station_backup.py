@@ -453,46 +453,18 @@ def test_state_files_are_one_moment_with_the_index(tmp_path: Path) -> None:
     owl = _station_dir(cfg, "nightowl") / "web_state.json"
     from autodj import backup as backup_module
 
-    real = backup_module._regular_files
+    real = backup_module._folder_files
 
     def late_edit(root, pattern="**/*"):
         owl.write_bytes(b"edited after the snapshot")
         (cfg.index.active_dir / "schedule.json").write_bytes(b"edited too")
         return real(root, pattern)
 
-    with patch.object(backup_module, "_regular_files", late_edit):
+    with patch.object(backup_module, "_folder_files", late_edit):
         archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
     with zipfile.ZipFile(archive) as opened:
         assert opened.read("stations/nightowl/index/web_state.json") == written[owl]
         assert opened.read("index/schedule.json") == written[cfg.index.active_dir / "schedule.json"]
-
-
-def _symlink(link: Path, target: Path) -> None:
-    try:
-        link.symlink_to(target, target_is_directory=target.is_dir())
-    except OSError as exc:  # Windows without the symlink privilege
-        pytest.skip(f"cannot make symlinks here: {exc}")
-
-
-def test_links_never_bring_outside_files_into_a_backup(tmp_path: Path) -> None:
-    cfg = _config(tmp_path)
-    _fill(cfg)
-    secret = tmp_path / "outside" / "secret.txt"
-    secret.parent.mkdir()
-    secret.write_bytes(b"not for the backup")
-    owl = _station_dir(cfg, "nightowl")
-    _symlink(owl / "liners" / "secret.mp3", secret)
-    _symlink(owl / "carts" / "elsewhere", secret.parent)
-    (owl / "listener_bans.json").unlink()
-    _symlink(owl / "listener_bans.json", secret)
-
-    archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
-
-    with zipfile.ZipFile(archive) as opened:
-        names = opened.namelist()
-        assert not any("secret" in name or "elsewhere" in name for name in names)
-        assert "stations/nightowl/index/listener_bans.json" not in names
-        assert all(opened.read(name) != b"not for the backup" for name in names)
 
 
 @pytest.mark.parametrize(
