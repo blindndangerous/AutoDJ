@@ -198,3 +198,52 @@ def test_pending_reservation_does_not_hold_registry_lock(tmp_path: Path) -> None
         release.set()
         worker.join(timeout=2)
     assert not worker.is_alive()
+
+
+def _through_proxy_headers(trusted: list[str], peer: str, headers: list) -> dict:
+    from autodj.listener_access import forwarded_allow_ips
+
+    seen: dict = {}
+
+    async def app(scope, _receive, _send):
+        seen.update(scope)
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    async def send(_message):
+        return None
+
+    scope = {"type": "http", "client": (peer, 1234), "headers": headers, "scheme": "http"}
+    middleware = ProxyHeadersMiddleware(app, trusted_hosts=forwarded_allow_ips(trusted))
+    asyncio.run(middleware(scope, receive, send))
+    return seen
+
+
+@pytest.mark.parametrize("peer", ["127.0.0.1", "::1"])
+def test_with_no_trusted_proxies_a_tls_proxy_on_this_machine_still_works(peer):
+    from autodj.security import machine_transport_allowed
+
+    proxied = [(b"x-forwarded-proto", b"https"), (b"x-forwarded-for", b"192.0.2.7")]
+    scope = _through_proxy_headers([], peer, proxied)
+    assert scope["scheme"] == "https"
+    assert machine_transport_allowed(scope)
+    # Plain HTTP through that proxy is still refused for machine tokens ...
+    plain = _through_proxy_headers([], peer, [(b"x-forwarded-for", b"192.0.2.7")])
+    assert not machine_transport_allowed(plain)
+    # ... and a program on this machine with no proxy works as before.
+    direct = _through_proxy_headers([], peer, [])
+    assert machine_transport_allowed(direct)
+
+
+def test_an_explicit_proxy_list_is_kept_as_configured():
+    from autodj.listener_access import forwarded_allow_ips
+
+    assert "127.0.0.1/32" not in forwarded_allow_ips(["10.0.0.0/8"])
+    scope = _through_proxy_headers(["10.0.0.0/8"], "127.0.0.1", [(b"x-forwarded-proto", b"https")])
+    assert scope["scheme"] == "http"
+    # A LAN worker over HTTPS needs no proxy at all and is unaffected.
+    from autodj.security import machine_transport_allowed
+
+    lan = {"type": "http", "scheme": "https", "client": ("192.168.1.9", 5), "headers": []}
+    assert machine_transport_allowed(lan)

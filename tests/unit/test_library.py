@@ -1,3 +1,4 @@
+import logging
 import os
 import threading
 from contextlib import contextmanager
@@ -205,7 +206,11 @@ def test_scan_imports_recursive_music_and_liners_and_reuses_loudness(manager_fac
     manager = manager_factory(music=music, liners=liner_dir, processing="smooth")
     analyze = patch("autodj.library.analyze_basic", side_effect=fake_basic)
     loudness = patch("autodj.library.analyze_loudness", side_effect=fake_loudness)
-    with analyze as analyzed, loudness as measured:
+    with (
+        analyze as analyzed,
+        loudness as measured,
+        patch("autodj.audio_meta.read_file_tags") as read_tags,
+    ):
         manager.scan()
         assert manager.entry_for_path(song).title == "song"
         assert len(manager.entries_snapshot("liner")) == 1
@@ -215,6 +220,84 @@ def test_scan_imports_recursive_music_and_liners_and_reuses_loudness(manager_fac
         manager.scan()
         assert analyzed.call_count == measured.call_count == 2
         assert manager.snapshot()["import"]["errors"] == []
+        read_tags.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("embedded_bpm", "manual_bpm", "expected_bpm", "expected_tags"),
+    [
+        (0, True, 124.5, ["bpm", "key"]),
+        (124, True, 124.5, ["bpm", "key"]),
+        (130, False, 130, ["key"]),
+    ],
+)
+def test_scan_can_override_existing_tags_without_replacing_analysis(
+    manager_factory, tmp_path, embedded_bpm, manual_bpm, expected_bpm, expected_tags
+):
+    from autodj.audio_meta import FileTags
+
+    music = tmp_path / "Music"
+    music.mkdir()
+    song = music / "song.flac"
+    song.write_bytes(b"music")
+    manager = manager_factory(music=music)
+    manager.catalog.put_entry(
+        make_entry(song, title="Old title", energy=0.42),
+        points={"start": 0, "end": 180, "intro": 9},
+    )
+    manager.catalog.retag(song, {"key": 4, **({"bpm": 124.5} if manual_bpm else {})})
+    manager.refresh()
+
+    with (
+        patch(
+            "autodj.audio_meta.read_file_tags",
+            return_value=FileTags(title="Tagged title", artist="Tagged artist", bpm=embedded_bpm),
+        ) as read_tags,
+        patch("autodj.library.analyze_basic", side_effect=AssertionError("must reuse analysis")),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+    ):
+        manager.scan(override_tags=True)
+
+    entry = manager.entry_for_path(song)
+    record = manager.catalog.record_for_path(song)
+    assert entry.title == "Tagged title" and entry.artist == "Tagged artist"
+    assert entry.bpm == expected_bpm and entry.key == 4  # missing embedded values keep saved tags
+    assert entry.energy == 0.42
+    assert record["points"]["intro"] == 9
+    assert record["user_tags"] == expected_tags
+    read_tags.assert_called_once_with(song)
+
+
+def test_queued_tag_override_runs_before_loudness_scan_finishes(manager_factory, tmp_path):
+    from autodj.audio_meta import FileTags
+
+    music = tmp_path / "Music"
+    music.mkdir()
+    song = music / "song.flac"
+    song.write_bytes(b"music")
+    manager = manager_factory(music=music, processing="smooth")
+    requested = False
+
+    def measure(path, kind="music"):
+        nonlocal requested
+        if not requested:
+            requested = True
+            assert manager.start_scan(override_tags=True)
+        return fake_loudness(path, kind)
+
+    with (
+        patch(
+            "autodj.audio_meta.read_file_tags", return_value=FileTags(title="Tagged")
+        ) as read_tags,
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=measure),
+    ):
+        assert manager.start_scan()
+        manager._thread.join(timeout=5)
+        assert not manager._thread.is_alive()
+
+    assert manager.entry_for_path(song).title == "Tagged"
+    read_tags.assert_called_once_with(song)
 
 
 def test_scan_continues_after_per_file_failure(manager_factory, tmp_path):
@@ -283,11 +366,11 @@ def test_added_folders_queue_once_without_expanding_to_other_sources(
     observed = []
     original_scan = manager._scan
 
-    def scoped_scan(source_ids):
+    def scoped_scan(source_ids, override_tags=False):
         if not observed:
             entered.set()
             assert release.wait(timeout=3)
-        original_scan(source_ids)
+        original_scan(source_ids, override_tags)
         observed.append((source_ids, manager.snapshot()["import"]["total"]))
 
     manager._scan = scoped_scan
@@ -908,8 +991,9 @@ def test_start_scan_reruns_with_new_sources_when_requested_during_scan(manager_f
     second_root.mkdir()
     observed = []
 
-    def pass_scan(source_ids):
+    def pass_scan(source_ids, override_tags=False):
         assert source_ids is None
+        assert not override_tags
         observed.append({source["path"] for source in manager.catalog.sources("music")})
         if len(observed) == 1:
             entered.set()
@@ -1171,6 +1255,9 @@ def test_scan_drops_deleted_tracks_but_not_an_unmounted_share(manager_factory, t
         manager.scan()
         assert [Path(entry.path).name for entry in manager.entries_snapshot()] == ["kept.flac"]
         assert manager._missing == frozenset({os.path.normcase(str(deleted))})
+        assert manager.is_gone(deleted)
+        assert not manager.is_gone(remote)  # its share is only away
+        assert not manager.is_gone(kept)
         moved.rename(share)
         manager.catalog.update_source(manager.catalog.sources("music")[-1]["id"], True, True)
         manager.tick()
@@ -1473,3 +1560,120 @@ def test_a_write_during_a_refresh_is_caught_on_the_next_tick(other_connection, m
     monkeypatch.setattr(manager.catalog, "reader", reader)
     manager.tick()
     assert manager.entry_for_path(late) is not None
+
+
+def test_a_finished_scan_calls_its_tidy_up_and_survives_its_failure(
+    manager_factory, tmp_path, caplog
+):
+    music = tmp_path / "Music"
+    music.mkdir()
+    (music / "one.flac").write_bytes(b"one")
+    manager = manager_factory(music=music)
+    seen = []
+
+    def tidy() -> None:
+        seen.append(len(manager.entries_snapshot()))  # after the refresh
+        raise OSError("disk gone")
+
+    manager.on_scan_done = tidy
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+        caplog.at_level(logging.ERROR, logger="autodj.library"),
+    ):
+        manager.scan()
+    assert seen == [1]
+    assert "after-scan tidy-up failed" in caplog.text
+    assert manager._state["running"] is False
+
+
+def test_a_folder_the_scan_cannot_read_marks_nothing_gone_and_skips_the_tidy_up(
+    manager_factory, tmp_path, monkeypatch
+):
+    import autodj.library as library_module
+
+    music = tmp_path / "Music"
+    (music / "Sub").mkdir(parents=True)
+    kept, deleted = music / "kept.flac", music / "Sub" / "deleted.flac"
+    for path in (kept, deleted):
+        path.write_bytes(path.name.encode())
+    manager = manager_factory(music=music)
+    tidied = []
+    manager.on_scan_done = lambda: tidied.append(True)
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+    ):
+        manager.scan()
+        assert tidied == [True]
+        deleted.unlink()
+        real_walk = os.walk
+
+        def failing_walk(top, *args, onerror=None, **kwargs):
+            # The subfolder cannot be read just now: its files are not seen.
+            for current, directories, files in real_walk(top, *args, **kwargs):
+                if "Sub" in directories:
+                    directories.remove("Sub")
+                    onerror(PermissionError(13, "Permission denied", str(Path(current, "Sub"))))
+                yield current, directories, files
+
+        monkeypatch.setattr(library_module.os, "walk", failing_walk)
+        manager.scan()
+    assert not manager.is_gone(deleted)  # not seen is not gone
+    assert tidied == [True]  # no tidy-up after a scan that could not read a folder
+    monkeypatch.setattr(library_module.os, "walk", real_walk)
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+    ):
+        manager.scan()
+    assert manager.is_gone(deleted)
+    assert tidied == [True, True]
+
+
+def test_a_file_listed_but_not_resolvable_is_not_marked_gone(manager_factory, tmp_path):
+    music = tmp_path / "Music"
+    music.mkdir()
+    flapping = music / "flapping.flac"
+    flapping.write_bytes(b"x")
+    (music / "kept.flac").write_bytes(b"y")
+    manager = manager_factory(music=music)
+    tidied = []
+    manager.on_scan_done = lambda: tidied.append(True)
+    real_resolve = Path.resolve
+
+    def flap(self: Path, strict: bool = False) -> Path:
+        if self.name == "flapping.flac" and strict:
+            raise OSError(64, "The specified network name is no longer available")
+        return real_resolve(self, strict=strict)
+
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+    ):
+        manager.scan()
+        with patch.object(Path, "resolve", flap), patch("os.path.isfile", return_value=False):
+            manager.scan()
+    assert not manager.is_gone(flapping)
+    assert tidied == [True, True]
+
+
+def test_a_scan_that_fails_part_way_runs_no_tidy_up(manager_factory, tmp_path):
+    music = tmp_path / "Music"
+    music.mkdir()
+    (music / "one.flac").write_bytes(b"one")
+    manager = manager_factory(music=music)
+    tidied = []
+    manager.on_scan_done = lambda: tidied.append(True)
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("catalog locked")
+
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+        patch.object(manager, "_reconcile_moves", broken),
+        pytest.raises(RuntimeError),
+    ):
+        manager.scan()
+    assert tidied == []

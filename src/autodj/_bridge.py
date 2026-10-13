@@ -45,7 +45,11 @@ def _build_why(player: Any, cur: Any) -> list[str]:
 
     prev = getattr(player, "_previous_track", None)
     mode = getattr(player, "_last_pick_mode", "similarity")
-    return explain_pick(prev, cur, mode=mode)
+    reasons = explain_pick(prev, cur, mode=mode)
+    step = getattr(player, "_last_clock_step", None)
+    if mode in {"clock", "seed"} and step and reasons:
+        reasons[0] = f"Clockwheel step {step['number']}."
+    return reasons
 
 
 def _library_job_snapshot() -> dict:
@@ -520,7 +524,8 @@ class PlayerBridge:
             nxt = state.next_track
         elif cur is not None:
             try:
-                nxt = p._pick_next(cur)
+                # *cur* has ended or was skipped: the pick plays now.
+                nxt = p._pick_next(cur, at=p._now())
             except Exception:  # pragma: no cover -- defensive log-only path
                 # Picker failed (empty index after prune, FAISS error, ...).
                 # Leave state untouched so the browser keeps playing the
@@ -532,6 +537,7 @@ class PlayerBridge:
             return
 
         state.current_track = nxt
+        p.note_browser_start(nxt)
         # Lazy-capture seed on first advance (seed never goes through advance_now as nxt).
         with self._history_lock:
             if not self._history_started and cur is not None:
@@ -585,7 +591,8 @@ class PlayerBridge:
                 seed_for_next = state.pre_queue_seed
             state.pre_queue_seed = None
         try:
-            state.next_track = p._pick_next(seed_for_next)
+            # The pick follows *nxt*, which has just started, whatever it is seeded from.
+            state.next_track = p._pick_next(seed_for_next, at=p._browser_handoff(nxt))
         except Exception:  # pragma: no cover -- defensive log-only path
             # Browser will see "no upcoming track" until the next advance
             # rebuilds it.  Warning so the default INFO floor surfaces
@@ -1066,6 +1073,9 @@ class PlayerBridge:
             "last_transition_fx": getattr(self.player, "_last_transition_fx", "none"),
             "next_transition_fx": self._next_transition_fx(current, upcoming),
             "why_this_track": _build_why(self.player, current),
+            "clock_step": getattr(self.player, "_last_clock_step", None)
+            if getattr(self.player, "_last_pick_mode", "") in {"clock", "seed"}
+            else None,
             "library_job": _library_job_snapshot(),
             # Browser-side audio drives playback only when the server is
             # headless (dry_run: no --server-audio, or missing audio deps) and
@@ -1515,6 +1525,8 @@ class PlayerBridge:
         names = sorted(set(BUILTIN_PRESETS.keys()) | set(cfg.presets.keys()))
         bpm_range = p._bpm_range
         related_problem = getattr(p, "related_artists_problem", None)
+        tracks_problem = getattr(p, "related_tracks_problem", None)
+        active_dir = cfg.index.active_dir
         return {
             "preset": preset.name if preset else None,
             "available_presets": names,
@@ -1554,9 +1566,17 @@ class PlayerBridge:
                 if isinstance(related_problem, str)
                 else None,
                 "related_artists_default_file": str(
-                    (Path(cfg.index.active_dir) / "related-artists.toml").resolve()
+                    (Path(active_dir) / "related-artists.toml").resolve()
                 )
-                if cfg.index.active_dir is not None
+                if active_dir is not None
+                else "",
+                "related_tracks_problem": tracks_problem
+                if isinstance(tracks_problem, str)
+                else None,
+                "related_tracks_default_file": str(
+                    (Path(active_dir) / "related-tracks.toml").resolve()
+                )
+                if active_dir is not None
                 else "",
                 "transition_wet_mix": float(cfg.transitions.wet_mix),
                 "replaygain_target_db": float(cfg.replaygain.target_db),
@@ -1702,10 +1722,11 @@ class PlayerBridge:
 
             preset_path(cfg.index.active_dir, values["stereotool_preset"])
         related_artists = self._read_related_artists(body, restoring=restoring)
+        related_tracks = self._read_related_tracks(body, restoring=restoring)
         if body.repeat_rules is not None:
             values["repeat_rules"] = body.repeat_rules
         with settings_lock(player):
-            self._apply_playback_settings(values, related_artists)
+            self._apply_playback_settings(values, related_artists, related_tracks)
         if "repeat_rules" in values and (ledger := self._ledger()) is not None:
             player.restore_repeat_history(ledger, refresh=True)
 
@@ -1746,12 +1767,50 @@ class PlayerBridge:
             return related, problem
         return None
 
+    def _read_related_tracks(
+        self, body: PlaybackSettingsBody, *, restoring: bool
+    ) -> tuple[Any, str | None] | None:
+        """The related tracks new repeat rules use, and any problem with the file.
+
+        Works like :meth:`_read_related_artists`: ``None`` when *body* sets
+        no repeat rules, and a file that cannot be read refuses the change
+        except while settings are restored at startup.
+        """
+        if body.repeat_rules is None:
+            return None
+        from autodj.related_artist_file import (
+            invalid_related_artists_message,
+            load_configured_related_tracks,
+            unused_related_artists_message,
+        )
+        from autodj.repeat_rules import RelatedTracks
+
+        player = self.player
+        related = RelatedTracks()
+        problem = None
+        if body.repeat_rules.use_related_tracks:
+            try:
+                related = load_configured_related_tracks(player._cfg.index.active_dir)
+            except (OSError, ValueError) as exc:
+                if not restoring:
+                    message = invalid_related_artists_message(exc, "tracks")
+                    player.related_tracks_problem = message
+                    raise ValueError(message) from exc
+                problem = unused_related_artists_message(exc, "tracks")
+                logger.warning("Related tracks file was not used: %s", exc)
+        return related, problem
+
     def _apply_playback_settings(
-        self, values: dict[str, Any], related_artists: tuple[Any, str | None] | None
+        self,
+        values: dict[str, Any],
+        related_artists: tuple[Any, str | None] | None,
+        related_tracks: tuple[Any, str | None] | None = None,
     ) -> None:
         """Swap *values* in (hold the settings lock); only memory changes here."""
         player = self.player
         cfg = player._cfg
+        if related_tracks is not None:
+            player._related_tracks, player.related_tracks_problem = related_tracks
         if related_artists is not None:
             player._related_artists, player.related_artists_problem = related_artists
             if hasattr(player, "_key_cache_lock"):

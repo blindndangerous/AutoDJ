@@ -61,6 +61,21 @@ def proxy_allowlist(trusted: list[str]) -> list[str]:
     return result
 
 
+#: The proxies trusted when ``[stream] trusted_proxies`` is empty: one on
+#: this machine, as Uvicorn trusts by default.  A TLS reverse proxy on the
+#: same host then still makes its requests HTTPS (#88).
+LOOPBACK_PROXIES: tuple[str, ...] = ("127.0.0.1/32", "::1/128")
+
+
+def forwarded_allow_ips(trusted: list[str]) -> list[str]:
+    """The peers whose ``X-Forwarded-*`` headers the server believes.
+
+    The configured ``[stream] trusted_proxies``, or this machine when the
+    list is empty.
+    """
+    return proxy_allowlist(list(trusted) or list(LOOPBACK_PROXIES))
+
+
 def player_name(user_agent: str) -> str:
     """Give the operator a short printable player label."""
     clean = "".join(char if char.isprintable() else " " for char in user_agent)

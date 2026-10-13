@@ -382,7 +382,7 @@
     <section id="points-editor" aria-labelledby="points-heading" hidden>
       <h3 id="points-heading">Cue points</h3>
       <p>Preview this file to check its cues. Use preview position copies the preview’s time; it does not use or change the station’s playback position.</p>
-      <p id="points-liner-help" hidden>Segue marks the end of the liner’s main content; End keeps the remaining tail. A blank Overlap start uses Segue, or End when Segue is blank. With Allow start over outro unchecked, the liner starts at the outgoing song’s Segue; checked, it may start over the Outro. Set Overlap start to 0 to let the next song’s intro overlap the liner when timing allows. A positive value is the number of seconds after the liner’s saved Start at which the next song may enter. It cannot be later than the liner’s Segue.</p>
+      <p id="points-liner-help" hidden>Segue marks the end of the liner’s main content; End keeps the remaining tail. A blank Overlap start uses Segue, or End when Segue is blank. With Allow start over outro unchecked, the liner starts at the outgoing song’s Segue; checked, it may start over the Outro. Set Overlap start to 0 to let the next song’s intro overlap the liner when timing allows. A positive value is the number of seconds after the liner’s saved Start at which the next song may enter. It cannot be later than the liner’s Segue. A negative value starts the liner after the next song begins, limited by its intro.</p>
       <label id="points-allow-outro-label" hidden><input type="checkbox" id="points-allow-outro" aria-describedby="points-liner-help"> Allow start over outro</label>
       <label for="points-path">Track path</label>
       <input id="points-path" type="text" autocomplete="off" readonly>
@@ -413,10 +413,11 @@
           <button type="button" data-preview="end">Preview End</button>
         </div>
         <div class="cue-point-row">
-          <label>Overlap start (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="overlap_start" aria-label="Overlap start time"><span data-point-source="overlap_start"></span></label>
+          <label>Overlap start (seconds or MM:SS; minimum -15) <input type="text" inputmode="decimal" data-point="overlap_start" aria-describedby="negative-overlap-help"><span data-point-source="overlap_start"></span></label>
           <button type="button" data-set-current="overlap_start" aria-label="Set Overlap start to preview position">Use preview position</button>
           <button type="button" data-preview="overlap_start">Preview Overlap start</button>
         </div>
+        <small id="negative-overlap-help" hidden>A negative value delays this liner by up to 15 seconds, limited by the next song’s intro. Preview and Use preview position are unavailable for negative values.</small>
       </div>
       <button type="button" id="points-save">Save points</button>
       <audio id="points-preview" controls preload="none" aria-label="Song point preview" data-preview-output></audio>
@@ -898,10 +899,10 @@
     </fieldset>
 
     <!-- The rules' shared help is the outer group's description, read once
-         when focus enters Repeats, not repeated on all eight boxes. -->
+         when focus enters Repeats, not repeated on all twelve boxes. -->
     <fieldset aria-describedby="repeat-rules-desc">
       <legend>Repeats</legend>
-      <p class="setting-desc" id="repeat-rules-desc">Each rule has a Tracks limit and a Minutes limit; when both are set, a repeat waits for both. 0 turns a limit off. Tracks are whole numbers, up to 100000 for the same track and up to 5000 for artist, album and title. Minutes go up to 10080 (one week) and can have decimals.</p>
+      <p class="setting-desc" id="repeat-rules-desc">Each rule has a Tracks limit and a Minutes limit; when both are set, a repeat waits for both. 0 turns a limit off. Tracks are whole numbers, up to 100000 for the same track and up to 5000 for the others. Minutes go up to 10080 (one week) and can have decimals.</p>
       <fieldset>
         <legend>Prevent the same artist from repeating within</legend>
         <div class="settings-row">
@@ -919,10 +920,18 @@
           <input type="checkbox" id="repeat-use-related-artists" aria-describedby="repeat-related-desc repeat-related-status">
           <label for="repeat-use-related-artists">Use related artists</label>
         </div>
-        <p class="setting-desc" id="repeat-related-desc">The artist rule also holds back the artists linked in related-artists.toml in the index folder: <code id="repeat-related-default">index/&lt;name&gt;/related-artists.toml</code>. Edit that file, then save repeat settings to reload it.</p>
+        <p class="setting-desc" id="repeat-related-desc">Also holds back the artists linked in related-artists.toml in the index folder to an artist that played within the limits below: <code id="repeat-related-default">index/&lt;name&gt;/related-artists.toml</code>. Edit that file, then save repeat settings to reload it.</p>
         <!-- A problem found in the file at startup or on save; empty and
              hidden while there is none. -->
         <p class="setting-desc" id="repeat-related-status" hidden></p>
+        <div class="settings-row">
+          <label for="repeat-related-artist-tracks">Tracks</label>
+          <input type="number" id="repeat-related-artist-tracks" min="0" max="5000" step="1" value="8" inputmode="numeric">
+        </div>
+        <div class="settings-row">
+          <label for="repeat-related-artist-minutes">Minutes</label>
+          <input type="number" id="repeat-related-artist-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
+        </div>
       </fieldset>
       <fieldset>
         <legend>Prevent the same album from repeating within</legend>
@@ -955,6 +964,25 @@
         <div class="settings-row">
           <label for="repeat-title-minutes">Minutes</label>
           <input type="number" id="repeat-title-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Related tracks</legend>
+        <div class="settings-check">
+          <input type="checkbox" id="repeat-use-related-tracks" aria-describedby="repeat-related-tracks-desc repeat-related-tracks-status">
+          <label for="repeat-use-related-tracks">Use related tracks</label>
+        </div>
+        <p class="setting-desc" id="repeat-related-tracks-desc">Holds back tracks that sound alike, such as a song and one that samples it, when one of them played within the limits below. Each group in related-tracks.toml in the index folder lists tracks as Artist - Title: <code id="repeat-related-tracks-default">index/&lt;name&gt;/related-tracks.toml</code>. Edit that file, then save repeat settings to reload it.</p>
+        <!-- A problem found in the file at startup or on save; empty and
+             hidden while there is none. -->
+        <p class="setting-desc" id="repeat-related-tracks-status" hidden></p>
+        <div class="settings-row">
+          <label for="repeat-related-track-tracks">Tracks</label>
+          <input type="number" id="repeat-related-track-tracks" min="0" max="5000" step="1" value="20" inputmode="numeric">
+        </div>
+        <div class="settings-row">
+          <label for="repeat-related-track-minutes">Minutes</label>
+          <input type="number" id="repeat-related-track-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
         </div>
       </fieldset>
       <button type="button" id="repeat-save">Save repeat settings</button>
@@ -1399,6 +1427,30 @@
       Which ticked pack says each time check. When that pack has no files for the minute, the other ticked packs are tried before recorded clips.
     </span>
 
+    <!-- Play dates for one pack at a time; the result is said through
+         #tc-status, and a refused date is shown in #tc-dates-error and
+         linked to its field. -->
+    <fieldset id="tc-dates" aria-describedby="tc-dates-desc" hidden>
+      <legend>Voice pack play dates</legend>
+      <span class="setting-desc" id="tc-dates-desc">
+        Optional. A ticked pack speaks only from its Not before date to its Do not play after date, both days included, in the station time zone, such as a holiday voice in December. Outside them the other ticked packs speak instead. Choosing the pack in Voice to test still plays it.
+      </span>
+      <div class="settings-row">
+        <label for="tc-dates-pack">Voice pack</label>
+        <select id="tc-dates-pack"></select>
+      </div>
+      <div class="settings-row">
+        <label for="tc-not-before">Not before</label>
+        <input type="date" id="tc-not-before">
+      </div>
+      <div class="settings-row">
+        <label for="tc-not-after">Do not play after</label>
+        <input type="date" id="tc-not-after">
+      </div>
+      <p id="tc-dates-error" class="field-error" hidden></p>
+      <button type="button" id="tc-dates-save">Save play dates</button>
+    </fieldset>
+
     <h4>Recordings</h4>
     <p id="tc-clips-status"></p>
     <div class="settings-row">
@@ -1780,24 +1832,47 @@
     <p class="card-desc">
       A computer with a graphics card can analyse new songs for this server far faster than the server can.  Create a token below, then run <code>autodj worker</code> on that computer with this server's address and the token.  The worker downloads each song from this server, so it needs no copy of the music.  While a worker is connected, this server pauses its own analysis.
     </p>
+    <p class="card-desc">
+      An announcer program on this computer, such as radiodj, sends a station DJ breaks, news and weather with an announcer token.  Breaks also need <code>[breaks] enabled = true</code> in config.toml.
+    </p>
     <div id="workers-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     <h4 id="workers-heading">Workers</h4>
     <p id="workers-queue">Loading…</p>
     <ul id="workers-list" aria-labelledby="workers-heading"></ul>
     <button type="button" id="workers-refresh">Refresh workers</button>
 
-    <h4>Worker tokens</h4>
+    <h4>Machine tokens</h4>
     <fieldset>
       <legend>Create a token</legend>
       <div class="settings-row">
         <label for="token-name">Token name</label>
         <input type="text" id="token-name" maxlength="64" autocomplete="off"
                aria-describedby="token-name-desc">
-        <button type="button" id="token-create">Create token</button>
       </div>
       <span class="setting-desc" id="token-name-desc">
-        Name the computer that will use it, such as Alienware.  A worker token can only analyse songs: it cannot play, change settings or read anything else.
+        Name the computer or program that will use it, such as Alienware or radiodj.
       </span>
+      <div class="settings-row">
+        <label for="token-scope">Token use</label>
+        <select id="token-scope" aria-describedby="token-scope-desc">
+          <option value="analysis-worker">Analysis worker</option>
+          <option value="announcer">Announcer</option>
+        </select>
+      </div>
+      <span class="setting-desc" id="token-scope-desc">
+        A worker token can only analyse songs.  An announcer token can only read one station's coming songs and send that station breaks; choosing Announcer shows a Station choice below.  Neither can play, change settings or read anything else.
+      </span>
+      <!-- Shown only for an announcer token: it works for one station. -->
+      <div class="settings-row" id="token-station-row" hidden>
+        <label for="token-station">Station</label>
+        <select id="token-station" aria-describedby="token-station-desc">
+          <option value="">Choose a station</option>
+        </select>
+      </div>
+      <span class="setting-desc" id="token-station-desc" hidden>
+        The station this announcer token sends breaks to.  It works for no other station.
+      </span>
+      <button type="button" id="token-create">Create token</button>
     </fieldset>
     <!-- The token is shown once.  Creating it moves focus here and
          #workers-status says it will not be shown again. -->
@@ -2055,6 +2130,8 @@
         <label><input id="source-folder-recursive" type="checkbox" checked> Add subfolders</label>
         <label><input id="source-folder-advanced" type="checkbox" checked> Perform advanced analysis</label>
         <button type="button" id="source-folder-add">Add folder</button>
+        <label><input id="source-folder-override-tags" type="checkbox" aria-describedby="source-folder-override-tags-help"> Override with ID3 tags</label>
+        <p id="source-folder-override-tags-help">Rescan refreshes populated file tags. Hand-edited BPM and key values and cue points are retained.</p>
         <button type="button" id="source-folder-rescan">Rescan</button>
         <p id="source-folders-status">Loading folders…</p>
         <ul id="source-folders" aria-label="Registered music and liner folders"><li>No folders loaded.</li></ul>
@@ -2187,7 +2264,7 @@
           <fieldset id="categories-daypart" aria-describedby="categories-daypart-help">
             <legend>When the songs may play</legend>
             <p class="setting-desc" id="categories-daypart-help">
-              Optional. Outside these days and hours no pick mode plays the category's songs, and a clockwheel step for it is skipped. A song in several categories plays only when all of them allow it. Leave every day unchecked for every day, and both times empty for all day. Times are in the station time zone, and a window that crosses midnight, such as 22:00 until 02:00, belongs to the day it starts. A song you queue yourself plays at any time.
+              Optional. Outside these days, hours and dates no pick mode plays the category's songs, and a clockwheel step for it is skipped. A song in several categories plays only when all of them allow it. Leave every day unchecked for every day, both times empty for all day, and both dates empty for every day of the year; both dates are included, such as 1 December until 26 December for seasonal songs. Times and dates are in the station time zone, and a window that crosses midnight, such as 22:00 until 02:00, belongs to the day it starts. A song you queue yourself plays at any time.
             </p>
             <fieldset id="categories-days">
               <legend>Days</legend>
@@ -2206,6 +2283,14 @@
             <div class="settings-row">
               <label for="categories-hours-until">Allowed until</label>
               <input type="time" id="categories-hours-until">
+            </div>
+            <div class="settings-row">
+              <label for="categories-not-before">Not before</label>
+              <input type="date" id="categories-not-before">
+            </div>
+            <div class="settings-row">
+              <label for="categories-not-after">Do not play after</label>
+              <input type="date" id="categories-not-after">
             </div>
           </fieldset>
           <button type="button" id="categories-check" aria-describedby="categories-match">Check</button>
@@ -2241,8 +2326,9 @@
       <p id="clock-pal-help">Import makes a new clockwheel from a SAM Broadcaster .PAL file. Only Dir and SubDir queue lines are read, and nothing in the file runs. Each folder must be a registered music or voice liner folder, or a folder inside one that adds subfolders.</p>
 
       <h3 id="clock-steps-heading">Steps of <span id="clock-open-name">no clockwheel open</span></h3>
-      <p id="clock-steps-help">Up and Down move between step names; Left and Right move between row buttons; Home and End move to the first and last row buttons. Enter or Space presses the focused button, so Enter on a step name edits it; Delete asks before it removes that step. Alt+Up and Alt+Down move the focused step. Changes are kept only when you press Save clockwheel.</p>
+      <p id="clock-steps-help">Up and Down move between step names; Left and Right move between row buttons; Home and End move to the first and last row buttons. Enter or Space presses the focused button, so Enter on a step name edits it; Delete removes the step, just like its Delete button. Delete and Undo step change are unavailable while editing a step. Ctrl+Z or Undo step change restores the last step change until you save or open another clockwheel. Alt+Up and Alt+Down move the focused step. Changes are kept only when you press Save clockwheel.</p>
       <ol id="clock-slots" role="grid" aria-labelledby="clock-steps-heading" aria-describedby="clock-steps-help"><li role="row"><div role="gridcell">Open or create a clockwheel to see its steps.</div></li></ol>
+      <button type="button" id="clock-undo" aria-keyshortcuts="Control+Z" disabled>Undo step change</button>
       <p id="clock-next"></p>
       <fieldset id="clock-step-form" class="flow-form">
         <legend id="clock-step-legend">Add a step</legend>
@@ -2250,7 +2336,6 @@
         <select id="clock-step-type">
           <option value="music">Music matching conditions</option>
           <option value="liner">Voice liner matching conditions</option>
-          <option value="category">Music from a category</option>
           <option value="track">A specific track</option>
           <option value="settings">Switch preset</option>
         </select>
@@ -2260,17 +2345,12 @@
           <p id="clock-step-conditions-label">Conditions</p>
           <div id="clock-step-conditions" role="group" aria-labelledby="clock-step-conditions-label"></div>
           <button type="button" id="clock-add-condition">Add condition</button>
-          <p class="setting-desc" id="clock-step-conditions-help">Choose Matches to use * for any text or ? for one character. Duration accepts seconds or MM:SS. Beets fields require a configured Beets library.</p>
+          <p class="setting-desc" id="clock-step-conditions-help">Choose Matches to use * for any text or ? for one character. Duration accepts seconds or MM:SS. Beets fields require a configured Beets library. To use a category condition, first add a music category under Library tools, Categories.</p>
           <p class="setting-desc" id="clock-step-beets-notice" hidden></p>
         </div>
         <div class="clock-step-field" id="clock-step-source-field">
           <label for="clock-step-source">Library folder</label>
           <select id="clock-step-source"></select>
-        </div>
-        <div class="clock-step-field">
-          <label for="clock-step-category">Category</label>
-          <select id="clock-step-category" aria-describedby="clock-step-category-help"></select>
-          <span class="setting-desc" id="clock-step-category-help">Add categories under Categories above.</span>
         </div>
         <div class="clock-step-field">
           <label for="clock-step-path">Track</label>
@@ -2296,6 +2376,33 @@
           <input id="clock-step-require-following" type="checkbox">
           <label for="clock-step-require-following">Only play if the following track fits before the next reset</label>
         </div>
+        <!-- step-hours.js: the step's days and hours.  A refused field is
+             linked to #clock-step-hours-error and focused; #clock-status says it. -->
+        <fieldset id="clock-step-hours" aria-describedby="clock-step-hours-help">
+          <legend>When this step plays</legend>
+          <p class="setting-desc" id="clock-step-hours-help">
+            Optional. Outside these days and hours the step is skipped, as an empty step is, and the clockwheel moves on to its next step. Leave every day unchecked for every day, and both times empty for all day. Times are in the station time zone, and a window that crosses midnight, such as 22:00 until 02:00, belongs to the day it starts.
+          </p>
+          <fieldset id="clock-step-days">
+            <legend>Days</legend>
+            <div class="settings-check"><input type="checkbox" id="clock-step-day-0" value="0"><label for="clock-step-day-0">Monday</label></div>
+            <div class="settings-check"><input type="checkbox" id="clock-step-day-1" value="1"><label for="clock-step-day-1">Tuesday</label></div>
+            <div class="settings-check"><input type="checkbox" id="clock-step-day-2" value="2"><label for="clock-step-day-2">Wednesday</label></div>
+            <div class="settings-check"><input type="checkbox" id="clock-step-day-3" value="3"><label for="clock-step-day-3">Thursday</label></div>
+            <div class="settings-check"><input type="checkbox" id="clock-step-day-4" value="4"><label for="clock-step-day-4">Friday</label></div>
+            <div class="settings-check"><input type="checkbox" id="clock-step-day-5" value="5"><label for="clock-step-day-5">Saturday</label></div>
+            <div class="settings-check"><input type="checkbox" id="clock-step-day-6" value="6"><label for="clock-step-day-6">Sunday</label></div>
+          </fieldset>
+          <div class="settings-row">
+            <label for="clock-step-hours-from">Allowed from</label>
+            <input type="time" id="clock-step-hours-from">
+          </div>
+          <div class="settings-row">
+            <label for="clock-step-hours-until">Allowed until</label>
+            <input type="time" id="clock-step-hours-until">
+          </div>
+          <p id="clock-step-hours-error" class="field-error" hidden></p>
+        </fieldset>
         <button type="button" id="clock-add-step">Add step</button>
         <button type="button" id="clock-cancel-edit" hidden>Cancel edit</button>
       </fieldset>

@@ -1923,7 +1923,7 @@ describe("app request behavior", () => {
       await vi.waitFor(() => expect(tbody.querySelector("[data-history-id='new']")).not.toBeNull());
       expect(focused.isConnected).toBe(false);
       expect(document.activeElement).toBe(tbody.querySelectorAll(".history-info")[49]);
-      expect(document.querySelector("#sr-status").textContent).toContain("no longer in the displayed History rows");
+      await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent).toContain("no longer in the displayed History rows"));
     } finally {
       window.location.hash = "";
       await new Promise((resolve) => setTimeout(resolve, 0));

@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from autodj.config import PlaybackConfig
+from autodj.mixbus import RenderedTrack
 from autodj.player import Player
 from autodj.stereo import SAMPLE_RATE as SR
 from tests.unit._fakes import make_cfg_mock, make_entry, make_sim_index
@@ -154,6 +155,45 @@ def test_saved_start_survives_next_rendered_metadata(station):
     result = player._next_rendered()
     assert result.start_offset == round(0.25 * SR)
     assert result.start_offset + len(result.audio) == 11 * SR
+
+
+def test_clock_step_provenance_follows_each_rendered_track(station, monkeypatch):
+    player, (a, b, voice, _), _points = station
+    steps = iter(
+        (
+            {"number": 2, "step": {"type": "music", "selection": "random"}},
+            {"number": 4, "step": {"type": "category", "selection": "least_recent"}},
+        )
+    )
+
+    def choose(_current, _context):
+        player._chosen_clock_step = next(steps)
+        return b if player._pending_entry is a else voice, "clock", (), None, ""
+
+    monkeypatch.setattr(player, "_choose_station_next", choose)
+    monkeypatch.setattr(
+        player,
+        "_render_track",
+        lambda current, upcoming, *_args, **_kwargs: RenderedTrack(
+            current, np.zeros((10, 2), np.float32), upcoming, 0, "none"
+        ),
+    )
+    first_step = {"number": 1, "step": {"type": "liner", "selection": "random"}}
+    player._set_render_cursor(a, 0, "clock", clock_step=first_step)
+
+    first = player._next_rendered()
+    assert first.clock_step == first_step
+    assert first.next_clock_step["number"] == 2
+    player._start_playing(first)
+    assert player._last_clock_step == first_step
+
+    second = player._next_rendered()
+    assert second.clock_step["number"] == 2
+    assert second.next_clock_step["number"] == 4
+    player._rewind_render_cursor(second)
+    assert player._pending_clock_step == second.clock_step
+    player._skip_past_render(second)
+    assert player._pending_clock_step == second.next_clock_step
 
 
 def test_queue_edit_revalidates_liner_reservation(station):
@@ -418,6 +458,8 @@ def test_clock_omits_only_liner_when_pair_will_not_fit(
         (0, 0.25, True, None),
         (0, 2.25, True, None),
         (3, 2.25, True, None),
+        (-3, 5.25, False, None),
+        (-3, 2.25, False, None),
         (None, 2.25, False, 2.5),
         (3, 2.25, False, 2.5),
     ],
@@ -566,6 +608,87 @@ def test_voice_followed_by_id_never_starts_id_before_song_segue(station):
     result = player._render_track(a, b, 0, liners=((voice, True), (jingle, True)))
     assert result.liner_events == ((6 * SR, voice, True), (10 * SR, jingle, True))
     assert len(result.audio) - result.overlap_frames == 12 * SR
+
+
+def test_later_negative_liner_cue_does_not_delay_an_earlier_zero_liner(station):
+    player, (a, b, voice, jingle), points = station
+    points[b.path]["intro"] = 6
+    points[voice.path].update(start=0, segue=1, end=1, overlap_start=0)
+    points[jingle.path].update(start=0, segue=1, end=1, overlap_start=-3)
+    result = player._render_track(a, b, 0, liners=((voice, False), (jingle, False)))
+    assert result.liner_events == ((10 * SR, voice, False), (11 * SR, jingle, False))
+    assert len(result.audio) - result.overlap_frames == 10 * SR
+
+
+def test_first_negative_attached_liner_starts_after_music_and_keeps_tail(station):
+    player, (a, b, voice, _), points = station
+    points[b.path]["intro"] = 6
+    points[voice.path].update(start=0.5, segue=2, end=4, overlap_start=-3)
+    result = player._render_track(a, b, 0, liners=((voice, False),))
+    assert result.liner_events == ((13 * SR, voice, False),)
+    assert len(result.audio) - result.overlap_frames == 10 * SR
+    assert result.full_audio[round(14 * SR), 1] == pytest.approx(0.5)
+    assert result.full_audio[round(16.25 * SR), 1] == pytest.approx(0.5)
+
+
+def test_seed_liner_negative_cue_starts_it_after_incoming_music(station):
+    player, (_, b, voice, jingle), points = station
+    points[b.path]["intro"] = 6
+    points[voice.path].update(start=0.5, segue=2, end=4, overlap_start=-3)
+    points[jingle.path].update(start=0, segue=1, end=1, overlap_start=0)
+    result = player._render_track(voice, b, 0, liners=((jingle, False),))
+    assert result.full_audio[0, 0] == pytest.approx(0.25)
+    assert result.full_audio[round(1.2 * SR), 1] == pytest.approx(0)
+    assert result.full_audio[round(1.25 * SR), 1] == pytest.approx(0.5)
+    assert result.liner_events == ((round(4.75 * SR), jingle, False),)
+
+
+@pytest.mark.parametrize("overlap,second_start", [(None, 2), (0, 2), (0.75, 2), (-3, 4)])
+@pytest.mark.parametrize("start_offset", [0, SR])
+def test_liner_chain_events_follow_audio_with_trimmed_start(
+    station, monkeypatch, overlap, second_start, start_offset
+):
+    player, (_, b, voice, jingle), points = station
+    points[b.path]["intro"] = 5.25
+    points[voice.path].update(start=0.5, segue=2.5, end=2.5, overlap_start=overlap)
+    points[jingle.path].update(start=0.2, segue=1.2, end=1.2, overlap_start=0)
+    load = player._load_playout_audio
+
+    def marked_audio(entry):
+        audio = load(entry)
+        if entry is jingle:
+            audio[:, 1] = 0.75
+        return audio
+
+    monkeypatch.setattr(player, "_load_playout_audio", marked_audio)
+    result = player._render_track(voice, b, start_offset, liners=((jingle, True),))
+    at = round(second_start * SR) - max(0, start_offset - round(0.5 * SR))
+    assert result.liner_events == ((at, jingle, True),)
+    assert result.audio[at - 1, 1] == pytest.approx(0.5)
+    assert result.audio[at, 1] == pytest.approx(0.75)
+
+
+@pytest.mark.parametrize("standalone", [False, True])
+@pytest.mark.parametrize("second_overlap,release", [(0, 2), (None, 7), (3, 4)])
+def test_long_liner_after_negative_liner_still_respects_its_overlap(
+    station, standalone, second_overlap, release
+):
+    player, (a, b, voice, jingle), points = station
+    player._library.catalog.record_for_path = lambda _path: {"allow_outro": False}
+    points[b.path]["intro"] = 5.25
+    points[voice.path].update(start=0, segue=1, end=1, overlap_start=-3)
+    points[jingle.path].update(start=0, segue=6, end=6, overlap_start=second_overlap)
+    result = player._render_track(
+        voice if standalone else a,
+        b,
+        0,
+        liners=((jingle, True),) if standalone else ((voice, True), (jingle, True)),
+    )
+    first = 0 if standalone else 10
+    assert result.liner_events[-1] == ((first + 1) * SR, jingle, True)
+    assert len(result.audio) - result.overlap_frames == (first + release) * SR
+    # Even the full-overlap liner must finish before the incoming vocals.
+    assert first + 7 <= first + release + 5
 
 
 @pytest.fixture
@@ -827,3 +950,38 @@ def test_clock_conditions_are_worked_out_once_per_library_generation(station, mo
     music = (a, b)  # The library published new entries.
     assert player._clock_pick(player._pick_context(), 0).entry is b
     assert len(built) == 2
+
+
+def test_clock_save_during_pick_keeps_original_slots_and_step(station, monkeypatch):
+    import autodj.clockwheel as clockwheel
+    from autodj.categories import parse_step_hours
+
+    player, (a, b, *_), _ = station
+    player._clock = {"cursor": 0}
+    player._clock_slots = [clockwheel.ClockSlot(kind="track", path=a.path)]
+    player._clock_step_hours = (None,)
+    old_steps = [{"type": "track", "path": a.path}]
+    player._clock_steps = old_steps
+    context = player._pick_context()
+    original_pick = clockwheel.pick_slot
+
+    def save_then_entries():
+        player._clock = {"cursor": 0}
+        player._clock_slots = [clockwheel.ClockSlot(kind="track", path=b.path, selection="random")]
+        player._clock_steps = [{"type": "track", "path": b.path}]
+        player._clock_step_hours = (
+            parse_step_hours({"days": [(player._station_now(context.at).weekday() + 1) % 7]}),
+        )
+        return (a, b)
+
+    def check_history(*args, **kwargs):
+        assert kwargs["normalized_history"] is not None
+        return original_pick(*args, **kwargs)
+
+    monkeypatch.setattr(player, "playable_entries", save_then_entries)
+    monkeypatch.setattr(clockwheel, "pick_slot", check_history)
+    picked = player._clock_pick(context, None)
+    assert picked.entry is a
+    assert picked.step_snapshot["step"] == {"type": "track", "path": a.path}
+    old_steps[0]["path"] = b.path
+    assert picked.step_snapshot["step"]["path"] == a.path

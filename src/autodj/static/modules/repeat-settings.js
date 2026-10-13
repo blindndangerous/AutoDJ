@@ -3,15 +3,26 @@ import {
   captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent,
 } from "./api-client.js";
 
-const RULES = ["artist", "album", "track", "title"];
+const RULES = ["artist", "related_artist", "album", "track", "title", "related_track"];
+// Each rule's boxes are els[`${PREFIX[rule]}Tracks`] and els[`${PREFIX[rule]}Minutes`].
+const PREFIX = {
+  artist: "artist", related_artist: "relatedArtist", album: "album", track: "track",
+  title: "title", related_track: "relatedTrack",
+};
 // The names the messages give each rule; the page's legends say
 // "Prevent the same artist from repeating within".
 const RULE_NAMES = {
-  artist: "Same artist", album: "Same album", track: "Same track", title: "Same title",
+  artist: "Same artist", related_artist: "Related artists", album: "Same album",
+  track: "Same track", title: "Same title", related_track: "Related tracks",
 };
-// The server caps artist, album and title at 5000 tracks (each pick walks
-// that many plays); the track rule only keeps paths, so it allows more.
-const MAX_TRACKS = { artist: 5000, album: 5000, track: 100000, title: 5000 };
+// The server caps every rule but the track rule at 5000 tracks (each pick
+// walks that many plays); the track rule only keeps paths, so it allows more.
+const MAX_TRACKS = {
+  artist: 5000, related_artist: 5000, album: 5000, track: 100000, title: 5000,
+  related_track: 5000,
+};
+
+const box = (els, rule, part) => els[`${PREFIX[rule]}${part}`];
 const MAX_MINUTES = 10080;
 // As in settings-panel.js: after a save, a push that left the server
 // before it still holds the old rules, and writing them back would undo
@@ -21,8 +32,9 @@ const ECHO_WAIT_MS = 5000;
 
 function controls(els) {
   return [
-    ...RULES.flatMap((rule) => [els[`${rule}Tracks`], els[`${rule}Minutes`]]),
+    ...RULES.flatMap((rule) => [box(els, rule, "Tracks"), box(els, rule, "Minutes")]),
     els.useRelatedArtists,
+    els.useRelatedTracks,
   ];
 }
 
@@ -30,11 +42,12 @@ function values(els) {
   const result = {};
   for (const rule of RULES) {
     result[rule] = {
-      tracks: Number(els[`${rule}Tracks`].value),
-      minutes: Number(els[`${rule}Minutes`].value),
+      tracks: Number(box(els, rule, "Tracks").value),
+      minutes: Number(box(els, rule, "Minutes").value),
     };
   }
   result.use_related_artists = els.useRelatedArtists.checked;
+  result.use_related_tracks = els.useRelatedTracks.checked;
   return result;
 }
 
@@ -42,15 +55,16 @@ function sameRules(a, b) {
   if (!a || !b) return false;
   return RULES.every((rule) => Number(a[rule]?.tracks) === Number(b[rule]?.tracks)
       && Number(a[rule]?.minutes) === Number(b[rule]?.minutes))
-    && Boolean(a.use_related_artists) === Boolean(b.use_related_artists);
+    && Boolean(a.use_related_artists) === Boolean(b.use_related_artists)
+    && Boolean(a.use_related_tracks) === Boolean(b.use_related_tracks);
 }
 
 // [control, message] for the first box holding a value the server would
 // refuse, or null.  With *target*, only that box is checked.
 function invalidField(els, target = null) {
   for (const rule of RULES) {
-    const tracks = els[`${rule}Tracks`];
-    const minutes = els[`${rule}Minutes`];
+    const tracks = box(els, rule, "Tracks");
+    const minutes = box(els, rule, "Minutes");
     const trackValue = Number(tracks.value);
     const minuteValue = Number(minutes.value);
     const maxTracks = MAX_TRACKS[rule];
@@ -71,18 +85,23 @@ function write(els, incoming) {
   for (const rule of RULES) {
     const value = incoming?.[rule];
     if (!value) continue;
-    els[`${rule}Tracks`].value = value.tracks;
-    els[`${rule}Minutes`].value = value.minutes;
+    box(els, rule, "Tracks").value = value.tracks;
+    box(els, rule, "Minutes").value = value.minutes;
   }
   els.useRelatedArtists.checked = Boolean(incoming?.use_related_artists);
+  els.useRelatedTracks.checked = Boolean(incoming?.use_related_tracks);
 }
 
-// The status line under Use related artists, part of its description;
-// hidden while the file has no problem.
-function showFileProblem(els, problem) {
-  if (!els.fileStatus) return;
-  els.fileStatus.textContent = problem || "";
-  els.fileStatus.hidden = !problem;
+// The status line under Use related artists or Use related tracks, part
+// of its description; hidden while the file has no problem.
+function showStatus(status, problem) {
+  if (!status) return;
+  status.textContent = problem || "";
+  status.hidden = !problem;
+}
+
+function showDefaultFile(element, path) {
+  if (element && typeof path === "string" && path) element.textContent = path;
 }
 
 function reportInvalid(control, message, settingsStatus) {
@@ -93,12 +112,13 @@ function reportInvalid(control, message, settingsStatus) {
 
 export function applyRepeatSettings(st, els) {
   const playback = st?.playback;
-  if (els.defaultFile && typeof playback?.related_artists_default_file === "string"
-      && playback.related_artists_default_file) {
-    els.defaultFile.textContent = playback.related_artists_default_file;
-  }
+  showDefaultFile(els.defaultFile, playback?.related_artists_default_file);
+  showDefaultFile(els.tracksDefaultFile, playback?.related_tracks_default_file);
   if (playback && "related_artists_problem" in playback) {
-    showFileProblem(els, playback.related_artists_problem);
+    showStatus(els.fileStatus, playback.related_artists_problem);
+  }
+  if (playback && "related_tracks_problem" in playback) {
+    showStatus(els.tracksFileStatus, playback.related_tracks_problem);
   }
   const incoming = playback?.repeat_rules;
   if (!incoming) return;
@@ -125,13 +145,16 @@ export function resetRepeatSettings(els) {
   els.dirty = false;
   els.echo = null;
   if (els.defaultFile) els.defaultFile.textContent = els.defaultFileText ?? "";
-  showFileProblem(els, "");
+  if (els.tracksDefaultFile) els.tracksDefaultFile.textContent = els.tracksDefaultFileText ?? "";
+  showStatus(els.fileStatus, "");
+  showStatus(els.tracksFileStatus, "");
 }
 
 export function installRepeatSettings(els, { postSettings, settingsStatus }) {
   els.confirmed = values(els);
   els.echo = null;
   els.defaultFileText = els.defaultFile?.textContent ?? "";
+  els.tracksDefaultFileText = els.tracksDefaultFile?.textContent ?? "";
   for (const control of controls(els)) {
     for (const event of ["input", "change"]) {
       control.addEventListener(event, () => {
@@ -162,7 +185,8 @@ export function installRepeatSettings(els, { postSettings, settingsStatus }) {
       els.confirmed = body;
       els.dirty = !sameRules(values(els), body);
       for (const control of controls(els)) control.removeAttribute("aria-invalid");
-      showFileProblem(els, "");
+      showStatus(els.fileStatus, "");
+      showStatus(els.tracksFileStatus, "");
       announceStatus(settingsStatus, "Repeat settings saved.", { dwellMs: 4000, force: true });
       return;
     }
@@ -170,9 +194,18 @@ export function installRepeatSettings(els, { postSettings, settingsStatus }) {
     if (els.echo === echo) els.echo = null;
     els.dirty = true;
     const detail = failure?.message || "";
+    // The boxes were checked above, so a 400 means the server refused a file;
+    // its message names which one.
+    if (failure?.status === 400 && body.use_related_tracks
+        && detail.startsWith("The related tracks file")) {
+      showStatus(els.tracksFileStatus, detail);
+      reportInvalid(els.useRelatedTracks,
+        `Use related tracks: ${detail} Fix the file or turn this off, then save again.`,
+        settingsStatus);
+      return;
+    }
     if (failure?.status === 400 && body.use_related_artists) {
-      // The boxes were checked above, so the server refused the file.
-      showFileProblem(els, detail);
+      showStatus(els.fileStatus, detail);
       reportInvalid(els.useRelatedArtists,
         `Use related artists: ${detail} Fix the file or turn this off, then save again.`,
         settingsStatus);

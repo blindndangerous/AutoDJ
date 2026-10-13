@@ -11,6 +11,7 @@ import pytest
 
 from autodj import stations
 from autodj._bridge import PlayerBridge
+from autodj.breaks import BreakDesk, new_id
 from autodj.carts import CartStore
 from autodj.config import AutoDJConfig, load_config
 from autodj.server import create_app
@@ -172,6 +173,26 @@ def _rig(
     )
     registry = StationRegistry(runtime)
     return runtime, registry, SharedLibrary(library, registry), bridge
+
+
+async def test_station_start_sweeps_old_break_files_before_starting_services(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log: list[str] = []
+    runtime, registry, shared, _bridge = _rig(tmp_path, monkeypatch, log)
+    folder = tmp_path / "announcements"
+    folder.mkdir()
+    leftover = folder / f"brk-{new_id()}.wav"
+    leftover.write_bytes(b"old break")
+    runtime.breaks = BreakDesk(lambda: runtime.cfg.breaks, folder)
+
+    def start_schedule() -> None:
+        assert not leftover.exists()
+
+    runtime.schedule.start = start_schedule
+    await runtime.start()
+    assert not leftover.exists()
+    await registry.shutdown(shared, 1.0)
 
 
 async def test_shutdown_keeps_the_order_of_the_single_station_server(

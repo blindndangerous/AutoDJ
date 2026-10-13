@@ -1412,6 +1412,108 @@ class DmcaConfig(_Section):
             raise TypeError("dmca.enabled must be true or false")
 
 
+#: Where a DJ break goes in a song change (:class:`BreaksConfig`).
+BREAK_PLACEMENTS: tuple[str, ...] = ("auto", "talk_up", "standalone")
+
+
+@dataclass
+class BreaksConfig(_Section):
+    """DJ breaks, news and weather from an announcer program (#88).
+
+    Attributes:
+        enabled: Plan each song change one song ahead and take breaks for it.
+            Off by default: a station with breaks off picks songs exactly as
+            before.
+        dj_placement: Where a DJ break goes when its request says ``auto``:
+            ``"auto"`` talks up the next song when its intro is at least
+            *min_intro_seconds* long and otherwise plays between the songs;
+            ``"talk_up"`` talks up any intro; ``"standalone"`` always plays
+            between the songs.  News, weather and music news always play
+            between the songs.
+        min_intro_seconds: The shortest intro ``"auto"`` talks up.
+        duck_db: How far the music drops under a break's voice, in dB
+            (-30 to 0).  Unset uses ``[playback] liners_duck_db``.
+        max_upload_mb: The largest break file, in megabytes (at most 200).
+        max_seconds: The longest break, in seconds (at most 900).  A break
+            is decoded whole into memory, about 0.35 MB per second of this
+            limit, so the default 300 s takes about 106 MB at most.
+        max_queued: Breaks waiting to air at once, on this station.
+        max_per_slot: Breaks one song change can take.
+        default_expires_seconds: How long a break may wait when its request
+            does not say.
+        max_expires_seconds: The longest wait a request may ask for.
+        quota_mb: Disk space the waiting break files may use, in megabytes.
+        requests_per_minute: Requests one token may make to the breaks API.
+    """
+
+    SECTION: ClassVar[str] = "breaks"
+
+    enabled: bool = False
+    dj_placement: str = "auto"
+    min_intro_seconds: float = 2.0
+    duck_db: float | None = None
+    max_upload_mb: int = 40
+    max_seconds: float = 300.0
+    max_queued: int = 6
+    max_per_slot: int = 2
+    default_expires_seconds: int = 1800
+    max_expires_seconds: int = 7200
+    quota_mb: int = 400
+    requests_per_minute: int = 120
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise TypeError("breaks.enabled must be true or false")
+        if self.dj_placement not in BREAK_PLACEMENTS:
+            raise ValueError("breaks.dj_placement must be one of: " + ", ".join(BREAK_PLACEMENTS))
+        for name, low, high in (
+            ("min_intro_seconds", 0.0, 60.0),
+            ("max_seconds", 5.0, 900.0),
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise TypeError(f"breaks.{name} must be a number")
+            if not math.isfinite(value) or not low <= value <= high:
+                raise ValueError(f"breaks.{name} must be between {low:g} and {high:g}")
+            setattr(self, name, float(value))
+        if self.duck_db is not None:
+            if isinstance(self.duck_db, bool) or not isinstance(self.duck_db, (int, float)):
+                raise TypeError("breaks.duck_db must be a number")
+            if not math.isfinite(self.duck_db) or not -30.0 <= self.duck_db <= 0.0:
+                raise ValueError("breaks.duck_db must be between -30 and 0 dB")
+            self.duck_db = float(self.duck_db)
+        for name, low, high in (
+            ("max_upload_mb", 1, 200),
+            ("max_queued", 1, 50),
+            ("max_per_slot", 1, 5),
+            ("default_expires_seconds", 60, 86400),
+            ("max_expires_seconds", 60, 86400),
+            ("quota_mb", 1, 100000),
+            ("requests_per_minute", 1, 6000),
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"breaks.{name} must be a whole number")
+            if not low <= value <= high:
+                raise ValueError(f"breaks.{name} must be between {low} and {high}")
+        if self.default_expires_seconds > self.max_expires_seconds:
+            raise ValueError(
+                "breaks.default_expires_seconds must not be more than max_expires_seconds"
+            )
+        if self.quota_mb < self.max_upload_mb:
+            raise ValueError("breaks.quota_mb must be at least max_upload_mb")
+
+    @property
+    def max_upload_bytes(self) -> int:
+        """:attr:`max_upload_mb` in bytes."""
+        return self.max_upload_mb * 1024 * 1024
+
+    @property
+    def quota_bytes(self) -> int:
+        """:attr:`quota_mb` in bytes."""
+        return self.quota_mb * 1024 * 1024
+
+
 @dataclass(frozen=True)
 class WebhookConfig:
     """One outbound track-change destination, stored in config.local.toml."""
@@ -1519,6 +1621,7 @@ class AutoDJConfig:
         transitions: Transition effect settings.
         server: Web server, LAN and HTTPS settings.
         stream: Radio stream settings.
+        breaks: Announcer breaks from another program (#88).
         stations: The stations other than the default one, from
             ``[stations.<slug>]`` tables; empty for a single station.
         config_sources: Where the values came from, in load order.
@@ -1539,6 +1642,7 @@ class AutoDJConfig:
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     nowplaying: NowPlayingConfig = field(default_factory=NowPlayingConfig)
     time_checks: TimeChecksConfig = field(default_factory=TimeChecksConfig)
+    breaks: BreaksConfig = field(default_factory=BreaksConfig)
     dmca: DmcaConfig = field(default_factory=DmcaConfig)
     webhooks: tuple[WebhookConfig, ...] = ()
     stations: tuple[StationSpec, ...] = ()
@@ -1728,6 +1832,7 @@ _SECTION_TYPES: tuple[type[_Section], ...] = (
     RecordingConfig,
     NowPlayingConfig,
     TimeChecksConfig,
+    BreaksConfig,
     DmcaConfig,
 )
 
@@ -1744,6 +1849,7 @@ STATION_SECTION_TYPES: tuple[type[_Section], ...] = (
     RecordingConfig,
     NowPlayingConfig,
     TimeChecksConfig,
+    BreaksConfig,
     DmcaConfig,
 )
 SHARED_SECTIONS: tuple[str, ...] = ("library", "index", "model", "huggingface", "server")

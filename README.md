@@ -202,6 +202,9 @@ Every command takes `--help`, for example `uv run autodj serve --help`. The glob
   program sharing the GPU. See [Using a GPU machine](docs/operations.md#using-a-gpu-machine).
 - `autodj tokens list`, `create NAME --scope analysis-worker` and `revoke ID` manage machine
   tokens from the command line, as Settings, Analysis workers does; a new token is printed once.
+  `create NAME --scope announcer --station SLUG` makes a token for an announcer program that sends
+  that station DJ breaks, news and weather; see
+  [Announcer breaks](docs/operations.md#announcer-breaks-dj-breaks-news-and-weather).
 - `autodj migrate-index` previews a schema-3 to schema-4 conversion; add `--apply` to save a
   recovery copy and convert without repeating analysis. Interactive `serve` offers this too.
 - `autodj enrich` refreshes key and mode from your beets database.
@@ -507,18 +510,20 @@ key_sync_fx             = true
 transition_mode         = "full_intro_outro"
 ```
 
-Set repeat limits in **Settings > Picking > Repeats**. Artist, album, track and title
-have separate Tracks and Minutes boxes. Zero turns off a limit; when both are set,
+Set repeat limits in **Settings > Picking > Repeats**. Artist, related artists, album, track,
+title and related tracks have separate Tracks and Minutes boxes. Zero turns off a limit; when both are set,
 both must be satisfied before a repeat is allowed. Save applies the rules to future
 picks and remembers them across restarts. Old repeat keys in `config.toml` or
 `web_state.json` produce warnings and are ignored. Re-enter any limits that still use
 the old keys in **Settings > Picking > Repeats**. Current repeat rules are preserved;
 Doctor can optionally remove obsolete keys with a backup.
 
-**Use related artists** applies the artist limit to the links in your editable TOML file.
-The page shows its fixed location, `index/<name>/related-artists.toml`. AutoDJ copies
-a sample there on first use and leaves your edits alone on upgrades. After editing the
-file, save the repeat settings to reload it. See [repeat rules](docs/track-selection.md#repeat-avoidance-and-discovery).
+**Use related artists** holds back the artists linked in your editable TOML file, with its
+own limits. The page shows its fixed location, `index/<name>/related-artists.toml`.
+**Use related tracks**, off by default, does the same for groups of tracks that sound alike,
+such as a song and one that samples it, written as "Artist - Title" in
+`index/<name>/related-tracks.toml`. AutoDJ copies a sample of each file there on first use and
+leaves your edits alone on upgrades. After editing a file, save the repeat settings to reload it. See [repeat rules](docs/track-selection.md#repeat-avoidance-and-discovery).
 
 ### Multi-machine / NAS setups
 

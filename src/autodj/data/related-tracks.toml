@@ -1,0 +1,17 @@
+# Related tracks: songs that sound alike on air, such as a song and one that samples it.
+# Turn this on in Settings > Picking > Repeats > Related tracks.
+#
+# Write each track as "Artist - Title", with the lead artist. Case, punctuation, a leading
+# "The", featured artists and version notes such as "(Radio Edit)" do not matter.
+# A track and its list form one group: every track in a group holds back every other
+# track in it, in both directions. Groups are not joined to each other.
+# Tracks that are not in your library are ignored.
+
+[related]
+"Rick James - Super Freak" = ["MC Hammer - U Can't Touch This", "Nicki Minaj - Super Freaky Girl"]
+"Queen & David Bowie - Under Pressure" = ["Vanilla Ice - Ice Ice Baby"]
+"Chic - Good Times" = ["The Sugarhill Gang - Rapper's Delight"]
+"Etta James - Something's Got A Hold On Me" = ["Avicii - Levels", "Flo Rida - Good Feeling"]
+"Gotye - Somebody That I Used To Know" = ["Doechii - Anxiety"]
+"Nine Inch Nails - 34 Ghosts IV" = ["Lil Nas X - Old Town Road"]
+"Snow - Informer" = ["Daddy Yankee - Con Calma"]

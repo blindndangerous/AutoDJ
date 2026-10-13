@@ -5,7 +5,7 @@ categories?" before the rules go on air.  A simulation plays a span of time
 (such as a week) or a number of songs through the station's own picker: the
 clockwheel and its steps, the rotation categories and their days and hours,
 the schedule's song-picking changes and their date ranges, the repeat rules
-(related artists included), the DMCA limits, every relaxation and the
+(related artists and related tracks included), the DMCA limits, every relaxation and the
 fallbacks.  Nothing on air changes: the dry run picks with a copy of the
 player that has its own configuration, play history, last-played times,
 clock and random generator, and it never writes to the library.
@@ -82,6 +82,7 @@ RULES = (
     "related artist",
     "same album",
     "same title",
+    "related track",
     "track repeat window",
     "dayparting",
     "back to back",
@@ -200,6 +201,7 @@ class PlayerSnapshot:
     clock_status: str | None
     liner_filter: Any
     station_paths: Any = None
+    related_tracks: Any = None
 
 
 def snapshot_player(player: Any) -> PlayerSnapshot:
@@ -220,6 +222,7 @@ def snapshot_player(player: Any) -> PlayerSnapshot:
         snapshot_clock = dict(clock) if clock else None
         clock_status = getattr(player, "_clock_status", None)
         related = getattr(player, "_related_artists", None)
+        related_tracks = getattr(player, "_related_tracks", None)
         liner_filter = getattr(player, "liner_filter", None)
         station_paths = getattr(player, "station_paths", None)
         discovery = bool(player._state.discovery_enabled)
@@ -238,6 +241,7 @@ def snapshot_player(player: Any) -> PlayerSnapshot:
         clock_status=clock_status,
         liner_filter=liner_filter,
         station_paths=station_paths,
+        related_tracks=related_tracks,
     )
 
 
@@ -537,6 +541,8 @@ def _copy_player(
     player._state.clock = lambda: player._sim_now
     if snapshot.related_artists is not None:
         player._related_artists = snapshot.related_artists
+    if snapshot.related_tracks is not None:
+        player._related_tracks = snapshot.related_tracks
     for name, value in snapshot.settings.items():
         setattr(player, name, value)
     player._state.discovery_enabled = snapshot.discovery_enabled
@@ -586,6 +592,7 @@ def _liner_filter(source: SimulationSource, snapshot: PlayerSnapshot, player: _S
         _ReadOnlyLinerDates(source.liner_dates),
         lambda: station_wall(player._cfg, player._sim_now).date(),
         liner_id,
+        lambda at: station_wall(player._cfg, at).date(),
     )
     return gate.playable
 
@@ -837,7 +844,7 @@ def _simulate(
     schedule = _Schedule(source.events, source.timezone, start)
     initial_mode = "random" if player._pure_shuffle else player._cfg.playback.pick_mode
     initial_clock = (player._clock or {}).get("name") if initial_mode == "clock" else None
-    categories = player._category_members()
+    categories = player._category_members() or {}
 
     def station_mode() -> bool:
         return player._cfg.playback.transition_mode == "saved_points"
@@ -875,7 +882,8 @@ def _simulate(
         player._seed_clock_cursor = None
         player._seed_clock_name = None
         try:
-            context = player._pick_context()
+            # A first song starts as it is picked, as the live start pick does.
+            context = player._pick_context(at=now)
             entry = player._random_start_entry()
         except Exception:
             return None
@@ -936,7 +944,8 @@ def _simulate(
         player._sim_now = now
         apply_schedule(now)
         tally.pending_skips = []
-        context = player._pick_context()
+        # As the station does, dayparting reads the hours at the song's start.
+        context = player._pick_context(at=handoff)
         liners: tuple[tuple[Any, bool], ...] = ()
         try:
             if station_mode():

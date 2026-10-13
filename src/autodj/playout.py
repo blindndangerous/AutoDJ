@@ -31,6 +31,39 @@ class Handoff:
     liner_s: float | None
     fade_start_s: float
     full_audio: np.ndarray
+    overlay_gain: np.ndarray | None = None
+
+
+#: How long the music takes to drop under a ducked voice, and to come back.
+DUCK_RAMP_SECONDS = 0.25
+
+
+def duck_envelope(
+    frames: int, spans: tuple[tuple[int, int], ...], gain: float, ramp: int
+) -> np.ndarray | None:
+    """A per-frame music gain: *gain* inside each span, 1 outside, with *ramp*-frame slopes.
+
+    Returns ``None`` when nothing is ducked (no spans, or a gain of 1).
+    The slopes sit outside the spans, so the music is fully down before a
+    voice starts and stays down until it ends.
+    """
+    if frames <= 0 or gain >= 1.0 or not spans:
+        return None
+    envelope = np.ones(frames, dtype=np.float32)
+    ramp = max(1, ramp)
+    for first, last in spans:
+        first, last = max(0, first), min(frames, last)
+        if last <= first:
+            continue
+        envelope[first:last] = np.minimum(envelope[first:last], gain)
+        slope = np.linspace(1.0, gain, ramp + 1, dtype=np.float32)[1:]
+        lead_from = max(0, first - ramp)
+        lead = slope[ramp - (first - lead_from) :]
+        envelope[lead_from:first] = np.minimum(envelope[lead_from:first], lead)
+        tail_to = min(frames, last + ramp)
+        tail = slope[::-1][: tail_to - last]
+        envelope[last:tail_to] = np.minimum(envelope[last:tail_to], tail)
+    return envelope
 
 
 def _point(points: dict[str, Any], name: str) -> float | None:
@@ -47,6 +80,22 @@ def _frames(seconds: float, name: str) -> int:
     if not math.isfinite(frames):
         raise ValueError(f"{name} is too large")
     return round(frames)
+
+
+def liner_release_frames(main_frames: int, intro_frames: int, overlap_start: float | None) -> int:
+    """Return incoming-music delay from a liner-chain start, including negative cues."""
+    if overlap_start is None:
+        return main_frames
+    if overlap_start < 0:
+        requested = _frames(-overlap_start, "overlap_start")
+        return (
+            -min(requested, intro_frames - main_frames)
+            if main_frames <= intro_frames
+            else main_frames - intro_frames
+        )
+    if overlap_start == 0:
+        return max(0, main_frames - intro_frames)
+    return min(main_frames, _frames(overlap_start, "overlap_start"))
 
 
 def _audio(value: np.ndarray | None, name: str, *, optional: bool = False) -> np.ndarray | None:
@@ -75,6 +124,8 @@ def render_handoff(
     overlap_start: float | None = None,
     liner_segue: float | None = None,
     outro_lead_limit: float | None = 0.0,
+    duck_spans: tuple[tuple[float, float], ...] = (),
+    duck_db: float = 0.0,
 ) -> Handoff:
     """Plan a handoff from saved points without rendering incoming music.
 
@@ -83,6 +134,7 @@ def render_handoff(
     Point times are seconds in their source files; offsets are sample frames.
     ``liner_segue`` is relative to the retained liner audio, excluding its tail.
     Blank overlap uses that segue; zero permits fitting under the incoming intro.
+    A negative overlap starts the liner after music, capped by the remaining intro.
     ``outro_lead_limit`` bounds how early a liner chain may start before the song
     segue: zero for an ID, None for voices, or an ID's offset after preceding voices.
     """
@@ -106,9 +158,14 @@ def render_handoff(
             isinstance(value, bool)
             or not isinstance(value, (int, float))
             or not math.isfinite(value)
-            or value < 0
+            or (name == "outro_lead_limit" and value < 0)
+            or (name == "overlap_start" and value < -15)
         ):
-            raise ValueError(f"{name} must be a non-negative finite number or None")
+            raise ValueError(
+                "overlap_start must be a finite number of at least -15 or None"
+                if name == "overlap_start"
+                else "outro_lead_limit must be a non-negative finite number or None"
+            )
 
     frame_count = len(outgoing)
     start_frame = min(
@@ -156,7 +213,11 @@ def render_handoff(
             safe_outro = max(
                 safe_outro, segue_frame - _frames(outro_lead_limit, "outro_lead_limit")
             )
-        if overlap_start == 0:
+        if overlap_start is not None and overlap_start < 0:
+            release = liner_release_frames(main_frames, incoming_intro_frames, overlap_start)
+            liner_start = max(safe_outro, segue_frame - release)
+            incoming_frame = max(segue_frame, liner_start + release)
+        elif overlap_start == 0:
             liner_start = max(
                 safe_outro, min(segue_frame, segue_frame + incoming_intro_frames - main_frames)
             )
@@ -205,6 +266,25 @@ def render_handoff(
     )
     # One buffer for the chunk and the overlay, split at the incoming frame.
     full = outgoing_segment(chunk_start, overlay_end)
+    split = max(0, incoming_frame - chunk_start)
+    envelope = None
+    if liner is not None and liner_start is not None and duck_spans and duck_db < 0:
+        if not math.isfinite(duck_db):
+            raise ValueError("duck_db must be finite")
+        envelope = duck_envelope(
+            len(full),
+            tuple(
+                (
+                    liner_start - chunk_start + _frames(first, "duck span"),
+                    liner_start - chunk_start + _frames(last, "duck span"),
+                )
+                for first, last in duck_spans
+            ),
+            float(10 ** (duck_db / 20)),
+            _frames(DUCK_RAMP_SECONDS, "duck ramp"),
+        )
+        if envelope is not None:
+            full *= envelope[:, None]
     if liner is not None and liner_start is not None:
         first = max(chunk_start, liner_start)
         last = min(overlay_end, liner_start + liner_frames)
@@ -212,7 +292,6 @@ def render_handoff(
             full[first - chunk_start : last - chunk_start] += liner[
                 first - liner_start : last - liner_start
             ]
-    split = max(0, incoming_frame - chunk_start)
 
     return Handoff(
         audio=full[:split],
@@ -224,4 +303,5 @@ def render_handoff(
         liner_s=None if liner_start is None else liner_start / SAMPLE_RATE,
         fade_start_s=fade_start_s,
         full_audio=full,
+        overlay_gain=None if envelope is None else envelope[split:],
     )

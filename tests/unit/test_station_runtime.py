@@ -8,6 +8,7 @@ import logging
 import sys
 import threading
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -607,12 +608,21 @@ def test_a_stations_clockwheel_picks_only_its_own_liners(tmp_path: Path) -> None
     owned = SimpleNamespace(path="mine.mp3")
     other = SimpleNamespace(path="theirs.mp3")
     runtime = StationRuntime.__new__(StationRuntime)
-    runtime.liner_gate = SimpleNamespace(playable=lambda entries: entries)  # type: ignore[assignment]
+    calls: list[tuple[list[Any], float | None]] = []
+
+    def playable(entries: list[Any], at: float | None = None) -> list[Any]:
+        calls.append((entries, at))
+        return entries
+
+    runtime.liner_gate = SimpleNamespace(playable=playable)  # type: ignore[assignment]
     runtime.owns_liner = lambda path: path == "mine.mp3"
-    assert runtime._playable_liners([owned, other]) == [owned]
+    at = datetime(2026, 10, 12, tzinfo=UTC).timestamp()  # the expected air time
+    assert runtime._playable_liners([owned, other], at) == [owned]
+    assert calls == [([owned], at)]
     everything = [owned, other]
     runtime.owns_liner = lambda _path: True
-    assert runtime._playable_liners(everything) is everything  # unchanged with one station
+    assert runtime._playable_liners(everything, at) is everything  # unchanged with one station
+    assert calls[-1] == (everything, at)
 
 
 def test_a_stopping_station_answers_at_once(tmp_path: Path) -> None:
@@ -1226,6 +1236,55 @@ def test_a_master_says_whether_its_processes_have_ended() -> None:
     assert master.close() is True  # killed after terminate was ignored
     assert all(not proc.running for proc in procs)
     assert master.close() is True  # again: nothing left
+
+
+def test_pipeline_cleanup_releases_finished_children_and_keeps_live_ones(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    from autodj import mastering
+
+    class _Finished:
+        stdin = stdout = None
+
+        def poll(self) -> int | None:
+            return None if self.running else 0
+
+        def __init__(self) -> None:
+            self.running = True
+
+        def terminate(self) -> None:
+            self.running = False
+
+        def wait(self, timeout: float) -> int:
+            return 0
+
+    class _Stubborn:
+        stdin = stdout = None
+
+        def poll(self) -> int | None:
+            return None
+
+        def terminate(self) -> None:
+            pass
+
+        def kill(self) -> None:
+            pass
+
+        def wait(self, timeout: float) -> int:
+            raise subprocess.TimeoutExpired("stubborn", timeout)
+
+    finished, stubborn = _Finished(), _Stubborn()
+    master = mastering.ContinuousMaster.__new__(mastering.ContinuousMaster)
+    master._spawn_lock = threading.Lock()
+    master._children = {finished, stubborn}
+    monkeypatch.setattr(mastering, "_LIVE_PROCESSES", {finished, stubborn})
+
+    for _ in range(2):
+        master._stop_pipeline(finished, None, None, None, stubborn)
+        assert master._children == {stubborn}
+        assert {stubborn} == mastering._LIVE_PROCESSES
 
 
 def test_a_mastering_process_that_outlives_the_close_keeps_the_licence(
