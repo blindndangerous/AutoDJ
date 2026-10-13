@@ -136,7 +136,7 @@ def source_port(cfg: RelayConfig) -> int:
 
 
 def resolve_safe_relay_addresses(host: str, port: int) -> list[tuple[int, int, int, str, tuple]]:
-    """Resolve a relay destination and reject addresses that can reach local services."""
+    """Resolve a relay destination and reject unspecified, multicast and link-local IPs."""
     results = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     if not results:
         raise ValueError("relay host did not resolve")
@@ -144,20 +144,30 @@ def resolve_safe_relay_addresses(host: str, port: int) -> list[tuple[int, int, i
         ip = ipaddress.ip_address(address[0])
         if ip.version == 6 and ip.ipv4_mapped:
             ip = ip.ipv4_mapped
-        if ip.version == 6 and ip.sixtofour and not ip.sixtofour.is_global:
+        if ip.version == 6 and ip.sixtofour and (
+            ip.sixtofour.is_private
+            or ip.sixtofour.is_unspecified
+            or ip.sixtofour.is_multicast
+            or ip.sixtofour.is_link_local
+        ):
             raise ValueError("relay host resolves to a restricted address")
-        if not ip.is_global:
+        if (
+            ip.is_unspecified
+            or ip.is_multicast
+            or ip.is_link_local
+            or ip == ipaddress.IPv6Address("fd00:ec2::254")
+        ):
             raise ValueError("relay host resolves to a restricted address")
     return results
 
 
-def _connect_relay(host: str, port: int) -> socket.socket:
+def _connect_relay(host: str, port: int, *, timeout: float = CONNECT_TIMEOUT) -> socket.socket:
     """Connect only to addresses checked in the same DNS lookup."""
     last_error = None
     for family, socktype, proto, _, address in resolve_safe_relay_addresses(host, port):
         sock = socket.socket(family, socktype, proto)
         try:
-            sock.settimeout(CONNECT_TIMEOUT)
+            sock.settimeout(timeout)
             sock.connect(address)
             return sock
         except OSError as exc:
@@ -393,6 +403,8 @@ def send_metadata(
         headers = {"User-Agent": _SHOUTCAST_USER_AGENT}
     conn = connection_factory(cfg.host, cfg.port, timeout=METADATA_TIMEOUT)
     try:
+        if connection_factory is http.client.HTTPConnection:
+            conn.sock = _connect_relay(cfg.host, cfg.port, timeout=METADATA_TIMEOUT)
         conn.request("GET", path, headers=headers)
         response = conn.getresponse()
         response.read(_REPLY_LIMIT)

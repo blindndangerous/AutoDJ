@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import itertools
 import json
 import logging
@@ -52,6 +53,33 @@ def test_relay_dns_rejects_non_public_addresses(monkeypatch, host, resolved):
     )
     with pytest.raises(ValueError, match="restricted"):
         resolve_safe_relay_addresses(host, 8000)
+
+
+def test_relay_dns_allows_private_lan_destinations(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.1.20", 8000))
+        ],
+    )
+    assert resolve_safe_relay_addresses("icecast.local", 8000)[0][4][0] == "192.168.1.20"
+
+
+def test_metadata_update_rejects_link_local_before_http_request(monkeypatch):
+    requested = False
+
+    def request(*_args, **_kwargs):
+        nonlocal requested
+        requested = True
+
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *_args, **_kwargs: [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 8000))
+    ])
+    monkeypatch.setattr(http.client.HTTPConnection, "request", request)
+    with pytest.raises(ValueError, match="restricted"):
+        send_metadata(_shoutcast("shoutcast1"), "A - B")
+    assert not requested
 
 
 def _icecast(**extra: Any) -> RelayConfig:

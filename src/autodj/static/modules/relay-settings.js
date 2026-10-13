@@ -22,6 +22,7 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
       : error.message.toLowerCase().includes("host") ? "host"
       : error.message.toLowerCase().includes("port") ? "port"
       : error.message.toLowerCase().includes("mount") ? "mount"
+      : error.message.toLowerCase().includes("user") ? "user"
       : error.message.toLowerCase().includes("stream_id") ? "stream-id"
       : error.message.toLowerCase().includes("bitrate") ? "bitrate"
       : error.message.toLowerCase().includes("type") ? "type" : "name";
