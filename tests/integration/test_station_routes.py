@@ -76,14 +76,19 @@ SHARED = frozenset(
 )
 # Public listening addresses: the default station's, and any station's
 # stream and playlist (/stations/<slug>.mp3 and .m3u), status page
-# (/stations/<slug>/status) and request page by name.
+# (/stations/<slug>/status), player page, embeddable player and request page
+# by name.
 DEFAULT_STATION_PUBLIC = frozenset(
     {
         "/status",
+        "/player",
+        "/embed",
         "/requests",
         "/stream.{ext}",
         "/stations/{station_file}",
         "/stations/{slug}/status",
+        "/stations/{slug}/player",
+        "/stations/{slug}/embed",
         "/stations/{slug}/requests",
     }
 )
@@ -361,6 +366,11 @@ def test_station_relative_maps_only_configured_stations() -> None:
         ("get", "/stations/nope/requests", 401),
         ("get", "/api/stations/default/requests", 401),
         ("get", "/api/requests", 401),
+        # Its player pages are public too, and answer 404 while they are
+        # off (the default); under any other name they need a session.
+        ("get", "/stations/default/player", 404),
+        ("head", "/stations/default/embed", 404),
+        ("get", "/stations/nope/player", 401),
         # and so do the station list and starting or stopping a station.
         ("get", "/api/stations", 401),
         ("post", "/api/stations/default/start", 401),

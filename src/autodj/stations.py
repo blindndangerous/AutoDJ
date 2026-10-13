@@ -47,7 +47,7 @@ if TYPE_CHECKING:
     from autodj.breaks import BreakDesk
     from autodj.carts import StationCarts
     from autodj.clip_dates import LinerGate
-    from autodj.config import AutoDJConfig
+    from autodj.config import AutoDJConfig, PlayerPageConfig
     from autodj.indexer import IndexEntry
     from autodj.library import LibraryManager
     from autodj.listener_access import ListenerAccess
@@ -74,21 +74,37 @@ def public_feed_path(slug: str, *, by_name: bool = True) -> str:
     return f"/api/stations/{slug}/nowplaying" if by_name else "/api/nowplaying"
 
 
-def public_addresses(slug: str, *, streams: bool) -> dict[str, str | None]:
-    """Station *slug*'s public addresses: its status page, feed, stream and playlist.
+def public_page_path(slug: str, page: str, *, by_name: bool = True) -> str:
+    """The address of station *slug*'s public *page* (``status``, ``player`` or ``embed``).
+
+    By name it is ``/stations/<slug>/<page>``; the default station's own
+    address, ``/<page>``, otherwise.
+    """
+    return f"/stations/{slug}/{page}" if by_name else f"/{page}"
+
+
+def public_addresses(
+    slug: str, *, streams: bool, player_page: PlayerPageConfig | None = None
+) -> dict[str, str | None]:
+    """Station *slug*'s public addresses: its pages, feed, stream and playlist.
 
     The default station keeps the addresses it always had (``/status``,
     ``/api/nowplaying``, ``/stream.mp3``); every other station's are
     under its name.  The stream and playlist are ``None`` for a station
-    that does not stream.
+    that does not stream, and the player page and embeddable player
+    ``None`` unless *player_page* turns them on.
     """
     by_name = slug != DEFAULT_SLUG
     stream = f"/stations/{slug}.mp3" if by_name else "/stream.mp3"
+    player = player_page is not None and player_page.enabled
+    embed = player_page is not None and player_page.embed
     return {
-        "status_path": f"/stations/{slug}/status" if by_name else "/status",
+        "status_path": public_page_path(slug, "status", by_name=by_name),
         "nowplaying_path": public_feed_path(slug, by_name=by_name),
         "stream_path": stream if streams else None,
         "m3u_path": stream.removesuffix(".mp3") + ".m3u" if streams else None,
+        "player_path": public_page_path(slug, "player", by_name=by_name) if player else None,
+        "embed_path": public_page_path(slug, "embed", by_name=by_name) if embed else None,
     }
 
 
@@ -806,7 +822,9 @@ class StationRuntime:
             "state": state,
             "listeners": int(stream.listener_count) if stream is not None else 0,
             "title": getattr(track, "display_name", None) if track is not None else None,
-            **public_addresses(self.slug, streams=bool(bridge.stream_mode)),
+            **public_addresses(
+                self.slug, streams=bool(bridge.stream_mode), player_page=self.cfg.player_page
+            ),
         }
 
     @property
@@ -1091,6 +1109,8 @@ class ExtraStation:
     build: Callable[[StationRegistry], StationRuntime]
     #: Whether its ``[requests]`` page is on, so the page answers while it is stopped.
     requests_enabled: bool = False
+    #: Its ``[player_page]`` settings, so its pages answer while it is stopped.
+    player_page: PlayerPageConfig | None = None
 
 
 @dataclass
@@ -1140,6 +1160,7 @@ class StoppedStation:
         self.slug = extra.slug
         self.name = extra.name
         self.requests_enabled = extra.requests_enabled
+        self.player_page = extra.player_page
         # "stopped", "stopping" (closing down: its routes already answer
         # 409) or "stuck stopping" (its player outlived the stop and still
         # runs, with its mastering process, until it ends).
@@ -1153,7 +1174,7 @@ class StoppedStation:
             "state": self.state,
             "listeners": 0,
             "title": None,
-            **public_addresses(self.slug, streams=True),
+            **public_addresses(self.slug, streams=True, player_page=self.player_page),
         }
 
 

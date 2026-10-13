@@ -1462,6 +1462,55 @@ class RequestsConfig(_Section):
                 raise ValueError(f"requests.{name} allows at most 500 entries")
 
 
+#: The most sites ``[player_page] embed_origins`` may name.
+MAX_EMBED_ORIGINS = 20
+
+
+@dataclass
+class PlayerPageConfig(_Section):
+    """The public listening page and its embeddable version (``[player_page]``).
+
+    Attributes:
+        enabled: Serve the player page (``/player``, or
+            ``/stations/<slug>/player``).
+        embed: Serve the embeddable player (``/embed``, or
+            ``/stations/<slug>/embed``).
+        embed_origins: The sites allowed to show the embeddable player in a
+            frame, as ``https://host[:port]`` origins, or ``"*"`` for any
+            site.  Empty means only this server's own pages.
+    """
+
+    SECTION: ClassVar[str] = "player_page"
+    enabled: bool = False
+    embed: bool = False
+    embed_origins: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise TypeError("player_page.enabled must be true or false")
+        if not isinstance(self.embed, bool):
+            raise TypeError("player_page.embed must be true or false")
+        if not isinstance(self.embed_origins, list) or not all(
+            isinstance(item, str) for item in self.embed_origins
+        ):
+            raise TypeError("player_page.embed_origins must be a list of origins")
+        if len(self.embed_origins) > MAX_EMBED_ORIGINS:
+            raise ValueError(f"player_page.embed_origins allows at most {MAX_EMBED_ORIGINS} sites")
+        origins: list[str] = []
+        for item in self.embed_origins:
+            if item == "*":
+                origins.append(item)
+                continue
+            try:
+                origins.append(canonicalize_allowed_origin(item))
+            except ValueError as exc:
+                raise ValueError(
+                    f"player_page.embed_origins entry {item!r} must be an HTTP(S) origin "
+                    'such as "https://radio.example.net", or "*" for any site'
+                ) from exc
+        self.embed_origins = list(dict.fromkeys(origins))
+
+
 @dataclass
 class DmcaConfig(_Section):
     """Optional US statutory-webcasting programming safeguards."""
@@ -1704,6 +1753,7 @@ class AutoDJConfig:
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     nowplaying: NowPlayingConfig = field(default_factory=NowPlayingConfig)
     requests: RequestsConfig = field(default_factory=RequestsConfig)
+    player_page: PlayerPageConfig = field(default_factory=PlayerPageConfig)
     time_checks: TimeChecksConfig = field(default_factory=TimeChecksConfig)
     breaks: BreaksConfig = field(default_factory=BreaksConfig)
     dmca: DmcaConfig = field(default_factory=DmcaConfig)
@@ -1895,6 +1945,7 @@ _SECTION_TYPES: tuple[type[_Section], ...] = (
     RecordingConfig,
     NowPlayingConfig,
     RequestsConfig,
+    PlayerPageConfig,
     TimeChecksConfig,
     BreaksConfig,
     DmcaConfig,
@@ -1913,6 +1964,7 @@ STATION_SECTION_TYPES: tuple[type[_Section], ...] = (
     RecordingConfig,
     NowPlayingConfig,
     RequestsConfig,
+    PlayerPageConfig,
     TimeChecksConfig,
     BreaksConfig,
     DmcaConfig,

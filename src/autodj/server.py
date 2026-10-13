@@ -94,6 +94,7 @@ from autodj.listener_access import (
 from autodj.machine_tokens import MachineTokenStore
 from autodj.model_identity import CachedModelCommit
 from autodj.pairing import DeviceRegistry
+from autodj.player_page import install_player_pages
 from autodj.request_page import install_request_pages
 from autodj.scheduler import system_timezone
 from autodj.secret_files import machine_tokens_path, paired_devices_path
@@ -1340,6 +1341,9 @@ def create_app(
 
     # The listener request page (#49), off unless [requests] turns it on.
     install_request_pages(app, stations)
+    # The player page and embeddable player (#52), off unless [player_page]
+    # turns them on for the station.
+    install_player_pages(app, stations)
 
     # ------------------------------------------------------------------
     # Radio stream (stream mode only; 404 otherwise)
@@ -2189,6 +2193,7 @@ def _extra_station(
         preset=spec.cfg.playback.stereotool_preset,
         build=build,
         requests_enabled=spec.cfg.requests.enabled,
+        player_page=spec.cfg.player_page,
     )
 
 

@@ -50,6 +50,10 @@ _PUBLIC_FILES = frozenset(
         # The listener request page, GET and POST; 404 unless [requests]
         # turns it on.  See request_page.py.
         "/requests",
+        # The player page and embeddable player; each answers 404 unless
+        # [player_page] turns it on.  See player_page.py.
+        "/player",
+        "/embed",
         "/api/pair",
     }
 )
@@ -489,7 +493,8 @@ def _is_public_path(path: str, slugs: AbstractSet[str] = frozenset()) -> bool:
     ``/stations/<slug>.mp3`` and ``.m3u`` for a configured station) does
     not require pairing; control APIs require a session.  A configured
     station's public now-playing feed is public under its station path too,
-    and so are its pages, ``/stations/<slug>/status`` and ``/requests``.
+    and so are its pages, ``/stations/<slug>/status``, ``/player``,
+    ``/embed`` and ``/requests``.
     """
     relative = station_relative(path, slugs)
     if relative is not None:
@@ -504,7 +509,7 @@ def _is_public_path(path: str, slugs: AbstractSet[str] = frozenset()) -> bool:
 
 
 #: The public pages each station has under ``/stations/<slug>/``.
-_STATION_PAGES = frozenset({"status", "requests"})
+_STATION_PAGES = frozenset({"status", "player", "embed", "requests"})
 
 
 def _is_station_page(path: str, slugs: AbstractSet[str]) -> bool:
@@ -605,6 +610,52 @@ def peer_address(scope: Scope) -> str:
     if isinstance(client, (tuple, list)) and client:
         return str(client[0])[:128]
     return "<unknown>"
+
+
+#: What every response says about frames unless it chose for itself.
+NO_FRAMES = "frame-ancestors 'none'"
+
+
+def frame_guard(send: Send) -> Send:
+    """Wrap *send* so no response can be shown in another page's frame (clickjacking).
+
+    A response without a Content-Security-Policy gets ``frame-ancestors
+    'none'``; one with a policy that does not mention frames has it added.
+    Either way, and for a policy that already says ``frame-ancestors
+    'none'``, ``X-Frame-Options: DENY`` is added for older browsers.  Only a
+    response whose own policy lets some site frame it (the embeddable
+    player) is left as it is.
+    """
+
+    async def guarded(message: Message) -> None:
+        if message["type"] == "http.response.start":
+            headers = list(message.get("headers", []))
+            index = next(
+                (
+                    i
+                    for i, (key, _value) in enumerate(headers)
+                    if key.lower() == b"content-security-policy"
+                ),
+                None,
+            )
+            framed = False
+            if index is None:
+                headers.append((b"content-security-policy", NO_FRAMES.encode("ascii")))
+            else:
+                policy = headers[index][1].decode("latin-1")
+                if "frame-ancestors" not in policy:
+                    headers[index] = (
+                        b"content-security-policy",
+                        f"{policy}; {NO_FRAMES}".encode("latin-1"),
+                    )
+                else:
+                    framed = NO_FRAMES not in policy
+            if not framed and not any(key.lower() == b"x-frame-options" for key, _ in headers):
+                headers.append((b"x-frame-options", b"DENY"))
+            message["headers"] = headers
+        await send(message)
+
+    return guarded
 
 
 class SecurityMiddleware:
@@ -710,6 +761,7 @@ class SecurityMiddleware:
             await self.app(scope, receive, send)
             return
 
+        send = frame_guard(send)
         request_id = new_request_id()
         state = scope.setdefault("state", {})
         state["request_id"] = request_id

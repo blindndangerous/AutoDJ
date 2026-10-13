@@ -21,6 +21,7 @@ from unittest.mock import MagicMock, PropertyMock
 from autodj.config import (
     DmcaConfig,
     NowPlayingConfig,
+    PlayerPageConfig,
     RecordingConfig,
     RequestsConfig,
     ServerConfig,
@@ -108,6 +109,7 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     cfg.stream = StreamConfig()
     cfg.nowplaying = NowPlayingConfig()
     cfg.requests = RequestsConfig()
+    cfg.player_page = PlayerPageConfig()
     cfg.time_checks = TimeChecksConfig()
     cfg.dmca = DmcaConfig()
     cfg.recording = RecordingConfig(NO_INDEX_DIR / "recordings")

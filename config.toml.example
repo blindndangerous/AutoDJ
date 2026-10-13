@@ -634,6 +634,16 @@ window_minutes = 30
 # Artists, and folders (full paths or inside music_dir), listeners cannot request.
 blocked_artists = []
 blocked_folders = []
+# Public player page at /player, where listeners press Play to hear the stream
+# in the browser, and a compact version at /embed for other websites. Both off
+# by default; each answers 404 while it is off. See "Player page and embeddable
+# player" in docs/operations.md.
+[player_page]
+enabled = false
+embed = false
+# Sites that may show /embed in a frame, such as "https://nightowlradio.example",
+# or "*" for any site. Empty: only this server's own pages.
+embed_origins = []
 
 # Webhook destinations belong ONLY in config.local.toml because URLs can hold
 # tokens. Example for that file:
@@ -654,7 +664,8 @@ blocked_folders = []
 #
 # A station starts from the defaults, not from the sections above: set
 # everything it needs here.  Its sections are playback, djmix, transitions,
-# replaygain, stream, recording, nowplaying, requests, time_checks, breaks, dmca
+# replaygain, stream, recording, nowplaying, player_page, requests, time_checks,
+# breaks, dmca
 # and presets.*;
 # library, index, model, huggingface and server are shared and read only from
 # the root.  Another station always streams (stream.enabled is ignored), and

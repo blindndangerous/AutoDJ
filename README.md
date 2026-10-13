@@ -143,6 +143,10 @@ An optional public request page (`/requests`) lets listeners search the library 
 songs, within per-listener and daily limits, the repeat rules and DMCA limits; you approve them
 by hand or automatically in Queue & Search. It is off until `[requests]` turns it on. See
 [Operations](docs/operations.md#listener-requests).
+An optional public player page (`/player`) lets listeners press Play to hear the station in the
+browser, and an embeddable version (`/embed`) puts the same player on another website; both are
+off until `[player_page]` turns them on. See
+[Operations](docs/operations.md#player-page-and-embeddable-player).
 
 DMCA mode (`[dmca] enabled = true`) keeps the station inside the US statutory webcasting
 licence's performance complement: album, artist and box set limits in any three hours, in every
