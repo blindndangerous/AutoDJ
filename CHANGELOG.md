@@ -761,6 +761,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The operations guide walks through adding a station to a server that runs one, step by step,
+  from the backup and configuration to moving its listeners and retiring a station (#70).
+  ADR 5 records the design: a station owns its playout chain, and the library is shared. The
+  README introduces several stations.
+
 - Analysis worker status counts waiting songs without sorting or building a list of their
   paths (#166).
 

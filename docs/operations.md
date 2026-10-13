@@ -1537,6 +1537,73 @@ start and the end, and Night Owl's thread count before and after. Memory that ke
 one restart to the next, or a thread count that grows, points to a leak; attach the report file to
 an issue.
 
+### Adding a station, step by step
+
+This adds Night Owl Radio (`nightowl`) to a server that runs one station today. Nothing on disk
+moves: the default station keeps its files, and Night Owl starts with empty ones of its own.
+
+1. **Check the server can carry it.** Each running station costs threads, two to four
+   subprocesses and a few hundred megabytes of memory (see
+   [Cost of each running station](#cost-of-each-running-station)). To measure it on the
+   machine itself, run the long soak test in [Soak test](#soak-test) while the server is idle.
+   One Stereo Tool licence runs one copy, so give the new station
+   `playback.loudness_processing = "smooth"` unless you have a second licence.
+2. **Stop AutoDJ and take a backup:** `uv run autodj backup backups/before-nightowl.zip`.
+3. **Describe the station** in `config.toml`, with its own recording folder:
+
+   ```toml
+   [stations.nightowl]
+   autostart = true
+
+   [stations.nightowl.stream]
+   station_name = "Night Owl Radio"
+   bitrate = 192
+   continuous = true
+
+   [stations.nightowl.playback]
+   loudness_processing = "smooth"
+
+   [stations.nightowl.recording]
+   folder = "recordings/nightowl"
+   ```
+
+   Put its secrets in `config.local.toml`: `listener_user` and `listener_password` under
+   `[stations.nightowl.stream]`, relay passwords under
+   `[stations.nightowl.stream.relays.<name>]` and webhooks as `[[stations.nightowl.webhooks]]`.
+   If a relay under the root `[stream.relays.*]` really belongs to the new station, move its
+   tables in both files under `stations.nightowl.stream.relays`. The full list of keys and rules
+   is in [Configuration](#configuration).
+4. **Liners and time checks.** Night Owl's liners go in
+   `<index_dir>/<name>/stations/nightowl/liners/` unless you set
+   `[stations.nightowl.playback] liners_folder`. Set `[stations.nightowl.time_checks]
+   clips_folder` or `voice_packs` if it should speak the time.
+5. **Containers only:** make sure the new recording folder, and any liner folder outside the
+   index, is mounted and writable. The station's own folder is inside the `/index` volume.
+6. **Check it:** `uv run autodj doctor --station nightowl`. A configuration error (a misspelt
+   station name, a recording folder or relay target another station uses, webhooks in
+   `config.toml`) stops the configuration from loading, and doctor says which. Doctor offers to
+   make the station's folder; AutoDJ also makes it when the station first starts.
+7. **Start AutoDJ.** The startup log names each station's stream and status page, such as
+   `/stations/nightowl.mp3`. Run `uv run autodj doctor` again: each station now has its own
+   lines.
+8. **Set it up in the web page.** Choose Night Owl Radio with the Station button in the banner
+   (see [The station switcher](#the-station-switcher)), then choose its clockwheel, DMCA mode
+   and processing, and build its schedule, carts and liners. To start from the default
+   station's clockwheels or profiles, copy files from `<index_dir>/<name>/clockwheels/` or
+   `<index_dir>/profiles/` into `stations/nightowl/clockwheels/` or `stations/nightowl/profiles/`
+   while AutoDJ is stopped.
+9. **Move the listeners.** Publish `https://<your host>/stations/nightowl.mp3`. If listeners
+   already use an address on a hosted Icecast or Shoutcast server, add a relay from Night Owl to
+   that server (see [Relaying to Icecast and Shoutcast](#relaying-to-icecast-and-shoutcast)) and
+   stop whatever fed it before, so the address listeners use does not change.
+10. **Take a new backup** and check that its `stations/nightowl/` files are in it (see
+    [Backups and doctor](#backups-and-doctor)).
+
+To retire a station, stop it (Settings, Stream, Stop, or `POST /api/stations/<slug>/stop`),
+then remove its tables from both configuration files and restart. Its folder stays: doctor names
+it as no longer configured, and backups leave it out. Move or delete it by hand once a backup
+that holds it is safe.
+
 ## Windows PowerShell setup
 
 For native no-container operation, create paths and run diagnostics as follows:

@@ -179,6 +179,17 @@ when nobody listens to AutoDJ directly. Settings, Stream shows each relay's stat
 [Relaying to Icecast and Shoutcast](docs/operations.md#relaying-to-icecast-and-shoutcast) for
 every option.
 
+### Several stations
+
+One server can run more than one station from the same library. The root sections of
+`config.toml` stay the default station; each other station is a `[stations.<slug>]` table with
+its own playback, stream, relays, recording, schedule, carts, clockwheels, liners and saved
+settings, streaming at `/stations/<slug>.mp3`. The Station button in the web page's banner
+chooses which station the page controls, and `autodj backup` and `autodj doctor` cover every
+station. See [Several stations](docs/operations.md#several-stations), including
+[adding a station step by step](docs/operations.md#adding-a-station-step-by-step), and
+[ADR 5](docs/adr/0005-a-station-owns-its-playout-chain.md) for the design.
+
 `autodj serve` loads the current library from `library.db` and shows its song and analysis
 counts. Add music in Library tools; songs become available before advanced analysis finishes.
 The published-index format (`index-manifest.json` and its generation files) is deprecated.
