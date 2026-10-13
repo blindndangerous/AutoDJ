@@ -123,3 +123,21 @@ def test_contains_finds_text_inside_a_numeric_beets_column():
     condition = {"field": "beets", "name": "bpm", "operator": "contains", "value": "12"}
     assert matches_condition(condition, {}, {"bpm": 120})
     assert not matches_condition(condition, {}, {"bpm": 130})
+
+
+def test_negative_conditions_require_known_metadata_and_exclude_any_matching_genre():
+    assert not matches_condition({"field": "bpm", "operator": "not_eq", "value": 90}, {})
+    assert matches_condition({"field": "bpm", "operator": "not_eq", "value": 90}, {"bpm": 91})
+    assert not matches_condition(
+        {"field": "genre", "operator": "is_not", "value": "slow jam"}, {"genre": "Pop;Slow Jam"}
+    )
+    assert matches_condition(
+        {"field": "genre", "operator": "is_not", "value": "slow jam"}, {"genre": "Pop;Rock"}
+    )
+    assert not matches_condition({"field": "artist", "operator": "not_contains", "value": "x"}, {})
+    assert not matches_condition(
+        {"field": "year", "operator": "outside", "value": 2000, "upper": 2010}, {"year": 2005}
+    )
+    assert matches_condition(
+        {"field": "year", "operator": "outside", "value": 2000, "upper": 2010}, {"year": 1999}
+    )

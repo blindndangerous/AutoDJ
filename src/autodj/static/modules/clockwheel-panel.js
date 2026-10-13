@@ -242,7 +242,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       category.hidden = category.previousElementSibling.hidden = f !== "category";
       name.hidden = name.previousElementSibling.hidden = f !== "beets";
       let choices = TEXT_OPERATORS;
-      if (isFolder || f === "genre" || f === "category") choices = [["is", "is"]];
+      if (isFolder || f === "genre" || f === "category") choices = [["is", "is"], ["is_not", "is not"]];
       else if (numeric) choices = NUMERIC_OPERATORS;
       else if (f === "beets") {
         choices = [["is", "Is (text)"], ...TEXT_OPERATORS.slice(1), ["eq", "Equals (number)"], ...NUMERIC_OPERATORS.slice(1)];
@@ -256,9 +256,9 @@ export function installClockwheelPanel({ document: doc = document, request = req
       }));
       operator.value = choices.some(([v]) => v === previousOperator) ? previousOperator : choices[0][0];
       selectedOperator = operator.value;
-      operator.hidden = operator.previousElementSibling.hidden = isFolder || f === "genre" || f === "category";
+      operator.hidden = operator.previousElementSibling.hidden = false;
       input.hidden = input.previousElementSibling.hidden = isFolder || f === "genre" || f === "category";
-      upper.hidden = upper.previousElementSibling.hidden = operator.value !== "between";
+      upper.hidden = upper.previousElementSibling.hidden = !["between", "outside"].includes(operator.value);
       input.previousElementSibling.textContent = f === "duration" ? "Value (seconds or MM:SS)" : "Value";
       upper.previousElementSibling.textContent = f === "duration" ? "Upper value (seconds or MM:SS)" : "Upper value";
     };
@@ -371,15 +371,15 @@ export function installClockwheelPanel({ document: doc = document, request = req
         if (folder && (folder.split("/").some((part) => !part || part === "." || part === "..") || folder.includes(":"))) {
           invalid(folderField, 'The subfolder must stay inside its library folder, with no "..".');
         }
-        return { field, source, folder, recursive: row.querySelector("input[type=checkbox]").checked };
+        return { field, source, folder, recursive: row.querySelector("input[type=checkbox]").checked, ...(selects[2].value === "is_not" ? { operator: "is_not" } : {}) };
       }
       if (field === "genre") {
         if (!selects[3].value) invalid(selects[3], "Choose a genre.");
-        return { field, operator: "is", value: selects[3].value };
+        return { field, operator: selects[2].value, value: selects[3].value };
       }
       if (field === "category") {
         if (!selects[5].value) invalid(selects[5], "Choose a saved music category.");
-        return { field, category: selects[5].value };
+        return { field, category: selects[5].value, ...(selects[2].value === "is_not" ? { operator: "is_not" } : {}) };
       }
 
       const inputs = row.querySelectorAll("input[type=text]");
@@ -387,7 +387,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       const raw = inputs[1].value.trim();
       if (!raw) invalid(inputs[1], `Enter a value for ${field}.`);
       const numeric = ["year", "bpm", "duration"].includes(field)
-        || (field === "beets" && ["eq", "lt", "lte", "gt", "gte", "between"].includes(operator));
+        || (field === "beets" && ["eq", "not_eq", "lt", "lte", "gt", "gte", "between", "outside"].includes(operator));
       const parse = (value, input) => {
         let number;
         try {
@@ -409,7 +409,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       if (field === "beets" && (data.beets_error || !(data.beets_fields || []).includes(result.name))) {
         invalid(selects[4], data.beets_error || `Beets field ${result.name} is unavailable.`);
       }
-      if (operator === "between") {
+      if (["between", "outside"].includes(operator)) {
         const high = inputs[2].value.trim();
         if (!high) invalid(inputs[2], "Enter the upper value for the range.");
         result.upper = numeric ? parse(high, inputs[2]) : high;

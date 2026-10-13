@@ -1,8 +1,8 @@
 import { stepHoursText } from "./step-hours.js";
 
 const FOLDER_TYPES = new Set(["music", "liner"]);
-export const NUMERIC_OPERATORS = [["eq", "is"], ["lt", "less than"], ["lte", "at most"], ["gt", "greater than"], ["gte", "at least"], ["between", "between"]];
-export const TEXT_OPERATORS = [["is", "is"], ["contains", "contains"], ["matches", "matches"]];
+export const NUMERIC_OPERATORS = [["eq", "is"], ["not_eq", "is not"], ["lt", "less than"], ["lte", "at most"], ["gt", "greater than"], ["gte", "at least"], ["between", "between"], ["outside", "outside range"]];
+export const TEXT_OPERATORS = [["is", "is"], ["contains", "contains"], ["not_contains", "does not contain"], ["matches", "matches"], ["not_matches", "does not match"]];
 
 function lastPart(path) {
   const parts = String(path).split(/[\\/]/).filter(Boolean);
