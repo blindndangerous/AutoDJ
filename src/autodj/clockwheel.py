@@ -468,26 +468,30 @@ def pick_slot(
                     index,
                     pending_liner_index,
                 )
-            skipped.append(f"track step {slot.path}: recording missing or blocked by rules")
+            skipped.append(
+                f"Step {index + 1}: track step {slot.path}: recording missing or blocked by rules"
+            )
             continue
         if slot.kind == "category":
             found = (categories or {}).get(slot.category)
             if found is None:
-                skipped.append(f"category step {slot.category}: the category no longer exists")
+                skipped.append(
+                    f"Step {index + 1}: category step {slot.category}: the category no longer exists"
+                )
                 continue
             name, members = found
             closed = (closed_categories or {}).get(slot.category)
             if closed:
-                skipped.append(f"category {name}: {closed}")
+                skipped.append(f"Step {index + 1}: category {name}: {closed}")
                 continue
             if not members:
-                skipped.append(f"category {name}: the category has no songs")
+                skipped.append(f"Step {index + 1}: category {name}: the category has no songs")
                 continue
             selected, reason = choose(
                 slot, [entry for entry in entries if entry.path in members], f"category {name}"
             )
             if reason:
-                skipped.append(reason)
+                skipped.append(f"Step {index + 1}: {reason}")
             if selected is not None:
                 return ClockPick(
                     selected,
@@ -509,7 +513,7 @@ def pick_slot(
             None,
         )
         if missing is not None:
-            skipped.append(f"category {missing} in step {index + 1}: the category no longer exists")
+            skipped.append(f"Step {index + 1}: category {missing}: the category no longer exists")
             continue
         pool = liners if slot.kind == "liner" else entries
         if slot.conditions and slot.kind == "music" and closed_paths:
@@ -522,12 +526,12 @@ def pick_slot(
         selected, reason = choose(
             slot,
             matches,
-            f"{slot.kind} step {index + 1} conditions"
+            f"{slot.kind} conditions"
             if slot.conditions
             else f"{slot.kind} slot {slot.folder}",
         )
         if reason:
-            skipped.append(reason)
+            skipped.append(f"Step {index + 1}: {reason}")
         if slot.kind == "liner":
             pending_liner = selected
             pending_liner_index = index if selected is not None else None

@@ -188,7 +188,7 @@ def test_runtime_picker_preserves_liner_flag_through_skips_settings_and_fixed_tr
         "winddown",
         True,
     )
-    assert pick.skipped == [r"music slot C:\missing: no matching entries"]
+    assert pick.skipped == [r"Step 2: music slot C:\missing: no matching entries"]
     assert pick.step_index == 3
     assert pick.liner_step_index == 0
 
@@ -309,7 +309,7 @@ def test_runtime_picker_reports_missing_slots_and_no_clock_pool_without_writing_
     history = {}
     pick = pick_slot(slots, 0, tracks, history, lambda _: True)
     assert pick.entry == tracks[0]
-    assert pick.skipped == [r"music slot C:\missing: no matching entries"]
+    assert pick.skipped == [r"Step 1: music slot C:\missing: no matching entries"]
     assert pick.next_cursor == 0
     assert history == {}
 
@@ -319,7 +319,22 @@ def test_runtime_picker_reports_missing_slots_and_no_clock_pool_without_writing_
 
     empty = pick_slot([ClockSlot(r"C:\empty")], 0, [], {}, lambda _: True)
     assert empty.entry is None
-    assert "no matching entries" in empty.skipped[0]
+    assert empty.skipped == [r"Step 1: music slot C:\empty: no matching entries"]
+
+
+def test_runtime_picker_numbers_repeat_blocked_folder_before_next_success():
+    blocked, allowed = Entry(r"C:\music\blocked.flac"), Entry(r"C:\other\allowed.flac")
+    pick = pick_slot(
+        [ClockSlot(r"C:\music"), ClockSlot(r"C:\other")],
+        0,
+        [blocked, allowed],
+        {},
+        lambda entry: entry is allowed,
+    )
+    assert pick.entry is allowed
+    assert pick.skipped == [
+        r"Step 1: music slot C:\music: all 1 matching entries blocked by rules"
+    ]
 
 
 def test_clock_validation_rejects_missing_music_and_consecutive_liners_across_wrap():

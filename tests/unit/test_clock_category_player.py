@@ -1,5 +1,6 @@
 """Category conditions through the live player's filtering and fallback paths."""
 
+from collections import deque
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -97,3 +98,28 @@ def test_category_read_failure_is_reported_and_does_not_use_stale_membership():
     recovered = player._clock_pick(context, 0)
     assert recovered.entry is first
     assert player._clock_condition_cache is not failed_cache
+
+
+def test_clock_skip_logs_deduplicate_and_reset_after_a_clear_pick(caplog):
+    player = _clock_player([("A", "One")])
+    reason = [r"Step 1: music slot C:\missing: no matching entries"]
+    with caplog.at_level("WARNING", logger="autodj.player"):
+        player._log_clock_skips(reason)
+        player._log_clock_skips(reason)
+        player._log_clock_skips([])
+        player._log_clock_skips(reason)
+    assert caplog.text.count("Clock selection skipped:") == 2
+
+
+def test_clock_pick_logs_a_filtered_step_before_the_next_folder(caplog):
+    player = _clock_player([("A", "One"), ("B", "Two")])
+    first, second = player.playable_entries()
+    player._clock_slots = [
+        ClockSlot(kind="track", path=first.path),
+        ClockSlot(folder="Z:/Music"),
+    ]
+    context = replace(player._pick_context(), recent=deque([first.path]))
+    with caplog.at_level("WARNING", logger="autodj.player"):
+        picked = player._clock_pick(context, 0)
+    assert picked.entry is second
+    assert "Clock selection skipped: Step 1: track step" in caplog.text

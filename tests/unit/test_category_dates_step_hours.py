@@ -159,7 +159,7 @@ def test_the_rotation_tester_keeps_seasonal_songs_to_their_season(tmp_path: Path
     rows = {row["name"]: row for row in october["categories"]}
     assert rows["Christmas"]["plays"] == 0
     assert (
-        "category Christmas: outside its dates: "
+        "Step 1: category Christmas: outside its dates: "
         "plays only between 1 December 2026 and 26 December 2026"
     ) in [item["reason"] for item in october["skipped_steps"]]
     december = simulate(source, SimulationRequest(hours=3, start=_at("2026-12-12 12:00"), seed=2))

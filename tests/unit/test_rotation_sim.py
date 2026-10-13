@@ -209,12 +209,15 @@ def test_long_repeat_rules_starve_a_small_category(tmp_path: Path) -> None:
     power = next(row for row in report["categories"] if row["name"] == "Power")
     assert power["skipped"] > 0
     reasons = {item["reason"]: item["count"] for item in report["skipped_steps"]}
-    assert reasons["category Power: all matching entries blocked by rules"] == power["skipped"]
+    assert (
+        reasons["Step 1: category Power: all matching entries blocked by rules"]
+        == power["skipped"]
+    )
     # The clock moved on to Current and Gold instead, so no rule had to be relaxed.
     assert power["plays"] == 6
     assert report["relaxed"] == {}
     text = report_text(report)
-    assert "category Power: all matching entries blocked by rules:" in text
+    assert "Step 1: category Power: all matching entries blocked by rules:" in text
 
 
 def test_a_clock_with_nothing_else_relaxes_the_track_window(tmp_path: Path) -> None:
@@ -348,7 +351,7 @@ def test_dayparting_keeps_a_category_to_its_hours(tmp_path: Path) -> None:
     assert rows["Late night"]["skipped"] > 0
     reasons = [item["reason"] for item in afternoon["skipped_steps"]]
     assert reasons == [
-        "category Late night: outside its hours: plays only every day from 22:00 until 02:00"
+        "Step 1: category Late night: outside its hours: plays only every day from 22:00 until 02:00"
     ]
     assert "dayparting" not in afternoon["relaxed"]
     night = simulate(source, SimulationRequest(hours=4, start=_at("2026-10-12 22:00"), seed=1))

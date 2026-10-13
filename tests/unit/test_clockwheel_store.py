@@ -205,7 +205,9 @@ def test_settings_steps_pass_their_preset_to_the_next_pick():
     assert (selected.entry, selected.preset, selected.next_cursor) == (entry, "winddown", 0)
     blocked = pick_slot(slots, 0, [entry], {}, lambda _: False)
     assert blocked.entry is None
-    assert blocked.skipped == ["track step /music/one.flac: recording missing or blocked by rules"]
+    assert blocked.skipped == [
+        "Step 2: track step /music/one.flac: recording missing or blocked by rules"
+    ]
 
 
 def _player(tmp_path, setting, sources):
@@ -343,17 +345,17 @@ def test_category_slots_pick_their_songs_and_skip_an_empty_or_missing_category()
     picked = pick_slot(slots, 0, songs, played, lambda _: True, categories=members)
     assert (picked.entry, picked.next_cursor) == (songs[2], 0)
     assert picked.skipped == [
-        "category step gone: the category no longer exists",
-        "category Empty: the category has no songs",
+        "Step 1: category step gone: the category no longer exists",
+        "Step 2: category Empty: the category has no songs",
     ]
     blocked = pick_slot(slots, 2, songs, played, lambda _: False, categories=members)
     assert blocked.entry is None
-    assert "category A: all 2 matching entries blocked by rules" in blocked.skipped
+    assert "Step 3: category A: all 2 matching entries blocked by rules" in blocked.skipped
     free = [ClockSlot(kind="category", category="a", selection="random", enforce_rules=False)]
     assert pick_slot(free, 0, songs, {}, lambda _: False, categories=members).entry in songs[1:3]
     # A category whose songs are all outside the pool (DMCA, just played) is skipped too.
     outside = pick_slot(slots[2:], 0, songs[:1], {}, lambda _: True, categories=members)
-    assert outside.skipped == ["category A: no matching entries"]
+    assert outside.skipped == ["Step 1: category A: no matching entries"]
 
 
 def test_player_loads_category_steps_even_for_a_category_deleted_since(tmp_path):
