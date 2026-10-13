@@ -368,6 +368,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Repeat rules that use minutes now keep and load up to 50,000 recent plays, so fast song rotations
+  retain more of the selected time window across picks and restarts.
 - Dayparting checks a category's hours for when the song is expected to start rather than when
   it is picked (#140), so a song no longer starts a few minutes after its window has closed. The
   rotation tester checks them the same way, and so does the song change planned a song early for
