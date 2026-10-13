@@ -1,3 +1,5 @@
+import { isStationUrl, stationApi, stationEpoch } from "./stations.js";
+
 let authRequiredHandler = () => {};
 let authenticatedRequestEpoch = 0;
 
@@ -51,9 +53,24 @@ function httpFailureText(status) {
     : NOT_ACCEPTED_TEXT;
 }
 
+// A reply that came back after the page switched to another station
+// (#70).  It is never applied: it would show the old station's data
+// under the new one's name.  Callers end their pending work as for any
+// failure; reportBackgroundRequestError and the like say nothing for it.
+const STALE_STATION_TEXT = "That reply was for the station this page has just left.";
+
+export function isStaleStationReply(errorValue) {
+  return errorValue instanceof ApiError && errorValue.staleStation === true;
+}
+
+// Every request goes through here.  A route that acts on one station goes
+// to the station this page controls (modules/stations.js).
 async function rawRequest(url, options) {
+  const routed = stationApi(url);
+  const sentFor = isStationUrl(url) ? stationEpoch() : null;
+  let response;
   try {
-    return await fetch(url, options);
+    response = await fetch(routed, options);
   } catch (cause) {
     // A cancelled request is the caller's own doing, not a failure.
     if (cause?.name === "AbortError") throw cause;
@@ -61,6 +78,17 @@ async function rawRequest(url, options) {
     error.unreachable = true;
     throw error;
   }
+  if (sentFor !== null && sentFor !== stationEpoch()) {
+    try {
+      await response.body?.cancel?.();
+    } catch (_) {
+      // The reply is dropped whether or not its body can be cancelled.
+    }
+    const error = new ApiError(STALE_STATION_TEXT, { status: response.status });
+    error.staleStation = true;
+    throw error;
+  }
+  return response;
 }
 
 // True for a request that never reached the server (the network or a
@@ -210,15 +238,19 @@ export async function probeResource(url, options = {}) {
   }
 }
 
+// One call per set of arguments at a time; a call made after a station
+// switch never joins one made for the station before (#70).
 export function makeSingleFlight(operation) {
   const flights = [];
   return function singleFlight(...args) {
+    const station = stationEpoch();
     const existing = flights.find((flight) =>
-      flight.args.length === args.length
+      flight.station === station
+      && flight.args.length === args.length
       && flight.args.every((arg, index) => Object.is(arg, args[index]))
     );
     if (existing) return existing.promise;
-    const flight = { args, promise: null };
+    const flight = { args, station, promise: null };
     flight.promise = Promise.resolve()
       .then(() => operation.apply(this, args))
       .finally(() => {

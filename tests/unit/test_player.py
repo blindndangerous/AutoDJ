@@ -7,6 +7,7 @@ Audio crossfade math is tested with real numpy arrays.
 import os
 import subprocess
 import sys
+import threading
 from collections import deque
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -645,7 +646,7 @@ class TestAnalyseTrackInBackground:
         assert thread not in player._bg_analysis_threads
 
     def test_lifespan_waits_for_background_cache_write_before_close(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, request
     ) -> None:
         import threading
 
@@ -663,13 +664,17 @@ class TestAnalyseTrackInBackground:
 
         paused_before_write = threading.Event()
         release_worker = threading.Event()
+        # Released below once shutdown is under way, or at teardown if the test
+        # fails first.  No timeout: a slow server start must not let the worker
+        # give up before the test releases it.
+        request.addfinalizer(release_worker.set)
         write_attempted = threading.Event()
         worker_exception_seen = threading.Event()
         worker_errors: list[BaseException] = []
 
         def pause_before_write(_audio: np.ndarray, _sr: int) -> DjMeta:
             paused_before_write.set()
-            assert release_worker.wait(2.0)
+            release_worker.wait()
             return DjMeta(analysed=True)
 
         original_set = cache.set
@@ -2057,6 +2062,10 @@ def test_next_rendered_carries_offset_between_tracks(monkeypatch):
     from autodj.mixbus import RenderedTrack
 
     p = player_mod.Player.__new__(player_mod.Player)
+    p._clock_lock = threading.RLock()
+    p._clock_selection_lock = threading.RLock()
+    p._clock_revision = 0
+    p._pending_clock_cursor_revision = None
     p._state = player_mod.PlayerState()
     p._set_generation = 0
     p._pending_pick_mode = "seed"
@@ -2086,6 +2095,10 @@ def test_next_rendered_skips_unrenderable_tracks_and_stops_without_a_cursor() ->
     from autodj.mixbus import RenderedTrack
 
     p = Player.__new__(Player)
+    p._clock_lock = threading.RLock()
+    p._clock_selection_lock = threading.RLock()
+    p._clock_revision = 0
+    p._pending_clock_cursor_revision = None
     p._state = PlayerState()
     p._set_generation = 0
     p._pending_pick_mode = "seed"
@@ -2116,6 +2129,10 @@ def test_next_rendered_skips_unrenderable_tracks_and_stops_without_a_cursor() ->
 def test_next_rendered_gives_up_after_five_failed_renders() -> None:
 
     p = Player.__new__(Player)
+    p._clock_lock = threading.RLock()
+    p._clock_selection_lock = threading.RLock()
+    p._clock_revision = 0
+    p._pending_clock_cursor_revision = None
     p._state = PlayerState()
     p._set_generation = 0
     p._pending_pick_mode = "seed"

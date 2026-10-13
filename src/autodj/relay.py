@@ -22,6 +22,7 @@ import base64
 import collections
 import contextlib
 import http.client
+import ipaddress
 import json
 import logging
 import socket
@@ -132,6 +133,39 @@ def describe_target(cfg: RelayConfig) -> str:
 def source_port(cfg: RelayConfig) -> int:
     """Return the port a source logs in on: Shoutcast uses the one above its own."""
     return cfg.port if cfg.type == "icecast" else cfg.port + 1
+
+
+def resolve_safe_relay_addresses(host: str, port: int) -> list[tuple[int, int, int, str, tuple]]:
+    """Resolve a relay destination and reject addresses that can reach local services."""
+    results = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    if not results:
+        raise ValueError("relay host did not resolve")
+    for _, _, _, _, address in results:
+        ip = ipaddress.ip_address(address[0])
+        if ip.version == 6 and ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+        if ip.version == 6 and ip.sixtofour and not ip.sixtofour.is_global:
+            raise ValueError("relay host resolves to a restricted address")
+        if not ip.is_global:
+            raise ValueError("relay host resolves to a restricted address")
+    return results
+
+
+def _connect_relay(host: str, port: int) -> socket.socket:
+    """Connect only to addresses checked in the same DNS lookup."""
+    last_error = None
+    for family, socktype, proto, _, address in resolve_safe_relay_addresses(host, port):
+        sock = socket.socket(family, socktype, proto)
+        try:
+            sock.settimeout(CONNECT_TIMEOUT)
+            sock.connect(address)
+            return sock
+        except OSError as exc:
+            last_error = exc
+            sock.close()
+    if last_error is not None:
+        raise last_error
+    raise OSError("relay host did not resolve")
 
 
 def _shut_down(sock: socket.socket) -> None:
@@ -300,7 +334,10 @@ def open_source(
         RelayError: The server refused the login.
         OSError: The connection failed.
     """
-    sock = connect((cfg.host, source_port(cfg)), timeout=CONNECT_TIMEOUT)
+    port = source_port(cfg)
+    sock = _connect_relay(cfg.host, port) if connect is socket.create_connection else connect(
+        (cfg.host, port), timeout=CONNECT_TIMEOUT
+    )
     try:
         if on_socket is not None:
             on_socket(sock)
@@ -891,11 +928,20 @@ class RelayManager:
             for relay, output in old.values():
                 remove_sink = getattr(output, "remove_sink", None)
                 if remove_sink is not None:
-                    remove_sink(relay)
-                relay.begin_close()
+                    try:
+                        remove_sink(relay)
+                    except Exception:
+                        logger.exception("Could not detach replaced relay %s", relay.cfg.name)
+                try:
+                    relay.begin_close()
+                except Exception:
+                    logger.exception("Could not stop replaced relay %s", relay.cfg.name)
             deadline = time.monotonic() + CLOSE_TIMEOUT
             for relay, _ in old.values():
-                relay.finish_close(deadline)
+                try:
+                    relay.finish_close(deadline)
+                except Exception:
+                    logger.exception("Could not finish stopping replaced relay %s", relay.cfg.name)
             for name in changed:
                 if name not in prepared:
                     continue
@@ -910,8 +956,14 @@ class RelayManager:
             used = {id(output) for _, output in self._by_name.values()}
             for output in list(self.outputs):
                 if id(output) not in used:
-                    self._remove_output(output)
-                    output.close()
+                    try:
+                        self._remove_output(output)
+                    except Exception:
+                        logger.exception("Could not detach an unused relay encoder")
+                    try:
+                        output.close()
+                    except Exception:
+                        logger.exception("Could not close an unused relay encoder")
                     self.outputs.remove(output)
             self._write_status()
 

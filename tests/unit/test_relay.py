@@ -22,12 +22,36 @@ from autodj.relay import (
     describe_error,
     open_source,
     read_status_file,
+    resolve_safe_relay_addresses,
     send_metadata,
 )
 
 PASSWORD = "s3cret-Pa55"
 # One MPEG-1 Layer III frame (128 kbps, 44.1 kHz): 417 bytes.
 FRAME = b"\xff\xfb\x90\x00" + b"\x00" * 413
+
+
+@pytest.mark.parametrize(
+    ("host", "resolved"),
+    [
+        ("2852039166", "169.254.169.254"),
+        ("0xa9fea9fe", "169.254.169.254"),
+        ("169.254.169.254.", "169.254.169.254"),
+        ("::ffff:a9fe:a9fe", "::ffff:169.254.169.254"),
+        ("2002:a9fe:a9fe::", "2002:a9fe:a9fe::"),
+        ("fd00:ec2::254", "fd00:ec2::254"),
+    ],
+)
+def test_relay_dns_rejects_non_public_addresses(monkeypatch, host, resolved):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [(socket.AF_INET6 if ":" in resolved else socket.AF_INET,
+                                    socket.SOCK_STREAM, 6, "", (resolved, 8000, 0, 0)
+                                    if ":" in resolved else (resolved, 8000))],
+    )
+    with pytest.raises(ValueError, match="restricted"):
+        resolve_safe_relay_addresses(host, 8000)
 
 
 def _icecast(**extra: Any) -> RelayConfig:

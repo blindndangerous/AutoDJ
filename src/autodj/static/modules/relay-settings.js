@@ -12,9 +12,24 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
   let relays = [];
   let statuses = new Map();
   let editing = null;
+  let returnFocus = null;
   let available = false;
   let generation = 0;
   const rowByName = new Map();
+  function validationError(error) {
+    form.querySelectorAll("[aria-invalid='true']").forEach((field) => field.removeAttribute("aria-invalid"));
+    const key = error.message.toLowerCase().includes("password") ? "password"
+      : error.message.toLowerCase().includes("host") ? "host"
+      : error.message.toLowerCase().includes("port") ? "port"
+      : error.message.toLowerCase().includes("mount") ? "mount"
+      : error.message.toLowerCase().includes("stream_id") ? "stream-id"
+      : error.message.toLowerCase().includes("bitrate") ? "bitrate"
+      : error.message.toLowerCase().includes("type") ? "type" : "name";
+    const field = id(`relay-${key}`);
+    field.setAttribute("aria-invalid", "true");
+    field.focus();
+    announce(error.message, true);
+  }
 
   function values() {
     return {
@@ -38,7 +53,7 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
     id("relay-host").value = relay?.host || "";
     id("relay-port").value = relay?.port || 8000;
     id("relay-password").value = "";
-    id("relay-password").disabled = Boolean(relay?.password_managed);
+    id("relay-password").readOnly = Boolean(relay?.password_managed);
     id("relay-password-help").textContent = relay?.password_managed
       ? "This password is managed by the server environment and cannot be changed here."
       : relay?.password_configured ? "A password is saved. Leave blank to keep it." : "Enter the relay source password.";
@@ -50,6 +65,9 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
     id("relay-enabled").checked = relay ? Boolean(relay.enabled) : true;
     updateType();
     form.hidden = false;
+    returnFocus = relay
+      ? rowByName.get(relay.name)?.row.querySelector("button") || id("relay-add")
+      : id("relay-add");
     id("relay-name").focus();
   }
 
@@ -83,6 +101,7 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
         const edit = button("Edit", () => showForm(record.relay));
         const toggle = button("Disable", () => save({
           name: record.relay.name, type: record.relay.type, host: record.relay.host,
+          is_edit: true,
           port: record.relay.port, password: null, mount: record.relay.mount,
           user: record.relay.user, stream_id: record.relay.stream_id,
           bitrate: record.relay.bitrate, public: record.relay.public,
@@ -95,6 +114,9 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
         structuralChange = true;
       }
       record.relay = relay;
+      record.row.querySelectorAll("button")[0].setAttribute("aria-label", `Edit relay ${relay.name}`);
+      record.toggle.setAttribute("aria-label", `${relay.enabled ? "Disable" : "Enable"} relay ${relay.name}`);
+      record.row.querySelectorAll("button")[2].setAttribute("aria-label", `Remove relay ${relay.name}`);
       const status = statuses.get(relay.name) || relay;
       const text = [status.state || "off", status.error, status.title_error]
         .filter(Boolean).join(" — ");
@@ -125,11 +147,12 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
   }
 
   async function save(payload) {
-    const ok = await post(`${root(slug)}/stream/relays`, payload, form);
+    const ok = await post(`${root(slug)}/stream/relays`, payload, form, { onError: validationError });
     if (!ok) return false;
     form.hidden = true;
     id("relay-password").value = "";
     await refresh();
+    (rowByName.get(payload.name)?.row.querySelector("button") || returnFocus || id("relay-add")).focus();
     announce("Relay settings saved.");
     return true;
   }
@@ -148,11 +171,16 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
   }
 
   id("relay-add").addEventListener("click", () => showForm());
-  id("relay-cancel").addEventListener("click", () => { form.hidden = true; });
+  id("relay-cancel").addEventListener("click", () => {
+    form.hidden = true;
+    (returnFocus || id("relay-add")).focus();
+  });
   id("relay-type").addEventListener("change", updateType);
+  form.addEventListener("input", (event) => event.target.removeAttribute("aria-invalid"));
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const payload = values();
+    payload.is_edit = editing !== null;
     if (editing && !payload.password) payload.password = null;
     await save(payload);
   });

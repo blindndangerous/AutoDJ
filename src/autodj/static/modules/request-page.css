@@ -1,0 +1,137 @@
+/* The public listener request page (/requests).  Every colour is a system
+   colour, as on the status page, so the page follows the reader's light or
+   dark preference and forced colours; a Light or Dark Theme chosen in the
+   web UI on this browser applies too (theme-init.js sets data-theme). */
+
+:root {
+  color-scheme: light dark;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0 auto;
+  max-width: 40rem;
+  padding: 1rem;
+  font-family: system-ui, sans-serif;
+  font-size: 1.125rem;
+  line-height: 1.5;
+  background: Canvas;
+  color: CanvasText;
+  overflow-wrap: anywhere;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.75rem;
+}
+
+h2 {
+  margin: 1.5rem 0 0.25rem;
+  font-size: 1.25rem;
+}
+
+header p,
+footer {
+  margin: 0.25rem 0;
+}
+
+footer {
+  margin-top: 2rem;
+}
+
+a {
+  color: LinkText;
+  text-decoration: underline;
+}
+
+label {
+  display: block;
+  font-weight: 600;
+}
+
+.hint {
+  margin: 0 0 0.25rem;
+}
+
+/* Said in words, and marked by weight and a bar, never by colour alone. */
+.error {
+  margin: 0.25rem 0;
+  padding-left: 0.5rem;
+  border-left: 4px solid CanvasText;
+  font-weight: 600;
+}
+
+.message {
+  margin: 1rem 0;
+  padding: 0 1rem 0.5rem;
+  border: 2px solid CanvasText;
+  border-radius: 4px;
+}
+
+.message h2 {
+  margin-top: 0.5rem;
+}
+
+.search-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+input[type="search"],
+input[type="text"] {
+  flex: 1 1 12rem;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-height: 44px;
+  padding: 0.25rem 0.5rem;
+  font: inherit;
+  color: CanvasText;
+  background: Canvas;
+  border: 2px solid CanvasText;
+  border-radius: 4px;
+}
+
+input[type="text"] {
+  width: 100%;
+}
+
+input[aria-invalid="true"] {
+  border-width: 4px;
+}
+
+button {
+  min-height: 44px;
+  padding: 0.25rem 0.75rem;
+  font: inherit;
+  /* The page's own colours, not ButtonFace and ButtonText: WebKit keeps
+     those light under a dark colour scheme (see status-page.css). */
+  color: CanvasText;
+  background: Canvas;
+  border: 2px solid CanvasText;
+  border-radius: 4px;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible {
+  outline: 3px solid currentcolor;
+  outline-offset: 2px;
+}
+
+ul {
+  padding-left: 1.5rem;
+}
+
+/* Each song is a link: room between them so each is an easy target. */
+li {
+  margin: 0.5rem 0;
+}

@@ -3,6 +3,12 @@
 The checks repair nothing and write no data.  Loading the index takes its
 publication lock, which creates ``.index-publication.lock`` in the index
 directory when it is not there yet.
+
+With several stations (``[stations.<slug>]``), the checks that belong to
+one station run once more for each other station, read from its own
+configuration and its own folder, and carry its slug in
+:attr:`DoctorCheck.station`.  The default station's checks keep their
+names and carry no slug.
 """
 
 from __future__ import annotations
@@ -14,9 +20,10 @@ import shutil
 import socket
 import sqlite3
 import sys
+import tomllib
 from collections.abc import Callable
 from contextlib import closing
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -34,8 +41,9 @@ from autodj.sqlite_utils import readonly_uri
 _connect = sqlite3.connect
 
 if TYPE_CHECKING:
-    from autodj.config import AutoDJConfig, IndexConfig, ModelConfig, RelayConfig
+    from autodj.config import AutoDJConfig, IndexConfig, ModelConfig, RelayConfig, StationSpec
     from autodj.model import ModelCacheStatus
+    from autodj.stations import StationPaths
 
 
 def inspect_model_cache(model_cfg: ModelConfig, index_cfg: IndexConfig) -> ModelCacheStatus:
@@ -55,13 +63,18 @@ class CheckStatus(StrEnum):
 
 @dataclass(frozen=True)
 class DoctorCheck:
-    """One stable, render-independent diagnostic result."""
+    """One stable, render-independent diagnostic result.
+
+    ``station`` is the slug of the station other than the default one that
+    the check is about, or ``None`` for the default station and the server.
+    """
 
     name: str
     status: CheckStatus
     summary: str
     detail: str | dict[str, Any] = ""
     repair: str | None = None
+    station: str | None = None
 
 
 @dataclass(frozen=True)
@@ -80,8 +93,9 @@ class DoctorReport:
         checks = []
         for check in self.checks:
             item = asdict(check)
-            if item["repair"] is None:
-                del item["repair"]
+            for key in ("repair", "station"):
+                if item[key] is None:
+                    del item[key]
             checks.append(item)
         return {"exit_code": self.exit_code, "checks": checks}
 
@@ -94,7 +108,8 @@ def render_text(report: DoctorReport) -> str:
     """Render one screen-reader-friendly line per check."""
     lines: list[str] = []
     for check in report.checks:
-        line = f"[{check.status.upper()}] {check.name}: {check.summary}"
+        where = f"Station {check.station}, " if check.station else ""
+        line = f"[{check.status.upper()}] {where}{check.name}: {check.summary}"
         if check.detail:
             detail = (
                 json.dumps(check.detail, sort_keys=True, default=str)
@@ -192,11 +207,11 @@ def _beets_db_check(cfg: AutoDJConfig) -> DoctorCheck:
     )
 
 
-def _saved_settings_check(cfg: AutoDJConfig) -> DoctorCheck:
+def _saved_settings_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> DoctorCheck:
     """Report obsolete saved settings and offer optional cleanup."""
     from autodj.stations import StationPaths
 
-    path = StationPaths.default(cfg).web_state
+    path = (paths or StationPaths.default(cfg)).web_state
     if not path.exists():
         return DoctorCheck("saved-settings", CheckStatus.PASS, "no saved settings")
     try:
@@ -566,14 +581,17 @@ def _relay_check(
 
 
 def _relay_checks(
-    cfg: AutoDJConfig, connect: Callable[..., socket.socket] = socket.create_connection
+    cfg: AutoDJConfig,
+    connect: Callable[..., socket.socket] | None = None,
+    paths: StationPaths | None = None,
 ) -> tuple[DoctorCheck, ...]:
     """Return one check per configured relay (``[stream.relays.<name>]``)."""
     if not cfg.stream.relays:
         return ()
+    connect = connect or socket.create_connection
     from autodj.relay import read_status_file, relay_status_path
 
-    report = read_status_file(relay_status_path(cfg)) or {"updated": "", "relays": {}}
+    report = read_status_file(relay_status_path(cfg, paths)) or {"updated": "", "relays": {}}
     return tuple(
         _relay_check(relay, report["relays"].get(relay.name), report["updated"], connect)
         for relay in cfg.stream.relays.values()
@@ -640,31 +658,268 @@ def run_doctor(
     cfg: AutoDJConfig,
     *,
     python_version: tuple[int, int] | None = None,
+    station: str | None = None,
 ) -> DoctorReport:
-    """Run all checks in stable order without repairing anything."""
-    return DoctorReport(
-        (
-            _configuration_check(cfg),
-            _dmca_check(cfg),
-            _python_check(python_version),
-            _path_check("music-path", cfg.library.music_dir, writable=False),
-            _beets_db_check(cfg),
-            _path_check("index-path", cfg.index.index_dir, writable=True),
-            _path_check("model-path", cfg.index.model_dir, writable=True),
-            _index_check(cfg),
-            _saved_settings_check(cfg),
-            _dj_meta_database_check(cfg),
-            _dependency_check(),
-            _model_cache_check(cfg),
-            _network_check(cfg),
-            _stream_check(cfg),
-            *_relay_checks(cfg),
-            _related_artists_check(cfg),
-            _related_tracks_check(cfg),
-            _time_checks_check(cfg),
-            *_voice_pack_checks(cfg),
-            _categories_check(cfg),
+    """Run all checks in stable order without repairing anything.
+
+    Args:
+        cfg: The loaded configuration.
+        python_version: Stands in for the running Python's, in tests.
+        station: Only this station's own checks (``"default"`` for the
+            default station's); every station's when omitted.  The
+            server-wide checks always run.
+    """
+    from autodj.stations import DEFAULT_SLUG
+
+    default = station in (None, DEFAULT_SLUG)
+    checks: list[DoctorCheck] = [_configuration_check(cfg)]
+    if default:
+        checks.append(_dmca_check(cfg))
+    checks += [
+        _python_check(python_version),
+        _path_check("music-path", cfg.library.music_dir, writable=False),
+        _beets_db_check(cfg),
+        _path_check("index-path", cfg.index.index_dir, writable=True),
+        _path_check("model-path", cfg.index.model_dir, writable=True),
+        _index_check(cfg),
+    ]
+    if default:
+        checks.append(_saved_settings_check(cfg))
+    checks += [
+        _dj_meta_database_check(cfg),
+        _dependency_check(),
+        _model_cache_check(cfg),
+        _network_check(cfg),
+    ]
+    if default:
+        checks += [_stream_check(cfg), *_relay_checks(cfg)]
+    checks += [_related_artists_check(cfg), _related_tracks_check(cfg)]
+    if default:
+        checks += [_time_checks_check(cfg), *_voice_pack_checks(cfg)]
+    checks += [_categories_check(cfg), _config_keys_check(cfg), *_restore_check(cfg)]
+    if default:
+        checks += [_recording_check(cfg), _liners_check(cfg)]
+    for spec in cfg.stations:
+        if station in (None, spec.slug):
+            checks += _station_checks(cfg, spec)
+    checks += _station_folders_check(cfg)
+    return DoctorReport(tuple(checks))
+
+
+def _restore_check(cfg: AutoDJConfig) -> tuple[DoctorCheck, ...]:
+    """Report what an interrupted or untidy restore left; nothing when there is nothing."""
+    from autodj.backup import restore_leftovers
+
+    try:
+        found = restore_leftovers(cfg)
+    except (OSError, ValueError) as exc:
+        return (
+            DoctorCheck("restore", CheckStatus.WARN, "cannot look for restore leftovers", str(exc)),
         )
+    if not found:
+        return ()
+    strays = [str(path) for path in found.strays]
+    detail: dict[str, Any] = {
+        "journal": str(found.journal) if found.journal else None,
+        "strays": strays,
+    }
+    if found.state in ("installing", "unreadable"):
+        return (
+            DoctorCheck(
+                "restore",
+                CheckStatus.FAIL,
+                "a restore did not finish: some files are new and some old",
+                detail,
+                "recover-restore",
+            ),
+        )
+    summary = (
+        "a restore finished but left old copies"
+        if found.state == "installed"
+        else f"{len(strays)} hidden {'copy' if len(strays) == 1 else 'copies'} left by an earlier restore"
+    )
+    return (DoctorCheck("restore", CheckStatus.WARN, summary, detail, "recover-restore"),)
+
+
+def _table(paths: StationPaths | None, section: str) -> str:
+    """The TOML table a station's *section* is set in: ``[playback]`` or ``[stations.x.playback]``."""
+    if paths is None or paths.is_default:
+        return f"[{section}]"
+    return f"[stations.{paths.slug}.{section}]"
+
+
+def _station_checks(cfg: AutoDJConfig, spec: StationSpec) -> list[DoctorCheck]:
+    """The checks of one station besides the default one, from its own configuration."""
+    from autodj.config import station_config
+    from autodj.stations import StationPaths
+
+    own = station_config(spec.cfg, cfg)
+    paths = StationPaths.for_station(own, spec.slug)
+    checks = [
+        _station_folder_check(paths),
+        _saved_settings_check(own, paths),
+        _dmca_check(own, paths),
+        _stream_check(own),
+        *_relay_checks(own, paths=paths),
+        _time_checks_check(own, paths),
+        *_voice_pack_checks(own, paths),
+        _recording_check(own, paths),
+        _liners_check(own, paths),
+    ]
+    return [replace(check, station=spec.slug) for check in checks]
+
+
+def _station_folder_check(paths: StationPaths) -> DoctorCheck:
+    """Check that another station's own folder exists and can be written, or can be made."""
+    folder = paths.state_dir
+    if folder.exists():
+        if folder.is_dir() and os.access(folder, os.R_OK | os.W_OK):
+            return DoctorCheck("station-folder", CheckStatus.PASS, str(folder))
+        return DoctorCheck(
+            "station-folder",
+            CheckStatus.FAIL,
+            str(folder),
+            "not a folder AutoDJ can read and write; the station cannot keep its settings",
+        )
+    parent = _nearest_existing_parent(folder)
+    if parent is not None and parent.is_dir() and os.access(parent, os.W_OK):
+        return DoctorCheck(
+            "station-folder",
+            CheckStatus.WARN,
+            str(folder),
+            "not made yet; the station makes it when it first starts, or doctor can make it now",
+            "create-station-folder",
+        )
+    return DoctorCheck(
+        "station-folder",
+        CheckStatus.FAIL,
+        str(folder),
+        f"missing, and {parent or 'no parent folder'} cannot be written",
+    )
+
+
+def _recording_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> DoctorCheck:
+    """Check that the station's recording folder can be written, or made when needed.
+
+    The configuration already refuses two stations with one recording
+    folder, so only the folder itself is checked.
+    """
+    folder = cfg.recording.folder
+    table = _table(paths, "recording")
+    if folder.exists():
+        if folder.is_dir() and os.access(folder, os.W_OK):
+            return DoctorCheck("recording", CheckStatus.PASS, str(folder))
+        return DoctorCheck(
+            "recording",
+            CheckStatus.WARN,
+            str(folder),
+            f"not a folder AutoDJ can write; a recording cannot start. Fix {table} folder.",
+        )
+    parent = _nearest_existing_parent(folder.absolute())
+    if parent is not None and parent.is_dir() and os.access(parent, os.W_OK):
+        return DoctorCheck(
+            "recording", CheckStatus.PASS, str(folder), "made when the first recording starts"
+        )
+    return DoctorCheck(
+        "recording",
+        CheckStatus.WARN,
+        str(folder),
+        f"missing, and it cannot be made; a recording cannot start. Fix {table} folder.",
+    )
+
+
+def _liners_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> DoctorCheck:
+    """Check the station's liner folder: a configured one must be there."""
+    from autodj.stations import StationPaths
+
+    folder = (paths or StationPaths.default(cfg)).liners
+    if folder.is_dir():
+        return DoctorCheck("liners", CheckStatus.PASS, str(folder))
+    table = _table(paths, "playback")
+    if folder.exists():
+        return DoctorCheck(
+            "liners", CheckStatus.WARN, str(folder), f"not a folder; fix {table} liners_folder"
+        )
+    if cfg.playback.liners_folder:
+        return DoctorCheck(
+            "liners",
+            CheckStatus.WARN,
+            str(folder),
+            f"{table} liners_folder does not exist; the station plays no liners. "
+            "Create the folder or fix the setting.",
+        )
+    return DoctorCheck(
+        "liners", CheckStatus.PASS, "no liners yet", f"put the station's liner clips in {folder}"
+    )
+
+
+def _config_keys_check(cfg: AutoDJConfig) -> DoctorCheck:
+    """Name the keys and tables the configuration files have but AutoDJ ignores.
+
+    Loading only logs them; this lists them by file, including those under
+    ``[stations.<slug>]``.  The files are read, never changed.
+    """
+    from autodj.config import unknown_config_keys, unknown_config_sections
+
+    found: dict[str, list[str]] = {}
+    for source in cfg.config_sources:
+        path = Path(source)
+        if path.suffix != ".toml" or not path.is_file():
+            continue
+        try:
+            raw = tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+            continue  # loading has already read it; a race is not worth a report
+        names = [
+            f"{table}.{key}" for table, keys in unknown_config_keys(raw).items() for key in keys
+        ]
+        names += [f"[{table}]" for table in unknown_config_sections(raw)]
+        if names:
+            found[str(path)] = names
+    if not found:
+        return DoctorCheck("config-keys", CheckStatus.PASS, "no unknown keys")
+    count = sum(len(names) for names in found.values())
+    return DoctorCheck(
+        "config-keys",
+        CheckStatus.WARN,
+        f"{count} unknown {'key or table is' if count == 1 else 'keys and tables are'} ignored",
+        {
+            **found,
+            "action": "Fix a misspelled name, or remove it. In a terminal, doctor offers to "
+            "remove unknown keys, with a backup of each file; remove unknown tables by hand.",
+        },
+    )
+
+
+def _station_folders_check(cfg: AutoDJConfig) -> tuple[DoctorCheck, ...]:
+    """Name station folders that no ``[stations.<slug>]`` table uses any more.
+
+    They are never deleted: their settings, schedule and carts may still be
+    wanted.  No check is made when there is no ``stations`` folder.
+    """
+    folder = cfg.index.active_dir / "stations"
+    if not folder.is_dir():
+        return ()
+    configured = {spec.slug for spec in cfg.stations}
+    try:
+        unused = sorted(
+            child.name
+            for child in folder.iterdir()
+            if child.is_dir() and not child.name.startswith(".") and child.name not in configured
+        )
+    except OSError as exc:
+        return (DoctorCheck("station-folders", CheckStatus.WARN, "cannot list", str(exc)),)
+    if not unused:
+        return (DoctorCheck("station-folders", CheckStatus.PASS, "every folder is configured"),)
+    return (
+        DoctorCheck(
+            "station-folders",
+            CheckStatus.WARN,
+            f"not in the configuration: {', '.join(unused)}",
+            f"{folder}. These stations' settings, schedules and carts are not used and not "
+            "backed up. Add their [stations.<slug>] tables back to use them, or move the "
+            "folders somewhere safe; AutoDJ never deletes them.",
+        ),
     )
 
 
@@ -774,17 +1029,23 @@ def _categories_check(cfg: AutoDJConfig) -> DoctorCheck:
     )
 
 
-def _time_checks_check(cfg: AutoDJConfig) -> DoctorCheck:
+def _time_checks_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> DoctorCheck:
     """Report recorded minute coverage, the clips and TTS program found, and the switches."""
-    from autodj.time_checks import clips_folder, load_settings, missing_minutes, pack_folders
+    from autodj.time_checks import (
+        clips_folder,
+        load_settings,
+        missing_minutes,
+        pack_folders,
+        state_path,
+    )
     from autodj.voice_packs import pieces_for, scan_pack
 
     tc = cfg.time_checks
-    folder = clips_folder(cfg)
+    folder = clips_folder(cfg, paths)
     missing = missing_minutes(folder)
     detail = {"folder": str(folder), "missing_examples": missing[:10]}
     try:
-        settings = load_settings(cfg)
+        settings = load_settings(cfg, paths)
         enabled = settings.enabled
     except (OSError, ValueError, KeyError, AttributeError) as exc:
         return DoctorCheck(
@@ -792,7 +1053,7 @@ def _time_checks_check(cfg: AutoDJConfig) -> DoctorCheck:
             CheckStatus.FAIL,
             f"saved time check settings cannot be read: {exc}",
             detail,
-            "Fix or remove time_checks.json in the index folder, then set the switches again.",
+            f"Fix or remove {state_path(cfg, paths)}, then set the switches again.",
         )
     coverage = f"{len(missing)} of 1440 minute clips missing"
     if not enabled:
@@ -830,14 +1091,16 @@ def _time_checks_check(cfg: AutoDJConfig) -> DoctorCheck:
     )
 
 
-def _voice_pack_checks(cfg: AutoDJConfig) -> tuple[DoctorCheck, ...]:
+def _voice_pack_checks(
+    cfg: AutoDJConfig, paths: StationPaths | None = None
+) -> tuple[DoctorCheck, ...]:
     """One check per configured voice pack: its coverage and the files it does not use."""
     from autodj.time_checks import load_settings, pack_folders
     from autodj.voice_packs import coverage, scan_pack
 
     folders = pack_folders(cfg)
     try:
-        settings = load_settings(cfg)
+        settings = load_settings(cfg, paths)
         hour_format, enabled = settings.hour_format, set(settings.enabled_packs)
     except (OSError, ValueError, KeyError, AttributeError):
         hour_format, enabled = cfg.time_checks.hour_format, set(folders)
@@ -858,7 +1121,7 @@ def _voice_pack_checks(cfg: AutoDJConfig) -> tuple[DoctorCheck, ...]:
     return tuple(checks)
 
 
-def _dmca_check(cfg: AutoDJConfig) -> DoctorCheck:
+def _dmca_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> DoctorCheck:
     """Name any setting that conflicts with DMCA mode, and how to fix it."""
     if not cfg.dmca.enabled:
         return DoctorCheck("dmca", CheckStatus.PASS, "off")
@@ -867,7 +1130,8 @@ def _dmca_check(cfg: AutoDJConfig) -> DoctorCheck:
             "dmca",
             CheckStatus.WARN,
             "on, with a conflicting setting",
-            "[nowplaying] show_next = true asks to announce the next song, which DMCA mode "
+            f"{_table(paths, 'nowplaying')} show_next = true asks to announce the next song, "
+            "which DMCA mode "
             "never does. Set show_next = false so the setting matches what listeners see.",
         )
     return DoctorCheck("dmca", CheckStatus.PASS, "on", "no conflicting settings")

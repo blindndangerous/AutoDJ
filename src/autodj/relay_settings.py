@@ -82,9 +82,39 @@ def save_relays(path: Path, relays: dict[str, RelayConfig], slug: str) -> None:
     old: dict[str, Any] = {}
     try:
         prior = json.loads(path.read_text(encoding="utf-8"))
-        old = {item["name"]: item for item in prior.get("relays", [])}
-    except (OSError, UnicodeError, json.JSONDecodeError, AttributeError, TypeError, KeyError):
-        pass
+    except FileNotFoundError:
+        prior = None
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("saved relay settings are unreadable") from exc
+    if prior is not None:
+        if (
+            not isinstance(prior, dict)
+            or prior.get("version") != 1
+            or not isinstance(prior.get("relays"), list)
+            or any(not isinstance(item, dict) or not isinstance(item.get("name"), str)
+                   for item in prior["relays"])
+        ):
+            raise ValueError("saved relay settings are invalid")
+        try:
+            names = set()
+            for item in prior["relays"]:
+                name = item["name"]
+                if name in names:
+                    raise ValueError("duplicate relay name")
+                names.add(name)
+                password = item.get("password")
+                variable = password_variable(slug, name)
+                if variable in os.environ:
+                    password = os.environ[variable]
+                elif password is None:
+                    password = _MISSING_CREDENTIAL
+                RelayConfig.from_table(
+                    name,
+                    {**{key: item[key] for key in _FIELDS if key in item}, "password": password},
+                )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("saved relay settings are invalid") from exc
+        old = {item["name"]: item for item in prior["relays"]}
     entries = []
     for name, cfg in relays.items():
         item: dict[str, Any] = {"name": name, **{key: getattr(cfg, key) for key in _FIELDS}}

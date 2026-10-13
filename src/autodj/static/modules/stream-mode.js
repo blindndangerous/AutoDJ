@@ -286,8 +286,15 @@ export function createStreamMode({
     return STREAM_DELAY_ESTIMATE_S;
   }
 
+  // Another station's pushes follow (#70): its last station event is
+  // remembered, not spoken, as on a fresh page.
+  function forgetEvents() {
+    seenFirstApply = false;
+    lastEventKey = null;
+  }
+
   return {
-    apply, toggleListen, delaySeconds, stop,
+    apply, toggleListen, delaySeconds, stop, forgetEvents,
     isListening: () => listening,
   };
 }

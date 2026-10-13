@@ -53,6 +53,7 @@ from autodj.playlog import (
     soundexchange_report,
 )
 from autodj.recorder import Recorder
+from autodj.relay import resolve_safe_relay_addresses, source_port
 from autodj.relay_settings import (
     credential_is_missing,
     password_variable,
@@ -252,6 +253,7 @@ class RelaySettingsBody(BaseModel):
     bitrate: Literal[128, 192, 256, 320] | None = None
     public: StrictBool = False
     enabled: StrictBool = True
+    is_edit: StrictBool = False
 
 
 @contextlib.contextmanager
@@ -377,7 +379,7 @@ def _persist_relay_set(station: StationRuntime, proposed: dict[str, RelayConfig]
         raise HTTPException(status_code=503, detail="Could not save relay settings.") from exc
     try:
         save_relays(path, proposed, station.slug)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         logger.error("Could not save relay settings", exc_info=True)
         raise HTTPException(status_code=503, detail="Could not save relay settings.") from exc
     try:
@@ -405,17 +407,31 @@ def _save_stream_relay_locked(
     station: StationRuntime, body: RelaySettingsBody, registry: Any
 ) -> dict:
     old = station.cfg.stream.relays.get(body.name)
+    if old is not None and not body.is_edit:
+        raise HTTPException(status_code=409, detail="A relay with this name already exists.")
+    if body.is_edit and old is None:
+        raise HTTPException(status_code=404, detail="Relay not found.")
     variable = password_variable(station.slug, body.name)
     managed = variable in os.environ
     if managed and body.password:
         raise HTTPException(
             status_code=409, detail="This relay password is managed by the environment."
         )
+    same_destination = old is not None and (
+        old.host.lower().rstrip(".") == body.host.lower().rstrip(".")
+        and old.port == body.port
+        and old.type == body.type
+    )
+    if managed and old is not None and not same_destination:
+        raise HTTPException(
+            status_code=409,
+            detail="The environment-managed password cannot be reused for a changed destination.",
+        )
     password = (
         os.environ[variable]
         if managed
         else old.password
-        if old is not None and not body.password
+        if same_destination and not body.password
         else body.password
     )
     if not password:
@@ -440,6 +456,7 @@ def _save_stream_relay_locked(
                 "enabled": body.enabled,
             },
         )
+        resolve_safe_relay_addresses(relay.host, source_port(relay))
         proposed = dict(station.cfg.stream.relays)
         proposed[body.name] = relay
         if len(proposed) > MAX_RELAYS:
@@ -453,8 +470,12 @@ def _save_stream_relay_locked(
             other_targets = {_relay_target(item) for item in other_relays.values()}
             if other_targets.intersection(targets):
                 raise ValueError("duplicate destination across stations")
+    except OSError as exc:
+        raise HTTPException(
+            status_code=422, detail="Relay host could not be resolved to a public address."
+        ) from exc
     except (TypeError, ValueError, KeyError) as exc:
-        raise HTTPException(status_code=422, detail="Relay settings are invalid.") from exc
+        raise HTTPException(status_code=422, detail=f"{body.name}: {exc}") from exc
     _persist_relay_set(station, proposed)
     statuses = {item["name"]: item for item in station.bridge.relay_status()}
     return {"relay": public_relay(relay, statuses.get(body.name, {}), station.slug)}
@@ -605,6 +626,7 @@ def _clock_snapshot(station: StationRuntime, library: Any) -> dict:
         "categories": [{"id": key, "name": name} for key, name in _category_names(library).items()],
         "cursor": (getattr(player, "_clock", None) or {}).get("cursor", 0),
         "last_status": getattr(player, "_clock_status", None),
+        "pending_update": getattr(player, "_pending_clock_update", None) is not None,
         "notice": OLD_CLOCK_MESSAGE if "slots" in setting else None,
     }
 
@@ -634,9 +656,7 @@ async def select_clock(
     # the latest place, and the old clockwheel's must not flush over this choice.
     ledger = station.ledger or StationLedger(library.catalog, station.slug)
     await asyncio.to_thread(ledger.select_clock, name, cursor, renamed_from)
-    reload_clock = getattr(station.player, "configure_clock", None)
-    if callable(reload_clock):
-        await asyncio.to_thread(reload_clock)
+    await asyncio.to_thread(station.player.configure_clock_after_selection)
     return await asyncio.to_thread(_clock_snapshot, station, library)
 
 
@@ -943,6 +963,38 @@ def equip_station(
     station.breaks = BreakDesk(lambda: station.cfg.breaks, station.paths.announcements)
     bridge.player.break_desk = station.breaks
 
+    requests_cfg = station.cfg.requests
+    if requests_cfg.enabled is True:
+        from autodj.listener_requests import (
+            FORM_TOKENS,
+            TRACK_SECRET,
+            RequestBook,
+            RequestDesk,
+            TrackIds,
+        )
+
+        station.requests = RequestDesk(
+            station.slug,
+            requests_cfg,
+            bridge,
+            RequestBook(station.paths.listener_requests, timezone=station.timezone),
+            music_dir=Path(station.cfg.library.music_dir),
+            tokens=FORM_TOKENS,
+            track_ids=TrackIds(TRACK_SECRET),
+            on_queued=station.nowplaying.refresh,
+        )
+
+    from autodj.categories import station_wall
+    from autodj.matched_intros import MatchedIntros
+
+    # Play dates are judged by the station's day when the intro airs.
+    station.intros = MatchedIntros(
+        station.paths.matched_intros,
+        station.paths.intros,
+        day_at=lambda at: station_wall(station.cfg, at).date(),
+    )
+    bridge.player.matched_intros = station.intros
+
 
 # ---------------------------------------------------------------------------
 # The router
@@ -1004,6 +1056,8 @@ def install_station_routes(router: StationRouter) -> None:
     from autodj.breaks_api import install_breaks
     from autodj.carts import install_carts
     from autodj.hour_preview import install_hour_preview
+    from autodj.matched_intros_api import install_matched_intros
+    from autodj.requests_api import install_requests
     from autodj.rotation_api import install_rotation_test
     from autodj.scheduler_api import install_scheduler
     from autodj.time_checks import install_time_checks
@@ -1833,7 +1887,12 @@ def install_station_routes(router: StationRouter) -> None:
         return _existing_clock(station, name)
 
     @router.put("/library/clock/{name}")
-    async def api_library_update_clock(station: StationDep, name: str, body: ClockBody) -> dict:
+    async def api_library_update_clock(
+        station: StationDep,
+        name: str,
+        body: ClockBody,
+        apply_timing: Literal["immediate", "continue", "next_restart"] = "immediate",
+    ) -> dict:
         library = _catalog_library(station)
         _existing_clock(station, name)
         if body.name != name:
@@ -1844,7 +1903,7 @@ def install_station_routes(router: StationRouter) -> None:
             )
             clock = _clock_store(station).save(checked)
             if _active_clock(station, library) == name:
-                await asyncio.to_thread(station.player.configure_clock)
+                await asyncio.to_thread(station.player.apply_clockwheel_update, name, apply_timing)
             return clock
         except (ValueError, OSError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1897,6 +1956,8 @@ def install_station_routes(router: StationRouter) -> None:
     install_scheduler(router)
     install_time_checks(router)
     install_breaks(router)
+    install_requests(router)
+    install_matched_intros(router)
     install_rotation_test(router)
     install_hour_preview(router)
 

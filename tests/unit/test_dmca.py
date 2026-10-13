@@ -471,6 +471,7 @@ def test_a_category_of_only_breaking_songs_plays_a_safe_one_from_the_library(cap
 
 def test_an_empty_or_failing_category_never_stops_the_station(caplog) -> None:
     player = _with_category_clock(_player("clock"), set())
+    player._dry_run = False
     current = _play_first_three(player)
     with caplog.at_level(logging.WARNING, logger="autodj.player"):
         for _ in range(3):
@@ -479,7 +480,7 @@ def test_an_empty_or_failing_category_never_stops_the_station(caplog) -> None:
             )
             assert (picked.title, mode) == ("Fine", "fallback")
         assert player._random_start_entry().title == "Fine"
-    assert caplog.text.count("the clockwheel moved on to its next step") == 1
+    assert caplog.text.count("Clock selection skipped:") == 1
     assert "picking one at random" in caplog.text
     assert "NoneType" not in caplog.text
 

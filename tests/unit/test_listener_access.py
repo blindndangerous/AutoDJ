@@ -247,3 +247,21 @@ def test_an_explicit_proxy_list_is_kept_as_configured():
 
     lan = {"type": "http", "scheme": "https", "client": ("192.168.1.9", 5), "headers": []}
     assert machine_transport_allowed(lan)
+
+
+def test_trusted_proxies_come_from_config_then_the_environment_with_warnings() -> None:
+    from autodj.listener_access import trusted_proxy_setting
+
+    allow, warnings = trusted_proxy_setting([], {})
+    assert "127.0.0.1/32" in allow and warnings == []
+    allow, warnings = trusted_proxy_setting([], {"FORWARDED_ALLOW_IPS": "10.0.0.5, ::1"})
+    assert allow == "10.0.0.5, ::1"
+    assert len(warnings) == 1 and "from 10.0.0.5" in warnings[0]
+    assert "terminate TLS" in warnings[0] and "X-Forwarded-For" in warnings[0]
+    allow, warnings = trusted_proxy_setting(["192.168.1.10"], {"FORWARDED_ALLOW_IPS": "*"})
+    assert "192.168.1.10/32" in allow
+    assert warnings[0].startswith("Ignoring FORWARDED_ALLOW_IPS")
+    assert "from 192.168.1.10" in warnings[1]
+    assert trusted_proxy_setting(["127.0.0.1"], {})[1] == []
+    _allow, warnings = trusted_proxy_setting([], {"FORWARDED_ALLOW_IPS": "*"})
+    assert "from *" in warnings[0]

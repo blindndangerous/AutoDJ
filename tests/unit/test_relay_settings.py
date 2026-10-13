@@ -81,7 +81,7 @@ def _body(name):
     return RelaySettingsBody(
         name=name,
         type="icecast",
-        host="ice.example",
+        host="8.8.8.8",
         port=8000,
         mount=f"/{name}",
         password="private",
@@ -136,6 +136,42 @@ def test_new_env_managed_relay_needs_no_password_in_request(tmp_path, monkeypatc
 
 
 def test_invalid_saved_relays_do_not_reactivate_config_relays(tmp_path):
+    import pytest
+
     path = tmp_path / "relays.json"
     path.write_text("bad json")
     assert load_relays(path, {"main": relay()}, "default") == {}
+    with pytest.raises(ValueError):
+        save_relays(path, {}, "default")
+    assert path.read_text() == "bad json"
+
+
+def test_relay_password_is_not_reused_after_destination_changes(tmp_path):
+    import pytest
+    from fastapi import HTTPException
+
+    from autodj.station_routes import _save_stream_relay
+
+    station, registry = _station(tmp_path)
+    original = relay(host="8.8.8.8")
+    station.cfg.stream.relays = {"main": original}
+    body = _body("main").model_copy(
+        update={"is_edit": True, "host": "1.1.1.1", "password": None}
+    )
+    with pytest.raises(HTTPException) as error:
+        _save_stream_relay(station, body, registry)
+    assert error.value.status_code == 422
+    assert station.cfg.stream.relays["main"].password == "private"
+
+
+def test_add_cannot_replace_existing_relay(tmp_path):
+    import pytest
+    from fastapi import HTTPException
+
+    from autodj.station_routes import _save_stream_relay
+
+    station, registry = _station(tmp_path)
+    station.cfg.stream.relays = {"main": relay(host="8.8.8.8")}
+    with pytest.raises(HTTPException) as error:
+        _save_stream_relay(station, _body("main"), registry)
+    assert error.value.status_code == 409
