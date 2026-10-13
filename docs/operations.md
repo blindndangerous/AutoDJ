@@ -977,6 +977,16 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
 - **Seek** is not available while streaming. The seek slider is hidden on the page, and the comma
   and full-stop keyboard shortcuts announce "Seeking is not available while streaming."
 - **EQ** is applied once, on the server, so every listener hears the same shaped sound.
+- **Music speed** (Settings, Sound) runs music from 10% slower to 10% faster, with 0 as the
+  default. Type up to two decimal places; the slider's arrow keys move one percentage point.
+  Pitch changes with speed. Liners, voice tracks, matched intros and cue previews keep their
+  normal speed. Saved cues and seek positions still refer to the original file; clock fitting
+  and forecasts account for the changed playing time.
+  Stream and server audio apply changes at the next safe rendered-buffer handoff, keeping the
+  current audio and booked speech intact. Browser playback applies a change immediately when
+  no transition is running. At nonzero speed, ordinary music/liner crossfades use a plain fade
+  so effects cannot change the voice; browser beatmatching also changes pitch. The setting is
+  saved per station as `[playback] music_speed_percent` and creates no audio files.
 - **Sound processing** is chosen in Settings, Sound. Stereo Tool loads the selected `.sts` preset
   when its processor starts; changing the preset restarts it. The bundled Included preset is
   read-only. Uploads (up to 2 MB) live in `index/stereo-tool-presets` beside the active index

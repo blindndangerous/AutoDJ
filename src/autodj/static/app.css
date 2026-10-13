@@ -1081,6 +1081,7 @@
     .settings-row label {
       min-width: 10rem;
     }
+    .music-speed-slider-row label { min-width: 0; }
     .settings-row input[type="number"] {
       width: 6rem;
     }
@@ -1611,6 +1612,7 @@
       .settings-row > *:not(input[type="checkbox"]) {
         width: 100%;
       }
+      #main-content .music-speed-slider-row > label { width: 1px; }
       .settings-row select,
       .settings-row input[type="number"],
       .settings-row input[type="text"] {
