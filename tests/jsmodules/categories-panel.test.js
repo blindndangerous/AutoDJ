@@ -106,9 +106,10 @@ describe("categories markup", () => {
     expect([...section.querySelectorAll('input[type="radio"]')].every((radio) => radio.name === "categories-source")).toBe(true);
     expect(byId("categories-query").getAttribute("aria-describedby")).toBe("categories-query-help");
     expect(byId("categories-playlist").getAttribute("aria-describedby")).toBe("categories-playlist-help");
-    expect(byId("categories-match").getAttribute("aria-hidden")).toBe("true");
+    expect(byId("categories-check").getAttribute("aria-describedby")).toBe("categories-match");
     expect(byId("categories-list").getAttribute("aria-labelledby")).toBe("categories-list-heading");
-    expect(byId("categories-match").getAttribute("aria-live")).toBeNull();
+    expect(byId("categories-match").getAttribute("aria-live")).toBe("off");
+    expect(byId("categories-match").getAttribute("aria-hidden")).toBeNull();
     expect(section.querySelector("[aria-controls]")).toBeNull();
     expect(byId("categories-form").hidden).toBe(true);
     const ids = [...document.querySelectorAll('[id^="categories-"]')].map((node) => node.id);

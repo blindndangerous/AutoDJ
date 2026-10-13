@@ -130,7 +130,8 @@ describe("clockwheel markup", () => {
     expect(byId("clock-status").getAttribute("role")).toBe("status");
     expect(byId("clock-name").maxLength).toBe(64);
     expect(byId("clock-step-legend").closest("fieldset").id).toBe("clock-step-form");
-    expect(byId("clock-step-match-count").getAttribute("aria-hidden")).toBe("true");
+    expect(byId("clock-step-match-count").getAttribute("aria-live")).toBe("off");
+    expect(byId("clock-step-match-count").getAttribute("aria-hidden")).toBeNull();
     expect(section.querySelector("[aria-controls]")).toBeNull();
     expect(byId("clock-steps-help").textContent).toContain("Alt+Up and Alt+Down");
     expect(byId("clock-steps-help").textContent).toContain("Enter on a step name edits it");
