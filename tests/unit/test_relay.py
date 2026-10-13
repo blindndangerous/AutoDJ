@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import itertools
 import json
 import logging
@@ -22,12 +23,73 @@ from autodj.relay import (
     describe_error,
     open_source,
     read_status_file,
+    resolve_safe_relay_addresses,
     send_metadata,
 )
 
 PASSWORD = "s3cret-Pa55"
 # One MPEG-1 Layer III frame (128 kbps, 44.1 kHz): 417 bytes.
 FRAME = b"\xff\xfb\x90\x00" + b"\x00" * 413
+
+
+@pytest.mark.parametrize(
+    ("host", "resolved"),
+    [
+        ("2852039166", "169.254.169.254"),
+        ("0xa9fea9fe", "169.254.169.254"),
+        ("169.254.169.254.", "169.254.169.254"),
+        ("::ffff:a9fe:a9fe", "::ffff:169.254.169.254"),
+        ("2002:a9fe:a9fe::", "2002:a9fe:a9fe::"),
+        ("fd00:ec2::254", "fd00:ec2::254"),
+    ],
+)
+def test_relay_dns_rejects_non_public_addresses(monkeypatch, host, resolved):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (
+                socket.AF_INET6 if ":" in resolved else socket.AF_INET,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                (resolved, 8000, 0, 0) if ":" in resolved else (resolved, 8000),
+            )
+        ],
+    )
+    with pytest.raises(ValueError, match="restricted"):
+        resolve_safe_relay_addresses(host, 8000)
+
+
+def test_relay_dns_allows_private_lan_destinations(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.1.20", 8000))
+        ],
+    )
+    assert resolve_safe_relay_addresses("icecast.local", 8000)[0][4][0] == "192.168.1.20"
+
+
+def test_metadata_update_rejects_link_local_before_http_request(monkeypatch):
+    requested = False
+
+    def request(*_args, **_kwargs):
+        nonlocal requested
+        requested = True
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 8000))
+        ],
+    )
+    monkeypatch.setattr(http.client.HTTPConnection, "request", request)
+    with pytest.raises(ValueError, match="restricted"):
+        send_metadata(_shoutcast("shoutcast1"), "A - B")
+    assert not requested
 
 
 def _icecast(**extra: Any) -> RelayConfig:
@@ -112,6 +174,48 @@ def test_icecast_ipv6_host_header_is_bracketed() -> None:
     sock = FakeSocket(b"HTTP/1.1 100 Continue\r\n\r\n")
     open_source(_icecast(host="::1"), bitrate=128, station_name="A", connect=_connector(sock, []))
     assert b"Host: [::1]:8000\r\n" in sock.sent
+
+
+def test_icecast_login_sends_station_metadata_as_utf8_headers() -> None:
+    sock = FakeSocket(b"HTTP/1.1 100 Continue\r\n\r\n")
+    open_source(
+        _icecast(),
+        bitrate=128,
+        station_name="Radio",
+        station_metadata={
+            "name": "Café Radio",
+            "genre": "Jazz",
+            "description": "Late night",
+            "url": "https://radio.example/",
+        },
+        connect=_connector(sock, []),
+    )
+    head = sock.sent.decode("utf-8")
+    assert "Ice-Name: Café Radio\r\n" in head
+    assert "Ice-Genre: Jazz\r\n" in head
+    assert "Ice-Description: Late night\r\n" in head
+    assert "Ice-Url: https://radio.example/\r\n" in head
+
+
+def test_shoutcast_login_sends_supported_station_metadata() -> None:
+    sock = FakeSocket(b"OK2\r\nicy-caps:11\r\n\r\n")
+    open_source(
+        _shoutcast(),
+        bitrate=128,
+        station_name="Radio",
+        station_metadata={
+            "name": "Café Radio",
+            "genre": "Jazz",
+            "description": "not supported",
+            "url": "https://radio.example/",
+        },
+        connect=_connector(sock, []),
+    )
+    assert (
+        "icy-name:Café Radio\r\nicy-genre:Jazz\r\nicy-url:https://radio.example/\r\n".encode()
+        in sock.sent
+    )
+    assert b"not supported" not in sock.sent
 
 
 @pytest.mark.parametrize(
@@ -542,6 +646,10 @@ class FakeOutput:
     def add_sink(self, sink) -> None:
         self.sinks.append(sink)
 
+    def remove_sink(self, sink) -> None:
+        if sink in self.sinks:
+            self.sinks.remove(sink)
+
     def set_title(self, artist: str, title: str) -> None:
         self.titles.append((artist, title))
 
@@ -550,13 +658,23 @@ class FakeOutput:
 
 
 class FakeRelay:
-    def __init__(self, cfg, *, bitrate, station_name, on_change) -> None:
+    def __init__(self, cfg, *, bitrate, station_name, on_change, fail_start_paused=False) -> None:
         self.cfg = cfg
         self.bitrate = bitrate
         self.on_change = on_change
         self.started = self.closed = False
+        self.staged = False
+        self.fail_start_paused = fail_start_paused
 
     def start(self) -> None:
+        self.started = True
+
+    def start_paused(self) -> None:
+        self.staged = True
+        if self.fail_start_paused:
+            raise RuntimeError("thread start failed")
+
+    def resume(self) -> None:
         self.started = True
 
     def begin_close(self) -> None:
@@ -618,6 +736,91 @@ def test_manager_with_only_disabled_relays_is_inactive() -> None:
     manager = RelayManager([cfg], FakeOutput(320), make_output=FakeOutput, station_name=lambda: "R")
     assert not manager.active
     manager.start()
+    manager.close()
+
+
+def test_manager_reconfigures_only_changed_relays_and_releases_unused_outputs() -> None:
+    main = FakeOutput(320)
+    bus: list[FakeOutput] = []
+    made: list[FakeOutput] = []
+
+    def make_output(rate: int) -> FakeOutput:
+        output = FakeOutput(rate)
+        made.append(output)
+        return output
+
+    configs = [
+        RelayConfig.from_table("keep", _table()),
+        RelayConfig.from_table("change", _table()),
+        RelayConfig.from_table("remove", {**_table(), "bitrate": 128}),
+    ]
+    manager = RelayManager(
+        configs,
+        main,
+        make_output=make_output,
+        station_name=lambda: "Radio",
+        relay_factory=FakeRelay,
+        add_output=bus.append,
+        remove_output=bus.remove,
+    )
+    bus.extend(manager.outputs)
+    manager.start()
+    keep = manager._by_name["keep"][0]
+    changed = manager._by_name["change"][0]
+    manager.reconfigure(
+        [
+            configs[0],
+            RelayConfig.from_table("change", {**_table(), "host": "other.example"}),
+            RelayConfig.from_table("remove", {**_table(), "bitrate": 128, "enabled": False}),
+            RelayConfig.from_table("add", {**_table(), "bitrate": 192}),
+        ]
+    )
+    assert manager._by_name["keep"][0] is keep
+    assert changed.closed
+    assert manager._by_name["change"][0].started
+    assert manager._by_name["add"][0].started
+    assert bus == [made[1]] and manager.outputs == [made[1]]
+    assert made[0].closed
+    manager.close()
+
+
+def test_manager_keeps_old_relays_when_staged_replacement_start_fails() -> None:
+    main = FakeOutput(320)
+    old_configs = [
+        RelayConfig.from_table("first", _table()),
+        RelayConfig.from_table("second", _table()),
+    ]
+    made: list[FakeRelay] = []
+
+    def factory(cfg, **kwargs):
+        relay = FakeRelay(cfg, **kwargs, fail_start_paused=len(made) == 3)
+        made.append(relay)
+        return relay
+
+    manager = RelayManager(
+        old_configs,
+        main,
+        make_output=FakeOutput,
+        station_name=lambda: "Radio",
+        relay_factory=factory,
+    )
+    manager.start()
+    old_relays = {name: manager._by_name[name][0] for name in ("first", "second")}
+    new_configs = [
+        RelayConfig.from_table("first", {**_table(), "host": "new-one.example"}),
+        RelayConfig.from_table("second", {**_table(), "host": "new-two.example"}),
+    ]
+
+    with pytest.raises(RuntimeError, match="thread start failed"):
+        manager.reconfigure(new_configs)
+
+    assert {name: manager._by_name[name][0] for name in old_relays} == old_relays
+    assert all(not relay.closed for relay in old_relays.values())
+    staged = made[2:]
+    assert len(staged) == 2
+    assert all(relay.closed for relay in staged)
+    assert all(relay not in main.sinks for relay in staged)
+    assert [cfg.host for cfg in manager._configs] == [cfg.host for cfg in old_configs]
     manager.close()
 
 

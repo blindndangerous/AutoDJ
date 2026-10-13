@@ -61,6 +61,7 @@ def _fill(cfg: AutoDJConfig) -> dict[Path, bytes]:
     for base, who in ((cfg.index.active_dir, b"default"), (_station_dir(cfg, "nightowl"), b"owl")):
         for name in STATION_FILES:
             put(base / name, b'{"station": "' + who + b'", "file": "' + name.encode() + b'"}')
+        put(base / "relays.json", b'{"password": "' + who + b'-relay-secret"}')
         put(base / "liners" / "id.mp3", who + b" liner")
         put(base / "carts" / "jingle.wav", who + b" cart")
         put(base / "time_checks" / "03_05.wav", who + b" clip")
@@ -71,7 +72,7 @@ def _fill(cfg: AutoDJConfig) -> dict[Path, bytes]:
     return written
 
 
-def test_two_stations_round_trip(tmp_path: Path) -> None:
+def test_two_stations_round_trip(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     cfg = _config(tmp_path)
     written = _fill(cfg)
 
@@ -80,6 +81,9 @@ def test_two_stations_round_trip(tmp_path: Path) -> None:
     with zipfile.ZipFile(archive) as opened:
         names = set(opened.namelist())
         manifest = json.loads(opened.read("manifest.json"))
+        default_relays = opened.read("index/relays.json")
+        owl_relays = opened.read("stations/nightowl/index/relays.json")
+        archive_manifest = opened.read("manifest.json")
     assert manifest["stations"] == ["nightowl"]
     # The default station keeps today's names; Night Owl's are under its slug.
     assert {"index/web_state.json", "liners/id.mp3", "profiles/Party.json"} <= names
@@ -93,8 +97,14 @@ def test_two_stations_round_trip(tmp_path: Path) -> None:
         "stations/nightowl/clockwheels/Night.json",
         "stations/nightowl/intros/intro.wav",
         "stations/nightowl/index/matched_intros.json",
+        "stations/nightowl/index/relays.json",
         "stations/nightowl/profiles/Party.json",
     } <= names
+    assert "index/relays.json" in names
+    assert default_relays == written[cfg.index.active_dir / "relays.json"]
+    assert owl_relays == written[_station_dir(cfg, "nightowl") / "relays.json"]
+    assert b"relay-secret" not in archive_manifest
+    assert "relay-secret" not in caplog.text
     # A station never holds the shared categories, and nothing is stored twice.
     assert "stations/nightowl/index/categories.json" not in names
     assert not any(name.startswith("stations/nightowl/stations/") for name in names)

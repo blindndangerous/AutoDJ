@@ -1750,7 +1750,7 @@ describe("app request behavior", () => {
     try {
       await setupApp({
         initialState: { current_track: { path: "M:/song.flac", title: "Song" } },
-        onRequest: (url) => url.startsWith("/api/library/points?")
+        onRequest: (url) => url.includes("/library/points?")
           ? jsonResponse({ path: decodeURIComponent(url.split("path=")[1]), title: "Song", kind: "music", points: {} })
           : jsonResponse({ ok: true }),
       });
