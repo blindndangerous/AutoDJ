@@ -82,6 +82,22 @@ def _frames(seconds: float, name: str) -> int:
     return round(frames)
 
 
+def liner_release_frames(main_frames: int, intro_frames: int, overlap_start: float | None) -> int:
+    """Return incoming-music delay from a liner-chain start, including negative cues."""
+    if overlap_start is None:
+        return main_frames
+    if overlap_start < 0:
+        requested = _frames(-overlap_start, "overlap_start")
+        return (
+            -min(requested, intro_frames - main_frames)
+            if main_frames <= intro_frames
+            else main_frames - intro_frames
+        )
+    if overlap_start == 0:
+        return max(0, main_frames - intro_frames)
+    return min(main_frames, _frames(overlap_start, "overlap_start"))
+
+
 def _audio(value: np.ndarray | None, name: str, *, optional: bool = False) -> np.ndarray | None:
     if value is None and optional:
         return None
@@ -118,6 +134,7 @@ def render_handoff(
     Point times are seconds in their source files; offsets are sample frames.
     ``liner_segue`` is relative to the retained liner audio, excluding its tail.
     Blank overlap uses that segue; zero permits fitting under the incoming intro.
+    A negative overlap starts the liner after music, capped by the remaining intro.
     ``outro_lead_limit`` bounds how early a liner chain may start before the song
     segue: zero for an ID, None for voices, or an ID's offset after preceding voices.
     """
@@ -141,9 +158,14 @@ def render_handoff(
             isinstance(value, bool)
             or not isinstance(value, (int, float))
             or not math.isfinite(value)
-            or value < 0
+            or (name == "outro_lead_limit" and value < 0)
+            or (name == "overlap_start" and value < -15)
         ):
-            raise ValueError(f"{name} must be a non-negative finite number or None")
+            raise ValueError(
+                "overlap_start must be a finite number of at least -15 or None"
+                if name == "overlap_start"
+                else "outro_lead_limit must be a non-negative finite number or None"
+            )
 
     frame_count = len(outgoing)
     start_frame = min(
@@ -191,7 +213,11 @@ def render_handoff(
             safe_outro = max(
                 safe_outro, segue_frame - _frames(outro_lead_limit, "outro_lead_limit")
             )
-        if overlap_start == 0:
+        if overlap_start is not None and overlap_start < 0:
+            release = liner_release_frames(main_frames, incoming_intro_frames, overlap_start)
+            liner_start = max(safe_outro, segue_frame - release)
+            incoming_frame = max(segue_frame, liner_start + release)
+        elif overlap_start == 0:
             liner_start = max(
                 safe_outro, min(segue_frame, segue_frame + incoming_intro_frames - main_frames)
             )

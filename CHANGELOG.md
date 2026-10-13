@@ -21,6 +21,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Settings saved before this keep using the artist limits.
 - A "(w/ X)" note in a title now credits X, like "(feat. X)" and "(with X)", for the artist
   repeat rules, related artists and DMCA mode, and is ignored when titles are compared.
+- Negative liner **Overlap start** values down to -15 seconds start the next song first, then place
+  liner content within its intro when it fits. For example, if a -3 second request has one second
+  available before vocals, the liner starts one second after the song. If the main content is longer
+  than the intro, existing liner-first timing remains; the liner tail continues over the song.
+  Track info announces when a negative value makes the cue-preview controls unavailable (#159).
 - **Why this track?** names the clockwheel step that selected the song, with its number and
   the same description shown in the clockwheel list. Music and category steps say whether they
   choose the least recently played song or choose at random. The description stays with the
@@ -381,6 +386,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   "Relaying to Icecast and Shoutcast" in the operations guide.
 
 ### Fixed
+
+- Clockwheel Delete and Undo leave an open step edit alone. Duplicating or moving steps
+  keeps the edit attached to its original step and updates its displayed number (#146).
 
 - Repeat rules that use minutes now keep and load up to 50,000 recent plays, so fast song rotations
   retain more of the selected time window across picks and restarts.
