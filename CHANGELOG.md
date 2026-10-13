@@ -10,6 +10,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Saving edits to the active clockwheel can now apply at its next restart, immediately from
+  step 1, or immediately continuing at the next step number. A song already playing and its
+  committed handoff finish normally. With no restart minutes, deferred edits apply when the
+  wheel wraps to step 1; the editor shows when an edit is waiting.
+- **Why this track?** names the clockwheel step that selected the song, with its number and the same description shown in the clockwheel list. Music and category steps say whether they choose the least recently played song or choose at random.
+- Matched intros (#127): Track info has a **Matched intros** section where you upload a short
+  voice clip for that song, or for any song by its artist, such as "Here's the new one from
+  Example Artist", and Listen to it or Remove it. When the song comes up, saved-point playback on
+  server audio or a stream mixes the clip into its song change: it talks the song up when the song's intro is long enough
+  for the speech, and otherwise plays just before the song. The song's own intros come first,
+  then the artist's. Each intro has a chance, a wait between plays (60 minutes by default) and
+  optional play dates. A matched intro takes the place of the automatic liner at that change, and
+  a DJ break booked for the change wins over it. Uploads have the liner upload limits and are
+  decoded like announcer breaks, at most one minute long. Intros are kept per station in
+  `matched_intros.json` and the `intros` folder, included in backups; a clean library scan removes
+  the intros of songs it found gone, and a share that is away loses none. The hour preview lists
+  an intro once its song change is mixed. Routes: `/api/intros` and
+  `/api/stations/<name>/intros`. See [Matched intros](docs/operations.md#matched-intros).
+
 - An hour preview with backtiming (#126): Now Playing > **Hour preview** lists what plays over
   the next 30 minutes to 3 hours with each item's estimated start time, and says in words on
   every row whether it is fixed (on the air, ready to play, picked, a booked break, in the queue)
@@ -23,6 +42,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   worker thread, stop after 80 songs or about 4 seconds, and are shared and reused for 45 seconds
   while nothing new is fixed.
 
+- A public player page and an embeddable player (#52), each off until `[player_page]` turns it
+  on, per station. `/player` (or `/stations/<slug>/player`) has a Play button that becomes Stop,
+  a labelled Volume slider remembered in the browser, the song playing, the next song when that is
+  shown publicly, and the recent songs. Nothing plays until Play is pressed, and Stop closes the
+  connection so no listener slot is held. A stall says "Buffering." once, a stream that has not
+  started 15 seconds after Play stops with a reason, and where the browser fixes the volume
+  (iPhone and iPad) a note replaces the slider. `/embed` (or `/stations/<slug>/embed`) is a compact
+  version for an `<iframe>` on another site: `embed_origins` lists the sites allowed to show it,
+  and `?theme=light` or `?theme=dark` matches the site's colours. The song line is the only live
+  region and speaks once per song; playback results are said once in a status line; both pages
+  work at 320 px, in light, dark and forced colours, and without JavaScript through the
+  browser's own audio controls. They carry nothing the public feed does not, send a strict
+  Content-Security-Policy, and the full page cannot be framed. `GET /api/stations` lists each
+  station's `player_path` and `embed_path`.
 - Queue & Search uses one paginated library table with Music or Voice liners, folder filtering
   and text search. Folder management is shown as a table in Library tools; liner file maintenance
   is back in Settings > Voice liners. Search, folders and History share arrow-key navigation.
@@ -33,6 +66,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   fields. Songs matching more than one condition are included once. Existing category steps
   open in the same condition editor and keep their selection and repeat settings. Category
   hours and the list of clockwheels using each category still apply.
+
+- Count versions as one song (#177). Settings > Picking > Repeats has a **Count versions as one
+  song** checkbox under the track limits, off by default. Versions of a song by the same lead
+  artist, such as a radio edit and a remix, then come up as often as a song with one version:
+  random picks choose a song before a version, least recently played dates a song by its latest
+  played version, and similarity keeps the best version of each song. The track limits hold back
+  every version of a song that played. The rotation tester counts the versions as one song.
+
 - Related tracks (#101). Settings > Picking > Repeats has a **Use related tracks** checkbox, off
   by default, with its own Tracks and Minutes limits (20 tracks to start with). It holds back
   tracks that sound alike on air, such as a song and one that samples it, listed as
@@ -142,6 +183,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the run works in the background with a progress bar and a Cancel button, announces its end
   once, and shows the results as headings and lists. See
   [Operations](docs/operations.md#testing-the-rotation).
+
 - Editing tags from Track info (#53). A Tags section has fields for title, artist, album, genre,
   year, BPM, key and ISRC. Save tags writes only the changed fields into the file with mutagen
   (MP3, FLAC, M4A, Ogg Vorbis, Opus, WAV and AIFF) and updates the library at once, keeping the
@@ -462,6 +504,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Audio prepared before a clockwheel edit no longer restores the old step position or restart
+  time when it begins playing (#153).
+- Clock skip logs now include the step number and reason for every skipped step, including
+  folders blocked by repeat filters (#188). Repeated reasons are logged once and reported again
+  after a pick has no skips.
+
 - A `[model] manual_path` folder whose weights are rewritten at the same size within one tick of
   the filesystem clock (two seconds on FAT and exFAT drives) gets a new digest instead of keeping
   the old one, so the server and a remote worker can no longer look as if they run the same
@@ -755,6 +803,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- No page AutoDJ serves can be shown inside another site's frame any more, so a hostile page
+  cannot overlay the web UI or a public page to trick a click (clickjacking). Every response now
+  carries `Content-Security-Policy: frame-ancestors 'none'` (added to the page's own policy where
+  it has one) and `X-Frame-Options: DENY`. The one exception is the new embeddable player, which
+  may be framed only by the sites in `[player_page] embed_origins`.
 - FFmpeg may now open only local files and pipes whenever AutoDJ asks it to read a song, a liner,
   a cart clip or a break (`-protocol_whitelist file,pipe`). A file that FFmpeg took for a playlist
   could otherwise make it fetch addresses on the network.

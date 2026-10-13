@@ -47,10 +47,11 @@ if TYPE_CHECKING:
     from autodj.breaks import BreakDesk
     from autodj.carts import StationCarts
     from autodj.clip_dates import LinerGate
-    from autodj.config import AutoDJConfig
+    from autodj.config import AutoDJConfig, PlayerPageConfig
     from autodj.indexer import IndexEntry
     from autodj.library import LibraryManager
     from autodj.listener_access import ListenerAccess
+    from autodj.matched_intros import MatchedIntros
     from autodj.recorder import Recorder
     from autodj.scheduler import Scheduler
     from autodj.stream import StreamOutput
@@ -73,21 +74,37 @@ def public_feed_path(slug: str, *, by_name: bool = True) -> str:
     return f"/api/stations/{slug}/nowplaying" if by_name else "/api/nowplaying"
 
 
-def public_addresses(slug: str, *, streams: bool) -> dict[str, str | None]:
-    """Station *slug*'s public addresses: its status page, feed, stream and playlist.
+def public_page_path(slug: str, page: str, *, by_name: bool = True) -> str:
+    """The address of station *slug*'s public *page* (``status``, ``player`` or ``embed``).
+
+    By name it is ``/stations/<slug>/<page>``; the default station's own
+    address, ``/<page>``, otherwise.
+    """
+    return f"/stations/{slug}/{page}" if by_name else f"/{page}"
+
+
+def public_addresses(
+    slug: str, *, streams: bool, player_page: PlayerPageConfig | None = None
+) -> dict[str, str | None]:
+    """Station *slug*'s public addresses: its pages, feed, stream and playlist.
 
     The default station keeps the addresses it always had (``/status``,
     ``/api/nowplaying``, ``/stream.mp3``); every other station's are
     under its name.  The stream and playlist are ``None`` for a station
-    that does not stream.
+    that does not stream, and the player page and embeddable player
+    ``None`` unless *player_page* turns them on.
     """
     by_name = slug != DEFAULT_SLUG
     stream = f"/stations/{slug}.mp3" if by_name else "/stream.mp3"
+    player = player_page is not None and player_page.enabled
+    embed = player_page is not None and player_page.embed
     return {
-        "status_path": f"/stations/{slug}/status" if by_name else "/status",
+        "status_path": public_page_path(slug, "status", by_name=by_name),
         "nowplaying_path": public_feed_path(slug, by_name=by_name),
         "stream_path": stream if streams else None,
         "m3u_path": stream.removesuffix(".mp3") + ".m3u" if streams else None,
+        "player_path": public_page_path(slug, "player", by_name=by_name) if player else None,
+        "embed_path": public_page_path(slug, "embed", by_name=by_name) if embed else None,
     }
 
 
@@ -177,6 +194,16 @@ class StationPaths:
     def liner_dates(self) -> Path:
         """The voice liners' play dates."""
         return self.state_dir / "liner_dates.json"
+
+    @property
+    def matched_intros(self) -> Path:
+        """Intros matched to songs and artists (#127)."""
+        return self.state_dir / "matched_intros.json"
+
+    @property
+    def intros(self) -> Path:
+        """The audio of the matched intros."""
+        return self.state_dir / "intros"
 
     @property
     def listener_bans(self) -> Path:
@@ -495,6 +522,38 @@ def prune_liner_dates(station: StationRuntime) -> list[str]:
     return forgotten
 
 
+def prune_matched_intros(station: StationRuntime) -> list[str]:
+    """Forget *station*'s intros for songs that are gone, with their audio; the IDs forgotten.
+
+    Called only after a clean scan (see :class:`SharedLibrary`).  A song is
+    gone when that scan found its file missing from a folder that is there,
+    so a share that is not mounted forgets nothing.  An intro whose song has
+    no library record (its source removed, say) is kept, and so is every
+    artist intro: the artist may come back.
+    """
+    store = getattr(station, "intros", None)
+    library = station.bridge.library
+    if store is None or library is None:
+        return []
+    intros = store.all()
+    gone = []
+    for intro_id, intro in intros.items():
+        if intro.track_id is None:
+            continue
+        record = library.catalog.record_for_id(intro.track_id)
+        if record is not None and library.is_gone(record["path"]):
+            gone.append(intro_id)
+    forgotten = store.forget(gone) if gone else []
+    if forgotten:
+        logger.info(
+            "Station %s: removed %d matched intros whose songs are gone: %s",
+            station.slug,
+            len(forgotten),
+            ", ".join(forgotten),
+        )
+    return forgotten
+
+
 def _registered_liners(
     bridge: PlayerBridge, owns: Callable[[str], bool] | None = None
 ) -> list[tuple[str, Path]]:
@@ -666,6 +725,7 @@ class StationRuntime:
     time_checks: TimeChecks
     carts: StationCarts
     breaks: BreakDesk
+    intros: MatchedIntros
     # Pushes the state to this station's WebSocket clients once a second.
     broadcast: Callable[[], Coroutine[Any, Any, None]]
 
@@ -801,7 +861,9 @@ class StationRuntime:
             "state": state,
             "listeners": int(stream.listener_count) if stream is not None else 0,
             "title": getattr(track, "display_name", None) if track is not None else None,
-            **public_addresses(self.slug, streams=bool(bridge.stream_mode)),
+            **public_addresses(
+                self.slug, streams=bool(bridge.stream_mode), player_page=self.cfg.player_page
+            ),
         }
 
     @property
@@ -1050,6 +1112,12 @@ class StationRuntime:
                     await asyncio.to_thread(desk.maintain)
             except Exception:
                 logger.exception("Break upkeep failed")
+            intros = getattr(self, "intros", None)
+            try:
+                if intros is not None and intros.needs_upkeep():
+                    await asyncio.to_thread(intros.upkeep)
+            except Exception:
+                logger.exception("Matched intro upkeep failed")
 
 
 # ---------------------------------------------------------------------------
@@ -1084,6 +1152,8 @@ class ExtraStation:
     paths: StationPaths
     preset: str
     build: Callable[[StationRegistry], StationRuntime]
+    #: Its ``[player_page]`` settings, so its pages answer while it is stopped.
+    player_page: PlayerPageConfig | None = None
 
 
 @dataclass
@@ -1132,6 +1202,7 @@ class StoppedStation:
     def __init__(self, extra: ExtraStation, *, state: str = "stopped") -> None:
         self.slug = extra.slug
         self.name = extra.name
+        self.player_page = extra.player_page
         # "stopped", "stopping" (closing down: its routes already answer
         # 409) or "stuck stopping" (its player outlived the stop and still
         # runs, with its mastering process, until it ends).
@@ -1145,7 +1216,7 @@ class StoppedStation:
             "state": self.state,
             "listeners": 0,
             "title": None,
-            **public_addresses(self.slug, streams=True),
+            **public_addresses(self.slug, streams=True, player_page=self.player_page),
         }
 
 
@@ -1675,12 +1746,16 @@ class SharedLibrary:
             self._ticker = asyncio.create_task(self._tick())
 
     def _scan_done(self) -> None:
-        """After a scan (on its thread): forget the play dates of liners now gone."""
+        """After a clean scan (on its thread): forget liner dates and song intros now gone."""
         for station in self._stations.all():
             try:
                 prune_liner_dates(station)
             except Exception:
                 logger.exception("Station %s: could not tidy the liner dates", station.slug)
+            try:
+                prune_matched_intros(station)
+            except Exception:
+                logger.exception("Station %s: could not tidy the matched intros", station.slug)
 
     async def close(self, writers_quiesced: bool, *, readers_stopped: bool = True) -> bool:
         """Close the DJ-meta cache if no writer remains, then the library.

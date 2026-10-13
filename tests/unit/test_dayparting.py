@@ -254,14 +254,15 @@ def test_relaxing_the_repeat_rules_never_picks_a_song_outside_its_hours() -> Non
 
 def test_a_clock_skips_a_category_step_outside_its_hours_and_says_why(caplog) -> None:
     player = _dayparted(_player("clock", dmca=False), NIGHT, clock=True)
+    player._dry_run = False
     with caplog.at_level(logging.WARNING, logger="autodj.player"):
         for _ in range(6):
             picked = player._clock_pick(player._pick_context(), 0)
             assert picked.entry.title not in NIGHT
     assert player._clock_status == (
-        "category Late night: outside its hours: plays only every day from 22:00 until 02:00"
+        "Step 1: category Late night: outside its hours: plays only every day from 22:00 until 02:00"
     )
-    assert caplog.text.count("the clockwheel moved on to its next step") == 1
+    assert caplog.text.count("Clock selection skipped:") == 1
 
 
 def test_a_clock_of_closed_categories_plays_an_allowed_song_from_the_library(caplog) -> None:
@@ -386,7 +387,7 @@ def test_pick_slot_skips_a_closed_category_without_a_player() -> None:
         closed_categories={"night": "outside its hours"},
     )
     assert picked.entry is None
-    assert picked.skipped == ["category Late night: outside its hours"]
+    assert picked.skipped == ["Step 1: category Late night: outside its hours"]
 
 
 def test_the_clock_pool_leaves_out_silent_protected_and_closed_songs_in_order() -> None:
