@@ -1563,9 +1563,10 @@ def _convert_index(index_dir: Path, music_dir: Path, moves: dict[str, str], *, a
 def cmd_migrate_index(
     ctx: click.Context, index_name: str | None, apply: bool, move_map: Path | None
 ) -> None:
-    """Convert a schema-3 index to schema 4 without repeating analysis.
+    """Import published index data and legacy state into the current catalog.
 
     Stop serving and indexing before --apply. The default is a read-only preview.
+    Vectors are imported unchanged; audio is not reanalysed.
     """
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
     _apply_index_name(cfg, index_name)
@@ -1573,7 +1574,26 @@ def cmd_migrate_index(
         moves = json.loads(move_map.read_text(encoding="utf-8")) if move_map else {}
     except (OSError, ValueError) as exc:
         raise click.ClickException(f"Cannot read the move map: {exc}") from exc
-    _convert_index(cfg.index.active_dir, cfg.library.music_dir, moves, apply=apply)
+    from autodj.config import station_config
+    from autodj.index_migration import migrate_catalog
+    from autodj.stations import StationPaths
+
+    liner_dir = cfg.playback.liners_folder or str(StationPaths.default(cfg).liners)
+    station_web_states = [
+        StationPaths.for_station(station_config(spec.cfg, cfg), spec.slug).web_state
+        for spec in cfg.stations
+    ]
+    try:
+        migrate_catalog(
+            cfg.index.active_dir,
+            cfg.library.music_dir,
+            Path(liner_dir),
+            moves,
+            apply=apply,
+            station_web_states=station_web_states,
+        )
+    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+        raise click.ClickException(f"Catalog migration failed: {exc}") from exc
 
 
 class _ServeCommand(click.Command):

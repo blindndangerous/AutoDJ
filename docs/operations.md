@@ -1769,13 +1769,14 @@ exactly one new file match. A copy, two identical files, or a file whose bytes c
 is handled as a changed or new song. Register the destination folder before rescanning. This does
 not make a copied catalog portable to paths on another machine.
 
-Legacy imports need index schema 4. When started in an interactive terminal, `autodj serve` detects a
-schema-3 index and offers to save a recovery copy and convert it. Entering Yes converts the index
-and continues startup; No leaves it unchanged and stops startup. Stop any other AutoDJ serving,
-indexing or analysis process before accepting. Services and other non-interactive launches exit
-with instructions instead of waiting for input.
+Use `autodj migrate-index` to move a published index and supported old state into the current
+`library.db`. It accepts schema-3 and schema-4 indexes, imports their vectors unchanged, and does not
+reanalyze audio. It also upgrades version-1 `web_state.json`, imports legacy play-history JSON, and
+registers the configured music and liner roots when the catalog has not recorded its initial roots.
+You can run it when the index itself is current but only saved settings, history, or folder
+registration still needs upgrading. The preview lists the work and writes nothing.
 
-To preview and convert manually, use the same configuration and named index as your server:
+Run it with the same configuration and named index as your server:
 
 ```bash
 uv run autodj migrate-index
@@ -1784,19 +1785,19 @@ uv run autodj migrate-index --apply
 uv run autodj --config station.toml migrate-index --name gold --apply
 ```
 
-The preview writes nothing. Applying copies the original index generation, cue database, station
-library database and saved web settings into a recovery folder under
-`index/.migration-backups/default.schema3-backup-...`. The location is printed. SQLite databases
-are copied with their committed changes, including changes still in the write-ahead log.
-The copy is verified before
-live files change and is retained after conversion. This is a migration recovery folder, not an
-`autodj restore` ZIP archive; it preserves the original files for recovery after an interrupted
-conversion. It does not copy music, external liner folders or configuration files.
+Applying saves a recovery copy of the index generation, `dj_meta.db`, `library.db`, and saved web
+settings before changing them. The recovery folder is under `index/.migration-backups/`; the exact
+path is printed. SQLite databases are copied with committed changes, including changes still in
+the write-ahead log. The recovery copy is retained. It is not an `autodj restore` ZIP archive and
+does not copy music, external liner folders or configuration files. The import is idempotent: if it
+is interrupted, run `migrate-index --apply` again. Existing catalog records and vectors are kept;
+missing records and vectors are filled from the published generation. Unsupported older index
+schemas still require rebuilding.
 
-Vectors are copied unchanged, so the expensive analysis does not run again. The converted index
-is checked before publication. Missing music files are listed and keep their existing analysis,
-but cannot be recognised as moved until they have a fingerprint. A conversion failure stops
-startup; it does not silently rebuild the index. Schema 2 still requires a rebuild.
+The command validates the published files before importing them. Missing music files keep their
+existing vectors and metadata, but cannot be recognized as moved until their files can be
+fingerprinted. Initial music and liner roots use the configured paths. Existing folder
+registrations and saved catalog settings are preserved.
 
 For files that moved, `--map moves.json` accepts old to new paths relative to `music_dir`, such as
 `{"Old/a.flac": "New/a.flac"}`. Paths must use forward slashes, and destinations must be unique
@@ -1808,7 +1809,8 @@ uv run python scripts/convert_index_v3_to_v4.py --index-dir index --music-dir /m
 uv run python scripts/convert_index_v3_to_v4.py --index-dir index --music-dir /music --map moves.json --apply
 ```
 
-The first command is a dry run. Both entry points use the same converter and recovery copy.
+The first command is a dry run for the schema-3 to schema-4 conversion; the `migrate-index` command
+then imports the published vectors into `library.db`.
 
 ## More than one machine
 
@@ -1827,11 +1829,10 @@ that machine; do not copy a populated `library.db` expecting it to adapt to a di
 
 ### Importing a legacy index on another machine
 
-Older published indexes store paths relative to `music_dir` and can still be imported when the
-destination has no catalog. Set `music_dir` to that machine's library root, then place the legacy
-index files in its named index directory before running `serve` or `index`. The first import keeps
-the source files for recovery; after a catalog exists, the legacy manifest is ignored. The
-`migrate-index` command remains available for older index schemas.
+Older published indexes store paths relative to `music_dir` and can be imported on the destination
+without re-embedding. Set `music_dir` to that machine's library root, then place the legacy index
+files in its named index directory and run `autodj migrate-index --apply`. The catalog stores the
+destination's absolute paths and the command keeps a recovery copy.
 
 For this one-time legacy import, stop AutoDJ and any `index` or `analyse` run on both machines.
 Copy only the files needed by the old format from `index/<name>/`:

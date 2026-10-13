@@ -453,7 +453,16 @@ class LibraryCatalog:
             return None
         return value if math.isfinite(value) and value >= 0 else None
 
-    def _migrate_legacy_history(self) -> None:
+    def migrate_legacy_history(self) -> None:
+        """Import the old JSON play log into the complete catalog play table.
+
+        This is public so the explicit application-data migration can run it
+        before normal runtime stops performing legacy upgrades.
+        """
+        self._migrate_legacy_history(strict=True)
+
+    def _migrate_legacy_history(self, *, strict: bool = False) -> None:
+        """Convert rows, optionally refusing to discard any invalid legacy row."""
         db = self._db()
         with self._lock:
             try:
@@ -471,31 +480,79 @@ class LibraryCatalog:
                     return
                 try:
                     rows = json.loads(legacy[0])
-                except (TypeError, json.JSONDecodeError):
+                except (TypeError, json.JSONDecodeError) as exc:
+                    if strict:
+                        raise ValueError("legacy play-history JSON is invalid") from exc
                     rows = []
-                if isinstance(rows, list):
-                    for row in rows:
-                        if not isinstance(row, dict):
-                            continue
-                        duration = self._duration(row.get("duration"))
-                        if (
-                            not isinstance(row.get("title"), str)
-                            or not isinstance(row.get("artist"), str)
-                            or duration is None
-                            or not self._valid_played_at(row.get("played_at"))
-                        ):
-                            continue
-                        db.execute(
-                            "INSERT INTO play_history "
-                            "(event_id,title,artist,duration,played_at) VALUES (?,?,?,?,?)",
-                            (
-                                uuid.uuid4().hex,
-                                row["title"],
-                                row["artist"],
-                                duration,
-                                row["played_at"],
-                            ),
+                if not isinstance(rows, list):
+                    if strict:
+                        raise ValueError("legacy play-history must be a JSON list")
+                    rows = []
+                valid_rows = []
+                invalid = 0
+                for row in rows:
+                    if not isinstance(row, dict):
+                        invalid += 1
+                        continue
+                    duration = self._duration(row.get("duration"))
+                    if (
+                        not isinstance(row.get("title"), str)
+                        or not isinstance(row.get("artist"), str)
+                        or duration is None
+                        or not self._valid_played_at(row.get("played_at"))
+                        or ("path" in row and not isinstance(row["path"], str))
+                        or (
+                            "event_id" in row
+                            and (not isinstance(row["event_id"], str) or not row["event_id"])
                         )
+                        or (
+                            "station" in row
+                            and (not isinstance(row["station"], str) or not row["station"])
+                        )
+                        or ("interrupted" in row and type(row["interrupted"]) is not bool)
+                        or ("performances" in row and self._count(row["performances"]) is None)
+                    ):
+                        invalid += 1
+                        continue
+                    valid_rows.append((row, duration))
+                if strict and invalid:
+                    raise ValueError(
+                        f"legacy play-history has {invalid} invalid row(s); no history was migrated"
+                    )
+                for row, duration in valid_rows:
+                    path = _path(row["path"]) if isinstance(row.get("path"), str) else None
+                    entry = (
+                        db.execute(
+                            "SELECT id FROM catalog_entries WHERE path=?", (path,)
+                        ).fetchone()
+                        if path
+                        else None
+                    )
+                    event_id = row.get("event_id")
+                    if not isinstance(event_id, str) or not event_id:
+                        event_id = uuid.uuid4().hex
+                    station = row.get("station", DEFAULT_STATION)
+                    if not isinstance(station, str) or not station:
+                        station = DEFAULT_STATION
+                    interrupted = int(row.get("interrupted") is True)
+                    performances = self._count(row.get("performances"))
+                    db.execute(
+                        "INSERT INTO play_history "
+                        "(event_id,entry_id,path,title,artist,duration,played_at,interrupted,station,performances) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            event_id,
+                            entry[0] if entry else None,
+                            path,
+                            row["title"],
+                            row["artist"],
+                            duration,
+                            row["played_at"],
+                            interrupted,
+                            station,
+                            performances,
+                        ),
+                    )
                 db.execute("INSERT INTO catalog_settings VALUES ('play_history_migrated','true')")
                 db.commit()
             except BaseException:
