@@ -119,8 +119,15 @@ The old published-index format, including `index-manifest.json`, is deprecated. 
 catalog, `index` or `serve` imports a valid old index once and keeps the originals for recovery.
 A stale manifest is ignored when the catalog already exists. For an unreadable legacy index,
 `index --force` can build a catalog from the configured folders without importing that index.
-`migrate-index` remains available for older formats. Legacy `analyse`, `prune`, and `stats`
-commands still use the old files; `enrich` uses the catalog when present.
+`migrate-index` remains available for older formats. `analyse`, `enrich`, and `stats` use the
+current catalog: Analyse backfills CPU intro/outro and beat data without MuQ, Enrich refreshes
+beets metadata without re-embedding, and Stats prints the detailed catalog report. CPU DJ-meta
+cache keys remain relative to the configured `music_dir`, so Analyse reports and skips songs
+registered only under other roots. The Library panel's **Remove missing tracks** action is
+available after a successful rescan; it previews catalog records missing from mounted sources,
+requires confirmation, asks again above the 20% safety threshold, deletes saved catalog cues and
+analysis data for those records, and preserves audio files and play history. Disconnected sources
+and incomplete scans are excluded from cleanup.
 
 To give network drives a rest during a long run, set a pause before each track, in milliseconds,
 in `config.toml`:

@@ -721,6 +721,17 @@ class TestEnrichFromBeets:
         conn.commit()
         conn.close()
 
+    def _make_catalog(self, index_dir: Path, entries: list[IndexEntry], music_root: Path) -> None:
+        from autodj.catalog import LibraryCatalog
+
+        index_dir.mkdir(parents=True, exist_ok=True)
+        with LibraryCatalog(index_dir / "library.db") as catalog:
+            catalog.add_source(music_root)
+            for entry in entries:
+                Path(entry.path).parent.mkdir(parents=True, exist_ok=True)
+                Path(entry.path).touch(exist_ok=True)
+                catalog.put_entry(entry)
+
     def test_no_index_returns_zero(self, tmp_path: Path) -> None:
         from autodj.indexer import enrich_from_beets
 
@@ -730,12 +741,11 @@ class TestEnrichFromBeets:
 
     def test_missing_beets_db_raises_instead_of_reporting_in_sync(self, tmp_path: Path) -> None:
         from autodj.beets import BeetsNotFoundError
-        from autodj.indexer import enrich_from_beets, save_index
+        from autodj.indexer import enrich_from_beets
 
-        entries, vectors = self._make_distinctive_index(tmp_path)
+        entries, _vectors = self._make_distinctive_index(tmp_path)
         idx = tmp_path / "idx"
-        idx.mkdir()
-        save_index(entries, vectors, idx, music_dir=tmp_path, base_generation=0)
+        self._make_catalog(idx, entries, tmp_path)
 
         with pytest.raises(BeetsNotFoundError, match="Beets library not found"):
             enrich_from_beets(idx, music_dir=tmp_path, beets_db=tmp_path / "missing.db")
@@ -744,62 +754,27 @@ class TestEnrichFromBeets:
         self,
         tmp_path: Path,
     ) -> None:
-        from dataclasses import replace
+        from autodj.indexer import enrich_from_beets
 
-        import autodj.indexer as indexer
-        from autodj.index_manifest import IndexConsistencyError, read_manifest
-        from autodj.indexer import enrich_from_beets, load_index, save_index
-
-        entries, vectors = self._make_distinctive_index(tmp_path)
+        entries, _vectors = self._make_distinctive_index(tmp_path)
         idx = tmp_path / "idx"
-        save_index(entries, vectors, idx, music_dir=tmp_path, base_generation=0)
-        first = read_manifest(idx)
-        assert first is not None
+        self._make_catalog(idx, entries, tmp_path)
         beets = tmp_path / "library.db"
         self._make_beets(
             beets,
             [{"path": entry.path, "title": f"Enriched {row}"} for row, entry in enumerate(entries)],
         )
-        concurrent_entries = [
-            replace(entry, title=f"Concurrent {row}") for row, entry in enumerate(entries)
-        ]
-        concurrent_vectors = np.zeros_like(vectors)
-        concurrent_vectors[0, 11] = 1.0
-        concurrent_vectors[1, 13] = 1.0
-        real_apply = indexer._apply_beets_row
-        raced = False
+        assert enrich_from_beets(idx, music_dir=tmp_path, beets_db=beets) == (2, 2)
+        from autodj.catalog import LibraryCatalog
 
-        def apply_after_concurrent_publish(*args, **kwargs):
-            nonlocal raced
-            if not raced:
-                raced = True
-                save_index(
-                    concurrent_entries,
-                    concurrent_vectors,
-                    idx,
-                    music_dir=tmp_path,
-                    base_generation=1,
-                )
-            return real_apply(*args, **kwargs)
-
-        with (
-            patch(
-                "autodj.indexer._apply_beets_row",
-                side_effect=apply_after_concurrent_publish,
-            ),
-            pytest.raises(IndexConsistencyError, match="another command published"),
-        ):
-            enrich_from_beets(idx, music_dir=tmp_path, beets_db=beets)
-
-        current = read_manifest(idx)
-        assert current is not None
-        assert current.generation == first.generation + 1
-        loaded, loaded_vectors, _ = load_index(idx, music_dir=tmp_path)
-        assert [entry.title for entry in loaded] == ["Concurrent 0", "Concurrent 1"]
-        assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(2)] == [11, 13]
+        with LibraryCatalog(idx / "library.db") as catalog:
+            assert [entry.title for entry in catalog.entries_snapshot()] == [
+                "Enriched 0",
+                "Enriched 1",
+            ]
 
     def test_updates_initial_key(self, tmp_path: Path) -> None:
-        from autodj.indexer import enrich_from_beets, save_index
+        from autodj.indexer import enrich_from_beets
 
         # Build an index with one entry
         path = tmp_path / "song.flac"
@@ -820,11 +795,8 @@ class TestEnrichFromBeets:
                 tempo_confidence=0.5,
             )
         ]
-        vectors = np.random.randn(1, FEATURE_DIM).astype(np.float32)
-        vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
         idx = tmp_path / "idx"
-        idx.mkdir()
-        save_index(entries, vectors, idx, music_dir=tmp_path, base_generation=0)
+        self._make_catalog(idx, entries, tmp_path)
         # Set up beets DB with a key
         beets = tmp_path / "library.db"
         self._make_beets(beets, [{"path": str(path), "initial_key": "Am"}])
@@ -833,14 +805,15 @@ class TestEnrichFromBeets:
         assert updated == 1
         assert total == 1
         # Reload and verify
-        from autodj.indexer import load_index
+        from autodj.catalog import LibraryCatalog
 
-        loaded, _, _ = load_index(idx, music_dir=tmp_path)
+        with LibraryCatalog(idx / "library.db") as catalog:
+            loaded = catalog.entries_snapshot()
         assert loaded[0].mode == 0  # minor
         assert loaded[0].key == 9  # A
 
     def test_no_changes_returns_zero_updated(self, tmp_path: Path) -> None:
-        from autodj.indexer import enrich_from_beets, save_index
+        from autodj.indexer import enrich_from_beets
 
         path = tmp_path / "song.flac"
         path.write_bytes(b"")
@@ -860,11 +833,8 @@ class TestEnrichFromBeets:
                 tempo_confidence=0.5,
             )
         ]
-        vectors = np.random.randn(1, FEATURE_DIM).astype(np.float32)
-        vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
         idx = tmp_path / "idx"
-        idx.mkdir()
-        save_index(entries, vectors, idx, music_dir=tmp_path, base_generation=0)
+        self._make_catalog(idx, entries, tmp_path)
         beets = tmp_path / "library.db"
         self._make_beets(beets, [{"path": str(path), "initial_key": "Am"}])
 
@@ -1613,11 +1583,11 @@ class TestIndexRecoveryPaths:
         index_dir.mkdir()
         (index_dir / "tracks.g00000000000000000003.db").write_bytes(b"x")
 
-        with pytest.raises(IndexConsistencyError, match=r"no index-manifest\.json.*--force"):
-            if command == "prune":
+        if command == "prune":
+            with pytest.raises(IndexConsistencyError, match=r"no index-manifest\.json.*--force"):
                 prune_index(index_dir, music_dir=tmp_path)
-            else:
-                enrich_from_beets(index_dir, music_dir=tmp_path, beets_db=tmp_path / "b.db")
+        else:
+            assert enrich_from_beets(index_dir, music_dir=tmp_path, beets_db=tmp_path / "b.db") == (0, 0)
 
 
 # ---------------------------------------------------------------------------

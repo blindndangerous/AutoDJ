@@ -298,7 +298,7 @@ class TestCliConfigSelection:
         assert result.exit_code == 1
         # Rich markup used to swallow "[playback]" as a style tag.
         assert "Ignoring unknown config keys in [playback]: ['bogus_key']" in result.output
-        assert "Index not found" in result.output
+        assert "Current library not found" in result.output
         assert "Config not found or invalid" not in result.output
 
     def test_omitted_config_passes_none_to_loader(self) -> None:
@@ -405,12 +405,17 @@ class TestCliHappyPaths:
 
     def test_stats_happy_path(self) -> None:
         cfg_mock = _make_cfg()
-        entries = [_make_entry(i) for i in range(5)]
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.indexer.load_index", return_value=(entries, None, None)),
-        ):
-            result = CliRunner().invoke(cli, ["stats"])
+        import tempfile
+
+        from autodj.catalog import LibraryCatalog
+
+        with tempfile.TemporaryDirectory() as dirname:
+            cfg_mock.index.active_dir = Path(dirname)
+            with LibraryCatalog(cfg_mock.index.active_dir / "library.db") as catalog:
+                for entry in [_make_entry(i) for i in range(5)]:
+                    catalog.put_entry(entry)
+            with patch("autodj.config.load_config", return_value=cfg_mock):
+                result = CliRunner().invoke(cli, ["stats"])
         assert result.exit_code == 0
 
 
@@ -890,70 +895,85 @@ class TestCmdServe:
 
 
 class TestCmdPrune:
-    def test_prune_no_index(self) -> None:
+    def test_prune_no_index(self, tmp_path: Path) -> None:
         cfg_mock = _make_cfg()
+        cfg_mock.index.active_dir = tmp_path
+        with patch("autodj.config.load_config", return_value=cfg_mock):
+            result = CliRunner().invoke(cli, ["prune"])
+        assert result.exit_code == 1
+        assert "No current library" in result.output
+
+    def test_prune_previews_and_confirms_catalog_removal(self, tmp_path: Path) -> None:
+        cfg_mock = _make_cfg()
+        cfg_mock.index.active_dir = tmp_path
+        (tmp_path / "library.db").touch()
+
+        class Manager:
+            def __init__(self, *_args):
+                pass
+
+            def scan(self):
+                pass
+
+            def missing_removal_preview(self):
+                return {
+                    "ready": True,
+                    "count": 1,
+                    "total": 10,
+                    "percentage": 10,
+                    "requires_override": False,
+                    "tracks": [{"artist": "A", "title": "T", "path": "p"}],
+                    "token": "preview",
+                }
+
+            def remove_missing(self, token, **kwargs):
+                assert token == "preview" and kwargs == {"confirmed": True, "allow_mass": False}
+                return 1
+
+            def close(self):
+                pass
+
         with (
             patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.indexer.prune_index", return_value=(0, 0)),
+            patch("autodj.library.LibraryManager", Manager),
         ):
-            result = CliRunner().invoke(cli, ["prune"])
+            result = CliRunner().invoke(cli, ["prune"], input="y\n")
         assert result.exit_code == 0
-        assert "No index" in result.output or "Nothing" in result.output
+        assert "Removed 1" in result.output
 
-    def test_prune_all_present(self) -> None:
+    def test_prune_requires_force_for_mass_removal(self, tmp_path: Path) -> None:
         cfg_mock = _make_cfg()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.indexer.prune_index", return_value=(0, 100)),
-        ):
-            result = CliRunner().invoke(cli, ["prune"])
-        assert result.exit_code == 0
-        assert "All 100" in result.output or "Nothing" in result.output
+        cfg_mock.index.active_dir = tmp_path
+        (tmp_path / "library.db").touch()
 
-    def test_prune_removes_some(self) -> None:
-        cfg_mock = _make_cfg()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.indexer.prune_index", return_value=(5, 95)),
-        ):
-            result = CliRunner().invoke(cli, ["prune"])
-        assert result.exit_code == 0
-        assert "5" in result.output
+        class Manager:
+            def __init__(self, *_args):
+                pass
 
-    def test_prune_safety_aborts(self) -> None:
-        from autodj.indexer import PruneSafetyError
+            def scan(self):
+                pass
 
-        cfg_mock = _make_cfg()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.indexer.prune_index", side_effect=PruneSafetyError("too many")),
-        ):
-            result = CliRunner().invoke(cli, ["prune"])
-        assert result.exit_code == 2
+            def missing_removal_preview(self):
+                return {
+                    "ready": True,
+                    "count": 5,
+                    "total": 10,
+                    "percentage": 50,
+                    "requires_override": True,
+                    "tracks": [],
+                    "token": "preview",
+                }
 
-    def test_prune_force_passes_through(self) -> None:
-        cfg_mock = _make_cfg()
-        captured = {}
-
-        def fake_prune(_d, **kw):
-            captured.update(kw)
-            return (1, 99)
+            def close(self):
+                pass
 
         with (
             patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.indexer.prune_index", fake_prune),
-        ):
-            CliRunner().invoke(cli, ["prune", "--force"])
-        assert captured.get("allow_mass_prune") is True
-
-    def test_prune_unhandled_error_exits_one(self) -> None:
-        cfg_mock = _make_cfg()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.indexer.prune_index", side_effect=RuntimeError("disk gone")),
+            patch("autodj.library.LibraryManager", Manager),
         ):
             result = CliRunner().invoke(cli, ["prune"])
         assert result.exit_code == 1
+        assert "--force" in result.output
 
     def test_prune_config_missing(self) -> None:
         with patch("autodj.config.load_config", side_effect=FileNotFoundError("nope")):
@@ -971,15 +991,16 @@ class TestCmdEnrich:
 
     def test_enrich_no_index(self, tmp_path: Path) -> None:
         cfg_mock = _make_cfg(beets_db=tmp_path / "library.db")
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.indexer.enrich_from_beets", return_value=(0, 0)),
-        ):
+        cfg_mock.index.active_dir = tmp_path
+        with patch("autodj.config.load_config", return_value=cfg_mock):
             result = CliRunner().invoke(cli, ["enrich"])
-        assert result.exit_code == 0
+        assert result.exit_code == 1
+        assert "No current library" in result.output
 
     def test_enrich_all_synced(self, tmp_path: Path) -> None:
         cfg_mock = _make_cfg(beets_db=tmp_path / "library.db")
+        cfg_mock.index.active_dir = tmp_path
+        (tmp_path / "library.db").touch()
         with (
             patch("autodj.config.load_config", return_value=cfg_mock),
             patch("autodj.indexer.enrich_from_beets", return_value=(0, 1000)),
@@ -990,6 +1011,8 @@ class TestCmdEnrich:
 
     def test_enrich_updates_some(self, tmp_path: Path) -> None:
         cfg_mock = _make_cfg(beets_db=tmp_path / "library.db")
+        cfg_mock.index.active_dir = tmp_path
+        (tmp_path / "library.db").touch()
         with (
             patch("autodj.config.load_config", return_value=cfg_mock),
             patch("autodj.indexer.enrich_from_beets", return_value=(42, 1000)),
@@ -1000,6 +1023,8 @@ class TestCmdEnrich:
 
     def test_enrich_error_exits_one(self, tmp_path: Path) -> None:
         cfg_mock = _make_cfg(beets_db=tmp_path / "library.db")
+        cfg_mock.index.active_dir = tmp_path
+        (tmp_path / "library.db").touch()
         with (
             patch("autodj.config.load_config", return_value=cfg_mock),
             patch("autodj.indexer.enrich_from_beets", side_effect=RuntimeError("bad")),
@@ -1028,7 +1053,6 @@ class TestCmdListIndexes:
         assert "No indexes found" in result.output
 
     def test_lists_named_indexes(self, tmp_path: Path) -> None:
-        import numpy as np
 
         from autodj.indexer import FEATURE_DIM, save_index
         from tests.unit._fakes import make_entry
@@ -1221,13 +1245,14 @@ class TestLoggingDefaults:
 
 class TestCmdAnalyse:
     def _cfg_with_index(self, tmp_path: Path, entries: int = 1) -> MagicMock:
-        from autodj.indexer import FEATURE_DIM, IndexEntry, save_index
+        from autodj.catalog import LibraryCatalog
+        from autodj.indexer import IndexEntry
 
         idx_dir = tmp_path / "idx"
         idx_dir.mkdir()
         rows = [
             IndexEntry(
-                path=f"x{i}.flac",
+                path=str(tmp_path / f"x{i}.flac"),
                 title="t",
                 artist="a",
                 album="al",
@@ -1242,9 +1267,12 @@ class TestCmdAnalyse:
             )
             for i in range(entries)
         ]
-        save_index(
-            rows, np.zeros((entries, FEATURE_DIM), dtype=np.float32), idx_dir, base_generation=0
-        )
+        for entry in rows:
+            Path(entry.path).write_bytes(b"track")
+        with LibraryCatalog(idx_dir / "library.db") as catalog:
+            catalog.add_source(tmp_path)
+            for entry in rows:
+                catalog.put_entry(entry)
         cfg = _make_cfg()
         cfg.index.active_dir = idx_dir
         cfg.index.name = "default"
@@ -1263,7 +1291,7 @@ class TestCmdAnalyse:
         with patch("autodj.config.load_config", return_value=cfg):
             result = CliRunner().invoke(cli, ["analyse"])
         assert result.exit_code == 1
-        assert "No index" in result.output
+        assert "No current library" in result.output
 
     @pytest.mark.parametrize("command", ["analyse", "stats"])
     def test_old_index_format_exits_with_the_rebuild_hint(
@@ -1277,7 +1305,7 @@ class TestCmdAnalyse:
         with patch("autodj.config.load_config", return_value=cfg):
             result = CliRunner().invoke(cli, [command])
         assert result.exit_code == 1
-        assert "autodj index --force" in " ".join(result.output.split())
+        assert "current library" in " ".join(result.output.split()).lower()
 
     def test_invalid_name_exits(self, tmp_path: Path) -> None:
         cfg = self._cfg_with_index(tmp_path)
@@ -1290,14 +1318,21 @@ class TestCmdAnalyse:
         cfg = self._cfg_with_index(tmp_path, entries=3)
         captured = {}
 
-        def fake_backfill(config, entries, *, limit=None):
+        def fake_backfill(config, entries, *, limit=None, prune=True):
             captured["cfg"] = config
             captured["entries"] = list(entries)
             captured["limit"] = limit
+            captured["prune"] = prune
 
         with (
             patch("autodj.config.load_config", return_value=cfg),
             patch("autodj.indexer.backfill_dj_meta", fake_backfill),
+            patch(
+                "autodj.cli._analyse_catalog_dj_meta",
+                side_effect=lambda cfg, catalog, entries, limit=None: fake_backfill(
+                    cfg, entries, limit=limit, prune=False
+                ),
+            ),
         ):
             result = CliRunner().invoke(cli, ["analyse", "--limit", "2"])
         assert result.exit_code == 0
@@ -1305,12 +1340,13 @@ class TestCmdAnalyse:
         # Every indexed track goes in, so rows past the limit are not pruned.
         assert len(captured["entries"]) == 3
         assert captured["limit"] == 2
+        assert captured["prune"] is False
 
     def test_backfill_exception_exits_one(self, tmp_path: Path) -> None:
         cfg = self._cfg_with_index(tmp_path)
         with (
             patch("autodj.config.load_config", return_value=cfg),
-            patch("autodj.indexer.backfill_dj_meta", side_effect=RuntimeError("boom")),
+            patch("autodj.cli._analyse_catalog_dj_meta", side_effect=RuntimeError("boom")),
         ):
             result = CliRunner().invoke(cli, ["analyse"])
         assert result.exit_code == 1
@@ -1320,7 +1356,7 @@ class TestCmdAnalyse:
         cfg = self._cfg_with_index(tmp_path)
         with (
             patch("autodj.config.load_config", return_value=cfg),
-            patch("autodj.indexer.backfill_dj_meta") as bf,
+            patch("autodj.cli._analyse_catalog_dj_meta") as bf,
         ):
             result = CliRunner().invoke(cli, ["analyse", "--name", "workout"])
         assert result.exit_code == 0
