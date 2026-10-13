@@ -452,7 +452,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Positive liner overlap points now respect the next song's intro, just like zero and
   negative values. A cold opening waits until the liner's segue; its remaining tail can
-  still overlap. Saved cues and outgoing fades are unchanged (#194).
+  still overlap. Some songs now start later where the old overlap would have covered
+  their vocals. Stored cue values and outgoing fades are unchanged (#194).
 
 - A `[model] manual_path` folder whose weights are rewritten at the same size within one tick of
   the filesystem clock (two seconds on FAT and exFAT drives) gets a new digest instead of keeping
