@@ -597,7 +597,7 @@ def test_replaced_track_resets_manual_cues_and_derived_cache(
     old_prepared = tmp_path / "old-prepared.wav"
     old_prepared.write_bytes(b"old prepared audio")
     manager = manager_factory(music=music)
-    manager.catalog.put_entry(make_entry(song), prepared_path=str(old_prepared))
+    manager.catalog.put_entry(make_entry(song))
     manager.catalog.set_points(song, {"start": 0, "outro": 170, "end": 180}, source=point_source)
     manager.catalog.set_vector(song, np.ones(FEATURE_DIM, dtype=np.float32))
 
@@ -625,7 +625,6 @@ def test_replaced_track_resets_manual_cues_and_derived_cache(
     assert record["length"] == 100.0
     assert record["points"]["outro"] == 90.0
     assert record["point_sources"]["outro"] == "analysis"
-    assert record["prepared_path"] is None
     assert old_prepared.exists()
     assert not manager.catalog.has_vector(song)
     assert not any("song.flac" in error for error in manager.snapshot()["import"]["errors"])
@@ -642,9 +641,7 @@ def test_confirmed_move_preserves_points_loudness_vector_and_play_history(
     prepared.write_bytes(b"prepared audio")
     manager = manager_factory(music=music)
     original = make_entry(old)
-    manager.catalog.put_entry(
-        original, points={"start": 0, "segue": 150, "end": 170}, prepared_path=str(prepared)
-    )
+    manager.catalog.put_entry(original, points={"start": 0, "segue": 150, "end": 170})
     manager.catalog.set_loudness(old, fake_loudness(old))
     vector = np.ones(FEATURE_DIM, dtype=np.float32)
     manager.catalog.set_vector(old, vector)
@@ -661,7 +658,6 @@ def test_confirmed_move_preserves_points_loudness_vector_and_play_history(
     record = manager.catalog.record_for_path(new)
     assert record["id"] == record_id
     assert record["points"]["segue"] == 150
-    assert record["prepared_path"] == os.path.normcase(str(prepared))
     assert record["loudness"] == fake_loudness(new)
     assert manager.ledger.last_played()[os.path.normcase(str(new))] == 42.0
     assert analyze.call_count == 0
@@ -1055,7 +1051,7 @@ def test_advanced_worker_adds_vector_without_publishing_legacy_index(tmp_path: P
         check.close()
 
 
-def test_scan_preserves_prepared_reference_without_creating_audio(manager_factory, tmp_path):
+def test_scan_does_not_create_prepared_audio(manager_factory, tmp_path):
     music = tmp_path / "Music"
     song = music / "song.flac"
     music.mkdir()
@@ -1065,14 +1061,13 @@ def test_scan_preserves_prepared_reference_without_creating_audio(manager_factor
     cache.mkdir(parents=True)
     prepared = cache / "legacy.wav"
     prepared.write_bytes(b"existing prepared audio")
-    manager.catalog.put_entry(make_entry(song), prepared_path=str(prepared))
+    manager.catalog.put_entry(make_entry(song))
     with (
         patch("autodj.library.analyze_basic", side_effect=fake_basic),
         patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
     ):
         manager.scan()
 
-    assert manager.catalog.record_for_path(song)["prepared_path"] == os.path.normcase(str(prepared))
     assert prepared.read_bytes() == b"existing prepared audio"
     assert list(cache.iterdir()) == [prepared]
 
@@ -1241,6 +1236,51 @@ def test_scan_drops_deleted_tracks_but_not_an_unmounted_share(manager_factory, t
         "kept.flac",
         "remote.flac",
     }
+
+
+def test_missing_removal_requires_clean_preview_and_preserves_history(manager_factory, tmp_path):
+    music, share = tmp_path / "Music", tmp_path / "Share"
+    music.mkdir()
+    share.mkdir()
+    gone, remote = music / "gone.flac", share / "remote.flac"
+    for path in (gone, remote):
+        path.write_bytes(path.name.encode())
+    manager = manager_factory(music=music)
+    manager.catalog.add_source(share)
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+    ):
+        manager.scan()
+        manager.catalog.write_history(
+            [
+                {
+                    "event_id": "gone-play",
+                    "path": str(gone),
+                    "title": "gone",
+                    "artist": "artist",
+                    "duration": 3.0,
+                    "played_at": "2025-01-01T00:00:00+00:00",
+                }
+            ]
+        )
+        gone.unlink()
+        moved = tmp_path / "Share-offline"
+        share.rename(moved)
+        manager.scan()
+    preview = manager.missing_removal_preview()
+    assert preview["ready"] is True
+    assert preview["count"] == 1
+    assert [item["title"] for item in preview["tracks"]] == ["gone"]
+    with pytest.raises(ValueError, match="confirmation"):
+        manager.remove_missing(preview["token"], confirmed=False)
+    gone.write_bytes(b"returned")
+    with pytest.raises(RuntimeError, match="changed"):
+        manager.remove_missing(preview["token"], confirmed=True, allow_mass=True)
+    gone.unlink()
+    assert manager.remove_missing(preview["token"], confirmed=True, allow_mass=True) == 1
+    assert manager.catalog.recent_history()[0]["path"] == os.path.normcase(str(gone))
+    assert manager.catalog.record_for_path(remote) is not None
 
 
 @pytest.mark.parametrize("processing", [None, "off", "replaygain"])

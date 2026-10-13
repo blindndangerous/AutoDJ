@@ -932,14 +932,12 @@ def enrich_from_beets(
     music_dir: Path | None,
     beets_db: Path,
 ) -> tuple[int, int]:
-    """Refresh catalog entries, or legacy index entries when no catalog exists.
+    """Refresh current catalog entries from beets without re-embedding.
 
     Walks the music entries, looks up each track in *beets_db* by path, and
     overwrites a curated set of fields when beets has values for them.
-    This is the upgrade path for users who indexed without beets and
-    later add a ``library.db`` — they get title / artist / album /
-    genre / bpm / year / length backfill plus key/mode from
-    ``initial_key`` if the keyfinder plugin ran.
+    The current catalog is authoritative; legacy published-index files are
+    never loaded or rewritten by this operation.
 
     No re-embedding — only metadata.  Vectors are not touched.
 
@@ -956,8 +954,8 @@ def enrich_from_beets(
     left untouched.
 
     Args:
-        index_dir: The index directory.
-        music_dir: Library root (used to resolve relative stored paths).
+        index_dir: The active library directory.
+        music_dir: Library root (used to resolve relative beets paths).
         beets_db: Path to the beets ``library.db``.
 
     Returns:
@@ -970,33 +968,20 @@ def enrich_from_beets(
     from autodj.catalog import LibraryCatalog
 
     catalog_path = index_dir / "library.db"
-    if catalog_path.is_file():
-        with LibraryCatalog(catalog_path) as catalog:
-            entries = list(catalog.entries_snapshot())
-            changed = _enrich_entries(entries, music_dir, beets_db)
-            for entry in changed:
-                catalog.put_entry(entry)
-            return len(changed), len(entries)
-    try:
-        entries, loaded, manifest = load_index(index_dir, music_dir=music_dir)
-    except FileNotFoundError:
+    if not catalog_path.is_file():
         return (0, 0)
-    changed = _enrich_entries(entries, music_dir, beets_db)
-    if changed:
-        save_index(
-            entries,
-            loaded.reconstruct_n(0, loaded.ntotal),
-            index_dir,
-            music_dir,
-            base_generation=manifest.generation,
-        )
-    return len(changed), len(entries)
+    with LibraryCatalog(catalog_path) as catalog:
+        entries = list(catalog.entries_snapshot())
+        changed = _enrich_entries(entries, music_dir, beets_db)
+        for entry in changed:
+            catalog.put_entry(entry)
+        return len(changed), len(entries)
 
 
 def _enrich_entries(
     entries: list[IndexEntry], music_dir: Path | None, beets_db: Path
 ) -> list[IndexEntry]:
-    """Apply beets metadata to entries from either storage format."""
+    """Apply beets metadata to a catalog snapshot."""
     from autodj.beets import _items_columns, _open_db, _path_candidates, parse_initial_key
 
     conn = _open_db(beets_db)

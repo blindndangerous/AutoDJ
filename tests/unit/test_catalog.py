@@ -31,6 +31,22 @@ def test_seed_sources_migrates_once_and_keeps_explicit_empty(tmp_path: Path) -> 
         assert catalog.sources("music") == []
 
 
+def test_remove_entries_rejects_stale_preview_versions(tmp_path: Path) -> None:
+    first = tmp_path / "first.wav"
+    second = tmp_path / "second.wav"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    with LibraryCatalog(tmp_path / "catalog.db") as catalog:
+        catalog.put_entry(entry(first))
+        preview_versions = catalog.change_versions()
+        catalog.put_entry(entry(second))
+
+        with pytest.raises(RuntimeError, match="catalog changed"):
+            catalog.remove_entries([str(first)], expected_versions=preview_versions)
+
+        assert catalog.record_for_path(first) is not None
+
+
 def test_intro_lift_column_migrates_and_persists(tmp_path: Path) -> None:
     db = tmp_path / "catalog.db"
     with closing(sqlite3.connect(db)) as conn:
@@ -490,14 +506,18 @@ def test_seed_vectors_and_confirmed_move_preserve_vector(tmp_path: Path) -> None
         np.testing.assert_array_equal(vectors[0], vector)
 
 
-def test_changed_content_invalidates_vector_and_prepared_audio(tmp_path: Path) -> None:
+def test_changed_content_invalidates_vector_and_keeps_prepared_audio_external(
+    tmp_path: Path,
+) -> None:
     root = tmp_path / "music"
     root.mkdir()
     track = root / "song.flac"
     track.write_bytes(b"old audio")
     with LibraryCatalog(tmp_path / "catalog.db") as catalog:
+        # Existing databases can retain the old column; catalog operations ignore it.
+        catalog._db().execute("ALTER TABLE catalog_entries ADD COLUMN prepared_path TEXT")
         catalog.add_source(root)
-        catalog.put_entry(entry(track), prepared_path=str(root / "prepared.wav"))
+        catalog.put_entry(entry(track))
         stat = track.stat()
         catalog.set_loudness(
             track,
@@ -512,9 +532,9 @@ def test_changed_content_invalidates_vector_and_prepared_audio(tmp_path: Path) -
         )
         catalog.set_vector(track, np.ones(FEATURE_DIM, dtype=np.float32))
         track.write_bytes(b"new audio, a different file")
-        catalog.put_entry(entry(track), prepared_path=None)
-        assert catalog.record_for_path(track)["prepared_path"] is None
+        catalog.put_entry(entry(track))
         assert catalog.record_for_path(track)["loudness"] == {}
+        assert "prepared_path" not in catalog.record_for_path(track)
         records, vectors = catalog.vectors_snapshot()
         assert records == []
         assert vectors.shape == (0, FEATURE_DIM)

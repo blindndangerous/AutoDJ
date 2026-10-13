@@ -119,6 +119,17 @@ and run `autodj migrate-index` to preview the upgrade, then add `--apply` to imp
 data with a recovery copy. Startup and indexing use the catalog only; `index --force` does
 not bypass migration. A leftover manifest is ignored when the current catalog already exists.
 
+`analyse`, `enrich`, and `stats` use the
+current catalog: Analyse backfills CPU intro/outro and beat data without MuQ, Enrich refreshes
+beets metadata without re-embedding, and Stats prints the detailed catalog report. CPU DJ-meta
+cache keys remain relative to the configured `music_dir`, so Analyse reports and skips songs
+registered only under other roots. The Library panel's **Remove missing tracks** action is
+available after a successful rescan; it previews catalog records missing from mounted sources,
+requires confirmation, asks again above the 20% safety threshold, deletes saved catalog cues and
+analysis data for those records, and preserves audio files and play history. Disconnected sources
+and incomplete scans are excluded from cleanup.
+
+
 To give network drives a rest during a long run, set a pause before each track, in milliseconds,
 in `config.toml`:
 

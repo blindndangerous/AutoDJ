@@ -90,7 +90,7 @@ _SCHEMA = """
         tempo_confidence REAL NOT NULL DEFAULT 0,
         embedded_at REAL NOT NULL DEFAULT 0, size INTEGER NOT NULL DEFAULT 0,
         fingerprint TEXT NOT NULL DEFAULT '', points TEXT NOT NULL DEFAULT '{}',
-        point_sources TEXT NOT NULL DEFAULT '{}', prepared_path TEXT,
+        point_sources TEXT NOT NULL DEFAULT '{}',
         intro_lift_db REAL,
         loudness TEXT NOT NULL DEFAULT '{}',
         user_tags TEXT NOT NULL DEFAULT '{}',
@@ -124,7 +124,6 @@ _RECORD_COLUMNS = (
     "allow_outro",
     "points",
     "point_sources",
-    "prepared_path",
     "intro_lift_db",
     "loudness",
 )
@@ -845,13 +844,35 @@ class LibraryCatalog:
             self._db().commit()
             return cur.rowcount > 0
 
+    def remove_entries(
+        self, paths: list[str], *, expected_versions: dict[str, int] | None = None
+    ) -> int:
+        """Remove records if the catalog still matches a previewed version snapshot."""
+        normalized = list(dict.fromkeys(_path(path) for path in paths))
+        if not normalized:
+            return 0
+        with self._lock:
+            db = self._db()
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                if expected_versions is not None and _versions(db) != expected_versions:
+                    raise RuntimeError("The catalog changed; preview the removal again")
+                cursor = db.executemany(
+                    "DELETE FROM catalog_entries WHERE path=?", ((p,) for p in normalized)
+                )
+                removed = cursor.rowcount
+                db.commit()
+                return removed
+            except BaseException:
+                db.rollback()
+                raise
+
     def _put(
         self,
         entry: IndexEntry,
         kind: str,
         points: dict | None,
         point_source: str,
-        prepared_path: str | None,
     ) -> str:
         if kind not in {"music", "liner"}:
             raise ValueError("kind must be 'music' or 'liner'")
@@ -879,7 +900,7 @@ class LibraryCatalog:
                 # Changed bytes, including retagging, invalidate cues and derived audio too.
                 self._db().execute("DELETE FROM catalog_vectors WHERE entry_id=?", (record_id,))
                 self._db().execute(
-                    "UPDATE catalog_entries SET prepared_path=NULL, intro_lift_db=NULL, loudness='{}', points='{}', point_sources='{}', user_tags='{}' "
+                    "UPDATE catalog_entries SET intro_lift_db=NULL, loudness='{}', points='{}', point_sources='{}', user_tags='{}' "
                     "WHERE id=?",
                     (record_id,),
                 )
@@ -903,11 +924,6 @@ class LibraryCatalog:
                 f"INSERT INTO catalog_entries (id,path,kind,{cols}) VALUES (?,?,?,{placeholders})",  # nosec B608 -- constant field names; values are bound
                 (record_id, path, kind, *values),
             )
-        if prepared_path is not None:
-            self._db().execute(
-                "UPDATE catalog_entries SET prepared_path=? WHERE path=?",
-                (_path(prepared_path), path),
-            )
         self._merge_points(path, points or {}, point_source)
         return record_id
 
@@ -917,11 +933,10 @@ class LibraryCatalog:
         kind: str = "music",
         points: dict | None = None,
         point_source: str = "auto",
-        prepared_path: str | None = None,
     ) -> str:
         with self._lock:
             try:
-                record_id = self._put(entry, kind, points, point_source, prepared_path)
+                record_id = self._put(entry, kind, points, point_source)
                 self._db().commit()
                 return record_id
             except BaseException:
@@ -1015,7 +1030,7 @@ class LibraryCatalog:
             for entry in entries:
                 path = _path(entry.path)
                 if path not in existing:
-                    self._put(entry, "music", None, "auto", None)
+                    self._put(entry, "music", None, "auto")
                     existing.add(path)
                     count += 1
             self._db().commit()
@@ -1145,7 +1160,6 @@ class LibraryCatalog:
                 "allow_outro": bool(row["allow_outro"]),
                 "points": json.loads(row["points"]),
                 "point_sources": json.loads(row["point_sources"]),
-                "prepared_path": row["prepared_path"],
                 "intro_lift_db": row["intro_lift_db"],
                 "loudness": loudness,
                 "last_played": row["last_played"],
