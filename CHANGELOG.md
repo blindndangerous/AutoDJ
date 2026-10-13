@@ -464,6 +464,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Clock skip logs now include the step number and reason for every skipped step, including
+  folders blocked by repeat filters (#188). Repeated reasons are logged once and reported again
+  after a pick has no skips.
+
 - A `[model] manual_path` folder whose weights are rewritten at the same size within one tick of
   the filesystem clock (two seconds on FAT and exFAT drives) gets a new digest instead of keeping
   the old one, so the server and a remote worker can no longer look as if they run the same

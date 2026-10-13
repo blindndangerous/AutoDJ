@@ -1556,7 +1556,7 @@ class Player:
             self._clock_status += (
                 f"; every song this clockwheel can play is outside its {_closure_words(context)}"
             )
-        self._log_category_skips(picked.skipped)
+        self._log_clock_skips(picked.skipped)
         if picked.entry is not None and picked.preset:
             from autodj.presets import get_preset
 
@@ -1713,18 +1713,23 @@ class Player:
             return None
         return self._dmca_checked(chosen, context)
 
-    def _log_category_skips(self, skipped: list[str]) -> None:
-        """Log the category steps a pick passed over, once until the reasons change."""
-        reasons = tuple(
-            reason
-            for reason in skipped
-            if reason.startswith("category") or _OUTSIDE_ITS.search(reason)
-        )
-        if reasons and reasons != getattr(self, "_category_skips_logged", ()):
-            logger.warning(
-                "Clock: %s; the clockwheel moved on to its next step", "; ".join(reasons)
-            )
-            self._category_skips_logged = reasons
+    def _log_clock_skips(self, skipped: list[str]) -> None:
+        """Log skipped clock steps once until the reasons change or clear."""
+        if getattr(self, "_dry_run", False):
+            return
+        reasons = tuple(skipped)
+        if reasons and reasons != getattr(self, "_clock_skips_logged", ()):
+            blocked = [
+                reason
+                for reason in reasons
+                if "blocked by rules" in reason and "missing or blocked by rules" not in reason
+            ]
+            other = [reason for reason in reasons if reason not in blocked]
+            if other:
+                logger.warning("Clock selection skipped: %s", "; ".join(other))
+            if blocked:
+                logger.info("Clock selection skipped: %s", "; ".join(blocked))
+        self._clock_skips_logged = reasons
 
     def _candidate_filter(self, context: _PickContext) -> Callable[[IndexEntry], bool]:
         """The repeat rules and, in DMCA mode, the complement, as one filter."""
