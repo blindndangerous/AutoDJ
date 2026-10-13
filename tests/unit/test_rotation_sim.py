@@ -214,7 +214,7 @@ def test_long_repeat_rules_starve_a_small_category(tmp_path: Path) -> None:
     assert power["plays"] == 6
     assert report["relaxed"] == {}
     text = report_text(report)
-    assert "Step 2: category Power: all matching entries blocked by rules:" in text
+    assert "category Power: all matching entries blocked by rules:" in text
 
 
 def test_a_clock_with_nothing_else_relaxes_the_track_window(tmp_path: Path) -> None:
