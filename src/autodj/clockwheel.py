@@ -206,6 +206,7 @@ def _least_recent(
         stamp = played(entry.path)
         if song_played is None:
             return (stamp is not None, stamp)
+        assert versions is not None
         song = song_played(entry.path)
         # Break equal song ages before considering versions, so extra copies add no odds.
         return (
