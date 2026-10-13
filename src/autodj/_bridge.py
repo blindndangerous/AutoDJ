@@ -1039,6 +1039,7 @@ class PlayerBridge:
                 "artist": entry.artist,
                 "album": entry.album,
                 "path": entry.path,
+                "kind": record.get("kind", "music") if record else "music",
                 "bpm": entry.bpm,
                 "length": entry.length,
                 "display_name": entry.display_name,
@@ -1886,6 +1887,7 @@ class PlayerBridge:
             "playback": {
                 "crossfade_seconds": pb.crossfade_seconds,
                 "fade_in_seconds": pb.fade_in_seconds,
+                "music_speed_percent": float(pb.music_speed_percent),
                 "crossfade_eq_duck": pb.crossfade_eq_duck,
                 "pure_shuffle": p._pure_shuffle,
                 "pick_mode": "random" if p._pure_shuffle else pb.pick_mode,
@@ -2048,6 +2050,10 @@ class PlayerBridge:
             values["repeat_rules"] = body.repeat_rules
         with settings_lock(player):
             self._apply_playback_settings(values, related_artists, related_tracks)
+        if "music_speed_percent" in values and self._bus_mode():
+            # The playing render is immutable. Refresh only the unrendered
+            # lookahead so the new speed starts at the next buffer boundary.
+            player.refresh_render_ahead()
         if "repeat_rules" in values and (ledger := self._ledger()) is not None:
             player.restore_repeat_history(ledger, refresh=True)
 

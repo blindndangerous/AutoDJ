@@ -63,8 +63,10 @@ uploaded Stereo Tool presets.
   first credential bound to one station.
 - Only the default station can play in the browser or on the server's sound card. Other
   stations always stream.
-- One Stereo Tool licence covers one running copy, so only one station uses Stereo Tool at a
-  time.
+- One Stereo Tool licence covers one running copy, so at first only one station could use
+  Stereo Tool at a time. #163 lifted that limit: each station may run its own Stereo Tool, with
+  its own licence and executable copy (see "Stereo Tool instances and licences" in
+  `docs/operations.md`).
 
 ## Alternatives considered
 
