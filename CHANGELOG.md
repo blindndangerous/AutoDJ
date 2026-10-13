@@ -494,6 +494,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A matched intro reserved for a handoff is available again if playback skips that handoff before the intro starts. Intros already heard keep their cooldown.
 - Positive liner overlap points now respect the next song's intro, just like zero and
   negative values. A cold opening waits until the liner's segue; its remaining tail can
   still overlap. Some songs now start later where the old overlap would have covered

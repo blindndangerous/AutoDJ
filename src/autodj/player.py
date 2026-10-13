@@ -2323,6 +2323,17 @@ class Player:
         if store is not None and track.intro_events:
             store.release(intro_id for _at, intro_id, _end, _label in track.intro_events)
 
+    def _settle_intros(self, track: RenderedTrack | None) -> None:
+        """Queue release of intros in a playing render that ended before they aired."""
+        store = self.matched_intros
+        if store is not None and track is not None and track.intro_events:
+            heard: set[str] = getattr(self, "_heard_intros", set())
+            store.release_later(
+                intro_id
+                for _at, intro_id, _end, _label in track.intro_events
+                if intro_id not in heard
+            )
+
     def _build_bus(self) -> MixBus:
         """Create the mix bus, fed by the render-ahead worker, as :attr:`bus`."""
         self.bus = MixBus(
@@ -3159,6 +3170,7 @@ class Player:
         with self._set_lock:
             self._set_generation += 1
             cut_short = self._state.current_track
+            self._settle_intros(self._playing_render)
             self._playing_render = None
             self._state.current_track = None
             self._state.next_track = None
@@ -3349,7 +3361,9 @@ class Player:
     def _start_playing(self, rendered: RenderedTrack) -> None:
         """Make *rendered* the playing track and record it (hold ``_set_lock``)."""
         entry = rendered.entry
-        self._settle_breaks(self._playing_render)
+        finished = self._playing_render
+        self._settle_breaks(finished)
+        self._settle_intros(finished)
         self._playing_render = rendered
         self._heard_liner_events: set[int] = set()
         self._heard_break_starts = set()
