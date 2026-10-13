@@ -109,6 +109,7 @@ const pbKeySyncFx     = document.getElementById("pb-key-sync-fx");
 const pbBeatmatchSkip = document.getElementById("pb-beatmatch-on-skip");
 const pbSkipStyle     = document.getElementById("pb-skip-style");
 const lnTalkUp        = document.getElementById("ln-talk-up");
+const lnMatchedIntroOnlyWithoutLiner = document.getElementById("ln-matched-intro-only-without-liner");
 const pbTransitionMode = document.getElementById("pb-transition-mode");
 const pbPostQueueSeed  = document.getElementById("pb-post-queue-seed");
 const keyNotation     = document.getElementById("key-notation");
@@ -781,6 +782,7 @@ const _settingsEls = () => ({
   pbReplayGain, pbLoudness: pbReplayGain,
   pbSavedPointsNote: document.getElementById("pb-saved-points-note"),
   pbBeatSyncFx, pbKeySyncFx, pbBeatmatchSkip, pbSkipStyle, lnTalkUp,
+  lnMatchedIntroOnlyWithoutLiner,
   pbTransitionMode, pbPostQueueSeed,
   keyNotation, keyPreferFlats,
   bpmLo, bpmHi,

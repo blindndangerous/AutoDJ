@@ -2368,17 +2368,30 @@ class Player:
                     next_clock_step = plan.clock_step
                     self._pending_clock_boundary = plan.boundary_after
                     breaks = self._take_breaks(plan)
-                    intro = self._matched_intro(next_entry, breaks, context.at)
-                    if not breaks and not liners and intro is None:
-                        liners, liner_key = self._auto_liner(current, next_entry)
+                    only_without_liner = self._cfg.playback.matched_intro_only_without_liner
+                    if only_without_liner:
+                        if not breaks and not liners:
+                            liners, liner_key = self._auto_liner(current, next_entry)
+                        if not liners:
+                            intro = self._matched_intro(next_entry, breaks, context.at)
+                    else:
+                        intro = self._matched_intro(next_entry, breaks, context.at)
+                        if not breaks and not liners and intro is None:
+                            liners, liner_key = self._auto_liner(current, next_entry)
                 elif station_mode:
                     next_entry, next_mode, liners, next_cursor, liner_key = (
                         self._choose_station_next(current, context, auto_liner=False)
                     )
                     next_clock_step = self._chosen_clock_step
-                    intro = self._matched_intro(next_entry, (), context.at)
-                    if not liners and intro is None:
-                        liners, liner_key = self._auto_liner(current, next_entry)
+                    if self._cfg.playback.matched_intro_only_without_liner:
+                        if not liners:
+                            liners, liner_key = self._auto_liner(current, next_entry)
+                        if not liners:
+                            intro = self._matched_intro(next_entry, (), context.at)
+                    else:
+                        intro = self._matched_intro(next_entry, (), context.at)
+                        if not liners and intro is None:
+                            liners, liner_key = self._auto_liner(current, next_entry)
                 else:
                     next_entry, next_mode = self._choose_next(current, context)
             except Exception as exc:
