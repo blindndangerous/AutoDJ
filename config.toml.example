@@ -228,7 +228,7 @@ music_speed_percent = 0.0
 # Both can be set.
 # Older repeat keys are rejected. Remove them by hand and re-enter limits in
 # Settings > Picking > Repeats. Optional starting values use the same structure:
-# repeat_rules = { track = { tracks = 50, minutes = 0 }, artist = { tracks = 8, minutes = 0 }, related_artist = { tracks = 8, minutes = 0 }, album = { tracks = 0, minutes = 0 }, title = { tracks = 0, minutes = 0 }, related_track = { tracks = 20, minutes = 0 }, use_related_artists = false, use_related_tracks = false }
+# repeat_rules = { track = { tracks = 50, minutes = 0 }, artist = { tracks = 8, minutes = 0 }, related_artist = { tracks = 8, minutes = 0 }, album = { tracks = 0, minutes = 0 }, title = { tracks = 0, minutes = 0 }, related_track = { tracks = 20, minutes = 0 }, use_related_artists = false, use_related_tracks = false, versions_as_one_song = false }
 # Track counts other than the track rule's are capped at 5000. The related-artist file is
 # fixed at index/<name>/related-artists.toml and the related-track file at
 # index/<name>/related-tracks.toml; each is read only when enabled.

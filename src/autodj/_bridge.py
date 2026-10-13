@@ -49,7 +49,22 @@ def _build_why(player: Any, cur: Any) -> list[str]:
     step = getattr(player, "_last_clock_step", None)
     if mode in {"clock", "seed"} and step and reasons:
         reasons[0] = f"Clockwheel step {step['number']}."
+    reasons.extend(_versions_note(player, cur))
     return reasons
+
+
+def _versions_note(player: Any, cur: Any) -> list[str]:
+    """A sentence saying *cur* is one of its song's versions, with Count versions as one song on."""
+    from autodj.repeat_rules import SongVersions
+
+    song_versions = getattr(player, "_song_versions", None)
+    versions = song_versions() if callable(song_versions) and cur is not None else None
+    if not isinstance(versions, SongVersions):
+        return []
+    count = len(versions.versions(cur.path))
+    if count < 2:
+        return []
+    return [f"One of {count} versions of this song, which count as one song."]
 
 
 def _library_job_snapshot() -> dict:

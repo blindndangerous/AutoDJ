@@ -7,6 +7,7 @@ import random
 import threading
 import time
 import uuid
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from datetime import time as clock_time
 from pathlib import Path
@@ -578,6 +579,73 @@ def test_server_render_cursor_maps_source_elapsed_to_output_event_time(tmp_path:
     assert event.starts == pytest.approx(NOW + 140)
 
 
+def test_fixed_render_keeps_its_actual_rate_after_the_setting_changes(tmp_path: Path) -> None:
+    source, _power, gold = _station(
+        tmp_path, playback={"pick_mode": "clock", "music_speed_percent": 10}
+    )
+    player = source.player
+    _playing(source, gold[0], NOW - 50)
+    playing = _render(gold[0], 200, gold[1], 5, playback_rate=0.9)
+    ready = _render(gold[1], 190, gold[2], 5, playback_rate=1.2, next_playback_rate=0.8)
+    player.bus = object()
+    player._playing_render = playing
+    player._playback_pos[0] = round(50 * 0.9 * SR)
+    player._render_ahead._ready = ready
+    player._pending_entry = gold[2]
+    player._pending_offset = round(5 * SR)
+    player._cursor_serial = 7
+
+    decided = read_station(player, now=NOW)
+
+    assert decided.last is gold[2]
+    assert decided.last_rate == pytest.approx(0.8)
+    assert decided.last_rate != pytest.approx(1.1)  # the new setting is for unrendered music
+
+
+@pytest.mark.parametrize(("outgoing_rate", "incoming_rate"), [(0.9, 1.1), (1.1, 0.9)])
+def test_preview_liner_placement_scales_music_cues_but_keeps_voice_time(
+    tmp_path: Path,
+    monkeypatch,
+    outgoing_rate: float,
+    incoming_rate: float,
+) -> None:
+    source, _power, gold = _station(
+        tmp_path, playback={"pick_mode": "clock", "music_speed_percent": 10}
+    )
+    player = source.player
+    liners = source.library.entries_snapshot("liner")
+    rates = {gold[0].path: outgoing_rate, gold[1].path: incoming_rate}
+    monkeypatch.setattr(player, "music_playback_rate", lambda entry: rates[entry.path])
+    points = {
+        gold[0].path: {"start": 0, "outro": 7, "segue": 8, "end": 12},
+        liners[0].path: {"start": 0.5, "segue": 2.5, "end": 3.5, "overlap_start": None},
+        liners[1].path: {"start": 0.25, "segue": 1, "end": 2, "overlap_start": 0},
+        gold[1].path: {"start": 0, "intro": 4, "end": 12},
+    }
+    monkeypatch.setattr(source.library.catalog, "points", lambda path: points.get(path, {}))
+    monkeypatch.setattr(
+        source.library.catalog, "record_for_path", lambda _path: {"allow_outro": True}
+    )
+
+    def audio(entry):
+        return np.zeros((round(entry.length * SR), 2), dtype=np.float32)
+
+    monkeypatch.setattr(player, "_playout_audio", lambda entry, _decode: audio(entry))
+    monkeypatch.setattr(player, "_load_playout_audio", audio)
+    actual = player._render_saved_track(
+        gold[0], gold[1], 0, ((liners[0], False), (liners[1], False))
+    )
+
+    rows, delay = hour_preview._preview_liner_group(
+        player, gold[0], gold[1], liners, NOW + 8 / outgoing_rate
+    )
+
+    actual_incoming = len(actual.audio) - actual.overlap_frames
+    assert delay == pytest.approx(actual_incoming / SR - 8 / outgoing_rate, abs=2 / SR)
+    assert rows[0][1] == pytest.approx(NOW + actual.liner_events[0][0] / SR)
+    assert rows[1][1] == pytest.approx(NOW + actual.liner_events[1][0] / SR)
+
+
 def test_a_render_under_way_leaves_only_the_next_song_fixed(tmp_path: Path) -> None:
     source, _power, gold = _station(tmp_path)
     player = source.player
@@ -642,6 +710,73 @@ def test_a_preview_is_kept_while_nothing_new_is_fixed(tmp_path: Path, monkeypatc
     assert KEEP_SECONDS > hour_preview.PAGE_REFRESH_SECONDS
 
 
+def test_cache_freshness_covers_handoff_rules_schedule_library_and_refresh(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source, _power, _gold = _station(tmp_path)
+    decided = hour_preview.Decided(
+        now=1000, handoff=1100, items=(Item("song", 900, 200, "on_air"),)
+    )
+    monkeypatch.setattr(hour_preview, "read_station", lambda *_args, **_kwargs: decided)
+    builds: list[int] = []
+    monkeypatch.setattr(
+        hour_preview, "build_preview", lambda *_args, **_kwargs: builds.append(1) or {}
+    )
+    versions = [0]
+    source.library.catalog.change_versions = lambda: {"entries": versions[0]}
+    source.player._cfg = SimpleNamespace(playback=SimpleNamespace(repeat_rules="one"))
+    previews = HourPreviews()
+
+    previews.get(source, 60)
+    previews.get(source, 60)
+    assert len(builds) == 1
+    decided = replace(decided, now=1015)  # Playing normally keeps the handoff fixed.
+    previews.get(source, 60)
+    assert len(builds) == 1
+    decided = replace(decided, handoff=1090)  # A short seek also needs fresh times.
+    monkeypatch.setattr(hour_preview, "read_station", lambda *_args, **_kwargs: decided)
+    previews.get(source, 60)
+    source.player._cfg.playback.repeat_rules = "two"
+    previews.get(source, 60)
+    source.events = ("changed scheduled event",)
+    previews.get(source, 60)
+    versions[0] += 1
+    previews.get(source, 60)
+    previews.get(source, 60, force=True)
+    assert len(builds) == 6
+    category_versions = [0]
+    monkeypatch.setattr(
+        source.library.categories, "cache_signature", lambda: tuple(category_versions)
+    )
+    previews.get(source, 60)
+    category_versions[0] += 1
+    previews.get(source, 60)
+    assert len(builds) == 8
+
+
+def test_category_signature_does_not_hold_the_category_pick_lock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source, _power, _gold = _station(tmp_path)
+    categories = source.library.categories
+    original_entries = categories._entries
+    original_signature = categories._signature
+    lock_states: list[bool] = []
+
+    def entries():
+        lock_states.append(categories._lock.locked())
+        return original_entries()
+
+    def signature(saved, current_entries):
+        lock_states.append(categories._lock.locked())
+        return original_signature(saved, current_entries)
+
+    monkeypatch.setattr(categories, "_entries", entries)
+    monkeypatch.setattr(categories, "_signature", signature)
+    categories.cache_signature()
+    assert lock_states == [False, False]
+
+
 def test_previews_run_on_their_own_worker_thread(tmp_path: Path, monkeypatch) -> None:
     source, _power, gold = _station(tmp_path)
     _playing(source, gold[0], time.time() - 30)
@@ -674,6 +809,26 @@ def test_browser_playback_lists_a_queued_next_song_once(tmp_path: Path) -> None:
         ("picked", power[3].path),
         ("queued", power[4].path),
     ]
+
+
+def test_queued_liners_in_fixed_mode_keep_their_full_lengths(tmp_path: Path, monkeypatch) -> None:
+    source, _power, gold = _station(tmp_path)
+    player = source.player
+    player._cfg.playback.transition_mode = "fixed"
+    _playing(source, gold[0], NOW - 50)
+    liner_entry = source.library.entries_snapshot("liner")[0]
+    player._state.next_track = gold[1]
+    player._state.queue.extend([liner_entry, gold[2]])
+    monkeypatch.setattr(
+        hour_preview,
+        "_preview_liner_group",
+        lambda *_args: pytest.fail("fixed transitions must not apply saved liner cues"),
+    )
+    decided = read_station(player, now=NOW)
+    liner_item = next(item for item in decided.items if item.kind == "liner")
+    following = next(item for item in decided.items if item.entry is gold[2])
+    assert liner_item.seconds == liner_entry.length
+    assert following.starts == pytest.approx(liner_item.starts + liner_entry.length)
 
 
 def test_a_position_from_another_render_is_not_used(tmp_path: Path) -> None:
@@ -738,6 +893,49 @@ def test_the_preview_and_the_rotation_tester_time_songs_alike(tmp_path: Path) ->
         assert item["seconds"] == pytest.approx(expected, abs=0.05)
 
 
+@pytest.mark.parametrize("first_overlap,second_overlap", [(None, 0), (0, -1), (2, 1), (-2, 0)])
+@pytest.mark.parametrize("incoming_intro", [None, 0.0, 4.0])
+@pytest.mark.parametrize("allow_outro", [False, True])
+def test_preview_liner_chain_matches_synthetic_live_render(
+    tmp_path: Path,
+    monkeypatch,
+    first_overlap: float | None,
+    second_overlap: float,
+    incoming_intro: float | None,
+    allow_outro: bool,
+) -> None:
+    source, _power, gold = _station(tmp_path)
+    player = source.player
+    liners = source.library.entries_snapshot("liner")
+    points = {
+        gold[0].path: {"start": 0, "outro": 4, "segue": 8, "end": 12},
+        liners[0].path: {"start": 0.5, "segue": 2.5, "end": 3.5, "overlap_start": first_overlap},
+        liners[1].path: {"start": 0.25, "segue": 1, "end": 2, "overlap_start": second_overlap},
+        gold[1].path: {"start": 0, "end": 12},
+    }
+    if incoming_intro is not None:
+        points[gold[1].path]["intro"] = incoming_intro
+    monkeypatch.setattr(source.library.catalog, "points", lambda path: points.get(path, {}))
+    monkeypatch.setattr(
+        source.library.catalog, "record_for_path", lambda _path: {"allow_outro": allow_outro}
+    )
+
+    def audio(entry):
+        return np.zeros((round(entry.length * SR), 2), dtype=np.float32)
+
+    monkeypatch.setattr(player, "_playout_audio", lambda entry, _decode: audio(entry))
+    monkeypatch.setattr(player, "_load_playout_audio", audio)
+
+    actual = player._render_saved_track(
+        gold[0], gold[1], 0, ((liners[0], False), (liners[1], False))
+    )
+    rows, delay = hour_preview._preview_liner_group(player, gold[0], gold[1], liners, NOW + 8)
+    actual_incoming = len(actual.audio) - actual.overlap_frames
+    assert delay == pytest.approx(actual_incoming / SR - 8)
+    assert rows[0][1] == pytest.approx(NOW + actual.liner_events[0][0] / SR)
+    assert rows[1][1] == pytest.approx(NOW + actual.liner_events[1][0] / SR)
+
+
 def test_the_snapshot_shares_nothing_of_the_clockwheel(tmp_path: Path) -> None:
     source, _power, _gold = _station(tmp_path)
     player = source.player
@@ -773,6 +971,24 @@ def test_asks_for_the_same_preview_share_one_answer(tmp_path: Path, monkeypatch)
         previews.submit(source, 180)
     release.set()
     assert all(future.result(timeout=10) for future in (first, *waiting))
+    assert previews.shutdown(5.0)
+
+
+def test_forced_refreshes_share_the_same_running_or_queued_work(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source, _power, gold = _station(tmp_path)
+    _playing(source, gold[0], time.time() - 30)
+    release, started = threading.Event(), threading.Event()
+    _slow_previews(monkeypatch, release, started)
+    previews = HourPreviews(waiting=1)
+    first = previews.submit(source, 60, force=True)
+    assert started.wait(10)
+    assert previews.submit(source, 60, force=True) is first
+    queued = previews.submit(source, 30)
+    release.set()
+    assert first.result(timeout=10)
+    assert queued.result(timeout=10)
     assert previews.shutdown(5.0)
 
 

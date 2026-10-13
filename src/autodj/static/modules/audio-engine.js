@@ -351,6 +351,7 @@ function _outroWallSeconds() {
 function _writeDeckRate(deck) {
   if (!deck?.audio) return;
   if (deck.kind !== "music") {
+    if (deck.audio.defaultPlaybackRate !== 1) deck.audio.defaultPlaybackRate = 1;
     if (deck.audio.playbackRate !== 1) deck.audio.playbackRate = 1;
     if (deck.audio.preservesPitch !== true) {
       try { deck.audio.preservesPitch = true; } catch (_) {}
@@ -358,6 +359,9 @@ function _writeDeckRate(deck) {
     return;
   }
   const rate = musicSpeedRate() * (deck.rateMultiplier || 1);
+  // The media load algorithm resets playbackRate to defaultPlaybackRate.
+  // Keep both in sync so prefetch/retry .load() calls retain the selected speed.
+  if (deck.audio.defaultPlaybackRate !== rate) deck.audio.defaultPlaybackRate = rate;
   if (deck.audio.playbackRate !== rate) deck.audio.playbackRate = rate;
   const preservePitch = Boolean(deck.preservePitch) || rate === 1;
   if (deck.audio.preservesPitch !== preservePitch) {

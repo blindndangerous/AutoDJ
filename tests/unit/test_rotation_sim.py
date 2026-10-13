@@ -1190,3 +1190,11 @@ def test_the_first_pick_after_a_fresh_start_takes_the_next_clock_step(tmp_path: 
     played = [path for _, path in _sequence(source, 4, picks=6)]
     ones = {entry.path for entry in first}
     assert [path in ones for path in played] == [True, False, True, False, True, False]
+
+
+def test_step_tallies_combine_same_reason_across_steps():
+    from autodj.rotation_sim import _step_key
+
+    assert _step_key("Step 1: all 20 matching entries blocked by rules") == _step_key(
+        "Step 4: all 15 matching entries blocked by rules"
+    )

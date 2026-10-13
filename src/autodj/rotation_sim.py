@@ -728,7 +728,7 @@ _ALL_MATCHING = re.compile(r"all \d[\d,]* matching entries")
 
 def _step_key(reason: str) -> str:
     """A skipped-step reason without the count that changes from pick to pick."""
-    return _ALL_MATCHING.sub("all matching entries", reason)
+    return _ALL_MATCHING.sub("all matching entries", re.sub(r"^Step \d+: ", "", reason))
 
 
 def _dmca_limit(text: str) -> str:
@@ -1159,10 +1159,19 @@ def _report(
 ) -> dict[str, Any]:
     plays = tally.plays
     by_path = {entry.path: entry for entry in entries}
-    song_counts = [plays.get(entry.path, 0) for entry in entries]
-    never = [entry for entry in entries if not plays.get(entry.path)]
+    # With Count versions as one song, a song's versions share one row, named
+    # by its first version; otherwise each file is a song.
+    versions = player._song_versions()
+    songs: dict[str, tuple[Any, int]] = {}
+    for entry in entries:
+        song = versions.song(entry.path) if versions is not None else entry.path
+        first, count = songs.get(song, (entry, 0))
+        songs[song] = (first, count + plays.get(entry.path, 0))
+    song_counts = [count for _first, count in songs.values()]
+    never = [first for first, count in songs.values() if not count]
     most = sorted(
-        (path for path in plays if path in by_path), key=lambda path: (-plays[path], path)
+        ((first, count) for first, count in songs.values() if count),
+        key=lambda pair: (-pair[1], pair[0].path),
     )[:5]
 
     artists: dict[str, tuple[str, int]] = {}
@@ -1189,7 +1198,9 @@ def _report(
                 "never_played": len(unplayed),
                 "never_played_sample": sorted(entry.display_name for entry in unplayed)[:SAMPLE],
                 "skipped": sum(
-                    count for reason, count in tally.steps.items() if reason.startswith(label)
+                    count
+                    for reason, count in tally.steps.items()
+                    if re.sub(r"^Step \d+: ", "", reason).startswith(label)
                 ),
             }
         )
@@ -1214,19 +1225,18 @@ def _report(
             "final_mode": "random" if player._pure_shuffle else player._cfg.playback.pick_mode,
             "final_clockwheel": clock.get("name"),
             "dmca": bool(player._state.dmca_enabled),
+            "versions_as_one_song": bool(player._state.rules.versions_as_one_song),
         },
         "picks": sum(plays.values()),
         "liners": tally.liners,
         "modes": dict(tally.modes.most_common()),
         "songs": {
-            "library": len(entries),
-            "played": len(entries) - len(never),
+            "library": len(songs),
+            "played": len(songs) - len(never),
             **_spread(song_counts),
             "never_played": len(never),
             "never_played_sample": sorted(entry.display_name for entry in never)[:SAMPLE],
-            "most_played": [
-                {"song": by_path[path].display_name, "plays": plays[path]} for path in most
-            ],
+            "most_played": [{"song": first.display_name, "plays": count} for first, count in most],
         },
         "artists": {
             "library": len(artists),
@@ -1342,6 +1352,7 @@ def report_sections(report: Mapping[str, Any]) -> list[dict[str, Any]]:
             f"Picked {counted(report['picks'], 'song')} and {counted(report['liners'], 'liner')}.",
             f"Song picking at the start: {mode}.",
             f"DMCA limits: {'on' if picking['dmca'] else 'off'}.",
+            "Versions of a song count as one song." if picking.get("versions_as_one_song") else "",
             f"Seed {report['seed']}. Use the same seed to repeat this run exactly.",
             f"The run took {_average(report['elapsed_seconds'])} seconds. Nothing on air changed.",
         ],

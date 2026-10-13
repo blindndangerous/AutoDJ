@@ -887,6 +887,22 @@
       overflow-wrap: anywhere;
     }
     #vt-list li:last-child { border-bottom: none; }
+
+    /* Track info, Matched intros (#127): each intro's words, then its
+       Listen and Remove buttons, which wrap under the words when narrow. */
+    .intro-list { list-style: none; padding: 0; margin: 0.5rem 0; }
+    .intro-list li {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.35rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .intro-list li:last-child { border-bottom: none; }
+    .intro-list .intro-text { flex: 1 1 16rem; min-width: 0; overflow-wrap: anywhere; }
+    #intro-applies { border: none; padding: 0; margin: 0.4rem 0; }
+    #intros-form > fieldset { margin: 0.75rem 0; min-width: 0; }
     .queue-name {
       flex: 1;
       min-width: 0;

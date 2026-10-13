@@ -97,6 +97,9 @@ class RenderedTrack:
             output frame). Source positions remain in the original file's units.
         next_playback_rate: Playback speed used for *next_entry*'s music head
             in this buffer.
+        intro_events: ``(start, intro_id, end, label)`` for the intro
+            matched to *next_entry* (#127) mixed into the handoff: where its
+            voice starts and its speech ends in *audio*, and its label.
     """
 
     entry: IndexEntry
@@ -120,17 +123,21 @@ class RenderedTrack:
     next_entry_offset: int = 0
     liner_events: tuple[tuple[int, IndexEntry, bool], ...] = ()
     break_events: tuple[tuple[int, str, int], ...] = ()
+    intro_events: tuple[tuple[int, str, int, str], ...] = ()
     reserved_liners: tuple[IndexEntry, ...] = ()
     next_reserved_liners: tuple[IndexEntry, ...] = ()
     loudness_processing: str = ""
     clock_cursor: int | None = None
     next_clock_cursor: int | None = None
-    # The clockwheel both clock cursors are places in (#133).
+    # The outgoing cursor belongs to this wheel; an edit may change the incoming one.
     clock_name: str | None = None
     clock_boundary: float | None = None
     next_clock_boundary: float | None = None
     clock_step: dict | None = None
     next_clock_step: dict | None = None
+    clock_revision: int | None = None
+    next_clock_revision: int | None = None
+    next_clock_name: str | None = None
     liner_plan_key: str = ""
     full_audio: np.ndarray | None = None
     source_start_offset: int = 0

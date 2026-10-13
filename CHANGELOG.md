@@ -15,6 +15,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   safe; voice liners and previews stay at their normal speed. In stream and server-audio modes,
   the new speed takes effect at the next unrendered audio-buffer boundary. Cue points, lyrics,
   catalog durations and playback progress remain on the source-file timeline.
+- Saving edits to the active clockwheel can now apply at its next restart, immediately from
+  step 1, or immediately continuing at the next step number. A song already playing and its
+  committed handoff finish normally. With no restart minutes, deferred edits apply when the
+  wheel wraps to step 1; the editor shows when an edit is waiting.
+- **Why this track?** names the clockwheel step that selected the song, with its number and the same description shown in the clockwheel list. Music and category steps say whether they choose the least recently played song or choose at random.
+- Matched intros (#127): Track info has a **Matched intros** section where you upload a short
+  voice clip for that song, or for any song by its artist, such as "Here's the new one from
+  Example Artist", and Listen to it or Remove it. When the song comes up, saved-point playback on
+  server audio or a stream mixes the clip into its song change: it talks the song up when the song's intro is long enough
+  for the speech, and otherwise plays just before the song. The song's own intros come first,
+  then the artist's. Each intro has a chance, a wait between plays (60 minutes by default) and
+  optional play dates. A matched intro takes the place of the automatic liner at that change, and
+  a DJ break booked for the change wins over it. Uploads have the liner upload limits and are
+  decoded like announcer breaks, at most one minute long. Intros are kept per station in
+  `matched_intros.json` and the `intros` folder, included in backups; a clean library scan removes
+  the intros of songs it found gone, and a share that is away loses none. The hour preview lists
+  an intro once its song change is mixed. Routes: `/api/intros` and
+  `/api/stations/<name>/intros`. See [Matched intros](docs/operations.md#matched-intros).
+
 - An hour preview with backtiming (#126): Now Playing > **Hour preview** lists what plays over
   the next 30 minutes to 3 hours with each item's estimated start time, and says in words on
   every row whether it is fixed (on the air, ready to play, picked, a booked break, in the queue)
@@ -26,7 +45,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the new **Shift+H** shortcut say the summary. Every station has its own, at
   `/api/hour-preview` and `/api/stations/<name>/hour-preview`. Previews run on one low-priority
   worker thread, stop after 80 songs or about 4 seconds, and are shared and reused for 45 seconds
-  while nothing new is fixed.
+  while the timeline and picking inputs stay current. Refresh preview always rebuilds from the
+  current inputs; queued and predicted voice liners use saved overlap cues for their estimated
+  placement.
 
 - A public player page and an embeddable player (#52), each off until `[player_page]` turns it
   on, per station. `/player` (or `/stations/<slug>/player`) has a Play button that becomes Stop,
@@ -52,6 +73,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   fields. Songs matching more than one condition are included once. Existing category steps
   open in the same condition editor and keep their selection and repeat settings. Category
   hours and the list of clockwheels using each category still apply.
+
+- Count versions as one song (#177). Settings > Picking > Repeats has a **Count versions as one
+  song** checkbox under the track limits, off by default. Versions of a song by the same lead
+  artist, such as a radio edit and a remix, then come up as often as a song with one version:
+  random picks choose a song before a version, least recently played dates a song by its latest
+  played version, and similarity keeps the best version of each song. The track limits hold back
+  every version of a song that played. The rotation tester counts the versions as one song.
+
 - Related tracks (#101). Settings > Picking > Repeats has a **Use related tracks** checkbox, off
   by default, with its own Tracks and Minutes limits (20 tracks to start with). It holds back
   tracks that sound alike on air, such as a song and one that samples it, listed as
@@ -161,6 +190,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the run works in the background with a progress bar and a Cancel button, announces its end
   once, and shows the results as headings and lists. See
   [Operations](docs/operations.md#testing-the-rotation).
+
 - Editing tags from Track info (#53). A Tags section has fields for title, artist, album, genre,
   year, BPM, key and ISRC. Save tags writes only the changed fields into the file with mutagen
   (MP3, FLAC, M4A, Ogg Vorbis, Opus, WAV and AIFF) and updates the library at once, keeping the
@@ -468,6 +498,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   "Relaying to Icecast and Shoutcast" in the operations guide.
 
 ### Fixed
+
+- Positive liner overlap points now respect the next song's intro, just like zero and
+  negative values. A cold opening waits until the liner's segue; its remaining tail can
+  still overlap. Some songs now start later where the old overlap would have covered
+  their vocals. Stored cue values and outgoing fades are unchanged (#194).
+- Track info preview audio stops when leaving the tab or saving cue points, while keeping
+  its position available for further editing (#186).
+- Audio prepared before a clockwheel edit no longer restores the old step position or restart
+  time when it begins playing (#153).
+- Clock skip logs now include the step number and reason for every skipped step, including
+  folders blocked by repeat filters (#188). Repeated reasons are logged once and reported again
+  after a pick has no skips.
 
 - A `[model] manual_path` folder whose weights are rewritten at the same size within one tick of
   the filesystem clock (two seconds on FAT and exFAT drives) gets a new digest instead of keeping

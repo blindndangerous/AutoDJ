@@ -1189,6 +1189,7 @@ const _repeatEls = {
   relatedTrackMinutes: document.getElementById("repeat-related-track-minutes"),
   useRelatedArtists: document.getElementById("repeat-use-related-artists"),
   useRelatedTracks: document.getElementById("repeat-use-related-tracks"),
+  versionsAsOneSong: document.getElementById("repeat-versions-as-one-song"),
   defaultFile: document.getElementById("repeat-related-default"),
   fileStatus: document.getElementById("repeat-related-status"),
   tracksDefaultFile: document.getElementById("repeat-related-tracks-default"),
@@ -1510,6 +1511,7 @@ function returnToOwnTempo({ audio, deck, path, rate, prevPitch }, finished) {
     deck.rateMultiplier = 1;
     deck.preservePitch = false;
     const isMusic = !deck.kind || deck.kind === "music";
+    try { audio.defaultPlaybackRate = isMusic ? musicSpeedRate() : 1; } catch (_) {}
     try { audio.playbackRate = isMusic ? musicSpeedRate() : 1; } catch (_) {}
     try { audio.preservesPitch = isMusic ? prevPitch : true; } catch (_) {}
   };
@@ -1534,6 +1536,7 @@ function returnToOwnTempo({ audio, deck, path, rate, prevPitch }, finished) {
     }
     const multiplier = rate + (1 - rate) * (step / steps);
     deck.rateMultiplier = multiplier;
+    try { audio.defaultPlaybackRate = musicSpeedRate() * multiplier; } catch (_) {}
     try { audio.playbackRate = musicSpeedRate() * multiplier; } catch (_) {}
   }, BEATMATCH_RETURN_STEP_MS);
 }
@@ -1563,6 +1566,7 @@ btnSkip.addEventListener("click", async () => {
       deck.rateMultiplier = rate;
       deck.preservePitch = preservePitch;
       try { audio.preservesPitch = preservePitch; } catch (_) {}
+      try { audio.defaultPlaybackRate = musicSpeedRate() * rate; } catch (_) {}
       try { audio.playbackRate = musicSpeedRate() * rate; } catch (_) {}
       dbg("beatmatch-on-skip: ratio=", rate.toFixed(3),
         "(", _outBpmCache.toFixed(1), "/", _inBpmCache.toFixed(1), ")");
@@ -1648,6 +1652,7 @@ function _seekByDelta(deltaSec) {
   // Comma and period leave focus where it is, so the new position is
   // said in the seek slider's own words.
   if (dur > 0) srSpeak(`${fmtTime(target)} of ${fmtTime(dur)}`);
+  hourPreviewControls?.noteSeek();
   void postJsonBestEffort("/api/seek", { delta: deltaSec }, reportBackgroundRequestError);
 }
 
@@ -1679,6 +1684,7 @@ function _seekToFrac(frac, opts) {
     if (progressLbl) progressLbl.textContent = `${fmtTime(seconds)} / ${fmtTime(dur)}`;
   }
   if (!opts || opts.post !== false) {
+    hourPreviewControls?.noteSeek();
     void postJsonBestEffort("/api/seek", { seconds }, reportBackgroundRequestError);
   }
 }

@@ -298,7 +298,7 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Six tabs:
 
 - **Now Playing.**  What is playing, the next track, album art, lyrics, the cue strip on the progress bar, and the **Hour preview**: what plays next with estimated start times, each marked fixed or predicted, and how early or late the hour lands.  See [Hour preview and backtiming](docs/operations.md#hour-preview-and-backtiming).
 - **Queue & Search.**  Find any track in your library and choose Play now, Play next (straight after the current track) or Add to queue (at the end).  Move queued tracks up, down or to the top, remove them, or clear the whole queue; each move says the new position, such as "Moved Alpha to position 2 of 5".  After Search come **Browse library**, which lists the whole library or one music or voice liner folder 100 tracks a page, and **Browse voice liners**, the liner files with Delete and Track info.
-- **Track info.**  View a recording's details, edit its tags (title, artist, album, genre, year, BPM, key and ISRC, written into the file without analysing it again) and edit its cue points. Open it from Now Playing, History, or the Queue, Search results, Browse library and Browse voice liners lists in Queue & Search. Use the Return to History, Return to Queue & Search or other view-specific button to return to the source item.
+- **Track info.**  View a recording's details, edit its tags (title, artist, album, genre, year, BPM, key and ISRC, written into the file without analysing it again) and edit its cue points. Attach matched intros: voice clips that play as the song starts, for that song or any song by its artist (see [Matched intros](docs/operations.md#matched-intros)). Open it from Now Playing, History, or the Queue, Search results, Browse library and Browse voice liners lists in Queue & Search. Use the Return to History, Return to Queue & Search or other view-specific button to return to the source item.
 - **History.**  What has played, newest first, one page at a time.  Times get a date when the page holds tracks from before today.  While page 1 is shown, each new song is added to the top on its own.  Refresh history reloads the page you are on.  Export play log saves every play between two dates, for royalty reports: a CSV with one row per play (times, seconds played, artist, title, album, ISRC, label, kind, file and performances, meaning listeners who heard it) or a SoundExchange Report of Use.  `autodj export-plays` does the same from the command line; see [Play log export](docs/operations.md#play-log-export).
 - **Settings.**  Split into subtabs, so each screen holds one group.  Move between them with the arrow keys, Home and End, as with the section tabs; the page remembers the last one you used.
   - **Transitions**: the transition mode, crossfade and fade-in length, EQ ducking and its cutoff, the transition effect and its level, and how Skip ends a track.
@@ -530,7 +530,10 @@ own limits. The page shows its fixed location, `index/<name>/related-artists.tom
 **Use related tracks**, off by default, does the same for groups of tracks that sound alike,
 such as a song and one that samples it, written as "Artist - Title" in
 `index/<name>/related-tracks.toml`. AutoDJ copies a sample of each file there on first use and
-leaves your edits alone on upgrades. After editing a file, save the repeat settings to reload it. See [repeat rules](docs/track-selection.md#repeat-avoidance-and-discovery).
+leaves your edits alone on upgrades. After editing a file, save the repeat settings to reload it.
+**Count versions as one song**, also off by default, treats a radio edit, a remix and other
+versions by the same lead artist as one song: it comes up as often as a song with one file, and
+the track limit holds back all of its versions. See [repeat rules](docs/track-selection.md#repeat-avoidance-and-discovery).
 
 ### Multi-machine / NAS setups
 

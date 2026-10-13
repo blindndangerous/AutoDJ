@@ -2738,6 +2738,8 @@ describe("stream mode", () => {
       "modules/audio-engine.js: return deck.audio.play().catch((err) => {",
       "modules/audio-engine.js: await deck.audio.play();",
       "modules/library-folders.js: await preview.play();",
+      // Track info, Matched intros, Listen: a preview in the page, like Listen back.
+      "modules/matched-intros.js: await playback.play();",
       "modules/player-page.js: playing = audio.play();",
       "modules/stream-mode.js: await audio.play();",
       // Listen back: a preview in the page, which follows the page level
@@ -3226,7 +3228,7 @@ describe("browser robustness", () => {
         standbyDeck.path = path;
         return new Promise((resolve) => { finish = resolve; });
       });
-      const standby = { playbackRate: 1, preservesPitch: false };
+      const standby = { defaultPlaybackRate: 1, playbackRate: 1, preservesPitch: false };
       const standbyDeck = { audio: standby, kind: "music", path: "previous-standby.mp3" };
       await setupApp({
         audio: {
@@ -3257,17 +3259,21 @@ describe("browser robustness", () => {
     it("holds the stretch for the whole transition, then eases back", async () => {
       const { finish, standby } = await skipWith({ outBpm: 120, inBpm: 125 });
       expect(standby.playbackRate).toBeCloseTo(0.96, 6);
+      expect(standby.defaultPlaybackRate).toBeCloseTo(0.96, 6);
       expect(standby.preservesPitch).toBe(true);
       // An effect can run up to 12 s, well past crossfade seconds.
       await vi.advanceTimersByTimeAsync(11000);
       expect(standby.playbackRate).toBeCloseTo(0.96, 6);
+      expect(standby.defaultPlaybackRate).toBeCloseTo(0.96, 6);
 
       finish(true);
       await vi.advanceTimersByTimeAsync(2000);
       expect(standby.playbackRate).toBeGreaterThan(0.96);
       expect(standby.playbackRate).toBeLessThan(1);
+      expect(standby.defaultPlaybackRate).toBeCloseTo(standby.playbackRate, 6);
       await vi.advanceTimersByTimeAsync(2000);
       expect(standby.playbackRate).toBe(1);
+      expect(standby.defaultPlaybackRate).toBe(1);
       expect(standby.preservesPitch).toBe(false);
     });
 

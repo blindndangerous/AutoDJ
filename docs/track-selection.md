@@ -129,7 +129,8 @@ Edit the rules under **Settings > Picking > Repeats**:
 - Related artists: an artist linked to a recent one in the related artists file, when
   **Use related artists** is on.
 - Album: the same album name, independent of the artist limit.
-- Track: the same audio file.
+- Track: the same audio file, or any version of the same song when **Count versions as one
+  song** is on.
 - Title: the same song title across versions, such as a radio edit and a live recording.
 - Related tracks: a track grouped with a recent one in the related tracks file, such as a song
   and one that samples it, when **Use related tracks** is on.
@@ -153,8 +154,8 @@ Re-enter any limits that still use those keys in Settings > Picking > Repeats.
 Current repeat rules are preserved, and Doctor offers optional cleanup with a backup.
 Optional config defaults use
 `[playback.repeat_rules]`, with `track`, `artist`, `related_artist`, `album`, `title` and
-`related_track` tables containing `tracks` and `minutes`, and the `use_related_artists` and
-`use_related_tracks` switches; saved web settings take precedence.
+`related_track` tables containing `tracks` and `minutes`, and the `use_related_artists`,
+`use_related_tracks` and `versions_as_one_song` switches; saved web settings take precedence.
 
 ### Titles
 
@@ -247,6 +248,40 @@ Each entry in the `[related]` table is one group, a track and a list of tracks, 
 An invalid file is refused when you save with **Use related tracks** on, leaving the previous
 rules in use. At startup, an invalid file produces a warning and the other repeat rules still
 work. The Repeats panel and `autodj doctor` report the problem.
+
+### Versions of a song
+
+A library can hold more than one version of a song, such as a radio edit and a remix. Each
+version is its own file, so a song with two versions comes up about twice as often as a song
+with one. The track rule only knows files, so it also lets the remix play soon after the
+radio edit.
+
+**Count versions as one song**, a checkbox under the same track limits, fixes both. It is off
+by default.
+
+- A song is its lead artist plus its title, compared the way the title rule compares titles.
+  The lead artist is the credit before any "feat." or "(with ...)" note. "Mariah Carey -
+  Fantasy" and "Mariah Carey feat. ODB - Fantasy (Remix)" are one song. Brandy's and Ariana
+  Grande's "The Boy Is Mine" are two, because the lead artists differ.
+- The track rule holds back every version of a song that played, for the same Tracks and
+  Minutes.
+- Random picks choose a song first and then one of its versions. A song with three versions
+  comes up as often as a song with one.
+- Least recently played dates a song by the latest play of any of its versions, then plays its
+  least recently played version, so the versions take turns. Clock steps that use least
+  recently played work the same way.
+- Similarity picks keep only the best-scoring version of each song among their candidates.
+- Versions count together wherever they are, in any folder or category.
+
+The title rule does not change. It still holds back songs that share a title across artists,
+such as two recordings of the same Christmas song. With the setting on, the rotation tester
+counts a song's versions as one song.
+
+Grouping depends on tags: reversed artist credits such as "A & B" and "B & A" stay separate,
+while identical titles by the same lead artist (such as "Intro" on different albums) group
+together. DMCA limits still count every actual play against its credited artists and album;
+grouping never reduces those counts. Related-track rules continue to use their existing
+artist/title matching, including recognised version labels.
 
 ### Where the rules apply
 

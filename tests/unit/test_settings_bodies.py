@@ -36,7 +36,10 @@ def test_playback_body_accepts_saved_points_and_legacy_fields() -> None:
 
 @pytest.mark.parametrize("value", (-10, -1.23, 0, 1.23, 10))
 def test_music_speed_percent_accepts_two_decimal_values(value: float) -> None:
-    assert PlaybackSettingsBody.model_validate({"music_speed_percent": value}).music_speed_percent == value
+    assert (
+        PlaybackSettingsBody.model_validate({"music_speed_percent": value}).music_speed_percent
+        == value
+    )
 
 
 @pytest.mark.parametrize("value", (-10.01, 10.01, 1.234, float("inf"), float("nan"), True, 1e100))

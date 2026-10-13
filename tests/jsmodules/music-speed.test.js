@@ -45,6 +45,9 @@ describe("audio engine music speed", () => {
     for (const audio of document.querySelectorAll("audio")) {
       audio.play = vi.fn().mockResolvedValue(undefined);
       audio.pause = vi.fn();
+      // Match the HTML media load algorithm: .load() restores playbackRate
+      // from defaultPlaybackRate.
+      audio.load = vi.fn(() => { audio.playbackRate = audio.defaultPlaybackRate; });
     }
     const context = {
       createAnalyser: () => ({ fftSize: 0 }),
@@ -68,9 +71,35 @@ describe("audio engine music speed", () => {
     engine.setSrcOnDeck(music, "song.mp3", "music");
     engine.setSrcOnDeck(liner, "liner.mp3", "liner");
     expect(music.audio.playbackRate).toBeCloseTo(1.0123);
+    expect(music.audio.defaultPlaybackRate).toBeCloseTo(1.0123);
     expect(music.audio.preservesPitch).toBe(false);
     expect(liner.audio.playbackRate).toBe(1);
+    expect(liner.audio.defaultPlaybackRate).toBe(1);
     expect(liner.audio.preservesPitch).toBe(true);
+  });
+
+  it("keeps effective music and native voice rates after media reload", async () => {
+    const engine = await import("../../src/autodj/static/modules/audio-engine.js");
+    engine.applyBrowserPlaybackState({ browser_playback: true,
+      current_track: { path: "song.mp3", kind: "music" },
+      next_track: { path: "next.mp3", kind: "music" },
+      settings: { playback: { music_speed_percent: 1.23 } } });
+    engine.ensureAudioGraph();
+    engine.setSrcOnDeck(engine.decks[0], "song.mp3", "music");
+
+    // Exercise the same write that applies the incoming BPM multiplier.
+    void engine.startCrossfade("next.mp3", 1, false, null, 1.5, true, "music");
+    const incoming = engine.decks[1].audio;
+    expect(incoming.defaultPlaybackRate).toBeCloseTo(1.0123 * 1.5);
+    incoming.load();
+    expect(incoming.playbackRate).toBeCloseTo(1.0123 * 1.5);
+
+    const voiceDeck = engine.decks[0];
+    engine.setSrcOnDeck(voiceDeck, "liner.mp3", "liner");
+    voiceDeck.audio.load();
+    expect(voiceDeck.audio.playbackRate).toBe(1);
+    expect(voiceDeck.audio.defaultPlaybackRate).toBe(1);
+    engine.stopAllDecks();
   });
 
   it("uses a plain fade for a sped-up music and liner overlap", async () => {
