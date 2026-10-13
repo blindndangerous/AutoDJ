@@ -63,8 +63,8 @@ its certificate against the domain (`originServerName`), with Cloudflare Access 
 one-time PIN policy) in front and `cloudflared` set to refuse requests without a valid Access
 token; see [docs/operations.md](docs/operations.md#https-with-your-own-domain). Access decides
 who reaches AutoDJ at all; AutoDJ's pairing and Host and Origin checks still apply behind it.
-Every tunnelled request arrives from the `cloudflared` machine's address. In stream mode, without
-a matching `trusted_proxies` entry, the per-address pairing lockout counts all remote browsers as one
+Every tunnelled request arrives from the `cloudflared` machine's address. Without a matching
+`[stream] trusted_proxies` entry (which applies in every mode), the per-address pairing lockout counts all remote browsers as one
 client, and someone who passed Access could use up that budget and delay other remote pairings
 for one code window. Never expose AutoDJ to
 the internet without Access, including through port forwarding.
@@ -616,6 +616,81 @@ HTTP framing:
 - In stream mode Uvicorn uses the h11 protocol implementation for every route, so HTTP/1.0
   players receive close-delimited audio instead of chunked framing they cannot read. This changes
   parsing performance, not what is accepted: the same middleware, limits and routes apply.
+
+## Listener requests
+
+The request page (`GET|HEAD|POST /requests`, and `/stations/<slug>/requests` for a configured
+slug) is the first feature that lets anyone who can reach the server change what a station does.
+It answers 404 until the station's `[requests] enabled` turns it on, and then needs no pairing.
+
+What a visitor can do, and the limits on it:
+
+- **Search the library.** Results are at most 20 songs, showing only title, artist and album.
+  Songs in blocked folders or by blocked artists are left out. A search needs 2 to 100 characters
+  and is matched as plain words in memory, never as SQL, a pattern or a path. Each address may run
+  30 searches a minute, and the same words within 30 seconds are answered from memory. The library's titles become readable to anyone who can reach the page;
+  the operator accepts that by turning requests on, and the blocklists keep chosen folders and
+  artists out.
+- **Name a song.** Songs are named by an opaque id: a keyed BLAKE2b hash of the file path, under
+  a key made when the server starts. The id reveals nothing about the path and cannot be computed
+  from one. The page never contains a path. Ids are worked out on demand for the songs a search
+  shows, and only those (the latest 10,000 per station) can be requested, so no map of the whole
+  library is built. An id that matches nothing, a song no search showed, or a blocked song gets the
+  same "Song not found" answer, so ids cannot be used to probe for hidden files.
+- **Send a request.** The form is `application/x-www-form-urlencoded` and holds only `token`,
+  `track` and an optional `name`, each given once; anything else gets 400. The body is capped at
+  2048 bytes, and a longer body gets 413 before it is parsed. The name is trimmed, at most 40
+  printable characters, and HTML-escaped wherever it is shown, to the operator too.
+- **Cross-site posts.** These are refused twice. Like every unsafe request, the POST must carry
+  exactly one allowed `Origin`. The form also carries a signed token: an HMAC-SHA256 of the
+  station's name, the song's id and the time it was issued, under a per-process key. The token is
+  good for two hours, only for that station and only for that song, so a token from one form
+  cannot send a request for another song. There is no session and no cookie, and the page sends
+  `Cache-Control: no-store`.
+- **Abuse limits, with no CAPTCHA.** Each address may make 10 form posts per ten minutes, and
+  `per_listener` accepted requests per `per_listener_minutes`. Every limit counts an IPv6 address
+  with its whole network of `[requests] ipv6_prefix` bits, a /56 by default, so a host cannot
+  rotate through the addresses (or the /64s) of its delegated network to get past them. It counts
+  an IPv4-mapped IPv6 address as its IPv4 address. With `ipv6_prefix = 64`, a home delegated a
+  /56 has 256 allowances; with a /56, several homes sharing one /56 share one allowance. The station has a daily cap,
+  `daily_limit`, and a cap on requests waiting, `max_pending`. Over a limit the answer is 429 with
+  `Retry-After`. The per-address tables keep at most 4096 addresses and forget idle ones. At most
+  four searches or request checks run at once across every station. The rest wait on the event
+  loop (an asyncio semaphore), holding no worker thread, and one that cannot start within two
+  seconds gets 503 "busy". So a flood cannot park the worker threads that carts, breaks, approvals
+  and the player's helpers need.
+- **What cannot be bypassed.** Each accepted request still has to keep the repeat rules and, in
+  DMCA mode, the DMCA limits at the place it would play. It is never played at once or at a set
+  time, and with `approval = "manual"` (the default) nothing reaches the queue until the operator
+  approves it.
+
+Addresses behind a reverse proxy count as one unless `[stream] trusted_proxies` names the proxy,
+as for the listener limits, so one visitor behind a shared address can use up that address's
+allowance for everyone behind it. Many addresses (a botnet) can still fill the daily cap. That
+denies requests for the day but nothing else, since the operator decides in manual mode.
+Listener addresses are held in memory only, never written to `listener_requests.json` or logs.
+The file keeps titles, names, times and the decision. A listener's name is removed 30 days after
+its request was decided, whatever the number of decisions kept. Pending requests expire after
+three hours and cannot be approved after that. The file is tidied when it is opened and every
+hour, whether or not anyone uses the page or the card.
+
+Placing a request never holds the queue's lock during the projection. The places are worked out
+from a copy of the queue, with no lock held. Then, under `queue_lock` alone, the queue is compared
+with that copy and the song is inserted, or the places are worked out again, at most three times,
+when it changed. The mix bus, which takes `queue_lock`, therefore never waits on the projection,
+the key cache or the library. The projection takes `history_lock` and `queue_lock` one after the
+other, never one inside the other.
+
+`[stream] trusted_proxies` now applies in every mode, not only in stream mode. Without it, an
+existing `FORWARDED_ALLOW_IPS` is honoured. Every trusted peer that is not loopback is named in a
+startup warning: it must append or overwrite `X-Forwarded-For`, and it must terminate TLS before
+machine tokens are accepted through it. The page's policy is `default-src 'none';
+script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors
+'none'`, with `X-Frame-Options: DENY`, `nosniff` and `no-referrer`.
+
+The operator's side, `GET /api/requests` and `POST /api/requests/<id>/approve|play-next|reject`,
+needs a paired browser like every other station route. It never returns a path. Ids are random
+128-bit hex values and are checked against a strict pattern before lookup.
 
 ## Request and audit records
 

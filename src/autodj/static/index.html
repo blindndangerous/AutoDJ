@@ -2065,6 +2065,22 @@
     <button type="button" id="queue-clear">Clear queue</button>
   </details>
 
+  <!-- Listener requests from the public request page; shown only when
+       [requests] is on.  The lists are plain text and refresh silently;
+       each button's result is said once in #requests-status. -->
+  <details class="card" id="requests-card" open hidden>
+    <summary id="requests-heading"><h2>Listener requests</h2></summary>
+    <p id="requests-summary">No requests waiting.</p>
+    <div id="requests-status"
+         role="status"
+         aria-live="polite"
+         aria-atomic="true"
+         class="visually-hidden"></div>
+    <ul id="requests-list" aria-label="Waiting requests" hidden></ul>
+    <h3 id="requests-recent-heading" hidden>Recent decisions</h3>
+    <ul id="requests-recent" aria-labelledby="requests-recent-heading" hidden></ul>
+  </details>
+
   <!-- Search and browse share one paginated result list. -->
   <section class="card flow-form" aria-labelledby="search-library-heading">
     <h2 id="search-library-heading">Search &amp; browse library</h2>

@@ -2442,6 +2442,7 @@ hourPreviewControls = installHourPreview();
 
 import { installLiners, bumpLinerTrackCount } from "./modules/liners.js";
 import { installTimeChecks } from "./modules/time-checks.js";
+import { installListenerRequests } from "./modules/listener-requests.js";
 
 let timeCheckControls = null;
 
@@ -2570,6 +2571,7 @@ function startAuthenticatedApp(initialState) {
       playBrowserClip(arrayBuf, duckDb, activeLinerSources, epoch),
   };
   timeCheckControls = installTimeChecks(linerAudio);
+  installListenerRequests();
   installLiners(_linerEls, { postSettings, ...linerAudio });
   // When the server mixes, it plays the cart itself and the page only
   // shows and announces it.

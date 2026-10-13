@@ -1400,6 +1400,73 @@ class NowPlayingConfig(_Section):
             raise ValueError("nowplaying.history_limit must be between 0 and 20")
 
 
+#: How listener requests are approved (``[requests] approval``).
+REQUEST_APPROVALS: tuple[str, ...] = ("manual", "auto")
+
+
+@dataclass
+class RequestsConfig(_Section):
+    """The public listener request page (``[requests]``).
+
+    Attributes:
+        enabled: Serve the request page (``/requests``, or
+            ``/stations/<slug>/requests``).  Off by default.
+        approval: ``"manual"``: each request waits for the operator;
+            ``"auto"``: a request that keeps the rules is queued at once.
+        per_listener: Requests one address may make per ``per_listener_minutes``.
+        per_listener_minutes: The window ``per_listener`` counts over.
+        daily_limit: Requests the station accepts per day, from everyone
+            (midnight in the station time zone).
+        max_pending: Requests that may wait for the operator at once.
+        window_minutes: How far ahead a request may be placed in the queue.
+        blocked_artists: Artists listeners cannot request.
+        blocked_folders: Folders whose songs listeners cannot request or
+            find, as full paths or paths inside ``[library] music_dir``.
+        ipv6_prefix: The IPv6 network one listener's limits count over,
+            in bits: 56 (the default) counts a whole home network that was
+            delegated a /56; 64 a single /64; 128 a single address.
+    """
+
+    SECTION: ClassVar[str] = "requests"
+    enabled: bool = False
+    approval: str = "manual"
+    per_listener: int = 3
+    per_listener_minutes: int = 60
+    daily_limit: int = 50
+    max_pending: int = 20
+    window_minutes: int = 30
+    blocked_artists: list[str] = field(default_factory=list)
+    blocked_folders: list[str] = field(default_factory=list)
+    ipv6_prefix: int = 56
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise TypeError("requests.enabled must be true or false")
+        if self.approval not in REQUEST_APPROVALS:
+            raise ValueError("requests.approval must be manual or auto")
+        for name, low, high in (
+            ("per_listener", 1, 100),
+            ("per_listener_minutes", 1, 1440),
+            ("daily_limit", 1, 10000),
+            ("max_pending", 1, 200),
+            ("window_minutes", 5, 240),
+            ("ipv6_prefix", 32, 128),
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"requests.{name} must be an integer")
+            if not low <= value <= high:
+                raise ValueError(f"requests.{name} must be between {low} and {high}")
+        for name in ("blocked_artists", "blocked_folders"):
+            value = getattr(self, name)
+            if not isinstance(value, list) or not all(
+                isinstance(item, str) and item.strip() for item in value
+            ):
+                raise TypeError(f"requests.{name} must be a list of non-empty strings")
+            if len(value) > 500:
+                raise ValueError(f"requests.{name} allows at most 500 entries")
+
+
 #: The most sites ``[player_page] embed_origins`` may name.
 MAX_EMBED_ORIGINS = 20
 
@@ -1690,6 +1757,7 @@ class AutoDJConfig:
     stream: StreamConfig = field(default_factory=StreamConfig)
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     nowplaying: NowPlayingConfig = field(default_factory=NowPlayingConfig)
+    requests: RequestsConfig = field(default_factory=RequestsConfig)
     player_page: PlayerPageConfig = field(default_factory=PlayerPageConfig)
     time_checks: TimeChecksConfig = field(default_factory=TimeChecksConfig)
     breaks: BreaksConfig = field(default_factory=BreaksConfig)
@@ -1881,6 +1949,7 @@ _SECTION_TYPES: tuple[type[_Section], ...] = (
     StreamConfig,
     RecordingConfig,
     NowPlayingConfig,
+    RequestsConfig,
     PlayerPageConfig,
     TimeChecksConfig,
     BreaksConfig,
@@ -1899,6 +1968,7 @@ STATION_SECTION_TYPES: tuple[type[_Section], ...] = (
     StreamConfig,
     RecordingConfig,
     NowPlayingConfig,
+    RequestsConfig,
     PlayerPageConfig,
     TimeChecksConfig,
     BreaksConfig,

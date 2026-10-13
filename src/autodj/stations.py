@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from autodj.indexer import IndexEntry
     from autodj.library import LibraryManager
     from autodj.listener_access import ListenerAccess
+    from autodj.listener_requests import RequestDesk
     from autodj.matched_intros import MatchedIntros
     from autodj.recorder import Recorder
     from autodj.scheduler import Scheduler
@@ -194,6 +195,11 @@ class StationPaths:
     def liner_dates(self) -> Path:
         """The voice liners' play dates."""
         return self.state_dir / "liner_dates.json"
+
+    @property
+    def listener_requests(self) -> Path:
+        """Listener requests: those waiting, and the recent decisions."""
+        return self.state_dir / "listener_requests.json"
 
     @property
     def matched_intros(self) -> Path:
@@ -781,6 +787,8 @@ class StationRuntime:
             else None
         )
         self.recorder: Recorder | None = None
+        # Listener requests, when [requests] is on (built by equip_station).
+        self.requests: RequestDesk | None = None
         self.stream_out: StreamOutput | None = None
         self.ws_clients: set[Any] = set()
         self.ws_lock = asyncio.Lock()
@@ -991,6 +999,9 @@ class StationRuntime:
         if carts is not None:
             await _step("closing its carts", carts.close, problems)
         await _step("closing its webhooks", self.webhooks.close, problems)
+        requests = getattr(self, "requests", None)
+        if requests is not None:
+            await _step("closing its listener requests", requests.close, problems)
         if self.stream_out is not None:
             await _step(
                 "stopping its stream",
@@ -1149,6 +1160,8 @@ class ExtraStation:
     paths: StationPaths
     preset: str
     build: Callable[[StationRegistry], StationRuntime]
+    #: Whether its ``[requests]`` page is on, so the page answers while it is stopped.
+    requests_enabled: bool = False
     #: Its ``[player_page]`` settings, so its pages answer while it is stopped.
     player_page: PlayerPageConfig | None = None
 
@@ -1199,6 +1212,7 @@ class StoppedStation:
     def __init__(self, extra: ExtraStation, *, state: str = "stopped") -> None:
         self.slug = extra.slug
         self.name = extra.name
+        self.requests_enabled = extra.requests_enabled
         self.player_page = extra.player_page
         # "stopped", "stopping" (closing down: its routes already answer
         # 409) or "stuck stopping" (its player outlived the stop and still

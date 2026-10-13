@@ -804,6 +804,27 @@ def equip_station(
     station.breaks = BreakDesk(lambda: station.cfg.breaks, station.paths.announcements)
     bridge.player.break_desk = station.breaks
 
+    requests_cfg = station.cfg.requests
+    if requests_cfg.enabled is True:
+        from autodj.listener_requests import (
+            FORM_TOKENS,
+            TRACK_SECRET,
+            RequestBook,
+            RequestDesk,
+            TrackIds,
+        )
+
+        station.requests = RequestDesk(
+            station.slug,
+            requests_cfg,
+            bridge,
+            RequestBook(station.paths.listener_requests, timezone=station.timezone),
+            music_dir=Path(station.cfg.library.music_dir),
+            tokens=FORM_TOKENS,
+            track_ids=TrackIds(TRACK_SECRET),
+            on_queued=station.nowplaying.refresh,
+        )
+
     from autodj.categories import station_wall
     from autodj.matched_intros import MatchedIntros
 
@@ -877,6 +898,7 @@ def install_station_routes(router: StationRouter) -> None:
     from autodj.carts import install_carts
     from autodj.hour_preview import install_hour_preview
     from autodj.matched_intros_api import install_matched_intros
+    from autodj.requests_api import install_requests
     from autodj.rotation_api import install_rotation_test
     from autodj.scheduler_api import install_scheduler
     from autodj.time_checks import install_time_checks
@@ -1737,6 +1759,7 @@ def install_station_routes(router: StationRouter) -> None:
     install_scheduler(router)
     install_time_checks(router)
     install_breaks(router)
+    install_requests(router)
     install_matched_intros(router)
     install_rotation_test(router)
     install_hour_preview(router)

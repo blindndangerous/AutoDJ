@@ -23,6 +23,7 @@ from autodj.config import (
     NowPlayingConfig,
     PlayerPageConfig,
     RecordingConfig,
+    RequestsConfig,
     ServerConfig,
     StreamConfig,
     TimeChecksConfig,
@@ -107,6 +108,7 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     )
     cfg.stream = StreamConfig()
     cfg.nowplaying = NowPlayingConfig()
+    cfg.requests = RequestsConfig()
     cfg.player_page = PlayerPageConfig()
     cfg.time_checks = TimeChecksConfig()
     cfg.dmca = DmcaConfig()

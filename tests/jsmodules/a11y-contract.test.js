@@ -2706,6 +2706,37 @@ describe("public status page contracts", () => {
   });
 });
 
+describe("listener request contracts", () => {
+  const requestCss = stripCssComments(readFileSync(staticPath("modules", "request-page.css"), "utf8"));
+  const requestsScript = readFileSync(staticPath("modules", "listener-requests.js"), "utf8")
+    .replace(/^\s*\/\/.*$/gm, "");
+
+  it("draws the public request page from the system palette, with visible focus and big targets", () => {
+    expect(requestCss).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
+    expect(requestCss).toMatch(/:root\[data-theme="dark"\]\s*\{\s*color-scheme: dark;/);
+    expect(requestCss).not.toMatch(/ButtonFace|ButtonText/);
+    expect(requestCss).toMatch(
+      /button:focus-visible,\s*a:focus-visible,\s*input:focus-visible\s*\{\s*outline: 3px solid currentcolor;/,
+    );
+    expect(requestCss).toMatch(/button\s*\{[^}]*min-height: 44px;/);
+    expect(requestCss).toMatch(/input\[type="text"\]\s*\{[^}]*min-height: 44px;[^}]*border: 2px solid CanvasText;/);
+    // An error is marked by weight and a bar, not by colour.
+    expect(requestCss).toMatch(/\.error\s*\{[^}]*border-left: 4px solid CanvasText;[^}]*font-weight: 600;/);
+  });
+
+  it("keeps the operator's request card to one status region, labelled lists and named buttons", () => {
+    const card = htmlSource.slice(htmlSource.indexOf('id="requests-card"'), htmlSource.indexOf("</details>", htmlSource.indexOf('id="requests-card"')));
+    expect(card.match(/aria-live=/g)).toHaveLength(1);
+    expect(card).toMatch(/id="requests-status"\s+role="status"\s+aria-live="polite"\s+aria-atomic="true"/);
+    expect(card).toMatch(/<ul id="requests-list" aria-label="Waiting requests"/);
+    expect(card).toMatch(/<ul id="requests-recent" aria-labelledby="requests-recent-heading"/);
+    // Each button starts with its visible word, then names its song.
+    expect(requestsScript).toMatch(/button\.append\(label\);/);
+    expect(requestsScript).toMatch(/which\.className = "visually-hidden";/);
+    expect(requestsScript).not.toMatch(/aria-live/);
+  });
+});
+
 describe("public player page contracts", () => {
   const playerCss = stripCssComments(readFileSync(staticPath("modules", "player-page.css"), "utf8"));
   // The code only: its comments explain these rules in the same words.
