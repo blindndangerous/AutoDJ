@@ -21,7 +21,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the new **Shift+H** shortcut say the summary. Every station has its own, at
   `/api/hour-preview` and `/api/stations/<name>/hour-preview`. Previews run on one low-priority
   worker thread, stop after 80 songs or about 4 seconds, and are shared and reused for 45 seconds
-  while nothing new is fixed.
+  while the timeline and picking inputs stay current. Refresh preview always rebuilds from the
+  current inputs; queued and predicted voice liners use saved overlap cues for their estimated
+  placement.
 
 - Queue & Search uses one paginated library table with Music or Voice liners, folder filtering
   and text search. Folder management is shown as a table in Library tools; liner file maintenance
