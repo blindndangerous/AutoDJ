@@ -52,8 +52,10 @@ function fakeServer({
   genres = ["Rock", "Jazz"],
   beets_fields = ["mood"],
   beets_error = null,
+  pending_update = false,
+  active = "Morning",
 } = {}) {
-  const server = { clocks: { Morning: copy(MORNING) }, active: "Morning", calls: [], fail: null };
+  const server = { clocks: { Morning: copy(MORNING) }, active, pending_update, calls: [], fail: null };
   server.request = vi.fn(async (url, options = {}) => {
     const method = options.method || "GET";
     const body = options.body ? JSON.parse(options.body) : undefined;
@@ -64,6 +66,7 @@ function fakeServer({
       names: names(), active: server.active, sources: SOURCES, presets: ["night", "wakeup"], categories,
       genres, beets_fields, beets_error,
       types: ["liner", "music", "settings", "track"], cursor: 1, last_status: "Ready", notice,
+      pending_update: server.pending_update,
     });
     if (url === "/api/library/clock" && method === "GET") return snapshot();
     if (url === "/api/library/clock" && method === "POST") { server.clocks[body.name] = body; return body; }
@@ -72,7 +75,8 @@ function fakeServer({
       server.clocks[body.name] = { version: 1, name: body.name, steps: [MUSIC], resync_minutes: body.resync_minutes };
       return server.clocks[body.name];
     }
-    const [, name, verb] = /^\/api\/library\/clock\/([^/]+)(?:\/(\w+))?$/.exec(url);
+    const path = url.split("?", 1)[0];
+    const [, name, verb] = /^\/api\/library\/clock\/([^/]+)(?:\/(\w+))?$/.exec(path);
     const clockName = decodeURIComponent(name);
     if (method === "GET") return copy(server.clocks[clockName]);
     if (method === "PUT") { server.clocks[clockName] = body; return body; }
@@ -166,7 +170,7 @@ describe("clockwheel editor", () => {
       type: "music", match: "any", conditions: [{ field: "category", category: "c2" }, { field: "category", category: "c1" }],
       selection: "least_recent", enforce_rules: true,
     });
-    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 4 steps."));
+    await vi.waitFor(() => expect(status()).toContain("Saved Morning, 4 steps."));
     rowButton(3, "edit").click();
     expect(byId("clock-add-step").textContent).toBe("Update step 4");
     type.value = "liner";
@@ -181,7 +185,7 @@ describe("clockwheel editor", () => {
     byId("clock-add-step").click();
     await vi.waitFor(() => expect(status()).toContain("Updated Step 4 of 4, liner from Liners or Liners"));
     byId("clock-save").click();
-    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 4 steps."));
+    await vi.waitFor(() => expect(status()).toContain("Saved Morning, 4 steps."));
     expect(server.calls.filter((call) => call.method === "PUT").at(-1).body.steps[3]).toMatchObject({
       type: "liner", conditions: [
         { field: "folder", source: "ids", folder: "" }, { field: "folder", source: "ids", folder: "" },
@@ -303,7 +307,7 @@ describe("clockwheel editor", () => {
       enforce_rules: true,
     });
     expect(rowText(3)).toContain("Live or Year between 1990 and 2000 or Duration (seconds) between 65 and 90");
-    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 4 steps."));
+    await vi.waitFor(() => expect(status()).toContain("Saved Morning, 4 steps."));
     rowButton(3, "edit").click();
     const reopenedRange = byId("clock-step-conditions").children[1];
     expect(reopenedRange.querySelectorAll("select")[2].value).toBe("between");
@@ -345,7 +349,7 @@ describe("clockwheel editor", () => {
       { field: "artist", operator: "contains", value: "Björk*" },
       { field: "title", operator: "contains", value: "Live?" },
     ]);
-    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 4 steps."));
+    await vi.waitFor(() => expect(status()).toContain("Saved Morning, 4 steps."));
     rowButton(3, "edit").click();
     expect(byId("clock-step-conditions").children).toHaveLength(2);
     byId("clock-step-conditions").children[0].querySelector("button").click();
@@ -593,7 +597,7 @@ describe("clockwheel editor", () => {
     expect(byId("clock-undo").disabled).toBe(false);
     server.fail = null;
     byId("clock-save").click();
-    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 2 steps."));
+    await vi.waitFor(() => expect(status()).toContain("Saved Morning, 2 steps."));
     expect(byId("clock-undo").disabled).toBe(true);
     rowButton(0, "delete").click();
     controls.clearProtectedData();
@@ -614,11 +618,46 @@ describe("clockwheel editor", () => {
     await vi.waitFor(() => expect(status()).toBe("This is already the first step."));
     altKey(document.activeElement, "ArrowDown");
     byId("clock-save").click();
-    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 3 steps."));
+    await vi.waitFor(() => expect(status()).toContain("Saved Morning, 3 steps."));
     const put = server.calls.find((call) => call.method === "PUT");
-    expect(put.url).toBe("/api/library/clock/Morning");
+    expect(put.url).toBe("/api/library/clock/Morning?apply_timing=next_restart");
     expect(put.body.steps.map((step) => step.type)).toEqual(["liner", "music", "track"]);
     expect(put.body.resync_minutes).toEqual([0]);
+  });
+
+  it("sends immediate apply timing when selected", async () => {
+    const server = await open(fakeServer());
+    byId("clock-resync-minutes").value = "15";
+    byId("clock-resync-minutes").dispatchEvent(new Event("input", { bubbles: true }));
+    byId("clock-apply-timing").value = "immediate";
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toContain("Changes apply immediately"));
+    const put = server.calls.find((call) => call.method === "PUT");
+    expect(put.url).toBe("/api/library/clock/Morning?apply_timing=immediate");
+  });
+
+  it("sends continue apply timing when selected", async () => {
+    const server = await open(fakeServer());
+    byId("clock-apply-timing").value = "continue";
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toContain("continuing at the next step"));
+    const put = server.calls.find((call) => call.method === "PUT");
+    expect(put.url).toBe("/api/library/clock/Morning?apply_timing=continue");
+  });
+
+  it("shows when saved active-wheel changes are waiting for restart", async () => {
+    await open(fakeServer({ pending_update: true }));
+    expect(byId("clock-next").textContent).toBe("Saved changes are waiting for the next clock restart.");
+    // A forced announcement clears the status, then writes it on the next tick.
+    await vi.waitFor(() => expect(status()).toBe("Saved changes are waiting for the next clock restart."));
+  });
+
+  it("hides Apply timing for an inactive wheel", async () => {
+    const server = await open(fakeServer());
+    expect(byId("clock-apply-timing").hidden).toBe(false);
+    server.active = "Night";
+    await controls.refresh();
+    expect(byId("clock-apply-timing").hidden).toBe(true);
   });
 
   it("moves with the buttons and moves focus to the other move button at an end", async () => {
@@ -668,7 +707,7 @@ describe("clockwheel editor", () => {
     expect(byId("clock-step-legend").textContent).toBe("Add a step");
     expect(byId("clock-step-require-following").checked).toBe(false);
     byId("clock-save").click();
-    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 3 steps."));
+    await vi.waitFor(() => expect(status()).toContain("Saved Morning, 3 steps."));
     const put = server.calls.find((call) => call.method === "PUT");
     expect(put.body.steps[1].require_following).toBe(true);
     expect(put.body.steps[0]).not.toHaveProperty("require_following");
@@ -679,7 +718,7 @@ describe("clockwheel editor", () => {
     byId("clock-add-step").click();
     await vi.waitFor(() => expect(status()).toBe("Added Step 5 of 5, liner from Liners, least recently played, ignoring repeat rules. Not saved yet."));
     byId("clock-save").click();
-    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 5 steps."));
+    await vi.waitFor(() => expect(status()).toContain("Saved Morning, 5 steps."));
     const savedAgain = server.calls.filter((call) => call.method === "PUT").at(-1);
     expect(savedAgain.body.steps[3].require_following).toBe(true);
     expect(savedAgain.body.steps[4].require_following).toBe(false);
@@ -702,7 +741,7 @@ describe("clockwheel editor", () => {
     expect(byId("clock-step-day-4").checked).toBe(false); // the form is cleared for the next step
     expect(byId("clock-step-hours-from").value).toBe("");
     byId("clock-save").click();
-    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 3 steps."));
+    await vi.waitFor(() => expect(status()).toContain("Saved Morning, 3 steps."));
     const put = server.calls.find((call) => call.method === "PUT");
     expect(put.body.steps[2]).toEqual({
       type: "track", source: "jazz", path: "Album/Song.flac",
@@ -771,7 +810,7 @@ describe("clockwheel editor", () => {
     byId("clock-add-step").click();
     await vi.waitFor(() => expect(status()).toBe("Added Step 5 of 5, switch to preset night. Not saved yet."));
     byId("clock-save").click();
-    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 5 steps."));
+    await vi.waitFor(() => expect(status()).toContain("Saved Morning, 5 steps."));
     const put = server.calls.find((call) => call.method === "PUT");
     expect(put.body.steps[3]).not.toHaveProperty("require_following");
     expect(put.body.steps[4]).not.toHaveProperty("require_following");

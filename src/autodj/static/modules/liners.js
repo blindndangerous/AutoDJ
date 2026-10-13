@@ -214,6 +214,7 @@ async function _deleteLiner(els, name, button, label = name) {
   const epoch = captureAuthenticatedRequestEpoch();
   let result = null;
   const confirmed = await confirmAction(button.ownerDocument, {
+    station: true,
     title: `Delete liner ${label}?`,
     message: "The file is removed from the liners folder.",
     confirmLabel: "Delete liner",
@@ -564,6 +565,8 @@ export function installLiners(els, deps) {
 
   // Initial fetch + reapply hidden state on load.
   void _refreshLibrary(els);
+  // After a station switch (#70): each station has its own liners.
+  return { refresh: () => _refreshLibrary(els) };
 }
 
 // Bumps the every_n_songs counter when the WS state surfaces a new

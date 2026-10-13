@@ -15,6 +15,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Saving edits to the active clockwheel can now apply at its next restart, immediately from
+  step 1, or immediately continuing at the next step number. A song already playing and its
+  committed handoff finish normally. With no restart minutes, deferred edits apply when the
+  wheel wraps to step 1; the editor shows when an edit is waiting.
+- **Why this track?** names the clockwheel step that selected the song, with its number and the same description shown in the clockwheel list. Music and category steps say whether they choose the least recently played song or choose at random.
+- Matched intros (#127): Track info has a **Matched intros** section where you upload a short
+  voice clip for that song, or for any song by its artist, such as "Here's the new one from
+  Example Artist", and Listen to it or Remove it. When the song comes up, saved-point playback on
+  server audio or a stream mixes the clip into its song change: it talks the song up when the song's intro is long enough
+  for the speech, and otherwise plays just before the song. The song's own intros come first,
+  then the artist's. Each intro has a chance, a wait between plays (60 minutes by default) and
+  optional play dates. By default, a matched intro takes the place of the automatic liner at that
+  change; Voice liners can instead limit matched intros to changes with no liner scheduled. A DJ
+  break booked for the change wins over it. Uploads have the liner upload limits and are
+  decoded like announcer breaks, at most one minute long. Intros are kept per station in
+  `matched_intros.json` and the `intros` folder, included in backups; a clean library scan removes
+  the intros of songs it found gone, and a share that is away loses none. The hour preview lists
+  an intro once its song change is mixed. Routes: `/api/intros` and
+  `/api/stations/<name>/intros`. See [Matched intros](docs/operations.md#matched-intros).
+
 - An hour preview with backtiming (#126): Now Playing > **Hour preview** lists what plays over
   the next 30 minutes to 3 hours with each item's estimated start time, and says in words on
   every row whether it is fixed (on the air, ready to play, picked, a booked break, in the queue)
@@ -26,8 +46,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the new **Shift+H** shortcut say the summary. Every station has its own, at
   `/api/hour-preview` and `/api/stations/<name>/hour-preview`. Previews run on one low-priority
   worker thread, stop after 80 songs or about 4 seconds, and are shared and reused for 45 seconds
-  while nothing new is fixed.
+  while the timeline and picking inputs stay current. Refresh preview always rebuilds from the
+  current inputs; queued and predicted voice liners use saved overlap cues for their estimated
+  placement.
 
+- Listener requests (#49), off until `[requests]` turns them on, per station.
+  - `/requests` (or `/stations/<slug>/requests`) lets anyone who can reach the server search the
+    library by title, artist or album and request a song, with an optional name. It needs no
+    pairing and no JavaScript, and each answer is a page whose title says what happened.
+  - Every request is checked against the repeat rules and, in DMCA mode, the DMCA limits at the
+    place it would play. It is also checked against blocked artists and folders, per-address
+    limits, a daily cap and a cap on requests waiting.
+  - A request goes to the place in the next `window_minutes` of the queue where it fits its
+    neighbours best: sound, tempo (half and double time count), key and energy.
+  - With `approval = "manual"` (the default), requests wait in a new Listener requests card in
+    Queue & Search, which shows where each would fit and why. The card offers Approve, Play next
+    and Turn down, says each result once and moves focus to the next request.
+  - Listeners are only ever told roughly when a song may play. Songs are named by opaque ids, never
+    paths. Each form carries a signed, time-limited token for its own song and must come from
+    the server's own origin. Limits count an IPv6 address with its whole network, a /56 by default
+    (`ipv6_prefix`). At most four
+    searches or request checks run at once, and listener names are dropped 30 days after the
+    decision.
+- A public player page and an embeddable player (#52), each off until `[player_page]` turns it
+  on, per station. `/player` (or `/stations/<slug>/player`) has a Play button that becomes Stop,
+  a labelled Volume slider remembered in the browser, the song playing, the next song when that is
+  shown publicly, and the recent songs. Nothing plays until Play is pressed, and Stop closes the
+  connection so no listener slot is held. A stall says "Buffering." once, a stream that has not
+  started 15 seconds after Play stops with a reason, and where the browser fixes the volume
+  (iPhone and iPad) a note replaces the slider. `/embed` (or `/stations/<slug>/embed`) is a compact
+  version for an `<iframe>` on another site: `embed_origins` lists the sites allowed to show it,
+  and `?theme=light` or `?theme=dark` matches the site's colours. The song line is the only live
+  region and speaks once per song; playback results are said once in a status line; both pages
+  work at 320 px, in light, dark and forced colours, and without JavaScript through the
+  browser's own audio controls. They carry nothing the public feed does not, send a strict
+  Content-Security-Policy, and the full page cannot be framed. `GET /api/stations` lists each
+  station's `player_path` and `embed_path`.
 - Queue & Search uses one paginated library table with Music or Voice liners, folder filtering
   and text search. Folder management is shown as a table in Library tools; liner file maintenance
   is back in Settings > Voice liners. Search, folders and History share arrow-key navigation.
@@ -38,6 +92,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   fields. Songs matching more than one condition are included once. Existing category steps
   open in the same condition editor and keep their selection and repeat settings. Category
   hours and the list of clockwheels using each category still apply.
+
+- Count versions as one song (#177). Settings > Picking > Repeats has a **Count versions as one
+  song** checkbox under the track limits, off by default. Versions of a song by the same lead
+  artist, such as a radio edit and a remix, then come up as often as a song with one version:
+  random picks choose a song before a version, least recently played dates a song by its latest
+  played version, and similarity keeps the best version of each song. The track limits hold back
+  every version of a song that played. The rotation tester counts the versions as one song.
+
 - Related tracks (#101). Settings > Picking > Repeats has a **Use related tracks** checkbox, off
   by default, with its own Tracks and Minutes limits (20 tracks to start with). It holds back
   tracks that sound alike on air, such as a song and one that samples it, listed as
@@ -147,6 +209,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the run works in the background with a progress bar and a Cancel button, announces its end
   once, and shows the results as headings and lists. See
   [Operations](docs/operations.md#testing-the-rotation).
+
 - Editing tags from Track info (#53). A Tags section has fields for title, artist, album, genre,
   year, BPM, key and ISRC. Save tags writes only the changed fields into the file with mutagen
   (MP3, FLAC, M4A, Ogg Vorbis, Opus, WAV and AIFF) and updates the library at once, keeping the
@@ -189,6 +252,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   such as `daypart` gives single songs their own hours. The categories list says the hours in
   words and when a category is outside them now. Categories without hours are saved as before.
 
+- A station switcher in the web page (#70). With more than one station, a **Station** button in
+  the banner opens a menu of every station with its state ("Night Owl Radio, on air, 3
+  listeners"); Enter, Space or a click switches, and moving through the menu never does. The page
+  then controls that station: every station control, panel and live update follows it, while the
+  library, search, presets and pairing stay shared. The heading, the browser tab's title, the main
+  landmark and the station tabs name it, the switch is announced, and screen readers hear "On
+  Night Owl Radio" after each control that changes what is on air and "Shared by all stations"
+  after shared ones. `?station=<slug>` in the address opens a station, and each browser
+  remembers the last one chosen. `c` moves to the switcher
+  and Shift+C says which station the page controls. Listen here keeps playing the station it was
+  started on. A stopped station shows an off-air note with Start, and Settings, Stream can stop a
+  station other than the default one. Hidden with one station, so a single-station page is
+  unchanged. See "The station switcher" in `docs/operations.md`.
 - Groundwork for running several stations on one server (#70). Every control address also answers
   under `/api/stations/default/...`, and the play log, last-played times and active clockwheel are
   kept per station in `library.db`. Existing plays belong to the default station, so nothing
@@ -210,8 +286,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `/api/stations/<slug>/`, and `GET /api/stations` lists every station. `POST
   /api/stations/<slug>/start` and `/stop` start and stop one; `autostart = false` leaves a station
   stopped until then. Its log lines start with `[<slug>]`. Only one station can use Stereo Tool
-  at a time (one licence), and a Stereo Tool preset any station uses cannot be deleted. The web
-  page's station switcher comes later.
+  at a time (one licence), and a Stereo Tool preset any station uses cannot be deleted.
 - Each station has its own public status page and now-playing feed (#70): `/stations/<slug>/status`
   and `/api/stations/<slug>/nowplaying`. Each shows only that station's name, songs and
   listeners, and the page links to that station's stream and playlist and keeps itself current
@@ -224,6 +299,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   running for", since each station counts its own, and a stopped station's says "Not on air".
   In Safari and other WebKit browsers, the status page's Pause updates button is now readable in
   the dark theme; its text had too little contrast.
+- `autodj backup` and `autodj restore` cover every station (#70). Each other station's settings,
+  schedule, carts, time checks, listener bans, recording state, liner dates, liners, cart clips,
+  time check clips, clockwheels and profiles are stored under `stations/<slug>/` in the archive,
+  and the default station's keep their names. A folder two stations share is stored once.
+  Restore puts each station's files back in its own folder, and refuses a backup holding a
+  station the configuration does not define ("add [stations.<slug>] to config.toml first")
+  before it changes anything. A shared folder restored where the configuration keeps it apart is
+  restored once, with a warning. Folders that hold one another, or a station's own folder, are
+  refused, and a station's `liners_folder` or `clips_folder` that holds its own folder is a
+  configuration error.
+- Backup and restore are safer for every installation (#70). Restore is all or nothing: every
+  file and folder it replaces is set aside first and put back if any replacement fails, so a
+  failure part way no longer leaves a mix of old and new files. It checks the archive's size
+  against a 256 GiB cap and the free space before unpacking, and refuses file names Windows
+  reserves for devices, holding `* ? " < > |` or ending in a dot or a space. Each step is
+  written to a journal first: a restore stopped by a crash is reported by `autodj doctor`, which
+  offers to roll it back (asking first and moving rather than deleting), and `autodj serve`
+  refuses to start until it is. Restore refuses while `autodj serve` holds its new lock on the
+  index folder. SQLite journal and WAL files beside a replaced database are set aside with it. Old
+  copies that cannot be deleted at the end no longer fail a finished restore. A backup copies every
+  station's state files with the index generation under the index's lock, checks the free space
+  first and skips AutoDJ's own temporary files; restored files keep their saved permissions.
+  `autodj doctor --station` runs only that station's repairs, and an index rebuild is always asked
+  for, even with `--fix`. A link that leaves its folder,
+  including a Windows junction, makes the backup fail with its name instead of copying outside
+  files (#193); a link within the folder is saved as a file. Restore refuses links in an archive
+  and destinations that a link takes elsewhere. Hard-linked files are refused because their other
+  names may be outside the backup folder.
+- `autodj doctor` checks every station (#70). Each other station gets its own lines, starting
+  "Station <slug>," (and a `station` field in `--json`): its folder, saved settings, stream,
+  relays, time checks and voice packs, DMCA mode, recording folder and liner folder.
+  `--station <slug>` checks one station (`default` for the default one) beside the server
+  checks. New for every station: `recording` (can its folder be written) and `liners` (is a
+  configured liner folder there). New server checks: `config-keys` lists the keys and tables in
+  the config files that AutoDJ ignores, including those under `[stations.<slug>]`, and
+  `station-folders` names station folders no `[stations.<slug>]` table uses any more, which are
+  never deleted and not backed up. Doctor offers to clean up a station's saved settings (with a
+  backup) and to make a station's folder, each only after asking, or with `--fix`.
 
 - Schedule events can have a date range: an optional start date and end date, both included, in
   the station time zone. Outside the range an event does not run, and Next events skips it. An
@@ -455,11 +568,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The web page footer said "build unknown" in Docker, because the image has no git. Build it
+  with `AUTODJ_COMMIT=$(git rev-parse --short HEAD) docker compose build` (or `up -d --build`)
+  and the footer names that commit. Once paired, the commit in the footer, from git or from
+  the image, links to that commit on GitHub in a new tab. A value that is not 7 to 40
+  hexadecimal digits is ignored. See [Build stamp](docs/operations.md#build-stamp).
+- Positive liner overlap points now respect the next song's intro, just like zero and
+  negative values. A cold opening waits until the liner's segue; its remaining tail can
+  still overlap. Some songs now start later where the old overlap would have covered
+  their vocals. Stored cue values and outgoing fades are unchanged (#194).
+- Track info preview audio stops when leaving the tab or saving cue points, while keeping
+  its position available for further editing (#186).
+- Audio prepared before a clockwheel edit no longer restores the old step position or restart
+  time when it begins playing (#153).
+- Clock skip logs now include the step number and reason for every skipped step, including
+  folders blocked by repeat filters (#188). Repeated reasons are logged once and reported again
+  after a pick has no skips.
+
 - A `[model] manual_path` folder whose weights are rewritten at the same size within one tick of
   the filesystem clock (two seconds on FAT and exFAT drives) gets a new digest instead of keeping
   the old one, so the server and a remote worker can no longer look as if they run the same
   weights when they do not. A digest is only remembered once every weight file is more than two
   seconds old.
+- Backups refuse links to files outside a configured backup folder and linked subfolders,
+  including Windows junctions, for both default and named stations. Restore also checks
+  linked destinations before replacing any files (#193).
 
 - Several stations on one server (#70, #141):
   - Restarting audio processing releases finished process objects and their Windows handles
@@ -639,6 +772,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The operations guide walks through adding a station to a server that runs one, step by step,
+  from the backup and configuration to moving its listeners and retiring a station (#70).
+  ADR 5 records the design: a station owns its playout chain, and the library is shared. The
+  README introduces several stations.
+
 - Analysis worker status counts waiting songs without sorting or building a list of their
   paths (#166).
 
@@ -748,6 +886,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- `[stream] trusted_proxies` now applies in every mode, not only in stream mode, so pairing, the
+  listener request limits and the audit log see a proxied client's own address there too. Trust
+  only a proxy that appends or overwrites `X-Forwarded-For`. Without `trusted_proxies`, an
+  existing `FORWARDED_ALLOW_IPS` is honoured, and the startup log warns about every trusted proxy
+  that is not on this machine.
+- No page AutoDJ serves can be shown inside another site's frame any more, so a hostile page
+  cannot overlay the web UI or a public page to trick a click (clickjacking). Every response now
+  carries `Content-Security-Policy: frame-ancestors 'none'` (added to the page's own policy where
+  it has one) and `X-Frame-Options: DENY`. The one exception is the new embeddable player, which
+  may be framed only by the sites in `[player_page] embed_origins`.
 - FFmpeg may now open only local files and pipes whenever AutoDJ asks it to read a song, a liner,
   a cart clip or a break (`-protocol_whitelist file,pipe`). A file that FFmpeg took for a playlist
   could otherwise make it fetch addresses on the network.

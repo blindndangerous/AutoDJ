@@ -537,6 +537,9 @@ def test_run_doctor_check_order(tmp_path: Path) -> None:
         "related-tracks",
         "time-checks",
         "categories",
+        "config-keys",
+        "recording",
+        "liners",
     ]
 
 

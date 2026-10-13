@@ -1,3 +1,5 @@
+import { severalStations, stationName } from "./stations.js";
+
 // Shared "are you sure" step for actions that cannot be undone: Clear
 // queue, Replace profile, Delete profile, Delete liner, Sign out and Revoke
 // device.
@@ -16,7 +18,11 @@
 // top of the page and the opener before the new focus (D14).  While it
 // runs, Cancel and Escape are held so the dialog cannot close under it.
 
-export function confirmAction(doc, { title, message, confirmLabel, onConfirm = null }) {
+// station: the action changes one station (#70).  While the server has
+// several, the message then ends by naming the station the page controls.
+export function confirmAction(doc, {
+  title, message, confirmLabel, onConfirm = null, station = false,
+}) {
   const dialog = doc.getElementById("confirm-dialog");
   const heading = doc.getElementById("confirm-title");
   const text = doc.getElementById("confirm-message");
@@ -26,7 +32,9 @@ export function confirmAction(doc, { title, message, confirmLabel, onConfirm = n
     return Promise.resolve(false);
   }
   heading.textContent = title;
-  text.textContent = message;
+  text.textContent = station && severalStations()
+    ? `${message} Station: ${stationName()}.`
+    : message;
   confirmButton.textContent = confirmLabel;
   dialog.returnValue = "";
   return new Promise((resolve) => {

@@ -16,6 +16,7 @@
 //     added to the box's description.  Pressing it says the reason and
 //     leaves it unticked: listeners never get the next song in that mode.
 
+import { DEFAULT_STATION, currentStation } from "./stations.js";
 import { announceStatus } from "./live-region.js";
 import { saveHolds } from "./settings-panel.js";
 import { listRow, rowButton } from "./dom-helpers.js";
@@ -23,6 +24,14 @@ import { isLoopbackHost } from "./stream-mode.js";
 
 export const FEED_PATH = "/api/nowplaying";
 export const STATUS_PATH = "/status";
+
+// The station's own public feed and status page (#70): the default
+// station keeps the addresses above; another is under its name.
+function publicPaths(slug = currentStation()) {
+  if (slug === DEFAULT_STATION) return { feed: FEED_PATH, status: STATUS_PATH };
+  const name = encodeURIComponent(slug);
+  return { feed: `/api/stations/${name}/nowplaying`, status: `/stations/${name}/status` };
+}
 export const COPIED_TEXT = "Now-playing link copied.";
 export const COPY_FAILED_TEXT =
   "Could not copy. Select the now-playing link and copy it yourself.";
@@ -100,8 +109,19 @@ export function installNowPlayingSettings({
   const empty = doc.getElementById("np-webhooks-empty");
   if (!link || !copy || !showNext || !list || !empty) return null;
 
-  link.value = `${doc.location.origin}${FEED_PATH}`;
-  if (statusLink) statusLink.value = `${doc.location.origin}${STATUS_PATH}`;
+  const statusOpen = doc.getElementById("np-status-open");
+  // The addresses follow the station the page controls.
+  function showAddresses() {
+    const paths = publicPaths();
+    const feed = `${doc.location.origin}${paths.feed}`;
+    if (link.value !== feed) link.value = feed;
+    const status = `${doc.location.origin}${paths.status}`;
+    if (statusLink && statusLink.value !== status) statusLink.value = status;
+    if (statusOpen && statusOpen.getAttribute("href") !== paths.status) {
+      statusOpen.setAttribute("href", paths.status);
+    }
+  }
+  showAddresses();
   if (loopbackNote && isLoopbackHost(hostname)) {
     loopbackNote.hidden = false;
     // Heard when tabbing to a link or its Copy, not only in browse mode.
@@ -278,6 +298,7 @@ export function installNowPlayingSettings({
   });
 
   function apply(state) {
+    showAddresses();
     // A push without settings leaves DMCA mode as it was.
     const dmcaSetting = state?.settings?.playback?.dmca_enabled;
     if (typeof dmcaSetting === "boolean" && dmcaSetting !== dmcaLocked()) applyDmca(dmcaSetting);

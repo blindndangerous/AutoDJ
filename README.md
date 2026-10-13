@@ -139,6 +139,14 @@ The public `/api/nowplaying` JSON feed lets pages show the station's current son
 recent plays and listener count, and the public `/status` page shows the same to listeners as plain text. With several stations, each has its own feed and page, at `/api/stations/<slug>/nowplaying` and `/stations/<slug>/status`. The upcoming song is hidden unless you turn on `[nowplaying] show_next`. Track-change
 webhooks can send the same metadata to other services or Discord; configure their URLs in
 `config.local.toml`. See [Operations](docs/operations.md#now-playing-feed-and-webhooks).
+An optional public request page (`/requests`) lets listeners search the library and request
+songs, within per-listener and daily limits, the repeat rules and DMCA limits; you approve them
+by hand or automatically in Queue & Search. It is off until `[requests]` turns it on. See
+[Operations](docs/operations.md#listener-requests).
+An optional public player page (`/player`) lets listeners press Play to hear the station in the
+browser, and an embeddable version (`/embed`) puts the same player on another website; both are
+off until `[player_page]` turns them on. See
+[Operations](docs/operations.md#player-page-and-embeddable-player).
 
 DMCA mode (`[dmca] enabled = true`) keeps the station inside the US statutory webcasting
 licence's performance complement: album, artist and box set limits in any three hours, in every
@@ -170,6 +178,17 @@ when nobody listens to AutoDJ directly. Settings, Stream shows each relay's stat
 `autodj doctor` checks that each server answers. See
 [Relaying to Icecast and Shoutcast](docs/operations.md#relaying-to-icecast-and-shoutcast) for
 every option.
+
+### Several stations
+
+One server can run more than one station from the same library. The root sections of
+`config.toml` stay the default station; each other station is a `[stations.<slug>]` table with
+its own playback, stream, relays, recording, schedule, carts, clockwheels, liners and saved
+settings, streaming at `/stations/<slug>.mp3`. The Station button in the web page's banner
+chooses which station the page controls, and `autodj backup` and `autodj doctor` cover every
+station. See [Several stations](docs/operations.md#several-stations), including
+[adding a station step by step](docs/operations.md#adding-a-station-step-by-step), and
+[ADR 5](docs/adr/0005-a-station-owns-its-playout-chain.md) for the design.
 
 `autodj serve` loads the current library from `library.db` and shows its song and analysis
 counts. Add music in Library tools; songs become available before advanced analysis finishes.
@@ -217,9 +236,11 @@ Every command takes `--help`, for example `uv run autodj serve --help`. The glob
   network; `autodj serve --stream` also serves the live mix as an MP3 radio station.
 - `autodj list-devices` lists the audio output devices available to `serve --server-audio`.
 - `autodj doctor` checks configuration, saved browser settings, paths, dependencies, the model,
-  and security settings. Use `--name` to check a specific index. If `serve` fails in a terminal,
-  it offers to run Doctor; repairs still require confirmation.
-- `autodj backup` and `autodj restore` archive and restore index and user data.
+  and security settings, and each station when there are several. Use `--name` to check a
+  specific index and `--station` to check one station. If `serve` fails in a terminal, it offers
+  to run Doctor; repairs still require confirmation.
+- `autodj backup` and `autodj restore` archive and restore index and user data, every station's
+  included.
 - `autodj devices list`, `rename`, `revoke`, `reset`, and `pairing-code` manage paired browsers.
 
 ### Starting without flags
@@ -294,7 +315,7 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Six tabs:
 
 - **Now Playing.**  What is playing, the next track, album art, lyrics, the cue strip on the progress bar, and the **Hour preview**: what plays next with estimated start times, each marked fixed or predicted, and how early or late the hour lands.  See [Hour preview and backtiming](docs/operations.md#hour-preview-and-backtiming).
 - **Queue & Search.**  Find any track in your library and choose Play now, Play next (straight after the current track) or Add to queue (at the end).  Move queued tracks up, down or to the top, remove them, or clear the whole queue; each move says the new position, such as "Moved Alpha to position 2 of 5".  After Search come **Browse library**, which lists the whole library or one music or voice liner folder 100 tracks a page, and **Browse voice liners**, the liner files with Delete and Track info.
-- **Track info.**  View a recording's details, edit its tags (title, artist, album, genre, year, BPM, key and ISRC, written into the file without analysing it again) and edit its cue points. Open it from Now Playing, History, or the Queue, Search results, Browse library and Browse voice liners lists in Queue & Search. Use the Return to History, Return to Queue & Search or other view-specific button to return to the source item.
+- **Track info.**  View a recording's details, edit its tags (title, artist, album, genre, year, BPM, key and ISRC, written into the file without analysing it again) and edit its cue points. Attach matched intros: voice clips that play as the song starts, for that song or any song by its artist (see [Matched intros](docs/operations.md#matched-intros)). Open it from Now Playing, History, or the Queue, Search results, Browse library and Browse voice liners lists in Queue & Search. Use the Return to History, Return to Queue & Search or other view-specific button to return to the source item.
 - **History.**  What has played, newest first, one page at a time.  Times get a date when the page holds tracks from before today.  While page 1 is shown, each new song is added to the top on its own.  Refresh history reloads the page you are on.  Export play log saves every play between two dates, for royalty reports: a CSV with one row per play (times, seconds played, artist, title, album, ISRC, label, kind, file and performances, meaning listeners who heard it) or a SoundExchange Report of Use.  `autodj export-plays` does the same from the command line; see [Play log export](docs/operations.md#play-log-export).
 - **Settings.**  Split into subtabs, so each screen holds one group.  Move between them with the arrow keys, Home and End, as with the section tabs; the page remembers the last one you used.
   - **Transitions**: the transition mode, crossfade and fade-in length, EQ ducking and its cutoff, the transition effect and its level, and how Skip ends a track.
@@ -526,7 +547,10 @@ own limits. The page shows its fixed location, `index/<name>/related-artists.tom
 **Use related tracks**, off by default, does the same for groups of tracks that sound alike,
 such as a song and one that samples it, written as "Artist - Title" in
 `index/<name>/related-tracks.toml`. AutoDJ copies a sample of each file there on first use and
-leaves your edits alone on upgrades. After editing a file, save the repeat settings to reload it. See [repeat rules](docs/track-selection.md#repeat-avoidance-and-discovery).
+leaves your edits alone on upgrades. After editing a file, save the repeat settings to reload it.
+**Count versions as one song**, also off by default, treats a radio edit, a remix and other
+versions by the same lead artist as one song: it comes up as often as a song with one file, and
+the track limit holds back all of its versions. See [repeat rules](docs/track-selection.md#repeat-avoidance-and-discovery).
 
 ### Multi-machine / NAS setups
 

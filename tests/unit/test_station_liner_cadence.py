@@ -34,6 +34,8 @@ def test_every_three_station_tracks_commits_liner_after_tracks_three_and_six(
     )
 
     player = Player.__new__(Player)
+    player._clock_lock = threading.RLock()
+    player._clock_revision = 0
     player._cfg = SimpleNamespace(playback=SimpleNamespace(pick_mode="similarity"))
     player._state = SimpleNamespace(queue_lock=threading.Lock(), queued_next=None, queue=[])
     player._pending_reserved_liners = ()

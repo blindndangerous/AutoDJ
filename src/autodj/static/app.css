@@ -210,6 +210,73 @@
     #conn-status.connecting  { background: #e67e22; color: #000; }
     #conn-status.error       { background: var(--danger);  color: #fff; }
 
+    /* Station switcher (#70): a menu button in the banner.  The banner
+       wraps so the button never pushes the page sideways at 320 px. */
+    header { flex-wrap: wrap; }
+    .station-switcher { position: relative; }
+    #station-button .station-switcher-name { font-weight: 600; }
+    #station-button .station-switcher-caret { margin-left: 0.25rem; }
+    #station-menu {
+      position: absolute;
+      top: calc(100% + 0.25rem);
+      left: 0;
+      z-index: 50;
+      min-width: 16rem;
+      max-width: min(28rem, calc(100vw - 2rem));
+      list-style: none;
+      padding: 0.25rem;
+      background: var(--bg-card);
+      color: var(--text);
+      border: 1px solid var(--control-border);
+      border-radius: var(--radius);
+    }
+    .station-switcher-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      min-height: 44px;
+      padding: 0.5rem 0.75rem;
+      border-radius: var(--radius);
+      cursor: pointer;
+    }
+    /* The checked station is marked by shape as well as by state: a tick
+       before its name, and room for one before the others (WCAG 1.4.1). */
+    .station-switcher-item::before {
+      content: "";
+      flex: 0 0 1rem;
+    }
+    .station-switcher-item[aria-checked="true"]::before { content: "\2713" / ""; }
+    .station-switcher-item[aria-checked="true"] { font-weight: 600; }
+    .station-switcher-item:hover,
+    .station-switcher-item:focus {
+      background: var(--tab-hover-bg);
+      color: var(--tab-hover-text);
+    }
+    .station-switcher-item:focus-visible { outline-offset: -2px; }
+    /* On a phone the menu spans the banner, so a long station name never
+       pushes it past the right edge (WCAG 1.4.10). */
+    @media (max-width: 40rem) {
+      header { position: relative; }
+      .station-switcher { position: static; }
+      #station-menu {
+        top: auto;
+        left: 0.75rem;
+        right: 0.75rem;
+        min-width: 0;
+        max-width: none;
+      }
+    }
+
+    /* The station this page controls is stopped (#70). */
+    .station-off-air {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+    }
+    .station-off-air[hidden] { display: none; }
+
     main {
       /* In rem, so the column widens with the reader's text size: at
          780 px, 200 % text squeezed every label and field into a column
@@ -887,6 +954,22 @@
       overflow-wrap: anywhere;
     }
     #vt-list li:last-child { border-bottom: none; }
+
+    /* Track info, Matched intros (#127): each intro's words, then its
+       Listen and Remove buttons, which wrap under the words when narrow. */
+    .intro-list { list-style: none; padding: 0; margin: 0.5rem 0; }
+    .intro-list li {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.35rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .intro-list li:last-child { border-bottom: none; }
+    .intro-list .intro-text { flex: 1 1 16rem; min-width: 0; overflow-wrap: anywhere; }
+    #intro-applies { border: none; padding: 0; margin: 0.4rem 0; }
+    #intros-form > fieldset { margin: 0.75rem 0; min-width: 0; }
     .queue-name {
       flex: 1;
       min-width: 0;
@@ -1833,6 +1916,16 @@
 #page-footer code,
 #page-footer #ver-commit {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+/* The commit link: --accent on --bg clears 4.5:1 in both themes, the
+   underline tells it from the text around it (1.4.1), and it stands
+   24 px tall (2.5.8).  The focus ring is the shared :focus-visible one. */
+#page-footer #ver-commit-link {
+  display: inline-block;
+  min-height: 24px;
+  line-height: 24px;
+  color: var(--accent);
+  text-decoration: underline;
 }
 
 /* Settings > Stream ------------------------------------------------- */

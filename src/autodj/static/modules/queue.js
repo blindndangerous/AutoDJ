@@ -95,19 +95,19 @@ export function renderQueue(queue, { queueList, queueCount }) {
       <button type="button" class="queue-btn" data-action="info" data-path="${path}"
               aria-label="Track info for ${name}">Track info</button>
       <button class="queue-btn" data-action="top"    data-path="${path}"
-              aria-label="Move ${name} to top of queue" ${isFirst ? "disabled" : ""}>
+              aria-label="Move ${name} to top of queue" aria-describedby="station-context" ${isFirst ? "disabled" : ""}>
         Top
       </button>
       <button class="queue-btn" data-action="up"     data-path="${path}"
-              aria-label="Move ${name} up in queue"     ${isFirst ? "disabled" : ""}>
+              aria-label="Move ${name} up in queue" aria-describedby="station-context" ${isFirst ? "disabled" : ""}>
         <span aria-hidden="true">▲</span> Up
       </button>
       <button class="queue-btn" data-action="down"   data-path="${path}"
-              aria-label="Move ${name} down in queue"   ${isLast  ? "disabled" : ""}>
+              aria-label="Move ${name} down in queue" aria-describedby="station-context" ${isLast  ? "disabled" : ""}>
         <span aria-hidden="true">▼</span> Down
       </button>
       <button class="queue-btn" data-action="remove" data-path="${path}"
-              aria-label="Remove ${name} from queue">
+              aria-label="Remove ${name} from queue" aria-describedby="station-context">
         <span aria-hidden="true">✕</span> Remove
       </button>
     </li>`;
@@ -138,6 +138,7 @@ export function installQueueClear({ queueList, queueAnnounce, queueClear, queueC
     // to the button with the list already empty (see confirmAction).  The
     // result is said after the dialog has closed.
     const confirmed = await confirmAction(doc, {
+      station: true,
       title: "Clear the queue?",
       message: `This removes all ${count} queued ${plural}.  AutoDJ keeps picking tracks on its own.`,
       confirmLabel: "Clear queue",
