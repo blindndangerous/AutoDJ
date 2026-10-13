@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from autodj.config import MAX_FADE_SECONDS
 from autodj.repeat_settings import RepeatSettings
@@ -119,7 +119,7 @@ class StreamSettingsBody(BaseModel):
 
     @field_validator("genre", "description", "url")
     @classmethod
-    def _check_station_metadata(cls, value: str | None, info) -> str | None:
+    def _check_station_metadata(cls, value: str | None, info: ValidationInfo) -> str | None:
         if value is None:
             return None
         if not value.isprintable():

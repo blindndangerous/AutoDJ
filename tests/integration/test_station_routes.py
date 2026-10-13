@@ -110,6 +110,8 @@ STATION = frozenset(
         "/discovery/toggle",
         "/eq",
         "/stream",
+        "/stream/relays",
+        "/stream/relays/{name}",
         "/stream/listeners",
         "/stream/listeners/{ident}",
         "/stream/bans",

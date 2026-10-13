@@ -841,7 +841,20 @@ connections. Relays run in stream mode only. Supported servers:
 - Shoutcast 1 (DNAS 1.9).
 - Shoutcast 2 (DNAS 2), through its Shoutcast 1 source login with a stream ID.
 
-Describe each server as a named table in `config.toml`:
+In **Settings > Stream**, add or edit relays, enable or disable them, and check their
+connection status. Set the station name, genre, description and website there too; relays
+inherit this metadata. Saving metadata reconnects enabled relays, but leaves direct stream
+listeners connected. Changing one relay reconnects that relay only.
+
+Until the first web relay save, the list comes from `config.toml`. After that, the complete
+list is stored in the station's private `relays.json`, including an empty list if every relay
+is removed. Passwords are never returned to the browser: leave the password blank when
+editing to keep it. Environment passwords take precedence and cannot be edited in the web
+form. `relays.json` contains credentials and is deliberately excluded from AutoDJ backups;
+keep a separate private copy if needed. Unreadable saved relay settings leave relays off.
+Station metadata is saved with the other web settings in `web_state.json`.
+
+For initial configuration, describe each server as a named table in `config.toml`:
 
 ```toml
 [stream.relays.main]

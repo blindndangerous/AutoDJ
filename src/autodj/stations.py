@@ -1241,7 +1241,7 @@ class StationRegistry:
         self._locks: dict[str, asyncio.Lock] = {slug: asyncio.Lock() for slug in self._extras}
         # Set once shutdown begins: no station starts after that.
         self._closing = False
-        self.relay_lock = asyncio.Lock()
+        self.relay_lock = threading.RLock()
         # Stations being stopped.  From the moment a stop is asked for,
         # their routes answer 409 at once and a start is refused at once,
         # instead of waiting while the player finishes (up to

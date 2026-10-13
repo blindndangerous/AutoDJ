@@ -43,7 +43,7 @@ from autodj.clockwheel_store import (
     validate_clockwheel,
     validate_name,
 )
-from autodj.config import MAX_RELAYS, RelayConfig
+from autodj.config import MAX_RELAYS, RelayConfig, _relay_target
 from autodj.playlog import (
     missing_fields,
     parse_bound,
@@ -356,8 +356,9 @@ def _require_stream_mode(station: StationRuntime) -> ListenerAccess:
     return station.listener_access
 
 
-def _relay_target(config: RelayConfig) -> tuple[object, ...]:
-    return (config.host.lower().rstrip("."), config.port, config.mount, config.stream_id)
+def _refresh_relay_metadata(station: StationRuntime, registry: Any) -> None:
+    with registry.relay_lock:
+        station.bridge.relays.reconfigure(station.cfg.stream.relays.values(), restart_all=True)
 
 
 def _persist_relay_set(station: StationRuntime, proposed: dict[str, RelayConfig]) -> None:
@@ -382,7 +383,7 @@ def _persist_relay_set(station: StationRuntime, proposed: dict[str, RelayConfig]
             if previous is None:
                 path.unlink(missing_ok=True)
             else:
-                write_private_file(path, previous.decode("ascii"))
+                write_private_file(path, previous)
         except (OSError, UnicodeError):
             logger.error("Could not restore prior relay settings", exc_info=True)
         raise HTTPException(status_code=503, detail="Could not apply relay settings.") from exc
@@ -390,6 +391,14 @@ def _persist_relay_set(station: StationRuntime, proposed: dict[str, RelayConfig]
 
 
 def _save_stream_relay(station: StationRuntime, body: RelaySettingsBody, registry: Any) -> dict:
+    # Keep serialization in the worker even if its HTTP request is cancelled.
+    with registry.relay_lock:
+        return _save_stream_relay_locked(station, body, registry)
+
+
+def _save_stream_relay_locked(
+    station: StationRuntime, body: RelaySettingsBody, registry: Any
+) -> dict:
     old = station.cfg.stream.relays.get(body.name)
     variable = password_variable(station.slug, body.name)
     managed = variable in os.environ
@@ -446,7 +455,12 @@ def _save_stream_relay(station: StationRuntime, body: RelaySettingsBody, registr
     return {"relay": public_relay(relay, statuses.get(body.name, {}), station.slug)}
 
 
-def _remove_stream_relay(station: StationRuntime, name: str) -> dict:
+def _remove_stream_relay(station: StationRuntime, name: str, registry: Any) -> dict:
+    with registry.relay_lock:
+        return _remove_stream_relay_locked(station, name)
+
+
+def _remove_stream_relay_locked(station: StationRuntime, name: str) -> dict:
     if name not in station.cfg.stream.relays:
         raise HTTPException(status_code=404, detail="Relay not found.")
     proposed = dict(station.cfg.stream.relays)
@@ -1120,15 +1134,13 @@ def install_station_routes(router: StationRouter) -> None:
     ) -> dict:
         _require_stream_mode(station)
         registry = request.app.state.stations
-        async with registry.relay_lock:
-            return await asyncio.to_thread(_save_stream_relay, station, body, registry)
+        return await asyncio.to_thread(_save_stream_relay, station, body, registry)
 
     @router.delete("/stream/relays/{name}")
     async def api_stream_relay_remove(station: StationDep, name: str, request: Request) -> dict:
         _require_stream_mode(station)
         registry = request.app.state.stations
-        async with registry.relay_lock:
-            return await asyncio.to_thread(_remove_stream_relay, station, name)
+        return await asyncio.to_thread(_remove_stream_relay, station, name, registry)
 
     @router.get("/recording")
     async def api_recording_status(station: StationDep) -> dict[str, object]:
@@ -1225,7 +1237,9 @@ def install_station_routes(router: StationRouter) -> None:
         return {"address": address}
 
     @router.post("/stream/settings")
-    async def api_stream_settings(station: StationDep, body: StreamSettingsBody) -> dict:
+    async def api_stream_settings(
+        station: StationDep, body: StreamSettingsBody, request: Request
+    ) -> dict:
         """Change the stream bitrate (listeners reconnect), continuous play or name."""
         access = _require_stream_mode(station)
         bridge = station.bridge
@@ -1262,9 +1276,7 @@ def install_station_routes(router: StationRouter) -> None:
             access.max_per_address = body.max_listeners_per_address
         await asyncio.to_thread(bridge.save_persistent_state)
         if metadata_changed and bridge.relays is not None:
-            await asyncio.to_thread(
-                bridge.relays.reconfigure, cfg.stream.relays.values(), restart_all=True
-            )
+            await asyncio.to_thread(_refresh_relay_metadata, station, request.app.state.stations)
         return bridge.stream_info()
 
     # ------------------------------------------------------------------
