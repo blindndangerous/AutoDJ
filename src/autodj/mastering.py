@@ -642,8 +642,8 @@ class ContinuousMaster:
                     self._output.append((generation, audio))
                     self._output_cond.notify_all()
 
-    @staticmethod
     def _stop_pipeline(
+        self,
         proc: subprocess.Popen[bytes] | None,
         writer: threading.Thread | None,
         reader: threading.Thread | None,
@@ -665,6 +665,8 @@ class ContinuousMaster:
                 with contextlib.suppress(subprocess.TimeoutExpired, OSError):
                     stage.wait(timeout=0.5)
             if stage.poll() is not None:
+                with self._spawn_lock:
+                    self._children.discard(stage)
                 with _LIVE_LOCK:
                     _LIVE_PROCESSES.discard(stage)
             for stream in (getattr(stage, "stdin", None), getattr(stage, "stdout", None)):

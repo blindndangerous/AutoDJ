@@ -365,6 +365,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - Several stations on one server (#70, #141):
+  - Restarting audio processing releases finished process objects and their Windows handles
+    during playback instead of retaining them until the station stops.
   - Stopping a station takes effect at once. While its player finishes, the station is listed
     as "stopping", its controls answer 409 straight away, its open pages are told at once, and
     starting it again is refused at once instead of waiting up to 30 seconds. Other stations can

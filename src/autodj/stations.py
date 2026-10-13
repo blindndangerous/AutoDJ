@@ -680,11 +680,8 @@ class StationRuntime:
         self.first_track = first_track
         self.paths = paths if paths is not None else StationPaths.default(bridge.player._cfg)
         self.liner_gate = _liner_gate(bridge, self.paths)
-        # The clockwheel's liner steps pass over liners outside their dates
-        # (now, or at the pick's time *at*) and other stations' liners.  A
-        # plain function, not a bound method, so copying the player's
-        # settings never copies the store (a deep copy copies a bound
-        # method's station with it).
+        # Keep both station ownership and the expected air time when filtering liners.
+        # A plain function avoids deep-copying the store with player settings.
         bridge.player.liner_filter = lambda entries, at=None: self._playable_liners(entries, at)
         self.nowplaying = NowPlaying(bridge, timezone=timezone)
         self.webhooks: WebhookWorker = WebhookWorker(getattr(bridge.player._cfg, "webhooks", ()))
@@ -721,7 +718,11 @@ class StationRuntime:
         self.liner_folder_empty_scans = 0
 
     def _playable_liners(self, entries: Sequence[Any], at: float | None = None) -> Sequence[Any]:
-        """This station's liners among *entries* that may play now, or at Unix time *at*."""
+        """This station's liners among *entries* that may play at the expected air time.
+
+        *at* is the Unix time the pick expects to air, as the player's pick
+        context gives it; ``None`` means now.
+        """
         owns = self.owns_liner
         owned = [entry for entry in entries if owns(entry.path)]
         return self.liner_gate.playable(entries if len(owned) == len(entries) else owned, at)
