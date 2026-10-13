@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import threading
@@ -93,6 +95,7 @@ class LibraryManager:
         self._lock = threading.RLock()
         self._refresh_lock = threading.Lock()
         self._scan_lock = threading.Lock()
+        self._cleanup_active = False
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._pending_sources: set[str] | None = set()
@@ -492,8 +495,113 @@ class LibraryManager:
             "tracks_indexed": indexed,
         }
 
+    def missing_removal_preview(
+        self, *, scan_lock_held: bool = False, cleanup_lock_held: bool = False
+    ) -> dict[str, Any]:
+        """Describe missing records from the latest clean scan for explicit cleanup."""
+        candidates, generation = self._missing_candidates(
+            scan_lock_held=scan_lock_held, cleanup_lock_held=cleanup_lock_held
+        )
+        if candidates is None:
+            return {"ready": False, "count": 0, "tracks": [], "token": None}
+        versions = self.catalog.change_versions()
+        token_data = json.dumps(
+            [
+                generation,
+                versions["entries"],
+                versions["sources"],
+                [item["path"] for item in candidates],
+            ],
+            separators=(",", ":"),
+        )
+        total = len(self.catalog.stored_entries())
+        count = len(candidates)
+        return {
+            "ready": True,
+            "count": count,
+            "total": total,
+            "percentage": 100 * count / total if total else 0.0,
+            "requires_override": bool(total and count / total > 0.2),
+            "tracks": candidates[:50],
+            "token": hashlib.sha256(token_data.encode()).hexdigest(),
+            "_versions": versions,
+        }
+
+    def _missing_candidates(
+        self, *, scan_lock_held: bool = False, cleanup_lock_held: bool = False
+    ) -> tuple[list[dict[str, str]], int] | tuple[None, int]:
+        """Return missing files covered by currently reachable, mounted sources."""
+        with self._lock:
+            if (
+                (self._scan_lock.locked() and not scan_lock_held)
+                or (self._cleanup_active and not cleanup_lock_held)
+                or not self._reconciled
+                or self._walk_failed
+            ):
+                return None, self._scan_generation
+            missing = set(self._missing)
+            generation = self._scan_generation
+        stored = {entry.path: (kind, entry) for kind, entry in self.catalog.stored_entries()}
+        candidates: list[dict[str, str]] = []
+        for path in sorted(missing):
+            try:
+                Path(path).stat()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                # Permission and I/O errors do not prove that a file is gone.
+                continue
+            else:
+                continue
+            stored_item = stored.get(path)
+            if stored_item is None:
+                continue
+            kind, entry = stored_item
+            relevant = self.catalog.sources_for_path(path, kind)
+            # A path covered by a disconnected source is never considered safe to remove.
+            if not relevant or any(not Path(source["path"]).is_dir() for source in relevant):
+                continue
+            candidates.append(
+                {"path": path, "title": entry.title or Path(path).name, "artist": entry.artist}
+            )
+        return candidates, generation
+
+    def remove_missing(self, token: str, *, confirmed: bool, allow_mass: bool = False) -> int:
+        """Remove only candidates from a clean, unchanged preview after explicit confirmation."""
+        if not confirmed:
+            raise ValueError("Explicit confirmation is required")
+        with self._lock:
+            if self._scan_lock.locked() or self._cleanup_active:
+                raise RuntimeError("A library scan or cleanup is running")
+            self._cleanup_active = True
+        try:
+            preview = self.missing_removal_preview(cleanup_lock_held=True)
+            if not preview["ready"] or preview["token"] != token:
+                raise RuntimeError("The library changed; rescan and preview the removal again")
+            if preview["requires_override"] and not allow_mass:
+                raise ValueError(
+                    "More than 20% of catalog tracks are missing; explicit override is required"
+                )
+            latest = self.missing_removal_preview(cleanup_lock_held=True)
+            if latest["token"] != token:
+                raise RuntimeError("The missing-track set changed; preview the removal again")
+            candidates, _generation = self._missing_candidates(cleanup_lock_held=True)
+            paths = [item["path"] for item in candidates or []]
+            if any(os.path.isfile(path) for path in paths):
+                raise RuntimeError("A missing track returned; preview the removal again")
+            removed = self.catalog.remove_entries(paths, expected_versions=latest["_versions"])
+            with self._lock:
+                self._missing = frozenset(set(self._missing) - set(paths))
+            self.refresh()
+            return removed
+        finally:
+            with self._lock:
+                self._cleanup_active = False
+
     def _claim_scan(self, source_ids: set[str] | None, override_tags: bool = False) -> bool:
         """Queue a scope and claim the worker lock; caller holds ``_lock``."""
+        if self._cleanup_active:
+            return False
         if source_ids is None or self._pending_sources is None:
             self._pending_sources = None
         else:
@@ -512,6 +620,8 @@ class LibraryManager:
         with self._lock:
             if self._closed:
                 return False
+            if self._cleanup_active:
+                return False
             if not self._claim_scan(source_ids, override_tags):
                 return True
             self._thread = threading.Thread(
@@ -527,7 +637,11 @@ class LibraryManager:
 
     def scan(self, source_ids: set[str] | None = None, override_tags: bool = False) -> None:
         with self._lock:
-            if self._closed or not self._claim_scan(source_ids, override_tags):
+            if (
+                self._closed
+                or self._cleanup_active
+                or not self._claim_scan(source_ids, override_tags)
+            ):
                 return
         self._scan_queued()
 
@@ -735,7 +849,7 @@ class LibraryManager:
                     if cache is not None:
                         cache.rekey_many([(source, str(track.path))])
                 except ValueError:
-                    # The legacy cache is rooted at one configured directory.
+                    # Invalid legacy cache paths must not prevent library scanning.
                     pass
                 finally:
                     missing.discard(source)
@@ -766,7 +880,7 @@ class LibraryManager:
             cache = get_cache(self.cfg.index.active_dir, music_dir=self.cfg.library.music_dir)
             meta = cache.get(str(path)) if cache is not None else None
         except ValueError:
-            # The legacy cache is rooted at one configured directory.
+            # Invalid legacy cache paths must not prevent library scanning.
             return {}
         if meta is None:
             return {}
