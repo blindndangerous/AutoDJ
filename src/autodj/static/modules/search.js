@@ -112,22 +112,21 @@ export function installSearch({
       label.className = "result-name";
       label.title = name;
       label.textContent = name;
-      const makeButton = (text, aria, values = {}) => {
+      const makeButton = (text, values = {}) => {
         const button = document.createElement("button");
         button.type = "button";
         button.className = "result-btn";
         button.textContent = text;
-        button.setAttribute("aria-label", aria);
         button.dataset.path = track.path;
         for (const [key, value] of Object.entries(values)) button.dataset[key] = value;
         return button;
       };
       const row = tableRow(searchResults.ownerDocument, [
         label,
-        makeButton("Play now", `Play ${name} now`, { now: "true" }),
-        makeButton("Play next", `Play ${name} next`, { now: "false", next: "true" }),
-        makeButton("Add to queue", `Add ${name} to queue`, { now: "false" }),
-        makeButton("Track info", `Track info for ${name}`, { points: "true", kind: track.kind || "music" }),
+        makeButton("Play now", { now: "true" }),
+        makeButton("Play next", { now: "false", next: "true" }),
+        makeButton("Add to queue", { now: "false" }),
+        makeButton("Track info", { points: "true", kind: track.kind || "music" }),
       ], { rowHeaderIndex: 0 });
       return row;
     }));

@@ -54,6 +54,15 @@ document.addEventListener("click", (event) => {
 });
 
 describe("clock folder and points controls", () => {
+  it("names folder tables by caption and matches the queue column to its action", () => {
+    const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
+    const page = document.createElement("template");
+    page.innerHTML = html;
+    expect(page.content.querySelector("#source-folders").hasAttribute("aria-label")).toBe(false);
+    expect(page.content.querySelector("#source-folders-table caption").textContent).toBe("Registered music and voice liner folders");
+    expect(page.content.querySelectorAll("#library-results-table th")[3].textContent).toBe("Add to queue");
+  });
+
   it("parses seconds and MM:SS while preserving empty points", () => {
     expect(parsePointTime("5.3")).toBe(5.3);
     expect(parsePointTime("1:05.5")).toBe(65.5);
@@ -166,20 +175,51 @@ describe("clock folder and points controls", () => {
     expect(request).toHaveBeenCalledWith("/api/library/folders/abc", { method: "DELETE" });
   });
 
-  it("holds a folder checkbox while its update is in flight", async () => {
-    document.getElementById("source-folders").innerHTML = '<tr data-id="abc"><td><input type="checkbox" data-field="recursive"></td></tr>';
+  it("keeps checkbox focus and blocks another toggle while saving, then survives a redraw", async () => {
+    document.getElementById("panel-library").hidden = false;
+    let folders = [{ id: "abc", path: "M:/", kind: "music", recursive: false, advanced: false }];
     let finish;
-    const request = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
-    installLibraryFolders({ document, request });
+    const request = vi.fn((url, options) => options?.method === "PATCH"
+      ? new Promise((resolve) => { finish = resolve; })
+      : Promise.resolve({ folders }));
+    const controls = installLibraryFolders({ document, request });
+    await new Promise((resolve) => setTimeout(resolve, 0));
     const checkbox = document.querySelector('[data-field="recursive"]');
-    checkbox.checked = true;
-    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
-    expect(checkbox.disabled).toBe(true);
-    expect(request).toHaveBeenCalledTimes(1);
+    checkbox.focus();
+    checkbox.click();
+    expect(checkbox.disabled).toBe(false);
+    expect(checkbox.getAttribute("aria-disabled")).toBe("true");
+    expect(document.activeElement).toBe(checkbox);
+    checkbox.click();
+    expect(checkbox.checked).toBe(true);
+    expect(request.mock.calls.filter(([, options]) => options?.method === "PATCH")).toHaveLength(1);
+    folders = [{ ...folders[0], recursive: true }];
+    await controls.refresh();
+    expect(document.activeElement).toBe(checkbox);
     finish({});
-    await vi.waitFor(() => expect(checkbox.disabled).toBe(false));
+    await vi.waitFor(() => expect(document.querySelector('[data-field="recursive"]')).not.toBe(checkbox));
+    const replacement = document.querySelector('[data-field="recursive"]');
+    expect(replacement.checked).toBe(true);
+    expect(replacement.hasAttribute("aria-disabled")).toBe(false);
+    expect(document.activeElement).toBe(replacement);
   });
 
+  it("restores the checkbox after a failed save without losing focus", async () => {
+    document.getElementById("panel-library").hidden = false;
+    const request = vi.fn(async (url, options) => {
+      if (options?.method === "PATCH") throw new Error("save failed");
+      return { folders: [{ id: "abc", path: "M:/", kind: "music", recursive: false, advanced: false }] };
+    });
+    installLibraryFolders({ document, request });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const checkbox = document.querySelector('[data-field="recursive"]');
+    checkbox.focus();
+    checkbox.click();
+    await vi.waitFor(() => expect(checkbox.hasAttribute("aria-disabled")).toBe(false));
+    expect(checkbox.checked).toBe(false);
+    expect(document.activeElement).toBe(checkbox);
+    expect(document.getElementById("source-folders-status").textContent).toContain("save failed");
+  });
 
   it("reaches both folder checkboxes with Space in separate grid cells", async () => {
     document.getElementById("panel-library").hidden = false;
@@ -234,7 +274,13 @@ describe("clock folder and points controls", () => {
       library.hidden = false;
       window.dispatchEvent(new window.HashChangeEvent("hashchange"));
       await vi.advanceTimersByTimeAsync(3000);
-      expect(request.mock.calls.length).toBeGreaterThan(1);
+      expect(request).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(request).toHaveBeenCalledTimes(4);
+      library.hidden = true;
+      window.dispatchEvent(new window.HashChangeEvent("hashchange"));
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(request).toHaveBeenCalledTimes(4);
     } finally { vi.useRealTimers(); }
   });
 

@@ -2,25 +2,41 @@
 export function installTableNavigation(body) {
   if (!body) return { refresh() {} };
   const cells = () => [...body.querySelectorAll("tr > td[role=gridcell], tr > td[role=rowheader]")];
-  const controls = (cell) => [...cell.querySelectorAll("button:not(:disabled), input:not(:disabled)")];
+  const controls = (cell) => cell ? [...cell.querySelectorAll("button, input")] : [];
+  const cellControl = (cell) => {
+    const items = controls(cell);
+    return items.length === 1 && !items[0].disabled ? items[0] : null;
+  };
+  function setRovingFocus(active) {
+    for (const cell of cells()) {
+      const control = cellControl(cell);
+      cell.tabIndex = active === cell && !control ? 0 : -1;
+      for (const item of controls(cell)) item.tabIndex = item === active ? 0 : -1;
+    }
+  }
   function refresh() {
     const items = cells();
-    const active = body.ownerDocument.activeElement?.closest?.("td");
-    items.forEach((cell, index) => { cell.tabIndex = cell === active ? 0 : index === 0 && !body.contains(active) ? 0 : -1; });
-    body.querySelectorAll("button, input").forEach((item) => { item.tabIndex = -1; });
+    const focused = body.ownerDocument.activeElement;
+    const activeCell = focused?.closest?.("td[role=gridcell], td[role=rowheader]");
+    const cell = activeCell && body.contains(activeCell) ? activeCell : items[0];
+    const active = cellControl(cell) || cell;
+    setRovingFocus(active);
   }
   body.addEventListener("focusin", (event) => {
     const cell = event.target.closest?.("td");
     if (!cell || !body.contains(cell)) return;
-    for (const item of cells()) item.tabIndex = item === cell ? 0 : -1;
+    const control = cellControl(cell);
+    if (event.target === cell && control) { control.focus(); return; }
+    setRovingFocus(control === event.target ? event.target : cell);
   });
   body.addEventListener("keydown", (event) => {
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
     const cell = event.target.closest?.("td[role=gridcell], td[role=rowheader]");
     if (!cell || !body.contains(cell)) return;
     if (event.key === "Enter" || event.key === " ") {
+      if (event.target !== cell && controls(cell).includes(event.target)) return;
       if (event.repeat) { event.preventDefault(); return; }
-      const control = controls(cell)[0];
+      const control = controls(cell).find((item) => !item.disabled);
       if (control) { event.preventDefault(); control.click(); }
       return;
     }
@@ -39,7 +55,7 @@ export function installTableNavigation(body) {
       target = rowCells[event.key === "Home" ? 0 : rowCells.length - 1];
     }
     if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) event.preventDefault();
-    if (target) target.focus();
+    if (target) (cellControl(target) || target).focus();
   });
   refresh();
   return { refresh };

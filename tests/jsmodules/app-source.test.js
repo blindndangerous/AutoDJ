@@ -1515,7 +1515,8 @@ describe("app request behavior", () => {
         expect(found).not.toBeNull();
         return found;
       });
-      expect(button.getAttribute("aria-label")).toBe("Track info for Artist — Song");
+      expect(button.hasAttribute("aria-label")).toBe(false);
+      expect(button.textContent).toBe("Track info");
       const tbody = document.querySelector("#history-tbody");
       const cells = [...tbody.querySelectorAll("td")];
       expect(cells.map((cell) => cell.getAttribute("role"))).toEqual([
@@ -1530,10 +1531,8 @@ describe("app request behavior", () => {
       cells[4].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
       expect(document.activeElement).toBe(cells[0]);
       cells[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-      expect(document.activeElement).toBe(cells[1]);
-      const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
-      cells[1].dispatchEvent(enter);
-      expect(enter.defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(button);
+      button.click();
       await vi.waitFor(() => expect(document.querySelector("#panel-track-info").hidden).toBe(false));
       expect(document.querySelector("#track-info-heading").textContent).toBe("Track info: Artist — Song");
       const back = document.querySelector("#track-info-return");
@@ -1551,6 +1550,9 @@ describe("app request behavior", () => {
       expect(historyCalls()).toHaveLength(beforeReturn);
       expect(document.querySelector("#history-tbody .history-info")).toBe(button);
       expect(focusEvents.filter((node) => node.classList?.contains("history-info"))).toEqual([button]);
+      expect(button.tabIndex).toBe(0);
+      button.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+      expect(document.activeElement).toBe(cells[2]);
       expect(document.querySelector("#sr-status").textContent).toBe("");
     } finally {
       window.location.hash = "";
@@ -1923,7 +1925,7 @@ describe("app request behavior", () => {
       await vi.waitFor(() => expect(tbody.querySelector("[data-history-id='new']")).not.toBeNull());
       expect(focused.isConnected).toBe(false);
       expect(document.activeElement).toBe(tbody.querySelectorAll("tr")[49].cells[2]);
-      expect(document.querySelector("#sr-status").textContent).toContain("no longer in the displayed History rows");
+      await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent).toContain("no longer in the displayed History rows"));
     } finally {
       window.location.hash = "";
       await new Promise((resolve) => setTimeout(resolve, 0));

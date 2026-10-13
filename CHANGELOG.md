@@ -1,7 +1,5 @@
 # Changelog
 
-- Queue & Search now uses one paginated library table with Music or Voice liners, folder filtering and text search. Folder management is shown as a table in Library tools; liner file maintenance is back in Settings > Voice liners.
-
 What changed and when, written for the people who use AutoDJ.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
@@ -11,6 +9,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+
+- Queue & Search uses one paginated library table with Music or Voice liners, folder filtering
+  and text search. Folder management is shown as a table in Library tools; liner file maintenance
+  is back in Settings > Voice liners. Search, folders and History share arrow-key navigation.
+  Action cells focus their buttons and checkboxes so screen readers can announce their roles
+  and checked state. Folder saves and table refreshes preserve focus.
 
 - A rotation tester (#125): Settings > Song picking > **Test rotation**, or
   `autodj simulate --days 7`, plays a span of time (up to 30 days) or a number of songs (up to

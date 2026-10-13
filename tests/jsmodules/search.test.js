@@ -78,7 +78,7 @@ describe("search requests", () => {
     els.btnSearch.click();
     await vi.waitFor(() => expect(els.searchResults.querySelector('[data-points="true"]')).not.toBeNull());
     const button = els.searchResults.querySelector('[data-points="true"]');
-    expect(button.getAttribute("aria-label")).toBe("Track info for Song");
+    expect(button.hasAttribute("aria-label")).toBe(false);
     expect(button.textContent).toContain("Track info");
     button.click();
     expect(onEditPoints).toHaveBeenCalledWith({ path: "M:/music/song.flac", kind: "music", opener: button });
@@ -197,10 +197,10 @@ describe("search result actions", () => {
     await vi.waitFor(() => expect(els.searchResults.textContent).toContain("Alpha"));
 
     const button = (label) => [...els.searchResults.querySelectorAll("button")]
-      .find((b) => b.getAttribute("aria-label") === label);
-    button("Play Alpha next").click();
+      .find((b) => b.textContent === label);
+    button("Play next").click();
     await vi.waitFor(() => expect(els.queueAnnounce.textContent).toBe("Alpha plays next."));
-    button("Add Alpha to queue").click();
+    button("Add to queue").click();
     await vi.waitFor(() => expect(els.queueAnnounce.textContent).toBe("Added Alpha to queue."));
 
     const posts = fetchImpl.mock.calls.filter(([url]) => !url.startsWith("/api/search"))

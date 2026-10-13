@@ -44,6 +44,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
   let searchShown = false;
   const list = doc.getElementById("source-folders");
   const tableNavigation = installTableNavigation(list);
+  const pendingFolderEdits = new Set();
   const status = doc.getElementById("source-folders-status");
   status.textContent = "";
   status.setAttribute("role", "status");
@@ -181,11 +182,10 @@ export function installLibraryFolders({ document: doc = document, request = requ
   function renderFolders(data) {
     const folders = data.folders || [];
     const signature = JSON.stringify(folders.map(({ id, path, kind, recursive, advanced }) => ({ id, path, kind, recursive, advanced })));
-    if (signature !== folderSignature) {
+    if (signature !== folderSignature && pendingFolderEdits.size === 0) {
       const focused = list.contains(doc.activeElement) ? {
         id: doc.activeElement.closest("tr")?.dataset.id,
-        field: doc.activeElement.dataset.field,
-        action: doc.activeElement.dataset.action,
+        column: doc.activeElement.closest("td")?.cellIndex,
       } : null;
       list.replaceChildren(...(folders.length ? folders.map((folder) => {
         const recursive = doc.createElement("input");
@@ -206,8 +206,8 @@ export function installLibraryFolders({ document: doc = document, request = requ
       tableNavigation.refresh();
       onFolders?.(folders);
       if (focused) {
-        const selector = focused.field ? `input[data-field="${focused.field}"]` : `button[data-action="${focused.action}"]`;
-        const replacement = [...list.querySelectorAll("tr")].find((row) => row.dataset.id === focused.id)?.querySelector(selector);
+        const cell = [...list.querySelectorAll("tr")].find((row) => row.dataset.id === focused.id)?.cells[focused.column];
+        const replacement = cell?.querySelector("button:not(:disabled), input:not(:disabled)") || cell;
         (replacement || doc.getElementById("source-folder-add")).focus();
       }
     }
@@ -275,36 +275,42 @@ export function installLibraryFolders({ document: doc = document, request = requ
   list.addEventListener("change", async (event) => {
     if (suspended) return;
     const input = event.target.closest("input[data-field]");
-    if (!input) return;
+    if (!input || pendingFolderEdits.has(input)) return;
     const row = input.closest("tr");
     const body = { [input.dataset.field]: input.checked };
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
-    input.disabled = true;
+    pendingFolderEdits.add(input);
+    input.setAttribute("aria-disabled", "true");
     try {
       await request(`/api/library/folders/${encodeURIComponent(row.dataset.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (requestCurrent(epoch, generation)) announceAction("Folder settings saved.");
     } catch (error) {
-      if (requestCurrent(epoch, generation)) { announceAction(`Could not save folder settings: ${error.message}`, true); await refresh(); }
+      if (requestCurrent(epoch, generation)) { input.checked = !body[input.dataset.field]; announceAction(`Could not save folder settings: ${error.message}`, true); }
     } finally {
-      if (requestCurrent(epoch, generation)) input.disabled = false;
+      pendingFolderEdits.delete(input);
+      if (requestCurrent(epoch, generation)) { input.removeAttribute("aria-disabled"); await refresh(); }
     }
   });
   list.addEventListener("click", async (event) => {
     if (suspended) return;
+    if (event.target.closest('[aria-disabled="true"]')) { event.preventDefault(); return; }
     const button = event.target.closest('button[data-action="remove"]');
     if (!button) return;
     const row = button.closest("tr");
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
-    button.disabled = true;
+    pendingFolderEdits.add(button);
+    button.setAttribute("aria-disabled", "true");
     try {
       await request(`/api/library/folders/${encodeURIComponent(row.dataset.id)}`, { method: "DELETE" });
       if (!requestCurrent(epoch, generation)) return;
       announceAction("Folder removed from the library.");
-      await refresh();
     } catch (error) { if (requestCurrent(epoch, generation)) announceAction(`Could not remove folder: ${error.message}`, true); }
-    finally { if (requestCurrent(epoch, generation)) button.disabled = false; }
+    finally {
+      pendingFolderEdits.delete(button);
+      if (requestCurrent(epoch, generation)) { button.removeAttribute("aria-disabled"); await refresh(); }
+    }
   });
   doc.getElementById("source-folder-rescan").addEventListener("click", async () => {
     if (suspended) return;
@@ -580,6 +586,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
   doc.addEventListener("visibilitychange", updatePolling);
   updatePolling();
   function clearProtectedData() {
+    pendingFolderEdits.clear();
     suspended = true;
     protectedGeneration += 1;
     actionAnnouncement += 1;

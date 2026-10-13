@@ -2144,7 +2144,6 @@ function historyRowHtml(it, withDate) {
   button.className = "history-info";
   button.dataset.path = it.path || "";
   button.dataset.historyId = it.event_id || `${it.played_at}:${it.path || ""}`;
-  button.setAttribute("aria-label", `Track info for ${fmtTrack(it)}`);
   button.textContent = "Track info";
   const title = document.createElement("span");
   title.textContent = it.title ?? "";
