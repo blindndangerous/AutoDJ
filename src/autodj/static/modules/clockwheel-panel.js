@@ -57,6 +57,8 @@ export function installClockwheelPanel({ document: doc = document, request = req
   const panel = el("panel-library");
   const list = el("clock-list");
   const steps = el("clock-slots");
+  const undoButton = el("clock-undo");
+  const editor = steps?.closest("section");
   const nameInput = el("clock-name");
   const resync = el("clock-resync-minutes");
   const status = el("clock-status");
@@ -72,6 +74,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   let data = empty();
   let clock = null; // the working copy, or null when none is open
   let isNew = false; // created in the page and never saved
+  let undoHistory = [];
   let dirty = false;
   let editing = null; // index of the step in the form, or null when adding
   let listSignature = "";
@@ -393,6 +396,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
           invalid(input, "Enter the duration as seconds or minutes:seconds, for example 90 or 1:30.");
         }
         if (number === null || !Number.isFinite(number)) invalid(input, `Enter a number for ${field}.`);
+        if (field === "duration" && number < 0) invalid(input, "Duration must be non-negative.");
         return number;
       };
       const result = {
@@ -441,6 +445,11 @@ export function installClockwheelPanel({ document: doc = document, request = req
   }
 
   function renderSteps(focusIndex = null, action = "edit") {
+    if (editing !== null) {
+      if (legend) legend.textContent = `Edit step ${editing + 1}`;
+      addButton.textContent = `Update step ${editing + 1}`;
+    }
+    if (undoButton) undoButton.disabled = !undoHistory.length || editing !== null;
     if (!clock || !clock.steps.length) {
       const none = doc.createElement("li");
       none.setAttribute("role", "row");
@@ -480,7 +489,8 @@ export function installClockwheelPanel({ document: doc = document, request = req
           hidden.className = "visually-hidden";
           hidden.textContent = ` step ${index + 1}`;
           button.append(title, hidden);
-          button.disabled = (key === "move-up" && index === 0) || (key === "move-down" && index === clock.steps.length - 1);
+          button.disabled = (key === "move-up" && index === 0) || (key === "move-down" && index === clock.steps.length - 1)
+            || (key === "delete" && editing !== null);
           if (button.disabled) cell.setAttribute("aria-disabled", "true");
           cell.append(button);
           item.append(" ", cell);
@@ -529,6 +539,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       say(by < 0 ? "This is already the first step." : "This is already the last step.");
       return;
     }
+    rememberSteps(index);
     const [step] = clock.steps.splice(index, 1);
     clock.steps.splice(to, 0, step);
     if (editing === index) editing = to;
@@ -538,6 +549,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
 
   // Removes a step and renders the list; returns what to say and where focus belongs.
   function removeStep(index) {
+    rememberSteps(index);
     const gone = describe(clock.steps[index]);
     clock.steps.splice(index, 1);
     if (editing !== null) resetForm();
@@ -558,33 +570,41 @@ export function installClockwheelPanel({ document: doc = document, request = req
     say(message);
   }
 
-  // The Delete key asks first; the Delete button does not.  The page is
-  // inert while the dialog is open, so confirmAction moves focus once it
-  // closes, and the status is said after that.
-  async function confirmRemove(index, action) {
-    const step = clock.steps[index];
-    let removed = null;
-    await confirmAction(doc, {
-      title: `Delete step ${index + 1}, ${describe(step)}?`,
-      message: "The change is kept only when you press Save clockwheel.",
-      confirmLabel: "Delete step",
-      onConfirm: () => {
-        const at = clock ? clock.steps.indexOf(step) : -1;
-        if (at >= 0) removed = removeStep(at);
-        return removed?.target ?? null;
-      },
-    });
-    if (removed) say(removed.message);
-    else if (clock?.steps.includes(step)) focusRow(clock.steps.indexOf(step), action);
+  function rememberSteps(index) {
+    undoHistory.push({ steps: copy(clock.steps), index });
   }
 
+  function undoSteps() {
+    if (!clock || editing !== null || !undoHistory.length) return;
+    const previous = undoHistory.pop();
+    clock.steps = previous.steps;
+    resetForm();
+    const index = clock.steps.length ? Math.min(previous.index, clock.steps.length - 1) : null;
+    changed("Undid the last step change.", index, "edit");
+    if (index === null) typeSelect.focus();
+  }
+
+  function undoKey(event) {
+    if (!event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || event.key.toLowerCase() !== "z") return;
+    if (editing !== null) return;
+    // Leave text editing to the browser, including the name and condition fields.
+    if (event.target.closest?.("input, textarea, [contenteditable]")) return;
+    if (!undoHistory.length) return;
+    event.preventDefault();
+    if (!event.repeat) undoSteps();
+  }
+  editor?.addEventListener("keydown", undoKey);
+  undoButton?.addEventListener("click", undoSteps);
+
   function rowAction(action, index) {
-    if (!clock) return;
+    if (!clock || (action === "delete" && editing !== null)) return;
     if (action === "edit") startEdit(index);
     else if (action === "move-up") move(index, -1, action);
     else if (action === "move-down") move(index, 1, action);
     else if (action === "duplicate") {
+      rememberSteps(index);
       clock.steps.splice(index + 1, 0, copy(clock.steps[index]));
+      if (editing !== null && editing > index) editing += 1;
       changed(`Duplicated as ${position(index + 1)}.`, index + 1, action);
     } else if (action === "delete") remove(index);
   }
@@ -625,7 +645,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       focusRow(Number(row.dataset.index), cells[event.key === "Home" ? 0 : cells.length - 1].dataset.action);
     } else if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key === "Delete") {
       event.preventDefault();
-      if (!event.repeat) void confirmRemove(Number(row.dataset.index), event.target.dataset?.action || "edit");
+      if (!event.repeat) rowAction("delete", Number(row.dataset.index));
     } else if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
         && (event.key === "Enter" || event.key === " ") && event.target.matches?.(CELL)) {
       // A focused cell acts as its button; a focused button handles these itself.
@@ -659,6 +679,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   function startEdit(index) {
     const step = clock.steps[index];
     editing = index;
+    renderSteps();
     typeSelect.value = step.type === "category" || !(step.type in FIELDS_FOR) ? "music" : step.type;
     showFields();
     const set = (id, value) => { const field = el(id); if (field) field.value = value; };
@@ -766,6 +787,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     if (!clock) { say("Open or create a clockwheel first.", true); return; }
     let step;
     try { step = { ...formStep(), ...readStepHours(doc) }; } catch (error) { say(error.message, true); return; }
+    rememberSteps(editing ?? clock.steps.length);
     if (editing !== null) {
       const index = editing;
       clock.steps[index] = step;
@@ -782,6 +804,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   cancelEdit?.addEventListener("click", () => {
     const index = editing;
     resetForm();
+    renderSteps();
     if (index !== null) focusRow(index, "edit");
     say("Edit cancelled.");
   });
@@ -798,6 +821,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   }
 
   function load(value, { fresh = false } = {}) {
+    undoHistory = [];
     clock = copy(value);
     isNew = fresh;
     dirty = fresh;
@@ -811,6 +835,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   }
 
   function close() {
+    undoHistory = [];
     clock = null; isNew = false; dirty = false;
     resetForm();
     listSignature = "";
@@ -1006,6 +1031,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     if (timer !== null) clearInterval(timer);
     timer = null;
     data = empty();
+    undoHistory = [];
     clock = null; isNew = false; dirty = false;
     listSignature = ""; optionsSignature = ""; lastNotice = null;
     list.replaceChildren();
@@ -1028,6 +1054,8 @@ export function installClockwheelPanel({ document: doc = document, request = req
     resume() { suspended = false; updatePolling(); },
     destroy() {
       clearProtectedData();
+      editor?.removeEventListener("keydown", undoKey);
+      undoButton?.removeEventListener("click", undoSteps);
       window.removeEventListener("hashchange", updatePolling);
       doc.removeEventListener("visibilitychange", updatePolling);
     },

@@ -75,6 +75,23 @@ def test_standalone_lets_the_next_song_in_when_the_speech_ends(station):
     assert desk.get(item.break_id).mixed_as == "standalone"
 
 
+@pytest.mark.parametrize("kind", ["dj", "news"])
+def test_announcer_after_negative_liner_keeps_its_voice_before_vocals(station, kind):
+    player, (a, b, liner, _d), points, desk = station
+    points[b.path]["intro"] = 5.25
+    points[liner.path].update(start=0, segue=1, end=1, overlap_start=-3)
+    item = make_break(desk, new_id(), kind=kind, seconds=6.0)
+    desk.add(item)
+    render = player._render_track(
+        a, b, 0, liners=((liner, False),), breaks=tuple(desk.take(item.slot_id, 0.0))
+    )
+    start, end = voice_span(render)
+    assert render.liner_events == ((10 * SR, liner, False),)
+    assert start == pytest.approx(11.0, abs=1e-3)
+    assert end == pytest.approx(17.0, abs=1e-3)
+    assert incoming_entry(render) == pytest.approx(12.0 if kind == "dj" else 17.0, abs=1e-3)
+
+
 def test_auto_plays_standalone_when_the_intro_is_too_short(tmp_path):
     player, (a, b, _c, _d), _points, desk = make_station(tmp_path, min_intro_seconds=3.0)
     item = make_break(desk, new_id())
