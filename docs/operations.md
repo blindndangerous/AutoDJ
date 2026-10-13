@@ -1175,8 +1175,13 @@ list and the clips a cart can use.
 in the archive; another station's are under `stations/<slug>/`, for example
 `stations/nightowl/index/web_state.json` and `stations/nightowl/liners/...`. A folder two
 stations share, such as one liner folder for both, is stored once, under the default station's
-name. Take a new backup after adding a station, and check that its `stations/<slug>/` files are
-in it:
+name, and the archive notes that it was shared. If you restore it with a configuration that gives
+that station a folder of its own, the folder is restored to the default station's place only, and
+restore prints a warning naming both folders: copy the files across yourself if the station
+should have them. Folders that hold one another (one station's liner folder inside another's, or
+a folder that holds a station's own folder) are refused, because restoring one would replace the
+other; give each station folders side by side. Take a new backup after adding a station, and
+check that its `stations/<slug>/` files are in it:
 
 ```bash
 uv run autodj backup backups/after-nightowl.zip
@@ -2193,7 +2198,10 @@ Restore only accepts an archive made by the same major and minor version of Auto
 backup restores on any 0.19.x release and on no other. To roll back to an earlier release, check
 out that release's tag as in the [upgrade checklist](#upgrade-checklist), then restore a backup made
 by that release. Restore also refuses an archive whose file names are absolute or contain `..`,
-files the manifest does not list, and an index made by an older AutoDJ.
+files the manifest does not list, and an index made by an older AutoDJ. It also refuses file
+names Windows cannot hold, such as `CON`, `nul.mp3` or `COM1`, or a name ending in a dot or a
+space. Backups never follow links: a link in a liner, cart or other folder, or a state file that
+is a link, is left out, so a backup holds only files that are really in those folders.
 
 Without `--force`, restore refuses when anything it would replace already exists. With it:
 
@@ -2205,9 +2213,14 @@ Without `--force`, restore refuses when anything it would replace already exists
   not hold is left alone. A station the configuration does not define is refused, and nothing is
   restored.
 
-Restore unpacks every file into a temporary folder beside its destination and checks the index
-before it replaces anything, so a damaged archive changes nothing. If the replacement itself is
-interrupted, run the same restore again. Restore then runs `autodj doctor` and says so if doctor
+Restore first checks that the archive fits: it refuses one that unpacks to more than 256 GiB,
+or to more than the free space beside its destinations. It unpacks every file into a temporary
+folder beside its destination and checks the index before it replaces anything, so a damaged
+archive changes nothing. It then sets every file and folder it replaces aside under a hidden name
+(`.<name>.old-<id>`), puts the new ones in, and deletes what it set aside only once all are in.
+If any replacement fails, everything is put back as it was and restore says nothing was changed.
+Only a crash or a power cut in the middle can leave set-aside files; run the same restore again,
+and delete the `.old-` files once AutoDJ looks right. Restore then runs `autodj doctor` and says so if doctor
 finds a required failure; do not serve until doctor passes. Use the same configuration for backup,
 restore, and doctor that the previous `serve` process used. Keep the archive until playback,
 profiles and liners look right.
