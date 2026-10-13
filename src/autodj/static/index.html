@@ -1033,7 +1033,7 @@
          when focus enters Repeats, not repeated on all twelve boxes. -->
     <fieldset aria-describedby="repeat-rules-desc">
       <legend>Repeats</legend>
-      <p class="setting-desc" id="repeat-rules-desc">Each rule has a Tracks limit and a Minutes limit; when both are set, a repeat waits for both. 0 turns a limit off. Tracks are whole numbers, up to 100000 for the same track and up to 5000 for the others. Minutes go up to 10080 (one week) and can have decimals.</p>
+      <p class="setting-desc" id="repeat-rules-desc">The artist, album, track, title and related rules each have a Tracks limit and a Minutes limit; when both are set, a repeat waits for both. 0 turns a limit off. Tracks are whole numbers, up to 100000 for the same track and up to 5000 for the others. Minutes go up to 10080 (one week) and can have decimals. The daypart and quarter-hour rules, last, keep a song from playing at the same time every day. When no song passes the rules, they give way for that pick rather than stop the music.</p>
       <fieldset>
         <legend>Prevent the same artist from repeating within</legend>
         <div class="settings-row">
@@ -1121,6 +1121,30 @@
           <input type="number" id="repeat-related-track-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
         </div>
       </fieldset>
+      <fieldset aria-describedby="repeat-daypart-desc">
+        <legend>Prevent a song from playing in the same daypart</legend>
+        <p class="setting-desc" id="repeat-daypart-desc">Holds back a song that played in the daypart the next song starts in, earlier today or on any of the days before. 0 days turns this off; up to 7.</p>
+        <div class="settings-row">
+          <label for="repeat-daypart-days">Days</label>
+          <input type="number" id="repeat-daypart-days" min="0" max="7" step="1" value="0" inputmode="numeric">
+        </div>
+        <div class="settings-row">
+          <label for="repeat-daypart-hours">Daypart start hours</label>
+          <input type="text" id="repeat-daypart-hours" value="0, 6, 10, 15, 19" inputmode="numeric" autocomplete="off" spellcheck="false" aria-describedby="repeat-daypart-hours-desc">
+        </div>
+        <p class="setting-desc" id="repeat-daypart-hours-desc">Hours from 0 to 23 on the station's clock, separated by commas. Each daypart lasts until the next start, and the last one runs past midnight to the first. 0, 6, 10, 15, 19 is overnight, morning drive, midday, afternoon drive and evening. List all 24 hours to keep a song out of the hour it played in the day before.</p>
+      </fieldset>
+      <fieldset aria-describedby="repeat-hourpart-desc">
+        <legend>Prevent a song from playing in the same quarter of the hour</legend>
+        <p class="setting-desc" id="repeat-hourpart-desc">Holds back a song when one of its last plays in the past week started in the same quarter of the hour as the next song: :00 to :14, :15 to :29, :30 to :44 or :45 to :59. 0 plays turns this off; at 3, a song moves round all four quarters.</p>
+        <div class="settings-row">
+          <label for="repeat-hourpart-plays">Plays</label>
+          <input type="number" id="repeat-hourpart-plays" min="0" max="3" step="1" value="0" inputmode="numeric">
+        </div>
+      </fieldset>
+      <!-- A refused value's message; the script moves it under the field it
+           names and links it there with aria-describedby. -->
+      <p class="field-error" id="repeat-error" hidden></p>
       <button type="button" id="repeat-save">Save repeat settings</button>
     </fieldset>
 

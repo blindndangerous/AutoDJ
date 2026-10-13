@@ -36,6 +36,7 @@ import numpy.typing as npt
 
 from autodj.index_manifest import IndexManifest
 from autodj.indexer import IndexEntry, load_index
+from autodj.repeat_rules import RELAXED_RULES
 
 logger = logging.getLogger(__name__)
 
@@ -542,8 +543,8 @@ class SimilarityIndex:
                 any((excluded_artists, excluded_albums, excluded_titles)) or repeat_filter
             ):
                 logger.warning(
-                    "No candidates after full-index preference search; "
-                    "relaxing the artist, album and title repeat rules"
+                    "No candidates after full-index preference search; relaxing %s",
+                    RELAXED_RULES,
                 )
                 predicate = self._build_predicate(
                     excluded,

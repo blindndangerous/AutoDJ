@@ -803,6 +803,8 @@ class TestRepeatSettings:
             "related_track": {"tracks": 20, "minutes": 0.0},
             "use_related_tracks": False,
             "versions_as_one_song": False,
+            "daypart": {"days": 0, "start_hours": [0, 6, 10, 15, 19]},
+            "hourpart": {"plays": 0},
         }
         assert bridge.player._state.rules.related.related_to("alpha") == {"beta"}
 
@@ -818,6 +820,10 @@ class TestRepeatSettings:
         [
             {"track": {"tracks": -1}},
             {"artist": {"minutes": 10081}},
+            {"daypart": {"days": 8}},
+            {"daypart": {"start_hours": [6, 6]}},
+            {"daypart": {"start_hours": [24]}},
+            {"hourpart": {"plays": 4}},
         ],
     )
     def test_nested_repeat_ranges_are_rejected(self, bridge, tmp_path, rule) -> None:
@@ -829,6 +835,31 @@ class TestRepeatSettings:
         assert response.status_code == 422
         assert bridge.player._cfg.playback.repeat_rules.model_dump() == before
         bridge.save_persistent_state.assert_not_called()
+
+    def test_daypart_and_quarter_hour_rules_save_and_reach_the_picker(
+        self, bridge, tmp_path
+    ) -> None:
+        client = self._client(bridge, tmp_path)
+        payload = {
+            "repeat_rules": {
+                "daypart": {"days": 3, "start_hours": [19, 6, 0]},
+                "hourpart": {"plays": 2},
+            }
+        }
+
+        response = client.post("/api/playback-settings", json=payload)
+
+        assert response.status_code == 200
+        saved = response.json()["playback"]["repeat_rules"]
+        assert saved["daypart"] == {"days": 3, "start_hours": [0, 6, 19]}
+        assert saved["hourpart"] == {"plays": 2}
+        rules = bridge.player._state.rules
+        assert (rules.daypart_days, rules.daypart_starts, rules.hourpart_plays) == (
+            3,
+            (0, 6, 19),
+            2,
+        )
+        bridge.save_persistent_state.assert_called_once()
 
     def test_invalid_related_file_keeps_live_repeat_settings(self, bridge, tmp_path) -> None:
         client = self._client(bridge, tmp_path)
