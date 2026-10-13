@@ -597,6 +597,7 @@ def test_worker_command_refuses_plain_http_to_another_machine():
 def _pending_manager(tmp_path, count=2):
     cfg = make_config(tmp_path)
     manager = LibraryManager(cfg, Similarity())
+    manager.catalog.add_source(cfg.library.music_dir)
     songs = []
     for n in range(count):
         song = cfg.library.music_dir / f"song-{n}.flac"
@@ -735,6 +736,7 @@ def test_a_rescan_clears_holds_on_songs_whose_file_changed(tmp_path):
     write_tone(same, 330.0)
     manager = LibraryManager(cfg, Similarity())
     try:
+        manager.catalog.add_source(cfg.library.music_dir)
         manager.scan()
         queue = manager.analysis_queue
         songs = []
