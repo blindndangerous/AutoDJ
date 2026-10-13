@@ -160,6 +160,31 @@ describe("clockwheel editor", () => {
     expect([...operator.options].map((option) => option.value)).toContain("is_not");
   });
 
+  it("recounts Match any changes and never steals focus for an incomplete count", async () => {
+    const server = await open(fakeServer());
+    const first = byId("clock-step-conditions").firstElementChild;
+    first.querySelector("select").value = "genre";
+    first.querySelector("select").dispatchEvent(new Event("change", { bubbles: true }));
+    first.querySelectorAll("select")[3].value = "Rock";
+    first.querySelectorAll("select")[3].dispatchEvent(new Event("change", { bubbles: true }));
+    const match = byId("clock-step-match");
+    match.value = "any";
+    match.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(server.calls.filter((item) => item.url === "/api/library/clock/check")).toHaveLength(1));
+    expect(server.calls.at(-1).body.step.match).toBe("any");
+
+    const row = byId("clock-step-conditions").firstElementChild;
+    const field = row.querySelector("select");
+    field.value = "artist";
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+    const value = row.querySelectorAll('input[type="text"]')[1];
+    value.value = "";
+    value.dispatchEvent(new Event("input", { bubbles: true }));
+    match.focus();
+    await vi.waitFor(() => expect(byId("clock-step-match-count").textContent).toContain("Complete the step conditions"));
+    expect(document.activeElement).toBe(match);
+  });
+
   it("names category steps and selects music categories as conditions", async () => {
     expect(describeStep({ type: "category", category: "gone", selection: "least_recent" }, [], []))
       .toBe("music from a category that no longer exists, least recently played");

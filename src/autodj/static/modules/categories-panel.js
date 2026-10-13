@@ -456,7 +456,9 @@ export function installCategoriesPanel({ document: doc = document, request = req
   async function check() {
     countGeneration += 1;
     clearErrors();
-    const value = body();
+    let value;
+    try { value = body(); }
+    catch (error) { showError(error.field || "conditions", error.message); return; }
     if (!valid(value)) return;
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
     try {
@@ -512,7 +514,9 @@ export function installCategoriesPanel({ document: doc = document, request = req
   async function save(event) {
     event?.preventDefault();
     clearErrors();
-    const value = body();
+    let value;
+    try { value = body(); }
+    catch (error) { showError(error.field || "conditions", error.message); return; }
     if (!valid(value)) return;
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
     try {
@@ -597,7 +601,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
     if (filterHost.children.length >= 32) { showError("conditions", "A category can have at most 32 conditions."); return; }
     const item = filterRow(); filterHost.append(item.row); item.field.focus(); match.textContent = "Not checked yet.";
   });
-  el("categories-filter-match")?.addEventListener("change", () => { match.textContent = "Not checked yet."; });
+  el("categories-filter-match")?.addEventListener("change", () => { match.textContent = "Not checked yet."; scheduleCount(); });
   for (const field of [nameInput, queryInput, playlistSelect, el("categories-hours-from"),
     el("categories-hours-until"), el("categories-not-before"), el("categories-not-after")]) {
     field?.addEventListener("input", () => { unmark(field); scheduleCount(); });

@@ -142,6 +142,22 @@ describe("categories list", () => {
 });
 
 describe("categories form", () => {
+  it("reports incomplete filter conditions from Check and Save", async () => {
+    const server = await open();
+    byId("categories-add").click();
+    byId("categories-name").value = "Filtered";
+    byId("categories-source-filters").checked = true;
+    byId("categories-source-filters").dispatchEvent(new Event("change"));
+    const row = byId("categories-filter-conditions").firstElementChild;
+    row.querySelector("select").value = "artist";
+    row.querySelector("select").dispatchEvent(new Event("change"));
+    byId("categories-check").click();
+    expect(byId("categories-form-error").textContent).toContain("Enter a value for artist.");
+    byId("categories-save").click();
+    expect(byId("categories-form-error").textContent).toContain("Enter a value for artist.");
+    expect(server.calls.some((call) => call.method === "POST" && call.url === "/api/categories")).toBe(false);
+  });
+
   it("saves shared filter conditions and checks unsaved matches after a pause", async () => {
     const server = await open();
     byId("categories-add").click();

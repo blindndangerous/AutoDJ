@@ -351,15 +351,17 @@ export function installClockwheelPanel({ document: doc = document, request = req
     updateBeetsNotice();
   }
 
-  function readConditions() {
+  function readConditions(interactive = true) {
     const rows = [...el("clock-step-conditions").children];
     if (!rows.length) {
-      el("clock-add-condition").focus();
+      if (interactive) el("clock-add-condition").focus();
       throw new Error("Add at least one condition.");
     }
     const invalid = (input, message) => {
-      input.setAttribute("aria-invalid", "true");
-      input.focus();
+      if (interactive) {
+        input.setAttribute("aria-invalid", "true");
+        input.focus();
+      }
       throw new Error(message);
     };
     for (const row of rows) row.querySelectorAll("[aria-invalid]").forEach((input) => input.removeAttribute("aria-invalid"));
@@ -717,26 +719,28 @@ export function installClockwheelPanel({ document: doc = document, request = req
     say(`Editing ${position(index)}.`);
   }
 
-  function relative(id, label, optional) {
+  function relative(id, label, optional, interactive = true) {
     const field = el(id);
     const value = (field?.value || "").trim().replaceAll("\\", "/").replace(/^\/+|\/+$/g, "");
     const bad = value.split("/").some((part) => !part.trim() || part === "." || part === "..") || value.includes(":");
     if (value ? bad : !optional) {
-      field?.setAttribute("aria-invalid", "true");
-      field?.focus();
+      if (interactive) {
+        field?.setAttribute("aria-invalid", "true");
+        field?.focus();
+      }
       throw new Error(`${label} must be a path inside the library folder, such as Rock/Live, with no "..".`);
     }
     field?.removeAttribute("aria-invalid");
     return value;
   }
 
-  function formStep() {
+  function formStep(interactive = true) {
     const type = typeSelect.value;
     if (FOLDER_TYPES.has(type)) {
       const step = {
         type,
         match: el("clock-step-match").value,
-        conditions: readConditions(),
+        conditions: readConditions(interactive),
         selection: el("clock-step-selection").value,
         enforce_rules: el("clock-step-enforce-rules").checked,
       };
@@ -746,10 +750,10 @@ export function installClockwheelPanel({ document: doc = document, request = req
     if (type === "track") {
       const source = el("clock-step-source")?.value || "";
       if (!source) {
-        el("clock-step-source")?.focus();
+        if (interactive) el("clock-step-source")?.focus();
         throw new Error(`Add a ${type === "liner" ? "voice liner" : "music"} folder under Music folders and Voice liner folders first.`);
       }
-      return { type, source, path: relative("clock-step-path", "The track", false) };
+      return { type, source, path: relative("clock-step-path", "The track", false, interactive) };
     }
     if (type === "settings") {
       const preset = el("clock-step-preset")?.value || "";
@@ -772,7 +776,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       stepCountTimer = null;
       const epoch = captureAuthenticatedRequestEpoch();
       let step;
-      try { step = formStep(); }
+      try { step = formStep(false); }
       catch { if (stepCountCurrent(epoch, mine) && output) output.textContent = "Complete the step conditions to check matching tracks."; return; }
       pendingStepCount = { epoch, mine, step };
       void drainStepCounts();
@@ -875,6 +879,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     say("Edit cancelled.");
   });
   resync.addEventListener("input", () => { if (clock) { dirty = true; renderNext(); } });
+  el("clock-step-match")?.addEventListener("change", scheduleStepCount);
 
   // ---- Opening, saving and the clockwheel buttons ---------------------
   function discardChanges() {

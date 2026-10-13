@@ -524,6 +524,12 @@ class CategoryStore:
         # A category without days or hours is written without the three keys,
         # so an older AutoDJ, which refuses unknown keys, still reads the file.
         for category in document["categories"]:
+            # Older AutoDJ releases reject unknown keys in the categories
+            # file.  Filter-only defaults must not be written for legacy
+            # query and playlist categories.
+            if category["source"] != "filters":
+                category.pop("conditions", None)
+                category.pop("match", None)
             for key, empty in (
                 ("days", []),
                 ("hours_from", None),
