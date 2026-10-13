@@ -535,14 +535,15 @@ def test_rootless_catalog_upgrade_does_not_invent_a_music_source(tmp_path: Path)
     index_migration.migrate_catalog(index_dir, None, tmp_path / "unused-liners", {}, apply=True)
 
     with closing(sqlite3.connect(index_dir / "library.db")) as db:
-        assert db.execute("SELECT path,kind FROM catalog_sources").fetchall() == []
+        sources = db.execute("SELECT path,kind FROM catalog_sources").fetchall()
+        assert sources == [(str((tmp_path / "unused-liners").resolve()).casefold(), "liner")]
         assert db.execute(
             "SELECT value FROM catalog_settings WHERE key='sources_seeded'"
         ).fetchone() == ("true",)
     assert not index_migration.migration_required(index_dir)[0]
     index_migration.migrate_catalog(index_dir, None, tmp_path / "unused-liners", {}, apply=True)
     with closing(sqlite3.connect(index_dir / "library.db")) as db:
-        assert db.execute("SELECT path,kind FROM catalog_sources").fetchall() == []
+        assert db.execute("SELECT path,kind FROM catalog_sources").fetchall() == sources
     assert not index_migration.migration_required(index_dir)[0]
 
 
