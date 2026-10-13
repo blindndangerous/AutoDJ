@@ -1269,7 +1269,7 @@
   <div class="card" role="tabpanel" id="spanel-liners" aria-labelledby="stab-liners" hidden>
     <h3>Voice liners</h3>
     <p class="card-desc">
-      IDs, jingles and voice tracks. Add liner folders in Library tools or upload a file below. Use Track info beside a liner in Queue &amp; Search, Browse voice liners, to edit its Segue and Overlap start.
+      IDs, jingles and voice tracks. Add liner folders in Library tools or upload a file below. Use Track info beside a liner in Queue &amp; Search to edit its Segue and Overlap start.
     </p>
 
     <div id="ln-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
@@ -1363,8 +1363,16 @@
       <span class="setting-desc" id="ln-upload-replace-desc">
         When a liner with the same file name is already in the folder, overwrite it.  Unticked, that upload is refused.
       </span>
-      <p>Browse, delete and open Track info for your voice liners in Queue &amp; Search, under Browse voice liners.</p>
     </fieldset>
+    <p id="ln-browse-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></p>
+    <h4 id="ln-files-heading">Voice liner files</h4>
+    <ul id="ln-file-list" role="list" aria-labelledby="ln-files-heading" tabindex="-1"></ul>
+    <form id="ln-dates-form" novalidate hidden><fieldset><legend id="ln-dates-legend">Play dates</legend><p id="ln-dates-error" class="field-error" hidden></p>
+      <div class="settings-row"><label for="ln-not-before">Not before</label><input type="date" id="ln-not-before" aria-describedby="ln-dates-desc"></div>
+      <div class="settings-row"><label for="ln-not-after">Do not play after</label><input type="date" id="ln-not-after" aria-describedby="ln-dates-desc"></div>
+      <span class="setting-desc" id="ln-dates-desc">Optional. Both days are included, in the station time zone. Outside them, automatic liners, clockwheel liner steps, scheduled liner events and Test skip this liner; a cart that uses it still plays it. Leave both empty to play it on any day.</span>
+      <button type="submit" id="ln-dates-save">Save dates</button><button type="button" id="ln-dates-cancel">Cancel</button>
+    </fieldset></form>
   </div>
 
   <div class="card" role="tabpanel" id="spanel-time-checks" aria-labelledby="stab-time-checks" hidden>
@@ -1921,80 +1929,19 @@
     <button type="button" id="queue-clear">Clear queue</button>
   </details>
 
-  <!-- Search.  Open by default: the empty-queue message above tells the
-       user to search, so the field it refers to must not be hidden behind
-       a disclosure. -->
-  <details class="card" open>
-    <summary><h2>Search Library</h2></summary>
-    <div class="search-row">
-      <!-- Fix 6: label provides accessible name; removed duplicate aria-label -->
-      <label for="search-input"
-             style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap">
-        Search by artist or title
-      </label>
-      <!-- No aria-expanded / aria-controls: this is a plain search field,
-           not a combobox, and the result count is announced through the
-           #search-count live region. -->
-      <input type="search"
-             id="search-input"
-             placeholder="Artist or title…"
-             autocomplete="off">
-      <button id="btn-search" aria-label="Search">Search</button>
-    </div>
-    <!-- Visible AND announced: the same node is the sighted result count
-         and the polite region, so there is exactly one source of truth. -->
+  <!-- Search and browse share one paginated result list. -->
+  <section class="card flow-form" aria-labelledby="search-library-heading">
+    <h2 id="search-library-heading">Search &amp; browse library</h2>
+    <label for="library-kind">Type</label>
+    <select id="library-kind"><option value="music">Music</option><option value="liner">Voice liners</option></select>
+    <label for="library-folder">Folder</label>
+    <select id="library-folder"><option value="all">All folders</option></select>
+    <label for="search-input">Search text (optional)</label>
+    <div class="search-row"><input type="search" id="search-input" placeholder="Artist or title…" autocomplete="off"><button id="btn-search" type="button">Search</button></div>
     <div id="search-count" aria-live="polite" aria-atomic="true"></div>
-    <!-- aria-atomic="false": announce count separately, not the entire list -->
-    <ul id="search-results" role="list" aria-label="Search results"></ul>
-  </details>
-
-  <!-- Browse library.  The folder choice lists the registered music and
-       voice liner folders; library-folders.js refreshes it each time this
-       tab is shown.  Adding and removing folders stays in Library tools. -->
-  <section class="card flow-form" aria-labelledby="browse-library-heading">
-    <h2 id="browse-library-heading">Browse library</h2>
-    <label for="library-browse-folder">Folder</label>
-    <select id="library-browse-folder"><option value="all-music">All music</option><option value="all-liners">All voice liners</option></select>
-    <label for="library-browse-query">Search text (optional)</label>
-    <input id="library-browse-query" type="search">
-    <button type="button" id="library-browse">Browse</button>
-    <p id="library-browse-count" aria-live="polite" aria-atomic="true"></p>
-    <ul id="library-browse-results" role="list" aria-label="Library tracks"></ul>
+    <table id="library-results-table" role="grid"><caption class="visually-hidden">Library tracks</caption><thead><tr><th scope="col">Track</th><th scope="col">Play now</th><th scope="col">Play next</th><th scope="col">Add to queue</th><th scope="col">Track info</th></tr></thead><tbody id="search-results"></tbody></table>
     <button type="button" id="library-browse-previous" disabled>Previous</button>
     <button type="button" id="library-browse-next" disabled>Next</button>
-  </section>
-
-  <!-- Browse voice liners: the liner files (liners.js).  #ln-browse-status
-       says the result of a Delete here, where it is heard: the Settings
-       status region is hidden while this tab is shown.  The list takes
-       focus (tabindex -1) when the last liner is deleted.  Uploading stays
-       in Settings, Voice liners. -->
-  <section class="card" aria-labelledby="browse-liners-heading">
-    <h2 id="browse-liners-heading">Browse voice liners</h2>
-    <div id="ln-browse-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
-    <ul id="ln-file-list" role="list" aria-label="Voice liner files" tabindex="-1"></ul>
-    <!-- Play dates opens this form for one liner (liners.js).  Save and
-         Cancel go back to that liner's Play dates button; a refused date is
-         named in #ln-dates-error, linked to its field and focused. -->
-    <form id="ln-dates-form" novalidate hidden>
-      <fieldset>
-        <legend id="ln-dates-legend">Play dates</legend>
-        <p id="ln-dates-error" class="field-error" hidden></p>
-        <div class="settings-row">
-          <label for="ln-not-before">Not before</label>
-          <input type="date" id="ln-not-before" aria-describedby="ln-dates-desc">
-        </div>
-        <div class="settings-row">
-          <label for="ln-not-after">Do not play after</label>
-          <input type="date" id="ln-not-after" aria-describedby="ln-dates-desc">
-        </div>
-        <span class="setting-desc" id="ln-dates-desc">
-          Optional. Both days are included, in the station time zone. Outside them, automatic liners, clockwheel liner steps, scheduled liner events and Test skip this liner; a cart that uses it still plays it. Leave both empty to play it on any day.
-        </span>
-        <button type="submit" id="ln-dates-save">Save dates</button>
-        <button type="button" id="ln-dates-cancel">Cancel</button>
-      </fieldset>
-    </form>
   </section>
 
   </section>
@@ -2134,7 +2081,7 @@
         <p id="source-folder-override-tags-help">Rescan refreshes populated file tags. Hand-edited BPM and key values and cue points are retained.</p>
         <button type="button" id="source-folder-rescan">Rescan</button>
         <p id="source-folders-status">Loading folders…</p>
-        <ul id="source-folders" aria-label="Registered music and liner folders"><li>No folders loaded.</li></ul>
+        <table id="source-folders-table" role="grid"><caption>Registered music and voice liner folders</caption><thead><tr><th scope="col">Type</th><th scope="col">Path</th><th scope="col">Add subfolders</th><th scope="col">Advanced analysis</th><th scope="col">Actions</th></tr></thead><tbody id="source-folders"><tr><td colspan="5">No folders loaded.</td></tr></tbody></table>
       </section>
 
       <!-- Stats card -->

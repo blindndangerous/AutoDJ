@@ -47,13 +47,13 @@ function mount({ playNow } = {}) {
   return dialog;
 }
 
-// Search, then return the result button with this accessible name.
+// Search, then return the result button with this visible label.
 async function resultButton(label) {
   byId("search-input").value = "come";
   byId("btn-search").click();
   await vi.waitFor(() => expect(byId("search-results").textContent).toContain("Come Together"));
   return [...byId("search-results").querySelectorAll("button")]
-    .find((button) => button.getAttribute("aria-label") === label);
+    .find((button) => button.textContent === label);
 }
 
 // Answers the search, then each queue request in turn.
@@ -87,7 +87,7 @@ describe("queueing a song over a DMCA limit", () => {
 
   it("asks in the shared dialog, with the limit in words, before queueing anyway", async () => {
     const posts = stubServer([{ detail: WARNING, field: "confirm" }, 409], [{ ok: true }, 200]);
-    const opener = await resultButton("Add Come Together to queue");
+    const opener = await resultButton("Add to queue");
     opener.focus();
     opener.click();
 
@@ -113,7 +113,7 @@ describe("queueing a song over a DMCA limit", () => {
 
   it("says the song was not queued when the operator cancels", async () => {
     const posts = stubServer([{ detail: WARNING, field: "confirm" }, 409]);
-    (await resultButton("Play Come Together next")).click();
+    (await resultButton("Play next")).click();
     await vi.waitFor(() => expect(dialog.open).toBe(true));
 
     byId("confirm-cancel").click();
@@ -126,7 +126,7 @@ describe("queueing a song over a DMCA limit", () => {
       [{ detail: WARNING, field: "confirm" }, 409],
       [{ detail: "That track is no longer in the library." }, 404],
     );
-    (await resultButton("Add Come Together to queue")).click();
+    (await resultButton("Add to queue")).click();
     await vi.waitFor(() => expect(dialog.open).toBe(true));
     byId("confirm-accept").click();
     await vi.waitFor(() => expect(announced()).toBe(
@@ -136,7 +136,7 @@ describe("queueing a song over a DMCA limit", () => {
 
   it("treats any other refusal as a failure, without the dialog", async () => {
     stubServer([{ detail: "Busy." }, 409]);
-    (await resultButton("Add Come Together to queue")).click();
+    (await resultButton("Add to queue")).click();
     await vi.waitFor(() => expect(announced())
       .toBe("Could not add Come Together to the queue. Busy."));
     expect(dialog.showModal).not.toHaveBeenCalled();
@@ -152,7 +152,7 @@ describe("Play now over a DMCA limit", () => {
     const playNow = vi.fn(async (request) => { await request(); return true; });
     const dialog = mount({ playNow });
     const posts = stubServer([{ detail: WARNING, field: "confirm" }, 409], [{ ok: true }, 200]);
-    (await resultButton("Play Come Together now")).click();
+    (await resultButton("Play now")).click();
     await vi.waitFor(() => expect(dialog.open).toBe(true));
     expect(byId("confirm-message").textContent).toBe(`${WARNING} Play it now anyway?`);
     expect(byId("confirm-accept").textContent).toBe("Play anyway");
@@ -172,7 +172,7 @@ describe("Play now over a DMCA limit", () => {
     const playNow = vi.fn(async (request) => { await request(); return false; });
     mount({ playNow });
     stubServer([{ ok: true }, 200]);
-    (await resultButton("Play Come Together now")).click();
+    (await resultButton("Play now")).click();
     await vi.waitFor(() => expect(playNow).toHaveBeenCalledOnce());
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(announced()).toBe("");

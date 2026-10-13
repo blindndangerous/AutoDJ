@@ -1,8 +1,6 @@
-// Browse library and Browse voice liners live in Queue & Search, after
-// Search (#47).  These checks run against the real index.html.
+// Queue & Search holds one library results table; liner file maintenance stays in Settings.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 function installIndex() {
@@ -12,135 +10,63 @@ function installIndex() {
   template.content.querySelectorAll("script, link").forEach((node) => node.remove());
   document.body.replaceChildren(template.content.cloneNode(true));
 }
-
 const byId = (id) => document.getElementById(id);
-
-// Focusable controls in DOM order, as Tab reaches them.
-// A control inside a hidden part of *root* (a closed form) is not in the order.
-function hiddenWithin(node, root) {
-  for (let element = node; element && element !== root; element = element.parentElement) {
-    if (element.hidden) return true;
-  }
-  return false;
-}
-
 function tabOrder(root) {
   return [...root.querySelectorAll("a[href], button, input, select, textarea, summary, [tabindex]")]
-    .filter((node) => !node.disabled && node.getAttribute("tabindex") !== "-1" && !hiddenWithin(node, root));
+    .filter((node) => {
+      if (node.disabled || node.getAttribute("tabindex") === "-1") return false;
+      for (let parent = node; parent && parent !== root; parent = parent.parentElement) if (parent.hidden) return false;
+      return true;
+    });
 }
+afterEach(() => { window.location.hash = ""; document.body.replaceChildren(); });
 
-afterEach(() => {
-  window.location.hash = "";
-  document.body.replaceChildren();
-});
-
-describe("library browsing in Queue & Search", () => {
-  it("puts Browse library, then Browse voice liners, after Search", () => {
+describe("unified library search in Queue & Search", () => {
+  it("has one result panel with independent type, folder, and text controls", () => {
     installIndex();
     const queue = byId("panel-queue");
-    const sections = [...queue.children].filter((node) => node.matches("details.card, section.card"));
-    expect(sections.map((node) => node.querySelector("h2").textContent.trim().split(/\s+/)[0]))
-      .toEqual(["Queue", "Search", "Browse", "Browse"]);
-    expect(sections[2].querySelector("h2").id).toBe("browse-library-heading");
-    expect(sections[2].getAttribute("aria-labelledby")).toBe("browse-library-heading");
-    expect(sections[3].querySelector("h2").textContent).toBe("Browse voice liners");
-    expect(sections[3].getAttribute("aria-labelledby")).toBe("browse-liners-heading");
-    for (const id of ["library-browse-folder", "library-browse-query", "library-browse",
-      "library-browse-count", "library-browse-results", "library-browse-previous",
-      "library-browse-next"]) {
-      expect(sections[2].contains(byId(id)), id).toBe(true);
-    }
-    expect(sections[3].contains(byId("ln-file-list"))).toBe(true);
-    expect(sections[3].contains(byId("ln-browse-status"))).toBe(true);
+    expect(queue.querySelectorAll("#search-results, #library-results-table")).toHaveLength(2);
+    expect(queue.querySelector("#library-kind").value).toBe("music");
+    expect(queue.querySelector("#library-kind").options[1].value).toBe("liner");
+    expect(queue.querySelector('label[for="library-folder"]').textContent).toBe("Folder");
+    expect(queue.querySelector('label[for="search-input"]').textContent).toBe("Search text (optional)");
+    expect(queue.querySelector("#search-results").tagName).toBe("TBODY");
+    expect(queue.querySelector("#library-browse-query, #library-browse-results, #ln-file-list")).toBeNull();
+    expect(queue.querySelectorAll("[data-view]")).toHaveLength(0);
   });
 
-  it("keeps the Browse library card's labels, count and paging intact", () => {
+  it("keeps existing search IDs and puts the type and folder controls before the query", () => {
     installIndex();
-    expect(document.querySelector('label[for="library-browse-folder"]').textContent).toBe("Folder");
-    expect(document.querySelector('label[for="library-browse-query"]').textContent)
-      .toBe("Search text (optional)");
-    expect([...byId("library-browse-folder").options].map((option) => option.value))
-      .toEqual(["all-music", "all-liners"]);
-    expect(byId("library-browse-count").getAttribute("aria-live")).toBe("polite");
-    expect(byId("library-browse-results").getAttribute("aria-label")).toBe("Library tracks");
-    expect(byId("library-browse-previous").textContent).toBe("Previous");
-    expect(byId("library-browse-next").textContent).toBe("Next");
-  });
-
-  it("tabs from Search to Browse library to the voice liners", () => {
-    installIndex();
-    const order = tabOrder(byId("panel-queue"));
+    const queue = byId("panel-queue");
+    const order = tabOrder(queue);
     const at = (id) => order.indexOf(byId(id));
-    expect(at("btn-search")).toBeGreaterThan(at("search-input"));
-    expect(at("library-browse-folder")).toBe(at("btn-search") + 1);
-    expect(at("library-browse-query")).toBe(at("library-browse-folder") + 1);
-    expect(at("library-browse")).toBe(at("library-browse-query") + 1);
-    // Liner rows come after Next, the last Browse library control.
-    const list = byId("ln-file-list");
-    list.innerHTML = '<li><span>id.wav</span><button type="button">Delete</button></li>';
-    const withRow = tabOrder(byId("panel-queue"));
-    expect(withRow.indexOf(list.querySelector("button")))
-      .toBeGreaterThan(withRow.indexOf(byId("library-browse-previous")));
-    expect(withRow.at(-1)).toBe(list.querySelector("button"));
+    expect(byId("search-input")).not.toBeNull();
+    expect(byId("btn-search")).not.toBeNull();
+    expect(at("library-kind")).toBeLessThan(at("library-folder"));
+    expect(at("library-folder")).toBeLessThan(at("search-input"));
+    expect(at("search-input")).toBeLessThan(at("btn-search"));
   });
 
-  it("gives the voice liner section its own polite status and a focusable list", () => {
-    installIndex();
-    const status = byId("ln-browse-status");
-    expect(status.getAttribute("role")).toBe("status");
-    expect(status.getAttribute("aria-live")).toBe("polite");
-    expect(status.getAttribute("aria-atomic")).toBe("true");
-    const list = byId("ln-file-list");
-    expect(list.getAttribute("aria-label")).toBe("Voice liner files");
-    expect(list.getAttribute("role")).toBe("list");
-    expect(list.getAttribute("tabindex")).toBe("-1");
-  });
-
-  it("leaves folder upkeep in Library tools with a pointer to the new place", () => {
+  it("keeps folder maintenance in Library tools as a native table", () => {
     installIndex();
     const library = byId("panel-library");
-    expect(library.querySelector("#browse-library-heading, #library-browse-results, #ln-file-list"))
-      .toBeNull();
-    for (const id of ["source-folder-path", "source-folder-add", "source-folder-rescan", "source-folders"]) {
+    for (const id of ["source-folder-path", "source-folder-add", "source-folder-rescan", "source-folders-table", "source-folders"]) {
       expect(library.contains(byId(id)), id).toBe(true);
     }
-    const pointer = [...library.querySelectorAll("p")]
-      .find((node) => node.textContent === "Browse your library and voice liners in Queue & Search.");
-    expect(pointer).toBeDefined();
-    // Read straight after the card's heading, where focus lands on a tab switch.
-    expect(pointer.previousElementSibling.tagName).toBe("SUMMARY");
+    expect(byId("source-folders-table").querySelectorAll("th")).toHaveLength(5);
   });
 
-  it("keeps uploading in Settings, Voice liners and says where the list went", () => {
+  it("keeps liner upload, delete, and play-date maintenance in Settings", () => {
     installIndex();
     const settings = byId("spanel-liners");
-    expect(settings.querySelector("#ln-file-list, h4")).toBeNull();
     expect(settings.contains(byId("ln-upload-submit"))).toBe(true);
-    expect(settings.contains(byId("ln-status"))).toBe(true);
-    expect(settings.textContent).toContain("in Queue & Search, under Browse voice liners");
+    expect(settings.contains(byId("ln-file-list"))).toBe(true);
+    expect(settings.contains(byId("ln-dates-form"))).toBe(true);
+    expect(byId("panel-queue").contains(byId("ln-file-list"))).toBe(false);
+    expect(settings.textContent).toContain("Voice liner files");
   });
 
-  it("has unique ids and no skipped heading levels in either tab", () => {
-    installIndex();
-    const ids = [...document.querySelectorAll("[id]")].map((node) => node.id);
-    expect(ids.filter((id, index) => ids.indexOf(id) !== index)).toEqual([]);
-    for (const panelId of ["panel-queue", "panel-library"]) {
-      const levels = [...byId(panelId).querySelectorAll("h1, h2, h3, h4, h5, h6")]
-        .map((node) => Number(node.tagName[1]));
-      expect(levels[0], panelId).toBe(2);
-      levels.forEach((level, index) => {
-        if (index) expect(level - levels[index - 1], panelId).toBeLessThanOrEqual(1);
-      });
-    }
-    for (const node of document.querySelectorAll("[aria-labelledby]")) {
-      for (const id of node.getAttribute("aria-labelledby").split(/\s+/)) {
-        expect(byId(id), `${node.id || node.tagName} -> ${id}`).not.toBeNull();
-      }
-    }
-    expect(document.querySelector('[role="tablist"][aria-controls], [role="tab"][aria-controls]')).toBeNull();
-  });
-
-  it("lands #queue on the moved sections and focuses the first card", async () => {
+  it("lands #queue on the queue tab and focuses its first card", async () => {
     installIndex();
     window.location.hash = "#now";
     vi.resetModules();
@@ -149,8 +75,7 @@ describe("library browsing in Queue & Search", () => {
     byId("tab-queue").click();
     await vi.waitFor(() => expect(byId("panel-queue").hidden).toBe(false));
     expect(window.location.hash).toBe("#queue");
-    expect(byId("browse-library-heading").closest("[hidden]")).toBeNull();
-    expect(byId("ln-file-list").closest("[hidden]")).toBeNull();
+    expect(byId("search-library-heading").closest("[hidden]")).toBeNull();
     expect(document.activeElement).toBe(document.querySelector("#panel-queue summary"));
   });
 });
