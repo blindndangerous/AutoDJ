@@ -353,9 +353,9 @@ def _snapshot(cfg: AutoDJConfig, roots: dict[str, Path], snapshot: Path) -> dict
     members: dict[str, Path] = {}
     if not (active / "library.db").is_file():
         raise BackupError(
-            f"there is no catalog database at {active / 'library.db'}; run `autodj index` first"
+            f"there is no catalog database at {active / 'library.db'}; "
+            "run `autodj migrate-index --apply` for an older library, or `autodj index` for a new one"
         )
-    _check_catalog(active / "library.db")
     with im.publication_lock(active):
         for member, original in _state_sources(cfg, roots):
             copy = snapshot / member
@@ -382,6 +382,8 @@ def _snapshot(cfg: AutoDJConfig, roots: dict[str, Path], snapshot: Path) -> dict
         ):
             source.backup(target)
         _check_sqlite(index / name)
+        if name == "library.db":
+            _check_catalog(index / name)
     for name in ("related-artists.toml", "related-tracks.toml"):
         related = active / name
         if related.is_file():
@@ -409,7 +411,7 @@ def _check_sqlite(path: Path) -> None:
 
 
 def _check_catalog(path: Path) -> None:
-    """Refuse a healthy SQLite file that does not hold the current catalog schema."""
+    """Check a staged database has the catalog schema; discard its temporary sidecars."""
     try:
         from autodj.catalog import catalog_counts
 
@@ -422,6 +424,10 @@ def _check_catalog(path: Path) -> None:
             f"{path} is not a current AutoDJ catalog; restore it with a compatible older "
             "release, then run `autodj migrate-index --apply`"
         ) from exc
+
+    finally:
+        for suffix in _SQLITE_SIDECARS:
+            path.with_name(path.name + suffix).unlink(missing_ok=True)
 
 
 def _file_size(path: Path) -> int:
