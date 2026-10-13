@@ -34,7 +34,7 @@ def access_token_path(cfg: AutoDJConfig) -> Path:
     return Path(cfg.index.index_dir) / ".access-token"
 
 
-def write_private_file(path: Path, text: str) -> None:
+def write_private_file(path: Path, text: str | bytes) -> None:
     """Write *text* to *path* atomically, readable only by the owner (0600).
 
     Creates parent directories if needed, writes to a temporary file in the
@@ -43,7 +43,7 @@ def write_private_file(path: Path, text: str) -> None:
 
     Args:
         path: Destination file.
-        text: ASCII content to store.
+        text: ASCII text or existing file bytes to store.
 
     Raises:
         OSError: The file could not be written; no temporary file is left.
@@ -52,8 +52,8 @@ def write_private_file(path: Path, text: str) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.")
-        with os.fdopen(fd, "w", encoding="ascii") as handle:
-            handle.write(text)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(text.encode("ascii") if isinstance(text, str) else text)
         os.chmod(tmp, 0o600)
         os.replace(tmp, path)
     except OSError:

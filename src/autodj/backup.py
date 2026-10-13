@@ -9,8 +9,9 @@ that wrote it and the list of files) and these members:
   ``index/related-artists.toml``, ``index/related-tracks.toml``, ``index/schedule.json``,
   ``index/carts.json``,
   ``index/time_checks.json``, ``index/listener_bans.json``, ``index/recording.json``,
-  ``index/categories.json``, ``index/liner_dates.json``, ``index/matched_intros.json``
-  and ``index/ads.json`` from the active index folder.
+  ``index/categories.json``, ``index/liner_dates.json``, ``index/matched_intros.json``,
+  ``index/ads.json`` and ``index/relays.json`` from the active index folder. Relay files
+  contain source passwords.
 - ``liners/...``, ``carts/...``, ``time_checks/...``, ``profiles/...``, ``clockwheels/...``,
   ``intros/...`` (the matched intros' audio), ``ads/...`` (the ad spots' audio) and
   ``ad_plays/...`` (the ad play log, #51): every file in those folders and their
@@ -28,6 +29,7 @@ that wrote it and the list of files) and these members:
 
 Every station's state files are copied with the index generation under its
 publication lock; each SQLite database is copied through SQLite's backup API.
+The ZIP is not encrypted; protect it as you would the relay passwords it contains.
 Restore is all or nothing: what it replaces is set aside first
 (``.<name>.old-<id>``), each step written to a journal (``.autodj-restore.json``),
 and put back if any replacement fails; after a crash, :func:`recover_restore`
@@ -80,6 +82,7 @@ INDEX_FILES = (
     "liner_dates.json",
     "matched_intros.json",
     "ads.json",
+    "relays.json",
     im.MANIFEST_NAME,
 )
 _FOLDERS = (
@@ -105,6 +108,7 @@ _STATE_FILES = (
     "liner_dates.json",
     "matched_intros.json",
     "ads.json",
+    "relays.json",
 )
 # Another station's state files, in ``stations/<slug>/``.  The categories
 # are shared, so they are only in the default station's list.
