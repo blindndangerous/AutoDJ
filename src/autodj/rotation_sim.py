@@ -1170,7 +1170,9 @@ def _report(
                 "never_played": len(unplayed),
                 "never_played_sample": sorted(entry.display_name for entry in unplayed)[:SAMPLE],
                 "skipped": sum(
-                    count for reason, count in tally.steps.items() if reason.startswith(label)
+                    count
+                    for reason, count in tally.steps.items()
+                    if re.sub(r"^Step \d+: ", "", reason).startswith(label)
                 ),
             }
         )
