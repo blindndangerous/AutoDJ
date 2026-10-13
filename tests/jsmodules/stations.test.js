@@ -64,6 +64,8 @@ describe("where a request goes", () => {
       .toBe("/api/stations/nightowl/carts/pages/2/slots/7/play");
     expect(stationApi("/api/library/clock/Morning%20drive/rename"))
       .toBe("/api/stations/nightowl/library/clock/Morning%20drive/rename");
+    expect(stationApi("/api/library/clock/check"))
+      .toBe("/api/stations/nightowl/library/clock/check");
     expect(stationApi("/api/stream/listeners/abc")).toBe("/api/stations/nightowl/stream/listeners/abc");
     expect(stationApi("/api/liners/upload?replace=true"))
       .toBe("/api/stations/nightowl/liners/upload?replace=true");

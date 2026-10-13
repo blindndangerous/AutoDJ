@@ -2,9 +2,8 @@
 //
 // The server keeps them in categories.json and works out their songs.  This
 // module lists them with their counts (plain text), and adds, edits and
-// deletes them through one form.  Each result of a button (Check, Save,
-// Delete) is said once through #categories-status; the list and the
-// match count are never live regions, so polling never speaks.
+// deletes them through one form. Button results and each settled background
+// count are announced once through #categories-status.
 //
 // Focus: Add and Edit move it to Name; Save moves it to the saved
 // category's Edit button, Cancel back to the button that opened the form,
@@ -14,12 +13,16 @@
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
+import { createConditionRow, readConditionRows } from "./condition-editor.js";
+import { describeConditions } from "./clockwheel-step.js";
+import { parsePointTime } from "./library-folders.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 const POLL_MS = 15000;
 const EXAMPLES_SHOWN = 5;
 const FIELD_IDS = {
   name: "categories-name", query: "categories-query", playlist: "categories-playlist", source: "categories-source-query",
+    conditions: "categories-filter-add",
   days: "categories-day-0", hours_from: "categories-hours-from", hours_until: "categories-hours-until",
   not_before: "categories-not-before", not_after: "categories-not-after",
 };
@@ -40,8 +43,10 @@ export function countsText(counts) {
 }
 
 // What one saved category is, for its list item.
-export function describeCategory(category) {
-  const source = category.source === "m3u" ? `playlist ${category.playlist}` : `query ${category.query}`;
+export function describeCategory(category, folders = []) {
+  const source = category.source === "m3u" ? `playlist ${category.playlist}`
+    : category.source === "filters" ? `filters: ${describeConditions(category.conditions, category.match, folders)}`
+      : `query ${category.query}`;
   const sentences = [`${category.name}: ${countsText(category)}.`, `From ${source}.`];
   // Dayparting and the season, in words; "outside its hours now" (or its
   // dates) is said, not only shown.
@@ -72,6 +77,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
   const match = el("categories-match");
   const errorText = el("categories-form-error");
   const legend = el("categories-form-legend");
+  const filterHost = el("categories-filter-conditions");
   if (!panel || !list || !status || !form || !addButton || !nameInput || !queryInput || !playlistSelect || !match) {
     return { refresh: async () => {}, clearProtectedData() {}, resume() {}, destroy() {} };
   }
@@ -85,11 +91,17 @@ export function installCategoriesPanel({ document: doc = document, request = req
   let timer = null;
   let generation = 0;
   let suspended = false;
+  let filterId = 0;
+  let countTimer = null;
+  let countGeneration = 0;
+  let countRunning = false;
+  let pendingCount = null;
 
   const current = (epoch, mine) => !suspended && generation === mine && isAuthenticatedRequestCurrent(epoch);
+  const countCurrent = (epoch, mine) => !suspended && countGeneration === mine && isAuthenticatedRequestCurrent(epoch);
   const say = (message, error = false) => announceStatus(status, message, { force: true, tone: error ? "error" : "info" });
   const send = (url, method, body) => request(url, body === undefined ? { method } : { method, headers: JSON_HEADERS, body: JSON.stringify(body) });
-  const source = () => (el("categories-source-m3u")?.checked ? "m3u" : "query");
+  const source = () => el("categories-source-filters")?.checked ? "filters" : el("categories-source-m3u")?.checked ? "m3u" : "query";
   const byId = (id) => data.categories.find((category) => category.id === id);
 
   // ---- The list --------------------------------------------------------
@@ -107,7 +119,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
   }
 
   function renderList() {
-    const signature = JSON.stringify(data.categories);
+    const signature = JSON.stringify([data.categories, data.folders]);
     if (signature === listSignature) return;
     listSignature = signature;
     // The same categories in the same order: change only the words of each
@@ -118,7 +130,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
         && rows.every((row, i) => row.dataset.id === data.categories[i].id
           && row.dataset.name === data.categories[i].name)) {
       rows.forEach((row, i) => {
-        const text = describeCategory(data.categories[i]);
+      const text = describeCategory(data.categories[i], data.folders);
         const span = row.firstElementChild;
         if (span && span.textContent !== text) span.textContent = text;
       });
@@ -136,7 +148,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
       item.dataset.id = category.id;
       item.dataset.name = category.name; // the buttons' names say it
       const text = doc.createElement("span");
-      text.textContent = describeCategory(category);
+      text.textContent = describeCategory(category, data.folders);
       item.append(text, " ", rowButton(category, "edit", "Edit"), " ", rowButton(category, "delete", "Delete"));
       return item;
     }));
@@ -179,6 +191,45 @@ export function installCategoriesPanel({ document: doc = document, request = req
     const kind = source();
     el("categories-query-field")?.toggleAttribute("hidden", kind !== "query");
     el("categories-playlist-field")?.toggleAttribute("hidden", kind !== "m3u");
+    el("categories-filters-field")?.toggleAttribute("hidden", kind !== "filters");
+  }
+
+  function filterRow(value = {}) {
+    return createConditionRow({
+      document: doc,
+      nextId: () => `category-condition-${++filterId}`,
+      index: filterHost.children.length + 1,
+      value,
+      fields: ["folder", "year", "bpm", "duration", "artist", "title", "album", "genre", "beets"],
+      sourceChoices: (data.folders || []).map((item) => [item.id, item.path]),
+      genreChoices: (data.genres || []).map((item) => [item, item]),
+      beetsChoices: (data.beets_fields || []).map((item) => [item, item]),
+      onRemove: (row) => {
+        row.remove();
+        [...filterHost.children].forEach((item, index) => {
+          item.querySelector("legend").textContent = `Condition ${index + 1}`;
+          item.querySelector("button").textContent = `Remove condition ${index + 1}`;
+        });
+      },
+    });
+  }
+
+  function renderFilterConditions(conditions = []) {
+    filterHost?.replaceChildren();
+    for (const value of conditions.length ? conditions : [{}]) filterHost.append(filterRow(value).row);
+  }
+
+  function readFilterConditions(interactive = true) {
+    return readConditionRows([...filterHost.children], {
+      interactive,
+      parsePointTime,
+      folderRequired: "Choose a registered music folder.",
+      numberError: (field) => `Enter a valid value for ${field}.`,
+      durationError: "Enter a duration in seconds or minutes:seconds.",
+      beetsAvailable: (name) => Boolean(name) && !data.beets_error && (data.beets_fields || []).includes(name),
+      beetsError: () => data.beets_error || "Choose an available Beets field.",
+      errorField: "conditions",
+    });
   }
 
   // The error text joins or leaves a control's own description.
@@ -198,14 +249,16 @@ export function installCategoriesPanel({ document: doc = document, request = req
 
   function clearErrors() {
     for (const id of new Set([...Object.values(FIELD_IDS), ...DAY_IDS])) unmark(el(id));
+    for (const control of filterHost?.querySelectorAll("[aria-invalid]") || []) unmark(control);
     if (errorText) { errorText.textContent = ""; errorText.hidden = true; }
   }
 
   function showError(field, message) {
     const target = el(FIELD_IDS[field] || FIELD_IDS.name);
-    if (field === "source" || field === "query" || field === "playlist") {
+    if (field === "source" || field === "query" || field === "playlist" || field === "conditions") {
       // The field must be visible to take focus.
       if (field === "playlist") el("categories-source-m3u").checked = true;
+      else if (field === "conditions") el("categories-source-filters").checked = true;
       else if (field === "query") el("categories-source-query").checked = true;
       showSource();
     }
@@ -218,7 +271,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
     say(message, true);
   }
 
-  function body() {
+  function body(interactive = true) {
     const kind = source();
     const value = {
       name: nameInput.value.trim(),
@@ -226,6 +279,10 @@ export function installCategoriesPanel({ document: doc = document, request = req
       query: kind === "query" ? queryInput.value.trim() : "",
       playlist: kind === "m3u" ? playlistSelect.value : "",
     };
+    if (kind === "filters") {
+      value.match = el("categories-filter-match").value;
+      value.conditions = readFilterConditions(interactive);
+    }
     // Sent only when set: none means every day, all day.
     const days = DAY_IDS.map(el).filter((box) => box?.checked).map((box) => Number(box.value));
     if (days.length) value.days = days;
@@ -250,6 +307,10 @@ export function installCategoriesPanel({ document: doc = document, request = req
     }
     if (value.source === "m3u" && !value.playlist) {
       showError("playlist", `Put an M3U or M3U8 file in ${data.playlists_folder || "the playlists folder"} first.`);
+      return false;
+    }
+    if (value.source === "filters" && !value.conditions?.length) {
+      showError("conditions", "Add at least one category condition.");
       return false;
     }
     // A half-typed time reads as empty; say so rather than save "all day".
@@ -283,6 +344,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
   }
 
   function openForm(category, from) {
+    countGeneration += 1;
     editing = category ? category.id : null;
     opener = from;
     clearErrors();
@@ -300,25 +362,36 @@ export function installCategoriesPanel({ document: doc = document, request = req
       const input = el(id);
       if (input) input.value = category?.[key] || "";
     }
-    el(category?.source === "m3u" ? "categories-source-m3u" : "categories-source-query").checked = true;
+    el(category?.source === "m3u" ? "categories-source-m3u" : category?.source === "filters" ? "categories-source-filters" : "categories-source-query").checked = true;
     renderPlaylists();
+    el("categories-filter-match").value = category?.match || "all";
+    renderFilterConditions(category?.source === "filters" ? category.conditions || [] : []);
     if (category?.playlist) playlistSelect.value = category.playlist;
     showSource();
-    match.textContent = category ? `Saved: ${countsText(category)}.` : "Not checked yet.";
+    match.textContent = category
+      ? `Matching selection: ${countsText(category)} before playback restrictions.`
+      : "Not checked yet.";
     if (legend) legend.textContent = category ? `Edit category ${category.name}` : "Add category";
     form.hidden = false;
     nameInput.focus();
   }
 
   function closeForm() {
+    countGeneration += 1;
+    if (countTimer !== null) clearTimeout(countTimer);
+    countTimer = null;
+    pendingCount = null;
     form.hidden = true;
     editing = null;
     clearErrors();
   }
 
   async function check() {
+    countGeneration += 1;
     clearErrors();
-    const value = body();
+    let value;
+    try { value = body(); }
+    catch (error) { showError(error.field || "conditions", error.message); return; }
     if (!valid(value)) return;
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
     try {
@@ -332,10 +405,55 @@ export function installCategoriesPanel({ document: doc = document, request = req
     }
   }
 
+  function scheduleCount() {
+    if (source() === "query" && !el("categories-query").value.trim()) return;
+    if (countTimer !== null) clearTimeout(countTimer);
+    const mine = ++countGeneration;
+    countTimer = setTimeout(async () => {
+      countTimer = null;
+      const epoch = captureAuthenticatedRequestEpoch();
+      let value;
+      try { value = body(false); }
+      catch { if (countCurrent(epoch, mine)) match.textContent = "Complete the selection to check matching tracks."; return; }
+      if (!countCurrent(epoch, mine)) return;
+      if (!value.name) { match.textContent = "Enter a name to check matching tracks."; return; }
+      pendingCount = { epoch, mine, value };
+      void drainCounts();
+    }, 450);
+  }
+
+  async function drainCounts() {
+    if (countRunning) return;
+    countRunning = true;
+    try {
+      while (pendingCount) {
+        const item = pendingCount;
+        pendingCount = null;
+        if (!countCurrent(item.epoch, item.mine)) continue;
+        match.textContent = "Checking matching tracks…";
+        try {
+          const result = await send("/api/categories/check", "POST", item.value);
+          if (!countCurrent(item.epoch, item.mine)) continue;
+          match.textContent = result.error
+            ? `Count unavailable: ${result.error}`
+            : `${countsText(result)} match the selection before playback restrictions.`;
+          announceStatus(status, match.textContent, { tone: result.error ? "error" : "info" });
+        } catch (error) {
+          if (countCurrent(item.epoch, item.mine)) {
+            match.textContent = `Count unavailable: ${error.message}`;
+            announceStatus(status, match.textContent, { tone: "error" });
+          }
+        }
+      }
+    } finally { countRunning = false; }
+  }
+
   async function save(event) {
     event?.preventDefault();
     clearErrors();
-    const value = body();
+    let value;
+    try { value = body(); }
+    catch (error) { showError(error.field || "conditions", error.message); return; }
     if (!valid(value)) return;
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
     try {
@@ -409,18 +527,29 @@ export function installCategoriesPanel({ document: doc = document, request = req
     if (!back) (opener?.isConnected ? opener : addButton).focus();
     say("Cancelled. Nothing was saved.");
   });
-  for (const id of ["categories-source-query", "categories-source-m3u"]) {
+  for (const id of ["categories-source-query", "categories-source-m3u", "categories-source-filters"]) {
     el(id)?.addEventListener("change", () => {
       showSource();
       match.textContent = "Not checked yet.";
+      scheduleCount();
     });
   }
+  el("categories-filter-add")?.addEventListener("click", () => {
+    if (filterHost.children.length >= 32) { showError("conditions", "A category can have at most 32 conditions."); return; }
+    const item = filterRow(); filterHost.append(item.row); item.field.focus(); match.textContent = "Not checked yet.";
+  });
+  el("categories-filter-match")?.addEventListener("change", () => { match.textContent = "Not checked yet."; scheduleCount(); });
   for (const field of [nameInput, queryInput, playlistSelect, el("categories-hours-from"),
     el("categories-hours-until"), el("categories-not-before"), el("categories-not-after")]) {
-    field?.addEventListener("input", () => unmark(field));
+    field?.addEventListener("input", () => { unmark(field); scheduleCount(); });
+    field?.addEventListener("change", scheduleCount);
   }
   // The days are marked as one group, so changing any one clears them all.
-  for (const id of DAY_IDS) el(id)?.addEventListener("input", () => DAY_IDS.forEach((day) => unmark(el(day))));
+  for (const id of DAY_IDS) el(id)?.addEventListener("input", () => { DAY_IDS.forEach((day) => unmark(el(day))); scheduleCount(); });
+  filterHost?.addEventListener("input", scheduleCount);
+  filterHost?.addEventListener("change", scheduleCount);
+  el("categories-filter-add")?.addEventListener("click", scheduleCount);
+  filterHost?.addEventListener("click", (event) => { if (event.target.closest?.("button")) scheduleCount(); });
 
   // ---- Loading and polling ---------------------------------------------
   async function refresh() {

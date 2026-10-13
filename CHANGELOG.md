@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Multiple stations can use independent Stereo Tool processing instances when configured with the
+  required per-instance licences and executable paths (#163).
+
 ### Added
 
 - Shows (#106): Library tools has a **Shows** card where you plan a show such as "Remembering
@@ -127,6 +132,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is back in Settings > Voice liners. Search, folders and History share arrow-key navigation.
   Action cells focus their buttons and checkboxes so screen readers can announce their roles
   and checked state. Folder saves and table refreshes preserve focus.
+- Categories and Music clockwheel steps share folder, genre, year, BPM, duration, text and Beets
+  filters, with Match all / Match any and exclusions. Categories can be saved filter selections,
+  while existing Beets-query and M3U categories keep working; category references remain available
+  to steps, but categories cannot nest. Unknown metadata never passes an exclusion, and a genre
+  exclusion rejects a track if any label matches. Both editors show a debounced unique-track count
+  before playback restrictions; each settled count is announced once.
 - Clockwheel Music steps can combine categories with folder and metadata conditions. Use
   Match any to combine categories, or Match all to narrow a category by year, BPM or other
   fields. Songs matching more than one condition are included once. Existing category steps
@@ -139,7 +150,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   random picks choose a song before a version, least recently played dates a song by its latest
   played version, and similarity keeps the best version of each song. The track limits hold back
   every version of a song that played. The rotation tester counts the versions as one song.
-
 - Related tracks (#101). Settings > Picking > Repeats has a **Use related tracks** checkbox, off
   by default, with its own Tracks and Minutes limits (20 tracks to start with). It holds back
   tracks that sound alike on air, such as a song and one that samples it, listed as

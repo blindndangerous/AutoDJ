@@ -150,6 +150,66 @@ def test_categories_are_checked_saved_used_by_clockwheels_and_deleted(tmp_path):
         assert client.get("/api/library/clock/Throwback").status_code == 200
 
 
+def test_filter_categories_check_with_shared_clock_conditions(tmp_path):
+    with LibraryCatalog(tmp_path / "library.sqlite") as catalog:
+        app, client, _songs = _client(tmp_path, catalog)
+        _pair(app, client)
+        body = {
+            "name": "Rock not 2000s",
+            "source": "filters",
+            "match": "all",
+            "conditions": [
+                {"field": "genre", "operator": "is", "value": "Rock"},
+                {"field": "year", "operator": "not_eq", "value": 2003},
+            ],
+        }
+        checked = client.post("/api/categories/check", json=body)
+        assert checked.status_code == 200
+        assert checked.json()["tracks"] == 1
+        nested = {**body, "conditions": [{"field": "category", "category": "other"}]}
+        refused = client.post("/api/categories/check", json=nested)
+        assert refused.status_code == 400
+        assert refused.json()["field"] == "conditions"
+
+
+def test_clock_counts_fail_closed_when_a_referenced_category_source_fails(tmp_path):
+    with LibraryCatalog(tmp_path / "library.sqlite") as catalog:
+        app, client, songs = _client(tmp_path, catalog)
+        _pair(app, client)
+        playlists = tmp_path / "playlists"
+        playlists.mkdir()
+        playlist_path = playlists / "Rock.m3u8"
+        playlist_path.write_text(f"{songs[0].path}\n", encoding="utf-8")
+        created = client.post(
+            "/api/categories", json={"name": "Rock", "source": "m3u", "playlist": "Rock.m3u8"}
+        )
+        assert created.status_code == 201, created.text
+        category_id = created.json()["category"]["id"]
+
+        def count(operator):
+            return client.post(
+                "/api/library/clock/check",
+                json={
+                    "step": {
+                        "type": "music",
+                        "conditions": [
+                            {"field": "category", "category": category_id, "operator": operator}
+                        ],
+                    }
+                },
+            )
+
+        assert count("is").json() == {"tracks": 1, "error": None}
+        assert count("is_not").json() == {"tracks": 2, "error": None}
+
+        playlist_path.unlink()
+        for operator in ("is", "is_not"):
+            response = count(operator)
+            assert response.status_code == 200
+            assert response.json()["tracks"] is None
+            assert "playlist file Rock.m3u8 is missing" in response.json()["error"]
+
+
 def test_categories_save_and_report_their_days_and_hours(tmp_path, monkeypatch):
     with LibraryCatalog(tmp_path / "library.sqlite") as catalog:
         app, client, _songs = _client(tmp_path, catalog)

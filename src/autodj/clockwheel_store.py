@@ -149,8 +149,11 @@ def _condition(value: Any) -> dict[str, Any]:
         return validate_category_condition(value)
     if value["field"] != "folder":
         return validate_metadata_condition(value)
-    if set(value) - {"field", "source", "folder", "recursive"}:
+    if set(value) - {"field", "source", "folder", "recursive", "operator"}:
         raise ValueError("A folder condition has unknown fields")
+    operator = value.get("operator", "is")
+    if operator not in {"is", "is_not"}:
+        raise ValueError("A folder condition requires is or is not")
     recursive = value.get("recursive", False)
     if type(recursive) is not bool:
         raise ValueError("A folder condition's recursive value must be true or false")
@@ -159,6 +162,7 @@ def _condition(value: Any) -> dict[str, Any]:
         "source": _source_id(value.get("source")),
         "folder": relative_path(value.get("folder", ""), label="folder", allow_empty=True),
         "recursive": recursive,
+        **({"operator": "is_not"} if operator == "is_not" else {}),
     }
 
 
@@ -236,6 +240,7 @@ def resolve_conditions(
                 "field": "folder",
                 "folder": source_folder(source["path"], condition["folder"]),
                 "recursive": condition["recursive"],
+                **({"operator": "is_not"} if condition.get("operator") == "is_not" else {}),
             }
         )
     return tuple(result)
