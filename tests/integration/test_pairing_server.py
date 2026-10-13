@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 from fastapi.testclient import TestClient
 
 from autodj.pairing import DeviceRegistry
-from autodj.server import create_app
+from autodj.server import _version_info, create_app
 
 _SECRET = "pairing-secret-that-is-at-least-32-bytes"
 
@@ -211,19 +211,28 @@ def test_paused_pairing_tells_the_user_to_wait_for_a_new_code(bridge, tmp_path) 
     )
 
 
-def test_healthz_and_version_hide_details_until_paired(bridge, tmp_path) -> None:
-    """Under pairing, the track count, commit and build time need a session."""
+def test_healthz_and_version_hide_details_until_paired(bridge, tmp_path, monkeypatch) -> None:
+    """Under pairing, the track count, commit, its link and build time need a session."""
+    _version_info.cache_clear()
+    monkeypatch.setattr("autodj.server._git_commit", lambda: None)
+    monkeypatch.setenv("AUTODJ_COMMIT", "1a2b3c4")
     client, _registry = _paired_client(bridge, tmp_path)
 
-    assert client.get("/healthz").json() == {"status": "ok"}
-    assert set(client.get("/api/version").json()) == {"version"}
+    try:
+        assert client.get("/healthz").json() == {"status": "ok"}
+        assert set(client.get("/api/version").json()) == {"version"}
 
-    code = client.app.state.request_pairing_code()[0]
-    paired = client.post("/api/pair", json={"code": code, "device_name": "Kitchen tablet"})
-    assert paired.status_code == 200
+        code = client.app.state.request_pairing_code()[0]
+        paired = client.post("/api/pair", json={"code": code, "device_name": "Kitchen tablet"})
+        assert paired.status_code == 200
 
-    assert set(client.get("/healthz").json()) == {"status", "tracks"}
-    assert set(client.get("/api/version").json()) == {"version", "commit", "built_at"}
+        assert set(client.get("/healthz").json()) == {"status", "tracks"}
+        info = client.get("/api/version").json()
+        assert set(info) == {"version", "commit", "built_at", "commit_url"}
+        assert info["commit"] == "1a2b3c4"
+        assert info["commit_url"] == "https://github.com/blindndangerous/AutoDJ/commit/1a2b3c4"
+    finally:
+        _version_info.cache_clear()
 
 
 def _pair(client: TestClient, name: str) -> str:

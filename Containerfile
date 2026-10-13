@@ -51,6 +51,14 @@ ENV HOME=/home/autodj \
     AUTODJ_INDEX_DIR=/index \
     AUTODJ_MODEL_DIR=/models
 
+# The commit this image was built from, for the web page's build stamp; the
+# build context leaves out .git and the image has no git.  Pass it with
+# AUTODJ_COMMIT=$(git rev-parse --short HEAD) docker compose build.  The
+# server shows and links it only when it is 7 to 40 hex digits.  Declared
+# last so a new commit rebuilds only this layer.
+ARG AUTODJ_COMMIT=""
+ENV AUTODJ_COMMIT=${AUTODJ_COMMIT}
+
 USER 10001:10001
 EXPOSE 8080
 # Probe the local listener over HTTP, then HTTPS for a server with TLS set in

@@ -159,6 +159,76 @@ def test_version_endpoint_uses_same_accessor() -> None:
         _version_info.cache_clear()
 
 
+REPO_COMMIT = "https://github.com/blindndangerous/AutoDJ/commit/"
+
+
+@pytest.fixture
+def fresh_version_info():
+    _version_info.cache_clear()
+    yield _version_info
+    _version_info.cache_clear()
+
+
+def test_version_info_prefers_git(fresh_version_info, monkeypatch) -> None:
+    monkeypatch.setenv("AUTODJ_COMMIT", "fedcba9")
+    with patch("subprocess.check_output", return_value="1a2b3c4\n") as git:
+        info = fresh_version_info()
+    assert git.call_args.args[0] == ["git", "rev-parse", "--short", "HEAD"]
+    assert info["commit"] == "1a2b3c4"
+    assert info["commit_url"] == REPO_COMMIT + "1a2b3c4"
+
+
+@pytest.mark.parametrize(
+    "error", [FileNotFoundError("git"), subprocess.CalledProcessError(128, "git")]
+)
+def test_version_info_falls_back_to_build_arg(fresh_version_info, monkeypatch, error) -> None:
+    monkeypatch.setenv("AUTODJ_COMMIT", " 0123456789ABCDEF0123456789abcdef01234567\n")
+    with patch("subprocess.check_output", side_effect=error):
+        info = fresh_version_info()
+    full = "0123456789abcdef0123456789abcdef01234567"
+    assert info["commit"] == full
+    assert info["commit_url"] == REPO_COMMIT + full
+
+
+def test_version_info_without_git_or_build_arg_is_unknown(fresh_version_info, monkeypatch) -> None:
+    monkeypatch.delenv("AUTODJ_COMMIT", raising=False)
+    with patch("subprocess.check_output", side_effect=FileNotFoundError("git")):
+        info = fresh_version_info()
+    assert info["commit"] == "unknown"
+    assert "commit_url" not in info
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "abc123",  # six digits: too short
+        "a" * 41,  # longer than a SHA-1
+        "1a2b3c4g",
+        "1a2b3c4/../../evil",
+        "1a2b3c4?x=https://evil.example",
+        "1a2b3c4\nSet-Cookie: x=1",
+        "<script>alert(1)</script>",
+        "$(rm -rf /)",
+        "１２３４５６７",  # full-width digits are not ASCII hex
+    ],
+)
+def test_version_info_ignores_invalid_build_arg(fresh_version_info, monkeypatch, value) -> None:
+    monkeypatch.setenv("AUTODJ_COMMIT", value)
+    with patch("subprocess.check_output", side_effect=FileNotFoundError("git")):
+        info = fresh_version_info()
+    assert info["commit"] == "unknown"
+    assert "commit_url" not in info
+
+
+def test_version_info_ignores_unexpected_git_output(fresh_version_info, monkeypatch) -> None:
+    monkeypatch.delenv("AUTODJ_COMMIT", raising=False)
+    with patch("subprocess.check_output", return_value="fatal: not a git repository\n"):
+        info = fresh_version_info()
+    assert info["commit"] == "unknown"
+    assert "commit_url" not in info
+
+
 def test_frontend_has_no_independent_product_version() -> None:
     package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
     assert "version" not in package

@@ -516,7 +516,7 @@
          any other result is said once in #intros-status. -->
     <section id="intros-editor" aria-labelledby="intros-heading" hidden>
       <h3 id="intros-heading">Matched intros</h3>
-      <p class="setting-desc" id="intros-help">Short voice clips that play as this song starts, such as “Here’s the new one from this artist”. When the song’s intro, from Start to Intro, is long enough, the voice talks it up and ends as the singing starts; otherwise it plays just before the song. An intro for this song comes first; an intro for the artist plays on any of the artist’s songs. A matched intro takes the place of the automatic liner at that song change.</p>
+      <p class="setting-desc" id="intros-help">Short voice clips that play as this song starts, such as “Here’s the new one from this artist”. When the song’s intro, from Start to Intro, is long enough, the voice talks it up and ends as the singing starts; otherwise it plays just before the song. An intro for this song comes first; an intro for the artist plays on any of the artist’s songs. By default, a matched intro can take the place of the automatic liner at that song change. Voice liners has an option to use matched intros only when no liner is scheduled.</p>
       <p class="setting-desc" id="intros-inactive" hidden></p>
       <!-- Intros the station's file holds that are not valid: skipped, kept
            in the file, and said here in words (never live). -->
@@ -1448,6 +1448,13 @@
     </div>
     <span class="setting-desc" id="ln-enabled-desc">
         Enable automatic liners at the intervals below. Queued liners and clockwheel liner slots still play when this is off.
+    </span>
+    <div class="settings-check">
+      <input type="checkbox" id="ln-matched-intro-only-without-liner" aria-describedby="ln-matched-intro-only-without-liner-desc">
+      <label for="ln-matched-intro-only-without-liner">Only when no liner is scheduled</label>
+    </div>
+    <span class="setting-desc" id="ln-matched-intro-only-without-liner-desc">
+      Matched song intros play only when no queued, clockwheel or automatic liner is scheduled for that song change. Off, a matched intro can take the place of an automatic liner.
     </span>
 
     <fieldset data-show-when="ln-enabled">
@@ -2828,14 +2835,17 @@
   Placeholder text renders before /api/version resolves so a SR user
   landing here mid-fetch hears something coherent and there is no
   layout shift on populate.
+
+  When the server knows its commit, app.js wraps #ver-build in a link to
+  that commit on GitHub, so the link's name starts with its visible text,
+  "build 1a2b3c4" (2.5.3), and a hidden suffix says where it goes.
 -->
 <footer id="page-footer">
   <p id="version-stamp">
     AutoDJ
     <span id="ver-version">loading…</span>
     <span class="ver-sep" aria-hidden="true">·</span>
-    build
-    <span id="ver-commit">…</span>
+    <span id="ver-build">build <span id="ver-commit">…</span></span>
     <span class="ver-sep" aria-hidden="true">·</span>
     <time id="ver-built" datetime="">…</time>
   </p>
