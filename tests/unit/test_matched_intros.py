@@ -86,9 +86,12 @@ def test_an_intro_is_for_one_song_or_one_artist(tmp_path: Path) -> None:
         Intro(file="../escape.wav", track_id="x")
 
 
-def test_a_file_that_is_not_valid_is_set_aside(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "text", ["not json", '{"schema_version": 2, "intros": {}}', '{"intros": []}']
+)
+def test_a_file_that_is_not_a_file_of_intros_is_set_aside(tmp_path: Path, text: str) -> None:
     store = _store(tmp_path)
-    store.path.write_text('{"schema_version": 1, "intros": {"nope": {}}}', encoding="utf-8")
+    store.path.write_text(text, encoding="utf-8")
     assert store.all() == {}
     assert not store.path.exists()
     assert [path.name.startswith("matched_intros.json.bad-") for path in tmp_path.iterdir()] == [
@@ -96,14 +99,39 @@ def test_a_file_that_is_not_valid_is_set_aside(tmp_path: Path) -> None:
     ]
 
 
-def test_an_entry_naming_another_intros_file_is_refused(tmp_path: Path) -> None:
+def test_one_bad_intro_is_skipped_kept_and_said_while_the_others_play(
+    tmp_path: Path, caplog
+) -> None:
     store = _store(tmp_path)
-    document = {
-        "schema_version": 1,
-        "intros": {"b" * 32: {"file": file_name("a" * 32, ".wav"), "track_id": "x"}},
+    good = _add(store)
+    document = json.loads(store.path.read_text(encoding="utf-8"))
+    bad = {
+        # Names another intro's file.
+        "b" * 32: {"file": file_name("a" * 32, ".wav"), "track_id": "song-a"},
+        # Not an intro at all.
+        "nope": {"chance": 500},
     }
+    document["intros"].update(bad)
     store.path.write_text(json.dumps(document), encoding="utf-8")
-    assert store.all() == {}
+    other = _store(tmp_path)
+    assert list(other.all()) == [good]
+    assert other.choose("song-a", "", NOW) is not None  # the good one still plays
+    assert "skipping intro" in caplog.text
+    problem = other.problem()
+    assert problem is not None and problem.startswith("2 matched intros in matched_intros.json")
+    assert "nope" in problem
+    # A save keeps the bad entries as they were, so nothing is lost.
+    _add(other, track_id="song-b")
+    saved = json.loads(store.path.read_text(encoding="utf-8"))["intros"]
+    for intro_id, raw in bad.items():
+        assert saved[intro_id] == raw
+    assert len(saved) == 4
+    # Removed by hand, the problem goes.
+    for intro_id in bad:
+        del saved[intro_id]
+    store.path.write_text(json.dumps({"schema_version": 1, "intros": saved}), encoding="utf-8")
+    assert len(other.all()) == 2
+    assert other.problem() is None
 
 
 def test_a_file_that_cannot_be_read_is_kept_and_saves_are_refused(
@@ -333,6 +361,26 @@ def test_an_intro_that_fits_talks_up_the_song(tmp_path: Path) -> None:
     assert end == pytest.approx(11.5, abs=1e-3)
     assert _incoming(render) == pytest.approx(10.0, abs=1e-3)
     assert render.intro_events[0][3] == "New single"
+
+
+@pytest.mark.parametrize("speech", [1.0, 1.5, 2.0])
+def test_a_talk_up_intro_follows_the_liner_intro_rule(tmp_path: Path, speech: float) -> None:
+    # The rule liners follow when a positive overlap meets the next song's
+    # intro (#195): the music enters max(main - intro, min(main, overlap))
+    # after the voice starts.  A talk-up intro has overlap 0, so with speech
+    # that fits the intro the song enters with the voice, and the speech is
+    # over by the vocal; speech as long as the intro ends on the vocal.
+    player, (a, b, _c, _d), _points, _desk = make_station(tmp_path)
+    render = player._render_track(a, b, 0, intro=_chosen(tmp_path, speech))
+    start, end = _intro_span(render)
+    intro = 2.0  # b: Start 0.25, Intro 2.25
+    release = max(speech - intro, min(speech, 0.0))
+    assert _incoming(render) == pytest.approx(start + release, abs=1e-3)
+    vocal = _incoming(render) + intro
+    assert end == pytest.approx(start + speech, abs=1e-3)
+    assert end <= vocal + 1e-3
+    if speech == intro:
+        assert end == pytest.approx(vocal, abs=1e-3)
 
 
 def test_an_intro_longer_than_the_songs_intro_plays_before_it(tmp_path: Path) -> None:

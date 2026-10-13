@@ -158,6 +158,8 @@ def _listing(station: StationRuntime, track_id: str | None) -> dict[str, Any]:
         "station": station.slug,
         "active": reason is None,
         "reason": reason,
+        # Intros in the file that are not valid and are skipped, in words.
+        "problem": store.problem(),
         "limits": {
             "max_bytes": station.cfg.server.liner_upload_max_bytes,
             "max_seconds": MAX_INTRO_SECONDS,

@@ -11,8 +11,11 @@ Each station keeps its own intros: ``matched_intros.json`` in its state
 folder, by intro ID, and the audio in its ``intros`` folder as
 ``intro-<id><ext>``.  A song intro is keyed by the song's library ID, so a
 tag edit or a move the scan recognises keeps it; an artist intro by the
-artist's name.  The file is read again whenever it changes on disk.  A file
-that is not valid is set aside as ``matched_intros.json.bad-<id>``; one that
+artist's name.  The file is read again whenever it changes on disk.  One
+intro in it that is not valid is skipped, logged and said in Track info
+(:meth:`MatchedIntros.problem`), and written back as it was with every save,
+so the others still play and nothing is lost.  A file that is not a file of
+intros at all is set aside as ``matched_intros.json.bad-<id>``; one that
 cannot be read just now is left as it is, the intros last read are used and
 saves are refused, so nothing is ever written over it.
 
@@ -29,6 +32,7 @@ tick writes when it aired (:meth:`MatchedIntros.upkeep`).
 
 from __future__ import annotations
 
+import json
 import logging
 import random
 import re
@@ -127,18 +131,27 @@ class Intro(BaseModel):
 
 
 class _IntrosFile(BaseModel):
+    """The file's frame; each intro in it is checked on its own (:func:`_entry`)."""
+
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal[1]
-    intros: dict[str, Intro] = Field(default_factory=dict, max_length=MAX_INTROS)
+    intros: dict[str, Any] = Field(default_factory=dict)
 
-    @model_validator(mode="after")
-    def _ids(self) -> Self:
-        for intro_id, intro in self.intros.items():
-            found = _FILE.fullmatch(intro.file)
-            if found is None or found.group(1) != intro_id:
-                raise ValueError(f"intro {intro_id[:40]!r} does not name its own file")
-        return self
+
+def _entry(intro_id: str, raw: Any) -> Intro:
+    """One intro of the file, checked.
+
+    Raises:
+        ValueError: It is not a valid intro, or does not name its own file.
+    """
+    if not re.fullmatch(ID_PATTERN.strip("^$"), intro_id):
+        raise ValueError("its ID is not 32 hexadecimal digits")
+    intro = Intro.model_validate(raw)
+    found = _FILE.fullmatch(intro.file)
+    if found is None or found.group(1) != intro_id:
+        raise ValueError("it does not name its own file")
+    return intro
 
 
 def parse_rules(values: dict[str, Any]) -> dict[str, Any]:
@@ -258,6 +271,9 @@ class MatchedIntros:
         self._lock = threading.Lock()
         self._stamp: tuple[int, int, int] | None = None
         self._intros: dict[str, Intro] = {}
+        # Entries of the file that are not valid intros, kept as they are: they
+        # are skipped, said on the page, and written back with every save.
+        self._skipped: dict[str, Any] = {}
         # Whether this store has ever seen its file (see clip_dates.LinerDates).
         self._seen = False
         # When each intro aired, as heard, and when a render plans to air it.
@@ -312,15 +328,47 @@ class MatchedIntros:
         if stamp == self._stamp:
             return dict(self._intros)
         intros: dict[str, Intro] = {}
+        skipped: dict[str, Any] = {}
         if stamp is not None:
             data = self.path.read_bytes()
             try:
-                intros = _IntrosFile.model_validate_json(data).intros
+                document = _IntrosFile.model_validate_json(data)
             except ValueError as exc:
+                # Not a file of intros at all: set aside whole.
                 self._keep_bad_copy(str(exc).splitlines()[0])
                 stamp = None
-        self._stamp, self._intros = stamp, intros
+            else:
+                # One bad intro never silences the others: it is skipped.
+                for intro_id, raw in document.intros.items():
+                    try:
+                        intros[intro_id] = _entry(intro_id, raw)
+                    except ValueError as exc:
+                        skipped[intro_id] = raw
+                        reason = str(exc).splitlines()[0]
+                        logger.error(
+                            "Matched intros file %s: skipping intro %r, which is not valid (%s)",
+                            self.path,
+                            intro_id[:40],
+                            reason,
+                        )
+        self._stamp, self._intros, self._skipped = stamp, intros, skipped
         return dict(intros)
+
+    def problem(self) -> str | None:
+        """What is wrong with the file, in words, or ``None``: the intros it skips."""
+        with self._lock:
+            skipped = sorted(self._skipped)
+        if not skipped:
+            return None
+        count = len(skipped)
+        names = ", ".join(intro_id[:40] for intro_id in skipped[:5])
+        more = f" and {count - 5} more" if count > 5 else ""
+        return (
+            f"{count} matched intro{'' if count == 1 else 's'} in {self.path.name} "
+            f"{'is' if count == 1 else 'are'} not valid and skipped until the file is "
+            f"corrected: {names}{more}. AutoDJ keeps {'it' if count == 1 else 'them'} in the "
+            "file as written."
+        )
 
     def _write_locked(self, intros: dict[str, Intro]) -> None:
         """Write *intros*.  Caller holds ``_lock``.
@@ -328,9 +376,16 @@ class MatchedIntros:
         Raises:
             OSError: The file could not be written.
         """
-        document = _IntrosFile(schema_version=SCHEMA_VERSION, intros=intros)
+        # Skipped entries go back as they were read, never dropped.
+        entries: dict[str, Any] = {
+            intro_id: intro.model_dump(mode="json", exclude_none=True)
+            for intro_id, intro in intros.items()
+        }
+        for intro_id, raw in self._skipped.items():
+            entries.setdefault(intro_id, raw)
+        document = {"schema_version": SCHEMA_VERSION, "intros": entries}
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write(self.path, document.model_dump_json(indent=2, exclude_none=True) + "\n")
+        atomic_write(self.path, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
         self._seen = True
         try:
             stamp = self._stat()
@@ -366,7 +421,7 @@ class MatchedIntros:
         with self._lock:
             self._first_folder_locked()
             current = self._load_locked()
-            if intro_id not in current and len(current) >= MAX_INTROS:
+            if intro_id not in current and len(current) + len(self._skipped) >= MAX_INTROS:
                 raise IntroError("", f"A station can keep at most {MAX_INTROS} matched intros")
             current[intro_id] = intro
             self._write_locked(current)

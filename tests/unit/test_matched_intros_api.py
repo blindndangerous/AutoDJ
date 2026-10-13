@@ -242,3 +242,15 @@ def test_every_intro_route_needs_a_session(tmp_path: Path) -> None:
     ):
         reply = station.client.request(method, path, headers=ORIGIN)
         assert reply.status_code == 401, (method, path, reply.text)
+
+
+def test_the_listing_says_when_intros_in_the_file_are_skipped(station) -> None:
+    import json
+
+    made = station.upload().json()
+    document = json.loads(station.store.path.read_text(encoding="utf-8"))
+    document["intros"]["broken"] = {"chance": 0}
+    station.store.path.write_text(json.dumps(document), encoding="utf-8")
+    listing = station.listing()
+    assert [item["id"] for item in listing["song"]] == [made["id"]]
+    assert listing["problem"].startswith("1 matched intro in matched_intros.json is not valid")

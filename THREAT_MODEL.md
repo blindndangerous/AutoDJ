@@ -467,8 +467,9 @@ one decode thread; a file that does not decode or holds no speech is refused and
 song is named by its library ID, which must be a song in the library; an artist intro takes the
 artist from that song's record, so no free text becomes a match rule. Each station keeps at most
 2000 intros. Listen serves only a file named by an intro the station keeps, never a path, and
-refuses anything but a regular file. A file of intros that is not valid is set aside; one that
-cannot be read just now is never written over.
+refuses anything but a regular file. An intro in the file that is not valid is skipped (it never
+plays), logged and said in Track info, and written back unchanged with every save; a file that is
+not a file of intros at all is set aside; one that cannot be read just now is never written over.
 
 On the air, an intro is chosen and decoded by the render-ahead worker one song ahead and mixed into
 the song change like a break; the mix bus only reports it heard by adding to a queue that never

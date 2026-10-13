@@ -178,9 +178,12 @@ const TRACK_RECORD = {
   tags: TRACK_TAGS, tags_writable: true, beets_writeback: true,
 };
 // Its matched intros (#127): one for the song, with dates and skipped now,
-// and one for the artist with a long unbroken label, for the reflow checks.
+// and one for the artist with a long unbroken label, for the reflow checks,
+// and the note that says the station's file skips an intro that is not valid.
 const TRACK_INTROS = {
   station: "default", active: true, reason: null,
+  problem: "1 matched intro in matched_intros.json is not valid and skipped until the file is "
+    + "corrected: An_Unbroken_Broken_Intro_Identifier_0001. AutoDJ keeps it in the file as written.",
   limits: { max_bytes: 40 * 1024 * 1024, max_seconds: 60, extensions: [".mp3", ".wav"] },
   track: { id: TRACK_RECORD.id, title: TRACK_TAGS.title, artist: TRACK_TAGS.artist },
   song: [{

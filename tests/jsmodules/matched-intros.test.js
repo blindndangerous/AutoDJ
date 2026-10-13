@@ -88,6 +88,19 @@ describe("Track info matched intros", () => {
     expect(el("intros-inactive").hidden).toBe(true);
   });
 
+  it("shows, in words and never live, intros the station's file skips", async () => {
+    const said = "1 matched intro in matched_intros.json is not valid and skipped until the file is corrected: broken.";
+    const editor = install(vi.fn(async () => ({ ...LISTING, problem: said })));
+    editor.load(RECORD);
+    await settle();
+    expect(el("intros-problem").hidden).toBe(false);
+    expect(el("intros-problem").textContent).toBe(said);
+    expect(el("intros-problem").closest("[aria-live], [role=status]")).toBeNull();
+    expect(el("intros-song-list").children).toHaveLength(1);
+    editor.clear();
+    expect(el("intros-problem").hidden).toBe(true);
+  });
+
   it("hides itself for a liner and says why a station does not play intros", async () => {
     const editor = install(vi.fn(async () => ({ ...LISTING, active: false, reason: "Matched intros play only with saved segue playback." })));
     editor.load({ ...RECORD, kind: "liner" });

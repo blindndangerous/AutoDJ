@@ -2515,6 +2515,12 @@ describe("static accessibility contracts", () => {
     expect(player.hidden).toBe(true);
     expect(player.hasAttribute("controls")).toBe(false);
     expect(player.hasAttribute("data-preview-output")).toBe(true);
+    // Intros the file skips are said in words on the page, hidden until
+    // there are some, and never live.
+    const problem = document.getElementById("intros-problem");
+    expect(problem.classList.contains("field-error")).toBe(true);
+    expect(problem.hidden).toBe(true);
+    expect(problem.hasAttribute("role")).toBe(false);
     // One polite status, not nested in another live region.
     const live = [...section.querySelectorAll("[aria-live], [role='status'], [role='alert']")];
     expect(live.map((node) => node.id)).toEqual(["intros-status"]);

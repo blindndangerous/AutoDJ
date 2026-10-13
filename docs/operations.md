@@ -1957,8 +1957,11 @@ Backups include both for the default station. A song intro follows the song's li
 edit or a move the scan recognises keeps it. A library scan that read every folder and found a
 song's file gone removes that song's intros and their audio; a share that is not mounted, or a scan
 that could not read a folder, removes nothing, and artist intros are never removed by a scan. When
-`matched_intros.json` cannot be read just now, the intros last read are used and saves are refused;
-a file that is not valid is set aside as `matched_intros.json.bad-<id>`. The time an intro last aired
+`matched_intros.json` cannot be read just now, the intros last read are used and saves are refused.
+An intro in the file that is not valid (edited by hand, say) is skipped and logged, and Track info
+says which, under the Matched intros heading; the other intros still play, and every save writes
+the skipped one back as it was, so correct it in the file and it plays again. Only a file that is
+not a file of intros at all is set aside, as `matched_intros.json.bad-<id>`. The time an intro last aired
 is written to the file by the station's once-a-second upkeep, off the audio thread.
 
 For scripts and other stations, the routes are under `/api/intros` and

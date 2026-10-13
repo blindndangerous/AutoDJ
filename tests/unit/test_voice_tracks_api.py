@@ -274,3 +274,27 @@ def test_the_tracker_needs_a_session_and_takes_no_machine_token(tmp_path):
     assert app.state.stations.default.breaks.get(reply.json()["break_id"]).token_name == (
         "the voice tracker"
     )
+
+
+def test_a_voice_track_for_the_change_wins_over_a_matched_intro(station):
+    # A voice track is booked as a DJ break, so the intro matched to the
+    # upcoming song is not added: the operator already talks the song up (#127).
+    from pathlib import Path
+
+    from tests.unit.test_matched_intros import _add
+
+    _a, _b, _c, d = station.entries
+    store = station.station.intros
+    assert station.player.matched_intros is store
+    intro_id = _add(store, track_id=f"song-{Path(d.path).stem}", cooldown_minutes=0)
+    booked = book(station).json()
+    assert booked["kind"] == "dj" and booked["source"] == VOICE_TRACK
+    _render_a, render_b, _plan = station.renders
+    station.player._on_track_start(render_b)
+    render_c = station.player._next_rendered()
+    assert render_c.next_entry is d
+    assert [event[1] for event in render_c.break_events] == [booked["break_id"]]
+    assert render_c.intro_events == ()
+    assert intro_id not in store._reserved
+    # Without the voice track the same intro would have been chosen.
+    assert station.player._matched_intro(d, (), 0.0) is not None

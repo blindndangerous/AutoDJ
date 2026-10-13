@@ -65,6 +65,7 @@ export function installMatchedIntros({ document: doc = document, request = reque
   const el = (id) => doc.getElementById(id);
   const status = el("intros-status");
   const inactive = el("intros-inactive");
+  const problem = el("intros-problem");
   const lists = { song: el("intros-song-list"), artist: el("intros-artist-list") };
   const empties = { song: el("intros-song-empty"), artist: el("intros-artist-empty") };
   const artistHeading = el("intros-artist-heading");
@@ -207,6 +208,10 @@ export function installMatchedIntros({ document: doc = document, request = reque
     if (!artist && artistChoice.checked) inputs.applies.checked = true;
     inactive.textContent = data.active === false ? data.reason || "" : "";
     inactive.hidden = data.active !== false;
+    if (problem) {
+      problem.textContent = data.problem || "";
+      problem.hidden = !data.problem;
+    }
     renderList("song", data.song || []);
     renderList("artist", data.artist || []);
   }
@@ -254,6 +259,7 @@ export function installMatchedIntros({ document: doc = document, request = reque
     resetForm();
     status.textContent = "";
     for (const kind of ["song", "artist"]) lists[kind].replaceChildren();
+    if (problem) { problem.textContent = ""; problem.hidden = true; }
     section.hidden = true;
   }
 
