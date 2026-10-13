@@ -323,6 +323,20 @@ is not supported: the `Secure` cookie flag and the origin checks follow AutoDJ's
 For remote access, see [HTTPS with your own domain](#https-with-your-own-domain). The image's
 health check tries HTTP and then HTTPS, so it works either way.
 
+### Build stamp
+
+The footer of the web page names the commit the server runs, linked to that commit on GitHub,
+once the browser is paired. A bare-metal checkout reads it from git. The image has no git and
+its build leaves out `.git`, so pass the commit when you build it:
+
+```bash
+AUTODJ_COMMIT=$(git rev-parse --short HEAD) docker compose build
+AUTODJ_COMMIT=$(git rev-parse --short HEAD) docker compose up -d --build
+```
+
+Without it the footer says "build unknown". The value must be 7 to 40 hexadecimal digits;
+anything else is ignored.
+
 ### Advanced overrides
 
 `--lan` covers names this machine knows about. For a DNS name it cannot detect, such as a name

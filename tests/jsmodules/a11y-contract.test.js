@@ -1810,7 +1810,7 @@ describe("static accessibility contracts", () => {
 
     for (const selector of [
       "#now-playing-meta", "#cue-summary", "#cue-details", "#queue-list",
-      "#library-log", "#version-stamp",
+      "#library-log", "#version-stamp", "#ver-build",
       // The sighted status mirror and the silent job clock must never
       // become a second announcement path for the same message.
       "#status-toast", "#playback-stale-note", "#cue-legend", "#camelot-legend",
@@ -1820,7 +1820,7 @@ describe("static accessibility contracts", () => {
       expect(node.hasAttribute("aria-live"), selector).toBe(false);
     }
     for (const selector of [
-      "#now-playing-meta", "#cue-summary", "#cue-details", "#version-stamp",
+      "#now-playing-meta", "#cue-summary", "#cue-details", "#version-stamp", "#ver-build",
       "#status-toast", "#playback-stale-note", "#lib-job-elapsed",
       "#cue-legend", "#camelot-legend",
     ]) {
