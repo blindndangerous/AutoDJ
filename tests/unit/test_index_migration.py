@@ -16,6 +16,7 @@ import pytest
 from click.testing import CliRunner
 
 from autodj import index_migration
+from autodj.catalog import LibraryCatalog
 from autodj.cli import _load_index_for_serve, cli
 from autodj.config import (
     AutoDJConfig,
@@ -366,3 +367,210 @@ def test_non_tty_serve_does_not_prompt_and_uses_named_active_dir(tmp_path: Path)
     convert.assert_not_called()
     assert load.call_args.kwargs["music_dir"] == cfg.library.music_dir
     assert load.call_args.args[0] == named_dir
+
+
+def test_migrate_imports_schema3_vectors_and_catalog_state_without_analysis(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    index_dir, music_dir = _fixture(
+        tmp_path,
+        paths=("old.flac",),
+        index_dir=cfg.index.active_dir,
+        music_dir=cfg.library.music_dir,
+    )
+    audio = music_dir / "old.flac"
+    audio.write_bytes(b"audio bytes")
+    _write_cue(index_dir / "dj_meta.db")
+    original = faiss.read_index(str(index_dir / "vectors.g00000000000000000001.index"))
+    with closing(sqlite3.connect(index_dir / "library.db")) as db:
+        db.execute("CREATE TABLE catalog_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        db.execute(
+            "INSERT INTO catalog_settings VALUES ('play_history', ?)",
+            (
+                json.dumps(
+                    [
+                        {
+                            "title": "Old song",
+                            "artist": "Singer",
+                            "duration": 120,
+                            "played_at": "2024-01-01T00:00:00+00:00",
+                        }
+                    ]
+                ),
+            ),
+        )
+        db.commit()
+    state = {
+        "schema_version": 1,
+        "djmix": {"harmonic_mode": "compatible", "harmonic_mixing": False},
+    }
+    (index_dir / "web_state.json").write_text(json.dumps(state), encoding="utf-8")
+
+    assert index_migration.migration_required(index_dir)[0]
+    assert (
+        index_migration.migrate_catalog(index_dir, music_dir, tmp_path / "liners", {}, apply=True)
+        == 0
+    )
+
+    with closing(sqlite3.connect(index_dir / "library.db")) as db:
+        row = db.execute(
+            "SELECT e.path,e.title,e.artist,e.points,e.point_sources,v.vector "
+            "FROM catalog_entries e JOIN catalog_vectors v ON v.entry_id=e.id"
+        ).fetchone()
+        history = db.execute("SELECT title,artist,duration,played_at FROM play_history").fetchall()
+        settings = dict(db.execute("SELECT key,value FROM catalog_settings"))
+        sources = db.execute("SELECT path,kind,recursive,advanced FROM catalog_sources").fetchall()
+    assert row[:3] == (str(audio.resolve()).casefold(), "Track 0", "Artist")
+    assert json.loads(row[3]) == {"intro": 12.5}
+    assert json.loads(row[4]) == {"intro": "analysis"}
+    np.testing.assert_array_equal(np.frombuffer(row[5], dtype=np.float32), original.reconstruct(0))
+    assert history == [("Old song", "Singer", 120.0, "2024-01-01T00:00:00+00:00")]
+    assert json.loads(settings["play_history_migrated"]) is True
+    assert json.loads(settings["imported_index_generation"])["generation"] == 2
+    assert (str(music_dir.resolve()).casefold(), "music", 1, 1) in sources
+    assert json.loads((index_dir / "web_state.json").read_text())["djmix"]["harmonic_mode"] == "off"
+    assert (index_dir / "web_state.json.v1.bak").exists()
+    assert not index_migration.migration_required(index_dir)[0]
+
+    # Reruns fill missing import work, but never replace current catalog values.
+    with closing(sqlite3.connect(index_dir / "library.db")) as db:
+        db.execute("UPDATE catalog_entries SET title='Current title'")
+        db.commit()
+    index_migration.migrate_catalog(index_dir, music_dir, tmp_path / "liners", {}, apply=True)
+    with closing(sqlite3.connect(index_dir / "library.db")) as db:
+        assert db.execute("SELECT title FROM catalog_entries").fetchone() == ("Current title",)
+        assert db.execute("SELECT COUNT(*) FROM play_history").fetchone() == (1,)
+
+
+def test_migrate_preview_reports_catalog_only_conversions_without_writing(tmp_path: Path) -> None:
+    index_dir = tmp_path / "index"
+    index_dir.mkdir()
+    with closing(sqlite3.connect(index_dir / "library.db")) as db:
+        db.execute("CREATE TABLE catalog_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        db.execute("INSERT INTO catalog_settings VALUES ('sources_seeded','false')")
+        db.execute("INSERT INTO catalog_settings VALUES ('play_history','[]')")
+        db.commit()
+    (index_dir / "web_state.json").write_text(
+        '{"schema_version":1,"djmix":{"harmonic_mixing":false}}', encoding="utf-8"
+    )
+    before = _tree(index_dir)
+    assert index_migration.migration_required(index_dir) == (
+        True,
+        "web_state.json schema 1; legacy play-history JSON; initial folder registration is incomplete",
+    )
+
+    index_migration.migrate_catalog(
+        index_dir, tmp_path / "music", tmp_path / "liners", {}, apply=False
+    )
+    assert _tree(index_dir) == before
+
+
+def test_migrate_upgrades_catalog_only_legacy_state(tmp_path: Path) -> None:
+    index_dir = tmp_path / "index"
+    index_dir.mkdir()
+    with closing(sqlite3.connect(index_dir / "library.db")) as db:
+        db.execute("CREATE TABLE catalog_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        db.execute("INSERT INTO catalog_settings VALUES ('sources_seeded','false')")
+        db.execute(
+            "INSERT INTO catalog_settings VALUES ('play_history', ?)",
+            (
+                json.dumps(
+                    [
+                        {
+                            "title": "Old song",
+                            "artist": "Singer",
+                            "duration": 120,
+                            "played_at": "2024-01-01T00:00:00+00:00",
+                        }
+                    ]
+                ),
+            ),
+        )
+        db.commit()
+    (index_dir / "web_state.json").write_text(
+        '{"schema_version":1,"djmix":{"harmonic_mode":"compatible","harmonic_mixing":false}}',
+        encoding="utf-8",
+    )
+
+    index_migration.migrate_catalog(
+        index_dir, tmp_path / "music", tmp_path / "liners", {}, apply=True
+    )
+    assert not index_migration.migration_required(index_dir)[0]
+    with closing(sqlite3.connect(index_dir / "library.db")) as db:
+        assert db.execute("SELECT title,artist,duration FROM play_history").fetchall() == [
+            ("Old song", "Singer", 120.0)
+        ]
+        assert db.execute("SELECT COUNT(*) FROM catalog_sources").fetchone() == (2,)
+    assert json.loads((index_dir / "web_state.json").read_text())["djmix"]["harmonic_mode"] == "off"
+
+
+def test_migrate_imports_schema4_and_resumes_after_interruption(tmp_path: Path) -> None:
+    index_dir, music_dir = _fixture(tmp_path, paths=("old.flac",))
+    (music_dir / "old.flac").write_bytes(b"audio bytes")
+    index_migration.convert(index_dir, music_dir, {}, apply=True)
+    with (
+        patch("autodj.catalog.LibraryCatalog.seed_vectors", side_effect=OSError("interrupted")),
+        pytest.raises(OSError, match="interrupted"),
+    ):
+        index_migration.migrate_catalog(index_dir, music_dir, tmp_path / "liners", {}, apply=True)
+    assert index_migration.migration_required(index_dir) == (
+        True,
+        "published-index import was interrupted",
+    )
+
+    index_migration.migrate_catalog(index_dir, music_dir, tmp_path / "liners", {}, apply=True)
+    assert not index_migration.migration_required(index_dir)[0]
+    with closing(sqlite3.connect(index_dir / "library.db")) as db:
+        assert db.execute("SELECT COUNT(*) FROM catalog_entries").fetchone() == (1,)
+        assert db.execute("SELECT COUNT(*) FROM catalog_vectors").fetchone() == (1,)
+
+
+def test_current_catalog_ignores_unimported_stale_manifest(tmp_path: Path) -> None:
+    index_dir, music_dir = _fixture(tmp_path, paths=("old.flac",))
+    (index_dir / "index-manifest.json").write_text("stale corrupt manifest", encoding="utf-8")
+    station_state = tmp_path / "stations" / "secondary" / "web_state.json"
+    station_state.parent.mkdir(parents=True)
+    station_state.write_text(
+        '{"schema_version":1,"djmix":{"harmonic_mixing":false}}', encoding="utf-8"
+    )
+    with LibraryCatalog(index_dir / "library.db") as catalog:
+        catalog.set_setting("sources_seeded", True)
+    assert index_migration.migration_required(index_dir, [station_state]) == (
+        True,
+        "web_state.json schema 1",
+    )
+    index_migration.migrate_catalog(
+        index_dir,
+        music_dir,
+        tmp_path / "liners",
+        {},
+        apply=True,
+        station_web_states=[station_state],
+    )
+    assert json.loads(station_state.read_text())["djmix"]["harmonic_mode"] == "off"
+    assert station_state.with_suffix(".json.v1.bak").exists()
+    assert not index_migration.migration_required(index_dir, [station_state])[0]
+    with closing(sqlite3.connect(index_dir / "library.db")) as db:
+        assert db.execute("SELECT COUNT(*) FROM catalog_entries").fetchone() == (0,)
+
+
+@pytest.mark.parametrize("legacy_history", ["{broken", "[null]"])
+def test_invalid_legacy_history_blocks_migration_before_writes(
+    tmp_path: Path, legacy_history: str
+) -> None:
+    index_dir = tmp_path / "index"
+    index_dir.mkdir()
+    with closing(sqlite3.connect(index_dir / "library.db")) as db:
+        db.execute("CREATE TABLE catalog_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        db.execute("INSERT INTO catalog_settings VALUES ('play_history', ?)", (legacy_history,))
+        db.commit()
+    before = _tree(index_dir)
+
+    with pytest.raises(ValueError, match="legacy play-history"):
+        index_migration.migrate_catalog(
+            index_dir, tmp_path / "music", tmp_path / "liners", {}, apply=False
+        )
+    with pytest.raises(ValueError, match="legacy play-history"):
+        index_migration.migrate_catalog(
+            index_dir, tmp_path / "music", tmp_path / "liners", {}, apply=True
+        )
+    assert _tree(index_dir) == before

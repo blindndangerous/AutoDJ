@@ -15,6 +15,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `autodj migrate-index` now completes the move from supported schema-3/4 published indexes into
+  `library.db`, carrying vectors and catalog state without reanalyzing audio. It also explicitly
+  upgrades version-1 web settings, old play-history JSON, and initial folder registrations, with a
+  preview, recovery copy, and safe retry after interruption.
 - Settings > Stream can edit Icecast and Shoutcast relays while the station runs. Relay definitions
   and passwords are saved per station; environment-managed passwords remain read-only. Station
   name, genre, description and website URL are sent where each stream protocol supports them.
