@@ -1740,11 +1740,12 @@ describe("static accessibility contracts", () => {
     // source-order form layout.
     installDocument();
     for (const id of [
-      "source-folder-path", "library-kind", "search-input", "clock-name",
+      "source-folder-path", "source-folder-override-tags", "search-input", "clock-name",
       "clock-step-type", "listener-ban-address", "token-secret",
     ]) {
       expect(document.getElementById(id).closest(".flow-form"), id).not.toBeNull();
     }
+    expect(document.getElementById("source-folder-override-tags").checked).toBe(false);
   });
 
   it("keeps durable playback evidence separate from scoped announcements", () => {

@@ -187,6 +187,26 @@ def test_the_open_slot_is_the_change_after_the_next_song(station):
     assert airs_in > closes_in + plan.before_s
 
 
+def test_the_planned_clock_step_survives_until_its_song_is_rendered(station, monkeypatch):
+    player, entries, _points, _desk = station
+    snapshot = {"number": 3, "step": {"type": "track", "path": entries[3].path}}
+    choose = player._choose_station_next
+
+    def choose_with_snapshot(*args, **kwargs):
+        result = choose(*args, **kwargs)
+        player._chosen_clock_step = snapshot
+        return result
+
+    monkeypatch.setattr(player, "_choose_station_next", choose_with_snapshot)
+    _render_a, render_b, plan = start_station(player, entries)
+    assert plan.clock_step == snapshot
+    player._chosen_clock_step = {"number": 1, "step": {"type": "track", "path": entries[0].path}}
+    player._on_track_start(render_b)
+    render_c = player._next_rendered()
+    assert render_c.next_clock_step == snapshot
+    assert player._pending_clock_step == snapshot
+
+
 def test_a_booked_break_airs_in_the_planned_change(station):
     player, entries, _points, desk = station
     _a, _b, c, d = entries

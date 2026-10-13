@@ -96,6 +96,7 @@ class LibraryManager:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._pending_sources: set[str] | None = set()
+        self._pending_override_tags = False
         self._closed = False
         self._scan_generation = 0
         self._analysis_started_generation: int | None = None
@@ -491,22 +492,23 @@ class LibraryManager:
             "tracks_indexed": indexed,
         }
 
-    def _claim_scan(self, source_ids: set[str] | None) -> bool:
+    def _claim_scan(self, source_ids: set[str] | None, override_tags: bool = False) -> bool:
         """Queue a scope and claim the worker lock; caller holds ``_lock``."""
         if source_ids is None or self._pending_sources is None:
             self._pending_sources = None
         else:
             self._pending_sources.update(source_ids)
+        self._pending_override_tags = self._pending_override_tags or override_tags
         if not self._scan_lock.acquire(blocking=False):
             return False
         self._stop.clear()
         return True
 
-    def start_scan(self, source_ids: set[str] | None = None) -> bool:
+    def start_scan(self, source_ids: set[str] | None = None, override_tags: bool = False) -> bool:
         with self._lock:
             if self._closed:
                 return False
-            if not self._claim_scan(source_ids):
+            if not self._claim_scan(source_ids, override_tags):
                 return True
             self._thread = threading.Thread(
                 target=self._scan_queued, name="autodj-library-scan", daemon=True
@@ -519,9 +521,9 @@ class LibraryManager:
                 raise
             return True
 
-    def scan(self, source_ids: set[str] | None = None) -> None:
+    def scan(self, source_ids: set[str] | None = None, override_tags: bool = False) -> None:
         with self._lock:
-            if self._closed or not self._claim_scan(source_ids):
+            if self._closed or not self._claim_scan(source_ids, override_tags):
                 return
         self._scan_queued()
 
@@ -534,10 +536,16 @@ class LibraryManager:
                         break
                     source_ids = self._pending_sources
                     self._pending_sources = set()
+                    override_tags = self._pending_override_tags
+                    self._pending_override_tags = False
                     self._scan_generation += 1
-                self._scan(source_ids)
+                self._scan(source_ids, override_tags)
                 with self._lock:
-                    repeat = self._pending_sources is None or bool(self._pending_sources)
+                    repeat = (
+                        self._pending_sources is None
+                        or bool(self._pending_sources)
+                        or self._pending_override_tags
+                    )
                     repeat = repeat and not self._stop.is_set()
                     if not repeat:
                         self._scan_lock.release()
@@ -767,7 +775,9 @@ class LibraryManager:
             if value is not None
         }
 
-    def _scan_basic(self, source_ids: set[str] | None) -> list[tuple[str, Path]]:
+    def _scan_basic(
+        self, source_ids: set[str] | None, override_tags: bool = False
+    ) -> list[tuple[str, Path]]:
         self._set_state(phase="discovering", current="")
         found = self._discover(source_ids)
         self._set_state(phase="reading tracks", total=len(found), done=0)
@@ -779,6 +789,26 @@ class LibraryManager:
             try:
                 old = self.catalog.record_for_path(path)
                 unchanged = old is not None and self._same_identity(old, path)
+                if override_tags and unchanged and old is not None:
+                    from autodj.audio_meta import read_file_tags
+
+                    tags = read_file_tags(path)
+                    embedded: dict[str, Any] = {
+                        name: value
+                        for name, value in (
+                            ("title", tags.title),
+                            ("artist", tags.artist),
+                            ("album", tags.album),
+                            ("genre", tags.genre),
+                        )
+                        if value
+                    }
+                    if tags.year > 0:
+                        embedded["year"] = tags.year
+                    if np.isfinite(tags.bpm) and tags.bpm > 0:
+                        embedded["bpm"] = tags.bpm
+                    if embedded:
+                        self.catalog.retag(path, embedded, remember_manual=False)
                 needs_liner_segue = bool(
                     kind == "liner"
                     and old is not None
@@ -843,7 +873,7 @@ class LibraryManager:
         self.refresh()
         return found
 
-    def _scan(self, source_ids: set[str] | None = None) -> None:
+    def _scan(self, source_ids: set[str] | None = None, override_tags: bool = False) -> None:
         queued = self._scan_lock.locked()
         with self._lock:
             self._import_errors = []
@@ -853,7 +883,7 @@ class LibraryManager:
         self._set_state(running=True, phase="discovering", done=0, total=0, current="")
         completed = False
         try:
-            found = self._scan_basic(source_ids)
+            found = self._scan_basic(source_ids, override_tags)
             # Only Smooth and Stereo Tool use the stored measurement (and
             # measure a track themselves when it has none).
             measure = self.cfg.playback.loudness_processing in {"smooth", "stereotool"}
@@ -866,10 +896,12 @@ class LibraryManager:
                     with self._lock:
                         pending = self._pending_sources
                         self._pending_sources = set()
+                        pending_override_tags = self._pending_override_tags
+                        self._pending_override_tags = False
                         if pending is None or pending:
                             self._scan_generation += 1
                     if pending is None or pending:
-                        added = self._scan_basic(pending)
+                        added = self._scan_basic(pending, pending_override_tags)
                         if measure:
                             prioritized = {}
                             for item in added:

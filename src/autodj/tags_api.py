@@ -181,18 +181,19 @@ def _lock_for(path: str | Path) -> threading.Lock:
         return _path_locks.setdefault(key, threading.Lock())
 
 
-def _save(library: Any, stations: Any, path: str, values: TagValues) -> str:
-    """Write the file, then the catalog; the warning to show, or ``""``.
+def _save(
+    library: Any, stations: Any, path: str, values: TagValues, beets_db: Path | None
+) -> tuple[str, str, str]:
+    """Write the file, catalog and optional beets row as one per-file operation."""
+    warning = ""
+    beets = "off"
+    beets_error = ""
 
-    Raises:
-        TagError: The file was not changed.
-    """
     roots = [source["path"] for source in library.catalog.sources()]
     # The edit mark keeps a scan from storing the rewritten file as a new
     # recording in the moment between the rename and retag.
     with _lock_for(path), library.catalog.editing(path):
         write_tags(path, values, roots=roots, guard=lambda target: _held_still(stations, target))
-        warning = ""
         try:
             library.catalog.retag(path, _catalog_fields(values))
         except Exception as exc:  # the file is written: say so, do not fail
@@ -201,6 +202,12 @@ def _save(library: Any, stations: Any, path: str, values: TagValues) -> str:
                 f"The tags were saved in the file, but AutoDJ could not update its library "
                 f"({exc}). A rescan reads the new tags and analyses the song again."
             )
+        if beets_db is not None:
+            try:
+                beets = update_beets(beets_db, path, library.cfg.library.music_dir, values)
+            except (sqlite3.Error, OSError) as exc:
+                logger.warning("Could not update beets for %s: %s", path, exc)
+                beets, beets_error = "failed", str(exc)
     try:
         library.refresh()
     except Exception as exc:
@@ -209,7 +216,7 @@ def _save(library: Any, stations: Any, path: str, values: TagValues) -> str:
             f"The tags were saved, but the library did not reload ({exc}). "
             "They show after the next reload or rescan."
         )
-    return warning
+    return warning, beets, beets_error
 
 
 def install_tag_editor(
@@ -237,21 +244,20 @@ def install_tag_editor(
         busy = await asyncio.to_thread(playing_on, stations, path)
         if busy is not None:
             raise HTTPException(status_code=409, detail=busy)
+        beets_db = library.cfg.library.beets_db
+        if not body.beets or beets_db is None or not Path(beets_db).is_file():
+            beets_db = None
         try:
-            warning = await asyncio.to_thread(_save, library, stations, path, values)
+            warning, beets, beets_error = await asyncio.to_thread(
+                _save,
+                library,
+                stations,
+                path,
+                values,
+                Path(beets_db) if beets_db is not None else None,
+            )
         except TagError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        beets = "off"
-        beets_error = ""
-        beets_db = library.cfg.library.beets_db
-        if body.beets and beets_db is not None and Path(beets_db).is_file():
-            try:
-                beets = await asyncio.to_thread(
-                    update_beets, Path(beets_db), path, library.cfg.library.music_dir, values
-                )
-            except (sqlite3.Error, OSError) as exc:
-                logger.warning("Could not update beets for %s: %s", path, exc)
-                beets, beets_error = "failed", str(exc)
         record = await describe(library, path)
         record["beets"] = beets
         record["beets_error"] = beets_error
