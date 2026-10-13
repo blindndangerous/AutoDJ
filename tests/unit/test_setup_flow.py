@@ -217,7 +217,7 @@ def test_fresh_auto_setup_verifies_and_saves_supported_recommendation(
 def test_dry_run_prints_plan_without_writing_or_installing(
     setup_modules, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
 ) -> None:
-    root, music = _project(tmp_path)
+    root, _ = _project(tmp_path)
     mocks = _patch_execution(
         setup_modules,
         monkeypatch,
@@ -230,7 +230,7 @@ def test_dry_run_prints_plan_without_writing_or_installing(
     )
     before = {path.relative_to(root) for path in root.rglob("*")}
 
-    args = setup_modules.setup.parser().parse_args(["--dry-run", "--music-dir", str(music)])
+    args = setup_modules.setup.parser().parse_args(["--dry-run"])
     assert setup_modules.setup.execute(args, root) == 0
 
     output = capsys.readouterr().out
@@ -289,9 +289,9 @@ def test_backend_selection_uses_auto_recommendation_and_explicit_choice(
 
 
 def test_explicit_existing_environment_skips_package_install(
-    setup_modules, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    setup_modules, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
 ) -> None:
-    root, music = _project(tmp_path)
+    root, _ = _project(tmp_path)
     environment = _environment(setup_modules.support, root)
     mocks = _patch_execution(setup_modules, monkeypatch)
     args = setup_modules.setup.parser().parse_args(
@@ -301,8 +301,6 @@ def test_explicit_existing_environment_skips_package_install(
             "cpu",
             "--environment",
             str(environment),
-            "--music-dir",
-            str(music),
             "--port",
             "8181",
         ]
@@ -311,7 +309,10 @@ def test_explicit_existing_environment_skips_package_install(
     assert setup_modules.setup.execute(args, root) == 0
 
     mocks.install_python.assert_not_called()
-    mocks.create_configuration.assert_called_once_with(root, music.resolve(), 8181)
+    mocks.create_configuration.assert_called_once_with(root, None, 8181)
+    generated = tomllib.loads((root / "config.toml").read_text(encoding="utf-8"))
+    assert "music_dir" not in generated["library"]
+    assert "Your library is empty" in capsys.readouterr().out
     selection = setup_modules.support.read_json(root / setup_modules.support.STATE)
     assert selection == {
         "environment": str(environment.resolve()),
@@ -346,7 +347,7 @@ def test_existing_configuration_is_preserved(
 def test_doctor_failure_does_not_discard_verified_runtime(
     setup_modules, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
 ) -> None:
-    root, music = _project(tmp_path)
+    root, _ = _project(tmp_path)
     environment = _environment(setup_modules.support, root)
     mocks = _patch_execution(setup_modules, monkeypatch)
     mocks.doctor.return_value = setup_modules.setup.subprocess.CompletedProcess(
@@ -362,8 +363,6 @@ def test_doctor_failure_does_not_discard_verified_runtime(
             "cpu",
             "--environment",
             str(environment),
-            "--music-dir",
-            str(music),
         ]
     )
 
@@ -381,7 +380,7 @@ def test_doctor_failure_does_not_discard_verified_runtime(
 def test_selected_gpu_backend_fails_when_runtime_has_no_usable_gpu(
     setup_modules, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    root, music = _project(tmp_path)
+    root, _ = _project(tmp_path)
     environment = _environment(setup_modules.support, root)
     _patch_execution(
         setup_modules,
@@ -408,8 +407,6 @@ def test_selected_gpu_backend_fails_when_runtime_has_no_usable_gpu(
             "nvidia",
             "--environment",
             str(environment),
-            "--music-dir",
-            str(music),
         ]
     )
 
@@ -435,7 +432,7 @@ def test_yes_keeps_import_and_server_actions_opt_in(
     actions: list[str],
     expected_suffixes: list[str],
 ) -> None:
-    root, music = _project(tmp_path)
+    root, _ = _project(tmp_path)
     environment = _environment(setup_modules.support, root)
     mocks = _patch_execution(setup_modules, monkeypatch)
     args = setup_modules.setup.parser().parse_args(
@@ -445,8 +442,6 @@ def test_yes_keeps_import_and_server_actions_opt_in(
             "cpu",
             "--environment",
             str(environment),
-            "--music-dir",
-            str(music),
             *actions,
         ]
     )
@@ -569,6 +564,17 @@ def test_configuration_escapes_path_and_validates_port(setup_modules, tmp_path: 
     for invalid in ("not-a-number", "0", "-1", "65536"):
         with pytest.raises(argparse.ArgumentTypeError):
             setup_modules.setup.port_number(invalid)
+
+
+def test_default_configuration_does_not_require_a_music_folder(
+    setup_modules, tmp_path: Path
+) -> None:
+    root, _ = _project(tmp_path)
+    setup_modules.support.create_configuration(root, None, 8080)
+
+    parsed = tomllib.loads((root / "config.toml").read_text(encoding="utf-8"))
+    assert parsed["library"] == {"beets_db": ""}
+    assert parsed["server"]["port"] == 8080
 
 
 def test_create_configuration_rejects_invalid_port_without_a_file(

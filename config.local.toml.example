@@ -1,10 +1,9 @@
 # Per-machine overrides, loaded only when a sibling base configuration file is loaded.
 # Copy to config.local.toml; this example remains safe to commit.
-# Only sections and keys from config.toml.example are accepted; any other is an error.
+# Only supported configuration sections and keys are accepted; any other is an error.
 # Every value here replaces the one in config.toml, so delete the lines you do not need.
 
 [library]
-music_dir = "/srv/music"
 # beets_db = "/srv/beets/library.db"
 
 [index]

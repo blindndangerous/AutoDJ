@@ -1,13 +1,6 @@
 # AutoDJ Configuration
 # Copy this file to config.toml and adjust paths to match your setup.
 #
-# IMPORTANT — Windows paths: always use forward slashes (/) in this file.
-#   Correct:   music_dir = "C:/Users/you/Music"
-#   Wrong:     music_dir = "C:\Users\you\Music"   ← backslashes break TOML parsing
-#
-# Backslashes are escape characters in TOML strings (\U, \b, \D etc. are
-# interpreted as unicode/control sequences and will cause a parse error).
-#
 # ---------------------------------------------------------------------------
 # Per-machine overlay (config.local.toml)
 # ---------------------------------------------------------------------------
@@ -19,19 +12,17 @@
 #   config.toml          = private deployment/base settings
 #   config.local.toml    = private per-machine overrides
 #
-# Example config.local.toml on a Windows host pointing at a NAS:
+# Example config.local.toml on a Windows host pointing at beets:
 #
 #   [library]
-#   music_dir = "Z:/Music"
-#   beets_db  = "Z:/Music/.config/beets/library.db"
+#   beets_db = "Z:/Music/.config/beets/library.db"
 #
 # Configuration precedence:
 # defaults < config.toml < config.local.toml < environment
 #   < settings saved from the web page (web_state.json, serve only) < CLI
 #
-# Both files accept only the sections and keys shown in this file.  An unknown
-# section or key (for example a setting a newer AutoDJ removed) stops AutoDJ
-# with an error that names it; delete the line.
+# Configuration keys are validated when loaded. An unknown section or key stops
+# AutoDJ with an error that names it; delete the unsupported line.
 #
 # Supported environment overrides:
 # BEGIN ENVIRONMENT OVERRIDES
@@ -52,13 +43,6 @@
 # END ENVIRONMENT OVERRIDES
 
 [library]
-# Full path to your music folder (local or mapped NAS drive).
-# When using beets, this MUST match the local mount point of the beets
-# `directory` config — recent beets versions store paths relative to the
-# library root, so AutoDJ resolves those against music_dir.
-# Example: "Z:/Music" or "C:/Users/you/Music"
-music_dir = "Z:/Music"
-
 # Full path to your beets SQLite library database (optional).
 # Find it by running: beet config | grep library
 # Leave blank to skip beets integration and use filesystem scanning instead.

@@ -10,7 +10,7 @@ def test_base_example_loads_without_environment(tmp_path: Path) -> None:
     base.write_bytes((ROOT / "config.toml.example").read_bytes())
 
     cfg = load_config(base, environ={})
-    assert cfg.library.music_dir == Path("Z:/Music")
+    assert cfg.library.music_dir is None
     assert cfg.index.index_dir == Path("index")
     assert cfg.index.model_dir == Path("models")
     assert cfg.server.host == "127.0.0.1"
@@ -22,7 +22,7 @@ def test_local_example_is_a_valid_overlay(tmp_path: Path) -> None:
     base.write_bytes((ROOT / "config.toml.example").read_bytes())
     (tmp_path / "config.local.toml").write_bytes((ROOT / "config.local.toml.example").read_bytes())
     cfg = load_config(base, environ={})
-    assert cfg.library.music_dir == Path("/srv/music")
+    assert cfg.library.music_dir is None
     assert cfg.index.index_dir == Path("/srv/autodj/index")
 
 
@@ -35,6 +35,12 @@ def test_examples_describe_optional_current_index_artifacts() -> None:
         assert "web_state.json" in text
         assert "<index_dir>/<name>/liners/" in text
         assert "metadata.json" not in text
+
+
+def test_normal_config_examples_do_not_require_a_music_root() -> None:
+    for filename in ("config.toml.example", "config.local.toml.example"):
+        text = (ROOT / filename).read_text(encoding="utf-8")
+        assert "music_dir =" not in text
 
 
 def test_local_example_describes_overlay_for_any_loaded_base_filename() -> None:

@@ -23,7 +23,8 @@ flow, then continues your original command after setup succeeds. Running the lau
 arguments starts `serve`. Use the same launcher for all commands; there is no separate AMD command.
 
 Setup detects the operating system and GPU, recommends a supported AMD or NVIDIA runtime or CPU,
-asks for your music folder and port, and shows the installation plan before changing anything.
+asks for a web port, and shows the installation plan before changing anything. A new installation
+starts with an empty library; add music folders from the Library page after starting AutoDJ.
 It installs the selected PyTorch build before the application so it does not download a CPU build
 just to replace it with a GPU build. GPU packages are pinned by the installation profiles; the
 application's other dependency requirements are resolved during setup.
@@ -45,14 +46,14 @@ Use `setup --help` to see all options. Common examples (replace `./autodj` with 
 
 ```sh
 ./autodj setup --dry-run
-./autodj setup --music-dir /path/to/music --port 8080 --yes
+./autodj setup --port 8080 --yes
 ./autodj setup --backend cpu
 ./autodj setup --backend amd --environment .uv/existing-amd
 ./autodj setup --test-import
 ```
 
 `--dry-run` inspects hardware and prints a plan without installing or writing files. `--yes` accepts
-the setup plan for unattended installation; a new installation also needs `--music-dir`. Optional
+the setup plan for unattended installation. Optional
 `--test-import` and `--serve` actions still require their flags in unattended mode. `--environment`
 validates and adopts an existing installation without replacing its packages. Rerunning setup uses
 the remembered runtime rather than creating a duplicate.

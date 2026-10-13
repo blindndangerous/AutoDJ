@@ -190,17 +190,21 @@ def install_python(
     write_json(stamp, {"dependencies": signature})
 
 
-def create_configuration(root: Path, music: Path, port: int) -> None:
+def create_configuration(root: Path, music: Path | None, port: int) -> None:
     """Create a minimal local configuration; never replace an existing file."""
-    if not music.is_dir():
+    if music is not None and not music.is_dir():
         raise ValueError(f"Music folder does not exist: {music}")
     if not 1 <= port <= 65535:
         raise ValueError("Port must be between 1 and 65535.")
     # JSON string escapes are valid TOML basic-string escapes for these values.
-    quoted_music = json.dumps(music.as_posix(), ensure_ascii=False)
+    library = (
+        f"music_dir = {json.dumps(music.as_posix(), ensure_ascii=False)}\n"
+        if music is not None
+        else ""
+    )
     content = (
         "# Created by AutoDJ setup. Edit this file to change your settings.\n"
-        f'[library]\nmusic_dir = {quoted_music}\nbeets_db = ""\n\n'
+        f'[library]\n{library}beets_db = ""\n\n'
         '[server]\nhost = "127.0.0.1"\n'
         f'port = {port}\nallowed_hosts = ["127.0.0.1", "localhost"]\n'
         f'allowed_origins = ["http://127.0.0.1:{port}", "http://localhost:{port}"]\n'
@@ -215,7 +219,6 @@ def initialize_paths(root: Path, python: Path, env: dict[str, str]) -> None:
     code = (
         "import muq, torchaudio, sounddevice, soundfile; "
         "from autodj.config import load_config; c=load_config(); "
-        "assert c.library.music_dir.is_dir(), f'Music folder does not exist: {c.library.music_dir}'; "
         "c.index.index_dir.mkdir(parents=True, exist_ok=True); "
         "c.index.model_dir.mkdir(parents=True, exist_ok=True)"
     )
