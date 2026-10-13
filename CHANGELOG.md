@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Settings > Stream can edit Icecast and Shoutcast relays while the station runs. Relay definitions
+  and passwords are saved per station; environment-managed passwords remain read-only. Station
+  name, genre, description and website URL are sent where each stream protocol supports them.
+
 - An hour preview with backtiming (#126): Now Playing > **Hour preview** lists what plays over
   the next 30 minutes to 3 hours with each item's estimated start time, and says in words on
   every row whether it is fixed (on the air, ready to play, picked, a booked break, in the queue)

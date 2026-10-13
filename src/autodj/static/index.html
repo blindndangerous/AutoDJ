@@ -1672,7 +1672,7 @@
       <!-- Relays to other servers ([stream.relays.<name>] in config.toml),
            filled by stream-mode.js.  Plain text, not live. -->
       <div id="stream-relays" hidden>
-        <p class="stream-detail" id="stream-relays-intro">Relays to other servers. While a relay is on, the station keeps playing even when nobody listens here.</p>
+        <p class="stream-detail" id="stream-relays-intro">Relays to other servers. While a relay is on, the station keeps playing even when nobody listens here. The config.toml relay list is used until you save here; after that, this station's saved list takes precedence. Environment-managed passwords override saved values. Relay source passwords are sent without TLS encryption.</p>
         <ul class="stream-detail" id="stream-relays-list" aria-labelledby="stream-relays-intro"></ul>
       </div>
       <div class="settings-row">
@@ -1683,6 +1683,35 @@
       <span class="setting-desc" id="stream-station-name-desc">
         The name players such as Sonos and VLC show for this station, up to 100 characters.  A player shows a new name the next time it connects.
       </span>
+      <div class="settings-row"><label for="stream-station-genre">Genre</label><input id="stream-station-genre" maxlength="255" autocomplete="off"></div>
+      <div class="settings-row"><label for="stream-station-description">Description</label><input id="stream-station-description" maxlength="255" autocomplete="off"></div>
+      <div class="settings-row"><label for="stream-station-url">Website URL</label><input id="stream-station-url" type="url" maxlength="2048" autocomplete="url"></div>
+      <p class="setting-desc">Station metadata changes reconnect enabled relays after you save. Description is sent to Icecast; Shoutcast and direct listener streams do not support it.</p>
+      <button type="button" id="stream-metadata-save">Save station metadata</button>
+      <div id="stream-relay-settings">
+        <h4>Relays</h4>
+        <button type="button" id="stream-relay-add">Add relay</button>
+        <table id="stream-relay-table" role="grid" aria-label="Stream relays">
+          <thead><tr><th scope="col">Relay</th><th scope="col">Status and error</th><th scope="col">Edit</th><th scope="col">Enable</th><th scope="col">Remove</th></tr></thead>
+          <tbody id="stream-relay-rows"></tbody>
+        </table>
+        <form id="stream-relay-form" hidden>
+          <h5 id="stream-relay-form-title">Add relay</h5>
+          <label for="stream-relay-name">Name</label><input id="stream-relay-name" maxlength="32" required pattern="[A-Za-z0-9_-]+">
+          <label for="stream-relay-type">Server type</label><select id="stream-relay-type"><option value="icecast">Icecast</option><option value="shoutcast1">Shoutcast 1</option><option value="shoutcast2">Shoutcast 2</option></select>
+          <label for="stream-relay-host">Host</label><input id="stream-relay-host" required autocomplete="off">
+          <label for="stream-relay-port">Listener port</label><input id="stream-relay-port" type="number" min="1" max="65535" value="8000" required>
+          <label for="stream-relay-password">Source password</label><input id="stream-relay-password" type="password" autocomplete="new-password">
+          <p id="stream-relay-password-help">Saved passwords stay private. Leave blank to keep the current password.</p>
+          <p>Relay TLS is unsupported; the source password is sent without encryption.</p>
+          <div id="stream-relay-icecast"><label for="stream-relay-mount">Mount point</label><input id="stream-relay-mount" value="/live"><label for="stream-relay-user">Username</label><input id="stream-relay-user" value="source"></div>
+          <div id="stream-relay-shoutcast2" hidden><label for="stream-relay-stream-id">Stream ID</label><input id="stream-relay-stream-id" type="number" min="1" value="1"></div>
+          <label for="stream-relay-bitrate">Bitrate</label><select id="stream-relay-bitrate"><option value="">Use station stream quality</option><option>128</option><option>192</option><option>256</option><option>320</option></select>
+          <label><input id="stream-relay-public" type="checkbox"> Public directory listing</label>
+          <label><input id="stream-relay-enabled" type="checkbox" checked> Enabled</label>
+          <button type="submit">Save relay</button><button type="button" id="stream-relay-cancel">Cancel</button>
+        </form>
+      </div>
       <div class="settings-row">
         <label for="stream-bitrate">Quality</label>
         <select id="stream-bitrate" aria-describedby="stream-bitrate-desc">

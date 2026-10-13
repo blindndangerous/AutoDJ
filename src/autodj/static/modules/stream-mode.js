@@ -366,6 +366,7 @@ export function createStreamSettings({
   saveBitrate,
   saveContinuous = async () => false,
   saveStationName = async () => false,
+  onRelays = () => {},
   // Told when the Stream settings appear and go, so the Settings subtab
   // for them can follow.
   setAvailable = () => {},
@@ -439,6 +440,10 @@ export function createStreamSettings({
     if (doc.activeElement !== bitrate) bitrate.value = savedBitrate;
     if (doc.activeElement !== continuous) continuous.checked = Boolean(info.continuous);
     showStationName(info.station_name);
+    for (const [field, key] of [["genre", "genre"], ["description", "description"], ["url", "url"]]) {
+      const input = doc.getElementById(`stream-station-${field}`);
+      if (input && doc.activeElement !== input && typeof info[key] === "string") input.value = info[key];
+    }
   }
 
   function showStationName(name) {
@@ -506,6 +511,7 @@ export function createStreamSettings({
   // otherwise interrupt whatever the user is doing.  Items are rebuilt
   // only when some text changed, so reading the list is not disturbed.
   function showRelays(relays) {
+    onRelays(relays);
     if (!relayBox || !relayList) return;
     const lines = Array.isArray(relays) ? relays.map(relayText) : [];
     const current = [...relayList.children].map((item) => item.textContent);

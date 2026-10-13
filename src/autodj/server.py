@@ -1406,6 +1406,8 @@ def create_app(
                 {
                     "icy-metaint": str(METAINT),
                     "icy-name": _header_text(stream_cfg.station_name),
+                    "icy-genre": _header_text(stream_cfg.genre),
+                    "icy-url": _header_text(stream_cfg.url),
                     "icy-br": str(stream_cfg.bitrate),
                 }
             )

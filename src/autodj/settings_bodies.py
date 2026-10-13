@@ -98,6 +98,9 @@ class StreamSettingsBody(BaseModel):
     bitrate: Literal[128, 192, 256, 320] | None = None
     continuous: bool | None = Field(default=None, strict=True)
     station_name: Annotated[str, Field(max_length=100)] | None = None
+    genre: Annotated[str, Field(max_length=255)] | None = None
+    description: Annotated[str, Field(max_length=255)] | None = None
+    url: Annotated[str, Field(max_length=2048)] | None = None
     show_next: bool | None = Field(default=None, strict=True)
     max_listeners_per_address: Annotated[int, Field(ge=0, le=100, strict=True)] | None = None
 
@@ -113,6 +116,21 @@ class StreamSettingsBody(BaseModel):
         if not name.isprintable():
             raise ValueError("station_name must not contain control characters")
         return name
+
+    @field_validator("genre", "description", "url")
+    @classmethod
+    def _check_station_metadata(cls, value: str | None, info) -> str | None:
+        if value is None:
+            return None
+        if not value.isprintable():
+            raise ValueError(f"{info.field_name} must not contain control characters")
+        if info.field_name == "url" and value:
+            from urllib.parse import urlsplit
+
+            parsed = urlsplit(value)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError("url must be an HTTP or HTTPS URL")
+        return value
 
 
 class TransitionBody(BaseModel):
