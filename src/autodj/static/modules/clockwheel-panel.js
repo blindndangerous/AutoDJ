@@ -433,6 +433,10 @@ export function installClockwheelPanel({ document: doc = document, request = req
   }
 
   function renderSteps(focusIndex = null, action = "edit") {
+    if (editing !== null) {
+      if (legend) legend.textContent = `Edit step ${editing + 1}`;
+      addButton.textContent = `Update step ${editing + 1}`;
+    }
     if (undoButton) undoButton.disabled = !undoHistory.length || editing !== null;
     if (!clock || !clock.steps.length) {
       const none = doc.createElement("li");
@@ -588,6 +592,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     else if (action === "duplicate") {
       rememberSteps(index);
       clock.steps.splice(index + 1, 0, copy(clock.steps[index]));
+      if (editing !== null && editing > index) editing += 1;
       changed(`Duplicated as ${position(index + 1)}.`, index + 1, action);
     } else if (action === "delete") remove(index);
   }

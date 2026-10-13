@@ -487,6 +487,23 @@ describe("clockwheel editor", () => {
     expect(rows()).toHaveLength(3);
   });
 
+  it("keeps an unsaved edit on its own step when an earlier step is duplicated or moved", async () => {
+    await open(fakeServer());
+    rowButton(2, "edit").click();
+    byId("clock-step-path").value = "Unsaved/Path.flac";
+    rowButton(0, "duplicate").click();
+    expect(byId("clock-step-legend").textContent).toBe("Edit step 4");
+    expect(byId("clock-add-step").textContent).toBe("Update step 4");
+    rowButton(3, "move-up").click();
+    expect(byId("clock-step-legend").textContent).toBe("Edit step 3");
+    expect(byId("clock-step-path").value).toBe("Unsaved/Path.flac");
+    byId("clock-step-type").dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true }));
+    expect(rows()).toHaveLength(4);
+    byId("clock-add-step").click();
+    expect(rowText(2)).toBe("track Unsaved/Path.flac");
+    expect(rowText(3)).toContain("liner from Top");
+  });
+
   it("restores the last deleted step with Ctrl+Z from Step type", async () => {
     const server = fakeServer();
     server.clocks.Morning.steps = [MUSIC];
