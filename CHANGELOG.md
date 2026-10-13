@@ -10,6 +10,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- An hour preview with backtiming (#126): Now Playing > **Hour preview** lists what plays over
+  the next 30 minutes to 3 hours with each item's estimated start time, and says in words on
+  every row whether it is fixed (on the air, ready to play, picked, a booked break, in the queue)
+  or predicted. The prediction is a dry run of the station's own picker from where the fixed part
+  ends, so nothing on the air changes. The card then says how early or late the song changes
+  land against the top of the hour, each clockwheel restart and each scheduled event, and which
+  song is the reason. The list is a table with column headers; times read as "2:04 PM and 30
+  seconds". It refreshes every 30 seconds while open, in place and silently; **Refresh preview**
+  and the new **Shift+H** shortcut say the summary. Every station has its own, at
+  `/api/hour-preview` and `/api/stations/<name>/hour-preview`. Previews run on one low-priority
+  worker thread, stop after 80 songs or about 4 seconds, and are shared and reused for 45 seconds
+  while nothing new is fixed.
 - Seasons for rotation categories (#140): under **When the songs may play**, a category can have a
   **Not before** date, a **Do not play after** date, or both, such as 1 to 26 December for
   Christmas songs. Outside them its songs are left out of every pick mode and a clockwheel step

@@ -306,6 +306,60 @@
     <p id="handoff-status" aria-live="polite" aria-atomic="true" class="setting-desc"></p>
   </details>
 
+  <!-- Hour preview (#126, hour-preview.js): what plays next, when it is
+       expected to start, and how the hour lands against the top of the
+       hour, clockwheel restarts and scheduled events.  Closed until opened,
+       because each preview runs a dry run of the picker on the server.
+       While it is open and Now Playing is showing, the table refreshes
+       every 30 seconds and when the song changes: cells change in place,
+       focus stays where it is and nothing is said (a failure is said once).
+       Refresh preview and a new span under Show say the new summary once
+       through #hour-preview-status; Shift+H says it from anywhere.  Fixed or predicted is a word in every row, never
+       only a colour or a style. -->
+  <details class="card" id="hour-preview-card">
+    <summary><h2>Hour preview</h2></summary>
+    <p class="setting-desc" id="hour-preview-desc">Estimated start times for what plays next. Fixed items are already decided: the song on the air, what is ready to play, the songs picked to follow, booked breaks and the queue. Predicted items come from a dry run of the station's song picking and can change. Nothing on air changes.</p>
+    <div class="settings-row">
+      <label for="hour-preview-span">Show</label>
+      <select id="hour-preview-span" aria-describedby="hour-preview-desc">
+        <option value="30">Next 30 minutes</option>
+        <option value="60" selected>Next hour</option>
+        <option value="120">Next 2 hours</option>
+        <option value="180">Next 3 hours</option>
+      </select>
+    </div>
+    <button type="button" id="hour-preview-refresh">Refresh preview</button>
+    <!-- Not live: the summary changes with every refresh.  Refresh
+         preview and Shift+H say it on demand. -->
+    <p id="hour-preview-summary">Open this card to see the hour ahead.</p>
+    <p id="hour-preview-stopped" class="setting-desc" hidden></p>
+    <section id="hour-preview-backtiming" aria-labelledby="hour-preview-backtiming-heading" hidden>
+      <h3 id="hour-preview-backtiming-heading">Backtiming</h3>
+      <ul id="hour-preview-points" role="list"></ul>
+      <p id="hour-preview-points-note" class="setting-desc" hidden></p>
+    </section>
+    <table id="hour-preview-table" hidden>
+      <caption id="hour-preview-table-caption">What plays next</caption>
+      <colgroup>
+        <col class="hp-starts">
+        <col class="hp-what">
+        <col class="hp-length">
+        <col class="hp-status">
+      </colgroup>
+      <thead>
+        <tr>
+          <th scope="col">Starts</th>
+          <th scope="col">What</th>
+          <th scope="col">Length</th>
+          <th scope="col">Status</th>
+        </tr>
+      </thead>
+      <tbody id="hour-preview-tbody"></tbody>
+    </table>
+    <ul id="hour-preview-notes" class="setting-desc" role="list" hidden></ul>
+    <div id="hour-preview-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+  </details>
+
   <!-- Lyrics — collapsed disclosure, shown only when the current track
        has LRC / beets / embedded lyrics.  Read on demand: nothing speaks
        lyric lines automatically.  The active line carries
@@ -2476,6 +2530,7 @@
     <dt><kbd>Shift+V</kbd></dt><dd>Speak volume, and whether muted</dd>
     <dt><kbd>Shift+Q</kbd></dt><dd>Speak how many tracks are queued, and the first one</dd>
     <dt><kbd>Shift+J</kbd></dt><dd>Speak the library job status</dd>
+    <dt><kbd>Shift+H</kbd></dt><dd>Speak how the hour lands, from the hour preview</dd>
   </dl>
   <p style="margin-top:1rem;color:var(--text-dim);font-size:0.9em">
     NVDA users: shortcuts work in focus mode (NVDA+Space to toggle).  In browse mode, NVDA intercepts the letter keys; switch to focus mode first, or press NVDA+F2 and then the shortcut to pass that one key through.

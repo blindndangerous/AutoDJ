@@ -832,6 +832,7 @@ def install_station_routes(router: StationRouter) -> None:
     """Register every station route, with paths relative to the API root (``/skip``, ...)."""
     from autodj.breaks_api import install_breaks
     from autodj.carts import install_carts
+    from autodj.hour_preview import install_hour_preview
     from autodj.rotation_api import install_rotation_test
     from autodj.scheduler_api import install_scheduler
     from autodj.time_checks import install_time_checks
@@ -1688,6 +1689,7 @@ def install_station_routes(router: StationRouter) -> None:
     install_time_checks(router)
     install_breaks(router)
     install_rotation_test(router)
+    install_hour_preview(router)
 
 
 __all__ = [

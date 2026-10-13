@@ -138,6 +138,7 @@ STATION = frozenset(
         "/schedule/{event_id}/enable",
         "/schedule/{event_id}/run",
         "/rotation-test",
+        "/hour-preview",
         "/carts",
         "/carts/pages/{page}/slots/{slot}",
         "/carts/pages/{page}/slots/{slot}/play",

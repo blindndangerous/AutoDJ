@@ -1174,8 +1174,13 @@ class StationRegistry:
             except Exception:
                 logger.exception("Could not close the pages of station %s", runtime.slug)
 
-    async def shutdown(self, library: SharedLibrary, timeout_s: float) -> tuple[bool, bool]:
+    async def shutdown(
+        self, library: SharedLibrary, timeout_s: float, *, readers_stopped: bool = True
+    ) -> tuple[bool, bool]:
         """Stop every station, then close the shared library, then each master and push.
+
+        With *readers_stopped* false (a reader such as an hour preview is
+        still reading the library) the library is left open.
 
         Returns:
             Whether every cache writer stopped in time, and whether the
@@ -1189,7 +1194,7 @@ class StationRegistry:
             for station in self.all():
                 quiet = await _run_as(station.slug, station.stop(timeout_s))
                 writers_quiesced = quiet and writers_quiesced
-            cache_closed = await library.close(writers_quiesced)
+            cache_closed = await library.close(writers_quiesced, readers_stopped=readers_stopped)
             for station in self.all():
                 await _run_as(station.slug, station.close())
             return writers_quiesced, cache_closed
@@ -1218,8 +1223,11 @@ class SharedLibrary:
             except Exception:
                 logger.exception("Station %s: could not tidy the liner dates", station.slug)
 
-    async def close(self, writers_quiesced: bool) -> bool:
+    async def close(self, writers_quiesced: bool, *, readers_stopped: bool = True) -> bool:
         """Close the DJ-meta cache if no writer remains, then the library.
+
+        The library stays open while a reader has not stopped
+        (*readers_stopped* false): closing it under that reader would fail it.
 
         Returns:
             Whether the DJ-meta cache closed.
@@ -1235,7 +1243,8 @@ class SharedLibrary:
                 logger.debug("shutdown: DJ-meta close failed", exc_info=True)
         if self._ticker is not None and self.library is not None:
             await _cancel(self._ticker)
-            await asyncio.to_thread(self.library.close)
+            if readers_stopped:
+                await asyncio.to_thread(self.library.close)
         return cache_closed
 
     async def _tick(self) -> None:
