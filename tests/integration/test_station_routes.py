@@ -414,3 +414,67 @@ async def test_a_failed_close_audits_the_station_socket_route(
         if record.name == "autodj.audit"
     ]
     assert routes == [STATION_PREFIX + "/ws"]
+
+
+def test_the_page_sends_every_station_route_to_the_station_it_controls() -> None:
+    """modules/stations.js routes each of these to /api/stations/<slug>/ (#70).
+
+    A station route missing there would act on the default station while
+    the page shows another one.
+    """
+    import re
+
+    source = (
+        Path(__file__).parents[2] / "src" / "autodj" / "static" / "modules" / "stations.js"
+    ).read_text(encoding="utf-8")
+    block = source.split("export const STATION_ROUTES = Object.freeze([", 1)[1].split("]);", 1)[0]
+    listed = re.findall(r'"([^"]+)"', block)
+    machine = {route for route in STATION if route.startswith("/announcer")}
+    assert len(listed) == len(set(listed))
+    assert set(listed) == STATION - machine - {"/ws"}
+
+
+def test_each_push_lists_the_stations_when_there_are_several() -> None:
+    import asyncio
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from autodj.server import _broadcast_state_once, _BroadcastFailureLog, _share_station
+
+    sent: list[str] = []
+
+    async def capture(_clients, _lock, payload, **_kwargs):
+        sent.append(payload)
+        return set()
+
+    bridge = SimpleNamespace(get_state=lambda: {"queue": []})
+    entries = [{"slug": "default", "name": "AutoDJ"}, {"slug": "nightowl", "name": "Night Owl"}]
+    with patch("autodj.server._broadcast_and_prune", capture):
+        for station_list in (None, lambda: entries):
+            asyncio.run(
+                _broadcast_state_once(
+                    bridge,  # type: ignore[arg-type]
+                    {object()},  # type: ignore[arg-type]
+                    asyncio.Lock(),
+                    _BroadcastFailureLog(),
+                    station_list=station_list,
+                )
+            )
+    assert "stations" not in json.loads(sent[0])
+    assert json.loads(sent[1])["stations"] == entries
+
+    def station() -> SimpleNamespace:
+        return SimpleNamespace(slug="default", bridge=SimpleNamespace(), station_list=None)
+
+    for slugs, listed in (({"default"}, False), ({"default", "nightowl"}, True)):
+        registry = SimpleNamespace(
+            slugs=lambda slugs=slugs: frozenset(slugs),
+            summaries=lambda: entries,
+            stereo_tool_user=lambda exclude: None,
+            stereo_tool_lock=None,
+            owns_liner=lambda slug, path: True,
+        )
+        runtime = station()
+        _share_station(registry, runtime)  # type: ignore[arg-type]
+        assert (runtime.station_list is not None) is listed

@@ -171,6 +171,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   such as `daypart` gives single songs their own hours. The categories list says the hours in
   words and when a category is outside them now. Categories without hours are saved as before.
 
+- A station switcher in the web page (#70). With more than one station, a **Station** button in
+  the banner opens a menu of every station with its state ("Night Owl Radio, on air, 3
+  listeners"); Enter, Space or a click switches, and moving through the menu never does. The page
+  then controls that station: every station control, panel and live update follows it, while the
+  library, search, presets and pairing stay shared. The heading, the browser tab's title, the main
+  landmark and the station tabs name it, the switch is announced, and screen readers hear "On
+  Night Owl Radio" after each control that changes what is on air and "Shared by all stations"
+  after shared ones. `?station=<slug>` in the address opens a station. `c` moves to the switcher
+  and Shift+C says which station the page controls. Listen here keeps playing the station it was
+  started on. A stopped station shows an off-air note with Start, and Settings, Stream can stop a
+  station other than the default one. Hidden with one station, so a single-station page is
+  unchanged. See "The station switcher" in `docs/operations.md`.
 - Groundwork for running several stations on one server (#70). Every control address also answers
   under `/api/stations/default/...`, and the play log, last-played times and active clockwheel are
   kept per station in `library.db`. Existing plays belong to the default station, so nothing
@@ -192,8 +204,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `/api/stations/<slug>/`, and `GET /api/stations` lists every station. `POST
   /api/stations/<slug>/start` and `/stop` start and stop one; `autostart = false` leaves a station
   stopped until then. Its log lines start with `[<slug>]`. Only one station can use Stereo Tool
-  at a time (one licence), and a Stereo Tool preset any station uses cannot be deleted. The web
-  page's station switcher comes later.
+  at a time (one licence), and a Stereo Tool preset any station uses cannot be deleted.
 - Each station has its own public status page and now-playing feed (#70): `/stations/<slug>/status`
   and `/api/stations/<slug>/nowplaying`. Each shows only that station's name, songs and
   listeners, and the page links to that station's stream and playlist and keeps itself current

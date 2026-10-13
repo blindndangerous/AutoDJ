@@ -814,6 +814,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   function discardChanges() {
     if (!dirty || !clock) return Promise.resolve(true);
     return confirmAction(doc, {
+      station: true,
       title: `Discard changes to ${clock.name}?`,
       message: "The changes to its steps have not been saved.",
       confirmLabel: "Discard changes",
@@ -964,6 +965,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     let deleted = null;
     // The request runs while the dialog is open; the result is said after it closes.
     await confirmAction(doc, {
+      station: true,
       title: `Delete clockwheel ${name}?`,
       message: name === data.active
         ? "It is the active clockwheel, so no clockwheel plays until you activate another."

@@ -361,8 +361,12 @@ async def _broadcast_state_once(
     failures: _BroadcastFailureLog,
     listener_revision: int | None = None,
     recording_status: Callable[[], dict[str, object]] | None = None,
+    station_list: Callable[[], list[dict[str, Any]]] | None = None,
 ) -> None:
     """Push the player state to every WebSocket client, if any are connected.
+
+    With several stations, *station_list* gives every station's entry, as
+    ``GET /api/stations`` does, so the page's station switcher stays current.
 
     A failure (building the state, encoding it, or sending it) is logged
     through *failures* and never raised, so the next push still runs:
@@ -378,6 +382,8 @@ async def _broadcast_state_once(
             state["stream_listener_revision"] = listener_revision
         if recording_status is not None:
             state["recording"] = recording_status()
+        if station_list is not None:
+            state["stations"] = station_list()
         payload = json.dumps(state)
         await _broadcast_and_prune(clients, clients_lock, payload)
     except Exception as exc:
@@ -2015,6 +2021,8 @@ def _share_station(stations: StationRegistry, station: StationRuntime) -> None:
     station.bridge.stereo_tool_elsewhere = lambda: stations.stereo_tool_user(exclude=slug)
     station.bridge.stereo_tool_lock = stations.stereo_tool_lock
     station.owns_liner = functools.partial(stations.owns_liner, slug)
+    if len(stations.slugs()) > 1:
+        station.station_list = stations.summaries
 
 
 def _station_broadcast(station: StationRuntime) -> Callable[[], Coroutine[Any, Any, None]]:
@@ -2038,6 +2046,7 @@ def _station_broadcast(station: StationRuntime) -> Callable[[], Coroutine[Any, A
                 failures,
                 listener_access.revision if listener_access is not None else None,
                 recorder.status if recorder is not None else None,
+                station.station_list,
             )
 
     return broadcast

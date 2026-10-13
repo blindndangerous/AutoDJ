@@ -426,6 +426,63 @@ describe("spoken status keys", () => {
     await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent)
       .toBe("F sharp minor"));
   });
+
+  describe("stations (#70)", () => {
+    function install(options) {
+      document.body.innerHTML = '<div id="sr-status"></div><section id="panel-now"></section>';
+      const addEventListener = vi.spyOn(window, "addEventListener");
+      installHotkeys(options);
+      const keydown = addEventListener.mock.calls.find(([type]) => type === "keydown")[1];
+      addEventListener.mockRestore();
+      return (key) => {
+        const event = { key, repeat: false, target: document.body, preventDefault: vi.fn() };
+        keydown(event);
+        window.dispatchEvent(new KeyboardEvent("keyup", { key }));
+        return event;
+      };
+    }
+
+    it("c moves to the switcher only while there are several stations", () => {
+      let several = false;
+      const focusStationSwitcher = vi.fn(() => several);
+      const press = install({ focusStationSwitcher });
+      expect(press("c").preventDefault).not.toHaveBeenCalled();
+      several = true;
+      expect(press("c").preventDefault).toHaveBeenCalled();
+      expect(focusStationSwitcher).toHaveBeenCalledTimes(2);
+    });
+
+    it("Shift+C says the station, and the status keys start with its name", async () => {
+      const press = install({
+        getStationText: () => "Controlling Night Owl Radio. On air, 3 listeners.",
+        getStationPrefix: () => "Night Owl Radio: ",
+        getTrack: () => ({ artist: "Owl", title: "Hoot" }),
+        getQueue: () => [],
+      });
+      const region = document.querySelector("#sr-status");
+      press("C");
+      await vi.waitFor(() => expect(region.textContent)
+        .toBe("Controlling Night Owl Radio. On air, 3 listeners."));
+      press("T");
+      await vi.waitFor(() => expect(region.textContent).toBe("Night Owl Radio: Owl - Hoot"));
+      press("Q");
+      await vi.waitFor(() => expect(region.textContent).toBe("Night Owl Radio: Queue empty"));
+    });
+
+    it("leaves the menu's own type-ahead letters alone", () => {
+      const focusStationSwitcher = vi.fn(() => true);
+      document.body.innerHTML = '<ul role="menu"><li role="menuitemradio" tabindex="-1">Night</li></ul>';
+      const addEventListener = vi.spyOn(window, "addEventListener");
+      installHotkeys({ focusStationSwitcher });
+      const keydown = addEventListener.mock.calls.find(([type]) => type === "keydown")[1];
+      addEventListener.mockRestore();
+      const item = document.querySelector("li");
+      const event = { key: "c", repeat: false, target: item, preventDefault: vi.fn() };
+      keydown(event);
+      expect(event.preventDefault).not.toHaveBeenCalled();
+      expect(focusStationSwitcher).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe("keyboard shortcut toggle (WCAG 2.1.4)", () => {
