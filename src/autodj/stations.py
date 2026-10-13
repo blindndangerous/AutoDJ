@@ -809,6 +809,9 @@ class StationRuntime:
         # Whether a liner registered in the shared library is this station's
         # (set by the registry); with one station, every liner is.
         self.owns_liner: Callable[[str], bool] = _every_liner
+        # Every station's entry, for the switcher in its pages' pushes (set
+        # by the registry when there are several stations); none with one.
+        self.station_list: Callable[[], list[dict[str, Any]]] | None = None
         # Scans in a row that found the liner folder empty (see prune_liner_dates).
         self.liner_folder_empty_scans = 0
 

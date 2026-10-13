@@ -104,6 +104,8 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
     const button = document.createElement("button");
     button.type = "button";
     button.dataset.slot = String(i + 1);
+    // A cart plays on the station the page controls (#70).
+    button.setAttribute("aria-describedby", "station-context");
     button.textContent = cartLabel(i + 1, null);
     button.addEventListener("click", () => {
       if (page()?.slots[i]) void play(i + 1);
@@ -360,6 +362,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
     if (source.value !== "upload" || !chosen) return;
     let result = null;
     const confirmed = await confirmAction(root.ownerDocument, {
+      station: true,
       title: `Delete uploaded clip ${chosen}?`,
       message: "The file is removed from the server.",
       confirmLabel: "Delete clip",

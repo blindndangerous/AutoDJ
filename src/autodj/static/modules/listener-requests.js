@@ -81,7 +81,9 @@ export function installListenerRequests({
   const recentHeading = doc.getElementById("requests-recent-heading");
   const status = doc.getElementById("requests-status");
   const panel = doc.getElementById("panel-queue");
-  if (!card || !summary || !list || !recent || !status) return { refresh: async () => {} };
+  if (!card || !summary || !list || !recent || !status) {
+    return { refresh: async () => {}, clear: () => {} };
+  }
   let lastJson = null;
   let lastState = null;
   let busy = false;
@@ -263,5 +265,15 @@ export function installListenerRequests({
   card.addEventListener("toggle", () => { if (card.open) void refresh(); });
   setTimer(() => { if (showing()) void refresh(); }, POLL_MS);
   void refresh();
-  return { refresh };
+  // Switching stations (#70) or signing out: drop the other station's
+  // requests at once, then ask the station now controlled.
+  function clear() {
+    lastJson = null;
+    lastState = null;
+    list.replaceChildren();
+    recent.replaceChildren();
+    card.hidden = true;
+    void refresh();
+  }
+  return { refresh, clear };
 }

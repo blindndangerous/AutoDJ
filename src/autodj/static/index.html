@@ -58,7 +58,28 @@
 <audio id="stream-audio" preload="none" hidden></audio>
 
 <header role="banner">
-  <h1>AutoDJ</h1>
+  <!-- With several stations the heading names the one this page controls
+       ("AutoDJ: Night Owl Radio"); app.js keeps it current. -->
+  <h1 id="page-heading">AutoDJ</h1>
+  <!-- Station switcher (#70): the APG menu button with menuitemradio
+       items, hidden while the server has one station.  The button's name
+       is its text, "Station: <name>", so the current station is heard on
+       every visit; a choice is made only with Enter, Space or a click.
+       See modules/stations.js for the keys. -->
+  <div id="station-switcher" class="station-switcher" hidden>
+    <button type="button" id="station-button" aria-haspopup="menu" aria-expanded="false"
+            aria-controls="station-menu"><span>Station:</span> <span class="station-switcher-name">AutoDJ</span><span class="station-switcher-caret" aria-hidden="true">▾</span></button>
+    <ul id="station-menu" role="menu" aria-labelledby="station-button" hidden></ul>
+  </div>
+  <!-- Descriptions, never shown: "On Night Owl Radio" for each control
+       that changes what is on air, and "Shared by all stations" for the
+       library and pairing.  Empty while the server has one station, so
+       nothing extra is spoken then. -->
+  <span id="station-context" hidden></span>
+  <span id="shared-context" hidden></span>
+  <!-- The station's name, added to the name of each tab panel that shows
+       one station ("Queue & Search Night Owl Radio"). -->
+  <span id="station-name-label" hidden></span>
   <!-- Fix 4: no static aria-label — text content is the live announcement -->
   <span id="conn-status" role="status" aria-live="polite">Connecting…</span>
 </header>
@@ -87,7 +108,7 @@
     <button type="button" role="tab" id="tab-track-info" data-view="track-info" aria-selected="false" tabindex="-1">Track info</button>
     <button type="button" role="tab" id="tab-history"  data-view="history"  aria-selected="false" tabindex="-1">History</button>
     <button type="button" role="tab" id="tab-settings" data-view="settings" aria-selected="false" tabindex="-1">Settings</button>
-    <button type="button" role="tab" id="tab-library"  data-view="library"  aria-selected="false" tabindex="-1">Library tools</button>
+    <button type="button" role="tab" id="tab-library"  data-view="library"  aria-selected="false" tabindex="-1" aria-describedby="shared-context">Library tools</button>
   </div>
 </nav>
 
@@ -110,6 +131,13 @@
     <p id="playback-stale-note" aria-hidden="true" hidden>
       Not live — showing the last known state.
     </p>
+    <!-- Shown while the station this page controls is stopped (#70).
+         Plain text, not a live region: the connection status already
+         says "Off air" once. -->
+    <div id="station-off-air" class="station-off-air" hidden>
+      <p id="station-off-air-text"></p>
+      <button type="button" id="station-start" aria-describedby="station-context">Start station</button>
+    </div>
 
     <div class="now-playing-row">
       <!-- Decorative cover art — the track change is announced by #track-announce.
@@ -210,12 +238,12 @@
              name plus aria-pressed. -->
         <!-- No title attributes on Play, Skip and Mute: NVDA read each one
              as a description that only repeated the name. -->
-        <button id="btn-pause" aria-label="Play or Pause" disabled><span aria-hidden="true">▶ Play or Pause</span></button>
+        <button id="btn-pause" aria-label="Play or Pause" aria-describedby="station-context" disabled><span aria-hidden="true">▶ Play or Pause</span></button>
         <!-- Stream mode only.  Fixed name plus aria-pressed, like Mute:
              it plays the station in this browser, while Play / Pause
              pauses the station for every listener. -->
-        <button type="button" id="btn-listen" aria-pressed="false" hidden><span aria-hidden="true">🔊</span> Listen here</button>
-        <button id="btn-skip">
+        <button type="button" id="btn-listen" aria-pressed="false" aria-describedby="listen-station" hidden><span aria-hidden="true">🔊</span> Listen here</button>
+        <button id="btn-skip" aria-describedby="station-context">
           <span aria-hidden="true">⏭</span> Skip
         </button>
         <button id="btn-shuffle"
@@ -234,6 +262,10 @@
           <span aria-hidden="true">⌨</span> Keyboard shortcuts
         </button>
       </div>
+      <!-- Listen here plays the station it was started on (#70).  Once the
+           page controls another station this says which, and describes
+           Listen here.  Plain text, not live. -->
+      <p id="listen-station" class="stream-detail" hidden></p>
     </div>
 
     <!-- Volume -->
@@ -474,7 +506,7 @@
         </div>
         <small id="negative-overlap-help" hidden>A negative value delays this liner by up to 15 seconds, limited by the next song’s intro. Preview and Use preview position are unavailable for negative values.</small>
       </div>
-      <button type="button" id="points-save">Save points</button>
+      <button type="button" id="points-save" aria-describedby="shared-context">Save points</button>
       <audio id="points-preview" controls preload="none" aria-label="Song point preview" data-preview-output></audio>
     </section>
     <p id="points-status" role="status" aria-live="polite" aria-atomic="true"></p>
@@ -1759,14 +1791,14 @@
       <div class="settings-row">
         <label for="stream-station-name">Station name</label>
         <input type="text" id="stream-station-name" maxlength="100" autocomplete="off"
-               aria-describedby="stream-station-name-desc">
+               aria-describedby="stream-station-name-desc station-context">
       </div>
       <span class="setting-desc" id="stream-station-name-desc">
         The name players such as Sonos and VLC show for this station, up to 100 characters.  A player shows a new name the next time it connects.
       </span>
       <div class="settings-row">
         <label for="stream-bitrate">Quality</label>
-        <select id="stream-bitrate" aria-describedby="stream-bitrate-desc">
+        <select id="stream-bitrate" aria-describedby="stream-bitrate-desc station-context">
           <option value="128">128 kbps</option>
           <option value="192">192 kbps</option>
           <option value="256">256 kbps</option>
@@ -1777,7 +1809,7 @@
         Higher sounds better and uses more network.  Changing it makes every speaker reconnect for a moment.
       </span>
       <div class="settings-check">
-        <input type="checkbox" id="stream-continuous" aria-describedby="stream-continuous-desc">
+        <input type="checkbox" id="stream-continuous" aria-describedby="stream-continuous-desc station-context">
         <label for="stream-continuous">Keep playing without listeners</label>
       </div>
       <span class="setting-desc" id="stream-continuous-desc">
@@ -1841,7 +1873,7 @@
         </p>
         <div class="settings-row">
           <button type="button" id="recording-toggle" aria-pressed="false"
-                  aria-describedby="recording-status recording-error">Record broadcast</button>
+                  aria-describedby="recording-status recording-error station-context">Record broadcast</button>
           <button type="button" id="recording-split-now" aria-disabled="true">Split recording now</button>
         </div>
         <p class="stream-detail" id="recording-status"></p>
@@ -1911,6 +1943,17 @@
         <p id="listener-ban-empty" hidden>No bans.</p>
       </section>
     </fieldset>
+    <!-- A station other than the default one can be stopped (#70); it asks
+         first in #confirm-dialog.  Hidden for the default station. -->
+    <div id="station-stop-row" hidden>
+      <div class="settings-row">
+        <button type="button" id="station-stop"
+                aria-describedby="station-stop-desc station-context">Stop station</button>
+      </div>
+      <span class="setting-desc" id="station-stop-desc">
+        Disconnects its listeners and relays and ends its recording until it is started again.
+      </span>
+    </div>
   </div>
 
   <div class="card" role="tabpanel" id="spanel-access" aria-labelledby="stab-access" hidden>
@@ -2062,7 +2105,7 @@
     </ol>
     <!-- Outside the list, so it stays put while rows come and go.  It asks
          before clearing, in #confirm-dialog. -->
-    <button type="button" id="queue-clear">Clear queue</button>
+    <button type="button" id="queue-clear" aria-describedby="station-context">Clear queue</button>
   </details>
 
   <!-- Listener requests from the public request page; shown only when
@@ -2685,6 +2728,8 @@
     <dt><kbd>Shift+Q</kbd></dt><dd>Speak how many tracks are queued, and the first one</dd>
     <dt><kbd>Shift+J</kbd></dt><dd>Speak the library job status</dd>
     <dt><kbd>Shift+H</kbd></dt><dd>Speak how the hour lands, from the hour preview</dd>
+    <dt style="margin-top:0.5rem"><kbd>c</kbd></dt><dd style="margin-top:0.5rem">Move to the station switcher. Only when the server has several stations.</dd>
+    <dt><kbd>Shift+C</kbd></dt><dd>Speak which station this page controls, whether it is on air, its listeners and its song</dd>
   </dl>
   <p style="margin-top:1rem;color:var(--text-dim);font-size:0.9em">
     NVDA users: shortcuts work in focus mode (NVDA+Space to toggle).  In browse mode, NVDA intercepts the letter keys; switch to focus mode first, or press NVDA+F2 and then the shortcut to pass that one key through.

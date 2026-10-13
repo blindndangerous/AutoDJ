@@ -1176,8 +1176,8 @@ table. Each station has its own player, mix bus, mastering process, encoder, rel
 schedule, carts, time checks, clockwheels, liners, profiles and saved settings; the library, the
 similarity index, pairing and the web server are shared.
 
-The station switcher in the web page is still to come. Until then, a station other than the
-default one is controlled through its API addresses, described below.
+The web page controls one station at a time; the station switcher in its banner picks which.
+See [The station switcher](#the-station-switcher).
 
 ### Configuration
 
@@ -1422,6 +1422,55 @@ stations; with a second licence, a later version can lift this limit.
 
 Stereo Tool presets are shared by every station, and each station chooses its own. A preset that
 any station uses, running or stopped, cannot be deleted; the message names the station.
+
+### The station switcher
+
+With more than one station configured, the banner of the web page has a **Station** button after
+the AutoDJ heading, for example "Station: AutoDJ". It is hidden while the server has one station.
+It opens a menu that lists every station with its state, such as "Night Owl Radio, on air, 3
+listeners" or "Oldies Hour, off air"; the station the page controls has a tick and is checked.
+
+- **Keyboard:** Enter, Space or Down Arrow opens the menu on the checked station, and Up Arrow on
+  the last one. Up and Down Arrow move through the stations, Home and End go to the first and
+  last, and typing a letter moves to the next station whose name starts with it. Enter or Space
+  switches to the station under focus; Escape closes the menu without switching. Both put focus
+  back on the Station button. Tab closes the menu and moves on. Moving through the menu never
+  switches; only Enter, Space or a click does.
+- **Shortcuts:** `c` moves focus to the Station button, and Shift+C says which station the page
+  controls, whether it is on air, its listeners and its song. While there are several stations,
+  the status keys that speak about the station (Shift+T, N, R, B, K, L, E and Q) start with its
+  name.
+- **What switches:** every control on the Now Playing, Queue & Search, Carts, Voice tracks, Track
+  info, History and Settings tabs then acts on the chosen station, and they show its state: its
+  song, queue, history, settings, carts, schedule, clockwheels, hour preview, liners, profiles,
+  time checks, matched intros, stream, listeners, recording and webhooks. Library tools, search
+  results, library folders,
+  song points, Stereo Tool presets and paired devices are shared by all stations.
+- **How it says so:** the heading becomes "AutoDJ: Night Owl Radio", the browser tab's title
+  ends with "Night Owl Radio - AutoDJ", the page's main landmark is named after the station, and
+  each station tab's name ends with it. The switch is announced once, for example "Now
+  controlling Night Owl Radio. On air, 3 listeners. Playing Artist – Title." A screen reader says
+  "On Night Owl Radio" after each control that changes what is on air (Play or Pause, Skip,
+  queue changes, carts, Run now, profile Apply, listener Disconnect and Ban, the stream settings
+  and recording) and "Shared by all stations" after the Library tools tab and song points.
+  Confirmations, such as Clear queue, end with the station's name.
+- **The address keeps the station:** the page adds `?station=nightowl` to its address, so a
+  reload or a bookmark opens the same station. Each browser also remembers the last station
+  chosen and opens it when the address names none; the address wins. An address naming a
+  station that is not configured opens the default station and says so; if the station list
+  cannot be loaded, the page keeps the station the address names and loads the list again.
+- **Listen here** keeps playing the station it was started on. While the page controls another
+  station, a line under the controls says which, for example "Playing AutoDJ"; pressing Listen
+  here stops it, and pressing it again plays the station the page now controls.
+- **Browser playback:** when the default station plays in the browser (no `--stream`), only that
+  page's own decks play it. Switching away asks first, because the page then stops playing it;
+  the station itself goes on for everyone else.
+- **A stopped station:** choosing one, or having the station stopped while the page controls it,
+  shows "Night Owl Radio is off air." with a **Start Night Owl Radio** button on Now Playing. The
+  page looks every 10 seconds whether the station is back. **Settings, Stream** of a station other
+  than the default one has **Stop Night Owl Radio**, which asks first.
+
+Every page has its own choice, so two browsers can control two stations at once.
 
 ### Logs
 

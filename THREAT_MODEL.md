@@ -577,7 +577,10 @@ What a listener can and cannot do:
   does not cover another, and the listener slots of all stations add up. Starting and stopping
   a station (`POST /api/stations/<slug>/start` and `/stop`) and the station list
   (`/api/stations`) need pairing, which is still server-wide: a paired browser controls every
-  station. Slugs are checked against a strict pattern before they name a folder.
+  station. Slugs are checked against a strict pattern before they name a folder. The web page's
+  station switcher is only a choice of addresses in that browser: it grants nothing, and each
+  request still passes the same session check. With several stations, each station's socket
+  push to its paired pages also carries the station list, the same fields as `/api/stations`.
 
 What the operator should know:
 
