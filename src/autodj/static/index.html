@@ -1009,6 +1009,11 @@
           <label for="repeat-track-minutes">Minutes</label>
           <input type="number" id="repeat-track-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
         </div>
+        <div class="settings-check">
+          <input type="checkbox" id="repeat-versions-as-one-song" aria-describedby="repeat-versions-desc">
+          <label for="repeat-versions-as-one-song">Count versions as one song</label>
+        </div>
+        <p class="setting-desc" id="repeat-versions-desc">Treats the versions of a song by the same lead artist, such as a radio edit and a remix, as one song. The song comes up as often as a song with one version, and the limits above hold back all of its versions.</p>
       </fieldset>
       <fieldset>
         <legend>Prevent the same title from repeating within</legend>

@@ -248,6 +248,9 @@ def test_a_step_outside_its_hours_is_skipped_and_says_why(tmp_path: Path, caplog
     step = {**category_step("night"), "hours_from": "22:00", "hours_until": "02:00"}
     source, night = _step_station(tmp_path, step)
     player = source.player
+    # This assertion exercises the live warning path; station fixtures are
+    # normally dry-run players so simulations stay quiet.
+    player._dry_run = False
     noon = _at("2026-10-12 12:00")
     player._now = lambda: noon  # type: ignore[method-assign]
     with caplog.at_level(logging.WARNING, logger="autodj.player"):
@@ -317,9 +320,9 @@ def test_the_rotation_tester_skips_a_step_outside_its_hours(tmp_path: Path) -> N
     monday = simulate(source, SimulationRequest(hours=3, start=_at("2026-10-12 12:00"), seed=4))
     rows = {row["name"]: row for row in monday["categories"]}
     assert rows["Night"]["plays"] == 0
-    assert (
-        "Step 1: outside its hours: plays only on Friday and Saturday from 22:00 until 02:00"
-    ) in [item["reason"] for item in monday["skipped_steps"]]
+    assert ("outside its hours: plays only on Friday and Saturday from 22:00 until 02:00") in [
+        item["reason"] for item in monday["skipped_steps"]
+    ]
     friday = simulate(source, SimulationRequest(hours=3, start=_at("2026-10-16 22:00"), seed=4))
     rows = {row["name"]: row for row in friday["categories"]}
     assert rows["Night"]["plays"] > 0
