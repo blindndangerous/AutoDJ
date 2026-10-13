@@ -1810,7 +1810,7 @@ describe("static accessibility contracts", () => {
 
     for (const selector of [
       "#now-playing-meta", "#cue-summary", "#cue-details", "#queue-list",
-      "#library-log", "#version-stamp",
+      "#library-log", "#version-stamp", "#ver-build",
       // The sighted status mirror and the silent job clock must never
       // become a second announcement path for the same message.
       "#status-toast", "#playback-stale-note", "#cue-legend", "#camelot-legend",
@@ -1820,7 +1820,7 @@ describe("static accessibility contracts", () => {
       expect(node.hasAttribute("aria-live"), selector).toBe(false);
     }
     for (const selector of [
-      "#now-playing-meta", "#cue-summary", "#cue-details", "#version-stamp",
+      "#now-playing-meta", "#cue-summary", "#cue-details", "#version-stamp", "#ver-build",
       "#status-toast", "#playback-stale-note", "#lib-job-elapsed",
       "#cue-legend", "#camelot-legend",
     ]) {
@@ -1891,8 +1891,9 @@ describe("static accessibility contracts", () => {
     expect(name.getAttribute("type")).toBe("text");
     expect(name.getAttribute("maxlength")).toBe("100");
     expect(labelText("stream-station-name")).toBe("Station name");
-    expect(describedBy(name)).toHaveLength(1);
-    expect(describedBy(name).every(Boolean)).toBe(true);
+    // Its help, then which station it changes (#70).
+    expect(describedBy(name).map((element) => element?.id))
+      .toEqual(["stream-station-name-desc", "station-context"]);
 
     const address = document.querySelector("#stream-url");
     expect(address.tagName).toBe("INPUT");
@@ -2042,7 +2043,7 @@ describe("static accessibility contracts", () => {
     expect(toggle.textContent.trim()).toBe("Record broadcast");
     expect(toggle.getAttribute("aria-pressed")).toBe("false");
     expect(describedBy(toggle).map((element) => element?.id))
-      .toEqual(["recording-status", "recording-error"]);
+      .toEqual(["recording-status", "recording-error", "station-context"]);
 
     // Split stays focusable while unavailable, so pressing it is answered.
     const split = document.querySelector("#recording-split-now");
@@ -2706,6 +2707,37 @@ describe("public status page contracts", () => {
   });
 });
 
+describe("listener request contracts", () => {
+  const requestCss = stripCssComments(readFileSync(staticPath("modules", "request-page.css"), "utf8"));
+  const requestsScript = readFileSync(staticPath("modules", "listener-requests.js"), "utf8")
+    .replace(/^\s*\/\/.*$/gm, "");
+
+  it("draws the public request page from the system palette, with visible focus and big targets", () => {
+    expect(requestCss).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
+    expect(requestCss).toMatch(/:root\[data-theme="dark"\]\s*\{\s*color-scheme: dark;/);
+    expect(requestCss).not.toMatch(/ButtonFace|ButtonText/);
+    expect(requestCss).toMatch(
+      /button:focus-visible,\s*a:focus-visible,\s*input:focus-visible\s*\{\s*outline: 3px solid currentcolor;/,
+    );
+    expect(requestCss).toMatch(/button\s*\{[^}]*min-height: 44px;/);
+    expect(requestCss).toMatch(/input\[type="text"\]\s*\{[^}]*min-height: 44px;[^}]*border: 2px solid CanvasText;/);
+    // An error is marked by weight and a bar, not by colour.
+    expect(requestCss).toMatch(/\.error\s*\{[^}]*border-left: 4px solid CanvasText;[^}]*font-weight: 600;/);
+  });
+
+  it("keeps the operator's request card to one status region, labelled lists and named buttons", () => {
+    const card = htmlSource.slice(htmlSource.indexOf('id="requests-card"'), htmlSource.indexOf("</details>", htmlSource.indexOf('id="requests-card"')));
+    expect(card.match(/aria-live=/g)).toHaveLength(1);
+    expect(card).toMatch(/id="requests-status"\s+role="status"\s+aria-live="polite"\s+aria-atomic="true"/);
+    expect(card).toMatch(/<ul id="requests-list" aria-label="Waiting requests"/);
+    expect(card).toMatch(/<ul id="requests-recent" aria-labelledby="requests-recent-heading"/);
+    // Each button starts with its visible word, then names its song.
+    expect(requestsScript).toMatch(/button\.append\(label\);/);
+    expect(requestsScript).toMatch(/which\.className = "visually-hidden";/);
+    expect(requestsScript).not.toMatch(/aria-live/);
+  });
+});
+
 describe("public player page contracts", () => {
   const playerCss = stripCssComments(readFileSync(staticPath("modules", "player-page.css"), "utf8"));
   // The code only: its comments explain these rules in the same words.
@@ -2742,5 +2774,111 @@ describe("public player page contracts", () => {
     // play() is called from one place: the Play button's handler.
     expect(playerScript.match(/\.play\(\)/g)).toHaveLength(1);
     expect(playerScript).toMatch(/url\.origin !== new URL\(here\)\.origin/);
+  });
+});
+
+describe("station switcher and station context contracts (#70)", () => {
+  const ids = (element, attribute) => (element.getAttribute(attribute) || "")
+    .split(/\s+/).filter(Boolean);
+
+  it("is an APG menu button in the banner, before the Sections tabs", () => {
+    installDocument();
+    const wrap = document.getElementById("station-switcher");
+    const button = document.getElementById("station-button");
+    const menu = document.getElementById("station-menu");
+    // Hidden until the server lists a second station.
+    expect(wrap.hidden).toBe(true);
+    expect(wrap.closest('header[role="banner"]')).not.toBeNull();
+    expect(wrap.compareDocumentPosition(document.getElementById("view-nav"))
+      & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(button.tagName).toBe("BUTTON");
+    expect(button.getAttribute("type")).toBe("button");
+    expect(button.getAttribute("aria-haspopup")).toBe("menu");
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+    expect(button.getAttribute("aria-controls")).toBe("station-menu");
+    // Named by its visible text, "Station: <name>"; the caret is not read.
+    expect(button.hasAttribute("aria-label")).toBe(false);
+    expect(button.querySelector(".station-switcher-caret").getAttribute("aria-hidden")).toBe("true");
+    const visible = [...button.childNodes]
+      .filter((node) => !(node instanceof window.Element && node.getAttribute("aria-hidden") === "true"))
+      .map((node) => node.textContent).join("").replace(/\s+/g, " ").trim();
+    expect(visible).toBe("Station: AutoDJ");
+    expect(menu.tagName).toBe("UL");
+    expect(menu.getAttribute("role")).toBe("menu");
+    expect(menu.getAttribute("aria-labelledby")).toBe("station-button");
+    expect(menu.hidden).toBe(true);
+  });
+
+  it("describes every control that changes what is on air with the station", () => {
+    installDocument();
+    const context = document.getElementById("station-context");
+    expect(context.hidden).toBe(true);
+    expect(context.textContent).toBe("");
+    for (const id of [
+      "btn-pause", "btn-skip", "queue-clear", "recording-toggle", "stream-station-name",
+      "stream-bitrate", "stream-continuous", "station-stop", "station-start",
+    ]) {
+      const control = document.getElementById(id);
+      expect(control, id).not.toBeNull();
+      expect(ids(control, "aria-describedby"), id).toContain("station-context");
+      // Every id it names exists, so nothing is silently lost.
+      for (const ref of ids(control, "aria-describedby")) {
+        expect(document.getElementById(ref), `${id} -> ${ref}`).not.toBeNull();
+      }
+    }
+  });
+
+  it("describes the shared controls as shared by all stations", () => {
+    installDocument();
+    const shared = document.getElementById("shared-context");
+    expect(shared.hidden).toBe(true);
+    expect(shared.textContent).toBe("");
+    for (const id of ["tab-library", "points-save"]) {
+      expect(ids(document.getElementById(id), "aria-describedby"), id).toContain("shared-context");
+    }
+  });
+
+  it("gives queue rows, search results, carts, listeners, profiles and Run now the station", () => {
+    const sources = {
+      queue: readFileSync(staticPath("modules", "queue.js"), "utf8"),
+      search: readFileSync(staticPath("modules", "search.js"), "utf8"),
+      carts: readFileSync(staticPath("modules", "cart-wall.js"), "utf8"),
+      listeners: readFileSync(staticPath("modules", "listener-controls.js"), "utf8"),
+      profiles: readFileSync(staticPath("modules", "profiles.js"), "utf8"),
+      schedule: readFileSync(staticPath("modules", "scheduler-panel.js"), "utf8"),
+    };
+    expect(sources.queue.match(/aria-describedby="station-context"/g)).toHaveLength(4);
+    for (const [name, source] of Object.entries(sources)) {
+      if (name === "queue") continue;
+      expect(source, name).toMatch(/setAttribute\("aria-describedby", "station-context"\)/);
+    }
+  });
+
+  it("styles the menu with theme tokens, 44 px items and a tick for the checked one", () => {
+    const css = stripCssComments(cssSource);
+    const rule = (selector) => {
+      const start = css.indexOf(`${selector} {`);
+      expect(start, selector).toBeGreaterThanOrEqual(0);
+      return css.slice(start, css.indexOf("}", start));
+    };
+    const menu = rule("#station-menu");
+    expect(menu).toMatch(/background: var\(--bg-card\)/);
+    expect(menu).toMatch(/color: var\(--text\)/);
+    expect(menu).toMatch(/border: 1px solid var\(--control-border\)/);
+    const item = rule(".station-switcher-item");
+    expect(item).toMatch(/min-height: 44px/);
+    expect(css).toMatch(/\.station-switcher-item\[aria-checked="true"\]::before \{ content: "\\2713" \/ ""; \}/);
+    // No literal colours anywhere in the switcher's rules.
+    const switcherRules = css.slice(css.indexOf(".station-switcher {"), css.indexOf(".station-off-air[hidden]"));
+    expect(switcherRules).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(/i);
+    // The banner wraps, so the switcher never scrolls the page sideways.
+    expect(css).toMatch(/header \{ flex-wrap: wrap; \}/);
+  });
+
+  it("lists the station keys in the shortcut help", () => {
+    installDocument();
+    const help = document.getElementById("hotkey-help-modal").textContent.replace(/\s+/g, " ");
+    expect(help).toMatch(/\bc ?Move to the station switcher\. Only when the server has several stations\./);
+    expect(help).toMatch(/Shift\+C ?Speak which station this page controls/);
   });
 });

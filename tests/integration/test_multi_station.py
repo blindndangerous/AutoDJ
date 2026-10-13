@@ -77,6 +77,9 @@ import_external_cues = false
 [stations.nightowl.recording]
 folder = "{root}/recordings/nightowl"
 
+[stations.nightowl.requests]
+enabled = true
+approval = "auto"
 [stations.nightowl.player_page]
 enabled = true
 embed = true
@@ -789,6 +792,14 @@ def test_each_station_has_its_own_public_status_page_and_feed(rig: Any, tmp_path
         assert str(tmp_path) not in text and tmp_path.as_posix() not in text
         assert "testserver" not in text
 
+    # Its request page, which only this station turns on.
+    requests = client.get("/stations/nightowl/requests")
+    assert requests.status_code == 200
+    assert "<title>Night Owl Radio: request a song</title>" in requests.text
+    assert '<form method="get" action="/stations/nightowl/requests" role="search">' in requests.text
+    assert client.get("/requests").status_code == 404
+    assert client.get("/stations/default/requests").status_code == 404
+    assert client.get("/stations/daybreak/requests").status_code == 401
     # Its player pages, which only this station turns on.
     player = client.get("/stations/nightowl/player")
     assert player.status_code == 200
@@ -818,6 +829,11 @@ def test_each_station_has_its_own_public_status_page_and_feed(rig: Any, tmp_path
     assert stopped_feed.json() == {"detail": "That station is off air"}
     assert stopped_feed.headers["access-control-allow-origin"] == "*"
     assert client.get("/stations/nightowl.mp3").status_code == 503
+    off_requests = client.get("/stations/nightowl/requests")
+    assert off_requests.status_code == 503
+    assert "Night Owl Radio is off air right now, so it is not taking requests." in (
+        off_requests.text
+    )
     off_player = client.get("/stations/nightowl/player")
     assert off_player.status_code == 503
     assert "Night Owl Radio is off air right now." in off_player.text
@@ -831,6 +847,10 @@ def test_each_station_has_its_own_public_status_page_and_feed(rig: Any, tmp_path
 
 def test_the_station_list_reports_each_stations_public_addresses(rig: Any) -> None:
     client, *_ = rig
+    # Each station's requests are its own: only Night Owl takes them.
+    owl_requests = client.get(f"{OWL}/requests").json()
+    assert (owl_requests["enabled"], owl_requests["approval"]) == (True, "auto")
+    assert client.get("/api/requests").json()["enabled"] is False
     listing = _stations(client)
     assert {
         key: listing["default"][key] for key in ("state", "status_path", "nowplaying_path")

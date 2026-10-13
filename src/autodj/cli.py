@@ -522,9 +522,24 @@ def cmd_setup(arguments: tuple[str, ...]) -> None:
     help="Apply supported repairs without prompting, or disable repairs. "
     "By default, ask before each repair in an interactive terminal.",
 )
+@click.option(
+    "--station",
+    default=None,
+    metavar="SLUG",
+    help="Check only this station besides the server: default, or a [stations.<slug>] name.",
+)
 @click.pass_context
-def cmd_doctor(ctx: click.Context, as_json: bool, fix: bool | None, index_name: str | None) -> None:
-    """Check configuration, storage, dependencies, model, network, and stream health."""
+def cmd_doctor(
+    ctx: click.Context,
+    as_json: bool,
+    fix: bool | None,
+    index_name: str | None,
+    station: str | None,
+) -> None:
+    """Check configuration, storage, dependencies, model, network, and stream health.
+
+    With several stations, each station's own checks run once per station.
+    """
     from autodj.doctor import (
         CheckStatus,
         DoctorCheck,
@@ -536,8 +551,10 @@ def cmd_doctor(ctx: click.Context, as_json: bool, fix: bool | None, index_name: 
     if as_json and fix:
         raise click.UsageError("--json is read-only; run repairs separately with --fix.")
     offer_repairs = not as_json and (sys.stdin.isatty() if fix is None else fix)
+    # With --station only that station's own repairs run: nothing server-wide.
+    server_repairs = offer_repairs and station is None
     try:
-        cfg = _doctor_load_config(ctx.obj["config_path"], offer_repairs, fix is True, as_json)
+        cfg = _doctor_load_config(ctx.obj["config_path"], server_repairs, fix is True, as_json)
     except click.exceptions.Exit:
         if not as_json:
             raise
@@ -554,21 +571,31 @@ def cmd_doctor(ctx: click.Context, as_json: bool, fix: bool | None, index_name: 
         click.echo(report.to_json())
         raise click.exceptions.Exit(1) from None
     _apply_index_name(cfg, index_name)
-    report = run_doctor(cfg)
+    if station is not None and station not in {"default", *(s.slug for s in cfg.stations)}:
+        raise click.BadParameter(f"no station is named {station!r}", param_hint="--station")
+    report = run_doctor(cfg, station=station)
     click.echo(report.to_json() if as_json else render_text(report))
     if offer_repairs and _doctor_repair_saved_settings(cfg, report, fix is True):
         click.echo("Rechecking after repairs...")
-        report = run_doctor(cfg)
+        report = run_doctor(cfg, station=station)
         click.echo(render_text(report))
-    if offer_repairs and _doctor_create_directories(cfg, report, fix is True):
+    if offer_repairs and _doctor_create_directories(
+        cfg, report, fix is True, server=server_repairs
+    ):
         click.echo("Rechecking after repairs...")
-        report = run_doctor(cfg)
+        report = run_doctor(cfg, station=station)
+        click.echo(render_text(report))
+    if server_repairs and _doctor_recover_restore(cfg, report):
+        click.echo("Rechecking after repairs...")
+        report = run_doctor(cfg, station=station)
         click.echo(render_text(report))
     recovery_failed = False
-    if offer_repairs:
+    if server_repairs:
         from autodj.doctor_commands import run_recovery_commands
 
-        report, recovery_failed = run_recovery_commands(cfg, report, auto_fix=fix is True)
+        report, recovery_failed = run_recovery_commands(
+            cfg, report, auto_fix=fix is True, station=station
+        )
     if report.exit_code or recovery_failed:
         raise click.exceptions.Exit(1)
 
@@ -603,41 +630,110 @@ def _doctor_load_config(
     return _load_cfg_or_exit(config_path, show_error=not as_json)
 
 
+def _station_state_dir(cfg: AutoDJConfig, slug: str | None) -> Path:
+    """The folder holding station *slug*'s state files; the default station's for ``None``."""
+    from autodj.config import station_config
+    from autodj.stations import StationPaths
+
+    if slug is None:
+        return StationPaths.default(cfg).state_dir
+    spec = next(spec for spec in cfg.stations if spec.slug == slug)
+    return StationPaths.for_station(station_config(spec.cfg, cfg), slug).state_dir
+
+
 def _doctor_repair_saved_settings(cfg: AutoDJConfig, report: DoctorReport, auto_fix: bool) -> bool:
+    """Offer each station's saved-settings cleanup, one at a time, each with a backup."""
     from autodj.doctor_repair import plan_saved_state_repair
 
-    if not any(check.repair == "repair-saved-settings" for check in report.checks):
+    changed = False
+    for check in report.checks:
+        if check.repair != "repair-saved-settings":
+            continue
+        repair = plan_saved_state_repair(_station_state_dir(cfg, check.station))
+        where = f" for station {check.station}" if check.station else ""
+        if repair is None:
+            click.echo(
+                f"No safe automatic edit is available for saved settings{where}; "
+                "review the details above."
+            )
+            continue
+        click.echo(f"Remove obsolete repeat keys from {repair.path}:")
+        for section, keys in repair.keys_by_section.items():
+            click.echo(f"  [{section}]: {list(keys)}")
+        if not auto_fix and not click.confirm("Apply this repair (with a backup)?", default=False):
+            continue
+        try:
+            backup = repair.apply()
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise click.ClickException(f"Could not repair saved settings: {exc}") from exc
+        click.echo(f"Repaired {repair.path}. Backup: {backup}")
+        changed = True
+    return changed
+
+
+def _doctor_recover_restore(cfg: AutoDJConfig, report: DoctorReport) -> bool:
+    """Offer to roll back or finish an interrupted restore; always asks, even with --fix.
+
+    Nothing is deleted: what is moved out of the way goes into a
+    ``restore-leftovers-<time>`` folder in the index folder.
+    """
+    import time
+
+    from autodj.backup import BackupError, recover_restore
+
+    check = next((c for c in report.checks if c.repair == "recover-restore"), None)
+    if check is None:
         return False
-    repair = plan_saved_state_repair(cfg.index.active_dir)
-    if repair is None:
+    keep = Path(cfg.index.index_dir) / f"restore-leftovers-{time.strftime('%Y%m%d-%H%M%S')}"
+    if check.status.value == "fail":
         click.echo(
-            "No safe automatic edit is available for saved settings; review the details above."
+            "A restore stopped part way. Doctor can put every old file back where it was; the "
+            f"files the restore had already put in place go into {keep}."
         )
+        question = "Roll back the interrupted restore?"
+    else:
+        click.echo(
+            f"A restore left old copies or hidden folders. Doctor can move them into {keep}; "
+            "nothing is deleted."
+        )
+        question = "Move them out of the way?"
+    if not sys.stdin.isatty():
+        click.echo("Not changing a restore without asking; run `autodj doctor` in a terminal.")
         return False
-    click.echo(f"Remove obsolete repeat keys from {repair.path}:")
-    for section, keys in repair.keys_by_section.items():
-        click.echo(f"  [{section}]: {list(keys)}")
-    if not auto_fix and not click.confirm("Apply this repair (with a backup)?", default=False):
+    if not click.confirm(question, default=False):
         return False
     try:
-        backup = repair.apply()
-    except (OSError, ValueError, RuntimeError) as exc:
-        raise click.ClickException(f"Could not repair saved settings: {exc}") from exc
-    click.echo(f"Repaired {repair.path}. Backup: {backup}")
+        done = recover_restore(cfg, keep)
+    except BackupError as exc:
+        raise click.ClickException(str(exc)) from exc
+    for line in done:
+        click.echo(line)
     return True
 
 
-def _doctor_create_directories(cfg: AutoDJConfig, report: DoctorReport, auto_fix: bool) -> bool:
-    """Offer only missing writable storage directories identified by the checks."""
+def _doctor_create_directories(
+    cfg: AutoDJConfig, report: DoctorReport, auto_fix: bool, *, server: bool = True
+) -> bool:
+    """Offer only missing writable storage directories identified by the checks.
+
+    These are the index and model folders and each other station's own
+    folder.  A new, empty folder replaces nothing, so no backup is made.
+    """
     from autodj.doctor import CheckStatus
 
     paths = {"index-path": cfg.index.index_dir, "model-path": cfg.index.model_dir}
     changed = False
     for check in report.checks:
-        path = paths.get(check.name)
+        path: Path | None
+        if check.repair == "create-station-folder" and check.station is not None:
+            path = _station_state_dir(cfg, check.station)
+            label = f"folder for station {check.station}"
+        else:
+            path = paths.get(check.name) if check.station is None and server else None
+            label = f"{check.name} directory"
         if path is None or check.status is not CheckStatus.WARN or path.exists():
             continue
-        click.echo(f"Create missing {check.name} directory: {path}")
+        click.echo(f"Create missing {label}: {path}")
         if auto_fix or click.confirm("Create this directory?", default=False):
             try:
                 path.mkdir(parents=True, exist_ok=True)
@@ -899,11 +995,14 @@ def cmd_restore(ctx: click.Context, archive: Path, force: bool) -> None:
     from autodj.doctor import render_text, run_doctor
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    warnings: list[str] = []
     try:
-        restored = restore_backup(cfg, archive, force=force)
+        restored = restore_backup(cfg, archive, force=force, warnings=warnings)
     except BackupError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"Restored {restored} files.")
+    for warning in warnings:
+        click.echo(f"Warning: {warning}")
     report = run_doctor(cfg)
     click.echo(render_text(report))
     if report.exit_code:
@@ -1578,6 +1677,36 @@ class _ServeCommand(click.Command):
             raise
 
 
+def _claim_index_for_serve(ctx: click.Context, active_dir: Path) -> None:
+    """Refuse to serve a half-restored index; hold the serve lock while serving.
+
+    A restore that stopped part way leaves its journal: some files are new
+    and some old, so the server does not start until ``autodj doctor`` has
+    rolled it back.  The serve lock makes ``autodj restore`` refuse while
+    this server runs; it is released when the command ends.
+    """
+    from autodj.backup import BackupError, hold_serve_lock, pending_restore_state
+
+    restore_state = pending_restore_state(active_dir)
+    if restore_state not in (None, "installed"):
+        console.print(
+            "[bold red]A restore of this index folder did not finish, so some files are new and "
+            "some old.[/] Run `autodj doctor` to put the old files back, then start AutoDJ again."
+        )
+        sys.exit(1)
+    if restore_state == "installed":
+        console.print(
+            "[yellow]A restore left old copies beside the index folder; `autodj doctor` can move "
+            "them out of the way.[/]"
+        )
+    try:
+        serve_lock = hold_serve_lock(active_dir)
+    except BackupError as exc:
+        console.print(f"[bold red]{escape(str(exc))}[/]")
+        sys.exit(1)
+    ctx.call_on_close(serve_lock.release)
+
+
 @cli.command("serve", cls=_ServeCommand)
 @click.option(
     "--seed",
@@ -1766,8 +1895,11 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         selected_index_name = index_name
     from autodj.index_manifest import IndexConsistencyError
 
+    active_dir = cfg.index.index_dir / selected_index_name
+    _claim_index_for_serve(ctx, active_dir)
+
     try:
-        sim = _load_index_for_serve(cfg, active_dir=cfg.index.index_dir / selected_index_name)
+        sim = _load_index_for_serve(cfg, active_dir=active_dir)
     except IndexConsistencyError as exc:
         console.print(f"[bold red]{escape(str(exc))}[/]")
         sys.exit(1)
