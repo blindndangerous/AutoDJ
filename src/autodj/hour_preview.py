@@ -217,7 +217,9 @@ def _preview_liner_group(
     from autodj.playout import liner_chain_placement, liner_release_frames
 
     sr = SAMPLE_RATE
-    chain, negative, zero = [], [], []
+    chain: list[tuple[Any, int, int, bool]] = []
+    negative: list[tuple[int, float, int]] = []
+    zero: list[tuple[int, int]] = []
     first_negative = False
     frames = main_frames = fit_main_frames = 0
     release = 0.0
