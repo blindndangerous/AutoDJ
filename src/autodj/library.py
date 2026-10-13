@@ -114,6 +114,18 @@ class LibraryManager:
         # the playable library without a file-system call per track.
         self._missing: frozenset[str] = frozenset()
         self._loaded_missing: frozenset[str] = frozenset()
+        # Called on the scan thread when a scan has finished and the library
+        # is refreshed, such as to forget the play dates of liners now gone.
+        self.on_scan_done: Callable[[], None] | None = None
+        # Whether a folder walk of the scan in progress hit an error (a
+        # subfolder it could not read): its tracks are then not marked gone,
+        # and the after-scan tidy-up does not run.
+        self._walk_failed = False
+        # Files a scan listed but could not resolve; never marked gone.
+        self._seen_unresolved: set[str] = set()
+        # Whether the scan in progress worked out which tracks are gone; the
+        # after-scan tidy-up runs only then.
+        self._reconciled = False
         # The music paths, in FAISS row order, of the vectors handed to sim.
         self._vector_paths: tuple[str, ...] | None = None
         self._entries: tuple[IndexEntry, ...] = ()
@@ -411,6 +423,15 @@ class LibraryManager:
         with self._lock:
             return record if _path(record["path"]) in self._by_path else None
 
+    def is_gone(self, path: str | Path) -> bool:
+        """Whether the latest scan found *path* gone from a folder that is there.
+
+        A file on a share that is not mounted is not gone: the scan marks a
+        file gone only when its folder is present and the file is not.
+        """
+        with self._lock:
+            return _path(path) in self._missing
+
     def add_ledger(self, station: str) -> StationLedger:
         """Keep another station's plays; :meth:`tick` writes them with the rest."""
         ledger = StationLedger(self.catalog, station, self.entry_for_path)
@@ -591,13 +612,14 @@ class LibraryManager:
             except OSError as exc:
                 with self._lock:
                     self._import_errors.append({"path": str(root), "error": str(exc)})
+                    self._walk_failed = True
                 continue
             allowed = formats
             if source["kind"] == "liner":
                 from autodj.liners import LINER_EXTS
 
                 allowed = set(LINER_EXTS)
-            for current, directories, files in os.walk(root):
+            for current, directories, files in os.walk(root, onerror=self._walk_error):
                 directories.sort()
                 if not source["recursive"]:
                     directories.clear()
@@ -607,8 +629,15 @@ class LibraryManager:
                     path = Path(current, name)
                     try:
                         path.resolve(strict=True).relative_to(resolved_root)
-                    except (OSError, ValueError):
+                    except ValueError:
                         # A file symlink may not expand the explicit source root.
+                        continue
+                    except OSError as exc:
+                        # Listed but not resolvable just now (a share flapping):
+                        # seen, so it is not marked gone, but not scanned.
+                        logger.debug("Library scan could not resolve %s: %s", path, exc)
+                        with self._lock:
+                            self._seen_unresolved.add(_path(path))
                         continue
                     normalized = _path(path)
                     # A registered liner root owns paths nested under music roots.
@@ -631,6 +660,13 @@ class LibraryManager:
             size and fingerprint and size == record["size"] and fingerprint == record["fingerprint"]
         )
 
+    def _walk_error(self, error: OSError) -> None:
+        """A folder the scan could not read: noted, and nothing is marked gone."""
+        logger.warning("Library scan could not read %s: %s", error.filename, error)
+        with self._lock:
+            self._import_errors.append({"path": str(error.filename), "error": str(error)})
+            self._walk_failed = True
+
     def _reconcile_moves(
         self, found: list[tuple[str, Path]], source_ids: set[str] | None = None
     ) -> None:
@@ -638,8 +674,17 @@ class LibraryManager:
 
         A record counts as gone only when a present folder this scan covers
         holds it, the scan did not find it, and it is not a file: a share
-        that is not mounted marks nothing gone.
+        that is not mounted marks nothing gone.  A scan whose walk could not
+        read a folder marks nothing gone either, since the tracks in it were
+        never seen.
         """
+        with self._lock:
+            walk_failed = self._walk_failed
+        if walk_failed:
+            logger.warning(
+                "Library scan: a folder could not be read, so no track is marked gone this time"
+            )
+            return
         coverage = Coverage(
             (source["path"], source["kind"], source["recursive"])
             for source in self.catalog.sources()
@@ -648,6 +693,8 @@ class LibraryManager:
         old = self.catalog.stored_entries()
         old_paths = {entry.path for _kind, entry in old}
         found_paths = {_path(path) for _kind, path in found}
+        with self._lock:
+            found_paths |= self._seen_unresolved
         missing = {
             entry.path
             for kind, entry in old
@@ -688,6 +735,7 @@ class LibraryManager:
             kept = {path for path in self._missing if not coverage.covered(path)}
             self._missing = frozenset(kept | missing)
             changed = self._missing != self._loaded_missing
+            self._reconciled = True
         if changed or moved:
             # Gone and moved tracks change now, not after the scan.
             self.refresh()
@@ -803,7 +851,11 @@ class LibraryManager:
         queued = self._scan_lock.locked()
         with self._lock:
             self._import_errors = []
+            self._walk_failed = False
+            self._seen_unresolved = set()
+            self._reconciled = False
         self._set_state(running=True, phase="discovering", done=0, total=0, current="")
+        completed = False
         try:
             found = self._scan_basic(source_ids)
             # Only Smooth and Stereo Tool use the stored measurement (and
@@ -858,9 +910,23 @@ class LibraryManager:
                         self._state["done"] = done
                         self._state["total"] = done + len(loudness)
             self._set_state(phase="complete")
+            completed = True
         finally:
             self.refresh()
             self._set_state(running=False, current="")
+            done_hook = self.on_scan_done
+            with self._lock:
+                clean = completed and not self._walk_failed and self._reconciled
+            if done_hook is not None and not clean:
+                logger.info(
+                    "Library scan: a folder could not be read or the scan stopped early; "
+                    "skipping the tidy-up"
+                )
+            elif done_hook is not None:
+                try:
+                    done_hook()
+                except Exception:
+                    logger.exception("Library: the after-scan tidy-up failed")
 
     def analysis_pending(self, force: bool = False) -> list[dict[str, Any]]:
         if not force:

@@ -44,6 +44,7 @@ from autodj.station_log import CURRENT_STATION, DEFAULT_SLUG
 
 if TYPE_CHECKING:
     from autodj._bridge import PlayerBridge
+    from autodj.breaks import BreakDesk
     from autodj.carts import StationCarts
     from autodj.clip_dates import LinerGate
     from autodj.config import AutoDJConfig
@@ -139,6 +140,11 @@ class StationPaths:
     def time_check_clips(self) -> Path:
         """Recorded time check clips: ``[time_checks] clips_folder`` or the default."""
         return Path(self._cfg.time_checks.clips_folder or self.state_dir / "time_checks")
+
+    @property
+    def announcements(self) -> Path:
+        """Breaks from the announcer program (#88), never in liner rotation."""
+        return self.state_dir / "announcements"
 
     @property
     def liner_dates(self) -> Path:
@@ -362,6 +368,7 @@ def start_server_audio_liners(
 
 def _liner_gate(bridge: PlayerBridge, paths: StationPaths) -> LinerGate:
     """The station's liner play dates, with the catalog naming registered liners."""
+    from autodj.categories import station_wall
     from autodj.clip_dates import LinerDates, LinerGate, station_today
 
     cfg = bridge.player._cfg
@@ -371,7 +378,94 @@ def _liner_gate(bridge: PlayerBridge, paths: StationPaths) -> LinerGate:
         record = library.catalog.record_for_path(path) if library is not None else None
         return str(record["id"]) if record else Path(path).name
 
-    return LinerGate(LinerDates(paths.liner_dates), lambda: station_today(cfg), liner_id)
+    return LinerGate(
+        LinerDates(paths.liner_dates),
+        lambda: station_today(cfg),
+        liner_id,
+        lambda at: station_wall(cfg, at).date(),
+    )
+
+
+#: A library (catalog) record ID: 32 hexadecimal digits.  A liner folder
+#: file name always has an extension, so the two never meet.
+_CATALOG_ID = re.compile(r"[0-9a-f]{32}")
+
+
+def prune_liner_dates(station: StationRuntime) -> list[str]:
+    """Forget the play dates of *station*'s liners that are gone; the IDs forgotten.
+
+    A liner deleted outside AutoDJ would otherwise keep its dates, and a new
+    file that took its name (or its catalog place) would start with them.
+    A registered liner is gone when the latest scan found its file missing
+    from a folder that is there; one in the liner folder, when the folder is
+    there and the file is not.  A share that is not mounted forgets nothing.
+    """
+    store = station.liner_gate.store
+    dates = store.all()
+    if not dates:
+        return []
+    library = station.bridge.library
+    # The liner folder, listed once.  A folder that cannot be listed (a share
+    # that is away, a moment of trouble) forgets nothing from it.
+    names: set[str] | None
+    try:
+        with os.scandir(station.paths.liners) as listing:
+            names = {item.name for item in listing if item.is_file()}
+    except OSError as exc:
+        logger.info(
+            "Station %s: liner folder not listed (%s); keeping its dates", station.slug, exc
+        )
+        names = None
+    file_keyed = [
+        liner_id
+        for liner_id in dates
+        if not _CATALOG_ID.fullmatch(liner_id) and Path(liner_id).name == liner_id
+    ]
+    if names is not None and not names and file_keyed:
+        # A readable but empty folder: a share can show one for a moment.
+        # Its dates go only when two scans in a row find it empty.
+        station.liner_folder_empty_scans = getattr(station, "liner_folder_empty_scans", 0) + 1
+        if station.liner_folder_empty_scans < 2:
+            logger.info(
+                "Station %s: the liner folder is empty; its liners' dates are kept until "
+                "the next scan finds it empty too",
+                station.slug,
+            )
+            names = None
+    elif names is not None:
+        station.liner_folder_empty_scans = 0
+    # Compared as the file system compares names (without case on Windows).
+    listed = {os.path.normcase(name) for name in names} if names is not None else None
+    gone = []
+    for liner_id in dates:
+        record = library.catalog.record_for_id(liner_id) if library is not None else None
+        if record is not None:
+            # A registered liner: gone when the scan found its file missing.
+            if (
+                record.get("kind") == "liner"
+                and library is not None
+                and library.is_gone(record["path"])
+            ):
+                gone.append(liner_id)
+        elif _CATALOG_ID.fullmatch(liner_id):
+            # A library ID without a record (a source removed, say): kept,
+            # because it is not a file name in the liner folder.
+            continue
+        elif (
+            listed is not None
+            and Path(liner_id).name == liner_id
+            and os.path.normcase(liner_id) not in listed
+        ):
+            gone.append(liner_id)  # one in the liner folder, gone from it
+    forgotten = store.forget(gone)
+    if forgotten:
+        logger.info(
+            "Station %s: forgot the play dates of %d liners that are gone: %s",
+            station.slug,
+            len(forgotten),
+            ", ".join(forgotten),
+        )
+    return forgotten
 
 
 def _registered_liners(
@@ -544,6 +638,7 @@ class StationRuntime:
     schedule: Scheduler
     time_checks: TimeChecks
     carts: StationCarts
+    breaks: BreakDesk
     # Pushes the state to this station's WebSocket clients once a second.
     broadcast: Callable[[], Coroutine[Any, Any, None]]
 
@@ -586,10 +681,11 @@ class StationRuntime:
         self.paths = paths if paths is not None else StationPaths.default(bridge.player._cfg)
         self.liner_gate = _liner_gate(bridge, self.paths)
         # The clockwheel's liner steps pass over liners outside their dates
-        # and other stations' liners.  A plain function, not a bound
-        # method, so copying the player's settings never copies the store
-        # (a deep copy copies a bound method's station with it).
-        bridge.player.liner_filter = lambda entries: self._playable_liners(entries)
+        # (now, or at the pick's time *at*) and other stations' liners.  A
+        # plain function, not a bound method, so copying the player's
+        # settings never copies the store (a deep copy copies a bound
+        # method's station with it).
+        bridge.player.liner_filter = lambda entries, at=None: self._playable_liners(entries, at)
         self.nowplaying = NowPlaying(bridge, timezone=timezone)
         self.webhooks: WebhookWorker = WebhookWorker(getattr(bridge.player._cfg, "webhooks", ()))
         self.listener_access: ListenerAccess | None = (
@@ -621,12 +717,14 @@ class StationRuntime:
         # Whether a liner registered in the shared library is this station's
         # (set by the registry); with one station, every liner is.
         self.owns_liner: Callable[[str], bool] = _every_liner
+        # Scans in a row that found the liner folder empty (see prune_liner_dates).
+        self.liner_folder_empty_scans = 0
 
-    def _playable_liners(self, entries: Sequence[Any]) -> Sequence[Any]:
-        """This station's liners among *entries* that may play today."""
+    def _playable_liners(self, entries: Sequence[Any], at: float | None = None) -> Sequence[Any]:
+        """This station's liners among *entries* that may play now, or at Unix time *at*."""
         owns = self.owns_liner
         owned = [entry for entry in entries if owns(entry.path)]
-        return self.liner_gate.playable(entries if len(owned) == len(entries) else owned)
+        return self.liner_gate.playable(entries if len(owned) == len(entries) else owned, at)
 
     @property
     def name(self) -> str:
@@ -708,6 +806,12 @@ class StationRuntime:
 
     async def start(self) -> None:
         """Start the schedule, the stream or liners, the WebSocket push and webhooks."""
+        desk = getattr(self, "breaks", None)
+        if desk is not None:
+            try:
+                await asyncio.to_thread(desk.maintain)
+            except Exception:
+                logger.exception("Break upkeep failed")
         self.stopped = False
         bridge = self.bridge
         cfg = self.cfg
@@ -753,6 +857,8 @@ class StationRuntime:
             bridge.liner_scheduler.announcement = self.time_checks.due_audio
             # Automatic liners pass over the ones outside their play dates.
             bridge.liner_scheduler.play_dates = self.liner_gate.refusal
+            # A talk-up planned ahead is judged by the day it airs.
+            bridge.liner_scheduler.play_dates_at = self.liner_gate.refusal
         self._broadcast_task = asyncio.create_task(self.broadcast())
         self.webhooks.start()
 
@@ -907,6 +1013,12 @@ class StationRuntime:
                 )
             except Exception:
                 logger.exception("Time check tick failed")
+            desk = getattr(self, "breaks", None)
+            try:
+                if desk is not None and desk.needs_maintenance():
+                    await asyncio.to_thread(desk.maintain)
+            except Exception:
+                logger.exception("Break upkeep failed")
 
 
 # ---------------------------------------------------------------------------
@@ -1522,8 +1634,17 @@ class SharedLibrary:
     async def start(self) -> None:
         """Start the library's scan and its two-second tick."""
         if self.library is not None:
+            self.library.on_scan_done = self._scan_done
             self.library.start_scan()
             self._ticker = asyncio.create_task(self._tick())
+
+    def _scan_done(self) -> None:
+        """After a scan (on its thread): forget the play dates of liners now gone."""
+        for station in self._stations.all():
+            try:
+                prune_liner_dates(station)
+            except Exception:
+                logger.exception("Station %s: could not tidy the liner dates", station.slug)
 
     async def close(self, writers_quiesced: bool) -> bool:
         """Close the DJ-meta cache if no writer remains, then the library.

@@ -604,7 +604,7 @@ def test_a_stations_clockwheel_picks_only_its_own_liners(tmp_path: Path) -> None
     owned = SimpleNamespace(path="mine.mp3")
     other = SimpleNamespace(path="theirs.mp3")
     runtime = StationRuntime.__new__(StationRuntime)
-    runtime.liner_gate = SimpleNamespace(playable=lambda entries: entries)  # type: ignore[assignment]
+    runtime.liner_gate = SimpleNamespace(playable=lambda entries, _at=None: entries)  # type: ignore[assignment]
     runtime.owns_liner = lambda path: path == "mine.mp3"
     assert runtime._playable_liners([owned, other]) == [owned]
     everything = [owned, other]

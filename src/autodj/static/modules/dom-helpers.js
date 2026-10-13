@@ -138,3 +138,18 @@ export function nextRowControl(list, selector, index, fallback) {
   const controls = list.querySelectorAll(selector);
   return controls[Math.min(index, controls.length - 1)] || fallback;
 }
+
+// The station's calendar day at *now*, as YYYY-MM-DD, or "" when the page
+// does not know the station time zone.  Pages left open past midnight use it
+// to see that the station's day has changed (liners, carts).
+export function stationDay(timeZone, now = new Date()) {
+  if (!timeZone) return "";
+  try {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+      timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+    }).formatToParts(now).map(({ type, value }) => [type, value]));
+    return `${parts.year}-${parts.month}-${parts.day}`;
+  } catch {
+    return "";
+  }
+}

@@ -15,9 +15,9 @@ from autodj.analysis_queue import WORKER_ACTIVE_SECONDS, WORKER_LEASE_SECONDS
 from autodj.config import ServerConfig
 from autodj.indexer import ANALYSIS_VERSION, FEATURE_DIM, analysis_identity
 from autodj.library import LibraryManager
-from autodj.machine_tokens import SCOPE_ANALYSIS_WORKER
+from autodj.machine_tokens import SCOPE_ANALYSIS_WORKER, SCOPE_ANNOUNCER
 from autodj.server import create_app
-from autodj.worker_api import _RateLimiter, decode_vector
+from autodj.worker_api import RateLimiter, decode_vector
 from tests.unit.test_library import Similarity, make_config, make_entry
 
 HTTPS = "https://127.0.0.1:8080"
@@ -387,7 +387,7 @@ def test_rate_and_size_limits(server, monkeypatch):
         headers={"Content-Type": "application/json"},
     )
     assert huge.status_code == 413
-    monkeypatch.setattr(_RateLimiter, "retry_after", lambda self, key: 7)
+    monkeypatch.setattr(RateLimiter, "retry_after", lambda self, key: 7)
     limited = server.call("POST", "/api/worker/claim", secret, json={})
     assert limited.status_code == 429
     assert limited.headers["retry-after"] == "7"
@@ -395,7 +395,7 @@ def test_rate_and_size_limits(server, monkeypatch):
 
 def test_rate_limiter_counts_a_sliding_window():
     now = [0.0]
-    limiter = _RateLimiter(2, 60.0, monotonic=lambda: now[0])
+    limiter = RateLimiter(2, 60.0, monotonic=lambda: now[0])
     assert limiter.retry_after("a") is None
     assert limiter.retry_after("a") is None
     assert limiter.retry_after("a") == 60
@@ -438,8 +438,15 @@ def test_settings_create_list_and_revoke_tokens(server):
     secret = created.json()["secret"]
     token_id = created.json()["token"]["token_id"]
     listing = server.client.get("/api/machine-tokens").json()
-    assert listing["scopes"] == [{"id": SCOPE_ANALYSIS_WORKER, "label": "Analysis worker"}]
+    assert listing["scopes"][0] == {
+        "id": SCOPE_ANALYSIS_WORKER,
+        "label": "Analysis worker",
+        "station": False,
+    }
+    assert {"id": SCOPE_ANNOUNCER, "station": True}.items() <= listing["scopes"][1].items()
+    assert [s["slug"] for s in listing["stations"]] == ["default"]
     assert [t["name"] for t in listing["tokens"]] == ["Alienware"]
+    assert listing["tokens"][0]["station"] is None
     assert secret not in str(listing)
     claim(server, secret, batch=2)
     origin = {"Origin": "http://127.0.0.1:8080"}
@@ -457,6 +464,26 @@ def test_settings_create_list_and_revoke_tokens(server):
         "/api/machine-tokens", json={"name": "x", "scopes": ["admin"]}, headers=origin
     )
     assert unknown.status_code == 422
+
+
+def test_settings_create_an_announcer_token_bound_to_a_station(server):
+    origin = {"Origin": "http://127.0.0.1:8080"}
+
+    def create(**body):
+        return server.client.post(
+            "/api/machine-tokens", json={"name": "radiodj", **body}, headers=origin
+        )
+
+    made = create(scopes=[SCOPE_ANNOUNCER], station="default")
+    assert made.status_code == 201, made.text
+    assert made.json()["token"]["station"] == "default"
+    # An announcer token needs a station that exists; a worker token takes none.
+    assert create(scopes=[SCOPE_ANNOUNCER]).status_code == 422
+    assert create(scopes=[SCOPE_ANNOUNCER], station="nightowl").status_code == 422
+    assert create(scopes=[SCOPE_ANALYSIS_WORKER], station="default").status_code == 422
+    # It cannot use the worker routes.
+    claimed = server.call("POST", "/api/worker/claim", made.json()["secret"], json={})
+    assert claimed.status_code == 401
 
 
 def test_settings_show_workers_and_the_queue(server):
