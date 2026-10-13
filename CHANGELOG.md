@@ -184,7 +184,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the default station's keep their names. A folder two stations share is stored once.
   Restore puts each station's files back in its own folder, and refuses a backup holding a
   station the configuration does not define ("add [stations.<slug>] to config.toml first")
-  before it changes anything.
+  before it changes anything. A shared folder restored where the configuration keeps it apart is
+  restored once, with a warning. Folders that hold one another, or a station's own folder, are
+  refused, and a station's `liners_folder` or `clips_folder` that holds its own folder is a
+  configuration error.
+- Backup and restore are safer for every installation (#70). Restore is all or nothing: every
+  file and folder it replaces is set aside first and put back if any replacement fails, so a
+  failure part way no longer leaves a mix of old and new files. It checks the archive's size
+  against a 256 GiB cap and the free space before unpacking, and refuses file names Windows
+  reserves for devices or that end in a dot or a space. A backup copies every station's state
+  files under the index's lock, so they are one moment's. A link that leaves its folder,
+  including a Windows junction, makes the backup fail with its name instead of copying outside
+  files (#193); a link within the folder is saved as a file. Restore refuses links in an archive
+  and destinations that a link takes elsewhere. Hard-linked files are refused because their other
+  names may be outside the backup folder.
 - `autodj doctor` checks every station (#70). Each other station gets its own lines, starting
   "Station <slug>," (and a `station` field in `--json`): its folder, saved settings, stream,
   relays, time checks and voice packs, DMCA mode, recording folder and liner folder.

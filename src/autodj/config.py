@@ -2114,6 +2114,8 @@ def _check_station_conflicts(root: AutoDJConfig, specs: Iterable[StationSpec]) -
                 f"{cfg.recording.folder}; give each station its own recording.folder"
             )
         folders[folder] = slug
+        if slug != "default":
+            _check_own_folder(slug, cfg)
         for relay in cfg.stream.relays.values():
             target = _relay_target(relay)
             other = targets.get(target)
@@ -2123,6 +2125,30 @@ def _check_station_conflicts(root: AutoDJConfig, specs: Iterable[StationSpec]) -
                     f"{relay.mount or ''}; each station needs its own relay target"
                 )
             targets[target] = slug
+
+
+def _check_own_folder(slug: str, cfg: AutoDJConfig) -> None:
+    """Refuse a station folder setting that holds the station's own state folder.
+
+    Restoring that folder would replace the station's settings, schedule and
+    carts with it, and its files would be backed up twice.
+
+    Raises:
+        ValueError: Naming the setting and the folders.
+    """
+    state = os.path.normcase(os.path.abspath(Path(cfg.index.active_dir) / "stations" / slug))
+    for setting, value in (
+        ("playback.liners_folder", cfg.playback.liners_folder),
+        ("time_checks.clips_folder", cfg.time_checks.clips_folder),
+    ):
+        if not value:
+            continue
+        folder = os.path.normcase(os.path.abspath(value))
+        if state == folder or state.startswith(folder.rstrip(os.sep) + os.sep):
+            raise ValueError(
+                f"[stations.{slug}] {setting} {value} holds the station's own folder {state}; "
+                "choose a folder beside it"
+            )
 
 
 def _relay_target(relay: RelayConfig) -> tuple[object, ...]:

@@ -945,11 +945,14 @@ def cmd_restore(ctx: click.Context, archive: Path, force: bool) -> None:
     from autodj.doctor import render_text, run_doctor
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    warnings: list[str] = []
     try:
-        restored = restore_backup(cfg, archive, force=force)
+        restored = restore_backup(cfg, archive, force=force, warnings=warnings)
     except BackupError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"Restored {restored} files.")
+    for warning in warnings:
+        click.echo(f"Warning: {warning}")
     report = run_doctor(cfg)
     click.echo(render_text(report))
     if report.exit_code:

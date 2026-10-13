@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -155,14 +158,50 @@ def test_a_shared_liner_folder_is_stored_once(tmp_path: Path) -> None:
     assert (shared / "id.mp3").read_bytes() == b"both"
 
 
-def test_a_station_folder_holding_another_is_refused(tmp_path: Path) -> None:
+def test_a_station_folder_holding_its_own_state_folder_is_refused_by_the_config(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match=r"\[stations.nightowl\] playback.liners_folder .* holds"):
+        _config(
+            tmp_path,
+            extra=f'\n[stations.nightowl.playback]\nliners_folder = "{tmp_path.as_posix()}/index"\n',
+        )
+
+
+@pytest.mark.parametrize(
+    ("default", "owl"),
+    [("shared/default", "shared"), ("shared", "shared/owl")],
+    ids=["station holds the default's", "default holds the station's"],
+)
+def test_folders_that_hold_each_other_are_refused_at_backup(
+    tmp_path: Path, default: str, owl: str
+) -> None:
     cfg = _config(
         tmp_path,
-        extra=(f'\n[stations.nightowl.playback]\nliners_folder = "{tmp_path.as_posix()}/index"\n'),
+        extra=(
+            f'\n[playback]\nliners_folder = "{(tmp_path / default).as_posix()}"\n'
+            f'\n[stations.nightowl.playback]\nliners_folder = "{(tmp_path / owl).as_posix()}"\n'
+        ),
     )
 
-    with pytest.raises(BackupError, match="stations/nightowl/liners folder"):
+    with pytest.raises(BackupError, match="overlap"):
         create_backup(cfg, tmp_path / "elsewhere" / "backup.zip", force=False)
+
+
+def test_a_folder_holding_a_state_folder_is_refused_at_restore(tmp_path: Path) -> None:
+    # The default station's liner folder set to the index folder itself: a
+    # restore of liners would replace the whole index folder.
+    cfg = _config(
+        tmp_path,
+        stations="",
+        extra=f'\n[playback]\nliners_folder = "{(tmp_path / "index" / "default").as_posix()}"\n',
+    )
+    archive = _archive(tmp_path / "b.zip", {"liners/id.mp3": b"x"})
+
+    with pytest.raises(BackupError, match="overlap"):
+        restore_backup(cfg, archive, force=True)
+    assert (cfg.index.active_dir).is_dir()
+    assert not (cfg.index.active_dir / "id.mp3").exists()
 
 
 def test_backup_refuses_a_destination_inside_a_station_folder(tmp_path: Path) -> None:
@@ -269,7 +308,7 @@ def test_restore_refuses_two_folders_that_land_in_one_place(tmp_path: Path) -> N
         stations=["nightowl"],
     )
 
-    with pytest.raises(BackupError, match="would both restore into"):
+    with pytest.raises(BackupError, match="overlap, so restoring one would replace the other"):
         restore_backup(cfg, archive, force=True)
 
     assert not shared.exists()
@@ -329,15 +368,244 @@ def test_restore_replaces_only_the_station_files_in_the_archive(tmp_path: Path) 
     assert (folder / "carts.json").read_bytes() == b"current carts"
 
 
+# ---------------------------------------------------------------------------
+# Restore is all or nothing; backups hold one moment and nothing from outside
+# ---------------------------------------------------------------------------
+
+
+def _leftovers(root: Path) -> list[str]:
+    return sorted(
+        str(path.relative_to(root))
+        for path in root.rglob("*")
+        if ".old-" in path.name or ".restore-" in path.name
+    )
+
+
+@pytest.mark.parametrize("failing_put", [1, 3, 6, 12])
+def test_a_failed_restore_puts_everything_back(tmp_path: Path, failing_put: int) -> None:
+    """Folders and single files replaced before the failure come back as they were."""
+    cfg = _config(tmp_path)
+    _fill(cfg)
+    archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
+    # The live data now differs from the backup in every file.
+    current: dict[Path, bytes] = {}
+    for path in [*cfg.index.active_dir.rglob("*"), *(cfg.index.index_dir / "profiles").rglob("*")]:
+        if path.is_file() and path.suffix != ".lock" and path.name != "library.db":
+            path.write_bytes(b"current " + path.name.encode())
+            current[path] = path.read_bytes()
+
+    from autodj import backup as backup_module
+
+    real_put = backup_module._Swap.put
+    calls = {"n": 0}
+
+    def put(self, source, target):
+        calls["n"] += 1
+        if calls["n"] == failing_put:
+            raise OSError("disk went away")
+        return real_put(self, source, target)
+
+    with (
+        patch.object(backup_module._Swap, "put", put),
+        pytest.raises(BackupError, match="nothing was changed: disk went away"),
+    ):
+        restore_backup(cfg, archive, force=True)
+
+    for path, data in current.items():
+        assert path.read_bytes() == data, path
+    assert _leftovers(tmp_path / "index") == []
+
+
+def test_a_restore_that_cannot_undo_says_where_the_old_files_are(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    _fill(cfg)
+    archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
+    from autodj import backup as backup_module
+
+    real_put = backup_module._Swap.put
+    calls = {"n": 0}
+
+    def put(self, source, target):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("disk went away")
+        return real_put(self, source, target)
+
+    with (
+        patch.object(backup_module._Swap, "put", put),
+        patch.object(backup_module._Swap, "undo", lambda self: ["could not move x back"]),
+        pytest.raises(BackupError, match=r"could not put everything back.*\.old-<id>"),
+    ):
+        restore_backup(cfg, archive, force=True)
+
+
+def test_a_successful_restore_leaves_nothing_aside(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    _fill(cfg)
+    archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
+    restore_backup(cfg, archive, force=True)
+    assert _leftovers(tmp_path / "index") == []
+
+
+def test_state_files_are_one_moment_with_the_index(tmp_path: Path) -> None:
+    """Edits made while the folders are read do not reach the archive's state files."""
+    cfg = _config(tmp_path)
+    written = _fill(cfg)
+    owl = _station_dir(cfg, "nightowl") / "web_state.json"
+    from autodj import backup as backup_module
+
+    real = backup_module._folder_files
+
+    def late_edit(root, pattern="**/*"):
+        owl.write_bytes(b"edited after the snapshot")
+        (cfg.index.active_dir / "schedule.json").write_bytes(b"edited too")
+        return real(root, pattern)
+
+    with patch.object(backup_module, "_folder_files", late_edit):
+        archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
+    with zipfile.ZipFile(archive) as opened:
+        assert opened.read("stations/nightowl/index/web_state.json") == written[owl]
+        assert opened.read("index/schedule.json") == written[cfg.index.active_dir / "schedule.json"]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "liners/CON",
+        "liners/con.mp3",
+        "liners/Nul.txt",
+        "liners/aux",
+        "liners/sub/PRN.wav",
+        "liners/COM1",
+        "liners/lpt9.mp3",
+        "stations/nightowl/liners/com3.mp3",
+        "liners/trailing.",
+        "liners/trailing ",
+        "liners/dir./x.mp3",
+        "liners/tab\tname.mp3",
+    ],
+)
+def test_restore_refuses_names_windows_cannot_hold(tmp_path: Path, name: str) -> None:
+    cfg = _config(tmp_path)
+    archive = _archive(tmp_path / "evil.zip", {name: b"x"}, stations=["nightowl"])
+
+    with pytest.raises(BackupError, match="unsafe file name"):
+        restore_backup(cfg, archive, force=True)
+
+
+@pytest.mark.parametrize("name", ["liners/console.mp3", "liners/com.mp3", "liners/lpt10.mp3"])
+def test_names_that_only_look_like_devices_are_fine(tmp_path: Path, name: str) -> None:
+    cfg = _config(tmp_path)
+    archive = _archive(tmp_path / "ok.zip", {name: b"x"})
+    restore_backup(cfg, archive, force=True)
+    assert (cfg.index.active_dir / name).read_bytes() == b"x"
+
+
+def test_restore_refuses_an_archive_bigger_than_the_cap(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    archive = _archive(tmp_path / "big.zip", {"liners/a.mp3": b"x" * 4096})
+    from autodj import backup as backup_module
+
+    with (
+        patch.object(backup_module, "MAX_RESTORE_BYTES", 1024),
+        pytest.raises(BackupError, match=r"more than the 0 GiB AutoDJ restores"),
+    ):
+        restore_backup(cfg, archive, force=True)
+    assert not (cfg.index.active_dir / "liners").exists()
+
+
+def test_restore_refuses_an_archive_bigger_than_the_free_space(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    archive = _archive(tmp_path / "big.zip", {"liners/a.mp3": b"x" * 4096})
+    usage = shutil.disk_usage(tmp_path)._replace(free=1024)
+
+    with (
+        patch("autodj.backup.shutil.disk_usage", return_value=usage),
+        pytest.raises(BackupError, match="not enough free space to restore"),
+    ):
+        restore_backup(cfg, archive, force=True)
+    assert not (cfg.index.active_dir / "liners").exists()
+
+
+def test_a_shared_folder_restored_where_it_is_no_longer_shared_is_warned_about(
+    tmp_path: Path,
+) -> None:
+    shared = tmp_path / "old" / "liners"
+    old = _config(
+        tmp_path / "old",
+        extra=(
+            f'\n[playback]\nliners_folder = "{shared.as_posix()}"\n'
+            f'\n[stations.nightowl.playback]\nliners_folder = "{shared.as_posix()}"\n'
+        ),
+    )
+    shared.mkdir()
+    (shared / "id.mp3").write_bytes(b"both")
+    archive = create_backup(old, tmp_path / "backup.zip", force=False)
+    with zipfile.ZipFile(archive) as opened:
+        assert json.loads(opened.read("manifest.json"))["shared"] == {
+            "stations/nightowl/liners": "liners"
+        }
+
+    apart = _config(tmp_path / "new")
+    warnings: list[str] = []
+    restore_backup(apart, archive, force=True, warnings=warnings)
+
+    assert (apart.index.active_dir / "liners" / "id.mp3").read_bytes() == b"both"
+    assert len(warnings) == 1
+    assert "stations/nightowl/liners shared the liners folder" in warnings[0]
+    assert str(_station_dir(apart, "nightowl") / "liners") in warnings[0]
+
+    # Restored where they are still shared, nothing is said.
+    warnings.clear()
+    restore_backup(old, archive, force=True, warnings=warnings)
+    assert warnings == []
+
+
+def test_the_restore_command_prints_the_warnings(tmp_path: Path) -> None:
+    from click.testing import CliRunner
+
+    from autodj.cli import cli
+
+    cfg = _config(tmp_path)
+    archive = _archive(tmp_path / "b.zip", {"liners/a.mp3": b"x"})
+
+    def restore(cfg, archive, *, force, warnings):
+        warnings.append("In this backup a folder was shared.")
+        return 1
+
+    with (
+        patch("autodj.cli._load_cfg_or_exit", return_value=cfg),
+        patch("autodj.backup.restore_backup", restore),
+        patch("autodj.doctor.run_doctor") as doctor,
+    ):
+        doctor.return_value.exit_code = 0
+        doctor.return_value.checks = ()
+        result = CliRunner().invoke(cli, ["restore", str(archive)])
+    assert "Warning: In this backup a folder was shared." in result.output
+
+
+# ---------------------------------------------------------------------------
+# Links (#193): a link that leaves its folder is refused; one inside is fine
+# ---------------------------------------------------------------------------
+
+
 def _link(link: Path, target: Path, *, directory: bool = False) -> None:
     try:
         link.symlink_to(target, target_is_directory=directory)
-    except OSError as exc:
+    except OSError as exc:  # Windows without the symlink privilege
         pytest.skip(f"symlinks unavailable: {exc}")
 
 
+def _junction(link: Path, target: Path) -> None:
+    if os.name != "nt":
+        pytest.skip("junctions are a Windows feature")
+    import _winapi
+
+    _winapi.CreateJunction(str(target), str(link))
+
+
 @pytest.mark.parametrize("station", ["default", "nightowl"])
-def test_backup_refuses_external_file_links(tmp_path: Path, station: str) -> None:
+def test_backup_refuses_a_file_link_that_leaves_its_folder(tmp_path: Path, station: str) -> None:
     cfg = _config(tmp_path)
     base = cfg.index.active_dir if station == "default" else _station_dir(cfg, station)
     liners = base / "liners"
@@ -348,9 +616,11 @@ def test_backup_refuses_external_file_links(tmp_path: Path, station: str) -> Non
     link = liners / "linked.wav"
     _link(link, secret)
     archive = tmp_path / "backup.zip"
+
     with pytest.raises(BackupError, match="outside backup folder"):
         create_backup(cfg, archive, force=False)
     assert not archive.exists()
+
     link.unlink()
     create_backup(cfg, archive, force=False)
     with zipfile.ZipFile(archive) as opened:
@@ -358,20 +628,23 @@ def test_backup_refuses_external_file_links(tmp_path: Path, station: str) -> Non
         assert all(opened.read(name) != b"private" for name in opened.namelist())
 
 
-def test_backup_keeps_in_root_file_links_as_audio(tmp_path: Path) -> None:
+def test_backup_keeps_a_file_link_inside_its_folder(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     liners = cfg.index.active_dir / "liners"
     liners.mkdir()
     original = liners / "original.wav"
     original.write_bytes(b"audio")
     _link(liners / "alias.wav", original)
+
     archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
+
     with zipfile.ZipFile(archive) as opened:
         assert opened.read("liners/alias.wav") == b"audio"
 
 
+@pytest.mark.parametrize("kind", ["symlink", "junction"])
 @pytest.mark.parametrize("station", ["default", "nightowl"])
-def test_backup_refuses_linked_subfolders(tmp_path: Path, station: str) -> None:
+def test_backup_refuses_a_linked_subfolder(tmp_path: Path, station: str, kind: str) -> None:
     cfg = _config(tmp_path)
     base = cfg.index.active_dir if station == "default" else _station_dir(cfg, station)
     liners = base / "liners"
@@ -379,13 +652,18 @@ def test_backup_refuses_linked_subfolders(tmp_path: Path, station: str) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "private.wav").write_bytes(b"private")
-    _link(liners / "linked", outside, directory=True)
+    if kind == "junction":
+        _junction(liners / "linked", outside)
+    else:
+        _link(liners / "linked", outside, directory=True)
+
     with pytest.raises(BackupError, match="linked backup folder"):
         create_backup(cfg, tmp_path / "backup.zip", force=False)
+    assert (outside / "private.wav").read_bytes() == b"private"
 
 
 @pytest.mark.parametrize("station", ["default", "nightowl"])
-def test_state_links_cannot_copy_or_restore_external_data(tmp_path: Path, station: str) -> None:
+def test_state_links_cannot_copy_or_restore_outside_data(tmp_path: Path, station: str) -> None:
     cfg = _config(tmp_path)
     base = cfg.index.active_dir if station == "default" else _station_dir(cfg, station)
     base.mkdir(parents=True, exist_ok=True)
@@ -396,6 +674,7 @@ def test_state_links_cannot_copy_or_restore_external_data(tmp_path: Path, statio
     external = tmp_path / "private.json"
     external.write_text("private")
     _link(state, external)
+
     with pytest.raises(BackupError, match="outside backup folder"):
         create_backup(cfg, tmp_path / "unsafe.zip", force=False)
     with pytest.raises(BackupError, match="outside backup folder"):
@@ -403,55 +682,37 @@ def test_state_links_cannot_copy_or_restore_external_data(tmp_path: Path, statio
     assert external.read_text() == "private"
 
 
-def test_backup_refuses_windows_junction(tmp_path: Path) -> None:
-    import os
-    import subprocess
-
-    if os.name != "nt":
-        pytest.skip("Windows junction test")
+def test_restore_refuses_a_link_stored_in_the_archive(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    liners = _station_dir(cfg, "nightowl") / "liners"
-    liners.mkdir(parents=True)
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (outside / "private.wav").write_bytes(b"private")
-    junction = liners / "linked"
-    result = subprocess.run(
-        ["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
-        capture_output=True,
-    )
-    assert result.returncode == 0, result.stderr
-    try:
-        with pytest.raises(BackupError, match="linked backup folder"):
-            create_backup(cfg, tmp_path / "backup.zip", force=False)
-        assert (outside / "private.wav").read_bytes() == b"private"
-    finally:
-        junction.rmdir()
-
-
-def test_restore_refuses_archive_symlink_entries(tmp_path: Path) -> None:
-    import stat
-
-    cfg = _config(tmp_path)
-    archive = tmp_path / "link.zip"
-    name = "liners/id.wav"
-    info = zipfile.ZipInfo(name)
-    info.create_system = 3
-    info.external_attr = (stat.S_IFLNK | 0o777) << 16
-    with zipfile.ZipFile(archive, "w") as opened:
-        opened.writestr(info, "../../private.txt")
-        opened.writestr(
+    path = tmp_path / "evil.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        info = zipfile.ZipInfo("liners/link.wav")
+        info.external_attr = 0o120777 << 16
+        archive.writestr(info, "/etc/passwd")
+        archive.writestr(
             "manifest.json",
-            json.dumps(
-                {
-                    "autodj_version": current_version(),
-                    "files": [name],
-                }
-            ),
+            json.dumps({"autodj_version": current_version(), "files": ["liners/link.wav"]}),
         )
+
     with pytest.raises(BackupError, match="linked file in archive"):
-        restore_backup(cfg, archive, force=True)
-    assert not (cfg.index.active_dir / name).exists()
+        restore_backup(cfg, path, force=True)
+
+
+def test_a_junction_replaced_by_a_restore_is_removed_as_a_link(tmp_path: Path) -> None:
+    """Deleting what a restore set aside never walks into a junction's target."""
+    cfg = _config(tmp_path, stations="")
+    real = tmp_path / "real-liners"
+    real.mkdir()
+    (real / "keep.wav").write_bytes(b"keep")
+    _junction(cfg.index.active_dir / "liners", real)
+    archive = _archive(tmp_path / "b.zip", {"liners/new.wav": b"new"})
+
+    restore_backup(cfg, archive, force=True)
+
+    assert (cfg.index.active_dir / "liners" / "new.wav").read_bytes() == b"new"
+    assert not (cfg.index.active_dir / "liners").is_junction()
+    assert (real / "keep.wav").read_bytes() == b"keep"
+    assert _leftovers(tmp_path / "index") == []
 
 
 @pytest.mark.parametrize("kind", ["liner", "state", "preset"])
@@ -461,12 +722,15 @@ def test_backup_refuses_hard_linked_files(tmp_path: Path, kind: str) -> None:
     external.write_bytes(b"private")
     relative = {"liner": "liners/alias.wav", "state": "web_state.json"}
     path = (
-        (cfg.index.active_dir / relative[kind])
+        cfg.index.active_dir / relative[kind]
         if kind != "preset"
         else cfg.index.active_dir.parent / "stereo-tool-presets/alias.sts"
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.hardlink_to(external)
+    try:
+        path.hardlink_to(external)
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable: {exc}")
     archive = tmp_path / "unsafe.zip"
     with pytest.raises(BackupError, match="hard-linked backup file"):
         create_backup(cfg, archive, force=False)
