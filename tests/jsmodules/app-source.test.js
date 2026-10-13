@@ -10,7 +10,46 @@ const moduleMocks = [
   "../../src/autodj/static/modules/media-session.js",
   "../../src/autodj/static/modules/audio-engine.js",
 ];
-const hashListeners = [];
+// Each test imports a fresh copy of app.js into the same document, and
+// nothing unloads the copies before it.  Their document and window
+// listeners and their timers outlived the test, so by the middle of this
+// file one click on a Track info button was answered by forty apps at
+// once, and opening it ran past vi.waitFor's one second on a busy CI
+// runner.  setupApp records what each copy installs; afterEach removes it.
+const appCleanups = [];
+
+function trackAppGlobals() {
+  if (appCleanups.length) return;
+  for (const target of [window, document]) {
+    const own = Object.hasOwn(target, "addEventListener");
+    const original = target.addEventListener;
+    const tracked = function (type, listener, options) {
+      appCleanups.push(() => target.removeEventListener(type, listener, options));
+      return original.call(this, type, listener, options);
+    };
+    target.addEventListener = tracked;
+    appCleanups.push(() => {
+      if (target.addEventListener !== tracked) return;
+      if (own) target.addEventListener = original;
+      else delete target.addEventListener;
+    });
+  }
+  for (const [set, clear] of [["setTimeout", "clearTimeout"], ["setInterval", "clearInterval"]]) {
+    const original = globalThis[set];
+    const cancel = globalThis[clear];
+    // A fake clock installed after this restores the wrapper on
+    // useRealTimers, so afterEach puts the original back only then.
+    const tracked = function (...args) {
+      const id = original.apply(this, args);
+      appCleanups.push(() => cancel(id));
+      return id;
+    };
+    globalThis[set] = tracked;
+    appCleanups.push(() => {
+      if (globalThis[set] === tracked) globalThis[set] = original;
+    });
+  }
+}
 
 function jsonResponse(body, status = 200) {
   return new globalThis.Response(JSON.stringify(body), {
@@ -52,11 +91,7 @@ async function setupApp({
   version = { version: "test", commit: "test", built_at: "2026-01-01T00:00:00Z" },
 } = {}) {
   vi.resetModules();
-  const addListener = window.addEventListener;
-  window.addEventListener = function (type, listener, options) {
-    if (type === "hashchange") hashListeners.push(listener);
-    return addListener.call(this, type, listener, options);
-  };
+  trackAppGlobals();
   const dialog = installDocument();
   const linerModule = await vi.importActual(moduleMocks[1]);
   const stopAllDecks = audio.stopAllDecks || vi.fn();
@@ -168,12 +203,10 @@ async function setupApp({
   try {
     await vi.waitFor(() => expect(WebSocketImpl).toHaveBeenCalledOnce());
   } catch (error) {
-    window.addEventListener = addListener;
     throw new Error(`${error.message}; connection=${document.querySelector("#conn-status")?.textContent}; requests=${fetchImpl.mock.calls.map(([url]) => url).join(",")}`, {
       cause: error,
     });
   }
-  window.addEventListener = addListener;
   return {
     bumpLinerTrackCount,
     dialog,
@@ -192,14 +225,22 @@ async function setupApp({
 }
 
 afterEach(() => {
-  for (const listener of hashListeners.splice(0)) window.removeEventListener("hashchange", listener);
   // A switch remembers its station per browser (#70); every test starts fresh.
   try {
     globalThis.localStorage?.removeItem("autodj.station");
   } catch {
     // No storage here: nothing was remembered.
   }
+  // Real timers first: a fake clock put in after setupApp hands back the
+  // tracking wrapper, which the cleanups then remove.
   vi.useRealTimers();
+  for (const cleanup of appCleanups.splice(0)) {
+    try {
+      cleanup();
+    } catch {
+      // A fake clock's timer died with the clock.
+    }
+  }
   vi.unstubAllGlobals();
   for (const modulePath of moduleMocks) vi.doUnmock(modulePath);
   document.body.replaceChildren();
