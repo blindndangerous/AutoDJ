@@ -2061,12 +2061,9 @@ def _break_upload_cap(stations: StationRegistry) -> int:
 def _share_station(stations: StationRegistry, station: StationRuntime) -> None:
     """Give *station* what it shares with the other stations.
 
-    One Stereo Tool at a time across stations, and each station's own
-    liners out of the shared library.
+    Each station's own liners out of the shared library.
     """
     slug = station.slug
-    station.bridge.stereo_tool_elsewhere = lambda: stations.stereo_tool_user(exclude=slug)
-    station.bridge.stereo_tool_lock = stations.stereo_tool_lock
     station.owns_liner = functools.partial(stations.owns_liner, slug)
     if len(stations.slugs()) > 1:
         station.station_list = stations.summaries
@@ -2179,14 +2176,7 @@ def _extra_station(
         player.on_track_started = bridge.on_track_started
         bridge.load_persistent_state()
         player.configure_clock()
-        # Checked and marked as one step, so a station switching to Stereo
-        # Tool while this one starts sees it.
-        if (other := registry.claim_stereo_tool(slug, cfg)) is not None:
-            raise StationControlError(
-                f"{spec.name} is set to use Stereo Tool, which is already processing {other}. "
-                "AutoDJ runs one Stereo Tool at a time (one licence): set this station's "
-                "loudness processing to Smooth."
-            )
+        registry.mark_starting(slug, cfg)
         # The mastering process and the player thread start from here; a
         # failure after that stops them again before it is raised.
         player_thread: threading.Thread | None = None

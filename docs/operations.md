@@ -1425,17 +1425,31 @@ station name, two stations sharing a recording folder or relay target, or a stat
 `config.toml` does not load at all, so doctor reports it as a configuration failure and names the
 problem.
 
-### Stereo Tool: one station at a time
+### Stereo Tool instances and licences
 
-One Stereo Tool licence covers one running copy, so AutoDJ lets only one station use Stereo Tool
-at a time. A second station set to `loudness_processing = "stereotool"` does not start while
-another station uses it, and choosing Stereo Tool in a station's settings, or applying a profile
-that does, is refused with a message naming the station that has it. A station that has just
-left Stereo Tool still counts until its current song ends. Use `"smooth"` for the other
-stations; with a second licence, a later version can lift this limit.
+Each station owns its own mastering process and may run Stereo Tool at the same time as other
+stations. For independent instances, Thimeo instructs users to make separately named executable
+copies. Set each station's existing `playback.stereotool_path` to its own executable
+in that station's configuration. A shared default executable path is not a guarantee that a
+particular Stereo Tool build supports independent instances. For example:
 
-Stereo Tool presets are shared by every station, and each station chooses its own. A preset that
-any station uses, running or stopped, cannot be deleted; the message names the station.
+```toml
+[stations.nightowl.playback]
+loudness_processing = "stereotool"
+stereotool_path = "C:/Radio/Stereo Tool Night Owl.exe"
+```
+
+Thimeo requires a separate licence for each radio-processing instance; one key does not license
+multiple simultaneous stations. Check [Thimeo's installation guidance](https://www.thimeo.com/stereo-tool/installed/)
+and [licensing terms](https://www.thimeo.com/stereo-tool/licenses/) for current details. AutoDJ does
+not manage licences or claim that unrestricted broadcast use is free.
+
+Each running station adds a real-time processor and encoder. Test CPU load and underruns while
+all intended stations run; AutoDJ does not impose a machine-independent station limit.
+
+Stereo Tool preset files are shared by all stations, and each station selects its own preset. A
+preset selected by any station, running or stopped, cannot be deleted; the message names the
+station using it.
 
 ### The station switcher
 
