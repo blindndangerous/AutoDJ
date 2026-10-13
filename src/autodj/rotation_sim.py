@@ -844,7 +844,7 @@ def _simulate(
     schedule = _Schedule(source.events, source.timezone, start)
     initial_mode = "random" if player._pure_shuffle else player._cfg.playback.pick_mode
     initial_clock = (player._clock or {}).get("name") if initial_mode == "clock" else None
-    categories = player._category_members()
+    categories = player._category_members() or {}
 
     def station_mode() -> bool:
         return player._cfg.playback.transition_mode == "saved_points"

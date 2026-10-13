@@ -31,6 +31,19 @@ def genres(value: Any) -> list[str]:
     return result
 
 
+def validate_category_condition(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a reference to a saved music category."""
+    category = value.get("category")
+    if (
+        set(value) != {"field", "category"}
+        or value.get("field") != "category"
+        or not isinstance(category, str)
+        or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", category)
+    ):
+        raise ValueError("A category condition must name a saved category by its ID")
+    return {"field": "category", "category": category}
+
+
 def validate_metadata_condition(value: Mapping[str, Any]) -> dict[str, Any]:
     """Validate and normalize a single metadata condition."""
     if not isinstance(value, Mapping):

@@ -1415,8 +1415,16 @@ class Player:
         # Judged by the day the liner airs, before the song being picked.
         playable_liners = liner_filter(liners, context.at) if liner_filter is not None else liners
         categories = self._category_members()
+        self._clock_category_error = "Categories could not be read" if categories is None else None
+        categories = categories or {}
         beets_items: Mapping[str, Mapping[str, Any]] | None = None
         condition_errors = {}
+        if self._clock_category_error:
+            for index, slot in enumerate(slots):
+                if slot.kind == "category" or any(
+                    condition["field"] == "category" for condition in slot.conditions
+                ):
+                    condition_errors[index] = self._clock_category_error
         fields = {
             condition["name"]
             for slot in slots
@@ -1444,8 +1452,8 @@ class Player:
         else:
             self._clock_condition_errors = ()
         cache = getattr(self, "_clock_condition_cache", None)
-        if cache is None or not cache.current(slots, entries, liners, beets_items):
-            cache = ConditionPaths(slots, entries, liners, beets_items)
+        if cache is None or not cache.current(slots, entries, liners, beets_items, categories):
+            cache = ConditionPaths(slots, entries, liners, beets_items, categories)
             self._clock_condition_cache = cache
 
         closed_steps = self._closed_clock_steps(context, step_hours)
@@ -1588,6 +1596,11 @@ class Player:
         except Exception:
             sources = []
         category_ids = {step["category"]} if step["type"] == "category" else set()
+        category_ids.update(
+            condition["category"]
+            for condition in step.get("conditions", ())
+            if condition.get("field") == "category"
+        )
         category_index = getattr(self._library, "categories", None)
         try:
             categories = (
@@ -1662,13 +1675,8 @@ class Player:
         parts.append(base[begin:])
         return tuple(chain.from_iterable(parts))
 
-    def _category_members(self) -> dict[str, tuple[str, frozenset[str]]]:
-        """Each rotation category's name and songs, or none when they cannot be read.
-
-        The category index works them out again only when the categories,
-        beets, a playlist file or the library changed.  A failure leaves the
-        category steps empty, so the clock moves on to its other steps.
-        """
+    def _category_members(self) -> dict[str, tuple[str, frozenset[str]]] | None:
+        """Return category membership, or None when the index cannot be read."""
         index = getattr(self._library, "categories", None)
         if index is None:
             return {}
@@ -1676,27 +1684,26 @@ class Player:
             members: dict[str, tuple[str, frozenset[str]]] = index.members()
         except Exception:
             logger.exception("Clock: the rotation categories could not be read")
-            return {}
+            return None
         return members
 
     def _empty_category_fallback(
         self, current: IndexEntry | None, context: _PickContext
     ) -> IndexEntry | None:
-        """A song from the whole library when a clock with category steps found none.
+        """A song from the whole library when legacy category steps found none.
 
         A category emptied by a failed playlist script or a deleted category
         must not silence a clockwheel made of category steps, so the pick
         falls back as the other pick modes do (the clock keeps its place).
-        A clock of folder and track steps only, or with conditions, is left
-        as it was, unless its songs are there and only their categories'
-        days and hours (dayparting) hold them back.
+        A clock with folders, tracks or explicit conditions is left as it was,
+        unless dayparting alone holds its songs back.
         """
         slots = getattr(self, "_clock_slots", None) or ()
         # Dayparting alone emptied the clock: its songs exist but are outside
         # their hours, so an allowed song plays, whatever the steps are.
         if not getattr(self, "_clock_closed_only", False):
             if any(getattr(slot, "conditions", ()) for slot in slots):
-                return None  # Explicit conditions must not fall back to unfiltered music.
+                return None
             if not any(getattr(slot, "kind", None) == "category" for slot in slots):
                 return None
         reason = ValueError(f"the clockwheel has no song to play: {self._clock_status}")

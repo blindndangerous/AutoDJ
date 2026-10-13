@@ -18,15 +18,16 @@ from tests.unit.test_clockwheel_store import _player, clock
 YEAR = {"field": "year", "operator": "between", "value": 1990, "upper": 1999}
 
 
-def test_conditions_save_and_load_into_player_without_a_folder(tmp_path):
+@pytest.mark.parametrize("condition", [YEAR, {"field": "category", "category": "gold"}])
+def test_conditions_save_and_load_into_player_without_a_folder(tmp_path, condition):
     saved = ClockwheelStore(tmp_path / "clockwheels").save(
-        clock([{"type": "music", "conditions": [YEAR], "match": "any"}])
+        clock([{"type": "music", "conditions": [condition], "match": "any"}])
     )
     assert saved["steps"][0]["match"] == "any"
     player = _player(tmp_path, {"name": "Morning"}, [])
     Player.configure_clock(player)
     slot = player._clock_slots[0]
-    assert slot.conditions == (YEAR,)
+    assert slot.conditions == (condition,)
     assert slot.match == "any" and not slot.folder
     assert slot.selection == "least_recent" and slot.enforce_rules
 

@@ -2272,9 +2272,6 @@ Step types:
 - **Music** or **Voice liner** matching the conditions in the step. Choose least recently played
   or random, and whether to follow the repeat rules. A liner uses its saved overlap points with
   the next music step; two liner steps cannot be next to each other.
-- **Music from a category**: a rotation category such as A, B or "Remembering the 2000s" (see
-  [Rotation categories](#rotation-categories)). It chooses the least recently played or a random
-  song of the category and follows or ignores the repeat rules, like a folder step.
 - **A specific track**, by its path inside a registered music folder. It follows the repeat rules;
   when they hold it back, the clockwheel moves on to the next step.
 - **Switch preset**: the next song is picked and mixed with that preset.
@@ -2288,6 +2285,14 @@ B) and year before 2000` are not supported yet.
 
 Available conditions:
 
+- **Category** (Music steps): choose a saved [rotation category](#rotation-categories). With
+  Match all, a song must belong to every selected category and meet the other conditions. With
+  Match any, belonging to any selected category or matching another condition is enough. For
+  example, Category Gold and BPM above 100 narrows Gold to faster songs; Category Gold or
+  Category Current hits combines those groups. A song matching several conditions is included
+  once, so it gets no extra chance of being picked. Category hours still apply even when another
+  condition also matches the song. Categories are music groups, so this condition is not offered
+  for voice liners.
 - **Folder**: a registered music or liner folder, or a subfolder such as `Rock/Live`. Include
   subfolders applies to that condition. The registered folder must include subfolders before a
   condition can use one of them.
@@ -2310,9 +2315,16 @@ a step that needs it. If it becomes unavailable during playback, that step is sk
 status message. Other valid steps can still play.
 
 Repeat rules apply after the conditions have selected their pool. Relaxing repeats never removes
-those conditions. If no step can supply a song, a clock containing conditions does not fall back
-to unfiltered music. Existing folder steps still work and open as one folder condition; editing
-one saves it in the new form. Category steps keep their saved category and selection rules.
+those conditions. When explicit conditions have no matches, including category conditions, the
+step is skipped and does not use unfiltered music. The existing dayparting-only fallback remains
+when matched songs are held back only by their allowed days or hours. Unedited legacy category
+steps keep their old empty-pool fallback; editing and saving one converts it to an explicit
+category condition. Existing folder steps also open in the Music or Voice liner form and keep
+their selection and repeat-rule settings.
+
+A deleted category skips the affected step, even with Match any, and the status says why. An
+existing category with no songs contributes no matches; other Match any conditions can still
+supply a song. Saving or activating a step with a missing category asks you to choose a saved one.
 
 The editor lists numbered steps with their names as Edit buttons. With focus in the step list,
 Up and Down move to the previous or next step name. Left and Right move between the actions in a
@@ -2352,8 +2364,8 @@ leaves the clock off while the station keeps playing:
     {"type": "liner", "source": "<library folder ID>", "folder": "",
      "recursive": false, "selection": "random", "enforce_rules": false},
     {"type": "track", "source": "<library folder ID>", "path": "Album/Song.flac"},
-    {"type": "category", "category": "<category ID>",
-     "selection": "least_recent", "enforce_rules": true},
+    {"type": "music", "conditions": [{"field": "category", "category": "<category ID>"}],
+     "match": "all", "selection": "least_recent", "enforce_rules": true},
     {"type": "settings", "preset": "winddown"}
   ],
   "resync_minutes": [0]
@@ -2402,7 +2414,9 @@ press **Activate**.
 A rotation category is a named set of songs that clockwheel steps pick from, the way professional
 stations schedule music: rotation A for current hits, B and C for recurrents, D for gold, or a
 themed set such as "Remembering the 2000s". There is no separate weighted pick mode; how often a
-category plays is set by how many steps of the clockwheel use it.
+category plays is set by how many steps of the clockwheel use it. Choose **Music**, add a
+**Category** condition, and select its name. You can use several categories or combine a category
+with folder and metadata conditions in the same step; the category itself stays unchanged.
 
 Keep them in the **Library tools** tab, **Categories**, next to the clockwheels that use them. The
 list says how many songs each category holds, how many playlist lines match no library track,
@@ -2428,7 +2442,8 @@ A category's songs come from one of two sources:
   - A bare word matches artist, title, album, album artist, genre or comments.
   - Every term must match. Regular expressions (`field::re`), exact matches (`field:=x`),
     alternatives with commas, sorting, date ranges, path queries and plugin queries are refused
-    with a message that names the term; make a category per alternative instead.
+    with a message that names the term; make a category per alternative and combine them with
+    Match any in the clockwheel step.
 - **An M3U or M3U8 file** in the playlists folder (`[library] playlists_folder`, by default
   `playlists/` in the active index folder). Each line that is not a comment is matched to a
   library song by its full path, or by a path from the playlist's own folder or from
@@ -2449,13 +2464,13 @@ few file-time checks before each clockwheel pick tell it; the songs are never re
 every pick. When a playlist is being rewritten or beets is busy importing, a category keeps the
 songs it held last time and the server log says why.
 
-**At play time.** A category step picks like a folder step: it follows the repeat rules when the
-step says so, relaxing them rather than going silent, and in DMCA mode it keeps the DMCA limits;
-when no song of the category keeps them, a song from the whole library that does plays instead,
-as for folder steps. When a step's category has no songs or was deleted, the server log
-says so once and the clockwheel moves on to its next step. When no step of a clockwheel with
-category steps has a song to play, the station plays a song from the whole library, as the other
-pick modes do when they cannot pick, rather than going silent; the clockwheel keeps its place.
+**At play time.** An explicit category condition picks from its category members and follows the
+step's repeat rules, relaxing them rather than going silent; in DMCA mode it keeps the DMCA
+limits. If no song matches its conditions, the step is skipped, including when a Match any step's
+category is missing or empty. An unedited legacy category step keeps its old whole-library
+fallback when all steps fail; saving it from the editor converts it to an explicit condition.
+The dayparting-only fallback also remains when matched songs are held back only by their allowed
+days or hours. The clockwheel keeps its place in each case.
 
 **Dayparting.** Under **When the songs may play**, a category can allow its songs only on chosen
 days, only between two times (**Allowed from** and **Allowed until**), or both, such as Friday and

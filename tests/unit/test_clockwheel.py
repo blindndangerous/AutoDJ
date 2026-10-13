@@ -244,6 +244,27 @@ def test_clock_step_snapshot_keeps_the_selected_step_and_display_labels():
     }
 
 
+def test_clock_step_snapshot_keeps_category_condition_labels():
+    from types import SimpleNamespace
+
+    from autodj.player import Player
+
+    step = {
+        "type": "music",
+        "match": "any",
+        "conditions": [{"field": "category", "category": "favorites"}],
+    }
+    player = object.__new__(Player)
+    player._library = SimpleNamespace(
+        catalog=SimpleNamespace(sources=lambda: []),
+        categories=SimpleNamespace(
+            categories=lambda: [SimpleNamespace(id="favorites", name="Favorites")]
+        ),
+    )
+    snapshot = player._clock_step_snapshot(0, [step])
+    assert snapshot["categories"] == [{"id": "favorites", "name": "Favorites"}]
+
+
 def test_runtime_picker_checks_rules_in_least_recent_order():
     now = datetime(2025, 1, 2)
     entries = [

@@ -33,14 +33,21 @@ class ClockSlot:
         if not isinstance(self.conditions, (list, tuple)) or len(self.conditions) > 32:
             raise ValueError("A slot allows a list of at most 32 conditions")
         if self.conditions:
-            from autodj.clock_conditions import validate_metadata_condition
+            from autodj.clock_conditions import (
+                validate_category_condition,
+                validate_metadata_condition,
+            )
 
             if self.kind not in {"music", "liner"} or self.folder:
                 raise ValueError("Only music or liner slots can use conditions instead of a folder")
             for condition in self.conditions:
                 if not isinstance(condition, dict):
                     raise ValueError("Each condition must be an object")
-                if condition.get("field") == "folder":
+                if condition.get("field") == "category":
+                    if self.kind != "music":
+                        raise ValueError("Category conditions are only available for music steps")
+                    validate_category_condition(condition)
+                elif condition.get("field") == "folder":
                     if set(condition) != {"field", "folder", "recursive"}:
                         raise ValueError("Invalid resolved folder condition")
                     ClockSlot(folder=condition["folder"], recursive=condition["recursive"])
@@ -236,7 +243,10 @@ def validate_clock(slots: Sequence[ClockSlot]) -> list[ClockSlot]:
 
 
 def condition_paths(
-    slot: ClockSlot, entries: Sequence[Any], beets: Mapping[str, Mapping[str, Any]] | None = None
+    slot: ClockSlot,
+    entries: Sequence[Any],
+    beets: Mapping[str, Mapping[str, Any]] | None = None,
+    categories: Mapping[str, tuple[str, AbstractSet[str]]] | None = None,
 ) -> set[str]:
     """The paths of *entries* that pass a conditions slot's Match all or Match any."""
     from autodj.catalog import normalize_path
@@ -248,6 +258,9 @@ def condition_paths(
             matched = _slot_entries(
                 ClockSlot(folder=condition["folder"], recursive=condition["recursive"]), entries
             )
+        elif condition["field"] == "category":
+            _, members = (categories or {}).get(condition["category"], ("", frozenset()))
+            matched = [entry for entry in entries if entry.path in members]
         elif condition["field"] == "beets" and beets:
             test = condition_matcher(condition)
             matched = [
@@ -269,12 +282,13 @@ def condition_paths(
 
 
 class ConditionPaths:
-    """Each conditions step's matching paths, worked out once per library and Beets data.
+    """Each conditions step's matching paths, cached until its source data changes.
 
     Build one from the music and liner entries a pick draws its pools from
     and the Beets values it reads; a pick then only looks each path up.  The
     entries are compared by identity, so a new one is needed whenever the
-    library publishes new entries or Beets is read again.
+    library publishes new entries or Beets is read again. Category memberships
+    are compared by value because the category index returns a new mapping per pick.
     """
 
     def __init__(
@@ -283,8 +297,10 @@ class ConditionPaths:
         entries: Sequence[Any],
         liners: Sequence[Any],
         beets: Mapping[str, Mapping[str, Any]] | None,
+        categories: Mapping[str, tuple[str, AbstractSet[str]]] | None = None,
     ) -> None:
         self._key = (slots, entries, liners, beets)
+        self._categories = categories
         self._paths: dict[int, frozenset[str]] = {}
 
     def current(
@@ -293,9 +309,10 @@ class ConditionPaths:
         entries: Sequence[Any],
         liners: Sequence[Any],
         beets: Mapping[str, Mapping[str, Any]] | None,
+        categories: Mapping[str, tuple[str, AbstractSet[str]]] | None = None,
     ) -> bool:
         """Whether this was built from these very slots, entries and Beets values."""
-        return all(
+        return self._categories == categories and all(
             old is new for old, new in zip(self._key, (slots, entries, liners, beets), strict=True)
         )
 
@@ -306,15 +323,20 @@ class ConditionPaths:
             slots, entries, liners, beets = self._key
             slot = slots[index]
             pool = liners if slot.kind == "liner" else entries
-            found = self._paths[index] = frozenset(condition_paths(slot, pool, beets))
+            found = self._paths[index] = frozenset(
+                condition_paths(slot, pool, beets, self._categories)
+            )
         return found
 
 
 def _slot_entries(
-    slot: ClockSlot, entries: Sequence[Any], beets: Mapping[str, Mapping[str, Any]] | None = None
+    slot: ClockSlot,
+    entries: Sequence[Any],
+    beets: Mapping[str, Mapping[str, Any]] | None = None,
+    categories: Mapping[str, tuple[str, AbstractSet[str]]] | None = None,
 ) -> list[Any]:
     if slot.conditions:
-        found_paths = condition_paths(slot, entries, beets)
+        found_paths = condition_paths(slot, entries, beets, categories)
         return [entry for entry in entries if entry.path in found_paths]
     root = _normalized(slot.folder)
     separator = "/" if root.startswith("/") and not root.startswith("//") else "\\"
@@ -380,6 +402,11 @@ def pick_slot(
     pending_liner_requires_following = False
     pending_liner_index = None
     preset = None
+    closed_paths = {
+        path
+        for category in (closed_categories or {})
+        for path in (categories or {}).get(category, ("", frozenset()))[1]
+    }
     # Build the normalized lookup lazily for direct callers without a shared one.
     played = normalized_history
 
@@ -473,12 +500,25 @@ def pick_slot(
                     pending_liner_index,
                 )
             continue
+        missing = next(
+            (
+                c["category"]
+                for c in slot.conditions
+                if c["field"] == "category" and c["category"] not in (categories or {})
+            ),
+            None,
+        )
+        if missing is not None:
+            skipped.append(f"category {missing} in step {index + 1}: the category no longer exists")
+            continue
         pool = liners if slot.kind == "liner" else entries
+        if slot.conditions and slot.kind == "music" and closed_paths:
+            pool = [entry for entry in pool if entry.path not in closed_paths]
         if slot.conditions and condition_cache is not None:
             step_paths = condition_cache.paths(index)
             matches = [entry for entry in pool if entry.path in step_paths]
         else:
-            matches = _slot_entries(slot, pool, beets)
+            matches = _slot_entries(slot, pool, beets, categories)
         selected, reason = choose(
             slot,
             matches,

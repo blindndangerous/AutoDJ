@@ -48,6 +48,10 @@ function describeSelection(step, sources, categories) {
         const folder = condition.folder || (source ? lastPart(source.path) : "a folder that is no longer registered");
         return `${folder}${condition.recursive ? " (with subfolders)" : ""}`;
       }
+      if (condition.field === "category") {
+        const category = categories.find((item) => item.id === condition.category);
+        return category ? `category ${category.name}` : "a category that no longer exists";
+      }
       const field = condition.field === "beets" ? `Beets ${beetsFieldName(condition.name)}`
         : condition.field === "duration" ? "Duration (seconds)"
           : condition.field === "bpm" ? "BPM"
