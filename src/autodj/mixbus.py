@@ -93,6 +93,9 @@ class RenderedTrack:
             voice starts and where its speech ends.  A render with breaks
             keeps its next track whatever the queue does, because the
             break names it.
+        intro_events: ``(start, intro_id, end, label)`` for the intro
+            matched to *next_entry* (#127) mixed into the handoff: where its
+            voice starts and its speech ends in *audio*, and its label.
     """
 
     entry: IndexEntry
@@ -116,6 +119,7 @@ class RenderedTrack:
     next_entry_offset: int = 0
     liner_events: tuple[tuple[int, IndexEntry, bool], ...] = ()
     break_events: tuple[tuple[int, str, int], ...] = ()
+    intro_events: tuple[tuple[int, str, int, str], ...] = ()
     reserved_liners: tuple[IndexEntry, ...] = ()
     next_reserved_liners: tuple[IndexEntry, ...] = ()
     loudness_processing: str = ""

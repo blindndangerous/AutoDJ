@@ -167,7 +167,7 @@ def test_clock_step_provenance_follows_each_rendered_track(station, monkeypatch)
         )
     )
 
-    def choose(_current, _context):
+    def choose(_current, _context, **_kwargs):
         player._chosen_clock_step = next(steps)
         return b if player._pending_entry is a else voice, "clock", (), None, ""
 
@@ -423,7 +423,7 @@ def test_clock_revision_snapshot_survives_edit_during_audio_render(station, monk
     player._set_render_cursor(a, 0, "clock", clock_cursor=0, clock_name="Morning", clock_revision=6)
     entered_render, finish_render = threading.Event(), threading.Event()
 
-    def choose(*_args):
+    def choose(*_args, **_kwargs):
         player._chosen_clock_revision = player._clock_revision
         player._chosen_clock_step = None
         return b, "clock", (), 1, ""
@@ -1353,7 +1353,7 @@ def test_nonclock_station_pick_does_not_hold_up_track_start(station, monkeypatch
     started = player._render_track(b, a, 0)
     searching, release = threading.Event(), threading.Event()
 
-    def choose(*_args):
+    def choose(*_args, **_kwargs):
         searching.set()
         assert release.wait(5)
         return b, "least_recent", (), None, ""
