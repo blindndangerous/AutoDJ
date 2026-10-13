@@ -16,6 +16,7 @@ from autodj.repeat_settings import RepeatRule, RepeatSettings
 from autodj.runtime_state import (
     STATE_VERSION,
     load_into_bridge,
+    migrate_state_file,
     save_from_player,
     state_file_for,
 )
@@ -292,6 +293,18 @@ def test_first_save_after_v1_keeps_original_backup(tmp_path: Path) -> None:
     path.write_text('{"schema_version":1,"changed":true}', encoding="utf-8")
     save_from_player({"preset": "newer"}, tmp_path)
     assert backup.read_bytes() == original.encode("utf-8")
+
+
+def test_state_migration_rejects_non_integer_current_version(tmp_path: Path) -> None:
+    original = b'{"schema_version":2.0}'
+    path = tmp_path / "web_state.json"
+    path.write_bytes(original)
+
+    with pytest.raises(ValueError, match=r"unsupported schema_version 2\.0"):
+        migrate_state_file(path, apply=False)
+
+    assert path.read_bytes() == original
+    assert not path.with_name("web_state.json.v1.bak").exists()
 
 
 def test_failed_v1_backup_prevents_overwrite(tmp_path: Path, monkeypatch, caplog) -> None:
