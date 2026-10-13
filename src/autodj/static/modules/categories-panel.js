@@ -14,12 +14,15 @@
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
+import { describeConditions, NUMERIC_OPERATORS, TEXT_OPERATORS } from "./clockwheel-step.js";
+import { parsePointTime } from "./library-folders.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 const POLL_MS = 15000;
 const EXAMPLES_SHOWN = 5;
 const FIELD_IDS = {
   name: "categories-name", query: "categories-query", playlist: "categories-playlist", source: "categories-source-query",
+    conditions: "categories-filter-add",
   days: "categories-day-0", hours_from: "categories-hours-from", hours_until: "categories-hours-until",
   not_before: "categories-not-before", not_after: "categories-not-after",
 };
@@ -40,8 +43,10 @@ export function countsText(counts) {
 }
 
 // What one saved category is, for its list item.
-export function describeCategory(category) {
-  const source = category.source === "m3u" ? `playlist ${category.playlist}` : `query ${category.query}`;
+export function describeCategory(category, folders = []) {
+  const source = category.source === "m3u" ? `playlist ${category.playlist}`
+    : category.source === "filters" ? `filters: ${describeConditions(category.conditions, category.match, folders)}`
+      : `query ${category.query}`;
   const sentences = [`${category.name}: ${countsText(category)}.`, `From ${source}.`];
   // Dayparting and the season, in words; "outside its hours now" (or its
   // dates) is said, not only shown.
@@ -72,6 +77,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
   const match = el("categories-match");
   const errorText = el("categories-form-error");
   const legend = el("categories-form-legend");
+  const filterHost = el("categories-filter-conditions");
   if (!panel || !list || !status || !form || !addButton || !nameInput || !queryInput || !playlistSelect || !match) {
     return { refresh: async () => {}, clearProtectedData() {}, resume() {}, destroy() {} };
   }
@@ -85,11 +91,17 @@ export function installCategoriesPanel({ document: doc = document, request = req
   let timer = null;
   let generation = 0;
   let suspended = false;
+  let filterId = 0;
+  let countTimer = null;
+  let countGeneration = 0;
+  let countRunning = false;
+  let pendingCount = null;
 
   const current = (epoch, mine) => !suspended && generation === mine && isAuthenticatedRequestCurrent(epoch);
+  const countCurrent = (epoch, mine) => !suspended && countGeneration === mine && isAuthenticatedRequestCurrent(epoch);
   const say = (message, error = false) => announceStatus(status, message, { force: true, tone: error ? "error" : "info" });
   const send = (url, method, body) => request(url, body === undefined ? { method } : { method, headers: JSON_HEADERS, body: JSON.stringify(body) });
-  const source = () => (el("categories-source-m3u")?.checked ? "m3u" : "query");
+  const source = () => el("categories-source-filters")?.checked ? "filters" : el("categories-source-m3u")?.checked ? "m3u" : "query";
   const byId = (id) => data.categories.find((category) => category.id === id);
 
   // ---- The list --------------------------------------------------------
@@ -107,7 +119,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
   }
 
   function renderList() {
-    const signature = JSON.stringify(data.categories);
+    const signature = JSON.stringify([data.categories, data.folders]);
     if (signature === listSignature) return;
     listSignature = signature;
     // The same categories in the same order: change only the words of each
@@ -118,7 +130,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
         && rows.every((row, i) => row.dataset.id === data.categories[i].id
           && row.dataset.name === data.categories[i].name)) {
       rows.forEach((row, i) => {
-        const text = describeCategory(data.categories[i]);
+      const text = describeCategory(data.categories[i], data.folders);
         const span = row.firstElementChild;
         if (span && span.textContent !== text) span.textContent = text;
       });
@@ -136,7 +148,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
       item.dataset.id = category.id;
       item.dataset.name = category.name; // the buttons' names say it
       const text = doc.createElement("span");
-      text.textContent = describeCategory(category);
+      text.textContent = describeCategory(category, data.folders);
       item.append(text, " ", rowButton(category, "edit", "Edit"), " ", rowButton(category, "delete", "Delete"));
       return item;
     }));
@@ -179,6 +191,112 @@ export function installCategoriesPanel({ document: doc = document, request = req
     const kind = source();
     el("categories-query-field")?.toggleAttribute("hidden", kind !== "query");
     el("categories-playlist-field")?.toggleAttribute("hidden", kind !== "m3u");
+    el("categories-filters-field")?.toggleAttribute("hidden", kind !== "filters");
+  }
+
+  function filterRow(value = {}) {
+    const row = doc.createElement("fieldset");
+    row.className = "clock-condition";
+    const legend = doc.createElement("legend");
+    legend.textContent = `Condition ${filterHost.children.length + 1}`;
+    row.append(legend);
+    const control = (labelText, tag = "input", options = []) => {
+      const id = `category-condition-${++filterId}`;
+      const label = doc.createElement("label");
+      const node = doc.createElement(tag);
+      label.htmlFor = id;
+      label.textContent = labelText;
+      node.id = id;
+      if (tag === "select") for (const [v, text] of options) {
+        const option = doc.createElement("option"); option.value = v; option.textContent = text; node.append(option);
+      }
+      row.append(label, node);
+      return node;
+    };
+    const fields = ["folder", "year", "bpm", "duration", "artist", "title", "album", "genre", "beets"];
+    const field = control("Condition type", "select", fields.map((v) => [v, v === "bpm" ? "BPM" : v[0].toUpperCase() + v.slice(1)]));
+    const folderChoices = (data.folders || []).map((x) => [x.id, x.path]);
+    if (value.source && !folderChoices.some(([id]) => id === value.source)) folderChoices.unshift([value.source, `${value.source} (unavailable)`]);
+    const sourceSelect = control("Library folder", "select", folderChoices);
+    const folder = control("Subfolder"); folder.type = "text";
+    const recursive = control("Include subfolders"); recursive.type = "checkbox";
+    const operator = control("Operator", "select");
+    const input = control("Value"); input.type = "text";
+    const upper = control("Upper value"); upper.type = "text";
+    const genreChoices = (data.genres || []).map((v) => [v, v]);
+    if (value.field === "genre" && value.value && !genreChoices.some(([v]) => v === value.value)) genreChoices.unshift([value.value, `${value.value} (unavailable)`]);
+    const genre = control("Genre", "select", genreChoices);
+    const beetsChoices = (data.beets_fields || []).map((v) => [v, v]);
+    if (value.field === "beets" && value.name && !beetsChoices.some(([v]) => v === value.name)) beetsChoices.unshift([value.name, `${value.name} (unavailable)`]);
+    const name = control("Beets field", "select", beetsChoices);
+    const remove = doc.createElement("button"); remove.type = "button"; remove.textContent = `Remove condition ${filterHost.children.length + 1}`; row.append(remove);
+    field.value = value.field || (sourceSelect.options.length ? "folder" : "title");
+    sourceSelect.value = value.source || sourceSelect.options[0]?.value || "";
+    folder.value = value.folder || ""; recursive.checked = Boolean(value.recursive);
+    input.value = value.value ?? ""; upper.value = value.upper ?? "";
+    genre.value = value.field === "genre" ? value.value || "" : ""; name.value = value.name || name.options[0]?.value || "";
+    let selected = value.operator || "";
+    const sync = () => {
+      const f = field.value, isFolder = f === "folder", numeric = ["year", "bpm", "duration"].includes(f);
+      for (const node of [sourceSelect, folder, recursive]) node.hidden = node.previousElementSibling.hidden = !isFolder;
+      genre.hidden = genre.previousElementSibling.hidden = f !== "genre";
+      name.hidden = name.previousElementSibling.hidden = f !== "beets";
+      let choices = TEXT_OPERATORS;
+      if (isFolder || f === "genre") choices = [["is", "is"], ["is_not", "is not"]];
+      else if (numeric) choices = NUMERIC_OPERATORS;
+      else if (f === "beets") choices = [["is", "Is (text)"], ...TEXT_OPERATORS.slice(1), ["eq", "Equals (number)"], ...NUMERIC_OPERATORS.slice(1)];
+      const previous = operator.value || selected;
+      operator.replaceChildren(...choices.map(([v, text]) => { const option = doc.createElement("option"); option.value = v; option.textContent = text; return option; }));
+      operator.value = choices.some(([v]) => v === previous) ? previous : choices[0][0]; selected = operator.value;
+      input.hidden = input.previousElementSibling.hidden = isFolder || f === "genre";
+      upper.hidden = upper.previousElementSibling.hidden = !["between", "outside"].includes(operator.value);
+    };
+    field.addEventListener("change", sync); operator.addEventListener("change", sync);
+    remove.addEventListener("click", () => { row.remove(); [...filterHost.children].forEach((item, i) => { item.querySelector("legend").textContent = `Condition ${i + 1}`; item.querySelector("button").textContent = `Remove condition ${i + 1}`; }); });
+    sync();
+    return { row, field, sourceSelect, folder, recursive, operator, input, upper, genre, name };
+  }
+
+  function renderFilterConditions(conditions = []) {
+    filterHost?.replaceChildren();
+    for (const value of conditions.length ? conditions : [{}]) filterHost.append(filterRow(value).row);
+  }
+
+  function readFilterConditions(interactive = true) {
+    return [...filterHost.children].map((row) => {
+      const selects = [...row.querySelectorAll("select")], field = selects[0].value, operator = selects[2].value;
+      const invalid = (control, message) => {
+        if (interactive) { control.setAttribute("aria-invalid", "true"); control.focus(); }
+        throw Object.assign(new Error(message), { field: "conditions" });
+      };
+      if (field === "folder") {
+        const sub = row.querySelector('input[type="text"]');
+        const folder = sub.value.trim().replaceAll("\\", "/").replace(/^[/\\]+|[/\\]+$/g, "");
+        if (!selects[1].value) invalid(selects[1], "Choose a registered music folder.");
+        if (folder && (folder.split("/").some((part) => !part || part === "." || part === "..") || folder.includes(":"))) invalid(sub, 'The subfolder must stay inside its library folder, with no "..".');
+        return { field, source: selects[1].value, folder, recursive: row.querySelector('input[type="checkbox"]').checked, ...(operator === "is_not" ? { operator } : {}) };
+      }
+      if (field === "genre") {
+        if (!selects[3].value) invalid(selects[3], "Choose a genre.");
+        return { field, operator, value: selects[3].value };
+      }
+      const inputs = [...row.querySelectorAll('input[type="text"]')], raw = inputs[1].value.trim();
+      if (!raw) invalid(inputs[1], `Enter a value for ${field}.`);
+      const numeric = ["year", "bpm", "duration"].includes(field) || (field === "beets" && ["eq", "not_eq", "lt", "lte", "gt", "gte", "between", "outside"].includes(operator));
+      const parse = (text, control) => {
+        let value;
+        try { value = field === "duration" ? parsePointTime(text) : Number(text); } catch { invalid(control, "Enter a duration in seconds or minutes:seconds."); }
+        if (!Number.isFinite(value) || (field !== "beets" && value < 0)) invalid(control, `Enter a valid value for ${field}.`);
+        return value;
+      };
+      const result = { field, ...(field === "beets" ? { name: selects[4].value } : {}), operator, value: numeric ? parse(raw, inputs[1]) : raw };
+      if (field === "beets" && (!result.name || data.beets_error || !(data.beets_fields || []).includes(result.name))) invalid(selects[4], data.beets_error || "Choose an available Beets field.");
+      if (["between", "outside"].includes(operator)) {
+        const high = inputs[2].value.trim(); if (!high) invalid(inputs[2], "Enter the upper value.");
+        result.upper = numeric ? parse(high, inputs[2]) : high;
+      }
+      return result;
+    });
   }
 
   // The error text joins or leaves a control's own description.
@@ -198,14 +316,16 @@ export function installCategoriesPanel({ document: doc = document, request = req
 
   function clearErrors() {
     for (const id of new Set([...Object.values(FIELD_IDS), ...DAY_IDS])) unmark(el(id));
+    for (const control of filterHost?.querySelectorAll("[aria-invalid]") || []) unmark(control);
     if (errorText) { errorText.textContent = ""; errorText.hidden = true; }
   }
 
   function showError(field, message) {
     const target = el(FIELD_IDS[field] || FIELD_IDS.name);
-    if (field === "source" || field === "query" || field === "playlist") {
+    if (field === "source" || field === "query" || field === "playlist" || field === "conditions") {
       // The field must be visible to take focus.
       if (field === "playlist") el("categories-source-m3u").checked = true;
+      else if (field === "conditions") el("categories-source-filters").checked = true;
       else if (field === "query") el("categories-source-query").checked = true;
       showSource();
     }
@@ -218,7 +338,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
     say(message, true);
   }
 
-  function body() {
+  function body(interactive = true) {
     const kind = source();
     const value = {
       name: nameInput.value.trim(),
@@ -226,6 +346,10 @@ export function installCategoriesPanel({ document: doc = document, request = req
       query: kind === "query" ? queryInput.value.trim() : "",
       playlist: kind === "m3u" ? playlistSelect.value : "",
     };
+    if (kind === "filters") {
+      value.match = el("categories-filter-match").value;
+      value.conditions = readFilterConditions(interactive);
+    }
     // Sent only when set: none means every day, all day.
     const days = DAY_IDS.map(el).filter((box) => box?.checked).map((box) => Number(box.value));
     if (days.length) value.days = days;
@@ -250,6 +374,10 @@ export function installCategoriesPanel({ document: doc = document, request = req
     }
     if (value.source === "m3u" && !value.playlist) {
       showError("playlist", `Put an M3U or M3U8 file in ${data.playlists_folder || "the playlists folder"} first.`);
+      return false;
+    }
+    if (value.source === "filters" && !value.conditions?.length) {
+      showError("conditions", "Add at least one category condition.");
       return false;
     }
     // A half-typed time reads as empty; say so rather than save "all day".
@@ -283,6 +411,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
   }
 
   function openForm(category, from) {
+    countGeneration += 1;
     editing = category ? category.id : null;
     opener = from;
     clearErrors();
@@ -300,23 +429,32 @@ export function installCategoriesPanel({ document: doc = document, request = req
       const input = el(id);
       if (input) input.value = category?.[key] || "";
     }
-    el(category?.source === "m3u" ? "categories-source-m3u" : "categories-source-query").checked = true;
+    el(category?.source === "m3u" ? "categories-source-m3u" : category?.source === "filters" ? "categories-source-filters" : "categories-source-query").checked = true;
     renderPlaylists();
+    el("categories-filter-match").value = category?.match || "all";
+    renderFilterConditions(category?.source === "filters" ? category.conditions || [] : []);
     if (category?.playlist) playlistSelect.value = category.playlist;
     showSource();
-    match.textContent = category ? `Saved: ${countsText(category)}.` : "Not checked yet.";
+    match.textContent = category
+      ? `Matching selection: ${countsText(category)} before playback restrictions.`
+      : "Not checked yet.";
     if (legend) legend.textContent = category ? `Edit category ${category.name}` : "Add category";
     form.hidden = false;
     nameInput.focus();
   }
 
   function closeForm() {
+    countGeneration += 1;
+    if (countTimer !== null) clearTimeout(countTimer);
+    countTimer = null;
+    pendingCount = null;
     form.hidden = true;
     editing = null;
     clearErrors();
   }
 
   async function check() {
+    countGeneration += 1;
     clearErrors();
     const value = body();
     if (!valid(value)) return;
@@ -330,6 +468,45 @@ export function installCategoriesPanel({ document: doc = document, request = req
     } catch (error) {
       if (current(epoch, mine)) showError(error.field || "name", error.message);
     }
+  }
+
+  function scheduleCount() {
+    if (source() === "query" && !el("categories-query").value.trim()) return;
+    if (countTimer !== null) clearTimeout(countTimer);
+    const mine = ++countGeneration;
+    countTimer = setTimeout(async () => {
+      countTimer = null;
+      const epoch = captureAuthenticatedRequestEpoch();
+      let value;
+      try { value = body(false); }
+      catch { if (countCurrent(epoch, mine)) match.textContent = "Complete the selection to check matching tracks."; return; }
+      if (!countCurrent(epoch, mine)) return;
+      if (!value.name) { match.textContent = "Enter a name to check matching tracks."; return; }
+      pendingCount = { epoch, mine, value };
+      void drainCounts();
+    }, 450);
+  }
+
+  async function drainCounts() {
+    if (countRunning) return;
+    countRunning = true;
+    try {
+      while (pendingCount) {
+        const item = pendingCount;
+        pendingCount = null;
+        if (!countCurrent(item.epoch, item.mine)) continue;
+        match.textContent = "Checking matching tracks…";
+        try {
+          const result = await send("/api/categories/check", "POST", item.value);
+          if (!countCurrent(item.epoch, item.mine)) continue;
+          match.textContent = result.error
+            ? `Count unavailable: ${result.error}`
+            : `${countsText(result)} match the selection before playback restrictions.`;
+        } catch (error) {
+          if (countCurrent(item.epoch, item.mine)) match.textContent = `Count unavailable: ${error.message}`;
+        }
+      }
+    } finally { countRunning = false; }
   }
 
   async function save(event) {
@@ -409,18 +586,29 @@ export function installCategoriesPanel({ document: doc = document, request = req
     if (!back) (opener?.isConnected ? opener : addButton).focus();
     say("Cancelled. Nothing was saved.");
   });
-  for (const id of ["categories-source-query", "categories-source-m3u"]) {
+  for (const id of ["categories-source-query", "categories-source-m3u", "categories-source-filters"]) {
     el(id)?.addEventListener("change", () => {
       showSource();
       match.textContent = "Not checked yet.";
+      scheduleCount();
     });
   }
+  el("categories-filter-add")?.addEventListener("click", () => {
+    if (filterHost.children.length >= 32) { showError("conditions", "A category can have at most 32 conditions."); return; }
+    const item = filterRow(); filterHost.append(item.row); item.field.focus(); match.textContent = "Not checked yet.";
+  });
+  el("categories-filter-match")?.addEventListener("change", () => { match.textContent = "Not checked yet."; });
   for (const field of [nameInput, queryInput, playlistSelect, el("categories-hours-from"),
     el("categories-hours-until"), el("categories-not-before"), el("categories-not-after")]) {
-    field?.addEventListener("input", () => unmark(field));
+    field?.addEventListener("input", () => { unmark(field); scheduleCount(); });
+    field?.addEventListener("change", scheduleCount);
   }
   // The days are marked as one group, so changing any one clears them all.
-  for (const id of DAY_IDS) el(id)?.addEventListener("input", () => DAY_IDS.forEach((day) => unmark(el(day))));
+  for (const id of DAY_IDS) el(id)?.addEventListener("input", () => { DAY_IDS.forEach((day) => unmark(el(day))); scheduleCount(); });
+  filterHost?.addEventListener("input", scheduleCount);
+  filterHost?.addEventListener("change", scheduleCount);
+  el("categories-filter-add")?.addEventListener("click", scheduleCount);
+  filterHost?.addEventListener("click", (event) => { if (event.target.closest?.("button")) scheduleCount(); });
 
   // ---- Loading and polling ---------------------------------------------
   async function refresh() {

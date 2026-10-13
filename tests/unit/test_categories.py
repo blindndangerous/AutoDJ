@@ -117,6 +117,80 @@ def test_names_and_sources_are_trimmed():
     )
 
 
+def test_filter_category_uses_clock_conditions_and_rejects_nested_categories(tmp_path):
+    music = tmp_path / "music"
+    tracks = [
+        song(music / "Rock" / "one.flac", genre="Rock;Pop", bpm=120),
+        song(music / "Rock" / "two.flac", genre="Pop", bpm=91),
+        song(music / "Jazz" / "three.flac", genre="Jazz", bpm=120),
+    ]
+    spec = parse_spec(
+        {
+            "name": "Upbeat pop-free",
+            "source": "filters",
+            "match": "all",
+            "conditions": [
+                {"field": "folder", "source": "music", "folder": "Rock", "recursive": True},
+                {"field": "genre", "operator": "is_not", "value": "Rock"},
+                {"field": "bpm", "operator": "not_eq", "value": 90},
+            ],
+        }
+    )
+    [result] = resolve_all(
+        [spec],
+        tracks,
+        beets=None,
+        music_dir=music,
+        folder=tmp_path,
+        sources_by_id={
+            "music": {"id": "music", "kind": "music", "path": str(music), "recursive": True}
+        },
+    )
+    assert result.paths == {tracks[1].path}
+    from autodj.clockwheel import ClockSlot, condition_paths
+    from autodj.clockwheel_store import resolve_conditions
+
+    same_conditions = resolve_conditions(
+        {"type": "music", "match": spec.match, "conditions": spec.conditions},
+        {"music": {"id": "music", "kind": "music", "path": str(music), "recursive": True}},
+        1,
+    )
+    assert (
+        condition_paths(
+            ClockSlot(kind="music", match=spec.match, conditions=same_conditions), tracks
+        )
+        == result.paths
+    )
+
+    any_spec = parse_spec(
+        {
+            "name": "Either",
+            "source": "filters",
+            "match": "any",
+            "conditions": [
+                {"field": "genre", "operator": "is", "value": "Rock"},
+                {"field": "bpm", "operator": "gte", "value": 120},
+            ],
+        }
+    )
+    [any_result] = resolve_all(
+        [any_spec],
+        tracks,
+        beets=None,
+        music_dir=music,
+        folder=tmp_path,
+    )
+    assert any_result.paths == {tracks[0].path, tracks[2].path}
+    with pytest.raises(CategoryError, match="cannot refer"):
+        parse_spec(
+            {
+                "name": "Nested",
+                "source": "filters",
+                "conditions": [{"field": "category", "category": "other"}],
+            }
+        )
+
+
 def test_store_round_trips_and_sets_a_bad_file_aside(tmp_path, caplog):
     store = CategoryStore(tmp_path / "categories.json")
     assert store.load() == []
@@ -280,6 +354,33 @@ def test_without_beets_queries_use_the_library_fields(tmp_path):
     )
     assert decade.paths == {songs[0].path} and decade.fallback == 1
     assert mood.error is not None and "set [library] beets_db" in mood.error
+
+
+def test_filter_beets_exclusions_do_not_fall_back_to_library_metadata(tmp_path):
+    music = tmp_path / "music"
+    tracks = [song(music / "a.flac", bpm=120), song(music / "b.flac", bpm=130)]
+    db = make_beets(
+        tmp_path / "library.db",
+        [(1, b"a.flac", "A", "Rock", 2000, 2000), (2, b"b.flac", "B", "Rock", 2000, 2000)],
+        attributes=[(1, "rating", "6")],
+    )
+    from autodj.categories import beets_source
+
+    spec = parse_spec(
+        {
+            "name": "Not five",
+            "source": "filters",
+            "conditions": [{"field": "beets", "name": "rating", "operator": "not_eq", "value": 5}],
+        }
+    )
+    [result] = resolve_all(
+        [spec],
+        tracks,
+        beets=beets_source(config(tmp_path, beets_db=db)),
+        music_dir=music,
+        folder=tmp_path,
+    )
+    assert result.paths == {tracks[0].path}
 
 
 def test_an_unreadable_beets_database_is_an_error_not_a_crash(tmp_path):

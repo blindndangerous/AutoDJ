@@ -84,8 +84,13 @@ export function installClockwheelPanel({ document: doc = document, request = req
   let generation = 0;
   let suspended = false;
   let conditionId = 0;
+  let stepCountTimer = null;
+  let stepCountGeneration = 0;
+  let stepCountRunning = false;
+  let pendingStepCount = null;
 
   const current = (epoch, mine) => !suspended && generation === mine && isAuthenticatedRequestCurrent(epoch);
+  const stepCountCurrent = (epoch, mine) => !suspended && stepCountGeneration === mine && isAuthenticatedRequestCurrent(epoch);
   const say = (message, error = false) => announceStatus(status, message, { force: true, tone: error ? "error" : "info" });
   const clockUrl = (name) => `/api/library/clock/${encodeURIComponent(name)}`;
   const send = (url, method, body) => request(url, body === undefined ? { method } : { method, headers: JSON_HEADERS, body: JSON.stringify(body) });
@@ -664,6 +669,12 @@ export function installClockwheelPanel({ document: doc = document, request = req
   }
 
   function resetForm() {
+    stepCountGeneration += 1;
+    if (stepCountTimer !== null) clearTimeout(stepCountTimer);
+    stepCountTimer = null;
+    pendingStepCount = null;
+    const countText = el("clock-step-match-count");
+    if (countText) countText.textContent = "Matching track count appears while editing.";
     editing = null;
     const match = el("clock-step-match");
     if (match) match.value = "all";
@@ -682,6 +693,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     renderSteps();
     typeSelect.value = step.type === "category" || !(step.type in FIELDS_FOR) ? "music" : step.type;
     showFields();
+    scheduleStepCount();
     const set = (id, value) => { const field = el(id); if (field) field.value = value; };
     if (step.type === "track") set("clock-step-source", step.source || "");
     set("clock-step-path", step.path || "");
@@ -700,6 +712,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     addButton.textContent = `Update step ${index + 1}`;
     if (cancelEdit) cancelEdit.hidden = false;
     fillStepHours(doc, step);
+    scheduleStepCount();
     typeSelect.focus();
     say(`Editing ${position(index)}.`);
   }
@@ -746,6 +759,49 @@ export function installClockwheelPanel({ document: doc = document, request = req
     throw new Error(`The editor cannot make ${type} steps yet.`);
   }
 
+  function scheduleStepCount() {
+    if (stepCountTimer !== null) clearTimeout(stepCountTimer);
+    const mine = ++stepCountGeneration;
+    const output = el("clock-step-match-count");
+    if (typeSelect.value === "settings") {
+      if (output) output.textContent = "Preset changes do not select tracks.";
+      return;
+    }
+    if (output) output.textContent = "Checking matching tracks…";
+    stepCountTimer = setTimeout(async () => {
+      stepCountTimer = null;
+      const epoch = captureAuthenticatedRequestEpoch();
+      let step;
+      try { step = formStep(); }
+      catch { if (stepCountCurrent(epoch, mine) && output) output.textContent = "Complete the step conditions to check matching tracks."; return; }
+      pendingStepCount = { epoch, mine, step };
+      void drainStepCounts();
+    }, 450);
+  }
+
+  async function drainStepCounts() {
+    if (stepCountRunning) return;
+    stepCountRunning = true;
+    try {
+      while (pendingStepCount) {
+        const item = pendingStepCount;
+        pendingStepCount = null;
+        const output = el("clock-step-match-count");
+        if (!stepCountCurrent(item.epoch, item.mine) || !output) continue;
+        try {
+          const result = await send("/api/library/clock/check", "POST", { step: item.step });
+          if (!stepCountCurrent(item.epoch, item.mine)) continue;
+          output.textContent = result.error
+            ? `Count unavailable: ${result.error}`
+            : result.tracks === null ? "Preset changes do not select tracks."
+              : `${Number(result.tracks).toLocaleString("en-US")} tracks match this selection before repeat protection, DMCA limits, hours and other playback restrictions.`;
+        } catch (error) {
+          if (stepCountCurrent(item.epoch, item.mine)) output.textContent = `Count unavailable: ${error.message}`;
+        }
+      }
+    } finally { stepCountRunning = false; }
+  }
+
   typeSelect.addEventListener("change", () => {
     let changedCategory = false;
     const kind = typeSelect.value === "liner" ? "liner" : "music";
@@ -780,8 +836,18 @@ export function installClockwheelPanel({ document: doc = document, request = req
     const controls = conditionRow();
     host.append(controls.row);
     updateBeetsNotice();
+    scheduleStepCount();
     controls.field.focus();
     say(`Condition ${host.children.length} added.`);
+  });
+  el("clock-step-form")?.addEventListener("input", (event) => {
+    if (event.target.closest?.("#clock-step-conditions-field") || event.target === typeSelect) scheduleStepCount();
+  });
+  el("clock-step-form")?.addEventListener("change", (event) => {
+    if (event.target.closest?.("#clock-step-conditions-field") || event.target === typeSelect) scheduleStepCount();
+  });
+  el("clock-step-conditions")?.addEventListener("click", (event) => {
+    if (event.target.closest?.("button[data-remove-condition]")) scheduleStepCount();
   });
   addButton.addEventListener("click", () => {
     if (!clock) { say("Open or create a clockwheel first.", true); return; }

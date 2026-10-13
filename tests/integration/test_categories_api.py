@@ -150,6 +150,28 @@ def test_categories_are_checked_saved_used_by_clockwheels_and_deleted(tmp_path):
         assert client.get("/api/library/clock/Throwback").status_code == 200
 
 
+def test_filter_categories_check_with_shared_clock_conditions(tmp_path):
+    with LibraryCatalog(tmp_path / "library.sqlite") as catalog:
+        app, client, _songs = _client(tmp_path, catalog)
+        _pair(app, client)
+        body = {
+            "name": "Rock not 2000s",
+            "source": "filters",
+            "match": "all",
+            "conditions": [
+                {"field": "genre", "operator": "is", "value": "Rock"},
+                {"field": "year", "operator": "not_eq", "value": 2003},
+            ],
+        }
+        checked = client.post("/api/categories/check", json=body)
+        assert checked.status_code == 200
+        assert checked.json()["tracks"] == 1
+        nested = {**body, "conditions": [{"field": "category", "category": "other"}]}
+        refused = client.post("/api/categories/check", json=nested)
+        assert refused.status_code == 400
+        assert refused.json()["field"] == "conditions"
+
+
 def test_categories_save_and_report_their_days_and_hours(tmp_path, monkeypatch):
     with LibraryCatalog(tmp_path / "library.sqlite") as catalog:
         app, client, _songs = _client(tmp_path, catalog)

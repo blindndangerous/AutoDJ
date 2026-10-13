@@ -20,6 +20,30 @@ function beetsFieldName(name) {
   return name === "original_year" ? "first release year" : String(name ?? "").replaceAll("_", " ");
 }
 
+export function describeCondition(condition, sources = [], categories = []) {
+  if (condition.field === "folder") {
+    const source = sources.find((item) => item.id === condition.source);
+    const folder = source ? condition.folder || lastPart(source.path)
+      : `${condition.source || "A folder"} (no longer registered)`;
+    return `${folder}${condition.recursive ? " (with subfolders)" : ""}${condition.operator === "is_not" ? " is not" : ""}`;
+  }
+  if (condition.field === "category") {
+    const category = categories.find((item) => item.id === condition.category);
+    return `category ${category?.name || "that no longer exists"}${condition.operator === "is_not" ? " is not" : ""}`;
+  }
+  const field = condition.field === "beets" ? `Beets ${beetsFieldName(condition.name)}`
+    : condition.field === "duration" ? "Duration (seconds)"
+      : condition.field === "bpm" ? "BPM"
+        : condition.field[0].toUpperCase() + condition.field.slice(1);
+  const operator = [...NUMERIC_OPERATORS, ...TEXT_OPERATORS, ["is_not", "is not"]].find(([value]) => value === condition.operator)?.[1] || condition.operator;
+  return `${field} ${operator} ${condition.value}${["between", "outside"].includes(condition.operator) ? ` and ${condition.upper}` : ""}`;
+}
+
+export function describeConditions(conditions = [], match = "all", sources = [], categories = []) {
+  return conditions.map((condition) => describeCondition(condition, sources, categories))
+    .join(match === "any" ? " or " : " and ");
+}
+
 // Shared by the saved-step list and the Why this track explanation.
 export function describeStep(step, sources = [], categories = []) {
   return [describeSelection(step, sources, categories), stepHoursText(step)].filter(Boolean).join(", ");
@@ -42,23 +66,7 @@ function describeSelection(step, sources, categories) {
       if (step.type === "liner" && step.require_following) extras.push("only if the following track fits before the next reset");
       return [`${step.type} from ${where}`, ...extras].join(", ");
     }
-    const where = step.conditions.map((condition) => {
-      if (condition.field === "folder") {
-        const source = sources.find((item) => item.id === condition.source);
-        const folder = condition.folder || (source ? lastPart(source.path) : "a folder that is no longer registered");
-        return `${folder}${condition.recursive ? " (with subfolders)" : ""}`;
-      }
-      if (condition.field === "category") {
-        const category = categories.find((item) => item.id === condition.category);
-        return category ? `category ${category.name}` : "a category that no longer exists";
-      }
-      const field = condition.field === "beets" ? `Beets ${beetsFieldName(condition.name)}`
-        : condition.field === "duration" ? "Duration (seconds)"
-          : condition.field === "bpm" ? "BPM"
-            : condition.field[0].toUpperCase() + condition.field.slice(1);
-      const operator = [...NUMERIC_OPERATORS, ...TEXT_OPERATORS].find(([value]) => value === condition.operator)?.[1] || condition.operator;
-      return `${field} ${operator} ${condition.value}${condition.operator === "between" ? ` and ${condition.upper}` : ""}`;
-    }).join(step.match === "any" ? " or " : " and ");
+    const where = describeConditions(step.conditions, step.match, sources, categories);
     const extras = [];
     extras.push(step.selection === "random" ? "at random" : "least recently played");
     if (step.enforce_rules === false) extras.push("ignoring repeat rules");

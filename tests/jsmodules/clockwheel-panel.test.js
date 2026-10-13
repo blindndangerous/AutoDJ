@@ -66,6 +66,7 @@ function fakeServer({
       types: ["liner", "music", "settings", "track"], cursor: 1, last_status: "Ready", notice,
     });
     if (url === "/api/library/clock" && method === "GET") return snapshot();
+    if (url === "/api/library/clock/check") return { tracks: 12, error: null };
     if (url === "/api/library/clock" && method === "POST") { server.clocks[body.name] = body; return body; }
     if (url === "/api/library/clock/active") { server.active = body.name; return snapshot(); }
     if (url === "/api/library/clock/import") {
@@ -134,6 +135,18 @@ describe("clockwheel markup", () => {
 });
 
 describe("clockwheel editor", () => {
+  it("shows a debounced matching track count for the current step", async () => {
+    const server = await open(fakeServer());
+    const row = byId("clock-step-conditions").firstElementChild;
+    row.querySelector("select").value = "genre";
+    row.querySelector("select").dispatchEvent(new Event("change", { bubbles: true }));
+    row.querySelectorAll("select")[3].value = "Rock";
+    row.querySelectorAll("select")[3].dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(byId("clock-step-match-count").textContent).toContain("12 tracks match"));
+    const call = server.calls.find((item) => item.url === "/api/library/clock/check");
+    expect(call.body.step.conditions).toEqual([{ field: "genre", operator: "is", value: "Rock" }]);
+  });
+
   it("names category steps and selects music categories as conditions", async () => {
     expect(describeStep({ type: "category", category: "gone", selection: "least_recent" }, [], []))
       .toBe("music from a category that no longer exists, least recently played");
@@ -327,7 +340,7 @@ describe("clockwheel editor", () => {
     const field = row.querySelector("select");
     field.value = "artist";
     field.dispatchEvent(new Event("change"));
-    row.querySelectorAll("select")[2].value = "contains";
+    row.querySelectorAll("select")[2].value = "not_contains";
     row.querySelectorAll("input[type=text]")[1].value = "Björk*";
     await controls.refresh();
     expect(row.querySelectorAll("input[type=text]")[1].value).toBe("Björk*");
@@ -342,7 +355,7 @@ describe("clockwheel editor", () => {
     byId("clock-save").click();
     await vi.waitFor(() => expect(server.calls.some((call) => call.method === "PUT")).toBe(true));
     expect(server.calls.find((call) => call.method === "PUT").body.steps.at(-1).conditions).toEqual([
-      { field: "artist", operator: "contains", value: "Björk*" },
+      { field: "artist", operator: "not_contains", value: "Björk*" },
       { field: "title", operator: "contains", value: "Live?" },
     ]);
     await vi.waitFor(() => expect(status()).toBe("Saved Morning, 4 steps."));

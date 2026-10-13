@@ -2513,24 +2513,26 @@ Available conditions:
   Category Current hits combines those groups. A song matching several conditions is included
   once, so it gets no extra chance of being picked. Category hours still apply even when another
   condition also matches the song. Categories are music groups, so this condition is not offered
-  for voice liners.
+  for voice liners. Choose **is not** to leave out that category's songs.
 - **Folder**: a registered music or liner folder, or a subfolder such as `Rock/Live`. Include
-  subfolders applies to that condition. The registered folder must include subfolders before a
+  subfolders applies to that condition; **is not** excludes it. The registered folder must include subfolders before a
   condition can use one of them.
-- **Genre**: choose a genre held in the library. Matching ignores case. Multiple labels stored
+- **Genre**: choose a genre held in the library and choose **is** or **is not**. Matching ignores case. Multiple labels stored
   with semicolons, or as a list, are matched separately; slashes and commas remain part of a label.
-- **Year**, **BPM** and **Duration**: equal to, less than, at most, greater than, at least, or between
-  two values. Between includes both ends. Year is the release year in AutoDJ's library. Duration
+- **Year**, **BPM** and **Duration**: equal to, not equal, less than, at most, greater than, at least,
+  between two values or outside a range. Between includes both ends; outside excludes both. Year is
+  the release year in AutoDJ's library. Duration
   is the full file length; enter seconds or `minutes:seconds`.
 - **Artist**, **Title** and **Album**: exact text, contains text, or a wildcard pattern. Matching
-  ignores case. In a pattern, `*` means any text and `?` means one character. Other punctuation is
+  also support does not contain and does not match. Matching ignores case. In a pattern, `*` means any text and `?` means one character. Other punctuation is
   literal; these are not regular expressions.
 - **Beets field**: a field from the configured Beets database, including custom fields. Choose a
-  text or numeric comparison. `original_year` uses the first-release year, falling back to
+  text or numeric comparison, including the matching exclusions. `original_year` uses the first-release year, falling back to
   `year` when it is missing. Ordinary conditions work without Beets.
 
-A missing value does not match a condition. Unknown year, BPM or duration values are not treated
-as zero. The player reads Beets without changing it and caches the requested fields until the
+A missing value does not match a condition, including a negative condition. Unknown year, BPM or
+duration values are not treated as zero. Genre exclusions reject a track if any genre label matches.
+The player reads Beets without changing it and caches the requested fields until the
 database changes. An unavailable database or field produces an error when saving or activating
 a step that needs it. If it becomes unavailable during playback, that step is skipped with a
 status message. Other valid steps can still play.
@@ -2640,13 +2642,20 @@ category plays is set by how many steps of the clockwheel use it. Choose **Music
 with folder and metadata conditions in the same step; the category itself stays unchanged.
 
 Keep them in the **Library tools** tab, **Categories**, next to the clockwheels that use them. The
-list says how many songs each category holds, how many playlist lines match no library track,
+list says how many unique songs each category holds, how many playlist lines match no library track,
 how many songs were placed by their release year (see below), and which clockwheels use it. **Add
-category** and **Edit** open one form; **Check** counts the songs without saving, and **Save**
-refuses a query that cannot run or names a field no song has. **Delete** asks first and names the
+category** and **Edit** open one form; the count refreshes after a short pause, and **Check** gives
+immediate feedback. Counts describe the matching selection before playback limits and hours.
+**Save** refuses a query that cannot run or names a field no song has. **Delete** asks first and names the
 clockwheels with a step for the category.
 
-A category's songs come from one of two sources:
+A category's songs come from one of three sources:
+
+- **Matching conditions** use the same Match all / Match any filters as a music clockwheel step:
+  registered folders, genre, year, BPM, duration, artist, title, album and available Beets fields.
+  A condition can exclude a folder, genre or text value, or use a numeric not-equal/outside-range
+  comparison. Unknown metadata never passes an exclusion; a genre exclusion leaves out a track if
+  any of its genre labels matches. Categories cannot refer to other categories.
 
 - **A beets query**, such as `original_year:2000..2009` or `genre:rock ^artist:"bon jovi"`. It is
   read against AutoDJ's library, with the values of the live beets database (`[library] beets_db`,
@@ -2692,6 +2701,11 @@ category is missing or empty. An unedited legacy category step keeps its old who
 fallback when all steps fail; saving it from the editor converts it to an explicit condition.
 The dayparting-only fallback also remains when matched songs are held back only by their allowed
 days or hours. The clockwheel keeps its place in each case.
+
+While editing, the step form counts unique tracks that match its current conditions. It uses the
+music or liner library selected by the step, before repeat protection, DMCA limits, step or category
+hours, and other playback restrictions. A preset change has no track count. Count errors and
+incomplete conditions are shown in the form; automatic updates are not announced by screen readers.
 
 **Dayparting.** Under **When the songs may play**, a category can allow its songs only on chosen
 days, only between two times (**Allowed from** and **Allowed until**), or both, such as Friday and
