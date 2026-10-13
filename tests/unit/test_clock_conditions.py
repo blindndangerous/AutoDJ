@@ -77,10 +77,14 @@ def test_beets_custom_text_and_original_year():
         {"field": "beets", "name": "mood", "operator": "is", "value": "happy"}, {}, None
     )
     assert matches_condition(
-        {"field": "beets", "name": "mood", "operator": "is_not", "value": "sad"}, {}, {"mood": "happy"}
+        {"field": "beets", "name": "mood", "operator": "is_not", "value": "sad"},
+        {},
+        {"mood": "happy"},
     )
     assert not matches_condition(
-        {"field": "beets", "name": "mood", "operator": "is_not", "value": "sad"}, {}, {"mood": "sad"}
+        {"field": "beets", "name": "mood", "operator": "is_not", "value": "sad"},
+        {},
+        {"mood": "sad"},
     )
 
 
