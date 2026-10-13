@@ -613,8 +613,10 @@ class StreamOutput:
         old.close()
 
     def close(self) -> None:
-        """Disconnect listeners and stop the encoder and its threads."""
+        """Disconnect listeners and stop the encoder and its threads; a second call does nothing."""
         with self._lock:
+            if self._closed:
+                return
             self._closed = True
             self._disconnect_all_locked()
             encoder = self._encoder
