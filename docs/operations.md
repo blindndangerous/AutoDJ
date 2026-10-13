@@ -1406,10 +1406,11 @@ directly if it is an intended backup source. Restore refuses linked archive entr
 destinations that point outside their configured folder.
 
 `autodj backup` includes every configured station. The default station's files keep their names
-in the archive; another station's are under `stations/<slug>/`, for example
-`stations/nightowl/index/web_state.json`, `stations/nightowl/index/relays.json` and
-`stations/nightowl/liners/...`. Relay settings include source passwords. Backups are plain ZIP
-files without encryption, so store them with the same care as those credentials. A folder two
+in the archive, including the current catalog at `index/library.db`; another station's are under
+`stations/<slug>/`, for example `stations/nightowl/index/web_state.json`,
+`stations/nightowl/index/relays.json` and `stations/nightowl/liners/...`. New backups omit legacy
+index manifests and generation files. Relay settings include source passwords. Backups are plain
+ZIP files without encryption, so store them with the same care as those credentials. A folder two
 stations share, such as one liner folder for both, is stored once, under the default station's
 name, and the archive notes that it was shared. If you restore it with a configuration that gives
 that station a folder of its own, the folder is restored to the default station's place only, and
@@ -1423,6 +1424,11 @@ check that its `stations/<slug>/` files are in it:
 uv run autodj backup backups/after-nightowl.zip
 unzip -l backups/after-nightowl.zip | grep stations/nightowl
 ```
+
+An older archive without `index/library.db` cannot be restored directly by this version. Restore
+it with a compatible older release, then run `autodj migrate-index --apply`. Archives that have
+the catalog but also contain old index generations restore the catalog and skip those obsolete
+files.
 
 Restore puts each station's files back in that station's folder. A backup that holds a station
 your configuration does not define is refused before anything changes: add its
