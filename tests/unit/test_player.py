@@ -646,7 +646,7 @@ class TestAnalyseTrackInBackground:
         assert thread not in player._bg_analysis_threads
 
     def test_lifespan_waits_for_background_cache_write_before_close(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, request
     ) -> None:
         import threading
 
@@ -664,13 +664,17 @@ class TestAnalyseTrackInBackground:
 
         paused_before_write = threading.Event()
         release_worker = threading.Event()
+        # Released below once shutdown is under way, or at teardown if the test
+        # fails first.  No timeout: a slow server start must not let the worker
+        # give up before the test releases it.
+        request.addfinalizer(release_worker.set)
         write_attempted = threading.Event()
         worker_exception_seen = threading.Event()
         worker_errors: list[BaseException] = []
 
         def pause_before_write(_audio: np.ndarray, _sr: int) -> DjMeta:
             paused_before_write.set()
-            assert release_worker.wait(2.0)
+            release_worker.wait()
             return DjMeta(analysed=True)
 
         original_set = cache.set
