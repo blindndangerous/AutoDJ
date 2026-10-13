@@ -43,6 +43,7 @@ from autodj.station_log import CURRENT_STATION, DEFAULT_SLUG
 
 if TYPE_CHECKING:
     from autodj._bridge import PlayerBridge
+    from autodj.breaks import BreakDesk
     from autodj.carts import StationCarts
     from autodj.clip_dates import LinerGate
     from autodj.config import AutoDJConfig
@@ -138,6 +139,11 @@ class StationPaths:
     def time_check_clips(self) -> Path:
         """Recorded time check clips: ``[time_checks] clips_folder`` or the default."""
         return Path(self._cfg.time_checks.clips_folder or self.state_dir / "time_checks")
+
+    @property
+    def announcements(self) -> Path:
+        """Breaks from the announcer program (#88), never in liner rotation."""
+        return self.state_dir / "announcements"
 
     @property
     def liner_dates(self) -> Path:
@@ -559,6 +565,7 @@ class StationRuntime:
     schedule: Scheduler
     time_checks: TimeChecks
     carts: StationCarts
+    breaks: BreakDesk
     # Pushes the state to this station's WebSocket clients once a second.
     broadcast: Callable[[], Coroutine[Any, Any, None]]
 
@@ -709,6 +716,12 @@ class StationRuntime:
 
     async def start(self) -> None:
         """Start the schedule, the stream or liners, the WebSocket push and webhooks."""
+        desk = getattr(self, "breaks", None)
+        if desk is not None:
+            try:
+                await asyncio.to_thread(desk.maintain)
+            except Exception:
+                logger.exception("Break upkeep failed")
         self.stopped = False
         bridge = self.bridge
         cfg = self.cfg
@@ -822,6 +835,12 @@ class StationRuntime:
                 )
             except Exception:
                 logger.exception("Time check tick failed")
+            desk = getattr(self, "breaks", None)
+            try:
+                if desk is not None and desk.needs_maintenance():
+                    await asyncio.to_thread(desk.maintain)
+            except Exception:
+                logger.exception("Break upkeep failed")
 
 
 # ---------------------------------------------------------------------------

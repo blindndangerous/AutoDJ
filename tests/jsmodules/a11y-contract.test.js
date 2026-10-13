@@ -2420,6 +2420,41 @@ describe("static accessibility contracts", () => {
       .toMatch(/\.settings-row \+ \.setting-desc \+ \.setting-desc\s*\{\s*margin-left: 10rem;/);
   });
 
+  it("gives machine tokens a labelled use and a station choice hidden until it applies", () => {
+    installDocument({ html: htmlSource });
+    const fieldset = document.getElementById("token-name").closest("fieldset");
+    expect(fieldset.querySelector("legend").textContent.trim()).toBe("Create a token");
+    const scope = document.getElementById("token-scope");
+    const station = document.getElementById("token-station");
+    for (const [select, label] of [[scope, "Token use"], [station, "Station"]]) {
+      expect(select.tagName).toBe("SELECT");
+      expect(select.closest("fieldset")).toBe(fieldset);
+      expect(document.querySelector(`label[for="${select.id}"]`).textContent.trim()).toBe(label);
+      expect(select.hasAttribute("aria-label")).toBe(false);
+      const help = document.getElementById(select.getAttribute("aria-describedby"));
+      expect(help.classList.contains("setting-desc")).toBe(true);
+      expect(help.hasAttribute("aria-live")).toBe(false);
+    }
+    // Both uses are written out, and what each token cannot do is said.
+    expect([...scope.options].map((option) => option.textContent))
+      .toEqual(["Analysis worker", "Announcer"]);
+    expect(document.getElementById("token-scope-desc").textContent)
+      .toMatch(/Neither can play, change settings or read anything else/);
+    // Token use says the Station choice appears, and Station starts with a
+    // placeholder, so no station is chosen silently.
+    expect(document.getElementById("token-scope-desc").textContent)
+      .toMatch(/choosing Announcer shows a Station choice below/);
+    expect([...station.options].map((option) => [option.value, option.textContent]))
+      .toEqual([["", "Choose a station"]]);
+    // The station choice and its help start hidden, together.
+    expect(document.getElementById("token-station-row").hidden).toBe(true);
+    expect(document.getElementById("token-station-desc").hidden).toBe(true);
+    // Reading order is name, use, station, then the button that acts on them.
+    const order = [...fieldset.querySelectorAll("input, select, button")].map((node) => node.id);
+    expect(order).toEqual(["token-name", "token-scope", "token-station", "token-create"]);
+    expect(document.getElementById("token-create").getAttribute("type")).toBe("button");
+  });
+
   it("keeps the transition effect description to one sentence", () => {
     // The per-effect list, about 450 words, was read on every focus.
     installDocument({ html: htmlSource });
