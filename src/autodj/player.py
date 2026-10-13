@@ -24,6 +24,7 @@ from collections.abc import Set as AbstractSet
 from concurrent.futures import Future, wait
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
+from datetime import UTC, tzinfo
 from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -62,6 +63,7 @@ from autodj.indexer import IndexEntry
 from autodj.mixbus import BusEvents, MixBus, RenderedTrack, SkipTail
 from autodj.render_ahead import RenderAhead
 from autodj.repeat_rules import (
+    RELAXED_RULES,
     ArtistSplitter,
     PlayRecord,
     RelatedArtists,
@@ -1629,9 +1631,9 @@ class Player:
         self._observe("clock_skipped", picked.skipped)
         if picked.entry is None and context.repeat:
             logger.info(
-                "Clock: every matching track is held back (%s); relaxing the artist, "
-                "album and title rules for this pick",
+                "Clock: every matching track is held back (%s); relaxing %s for this pick",
                 context.repeat.summary() or "repeat rules",
+                RELAXED_RULES,
             )
             picked = pick(False, True)
         if picked.entry is None and recent:
@@ -1935,6 +1937,11 @@ class Player:
         ]
         recent = set(context.recent)
         fresh = [other for other in audible if other.path not in recent]
+        # The repeat rules, the daypart and quarter-hour ones among them, only
+        # choose among tracks that keep the DMCA limits: relaxed() takes the
+        # first tier with such a track and goes to a wider tier before it gives
+        # one that breaks a limit, so preferring tracks the rules allow never
+        # weakens DMCA mode.
         choices = relaxed(
             ([other for other in fresh if context.repeat(other)], fresh, audible), limits.broken
         )
@@ -2323,6 +2330,17 @@ class Player:
         if store is not None and track.intro_events:
             store.release(intro_id for _at, intro_id, _end, _label in track.intro_events)
 
+    def _settle_intros(self, track: RenderedTrack | None) -> None:
+        """Queue release of intros in a playing render that ended before they aired."""
+        store = self.matched_intros
+        if store is not None and track is not None and track.intro_events:
+            heard = self._heard_intros
+            store.release_later(
+                intro_id
+                for _at, intro_id, _end, _label in track.intro_events
+                if intro_id not in heard
+            )
+
     def _build_bus(self) -> MixBus:
         """Create the mix bus, fed by the render-ahead worker, as :attr:`bus`."""
         self.bus = MixBus(
@@ -2565,9 +2583,16 @@ class Player:
                     next_clock_name = plan.clock_name
                     next_clock_boundary = plan.boundary_after
                     breaks = self._take_breaks(plan)
-                    intro = self._matched_intro(next_entry, breaks, context.at)
-                    if not breaks and not liners and intro is None:
-                        liners, liner_key = self._auto_liner(current, next_entry)
+                    only_without_liner = self._cfg.playback.matched_intro_only_without_liner
+                    if only_without_liner:
+                        if not breaks and not liners:
+                            liners, liner_key = self._auto_liner(current, next_entry)
+                        if not liners:
+                            intro = self._matched_intro(next_entry, breaks, context.at)
+                    else:
+                        intro = self._matched_intro(next_entry, breaks, context.at)
+                        if not breaks and not liners and intro is None:
+                            liners, liner_key = self._auto_liner(current, next_entry)
                 elif station_mode:
                     next_entry, next_mode, liners, next_cursor, liner_key = (
                         self._choose_station_next(current, context, auto_liner=False)
@@ -2577,9 +2602,15 @@ class Player:
                         next_clock_name = self._pending_clock_name
                         next_clock_revision = self._chosen_clock_revision
                         next_clock_boundary = self._pending_clock_boundary
-                    intro = self._matched_intro(next_entry, (), context.at)
-                    if not liners and intro is None:
-                        liners, liner_key = self._auto_liner(current, next_entry)
+                    if self._cfg.playback.matched_intro_only_without_liner:
+                        if not liners:
+                            liners, liner_key = self._auto_liner(current, next_entry)
+                        if not liners:
+                            intro = self._matched_intro(next_entry, (), context.at)
+                    else:
+                        intro = self._matched_intro(next_entry, (), context.at)
+                        if not liners and intro is None:
+                            liners, liner_key = self._auto_liner(current, next_entry)
                 else:
                     next_entry, next_mode = self._choose_next(current, context)
             except Exception as exc:
@@ -3159,6 +3190,7 @@ class Player:
         with self._set_lock:
             self._set_generation += 1
             cut_short = self._state.current_track
+            self._settle_intros(self._playing_render)
             self._playing_render = None
             self._state.current_track = None
             self._state.next_track = None
@@ -3349,7 +3381,9 @@ class Player:
     def _start_playing(self, rendered: RenderedTrack) -> None:
         """Make *rendered* the playing track and record it (hold ``_set_lock``)."""
         entry = rendered.entry
-        self._settle_breaks(self._playing_render)
+        finished = self._playing_render
+        self._settle_breaks(finished)
+        self._settle_intros(finished)
         self._playing_render = rendered
         self._heard_liner_events: set[int] = set()
         self._heard_break_starts = set()
@@ -3578,7 +3612,17 @@ class Player:
             track_number = self._state.track_number
             recorded = self._state.recently_played
             latest = recorded[-1] if recorded else None
-        repeat, minute_paths = build_filter(history, rules, now, self._track_keys())
+        # The daypart and quarter-hour rules judge the hours the song starts
+        # in, as dayparting does.
+        timed = bool(rules.daypart_days or rules.hourpart_plays)
+        repeat, minute_paths = build_filter(
+            history,
+            rules,
+            now,
+            self._track_keys(),
+            at=(self._now() if at is None else at) if timed else None,
+            zone=self._station_zone() if rules.daypart_days else UTC,
+        )
         if minute_paths:
             held = set(paths)
             paths = deque([*paths, *(path for path in minute_paths if path not in held)])
@@ -3613,6 +3657,14 @@ class Player:
         from autodj.categories import station_wall
 
         return station_wall(self._cfg, self._now() if at is None else at)
+
+    def _station_zone(self) -> tzinfo:
+        """The station's time zone (``[server] station_timezone``, else the system's)."""
+        from zoneinfo import ZoneInfo
+
+        from autodj.scheduler import system_timezone
+
+        return ZoneInfo(self._cfg.server.station_timezone or system_timezone())
 
     def _dayparts(self, at: float | None = None) -> tuple[frozenset[str], dict[str, str]]:
         """The songs whose categories are outside their days and hours, and why.
@@ -3798,8 +3850,7 @@ class Player:
             chosen = choose(protected)
         if chosen is None and repeat:
             logger.warning(
-                "Pure shuffle found no track the artist, album and title repeat rules allow; "
-                "relaxing them"
+                "Pure shuffle found no track the repeat rules allow; relaxing %s", RELAXED_RULES
             )
             chosen = choose(protected, use_rules=False)
         if chosen is None:

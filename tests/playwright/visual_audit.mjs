@@ -25,6 +25,9 @@
 //         lengths, and the address list of the formats that are on;
 //       - the status message with its Dismiss button, as a confirmation
 //         and as an error, through axe-core as well;
+//       - the footer's link to the running commit, when the server knows
+//         it: text 4.5:1 and underlined, 24 px tall, and a 2 px focus
+//         ring 3:1 when reached by keyboard;
 //   - in the System light mode only (layout does not change with colour):
 //       - reflow at 320 CSS px, the width of 400 % zoom on a 1280 px
 //         window, and 200 % text at 1280 px: the page must not scroll
@@ -394,6 +397,20 @@ async function openPackDatesError(page, visit) {
   await page.locator("#tc-not-after").fill("2026-12-31");
 }
 
+// Song picking > Repeats: daypart start hours refused in the browser, the
+// field marked invalid and focused, its message shown under it (#129).  Nothing is saved.
+async function openRepeatHoursError(page, visit) {
+  const hours = page.locator("#repeat-daypart-hours");
+  await hours.waitFor({ state: "visible" });
+  const before = await hours.inputValue();
+  await hours.fill("6, 6");
+  await page.locator("#repeat-save").click();
+  await page.locator('#repeat-daypart-hours[aria-invalid="true"]').waitFor();
+  await page.locator("#repeat-error").waitFor({ state: "visible" });
+  await visit("settings/picking/repeat-hours-error");
+  await hours.fill(before);
+}
+
 // Library tools: a category's season and a clockwheel step's hours, each
 // refused with its error on the page, linked to the field and focused.
 async function openDaypartErrors(page, visit) {
@@ -601,7 +618,10 @@ async function eachTarget(page, visit) {
       await openEveryCard(page);
       await settle(page);
       await visit(`settings/${id.replace(/^stab-/, "")}`);
-      if (id === "stab-picking") await openRotationTest(page, visit);
+      if (id === "stab-picking") {
+        await openRotationTest(page, visit);
+        await openRepeatHoursError(page, visit);
+      }
       if (id === "stab-time-checks") await openPackDatesError(page, visit);
     }
   }
@@ -881,6 +901,48 @@ async function focusProblems(page, startSelector, { maxStops = MAX_TAB_STOPS, me
   return problems;
 }
 
+// The footer's link to the running commit, there when /api/version sends a
+// commit_url (a git checkout, or an image built with AUTODJ_COMMIT): text
+// 4.5:1 and underlined (1.4.3, 1.4.1), 24 px tall (2.5.8), and reached by
+// keyboard with a 2 px focus ring 3:1 against the footer (2.4.7, 1.4.11).
+async function footerLinkProblems(page) {
+  const expected = await page.evaluate(async () => {
+    const response = await fetch("/api/version", { cache: "no-cache" });
+    return response.ok ? Boolean((await response.json()).commit_url) : false;
+  });
+  const link = page.locator("#ver-commit-link");
+  if (!expected) return await link.count() ? ["commit link without a commit_url"] : [];
+  if (!await link.count()) return ["no commit link though /api/version sent commit_url"];
+  // Reached from the keyboard, so the ring is the :focus-visible one; WebKit
+  // can skip links on Tab, so focus() after a key press stands in there.
+  await link.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  if (!await link.evaluate((element) => element === document.activeElement)) await link.focus();
+  await settle(page);
+  const problems = await link.evaluate((element) => {
+    const { parse, over, ratio, behind } = window.__contrast;
+    const found = [];
+    const style = window.getComputedStyle(element);
+    const back = behind(element.parentElement);
+    const text = ratio(over(parse(style.color), back), back);
+    if (text < 4.5) found.push(`text ${text.toFixed(2)}:1`);
+    if (!style.textDecorationLine.includes("underline")) found.push("not underlined");
+    const { height } = element.getBoundingClientRect();
+    if (height < 23.5) found.push(`${Math.round(height)} px tall`);
+    if (!element.matches(":focus-visible")) found.push("no :focus-visible on keyboard focus");
+    else if (style.outlineStyle === "none" || parseFloat(style.outlineWidth) < 2) {
+      found.push("no 2 px focus outline");
+    } else {
+      const ring = ratio(over(parse(style.outlineColor), back), back);
+      if (ring < 3) found.push(`focus ring ${ring.toFixed(2)}:1`);
+    }
+    return found;
+  });
+  await link.evaluate((element) => element.blur());
+  return problems;
+}
+
 function startOf(target) {
   const [view, sub] = target.split("/");
   // Only Settings targets name a subtab; "track-info/tags" is a state.
@@ -930,6 +992,7 @@ async function auditTheme(browser, mode, out) {
         record("nonText", "meters", await meterProblems(page));
         record("nonText", "camelot", await wheelProblems(page));
         record("toast", target, await toastProblems(page));
+        record("footer", target, await footerLinkProblems(page));
       }
       if (target === "settings/display") record("toast", target, await toastProblems(page));
       if (target === "settings/workers") {
@@ -1607,6 +1670,7 @@ export async function audit(name, launcher) {
   const out = {
     browser: name, axe: {}, nonText: {}, focusColour: {}, toast: {}, themeState: {},
     reflow320: {}, text200: {}, smallChoices: {}, focus: {}, behaviour: {}, statusPage: {},
+    footer: {},
     statusPaths: [], pageerrors: [],
   };
   if (SHOTS) mkdirSync(SHOTS, { recursive: true });
@@ -1674,7 +1738,7 @@ export function validateVisualAudit(name, result) {
   const failures = [];
   for (const key of [
     "axe", "nonText", "focusColour", "toast", "themeState",
-    "reflow320", "text200", "smallChoices", "focus", "behaviour", "statusPage",
+    "reflow320", "text200", "smallChoices", "focus", "behaviour", "statusPage", "footer",
   ]) {
     const entries = Object.entries(result[key]);
     if (entries.length) failures.push(`${key}: ${JSON.stringify(Object.fromEntries(entries))}`);

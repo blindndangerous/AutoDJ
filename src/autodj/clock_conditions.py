@@ -13,7 +13,7 @@ _NAME = re.compile(r"[a-z_][a-z0-9_]*\Z")
 _TEXT = {"artist", "title", "album"}
 _NUMERIC = {"year", "bpm", "duration"}
 _FIELDS = _TEXT | _NUMERIC | {"genre", "beets"}
-_OPS = {"eq", "lt", "lte", "gt", "gte", "between"}
+_OPS = {"eq", "lt", "lte", "gt", "gte", "between", "not_eq", "outside"}
 _MAX_VALUE = 500
 
 
@@ -35,13 +35,18 @@ def validate_category_condition(value: Mapping[str, Any]) -> dict[str, Any]:
     """Validate a reference to a saved music category."""
     category = value.get("category")
     if (
-        set(value) != {"field", "category"}
+        set(value) not in ({"field", "category"}, {"field", "category", "operator"})
         or value.get("field") != "category"
+        or value.get("operator", "is") not in {"is", "is_not"}
         or not isinstance(category, str)
         or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", category)
     ):
         raise ValueError("A category condition must name a saved category by its ID")
-    return {"field": "category", "category": category}
+    return {
+        "field": "category",
+        "category": category,
+        **({"operator": "is_not"} if value.get("operator") == "is_not" else {}),
+    }
 
 
 def validate_metadata_condition(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -71,7 +76,7 @@ def validate_metadata_condition(value: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("name is only valid for Beets fields")
     if field == "genre":
         if (
-            op != "is"
+            op not in {"is", "is_not"}
             or not isinstance(wanted, str)
             or not wanted.strip()
             or len(wanted) > _MAX_VALUE
@@ -80,15 +85,20 @@ def validate_metadata_condition(value: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("genre requires operator 'is' and one nonempty string")
         normalized["value"] = wanted.strip()
         return normalized
-    if field in _TEXT or (field == "beets" and op in {"is", "contains", "matches"}):
+    if field in _TEXT or (
+        field == "beets"
+        and op in {"is", "is_not", "contains", "matches", "not_contains", "not_matches"}
+    ):
         if (
-            op not in {"is", "contains", "matches"}
+            op not in {"is", "is_not", "contains", "matches", "not_contains", "not_matches"}
             or not isinstance(wanted, str)
             or not wanted.strip()
             or len(wanted) > _MAX_VALUE
             or "upper" in value
         ):
-            raise ValueError("text fields require is, contains, or matches and a nonempty string")
+            raise ValueError(
+                "text fields require is, is not, contains, or matches and a nonempty string"
+            )
         normalized["value"] = wanted
         return normalized
     if op not in _OPS:
@@ -102,7 +112,7 @@ def validate_metadata_condition(value: Mapping[str, Any]) -> dict[str, Any]:
         field == "year" or (field == "beets" and name in {"year", "original_year"})
     ) and not low.is_integer():
         raise ValueError("year must be an integer")
-    if op == "between":
+    if op in {"between", "outside"}:
         high_value = value.get("upper")
         high = (
             number(high_value)
@@ -110,7 +120,7 @@ def validate_metadata_condition(value: Mapping[str, Any]) -> dict[str, Any]:
             else None
         )
         if high is None or (field != "beets" and high < 0) or high < low:
-            raise ValueError("between requires a valid upper bound at or above value")
+            raise ValueError("range requires a valid upper bound at or above value")
         if (
             field == "year" or (field == "beets" and name in {"year", "original_year"})
         ) and not high.is_integer():
@@ -159,10 +169,15 @@ def condition_matcher(
         folded = wanted.casefold()
 
         def genre_matches(entry: Any, beets_item: Mapping[str, Any] | None = None) -> bool:
-            return any(g.casefold() == folded for g in genres(_get(entry, "genre")))
+            found = genres(_get(entry, "genre"))
+            return bool(found) and (
+                any(g.casefold() == folded for g in found)
+                if op == "is"
+                else all(g.casefold() != folded for g in found)
+            )
 
         return genre_matches
-    numeric = op in {"eq", "lt", "lte", "gt", "gte", "between"}
+    numeric = op in {"eq", "lt", "lte", "gt", "gte", "between", "not_eq", "outside"}
     no_zero = field in {"year", "bpm", "duration"} or (
         field == "beets" and name in {"year", "bpm", "length", "original_year"}
     )
@@ -191,8 +206,8 @@ def condition_matcher(
             found = number(raw)
             if found is None or (field != "beets" and found < 0) or (no_zero and found == 0):
                 return False
-            if op == "eq":
-                return found == wanted
+            if op in {"eq", "not_eq"}:
+                return (found == wanted) if op == "eq" else (found != wanted)
             if op == "lt":
                 return found < wanted
             if op == "lte":
@@ -201,16 +216,21 @@ def condition_matcher(
                 return found > wanted
             if op == "gte":
                 return found >= wanted
-            return wanted <= found <= upper
+            return (
+                (wanted <= found <= upper) if op == "between" else (found < wanted or found > upper)
+            )
         if field == "beets":
             raw = _beets_text(raw)
         if not isinstance(raw, str) or not raw.strip():
             return False
-        if op == "is":
-            return raw.casefold() == folded
-        if op == "contains":
+        if op in {"is", "is_not"}:
+            equal = raw.casefold() == folded
+            return not equal if op == "is_not" else equal
+        if op in {"contains", "not_contains"}:
             # A substring of the text, also for a numeric Beets column read as text.
-            return folded in raw.casefold()
-        return fnmatchcase(raw.casefold(), pattern)
+            contains = folded in raw.casefold()
+            return not contains if op == "not_contains" else contains
+        matched = fnmatchcase(raw.casefold(), pattern)
+        return not matched if op == "not_matches" else matched
 
     return matches

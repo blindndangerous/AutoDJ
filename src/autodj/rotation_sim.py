@@ -83,6 +83,8 @@ RULES = (
     "same album",
     "same title",
     "related track",
+    "same daypart",
+    "same quarter hour",
     "track repeat window",
     "dayparting",
     "back to back",
@@ -282,7 +284,7 @@ class LibrarySnapshot:
         self._by_path = {
             normalize_path(entry.path): entry for entry in (*self._music, *self._liners)
         }
-        self.categories = CategoryIndex(cfg, self.entries_snapshot)
+        self.categories = CategoryIndex(cfg, self.entries_snapshot, lambda: self.catalog.sources())
         self.categories.store = _ReadOnlyCategoryStore(self.categories.store.path)
         self.clock_beets = BeetsConditions(cfg)
         self.ledger = StationLedger(catalog, station, self.entry_for_path)

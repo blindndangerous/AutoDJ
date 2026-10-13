@@ -516,7 +516,7 @@
          any other result is said once in #intros-status. -->
     <section id="intros-editor" aria-labelledby="intros-heading" hidden>
       <h3 id="intros-heading">Matched intros</h3>
-      <p class="setting-desc" id="intros-help">Short voice clips that play as this song starts, such as “Here’s the new one from this artist”. When the song’s intro, from Start to Intro, is long enough, the voice talks it up and ends as the singing starts; otherwise it plays just before the song. An intro for this song comes first; an intro for the artist plays on any of the artist’s songs. A matched intro takes the place of the automatic liner at that song change.</p>
+      <p class="setting-desc" id="intros-help">Short voice clips that play as this song starts, such as “Here’s the new one from this artist”. When the song’s intro, from Start to Intro, is long enough, the voice talks it up and ends as the singing starts; otherwise it plays just before the song. An intro for this song comes first; an intro for the artist plays on any of the artist’s songs. By default, a matched intro can take the place of the automatic liner at that song change. Voice liners has an option to use matched intros only when no liner is scheduled.</p>
       <p class="setting-desc" id="intros-inactive" hidden></p>
       <!-- Intros the station's file holds that are not valid: skipped, kept
            in the file, and said here in words (never live). -->
@@ -1065,7 +1065,7 @@
          when focus enters Repeats, not repeated on all twelve boxes. -->
     <fieldset aria-describedby="repeat-rules-desc">
       <legend>Repeats</legend>
-      <p class="setting-desc" id="repeat-rules-desc">Each rule has a Tracks limit and a Minutes limit; when both are set, a repeat waits for both. 0 turns a limit off. Tracks are whole numbers, up to 100000 for the same track and up to 5000 for the others. Minutes go up to 10080 (one week) and can have decimals.</p>
+      <p class="setting-desc" id="repeat-rules-desc">The artist, album, track, title and related rules each have a Tracks limit and a Minutes limit; when both are set, a repeat waits for both. 0 turns a limit off. Tracks are whole numbers, up to 100000 for the same track and up to 5000 for the others. Minutes go up to 10080 (one week) and can have decimals. The daypart and quarter-hour rules, last, keep a song from playing at the same time every day. When no song passes the rules, they give way for that pick rather than stop the music.</p>
       <fieldset>
         <legend>Prevent the same artist from repeating within</legend>
         <div class="settings-row">
@@ -1153,6 +1153,30 @@
           <input type="number" id="repeat-related-track-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
         </div>
       </fieldset>
+      <fieldset aria-describedby="repeat-daypart-desc">
+        <legend>Prevent a song from playing in the same daypart</legend>
+        <p class="setting-desc" id="repeat-daypart-desc">Holds back a song that played in the daypart the next song starts in, earlier today or on any of the days before. 0 days turns this off; up to 7.</p>
+        <div class="settings-row">
+          <label for="repeat-daypart-days">Days</label>
+          <input type="number" id="repeat-daypart-days" min="0" max="7" step="1" value="0" inputmode="numeric">
+        </div>
+        <div class="settings-row">
+          <label for="repeat-daypart-hours">Daypart start hours</label>
+          <input type="text" id="repeat-daypart-hours" value="0, 6, 10, 15, 19" inputmode="numeric" autocomplete="off" spellcheck="false" aria-describedby="repeat-daypart-hours-desc">
+        </div>
+        <p class="setting-desc" id="repeat-daypart-hours-desc">Hours from 0 to 23 on the station's clock, separated by commas. Each daypart lasts until the next start, and the last one runs past midnight to the first. 0, 6, 10, 15, 19 is overnight, morning drive, midday, afternoon drive and evening. List all 24 hours to keep a song out of the hour it played in the day before.</p>
+      </fieldset>
+      <fieldset aria-describedby="repeat-hourpart-desc">
+        <legend>Prevent a song from playing in the same quarter of the hour</legend>
+        <p class="setting-desc" id="repeat-hourpart-desc">Holds back a song when one of its last plays in the past week started in the same quarter of the hour as the next song: :00 to :14, :15 to :29, :30 to :44 or :45 to :59. 0 plays turns this off; at 3, a song moves round all four quarters.</p>
+        <div class="settings-row">
+          <label for="repeat-hourpart-plays">Plays</label>
+          <input type="number" id="repeat-hourpart-plays" min="0" max="3" step="1" value="0" inputmode="numeric">
+        </div>
+      </fieldset>
+      <!-- A refused value's message; the script moves it under the field it
+           names and links it there with aria-describedby. -->
+      <p class="field-error" id="repeat-error" hidden></p>
       <button type="button" id="repeat-save">Save repeat settings</button>
     </fieldset>
 
@@ -1448,6 +1472,13 @@
     </div>
     <span class="setting-desc" id="ln-enabled-desc">
         Enable automatic liners at the intervals below. Queued liners and clockwheel liner slots still play when this is off.
+    </span>
+    <div class="settings-check">
+      <input type="checkbox" id="ln-matched-intro-only-without-liner" aria-describedby="ln-matched-intro-only-without-liner-desc">
+      <label for="ln-matched-intro-only-without-liner">Only when no liner is scheduled</label>
+    </div>
+    <span class="setting-desc" id="ln-matched-intro-only-without-liner-desc">
+      Matched song intros play only when no queued, clockwheel or automatic liner is scheduled for that song change. Off, a matched intro can take the place of an automatic liner.
     </span>
 
     <fieldset data-show-when="ln-enabled">
@@ -2539,7 +2570,7 @@
            count are plain text, not live regions: each result of a button
            (Check, Save and Delete included) is said once through
            #categories-status. -->
-      <p>A category is a set of songs that a clockwheel step picks from, such as rotation A, B, C and D, or Remembering the 2000s. Its songs come from a beets query or from an M3U playlist file. AutoDJ works the songs out again when beets, a playlist file or the library changes.</p>
+      <p>A category is a set of songs that a clockwheel step picks from, such as rotation A, B, C and D, or Remembering the 2000s. Its songs come from shared filters, a beets query or an M3U playlist file. AutoDJ works the songs out again when the library or a source changes.</p>
       <div id="categories-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
       <h3 id="categories-list-heading">Saved categories</h3>
       <ul id="categories-list" aria-labelledby="categories-list-heading"><li>No categories loaded.</li></ul>
@@ -2565,6 +2596,10 @@
               <input type="radio" name="categories-source" id="categories-source-m3u" value="m3u">
               <label for="categories-source-m3u">A playlist file</label>
             </div>
+            <div class="settings-check">
+              <input type="radio" name="categories-source" id="categories-source-filters" value="filters">
+              <label for="categories-source-filters">Matching conditions</label>
+            </div>
           </fieldset>
           <div id="categories-query-field">
             <div class="settings-row">
@@ -2583,6 +2618,14 @@
             <p class="setting-desc" id="categories-playlist-help">
               M3U and M3U8 files in <span id="categories-folder">the playlists folder</span>. Each line is matched to a song in the library, by its full path or by a path from the playlist's folder or the music folder; lines that match none are counted as missing.
             </p>
+          </div>
+          <div id="categories-filters-field" hidden>
+            <label for="categories-filter-match">Match conditions</label>
+            <select id="categories-filter-match"><option value="all">Match all</option><option value="any">Match any</option></select>
+            <p id="categories-filter-label">Conditions</p>
+            <div id="categories-filter-conditions" role="group" aria-labelledby="categories-filter-label"></div>
+            <button type="button" id="categories-filter-add">Add condition</button>
+            <p class="setting-desc">Uses the same folder, metadata and Beets filters as music clockwheel steps. Unknown metadata never matches an exclusion.</p>
           </div>
           <fieldset id="categories-daypart" aria-describedby="categories-daypart-help">
             <legend>When the songs may play</legend>
@@ -2617,8 +2660,8 @@
             </div>
           </fieldset>
           <button type="button" id="categories-check" aria-describedby="categories-match">Check</button>
-          <!-- The last Check or Save result.  Plain text: Check and Save say it once. -->
-          <p id="categories-match">Not checked yet.</p>
+          <!-- Browseable count; completed results are announced through categories-status. -->
+          <p id="categories-match" aria-live="off">Not checked yet.</p>
           <button type="submit" id="categories-save">Save category</button>
           <button type="button" id="categories-cancel">Cancel</button>
         </fieldset>
@@ -2670,6 +2713,7 @@
           <button type="button" id="clock-add-condition">Add condition</button>
           <p class="setting-desc" id="clock-step-conditions-help">Choose Matches to use * for any text or ? for one character. Duration accepts seconds or MM:SS. Beets fields require a configured Beets library. To use a category condition, first add a music category under Library tools, Categories.</p>
           <p class="setting-desc" id="clock-step-beets-notice" hidden></p>
+          <p id="clock-step-match-count" aria-live="off">Matching track count appears while editing.</p>
         </div>
         <div class="clock-step-field" id="clock-step-source-field">
           <label for="clock-step-source">Library folder</label>
@@ -2858,14 +2902,17 @@
   Placeholder text renders before /api/version resolves so a SR user
   landing here mid-fetch hears something coherent and there is no
   layout shift on populate.
+
+  When the server knows its commit, app.js wraps #ver-build in a link to
+  that commit on GitHub, so the link's name starts with its visible text,
+  "build 1a2b3c4" (2.5.3), and a hidden suffix says where it goes.
 -->
 <footer id="page-footer">
   <p id="version-stamp">
     AutoDJ
     <span id="ver-version">loading…</span>
     <span class="ver-sep" aria-hidden="true">·</span>
-    build
-    <span id="ver-commit">…</span>
+    <span id="ver-build">build <span id="ver-commit">…</span></span>
     <span class="ver-sep" aria-hidden="true">·</span>
     <time id="ver-built" datetime="">…</time>
   </p>

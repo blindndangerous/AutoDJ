@@ -72,6 +72,7 @@ export const STATION_ROUTES = Object.freeze([
   "/library/clock",
   "/library/clock/active",
   "/library/clock/import",
+  "/library/clock/check",
   "/library/clock/{name}",
   "/library/clock/{name}/duplicate",
   "/library/clock/{name}/rename",

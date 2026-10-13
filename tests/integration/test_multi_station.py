@@ -134,6 +134,26 @@ def _station_threads(slug: str) -> list[threading.Thread]:
     return [thread for thread in threading.enumerate() if named.match(thread.name)]
 
 
+def _running_threads(slug: str) -> list[str]:
+    """The names of *slug*'s threads once its player has started its mix bus.
+
+    The player thread starts the render-ahead worker and the bus's stop
+    watcher only after it opens its cue cache, so a count taken as soon as
+    the station starts can miss both; a slow machine (Windows CI) did.
+    """
+    started = {f"autodj-render-ahead-{slug}", f"autodj-bus-stop-{slug}"}
+    _wait_for(
+        lambda: started <= {thread.name for thread in _station_threads(slug)},
+        f"{slug}'s mix bus to start",
+    )
+    return sorted(thread.name for thread in _station_threads(slug))
+
+
+def _without_liner_workers(names: list[str]) -> list[str]:
+    # The liner worker starts with the first song, so a restart may not have it yet.
+    return [name for name in names if not name.startswith("autodj-liner-")]
+
+
 def _wait_for(predicate: Any, what: str) -> None:
     deadline = time.monotonic() + WAIT
     while not predicate():
@@ -319,11 +339,17 @@ def test_unknown_station_streams_are_not_found(rig: Any) -> None:
     assert client.post("/api/stations/daybreak/stop").status_code == 404
 
 
-def test_stop_and_start_clean_up_the_station(rig: Any) -> None:
+@pytest.mark.parametrize(
+    "rig",
+    [{"default_processing": "stereotool", "owl_processing": "stereotool"}],
+    indirect=True,
+)
+def test_stop_and_start_clean_up_one_of_two_stereo_tool_stations(rig: Any) -> None:
     client, _library, _cfg, _song, _closes = rig
     stations = client.app.state.stations
     owl = stations.get("nightowl")
     master = owl.player._continuous_master
+    default_master = stations.default.player._continuous_master
     encoder_stream = owl.bridge.stream
     with client.websocket_connect(f"{OWL}/ws") as socket:
         response = client.post(f"{OWL}/stop")
@@ -333,6 +359,7 @@ def test_stop_and_start_clean_up_the_station(rig: Any) -> None:
             socket.receive_json()
     assert _station_threads("nightowl") == []
     assert master.closed
+    assert not default_master.closed
     assert encoder_stream.listener_count == 0
     assert stations.get("nightowl").stopped
     assert client.get(f"{OWL}/status").status_code == 409
@@ -347,6 +374,8 @@ def test_stop_and_start_clean_up_the_station(rig: Any) -> None:
     fresh = stations.get("nightowl")
     assert fresh is not owl
     assert fresh.player._continuous_master is not master
+    assert stations.default.player._continuous_master is default_master
+    assert not default_master.closed
     assert client.get(f"{OWL}/status").status_code == 200
     assert client.post(f"{OWL}/start").json()["slug"] == "nightowl"
     assert stations.get("nightowl") is fresh
@@ -384,11 +413,30 @@ def test_a_station_without_autostart_waits_to_be_started(rig: Any) -> None:
     _wait_for(lambda: _station_threads("nightowl"), "the station's threads")
 
 
-@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_a_restarted_station_runs_the_same_threads_each_once(rig: Any) -> None:
+    client, *_ = rig
+    running = _without_liner_workers(_running_threads("nightowl"))
+    assert len(running) == len(set(running))
+    for _ in range(3):
+        assert client.post(f"{OWL}/stop").json()["state"] == "stopped"
+        _wait_for(lambda: not _station_threads("nightowl"), "Night Owl's threads to end")
+        assert client.post(f"{OWL}/start").status_code == 200
+        assert _without_liner_workers(_running_threads("nightowl")) == running
+
+
+@pytest.mark.parametrize(
+    "rig",
+    [
+        {"autostart": "false"},
+        {"autostart": "false", "default_processing": "stereotool"},
+    ],
+    indirect=True,
+)
 def test_a_station_that_fails_half_way_through_starting_leaves_nothing_running(
     rig: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    client, *_ = rig
+    client, _library, cfg, *_ = rig
+    default_master = client.app.state.stations.default.player._continuous_master
 
     def broken_recorder(*_args: Any, **_kwargs: Any) -> None:
         raise OSError("the recording state could not be read")
@@ -404,8 +452,40 @@ def test_a_station_that_fails_half_way_through_starting_leaves_nothing_running(
     assert FakeMaster.instances[-1].closed
     _wait_for(lambda: not _station_threads("nightowl"), "the station's threads to end")
     assert _stations(client)["nightowl"]["state"] == "stopped"
+    assert not default_master.closed
+    assert (
+        client.app.state.stations.default.cfg.playback.loudness_processing
+        == cfg.playback.loudness_processing
+    )
     monkeypatch.setattr(autodj.recorder, "Recorder", working)
     assert client.post(f"{OWL}/start").status_code == 200
+
+
+@pytest.mark.parametrize(
+    "rig",
+    [{"autostart": "false", "default_processing": "stereotool", "owl_processing": "stereotool"}],
+    indirect=True,
+)
+def test_one_failed_stereo_tool_start_leaves_the_other_instance_running(
+    rig: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, *_ = rig
+    default = client.app.state.stations.default
+    default_master = default.player._continuous_master
+
+    def broken_master(**kwargs: Any) -> None:
+        if kwargs["mode"]() == "stereotool":
+            raise OSError("the Stereo Tool processor could not start")
+        raise AssertionError("the requested independent processor should be Stereo Tool")
+
+    monkeypatch.setattr("autodj.mastering.ContinuousMaster", broken_master)
+    failed = client.post(f"{OWL}/start")
+    assert failed.status_code == 409
+    assert "Stereo Tool processor could not start" in failed.json()["detail"]
+    assert not default_master.closed
+    assert default.cfg.playback.loudness_processing == "stereotool"
+    assert client.app.state.stations.get("nightowl").stopped
+    assert _station_threads("nightowl") == []
 
 
 @pytest.mark.parametrize(
@@ -413,27 +493,25 @@ def test_a_station_that_fails_half_way_through_starting_leaves_nothing_running(
     [{"default_processing": "stereotool", "owl_processing": "stereotool"}],
     indirect=True,
 )
-def test_two_stations_cannot_both_use_stereo_tool(rig: Any) -> None:
+def test_two_stations_can_start_with_independent_stereo_tool_instances(rig: Any) -> None:
     client, *_ = rig
-    # Started with the server: refused, logged, and left stopped.
-    assert _stations(client)["nightowl"]["state"] == "stopped"
-    refused = client.post(f"{OWL}/start")
-    assert refused.status_code == 409
-    assert "Stereo Tool, which is already processing AutoDJ" in refused.json()["detail"]
-    assert _station_threads("nightowl") == []
+    assert _stations(client)["default"]["state"] != "stopped"
+    assert _stations(client)["nightowl"]["state"] != "stopped"
+    assert _station_threads("nightowl")
+    owl = client.app.state.stations.get("nightowl")
+    assert owl.cfg.playback.loudness_processing == "stereotool"
 
 
 @pytest.mark.parametrize("rig", [{"default_processing": "stereotool"}], indirect=True)
-def test_a_running_station_cannot_switch_to_stereo_tool_in_use(rig: Any) -> None:
+def test_two_running_stations_can_switch_to_stereo_tool_independently(rig: Any) -> None:
     client, *_ = rig
     owl = client.app.state.stations.get("nightowl")
-    refused = client.post(f"{OWL}/playback-settings", json={"loudness_processing": "stereotool"})
-    assert refused.status_code == 400
-    assert "Stereo Tool is already processing AutoDJ" in refused.json()["detail"]
-    assert owl.cfg.playback.loudness_processing == "smooth"
-    # The default station keeps it, and may still change its own settings.
+    changed = client.post(f"{OWL}/playback-settings", json={"loudness_processing": "stereotool"})
+    assert changed.status_code == 200, changed.text
+    assert owl.cfg.playback.loudness_processing == "stereotool"
     kept = client.post("/api/playback-settings", json={"loudness_processing": "stereotool"})
-    assert kept.status_code == 200
+    assert kept.status_code == 200, kept.text
+    assert client.app.state.stations.default.cfg.playback.loudness_processing == "stereotool"
 
 
 def test_a_preset_any_station_uses_cannot_be_deleted(rig: Any) -> None:
@@ -561,7 +639,8 @@ def test_soak_two_stations_keep_time_through_renders_and_restarts(rig: Any) -> N
     # Night Owl's threads, running; the same after every restart.  (The
     # process's whole count also has the render stand-ins and threads
     # other tests left to finish.)
-    owl_threads_at_start = len(_station_threads("nightowl"))
+    owl_running = _running_threads("nightowl")
+    owl_threads_at_start = len(owl_running)
     workers = [threading.Thread(target=render, daemon=True) for _ in range(2)]
     started = time.monotonic()
     cpu_then, wall_then = time.process_time(), started
@@ -596,6 +675,10 @@ def test_soak_two_stations_keep_time_through_renders_and_restarts(rig: Any) -> N
                 assert not old.bridge.stream._encoder.alive
                 assert old.player._continuous_master.closed
                 assert client.post(f"{OWL}/start").status_code == 200
+                # The restarted station runs the same threads, each once.
+                assert _without_liner_workers(_running_threads("nightowl")) == (
+                    _without_liner_workers(owl_running)
+                )
                 owl, owl_since = attach_owl()
                 restarts += 1
                 next_cycle = time.monotonic() + cycle

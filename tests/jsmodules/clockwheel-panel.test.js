@@ -69,6 +69,7 @@ function fakeServer({
       pending_update: server.pending_update,
     });
     if (url === "/api/library/clock" && method === "GET") return snapshot();
+    if (url === "/api/library/clock/check") return { tracks: 12, error: null };
     if (url === "/api/library/clock" && method === "POST") { server.clocks[body.name] = body; return body; }
     if (url === "/api/library/clock/active") { server.active = body.name; return snapshot(); }
     if (url === "/api/library/clock/import") {
@@ -129,6 +130,8 @@ describe("clockwheel markup", () => {
     expect(byId("clock-status").getAttribute("role")).toBe("status");
     expect(byId("clock-name").maxLength).toBe(64);
     expect(byId("clock-step-legend").closest("fieldset").id).toBe("clock-step-form");
+    expect(byId("clock-step-match-count").getAttribute("aria-live")).toBe("off");
+    expect(byId("clock-step-match-count").getAttribute("aria-hidden")).toBeNull();
     expect(section.querySelector("[aria-controls]")).toBeNull();
     expect(byId("clock-steps-help").textContent).toContain("Alt+Up and Alt+Down");
     expect(byId("clock-steps-help").textContent).toContain("Enter on a step name edits it");
@@ -138,6 +141,57 @@ describe("clockwheel markup", () => {
 });
 
 describe("clockwheel editor", () => {
+  it("shows a debounced matching track count for the current step", async () => {
+    const server = await open(fakeServer());
+    const row = byId("clock-step-conditions").firstElementChild;
+    row.querySelector("select").value = "genre";
+    row.querySelector("select").dispatchEvent(new Event("change", { bubbles: true }));
+    row.querySelectorAll("select")[3].value = "Rock";
+    row.querySelectorAll("select")[3].dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(byId("clock-step-match-count").textContent).toContain("12 tracks match"));
+    expect(status()).toContain("12 tracks match this selection before repeat protection");
+    const call = server.calls.find((item) => item.url === "/api/library/clock/check");
+    expect(call.body.step.conditions).toEqual([{ field: "genre", operator: "is", value: "Rock" }]);
+  });
+
+  it("offers exact negative text matching for library and Beets fields", async () => {
+    await open(fakeServer());
+    const row = byId("clock-step-conditions").firstElementChild;
+    const field = row.querySelector("select");
+    const operator = row.querySelectorAll("select")[2];
+    field.value = "artist";
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+    expect([...operator.options].map((option) => option.value)).toContain("is_not");
+    field.value = "beets";
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+    expect([...operator.options].map((option) => option.value)).toContain("is_not");
+  });
+
+  it("recounts Match any changes and never steals focus for an incomplete count", async () => {
+    const server = await open(fakeServer());
+    const first = byId("clock-step-conditions").firstElementChild;
+    first.querySelector("select").value = "genre";
+    first.querySelector("select").dispatchEvent(new Event("change", { bubbles: true }));
+    first.querySelectorAll("select")[3].value = "Rock";
+    first.querySelectorAll("select")[3].dispatchEvent(new Event("change", { bubbles: true }));
+    const match = byId("clock-step-match");
+    match.value = "any";
+    match.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(server.calls.filter((item) => item.url === "/api/library/clock/check")).toHaveLength(1));
+    expect(server.calls.at(-1).body.step.match).toBe("any");
+
+    const row = byId("clock-step-conditions").firstElementChild;
+    const field = row.querySelector("select");
+    field.value = "artist";
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+    const value = row.querySelectorAll('input[type="text"]')[1];
+    value.value = "";
+    value.dispatchEvent(new Event("input", { bubbles: true }));
+    match.focus();
+    await vi.waitFor(() => expect(byId("clock-step-match-count").textContent).toContain("Complete the step conditions"));
+    expect(document.activeElement).toBe(match);
+  });
+
   it("names category steps and selects music categories as conditions", async () => {
     expect(describeStep({ type: "category", category: "gone", selection: "least_recent" }, [], []))
       .toBe("music from a category that no longer exists, least recently played");
@@ -331,7 +385,7 @@ describe("clockwheel editor", () => {
     const field = row.querySelector("select");
     field.value = "artist";
     field.dispatchEvent(new Event("change"));
-    row.querySelectorAll("select")[2].value = "contains";
+    row.querySelectorAll("select")[2].value = "not_contains";
     row.querySelectorAll("input[type=text]")[1].value = "Björk*";
     await controls.refresh();
     expect(row.querySelectorAll("input[type=text]")[1].value).toBe("Björk*");
@@ -346,7 +400,7 @@ describe("clockwheel editor", () => {
     byId("clock-save").click();
     await vi.waitFor(() => expect(server.calls.some((call) => call.method === "PUT")).toBe(true));
     expect(server.calls.find((call) => call.method === "PUT").body.steps.at(-1).conditions).toEqual([
-      { field: "artist", operator: "contains", value: "Björk*" },
+      { field: "artist", operator: "not_contains", value: "Björk*" },
       { field: "title", operator: "contains", value: "Live?" },
     ]);
     await vi.waitFor(() => expect(status()).toContain("Saved Morning, 4 steps."));
@@ -648,7 +702,8 @@ describe("clockwheel editor", () => {
   it("shows when saved active-wheel changes are waiting for restart", async () => {
     await open(fakeServer({ pending_update: true }));
     expect(byId("clock-next").textContent).toBe("Saved changes are waiting for the next clock restart.");
-    expect(status()).toBe("Saved changes are waiting for the next clock restart.");
+    // A forced announcement clears the status, then writes it on the next tick.
+    await vi.waitFor(() => expect(status()).toBe("Saved changes are waiting for the next clock restart."));
   });
 
   it("hides Apply timing for an inactive wheel", async () => {
@@ -1097,6 +1152,15 @@ describe("clockwheel step conditions, for screen readers", () => {
       { field: "beets", name: "rg_track_gain", operator: "lt", value: -3 },
       { field: "artist", operator: "is", value: "Björk" },
     ]))).toBe("music from Beets rg track gain less than -3 or Artist is Björk, least recently played");
+  });
+
+  it("describes exact negative text, folder and category conditions naturally", () => {
+    expect(describeStep({ ...MUSIC, conditions: [{ field: "artist", operator: "is_not", value: "Björk" }] }, SOURCES))
+      .toBe("music from Artist is not Björk, least recently played");
+    expect(describeStep({ ...MUSIC, conditions: [{ field: "folder", source: "rock", folder: "Live", operator: "is_not" }] }, SOURCES))
+      .toBe("music from folder is not Live, least recently played");
+    expect(describeStep({ ...MUSIC, conditions: [{ field: "category", category: "c1", operator: "is_not" }] }, [], [{ id: "c1", name: "Rock gold" }]))
+      .toBe("music from category is not Rock gold, least recently played");
   });
 
   it("leaves a focused genre list alone until focus leaves it", async () => {

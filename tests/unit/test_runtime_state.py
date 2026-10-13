@@ -707,6 +707,7 @@ class TestRoundTrip:
             "liners_pick_mode",
             "liners_duck_db",
             "liners_talk_up",
+            "matched_intro_only_without_liner",
             "stream_bitrate",
             "stream_continuous",
             "stream_station_name",
@@ -854,6 +855,26 @@ def test_repeat_state_ignores_unknown_keys_without_losing_rules(tmp_path, caplog
     assert "related_artists_file" in caplog.text
     assert "future_limit" in caplog.text
     assert "private-path" not in caplog.text
+
+
+def test_saved_daypart_and_quarter_hour_rules_are_restored(tmp_path, caplog):
+    _write_state(
+        tmp_path,
+        {
+            "playback": {
+                "repeat_rules": {
+                    "daypart": {"days": 2, "start_hours": [0, 12], "future_limit": 1},
+                    "hourpart": {"plays": 3},
+                }
+            }
+        },
+    )
+    player = _make_player()
+    _load(player, tmp_path)
+    rules = player._cfg.playback.repeat_rules
+    assert (rules.daypart.days, rules.daypart.start_hours, rules.hourpart.plays) == (2, [0, 12], 3)
+    assert (player._state.rules.daypart_days, player._state.rules.hourpart_plays) == (2, 3)
+    assert "future_limit" in caplog.text
 
 
 def test_removed_repeat_keys_are_shared_and_grouped():

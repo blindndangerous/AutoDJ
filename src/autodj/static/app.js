@@ -131,6 +131,7 @@ const pbKeySyncFx     = document.getElementById("pb-key-sync-fx");
 const pbBeatmatchSkip = document.getElementById("pb-beatmatch-on-skip");
 const pbSkipStyle     = document.getElementById("pb-skip-style");
 const lnTalkUp        = document.getElementById("ln-talk-up");
+const lnMatchedIntroOnlyWithoutLiner = document.getElementById("ln-matched-intro-only-without-liner");
 const pbTransitionMode = document.getElementById("pb-transition-mode");
 const pbPostQueueSeed  = document.getElementById("pb-post-queue-seed");
 const keyNotation     = document.getElementById("key-notation");
@@ -844,6 +845,7 @@ const _settingsEls = () => ({
   pbReplayGain, pbLoudness: pbReplayGain,
   pbSavedPointsNote: document.getElementById("pb-saved-points-note"),
   pbBeatSyncFx, pbKeySyncFx, pbBeatmatchSkip, pbSkipStyle, lnTalkUp,
+  lnMatchedIntroOnlyWithoutLiner,
   pbTransitionMode, pbPostQueueSeed,
   keyNotation, keyPreferFlats,
   bpmLo, bpmHi,
@@ -1242,6 +1244,10 @@ const _repeatEls = {
   useRelatedArtists: document.getElementById("repeat-use-related-artists"),
   useRelatedTracks: document.getElementById("repeat-use-related-tracks"),
   versionsAsOneSong: document.getElementById("repeat-versions-as-one-song"),
+  daypartDays: document.getElementById("repeat-daypart-days"),
+  daypartHours: document.getElementById("repeat-daypart-hours"),
+  hourpartPlays: document.getElementById("repeat-hourpart-plays"),
+  error: document.getElementById("repeat-error"),
   defaultFile: document.getElementById("repeat-related-default"),
   fileStatus: document.getElementById("repeat-related-status"),
   tracksDefaultFile: document.getElementById("repeat-related-tracks-default"),
@@ -3035,6 +3041,27 @@ void bootstrapAuthenticatedApp({
   },
 });
 
+// The server sends commit_url only for a commit it knows; anything that is
+// not a GitHub commit address stays plain text.
+const COMMIT_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/commit\/[0-9a-f]{7,40}$/;
+
+// Wrap "build <sha>" in a link to the commit, so the link's name starts with
+// the words shown (2.5.3).  It opens in a new tab, as the status page link
+// does, so the control page keeps playing; the hidden suffix says so.
+function linkBuildStamp(build, url) {
+  if (!build || typeof url !== "string" || !COMMIT_URL.test(url)) return;
+  const link = document.createElement("a");
+  link.id = "ver-commit-link";
+  link.href = url;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  const where = document.createElement("span");
+  where.className = "visually-hidden";
+  where.textContent = " on GitHub (opens in a new tab)";
+  link.append(...build.childNodes, where);
+  build.append(link);
+}
+
 // Footer build stamp.  Static populate-once -- no live region, no WS
 // subscription; the stamp is reference data, not a status update.
 // On failure the footer says Unavailable and the shared reporter exposes
@@ -3047,6 +3074,7 @@ requestJson("/api/version", { cache: "no-cache" })
     };
     setText("ver-version", d.version);
     setText("ver-commit",  d.commit);
+    linkBuildStamp(document.getElementById("ver-build"), d.commit_url);
     const t = document.getElementById("ver-built");
     if (t && d.built_at) {
       // <time datetime="…"> -- machine-readable per HTML spec.  Visible
