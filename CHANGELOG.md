@@ -14,6 +14,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   liner content within its intro when it fits. For example, if a -3 second request has one second
   available before vocals, the liner starts one second after the song. If the main content is longer
   than the intro, existing liner-first timing remains; the liner tail continues over the song.
+  Track info announces when a negative value makes the cue-preview controls unavailable (#159).
+- **Why this track?** names the clockwheel step that selected the song, with its number and
+  the same description shown in the clockwheel list. Music and category steps say whether they
+  choose the least recently played song or choose at random. The description stays with the
+  selected song when the clock changes, including the opening song.
+- Library Rescan can override saved fields with populated embedded tags; missing tags keep the
+  saved values, cue points and analysis remain intact for unchanged files.
+
+- Seasons for rotation categories (#140): under **When the songs may play**, a category can have a
+  **Not before** date, a **Do not play after** date, or both, such as 1 to 26 December for
+  Christmas songs. Outside them its songs are left out of every pick mode and a clockwheel step
+  for it is skipped, as outside its hours; the list says the season in words and "Outside its
+  dates now". Categories without dates are saved as before.
+- Days and hours for clockwheel steps (#140): any step can keep to chosen days and hours in the
+  new **When this step plays** fields of the step form. Outside them the step is skipped as an
+  empty step is, with "outside its hours" in the clockwheel status and the server log; the hours
+  are checked for when the song is expected to start. The step list says them after the step. A
+  clockwheel whose every song step is outside its hours does what it does when no step has a
+  song; it gets no new whole-library fallback. Steps without hours are written as before, so an
+  older AutoDJ still reads the file.
+- Dayparting messages name what holds the songs back: "outside its hours", "outside its days" or
+  "outside its dates", in the clockwheel status, the server log and the category list (#140). The
+  category list changes its words in place when a poll finds a category now inside or outside
+  them, without moving focus.
+
+- Play dates for time check voice packs (#140): in Settings, Time checks, **Voice pack play
+  dates** gives a pack a **Not before** date, a **Do not play after** date, or both, such as a
+  holiday voice in December. Outside them a ticked pack is passed over and the other ticked packs
+  speak; a test of that pack still plays it. Each pack's description says its dates and when it
+  is skipped now. The dates are kept in `time_checks.json` under `pack_dates`, only when a pack
+  has some, so an older AutoDJ still reads the file. Keys this version does not know and dates
+  it cannot read are kept as written, each save reads the file again first, a file that cannot
+  be read refuses saves rather than lose what it holds, and a switch saved while dates are saved
+  keeps both.
+- Announcer breaks (#88): an announcer program on the station's machine, such as radiodj, can
+  send a station DJ breaks, news, weather and music news through a new breaks API, with no
+  AzuraCast in between. AutoDJ prepares each song change one song ahead, so it now also picks the
+  song after the next one and offers that song change as the open slot; the program writes a
+  break for that pair of songs and uploads it. A DJ break talks up the next song (the speech ends
+  as its vocal starts, over its intro) when the song has an intro of at least two seconds, and
+  otherwise plays between the songs; `[breaks] dj_placement` chooses. News, weather and music
+  news play between the songs. The music drops by `[breaks] duck_db` under the voice, or by the
+  liners' duck depth. A booked break keeps its next song whatever the queue does. AutoDJ trims the
+  silence after the speech, reports each break as queued, rendered, on the air, aired, dropped or
+  expired with the reason in words, and deletes the file afterwards. Breaks are off until
+  `[breaks] enabled = true`, need saved-point playback, and work per station. Uploads are capped
+  in size, length and number before their body is read, limited to 192 kHz and two channels,
+  decoded away from the playout within a memory budget, and checked before they are accepted.
+  Operations has the API with example requests.
+- Announcer tokens: in Settings, Analysis workers, Machine tokens, **Token use** now offers
+  Announcer, with a **Station** choice that shows only for it. An announcer token works for that
+  one station and only for the breaks API.
+  `autodj tokens create NAME --scope announcer --station SLUG` does the same, and
+  `autodj tokens list` names a token's station.
 - A rotation tester (#125): Settings > Song picking > **Test rotation**, or
   `autodj simulate --days 7`, plays a span of time (up to 30 days) or a number of songs (up to
   20,000) through the station's own song picker, with its clockwheel, categories and their hours,
@@ -26,7 +80,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the run works in the background with a progress bar and a Cancel button, announces its end
   once, and shows the results as headings and lists. See
   [Operations](docs/operations.md#testing-the-rotation).
-
 - Editing tags from Track info (#53). A Tags section has fields for title, artist, album, genre,
   year, BPM, key and ISRC. Save tags writes only the changed fields into the file with mutagen
   (MP3, FLAC, M4A, Ogg Vorbis, Opus, WAV and AIFF) and updates the library at once, keeping the
@@ -35,8 +88,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   flushed to disk and replaces the original only once every changed field reads back, so a failed
   save leaves the original as it was; an MP3 keeps its ID3 version. A song playing or up next is
   refused until it has played, and only files inside the library folders are changed. When beets
-  manages the library, the same fields can be written to the beets database too. A refused field
-  is marked invalid with its reason linked to it and focused; a save is said once and focus stays
+  manages the library, the same fields can be written to the beets database too, in the same
+  order as each file save. A refused field is marked invalid with its reason linked to it and
+  focused; a save is said once and focus stays
   on Save tags. The dialog that asks to save before switching tracks now reads its explanation when
   it opens and has a Keep editing button, which does what Escape does.
 
@@ -322,6 +376,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Repeat rules that use minutes now keep and load up to 50,000 recent plays, so fast song rotations
+  retain more of the selected time window across picks and restarts.
+- Dayparting checks a category's hours for when the song is expected to start rather than when
+  it is picked (#140), so a song no longer starts a few minutes after its window has closed. The
+  rotation tester checks them the same way, and so does the song change planned a song early for
+  announcer breaks (#88), for the song after the next one.
+- Picks with dayparting are cheaper (#140): which songs are outside their hours is worked out once
+  a minute rather than on every pick, and the closed songs are no longer sorted for the
+  similarity search on every pick. The answers are the same.
+- Without `[server] station_timezone`, the system time zone is looked up once rather than on
+  every pick, and a host with no known zone logs its warning once (#140).
+- When every song is outside its hours, the warning is logged once, not twice per pick, and again
+  only after the hours change (#140).
+- A category with all seven days ticked and no hours says "Plays every day, at any hour" rather
+  than "Plays only every day" (#140).
+- Sequential liner rotation keeps its place when a registered liner is outside its play dates
+  (#140): the liner after it still comes next, rather than the order shifting by one. A
+  discarded pick gives back every liner it passed over, and talk-up liners planned ahead pass over
+  liners outside their dates as well.
+- "expired" on cart buttons and "Skipped now" in the liner list follow the station's day on a page
+  left open past midnight, in place, without moving focus or announcing anything (#140).
+- A library scan forgets the play dates of liners deleted outside AutoDJ, and a liner uploaded
+  under a free name starts without dates, so a new file no longer inherits an old one's (#140).
+  A scan that could not read a folder marks no track gone and forgets nothing, a liner folder
+  that cannot be listed keeps its dates, and so does a library ID no longer in the library. A
+  `liner_dates.json` that cannot be read just now, or whose folder is away, is no longer set aside
+  or written over; saves are refused until it can be read, a new upload waits rather than take
+  an old liner's dates, and a delete says when the dates could not be forgotten. An empty liner
+  folder forgets dates only after two scans in a row, names compare without case on Windows, and
+  a file listed but not reachable is not marked gone.
+- Liner play dates are judged by the day the liner airs: a talk-up planned before midnight for a
+  song after it, and a clockwheel liner step for the next song. **Test** on the server refuses a
+  liner outside its dates and says why (#140).
+- In browser playback, dayparting times a pick from what is left of the song playing, and a pick
+  that replaces a song ending now is timed now (#140).
+- A cart editor date refused by the server is shown under the editor and linked to its field, as
+  the page's own checks are (#140). Only that 422 answer names the field; every other endpoint's
+  422 is unchanged.
+- A liner list redrawn at the station's midnight puts focus back on the same liner's button (#140).
+- The schedule form hides **Date range** for one-time events, unless the event was saved with one
+  (#140).
+- In Safari and other WebKit browsers, Settings, Time checks no longer scrolls sideways at 320 px
+  wide: a drop-down list whose choice is too long for its width now wraps the text onto a second
+  line instead of widening the page. Clicking Dismiss on the status message also leaves keyboard
+  focus on the control that had it; WebKit does not focus a clicked button, so focus used to fall
+  to the page itself. The visual audit passes in WebKit as well as Chromium and Firefox, and the
+  contributing and accessibility-testing guides say how to run it there.
+
 - Rotation tests now count repeat-rule violations on the opening song and after a fresh start,
   including steps configured to ignore repeat rules. Those picks could previously repeat a song
   while the report said no rules had been relaxed.
@@ -411,10 +513,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Analysis worker status counts waiting songs without sorting or building a list of their
+  paths (#166).
+
+- History exports load details only for the requested dates, while retaining the next play
+  needed to calculate duration (#165). Reports use a separate database snapshot so they do not
+  hold up play-history writes. Stored history remains unlimited.
+
 - Clockwheel picks on a large library take less work, the same songs as before: in DMCA mode a
   pick checks each song against only the few albums and artists at a limit (and none while nothing
   is), the songs a clock can pick from are kept between picks until the library or the hours
-  change, and least-recently-played steps compare play times without reworking every path.
+  change, and least-recently-played steps reuse their last-played lookup when retrying with
+  looser repeat limits (#167).
 
 - The clockwheel's reset timing now measures every song from its start cue to its end cue (or its
   segue or outro, when earlier) for all clockwheels, not only for liner steps with "Only play if
@@ -509,6 +619,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   or reads `index/.stream-secret`. It does not delete an existing one; the file is unused and you
   can delete it.
 - The librosa file-loading fallback. Librosa still detects beats, tempo and audio features.
+
+### Security
+
+- FFmpeg may now open only local files and pipes whenever AutoDJ asks it to read a song, a liner,
+  a cart clip or a break (`-protocol_whitelist file,pipe`). A file that FFmpeg took for a playlist
+  could otherwise make it fetch addresses on the network.
+- A machine token (an analysis worker's or an announcer's) is refused on plain HTTP when the
+  request carries a `Forwarded`, `X-Forwarded-*` or `X-Real-IP` header, even from the same
+  machine: a reverse proxy there may have carried it in from the network unencrypted. Through a
+  proxy, machine tokens need TLS at the proxy and `X-Forwarded-Proto: https` from a proxy the
+  server trusts. With `[stream] trusted_proxies` empty, a streaming server now trusts a proxy on
+  its own machine (`127.0.0.1`, `::1`), as a server that does not stream always has, so a TLS
+  reverse proxy on the same host keeps working; a list you set is used as it is.
+- AutoDJ now needs python-multipart 0.0.32 or later, which refuses a form part with more than
+  eight headers or a header over about 4 KiB.
 
 ## [0.20.0] - 2026-10-11
 

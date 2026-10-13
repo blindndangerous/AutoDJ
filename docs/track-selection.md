@@ -139,7 +139,7 @@ Save applies the rules to future picks and stores them in `web_state.json`.
 The current song and already prepared queue are left alone. Saved play history
 counts after a restart and when you increase a limit. A play interrupted by a
 set stop does not count, as in the history viewer. Future-dated saved plays are
-skipped if the clock has moved backwards. Minute limits use up to 5000 recent
+skipped if the clock has moved backwards. Minute limits use up to 50,000 recent
 plays; artist, album and title track limits allow at most 5000. If the library is too
 small for the track rule, AutoDJ reduces its effective count to leave at least
 a tenth of the library (and at least four tracks) available.

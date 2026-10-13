@@ -22,11 +22,11 @@ function mount() {
     <section id="panel-library" hidden>
       <input id="source-folder-path"><select id="source-folder-kind"><option value="music">Music</option><option value="liner">Liner</option></select>
       <input id="source-folder-recursive" type="checkbox" checked><input id="source-folder-advanced" type="checkbox" checked>
-      <button id="source-folder-add"></button><button id="source-folder-rescan"></button>
+      <input id="source-folder-override-tags" type="checkbox" aria-describedby="source-folder-override-tags-help"><p id="source-folder-override-tags-help">Rescan refreshes populated file tags. Hand-edited BPM and key values and cue points are retained.</p><button id="source-folder-add"></button><button id="source-folder-rescan"></button>
       <p id="source-folders-status"></p><ul id="source-folders"></ul>
     </section>
     <button id="edit-current-points"></button><section id="points-editor" hidden>
-      <h3 id="points-heading">Song points</h3><p id="points-liner-help" hidden></p><small id="negative-overlap-help" hidden></small><label id="points-allow-outro-label" hidden><input id="points-allow-outro" type="checkbox"> Allow start over outro</label>
+      <h3 id="points-heading">Song points</h3><p id="points-liner-help" hidden></p><small id="negative-overlap-help" hidden>A negative value delays the liner. Preview and Use preview position are unavailable for negative values.</small><label id="points-allow-outro-label" hidden><input id="points-allow-outro" type="checkbox"> Allow start over outro</label>
       <input id="points-path"><button id="points-load"></button>
       ${["start", "intro", "outro", "segue", "end", "overlap_start"].map((name) => `<label><input data-point="${name}"><span data-point-source="${name}"></span></label><button data-preview="${name}"></button><button data-set-current="${name}"></button>`).join("")}
       <audio id="points-preview"></audio>
@@ -53,6 +53,30 @@ document.addEventListener("click", (event) => {
 });
 
 describe("clock folder and points controls", () => {
+  it("sends the embedded-tag override only when checked", async () => {
+    const request = vi.fn(async () => ({}));
+    installLibraryFolders({ document, request });
+    const rescan = document.getElementById("source-folder-rescan");
+
+    expect(document.getElementById("source-folder-override-tags").checked).toBe(false);
+    rescan.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(JSON.parse(request.mock.calls[0][1].body)).toEqual({ override_tags: false });
+    await vi.waitFor(() => expect(document.getElementById("source-folders-status").textContent).toBe("Rescan started."));
+
+    document.getElementById("source-folder-override-tags").checked = true;
+    rescan.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(JSON.parse(request.mock.calls[1][1].body)).toEqual({ override_tags: true });
+    await vi.waitFor(() => expect(document.getElementById("source-folders-status").textContent).toBe("Rescan started; populated file tags will be refreshed."));
+  });
+
+  it("associates the embedded-tag override with its help in the page markup", () => {
+    const html = readFileSync(join(process.cwd(), "src", "autodj", "static", "index.html"), "utf8");
+    expect(html).toContain('id="source-folder-override-tags" type="checkbox" aria-describedby="source-folder-override-tags-help"');
+    expect(html).toContain('id="source-folder-override-tags-help">Rescan refreshes populated file tags. Hand-edited BPM and key values and cue points are retained.</p>');
+  });
+
   it("parses seconds and MM:SS while preserving empty points", () => {
     expect(parsePointTime("5.3")).toBe(5.3);
     expect(parsePointTime("1:05.5")).toBe(65.5);
@@ -340,6 +364,25 @@ describe("clock folder and points controls", () => {
     document.getElementById("points-save").click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(JSON.parse(request.mock.calls.find(([url]) => url === "/api/library/points")[1].body).points.overlap_start).toBe(-3);
+  });
+
+  it("announces preview availability when a liner overlap changes sign", async () => {
+    const request = vi.fn(async () => ({ path: "N:/voice/id.wav", kind: "liner", length: 8, points: { overlap_start: 0 } }));
+    installLibraryFolders({ document, request });
+    document.dispatchEvent(new CustomEvent("autodj:edit-points", { detail: { path: "N:/voice/id.wav", kind: "liner" } }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const input = document.querySelector('[data-point="overlap_start"]');
+    input.focus();
+    input.value = "-3";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    const status = document.getElementById("points-status");
+    await vi.waitFor(() => expect(status.textContent).toContain("unavailable for negative values"));
+    expect(document.activeElement).toBe(input);
+    input.value = "0";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.waitFor(() => expect(status.textContent).toContain("available again"));
+    expect(document.querySelector('[data-preview="overlap_start"]').disabled).toBe(false);
+    expect(document.querySelector('[data-set-current="overlap_start"]').disabled).toBe(false);
   });
 
   it("saves the liner outro option and keeps it checked when saved points reload", async () => {

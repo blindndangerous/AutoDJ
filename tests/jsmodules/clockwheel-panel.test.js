@@ -136,7 +136,7 @@ describe("clockwheel markup", () => {
 describe("clockwheel editor", () => {
   it("adds a step that plays music from a category and names the category", async () => {
     expect(describeStep({ type: "category", category: "gone", selection: "least_recent" }, [], []))
-      .toBe("music from a category that no longer exists");
+      .toBe("music from a category that no longer exists, least recently played");
     const server = await open(fakeServer({ categories: [{ id: "c1", name: "Rock gold" }, { id: "c2", name: "2000s" }] }));
     const type = byId("clock-step-type");
     type.value = "category";
@@ -172,17 +172,49 @@ describe("clockwheel editor", () => {
     expect(rows()).toHaveLength(3);
   });
 
+  it("says a step's days and hours in words", async () => {
+    const { stepHoursText } = await import("../../src/autodj/static/modules/step-hours.js");
+    expect(stepHoursText({})).toBe("");
+    expect(stepHoursText({ days: [0, 1, 2, 3, 4] })).toBe("only on weekdays");
+    expect(stepHoursText({ days: [6, 5] })).toBe("only at weekends");
+    expect(stepHoursText({ days: [0, 1, 2, 3, 4, 5, 6] })).toBe("");
+    expect(stepHoursText({ hours_from: "06:00", hours_until: "10:00" })).toBe("only every day from 06:00 until 10:00");
+    expect(stepHoursText({ days: [0, 2], hours_from: "06:00:00", hours_until: "10:00:00" }))
+      .toBe("only on Monday and Wednesday from 06:00 until 10:00");
+  });
+
   it("validates restart minutes and describes steps in words", () => {
     expect(parseResyncMinutes("30, 0, 30")).toEqual([0, 30]);
     expect(parseResyncMinutes(" ")).toEqual([]);
     expect(() => parseResyncMinutes("61")).toThrow("0 to 59");
     expect(() => parseResyncMinutes("a")).toThrow("whole minutes");
-    expect(describeStep(MUSIC, SOURCES)).toBe("music from Rock");
+    expect(describeStep(MUSIC, SOURCES)).toBe("music from Rock, least recently played");
     expect(describeStep(MORNING.steps[1], SOURCES)).toBe("liner from Top, at random, ignoring repeat rules");
     expect(describeStep({ ...MORNING.steps[1], require_following: true }, SOURCES)).toBe("liner from Top, at random, ignoring repeat rules, only if the following track fits before the next reset");
-    expect(describeStep({ ...MUSIC, recursive: true, source: "gone" }, SOURCES)).toBe("music from a folder that is no longer registered, with subfolders");
+    expect(describeStep({ ...MUSIC, recursive: true, source: "gone" }, SOURCES)).toBe("music from a folder that is no longer registered, with subfolders, least recently played");
     expect(describeStep({ type: "settings", preset: "night" })).toBe("switch to preset night");
     expect(describeStep({ type: "time_check" })).toBe("time check step");
+  });
+
+  it("shares step hours in descriptions used by the list and Why this track", async () => {
+    const { describeStep: sharedDescribeStep } = await import("../../src/autodj/static/modules/clockwheel-step.js");
+    expect(describeStep).toBe(sharedDescribeStep);
+    expect(sharedDescribeStep({ ...MUSIC, days: [0, 1, 2, 3, 4], hours_from: "06:00", hours_until: "10:00" }, SOURCES))
+      .toBe("music from Rock, least recently played, only on weekdays from 06:00 until 10:00");
+    expect(sharedDescribeStep({ type: "settings", preset: "night", days: [5, 6] }))
+      .toBe("switch to preset night, only at weekends");
+  });
+
+  it("says how every clockwheel music step chooses among its matches", () => {
+    expect(describeStep({ ...MUSIC, selection: "least_recent" }, SOURCES))
+      .toBe("music from Rock, least recently played");
+    expect(describeStep({ ...MUSIC, selection: "random" }, SOURCES)).toBe("music from Rock, at random");
+    expect(describeStep({ ...MORNING.steps[1], selection: "least_recent" }, SOURCES))
+      .toBe("liner from Top, least recently played, ignoring repeat rules");
+    expect(describeStep({ type: "category", category: "c1", selection: "least_recent" }, [], [{ id: "c1", name: "Rock gold" }]))
+      .toBe("music from category Rock gold, least recently played");
+    expect(describeStep({ type: "track", path: "Song.flac" })).toBe("track Song.flac");
+    expect(describeStep({ type: "settings", preset: "night" })).toBe("switch to preset night");
   });
 
   it("saves any-match folder rows and numeric ranges, with summaries for every condition", async () => {
@@ -316,7 +348,7 @@ describe("clockwheel editor", () => {
     await open(fakeServer());
     expect(byId("clock-slots").querySelectorAll('[role="row"] [role="rowheader"]')).toHaveLength(3);
     expect(byId("clock-slots").querySelectorAll('[role="row"] [role="gridcell"]')).toHaveLength(15);
-    expect(rowText(0)).toBe("music from Rock");
+    expect(rowText(0)).toBe("music from Rock, least recently played");
     expect(rowText(2)).toBe("track Album/Song.flac");
     expect(byId("clock-open-name").textContent).toBe("Morning");
     expect(byId("clock-next").textContent).toBe("Plays next: Step 2 of 3, liner from Top, at random, ignoring repeat rules.");
@@ -392,11 +424,11 @@ describe("clockwheel editor", () => {
     expect(rowCell(0, "move-down").tabIndex).toBe(0);
     expect(rowCell(0, "edit").tabIndex).toBe(-1);
     expect(key(rowCell(0, "move-down"), " ").defaultPrevented).toBe(true);
-    expect(rowText(1)).toBe("music from Rock");
+    expect(rowText(1)).toBe("music from Rock, least recently played");
     expect(document.activeElement).toBe(rowCell(1, "move-down"));
-    await vi.waitFor(() => expect(status()).toBe("Moved. Step 2 of 3, music from Rock. Not saved yet."));
+    await vi.waitFor(() => expect(status()).toBe("Moved. Step 2 of 3, music from Rock, least recently played. Not saved yet."));
     key(rowCell(1, "move-down"), "Enter", { repeat: true });
-    expect(rowText(1)).toBe("music from Rock");
+    expect(rowText(1)).toBe("music from Rock, least recently played");
     key(rowCell(1, "move-down"), "Home");
     key(document.activeElement, "Enter");
     expect(byId("clock-step-legend").textContent).toBe("Edit step 2");
@@ -404,7 +436,7 @@ describe("clockwheel editor", () => {
     rowCell(2, "move-down").focus();
     key(rowCell(2, "move-down"), "Enter");
     expect(rows().map((_, index) => rowText(index))).toEqual([
-      "liner from Top, at random, ignoring repeat rules", "music from Rock", "track Album/Song.flac",
+      "liner from Top, at random, ignoring repeat rules", "music from Rock, least recently played", "track Album/Song.flac",
     ]);
     // A button that has focus, as after a click, handles Enter itself.
     const native = key(rowButton(0, "duplicate"), "Enter");
@@ -421,12 +453,12 @@ describe("clockwheel editor", () => {
     rowCell(0, "duplicate").focus();
     rowCell(0, "duplicate").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }));
     await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
-    expect(byId("confirm-title").textContent).toBe("Delete step 1, music from Rock?");
+    expect(byId("confirm-title").textContent).toBe("Delete step 1, music from Rock, least recently played?");
     expect(document.activeElement).toBe(byId("confirm-cancel"));
     byId("confirm-cancel").click();
     await vi.waitFor(() => expect(document.activeElement).toBe(rowCell(0, "duplicate")));
     expect(rows()).toHaveLength(3);
-    expect(rowText(0)).toBe("music from Rock");
+    expect(rowText(0)).toBe("music from Rock, least recently played");
     expect(byId("clock-next").textContent).not.toBe("Save to play these changes.");
     expect(status()).toBe("");
   });
@@ -439,7 +471,7 @@ describe("clockwheel editor", () => {
     rowCell(0, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }));
     await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
     byId("confirm-accept").click();
-    await vi.waitFor(() => expect(status()).toBe("Deleted step 1, music from Rock. No steps are left. Not saved yet."));
+    await vi.waitFor(() => expect(status()).toBe("Deleted step 1, music from Rock, least recently played. No steps are left. Not saved yet."));
     expect(rows()).toHaveLength(0);
     expect(document.activeElement).toBe(byId("clock-step-type"));
   });
@@ -449,8 +481,8 @@ describe("clockwheel editor", () => {
     rowCell(0, "edit").focus();
     altKey(rowCell(0, "edit"), "ArrowDown");
     expect(document.activeElement).toBe(rowCell(1, "edit"));
-    expect(rowText(1)).toBe("music from Rock");
-    await vi.waitFor(() => expect(status()).toBe("Moved. Step 2 of 3, music from Rock. Not saved yet."));
+    expect(rowText(1)).toBe("music from Rock, least recently played");
+    await vi.waitFor(() => expect(status()).toBe("Moved. Step 2 of 3, music from Rock, least recently played. Not saved yet."));
     expect(byId("clock-next").textContent).toBe("Save to play these changes.");
     altKey(document.activeElement, "ArrowUp");
     expect(document.activeElement).toBe(rowCell(0, "edit"));
@@ -480,7 +512,7 @@ describe("clockwheel editor", () => {
     rowButton(0, "duplicate").click();
     expect(rows()).toHaveLength(4);
     expect(document.activeElement).toBe(rowCell(1, "duplicate"));
-    await vi.waitFor(() => expect(status()).toBe("Duplicated as Step 2 of 4, music from Rock. Not saved yet."));
+    await vi.waitFor(() => expect(status()).toBe("Duplicated as Step 2 of 4, music from Rock, least recently played. Not saved yet."));
     rowButton(3, "delete").click();
     expect(rows()).toHaveLength(3);
     expect(document.activeElement).toBe(rowCell(2, "edit"));
@@ -507,7 +539,7 @@ describe("clockwheel editor", () => {
     byId("clock-step-selection").value = "least_recent";
     byId("clock-step-require-following").checked = true;
     byId("clock-add-step").click();
-    expect(rowText(1)).toBe("liner from Top/Hour, ignoring repeat rules, only if the following track fits before the next reset");
+    expect(rowText(1)).toBe("liner from Top/Hour, least recently played, ignoring repeat rules, only if the following track fits before the next reset");
     expect(document.activeElement).toBe(rowCell(1, "edit"));
     expect(byId("clock-step-legend").textContent).toBe("Add a step");
     expect(byId("clock-step-require-following").checked).toBe(false);
@@ -518,10 +550,10 @@ describe("clockwheel editor", () => {
     expect(put.body.steps[0]).not.toHaveProperty("require_following");
     byId("clock-step-require-following").checked = true;
     byId("clock-add-step").click();
-    await vi.waitFor(() => expect(status()).toBe("Added Step 4 of 4, liner from Liners, ignoring repeat rules, only if the following track fits before the next reset. Not saved yet."));
+    await vi.waitFor(() => expect(status()).toBe("Added Step 4 of 4, liner from Liners, least recently played, ignoring repeat rules, only if the following track fits before the next reset. Not saved yet."));
     expect(byId("clock-step-require-following").checked).toBe(false);
     byId("clock-add-step").click();
-    await vi.waitFor(() => expect(status()).toBe("Added Step 5 of 5, liner from Liners, ignoring repeat rules. Not saved yet."));
+    await vi.waitFor(() => expect(status()).toBe("Added Step 5 of 5, liner from Liners, least recently played, ignoring repeat rules. Not saved yet."));
     byId("clock-save").click();
     await vi.waitFor(() => expect(status()).toBe("Saved Morning, 5 steps."));
     const savedAgain = server.calls.filter((call) => call.method === "PUT").at(-1);
@@ -531,6 +563,58 @@ describe("clockwheel editor", () => {
     byId("clock-cancel-edit").click();
     expect(document.activeElement).toBe(rowCell(2, "edit"));
     expect(byId("clock-add-step").textContent).toBe("Add step");
+  });
+
+  it("gives a step days and hours, says them in its name and fills them in on Edit", async () => {
+    const server = await open(fakeServer());
+    rowButton(2, "edit").click();
+    expect(byId("clock-step-day-4").checked).toBe(false);
+    byId("clock-step-day-4").checked = true;
+    byId("clock-step-day-5").checked = true;
+    byId("clock-step-hours-from").value = "22:00";
+    byId("clock-step-hours-until").value = "02:00";
+    byId("clock-add-step").click();
+    expect(rowText(2)).toBe("track Album/Song.flac, only on Friday and Saturday from 22:00 until 02:00");
+    expect(byId("clock-step-day-4").checked).toBe(false); // the form is cleared for the next step
+    expect(byId("clock-step-hours-from").value).toBe("");
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 3 steps."));
+    const put = server.calls.find((call) => call.method === "PUT");
+    expect(put.body.steps[2]).toEqual({
+      type: "track", source: "jazz", path: "Album/Song.flac",
+      days: [4, 5], hours_from: "22:00", hours_until: "02:00",
+    });
+    expect(put.body.steps[0]).not.toHaveProperty("days");
+    rowButton(2, "edit").click();
+    expect(byId("clock-step-day-5").checked).toBe(true);
+    expect(byId("clock-step-hours-until").value).toBe("02:00");
+    rowButton(0, "edit").click();
+    expect(byId("clock-step-day-5").checked).toBe(false);
+  });
+
+  it("names a half-filled time window, links the error and keeps the step out", async () => {
+    await open(fakeServer());
+    const from = byId("clock-step-hours-from");
+    from.value = "22:00";
+    byId("clock-add-step").click();
+    const until = byId("clock-step-hours-until");
+    const message = "Enter both Allowed from and Allowed until, or leave both empty.";
+    expect(document.activeElement).toBe(until);
+    expect(until.getAttribute("aria-invalid")).toBe("true");
+    expect(until.getAttribute("aria-describedby")).toBe("clock-step-hours-error");
+    expect(byId("clock-step-hours-error").textContent).toBe(message);
+    expect(byId("clock-step-hours-error").hidden).toBe(false);
+    await vi.waitFor(() => expect(status()).toBe(message));
+    expect(rows()).toHaveLength(3);
+    until.value = "22:00";
+    until.dispatchEvent(new Event("input"));
+    expect(until.hasAttribute("aria-invalid")).toBe(false);
+    byId("clock-add-step").click();
+    expect(byId("clock-step-hours-error").textContent).toBe("Allowed until must differ from Allowed from.");
+    until.value = "02:00";
+    byId("clock-add-step").click();
+    expect(byId("clock-step-hours-error").hidden).toBe(true);
+    expect(rows()).toHaveLength(4);
   });
 
   it("shows only the fields of the chosen step type and refuses paths that leave the folder", async () => {
@@ -845,11 +929,11 @@ describe("clockwheel step conditions, for screen readers", () => {
       { field: "genre", operator: "is", value: "Rock" },
       { field: "beets", name: "original_year", operator: "lt", value: 1990 },
       { field: "bpm", operator: "gt", value: 120 },
-    ]))).toBe("music from Genre is Rock and Beets first release year less than 1990 and BPM greater than 120");
+    ]))).toBe("music from Genre is Rock and Beets first release year less than 1990 and BPM greater than 120, least recently played");
     expect(describeStep(step("any", [
       { field: "beets", name: "rg_track_gain", operator: "lt", value: -3 },
       { field: "artist", operator: "is", value: "Björk" },
-    ]))).toBe("music from Beets rg track gain less than -3 or Artist is Björk");
+    ]))).toBe("music from Beets rg track gain less than -3 or Artist is Björk, least recently played");
   });
 
   it("leaves a focused genre list alone until focus leaves it", async () => {

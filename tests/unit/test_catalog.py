@@ -606,3 +606,31 @@ def test_change_counters_track_records_vectors_and_sources_from_any_process(
         changed = catalog.change_versions()
         assert changed["vectors"] == cues["vectors"] + 1
         assert changed["sources"] == cues["sources"] + 1
+
+
+def test_unembedded_count_matches_paths_and_tracks_external_changes(tmp_path: Path) -> None:
+    music, nested, liners = tmp_path / "music", tmp_path / "music" / "nested", tmp_path / "liners"
+    nested.mkdir(parents=True)
+    liners.mkdir()
+    songs = [music / "top.flac", nested / "nested.flac", liners / "liner.flac"]
+    for song in songs:
+        song.write_bytes(b"audio")
+    with (
+        LibraryCatalog(tmp_path / "catalog.db") as catalog,
+        LibraryCatalog(tmp_path / "catalog.db") as other,
+    ):
+        catalog.add_source(music, recursive=False, advanced=True)
+        nested_source = catalog.add_source(nested, recursive=True, advanced=False)
+        catalog.add_source(liners, "liner", recursive=True, advanced=False)
+        catalog.add_source(music, "liner", recursive=False, advanced=False)
+        catalog.put_entry(entry(songs[0]))
+        catalog.put_entry(entry(songs[1]))
+        catalog.put_entry(entry(songs[2]))
+        assert catalog.unembedded_count() == len(catalog.unembedded_paths()) == 0
+
+        other.update_source(nested_source["id"], recursive=True, advanced=True)
+        assert catalog.unembedded_count() == len(catalog.unembedded_paths()) == 1
+        other.set_vector(songs[1], np.ones(FEATURE_DIM, dtype=np.float32))
+        assert catalog.unembedded_count() == len(catalog.unembedded_paths()) == 0
+        other.put_entry(entry(nested / "new.flac"))
+        assert catalog.unembedded_count() == len(catalog.unembedded_paths()) == 1

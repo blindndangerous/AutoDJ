@@ -302,7 +302,8 @@ export function installLibraryFolders({ document: doc = document, request = requ
     if (suspended) return;
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
-    try { await request("/api/library/rescan", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); if (requestCurrent(epoch, generation)) { announceAction("Rescan started."); await refresh(); } }
+    const overrideTags = doc.getElementById("source-folder-override-tags").checked;
+    try { await request("/api/library/rescan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ override_tags: overrideTags }) }); if (requestCurrent(epoch, generation)) { announceAction(overrideTags ? "Rescan started; populated file tags will be refreshed." : "Rescan started."); await refresh(); } }
     catch (error) { if (requestCurrent(epoch, generation)) announceAction(`Could not start rescan: ${error.message}`, true); }
   });
 
@@ -330,7 +331,13 @@ export function installLibraryFolders({ document: doc = document, request = requ
     const negative = currentKind === "liner"
       && doc.querySelector('[data-point="overlap_start"]').value.trim().startsWith("-");
     const help = doc.getElementById("negative-overlap-help");
-    if (help) help.hidden = !negative;
+    if (help) {
+      const changed = help.hidden === negative;
+      help.hidden = !negative;
+      if (changed) announceStatus(doc.getElementById("points-status"), negative
+        ? help.textContent
+        : "Preview and Use preview position are available again.");
+    }
     for (const selector of ['[data-preview="overlap_start"]', '[data-set-current="overlap_start"]']) {
       const button = doc.querySelector(selector);
       if (button) button.disabled = negative;
