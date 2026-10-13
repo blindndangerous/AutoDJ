@@ -584,7 +584,13 @@ With several stations, the archive also holds each other station's state files a
 under `stations/<slug>/`, including its `listener_bans.json` and `recording.json`, and the
 manifest lists the stations. A folder shared with another station is stored once. The backup
 may not be written inside any station's folders either. Every station's state files are copied
-under the index's publication lock with the index, so they are one moment's.
+under the index's publication lock with the index, so they are one moment's. A link that leaves
+its folder (a file link pointing elsewhere, a state file linked elsewhere, or any linked
+subfolder, symbolic link or Windows junction) makes the backup fail with the link's name, so a
+link cannot pull another file on the machine into an archive; a file link within the same folder
+is read as that file. Restore refuses links stored in an archive and destinations that a link
+takes outside their folder, and it removes a link or junction it set aside as a link, never
+walking into its target.
 
 Restore requires a backup from the same major and minor version. It refuses member names that
 are absolute, contain `..`, backslashes or drive letters, or fall outside the known index files,

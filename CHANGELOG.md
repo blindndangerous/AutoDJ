@@ -193,7 +193,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   failure part way no longer leaves a mix of old and new files. It checks the archive's size
   against a 256 GiB cap and the free space before unpacking, and refuses file names Windows
   reserves for devices or that end in a dot or a space. A backup copies every station's state
-  files under the index's lock, so they are one moment's.
+  files under the index's lock, so they are one moment's. A link that leaves its folder,
+  including a Windows junction, makes the backup fail with its name instead of copying outside
+  files (#193); a link within the folder is saved as a file. Restore refuses links in an archive
+  and destinations that a link takes elsewhere.
 - `autodj doctor` checks every station (#70). Each other station gets its own lines, starting
   "Station <slug>," (and a `station` field in `--json`): its folder, saved settings, stream,
   relays, time checks and voice packs, DMCA mode, recording folder and liner folder.

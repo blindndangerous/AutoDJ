@@ -2202,6 +2202,14 @@ files the manifest does not list, and an index made by an older AutoDJ. It also 
 names Windows cannot hold, such as `CON`, `nul.mp3` or `COM1`, or a name ending in a dot or a
 space.
 
+Backup refuses a link that leaves its folder: a file link pointing outside the liner, cart or
+other folder it sits in, a state file that is a link to somewhere else, and any linked subfolder
+(a symbolic link or a Windows junction). This keeps unrelated files out of an archive. A file
+link to another file in the same folder is saved as an ordinary file. Uploaded Stereo Tool
+preset links are still left out. Configure a folder directly if it is meant to be backed up.
+Restore refuses links stored in an archive and destinations that a link takes outside their
+folder.
+
 Without `--force`, restore refuses when anything it would replace already exists. With it:
 
 - The index in the archive replaces the current index, including its older generations.

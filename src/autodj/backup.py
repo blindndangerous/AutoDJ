@@ -37,6 +37,7 @@ import json
 import os
 import shutil
 import sqlite3
+import stat
 import tempfile
 import uuid
 import zipfile
@@ -214,17 +215,52 @@ def _folder_roots(roots: dict[str, Path]) -> tuple[dict[str, Path], dict[str, st
     return kept, shared
 
 
-def _folder_files(root: Path, pattern: str = "**/*") -> list[Path]:
-    """The files a backup takes from folder *root*.
+def _is_link(path: Path) -> bool:
+    """Whether *path* is a symbolic link or a Windows junction."""
+    return path.is_symlink() or path.is_junction()
 
-    Uploaded Stereo Tool presets that are links stay out, as before; how
-    links in the other folders are treated is #193's (PR #197).
+
+def _within_root(path: Path, root: Path) -> None:
+    """Refuse a file that a link takes outside its configured folder (#193).
+
+    A link to another file in the same folder is fine; it is read as the
+    file it points to.
+
+    Raises:
+        BackupError: Naming the link and the folder.
     """
-    return [
-        path
-        for path in sorted(root.glob(pattern))
-        if path.is_file() and (pattern != "*.sts" or not path.is_symlink())
-    ]
+    if not path.resolve().is_relative_to(root.resolve()):
+        raise BackupError(f"{path} points outside backup folder {root}; remove the link first")
+
+
+def _folder_files(root: Path, pattern: str = "**/*") -> list[Path]:
+    """The files a backup takes from folder *root*, refusing links that leave it.
+
+    A linked subfolder (a symbolic link or a Windows junction) is refused,
+    and so is a file link that points outside *root*.  Uploaded Stereo Tool
+    presets that are links stay out, as before.
+
+    Raises:
+        BackupError: A link leaves the folder.
+    """
+    if not root.is_dir():
+        return []
+    if pattern == "*.sts":
+        return [
+            path for path in sorted(root.glob(pattern)) if path.is_file() and not _is_link(path)
+        ]
+    found = []
+    for directory, folders, files in os.walk(root, followlinks=False):
+        for name in folders:
+            path = Path(directory) / name
+            if _is_link(path):
+                raise BackupError(f"linked backup folder {path}; use a real folder instead")
+        for name in files:
+            path = Path(directory) / name
+            _within_root(path, root)
+            if path.is_file():
+                found.append(path)
+    return sorted(found)
 
 
 def _snapshot(cfg: AutoDJConfig, roots: dict[str, Path], snapshot: Path) -> dict[str, Path]:
@@ -252,6 +288,7 @@ def _snapshot(cfg: AutoDJConfig, roots: dict[str, Path], snapshot: Path) -> dict
                 (manifest.tracks_file, manifest.tracks_sha256),
                 (manifest.vectors_file, manifest.vectors_sha256),
             ):
+                _within_root(active / name, active)
                 shutil.copyfile(active / name, index / name)
                 if im.sha256_file(index / name) != digest:
                     raise BackupError(f"{active / name} does not match its SHA-256 in the manifest")
@@ -262,12 +299,18 @@ def _snapshot(cfg: AutoDJConfig, roots: dict[str, Path], snapshot: Path) -> dict
         ]
         for key, name in state:
             original = roots[key] / name
+            if not original.exists():
+                continue
+            _within_root(original, roots[key])
             if not original.is_file():
                 continue
             copy = snapshot / key / name
             copy.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(original, copy)
             members[f"{key}/{name}"] = copy
+    for name in ("dj_meta.db", "library.db", "related-artists.toml", "related-tracks.toml"):
+        if (active / name).exists():
+            _within_root(active / name, active)
     for name in ("dj_meta.db", "library.db"):
         database = active / name
         if not database.is_file():
@@ -557,7 +600,14 @@ class _Swap:
         """Keep the new files: delete what was set aside and flush the folders."""
         self._undo.clear()
         for aside in self._aside:
-            if aside.is_dir() and not aside.is_symlink():
+            # A link or junction set aside is removed as a link; rmtree would
+            # walk into what it points to.
+            if _is_link(aside):
+                if aside.is_junction() or (aside.is_dir() and os.name == "nt"):
+                    os.rmdir(aside)
+                else:
+                    aside.unlink(missing_ok=True)
+            elif aside.is_dir():
                 shutil.rmtree(aside, ignore_errors=True)
             else:
                 aside.unlink(missing_ok=True)
@@ -613,6 +663,11 @@ def _restore(
     targets = {name: _target(roots, name) for name in files}
     if sorted(files) != sorted(name for name in archive.namelist() if name != "manifest.json"):
         raise BackupError("the archive's files do not match its manifest.json")
+    for name, place in targets.items():
+        # A destination that a link takes elsewhere would be written there.
+        _within_root(place, roots[_split(name)[0]])
+        if stat.S_ISLNK(archive.getinfo(name).external_attr >> 16):
+            raise BackupError(f"linked file in archive: {name}")
     keys = list(dict.fromkeys(_split(name)[0] for name in files))
     _check_layout(roots, keys)
     folders = [key for key in keys if not _is_files(key)]
