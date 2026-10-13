@@ -418,8 +418,8 @@ def _restore(archive: zipfile.ZipFile, roots: dict[str, Path], *, force: bool) -
     targets = {name: _target(roots, name) for name in files}
     if sorted(files) != sorted(name for name in archive.namelist() if name != "manifest.json"):
         raise BackupError("the archive's files do not match its manifest.json")
-    for name, target in targets.items():
-        _within_root(target, roots[_split(name)[0]])
+    for name, target_path in targets.items():
+        _within_root(target_path, roots[_split(name)[0]])
         if stat.S_ISLNK(archive.getinfo(name).external_attr >> 16):
             raise BackupError(f"linked file in archive: {name}")
     keys = list(dict.fromkeys(_split(name)[0] for name in files))
