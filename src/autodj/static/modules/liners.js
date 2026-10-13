@@ -104,7 +104,8 @@ export function renderLinerFileList(fileList, files, onDelete, onEdit = (path, k
 // Where focus goes when the list has no liner left: the list's heading,
 // which takes focus from script only; the list itself without one.
 function _listHeading(list) {
-  const id = list.closest("section")?.getAttribute("aria-labelledby");
+  const id = list.getAttribute("aria-labelledby")
+    || list.closest("section")?.getAttribute("aria-labelledby");
   const heading = id ? list.ownerDocument.getElementById(id) : null;
   if (!heading) return list;
   if (!heading.hasAttribute("tabindex")) heading.tabIndex = -1;

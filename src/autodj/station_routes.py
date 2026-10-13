@@ -728,7 +728,13 @@ def equip_station(
     bridge = station.bridge
     api_root = "/api" if station.slug == DEFAULT_SLUG else f"/api/stations/{station.slug}"
     station.carts = StationCarts(
-        bridge, publish, lambda: station.paths.liners, station.paths.state_dir, api_root
+        bridge,
+        publish,
+        lambda: station.paths.liners,
+        station.paths.state_dir,
+        api_root,
+        # Looked up at each call: the registry sets it after this.
+        owns_liner=lambda path: station.owns_liner(path),
     )
 
     async def profile(name: str) -> dict:

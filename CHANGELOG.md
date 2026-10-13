@@ -22,12 +22,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `/api/hour-preview` and `/api/stations/<name>/hour-preview`. Previews run on one low-priority
   worker thread, stop after 80 songs or about 4 seconds, and are shared and reused for 45 seconds
   while nothing new is fixed.
+
+- Queue & Search uses one paginated library table with Music or Voice liners, folder filtering
+  and text search. Folder management is shown as a table in Library tools; liner file maintenance
+  is back in Settings > Voice liners. Search, folders and History share arrow-key navigation.
+  Action cells focus their buttons and checkboxes so screen readers can announce their roles
+  and checked state. Folder saves and table refreshes preserve focus.
 - Clockwheel Music steps can combine categories with folder and metadata conditions. Use
   Match any to combine categories, or Match all to narrow a category by year, BPM or other
   fields. Songs matching more than one condition are included once. Existing category steps
   open in the same condition editor and keep their selection and repeat settings. Category
   hours and the list of clockwheels using each category still apply.
-
 - Related tracks (#101). Settings > Picking > Repeats has a **Use related tracks** checkbox, off
   by default, with its own Tracks and Minutes limits (20 tracks to start with). It holds back
   tracks that sound alike on air, such as a song and one that samples it, listed as
@@ -404,6 +409,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   "Relaying to Icecast and Shoutcast" in the operations guide.
 
 ### Fixed
+
+- Several stations on one server (#70, #141):
+  - Restarting audio processing releases finished process objects and their Windows handles
+    during playback instead of retaining them until the station stops.
+  - Stopping a station takes effect at once. While its player finishes, the station is listed
+    as "stopping", its controls answer 409 straight away, its open pages are told at once, and
+    starting it again is refused at once instead of waiting up to 30 seconds. Other stations can
+    start and stop meanwhile. If the stopping station still holds Stereo Tool, a station asking
+    for it is told that the other station is stopping and to try again in a few seconds.
+  - A station stops and closes only once, even when a stop request arrives during server
+    shutdown. Every step of a stop is tried even if an earlier one fails, so shutdown always
+    stops every station and closes the library.
+  - A station whose player does not finish within 30 seconds of a stop is listed as "stuck
+    stopping", and the log says so every minute. It keeps its mastering process and Stereo Tool
+    until the player ends and the mastering process has really ended, instead of closing them
+    under a running player.
+  - Stopping a station now says what went wrong: the reply has a `warnings` list in plain words
+    (empty after a clean stop), and the log line is a warning instead of "stopped".
+  - On a normal shutdown, AutoDJ kills any mastering process still running and lets none start
+    again. On Windows, mastering processes also end when AutoDJ is killed outright or crashes.
+  - The check that only one station uses Stereo Tool can no longer miss a station that is
+    starting or stopping at that moment.
+  - A station that fails part of the way through starting now stops everything it had started:
+    its encoders, relays, liner worker, mastering process and player. If its player does not
+    finish in time, the player and its mastering process are left running and the log says so.
+  - A station with no `stream.station_name` is called by its slug, such as `nightowl`, instead of
+    "AutoDJ", so it no longer shares the default station's name in stream metadata. Two stations
+    given the same name are warned about at startup.
+  - When one station's liner folder is inside another's, each station keeps to its own liners.
+    The outer station no longer plays the inner station's liners in clockwheel liner steps or
+    offers them as cart clips. Folders reached through a symbolic link or a Windows short name
+    are matched too.
+  - Stopping a station cancels a cart's end timer, so a cart can no longer announce its end
+    after the station has stopped.
+  - The multi-station soak test now runs for a few seconds in every test run, stops and starts
+    the second station while both render, and checks that nothing is left behind (the bus timing
+    is judged only in a long run). It can run for hours and write memory and processor samples to
+    a file. See "Soak test" in `docs/operations.md`.
 
 - Clockwheel Delete and Undo leave an open step edit alone. Duplicating or moving steps
   keeps the edit attached to its original step and updates its displayed number (#146).

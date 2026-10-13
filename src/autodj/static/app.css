@@ -499,19 +499,28 @@
       outline-offset: 2px;
     }
 
-    #search-results {
+    #library-results-table, #source-folders-table {
+      width: 100%;
+      table-layout: fixed;
+      border-collapse: collapse;
       margin-top: 0.75rem;
-      list-style: none;
     }
-    #search-results li {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.45rem 0.25rem;
+    #library-results-table th, #library-results-table td,
+    #source-folders-table th, #source-folders-table td {
+      padding: 0.45rem 0.5rem;
       border-bottom: 1px solid var(--border);
-      font-size: 0.9rem;
+      text-align: left;
+      vertical-align: middle;
+      overflow-wrap: anywhere;
     }
-    #search-results li:last-child { border-bottom: none; }
+    #library-results-table th:first-child { width: 25%; }
+    #library-results-table th:not(:first-child) { width: 18.75%; }
+    #source-folders-table th:nth-child(1) { width: 14%; }
+    #source-folders-table th:nth-child(2) { width: 28%; }
+    #source-folders-table th:nth-child(3) { width: 18%; }
+    #source-folders-table th:nth-child(4) { width: 24%; }
+    #source-folders-table th:nth-child(5) { width: 16%; }
+    #source-folders-table label { display: block; margin: 0.2rem 0; overflow-wrap: anywhere; }
     .result-name {
       flex: 1;
       min-width: 0;
@@ -1235,7 +1244,7 @@
     }
 
     /* ---- Empty-list placeholder utility ---- */
-    /* Used by #why-list, #queue-list, #search-results, #ln-file-list,
+    /* Used by #why-list, #queue-list, #ln-file-list,
        #profile-list and #device-list.  list-style: none matters for #why-list, which is
        the one of those lists that still shows markers. */
     .no-results {
@@ -1268,9 +1277,8 @@
     :where(main) :where(ul, ol) {
       padding-inline-start: 1.5rem;
     }
-    :where(#search-results, #queue-list, #profile-list, #device-list,
-      #ln-file-list, #lyrics-list, #why-list, #library-browse-results,
-      #clock-slots),
+    :where(#queue-list, #profile-list, #device-list,
+      #ln-file-list, #lyrics-list, #why-list, #clock-slots),
     :where(main) :where(ul, ol):where(:has(> li.no-results:only-child)) {
       padding-inline-start: 0;
     }
@@ -1278,7 +1286,7 @@
     /* Rows that end in a button (Revoke, Remove folder, Unban) touched the
        next row's button: 44 px targets with no space between them. */
     :where(#token-list, #workers-list, #listener-ban-list, #listener-control-list,
-      #source-folders, #clock-list, #categories-list) > li + li {
+      #clock-list, #categories-list) > li + li {
       margin-top: 0.4rem;
     }
     /* Links: the card colour scheme's own link blue, underlined, so a link
@@ -1460,10 +1468,24 @@
       /* Track names get the full row width instead of being truncated to
          "3 Doors Down ..." for every entry, which made queue rows
          indistinguishable from each other. */
-      #queue-list li,
-      #search-results li {
+      #queue-list li {
         flex-wrap: wrap;
         row-gap: 0.4rem;
+      }
+      #library-results-table th, #library-results-table td,
+      #source-folders-table th, #source-folders-table td {
+        padding: 0.35rem 0.2rem;
+      }
+      #library-results-table .result-btn, #source-folders-table button {
+        width: 100%;
+        min-width: 0;
+        padding: 0.25rem 0.1rem;
+        white-space: normal;
+      }
+      #library-results-table .result-name {
+        display: block;
+        overflow-wrap: anywhere;
+        white-space: normal;
       }
       .queue-name,
       .result-name {

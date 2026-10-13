@@ -106,11 +106,16 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   on a poll that finds the same song; the next song shown only while it is allowed.
 - Voice liners: uploading a liner, Test now, and each rotation mode, including the spoken
   result when an upload or test fails.
-- Queue & Search, browsing: Tab moving from Search to Browse library (Folder, Search text, Browse,
-  the list, Previous and Next) and on to Browse voice liners; the track count said once per Browse
-  and per page, with focus staying on Previous or Next (or moving to the other one when the page
-  ends); Delete on a liner saying the result once and focus moving to the next liner or the list;
-  and Track info from either list, with Return to Queue & Search putting focus back on its button.
+- Library tools, folder table: arrow onto each checkbox and hear its name and checked state;
+  toggle it once, keep focus while saving and after the next poll, and confirm only one save.
+  After a failed save, check that the saved value is restored and focus stays on the checkbox.
+  Search and History action cells focus their buttons and announce the button role without
+  repeating the track name; returning from Track info leaves arrow navigation working.
+- Queue & Search, browsing: Tab to Type, Folder, Search text and Search; one result grid with
+  arrows, Home and End, and Enter or Space activating each action; the track count said once per
+  search and page, with focus staying on Previous or Next (or moving to the other when a page ends);
+  and Track info returning focus to its result. Under Settings > Voice liners, check Delete and
+  Play dates with focus moving to the next liner or the list.
 - Track info, Tags: each field read with its label and, for Year, BPM, Key and ISRC, its help;
   Save tags with a refused field marking it invalid, focusing the first one and reading its
   error; a save said once with focus staying on Save tags; and switching tracks with unsaved tags

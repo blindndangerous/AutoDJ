@@ -1740,7 +1740,7 @@ describe("static accessibility contracts", () => {
     // source-order form layout.
     installDocument();
     for (const id of [
-      "source-folder-path", "source-folder-override-tags", "library-browse-query", "clock-name",
+      "source-folder-path", "source-folder-override-tags", "search-input", "clock-name",
       "clock-step-type", "listener-ban-address", "token-secret",
     ]) {
       expect(document.getElementById(id).closest(".flow-form"), id).not.toBeNull();
