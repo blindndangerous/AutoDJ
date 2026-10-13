@@ -55,6 +55,7 @@ if TYPE_CHECKING:
     from autodj.matched_intros import MatchedIntros
     from autodj.recorder import Recorder
     from autodj.scheduler import Scheduler
+    from autodj.shows import ShowRunner, ShowStore
     from autodj.stream import StreamOutput
     from autodj.time_checks import TimeChecks
     from autodj.webhooks import WebhookWorker
@@ -205,6 +206,11 @@ class StationPaths:
     def matched_intros(self) -> Path:
         """Intros matched to songs and artists (#127)."""
         return self.state_dir / "matched_intros.json"
+
+    @property
+    def shows(self) -> Path:
+        """Shows: lists of songs prepared ahead (#106)."""
+        return self.state_dir / "shows.json"
 
     @property
     def intros(self) -> Path:
@@ -732,6 +738,8 @@ class StationRuntime:
     carts: StationCarts
     breaks: BreakDesk
     intros: MatchedIntros
+    shows: ShowStore
+    show_runner: ShowRunner
     # Pushes the state to this station's WebSocket clients once a second.
     broadcast: Callable[[], Coroutine[Any, Any, None]]
 
@@ -917,10 +925,15 @@ class StationRuntime:
         schedule.start()
         loop = asyncio.get_running_loop()
 
+        runner = getattr(self, "show_runner", None)
+
         def schedule_track_changed() -> None:
             # The mix-bus thread calls this; it only hands over to the loop.
             with contextlib.suppress(RuntimeError):  # the loop closed at shutdown
                 loop.call_soon_threadsafe(schedule.track_changed)
+                if runner is not None:
+                    # A show on the air queues its next songs (#106).
+                    loop.call_soon_threadsafe(runner.track_changed)
 
         bridge.scheduler_track_changed = schedule_track_changed
         self._schedule_ticker = asyncio.create_task(self._tick_schedule())

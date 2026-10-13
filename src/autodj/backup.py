@@ -9,8 +9,8 @@ that wrote it and the list of files) and these members:
   ``index/related-artists.toml``, ``index/related-tracks.toml``, ``index/schedule.json``,
   ``index/carts.json``,
   ``index/time_checks.json``, ``index/listener_bans.json``, ``index/recording.json``,
-  ``index/categories.json``, ``index/liner_dates.json`` and ``index/matched_intros.json``
-  from the active index folder.
+  ``index/categories.json``, ``index/liner_dates.json``, ``index/matched_intros.json``
+  and ``index/shows.json`` from the active index folder.
 - ``liners/...``, ``carts/...``, ``time_checks/...``, ``profiles/...``, ``clockwheels/...``
   and ``intros/...`` (the matched intros' audio): every file in those folders and their
   subfolders.  Time check
@@ -58,6 +58,7 @@ INDEX_FILES = (
     "categories.json",
     "liner_dates.json",
     "matched_intros.json",
+    "shows.json",
     im.MANIFEST_NAME,
 )
 _FOLDERS = (
@@ -180,6 +181,7 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
                     "categories.json",
                     "liner_dates.json",
                     "matched_intros.json",
+                    "shows.json",
                 )
             ]
             for path in [*sorted(snapshot.glob("*")), *state_files]:

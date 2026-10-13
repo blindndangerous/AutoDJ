@@ -621,3 +621,28 @@ def test_failed_audio_preparation_does_not_interrupt(tmp_path: Path) -> None:
     assert result.result == "error"
     assert result.message == "The selected liner is gone"
     assert rig.calls == ["prepare"]
+
+
+def test_an_action_can_run_hard_events_itself_and_soft_ones_at_once(tmp_path: Path) -> None:
+    rig = Rig(tmp_path / "schedule.json", playing=True)
+
+    async def queue(_params: dict[str, str]) -> None:
+        rig.calls.append("queue")
+
+    async def now(_params: dict[str, str]) -> None:
+        rig.calls.append("now")
+
+    rig.schedule.register(
+        Action("show", "Play a show", queue, interrupt="none", hard=now, soft_waits=False)
+    )
+    rig.schedule.start()
+    rig.add(action="show", time="12:01")
+    rig.add(action="show", time="12:02", timing="hard", name="Hard")
+    # Soft: at once, though a song is playing, and without a skip.
+    rig.tick_at("2026-10-11 12:01")
+    assert rig.calls == ["queue"]
+    assert rig.schedule.pending == []
+    # Hard: the action's own run, which does its own interrupting.
+    rig.tick_at("2026-10-11 12:02")
+    assert rig.calls == ["queue", "now"]
+    assert [run.result for run in rig.schedule.runs] == ["ok", "ok"]

@@ -457,6 +457,12 @@ class Action:
     so a liner airs over the next song; or ``"none"``. Audio handlers prepare
     the clip and return a playback callable; preparation must succeed before
     the interruption. The callable runs on a worker thread.
+
+    ``hard``, when given, runs a hard event instead of ``handle`` and does
+    its own interruption (a show starts its first song at once).  Without
+    ``soft_waits`` a soft event runs when it is due rather than waiting for
+    the song playing to end, and never interrupts (a show queues its songs
+    behind the song playing).
     """
 
     name: str
@@ -464,6 +470,8 @@ class Action:
     handle: Callable[[dict[str, str]], Awaitable[Callable[[], None] | None]]
     fields: tuple[ActionField, ...] = ()
     interrupt: Literal["before", "after", "none"] = "after"
+    hard: Callable[[dict[str, str]], Awaitable[None]] | None = None
+    soft_waits: bool = True
 
     def metadata(self) -> dict[str, Any]:
         """Describe the action for the web form (reads ``names`` lists)."""
@@ -757,6 +765,10 @@ class Scheduler:
             if action is None:
                 raise ValueError(f"Action {event.action} is not available")
             hard = event.timing == "hard"
+            if hard and action.hard is not None:
+                await action.hard(dict(event.params))
+                logger.info("Scheduled event %r ran: %s", event.name, summary)
+                return await self._record(event, "ok", "")
             play = await action.handle(dict(event.params))
             if hard and action.interrupt == "before":
                 self._interrupt()
@@ -794,7 +806,7 @@ class Scheduler:
             if now - due > MISSED_AFTER:
                 logger.warning("Scheduled event %r due at %s was missed", event.name, due)
                 await self._record(event, "missed", "Missed while the computer slept or stalled")
-            elif event.timing == "soft" and self._song_playing():
+            elif event.timing == "soft" and self._waits(event) and self._song_playing():
                 if event.id not in self.pending:
                     self.pending.append(event.id)
             else:
@@ -804,6 +816,11 @@ class Scheduler:
             await self._publish({"type": "schedule_changed"})
         if self.pending and not self._song_playing():
             await self._run_pending()
+
+    def _waits(self, event: ScheduledEvent) -> bool:
+        """Whether a soft *event* waits for the song playing to end."""
+        action = self.actions.get(event.action)
+        return action is None or action.soft_waits
 
     def track_changed(self) -> None:
         """Run the soft events that waited for the song that just ended (event loop)."""

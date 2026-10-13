@@ -42,6 +42,18 @@ AutoDJ is a single-user local music player with these exposed surfaces:
   8 previews wait (one more gets 503), the dry run stops at 80 songs or after about 4 seconds
   (checked before each pick), and a preview is reused for 45 seconds while what is fixed stays
   the same. Shutdown joins the worker and leaves the library open if it has not stopped.
+- Shows (`/api/shows`, #106) are browser routes like every other change: the signed-in session
+  and an allowed `Origin`, never a machine token. A show's list holds file paths, but a song can
+  only be added when it is a song in the library, and on the air each path is looked up in the
+  library again, so a path edited into `shows.json` never reaches the player. Generating a list
+  is the rotation tester's dry run on a copy of the player (its own clock, history and random
+  generator, nothing written), one at a time for the whole server (409 for another), on its own
+  thread below normal priority, for at most 20 seconds, cancelled at shutdown. A show holds at
+  most 500 songs and a station at most 200 shows. On the air a show only queues its songs, a
+  couple at a time, from the event loop's worker threads, holding `queue_lock` only to compare
+  and insert; in DMCA mode a song that would break a limit is skipped, never played.
+  `shows.json` is written atomically; an invalid show is skipped and kept, a file that is not a
+  file of shows is set aside, and one that cannot be read just now is never written over.
 - Machine tokens let a program on another computer use one narrow API without a browser. The
   only scope so far is "analysis worker" (`autodj worker`); see "Machine tokens and analysis
   workers" below.

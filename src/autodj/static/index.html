@@ -1714,7 +1714,7 @@
           </select>
         </div>
         <span class="setting-desc" id="schedule-timing-desc">
-          Soft waits for the current song to end.  Hard runs on time and, except for stream events, fades the current song out.
+          Soft waits for the current song to end.  Hard runs on time and, except for stream events, fades the current song out.  A show is queued at its time with Soft, to follow the current song, and starts at once with Hard.
         </span>
         <div class="settings-check">
           <input type="checkbox" id="schedule-enabled">
@@ -2592,6 +2592,81 @@
       </select>
       <p id="clock-apply-help">Continuing keeps the next step number. Moving or deleting steps can change what plays there. If that number no longer exists, the clock starts at step 1.</p>
       <button type="button" id="clock-save">Save clockwheel</button>
+    </section>
+
+    <section class="card" aria-labelledby="shows-heading" id="shows-card">
+      <h2 id="shows-heading">Shows</h2>
+      <!-- shows-panel.js fills this section.  The lists, the on-air line and
+           the totals are plain text, not live regions: each result of a
+           button is said once through #shows-status.  A refused field gets
+           aria-invalid, the error linked to it and focus. -->
+      <p>A show is a list of songs you prepare ahead, such as Remembering the 2000s, and air at a set time. AutoDJ picks the list from a category or a clockwheel with the station's own repeat rules and DMCA limits; you can then reorder it, remove songs, add others or generate it again. To air a show, add an event with the action Play a show under Settings, Schedule.</p>
+      <p id="shows-problem" class="field-error" hidden></p>
+      <div id="shows-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+      <p id="shows-on-air">No show is on the air.</p>
+      <button type="button" id="shows-stop" hidden>Stop show</button>
+      <h3 id="shows-list-heading">Saved shows</h3>
+      <ul id="shows-list" aria-labelledby="shows-list-heading"><li>No shows loaded.</li></ul>
+      <button type="button" id="shows-add">Add show</button>
+      <!-- Add and Edit share this form. -->
+      <form id="shows-form" novalidate hidden>
+        <fieldset>
+          <legend id="shows-form-legend">Add show</legend>
+          <p id="shows-form-error" class="field-error" hidden></p>
+          <div class="settings-row">
+            <label for="shows-name">Name</label>
+            <input id="shows-name" type="text" maxlength="100" autocomplete="off" spellcheck="false" required>
+          </div>
+          <fieldset id="shows-source">
+            <legend>Songs come from</legend>
+            <div class="settings-check">
+              <input type="radio" name="shows-source" id="shows-source-category" value="category" checked>
+              <label for="shows-source-category">A category</label>
+            </div>
+            <div class="settings-check">
+              <input type="radio" name="shows-source" id="shows-source-clockwheel" value="clockwheel">
+              <label for="shows-source-clockwheel">A clockwheel</label>
+            </div>
+          </fieldset>
+          <div class="settings-row" id="shows-category-field">
+            <label for="shows-category">Category</label>
+            <select id="shows-category" aria-describedby="shows-category-help"></select>
+          </div>
+          <p class="setting-desc" id="shows-category-help">Songs are picked from the category at random, with the repeat rules. Make categories, such as one from the beets query original_year:2000..2009, under Categories above.</p>
+          <div class="settings-row" id="shows-clockwheel-field" hidden>
+            <label for="shows-clockwheel">Clockwheel</label>
+            <select id="shows-clockwheel" aria-describedby="shows-clockwheel-help"></select>
+          </div>
+          <p class="setting-desc" id="shows-clockwheel-help" hidden>Songs are picked by the clockwheel's steps and conditions, in its order. Its voice liners are left out of the list.</p>
+          <div class="settings-row">
+            <label for="shows-target">Target length (minutes)</label>
+            <input id="shows-target" type="text" inputmode="numeric" autocomplete="off" value="60" aria-describedby="shows-target-help">
+          </div>
+          <p class="setting-desc" id="shows-target-help">5 to 360. Generating stops once the songs reach this length.</p>
+          <button type="submit" id="shows-save">Save show</button>
+          <button type="button" id="shows-cancel">Cancel</button>
+        </fieldset>
+      </form>
+
+      <section id="shows-editor" class="flow-form" aria-labelledby="shows-editor-heading" hidden>
+        <h3 id="shows-editor-heading" tabindex="-1">Songs of <span id="shows-editor-name"></span></h3>
+        <p id="shows-summary"></p>
+        <p id="shows-note" hidden></p>
+        <label for="shows-start">Pick as if at</label>
+        <input id="shows-start" type="datetime-local" aria-describedby="shows-start-help">
+        <p class="setting-desc" id="shows-start-help">Optional. Generate picks as the station would at this time, in the station time zone, so a category's days, hours and dates and a step's hours count then. Leave it empty for now.</p>
+        <button type="button" id="shows-generate">Generate list</button>
+        <p id="shows-songs-help">Move up and Move down change a song's place; Remove takes it out. Each change is saved at once, and the show plays its list as it is when it starts.</p>
+        <ol id="shows-songs" aria-labelledby="shows-editor-heading" aria-describedby="shows-songs-help"><li class="no-results">No songs yet. Press Generate list, or add songs below.</li></ol>
+        <h4 id="shows-add-heading">Add songs</h4>
+        <label for="shows-search">Search the library</label>
+        <input id="shows-search" type="search" autocomplete="off" spellcheck="false" aria-describedby="shows-search-help">
+        <p class="setting-desc" id="shows-search-help">Title, artist or album. Add puts the song at the end of the list.</p>
+        <button type="button" id="shows-search-run">Search</button>
+        <ul id="shows-results" aria-labelledby="shows-add-heading"></ul>
+        <button type="button" id="shows-play-now">Start after this song</button>
+        <button type="button" id="shows-close">Close list</button>
+      </section>
     </section>
   </section>
 

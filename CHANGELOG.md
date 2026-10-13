@@ -10,6 +10,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Shows (#106): Library tools has a **Shows** card where you plan a show such as "Remembering
+  the 2000s" ahead of time as a list of songs. Choose where its songs come from (a category, so
+  any genre, year or beets field, or a clockwheel with its step conditions) and a target length,
+  then **Generate list**: a dry run of the station's own picker, the one the rotation tester
+  uses, picks the songs under the repeat rules and DMCA limits without touching the air,
+  optionally as if at a later date and time. The list is then yours: **Move up**, **Move down**
+  and **Remove** buttons on every song (keyboard operable, focus stays on the moved song), songs
+  added from a library search, and the total length against the target. A schedule event with
+  the new action **Play a show** airs it at a date and time, once or repeating; hard timing plays
+  its first song at once, fading out the song playing, and soft timing queues it to follow the
+  song playing. On the air the list feeds the queue two songs
+  ahead, so liners, time checks and breaks behave as with queued songs, and normal programming
+  resumes when the list ends. Show songs are pre-approved for the repeat rules, but a song that
+  would break a DMCA limit is skipped and logged, checked again at every song change. The card
+  says which show is on the air and what was skipped, with **Stop show**. The hour preview lists
+  the rest of a show on the air, and a scheduled show's songs from its time, as fixed. Shows are
+  kept per station in `shows.json` (a damaged entry is skipped and kept, as with matched intros)
+  and included in backups. Routes: `/api/shows` and `/api/stations/<name>/shows`. See
+  [Shows](docs/operations.md#shows).
 - Saving edits to the active clockwheel can now apply at its next restart, immediately from
   step 1, or immediately continuing at the next step number. A song already playing and its
   committed handoff finish normally. With no restart minutes, deferred edits apply when the

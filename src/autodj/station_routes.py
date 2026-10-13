@@ -799,6 +799,13 @@ def equip_station(
     station.time_checks = TimeChecks(station.cfg, station.timezone, station.paths)
     schedule.register(time_check_action(station.time_checks, bridge))
 
+    from autodj.shows import ShowRunner, ShowStore, show_action
+
+    # Shows (#106): a list of songs prepared ahead that a schedule event airs.
+    station.shows = ShowStore(station.paths.shows)
+    station.show_runner = ShowRunner(bridge, station.shows, publish)
+    schedule.register(show_action(station.show_runner, station.shows))
+
     from autodj.breaks import BreakDesk
 
     station.breaks = BreakDesk(lambda: station.cfg.breaks, station.paths.announcements)
@@ -901,6 +908,7 @@ def install_station_routes(router: StationRouter) -> None:
     from autodj.requests_api import install_requests
     from autodj.rotation_api import install_rotation_test
     from autodj.scheduler_api import install_scheduler
+    from autodj.shows_api import install_shows
     from autodj.time_checks import install_time_checks
 
     @router.get("/status")
@@ -1761,6 +1769,7 @@ def install_station_routes(router: StationRouter) -> None:
     install_breaks(router)
     install_requests(router)
     install_matched_intros(router)
+    install_shows(router)
     install_rotation_test(router)
     install_hour_preview(router)
 

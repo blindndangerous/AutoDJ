@@ -846,6 +846,16 @@ def create_app(
                     "A rotation test was still running %.2f seconds after it was cancelled",
                     _SHUTDOWN_TIMEOUT_S,
                 )
+            # So does a show's generation (#106): it is cancelled and ends at
+            # its next pick.
+            show_generations = getattr(app.state, "show_generations", None)
+            if show_generations is not None and not await asyncio.to_thread(
+                show_generations.shutdown, _SHUTDOWN_TIMEOUT_S
+            ):
+                logger.warning(
+                    "A show's list was still being generated %.2f seconds after it was cancelled",
+                    _SHUTDOWN_TIMEOUT_S,
+                )
             # So does an hour preview (#126): it ends within its own time limit,
             # and a worker that has not stopped keeps the library open.
             hour_previews = getattr(app.state, "hour_previews", None)

@@ -182,6 +182,13 @@ STATION = frozenset(
         "/intros",
         "/intros/{intro_id}/audio",
         "/intros/{intro_id}",
+        # Shows (#106): browser routes, by station.
+        "/shows",
+        "/shows/on-air",
+        "/shows/{show_id}",
+        "/shows/{show_id}/songs",
+        "/shows/{show_id}/generate",
+        "/shows/{show_id}/start",
         "/ws",
     }
 )

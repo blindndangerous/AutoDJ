@@ -1612,6 +1612,37 @@ class PlayerBridge:
         state = self.player._state
         return QueueView(state.current_track, state.queued_next, tuple(state.queue))
 
+    def queue_insert_if(self, entry: IndexEntry, position: int, view: QueueView) -> bool:
+        """Put *entry* at *position* of the user queue if the queue still matches *view*.
+
+        For callers that worked out the place from *view* with no lock held
+        (a show's next song, #106): under ``queue_lock`` only, the queue is
+        compared with *view* and the song inserted, or nothing happens and
+        ``False`` says the queue changed meanwhile.
+        """
+        state = self.player._state
+        with state.queue_lock:
+            if self._queue_view_unlocked() != view:
+                return False
+            self._capture_pre_queue_seed()
+            state.queue.insert(max(0, min(position, len(state.queue))), entry)
+            self._refresh_bus_queue()
+            self._sync_next_for_prefetch()
+        return True
+
+    def queue_remove_if(self, position: int, view: QueueView) -> bool:
+        """Remove the user queue's item at *position* if the queue still matches *view*."""
+        state = self.player._state
+        with state.queue_lock:
+            if self._queue_view_unlocked() != view or not 0 <= position < len(state.queue):
+                return False
+            del state.queue[position]
+            if not state.queue and state.queued_next is None:
+                state.pre_queue_seed = None
+            self._refresh_bus_queue()
+            self._sync_next_for_prefetch()
+        return True
+
     def queue_insert(self, path: str, position: int) -> bool:
         """Put a track by path at *position* of the user queue (0 plays first)."""
         entry = self.entry_for_path(path)
