@@ -172,6 +172,16 @@ def least_recent(
     allowed: Callable[[Any], bool] | None = None,
 ) -> Any | None:
     """Choose the oldest allowed entry; prefer never-played and randomize ties."""
+    return _least_recent(entries, last_played.get, rng, allowed=allowed)
+
+
+def _least_recent(
+    entries: Sequence[Any],
+    played: Callable[[str], Any],
+    rng: Any = None,
+    *,
+    allowed: Callable[[Any], bool] | None = None,
+) -> Any | None:
     if not entries:
         raise ValueError("entries must not be empty")
     chooser = rng if rng is not None else random
@@ -179,7 +189,7 @@ def least_recent(
         ordered = list(entries)
         chooser.shuffle(ordered)
         heap = [
-            ((stamp := last_played.get(entry.path)) is not None, stamp, index, entry)
+            ((stamp := played(entry.path)) is not None, stamp, index, entry)
             for index, entry in enumerate(ordered)
         ]
         heapq.heapify(heap)
@@ -189,10 +199,10 @@ def least_recent(
                 return entry
         return None
     oldest = min(
-        (last_played.get(entry.path) for entry in entries),
+        (played(entry.path) for entry in entries),
         key=lambda stamp: (stamp is not None, stamp),
     )
-    candidates = [entry for entry in entries if last_played.get(entry.path) == oldest]
+    candidates = [entry for entry in entries if played(entry.path) == oldest]
     return chooser.choice(candidates)
 
 
@@ -201,6 +211,8 @@ class ClockPick:
     """A selected music entry, its optional preceding liner, and resume slot.
 
     ``preset`` is the last settings step passed on the way to the entry.
+    ``step_index`` and ``liner_step_index`` identify the steps that selected them.
+    The player attaches display snapshots from the same clock used for selection.
     """
 
     entry: Any | None
@@ -209,6 +221,10 @@ class ClockPick:
     skipped: list[str]
     preset: str | None = None
     liner_requires_following: bool = False
+    step_index: int | None = None
+    liner_step_index: int | None = None
+    step_snapshot: dict[str, Any] | None = None
+    liner_step_snapshot: dict[str, Any] | None = None
 
 
 #: Slot kinds that pick the music itself (a liner only rides on one).
@@ -356,6 +372,7 @@ def pick_slot(
     condition_errors: Mapping[int, str] | None = None,
     condition_cache: ConditionPaths | None = None,
     closed_categories: Mapping[str, str] | None = None,
+    normalized_history: Mapping[str, Any] | None = None,
 ) -> ClockPick:
     """Scan one clock cycle and select its next eligible music entry.
 
@@ -370,6 +387,7 @@ def pick_slot(
     days and hours to the reason, and its step is skipped the same way.
     ``condition_cache``, built from these *slots* and the entries the
     pools were drawn from, saves working out a conditions step again.
+    ``normalized_history`` can be shared across retry scans for the same pick.
     Nothing is written to playback history by this pure selection helper.
     """
     slots = validate_clock(slots)
@@ -382,14 +400,15 @@ def pick_slot(
     skipped: list[str] = []
     pending_liner = None
     pending_liner_requires_following = False
+    pending_liner_index = None
     preset = None
     closed_paths = {
         path
         for category in (closed_categories or {})
         for path in (categories or {}).get(category, ("", frozenset()))[1]
     }
-    # Last-played times by normalized path, worked out once per scan.
-    played: dict[str, Any] | None = None
+    # Build the normalized lookup lazily for direct callers without a shared one.
+    played = normalized_history
 
     def choose(
         slot: ClockSlot, matches: Sequence[Any], label: str
@@ -405,10 +424,9 @@ def pick_slot(
                     if isinstance(path, str)
                 }
             played_by_path = played
-            history = {entry.path: played_by_path.get(_normalized(entry.path)) for entry in matches}
-            selected = least_recent(
+            selected = _least_recent(
                 matches,
-                history,
+                lambda path: played_by_path.get(_normalized(path)),
                 chooser,
                 allowed=allowed if slot.enforce_rules else None,
             )
@@ -447,6 +465,8 @@ def pick_slot(
                     skipped,
                     preset,
                     pending_liner_requires_following if pending_liner is not None else False,
+                    index,
+                    pending_liner_index,
                 )
             skipped.append(f"track step {slot.path}: recording missing or blocked by rules")
             continue
@@ -476,6 +496,8 @@ def pick_slot(
                     skipped,
                     preset,
                     pending_liner_requires_following if pending_liner is not None else False,
+                    index,
+                    pending_liner_index,
                 )
             continue
         missing = next(
@@ -508,6 +530,7 @@ def pick_slot(
             skipped.append(reason)
         if slot.kind == "liner":
             pending_liner = selected
+            pending_liner_index = index if selected is not None else None
             pending_liner_requires_following = (
                 slot.require_following if selected is not None else False
             )
@@ -520,6 +543,8 @@ def pick_slot(
                 skipped,
                 preset,
                 pending_liner_requires_following if pending_liner is not None else False,
+                index,
+                pending_liner_index,
             )
 
     return ClockPick(None, None, start, skipped, preset)

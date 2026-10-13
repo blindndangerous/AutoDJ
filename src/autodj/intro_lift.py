@@ -9,6 +9,8 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
+from autodj.stereo import SAFE_FFMPEG_INPUT
+
 INTRO_SECONDS = 8.0
 HOLD_SECONDS = 1.0
 # Match the Stereo Tool output limiter ceiling; browser playback gets the same cap.
@@ -32,6 +34,7 @@ def measure_source_intro(path: Path, sample_rate: int, track_rms: float) -> floa
             "-loglevel",
             "error",
             "-nostdin",
+            *SAFE_FFMPEG_INPUT,
             "-i",
             str(path),
             "-t",

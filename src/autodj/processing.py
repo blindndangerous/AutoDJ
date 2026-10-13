@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from autodj.stereo import SAMPLE_RATE, TrackTooLongError, load_stereo
+from autodj.stereo import SAFE_FFMPEG_INPUT, SAMPLE_RATE, TrackTooLongError, load_stereo
 
 if TYPE_CHECKING:
     from autodj.indexer import IndexEntry
@@ -121,6 +121,7 @@ def analyze_loudness(source: Path, kind: str = "music") -> dict[str, object]:
             "-hide_banner",
             "-nostats",
             "-nostdin",
+            *SAFE_FFMPEG_INPUT,
             "-i",
             str(source),
             "-map",
@@ -187,6 +188,7 @@ def load_processed_audio(
         "-v",
         "error",
         "-nostdin",
+        *SAFE_FFMPEG_INPUT,
         "-i",
         str(source),
         "-map",
@@ -247,7 +249,11 @@ def _measurement(source: Path, kind: str, lufs: float, before: os.stat_result) -
 
 
 def load_and_measure_audio(
-    source: Path, kind: str = "music", max_seconds: float | None = None
+    source: Path,
+    kind: str = "music",
+    max_seconds: float | None = None,
+    *,
+    input_format: str | None = None,
 ) -> tuple[np.ndarray, dict[str, object]]:
     """Decode and measure *source* in one FFmpeg run, for a loudness cache miss.
 
@@ -256,7 +262,8 @@ def load_and_measure_audio(
     ``ebur128`` filter passes the audio through unchanged while it
     measures, and the gain is applied here once the integrated loudness
     is known.  FFmpeg's ``volume`` filter multiplies float samples by the
-    float32 gain too, so the samples are the same.
+    float32 gain too, so the samples are the same.  *input_format* names the
+    demuxer, so FFmpeg probes nothing (an uploaded break, #88).
 
     Returns:
         ``(audio, measurement)``: the processed audio and the measurement
@@ -274,6 +281,8 @@ def load_and_measure_audio(
         "-nostdin",
         "-loglevel",
         "level+info",
+        *SAFE_FFMPEG_INPUT,
+        *(("-f", input_format) if input_format else ()),
         "-i",
         str(source),
         "-map",
@@ -350,6 +359,7 @@ def probe_seconds(source: Path) -> float | None:
                 ffprobe,
                 "-v",
                 "error",
+                *SAFE_FFMPEG_INPUT,
                 "-show_entries",
                 "format=duration",
                 "-of",

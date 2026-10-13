@@ -21,6 +21,7 @@ const EXAMPLES_SHOWN = 5;
 const FIELD_IDS = {
   name: "categories-name", query: "categories-query", playlist: "categories-playlist", source: "categories-source-query",
   days: "categories-day-0", hours_from: "categories-hours-from", hours_until: "categories-hours-until",
+  not_before: "categories-not-before", not_after: "categories-not-after",
 };
 const DAY_IDS = [0, 1, 2, 3, 4, 5, 6].map((day) => `categories-day-${day}`);
 
@@ -42,9 +43,11 @@ export function countsText(counts) {
 export function describeCategory(category) {
   const source = category.source === "m3u" ? `playlist ${category.playlist}` : `query ${category.query}`;
   const sentences = [`${category.name}: ${countsText(category)}.`, `From ${source}.`];
-  // Dayparting, in words; "outside its hours now" is said, not only shown.
+  // Dayparting and the season, in words; "outside its hours now" (or its
+  // dates) is said, not only shown.
   if (category.daypart_text) {
-    sentences.push(`${category.daypart_text}.${category.allowed_now === false ? " Outside its hours now." : ""}`);
+    const outside = ["days", "dates"].includes(category.outside_now) ? category.outside_now : "hours";
+    sentences.push(`${category.daypart_text}.${category.allowed_now === false ? ` Outside its ${outside} now.` : ""}`);
   }
   const examples = (category.missing_examples || []).slice(0, EXAMPLES_SHOWN);
   if (category.missing && examples.length) {
@@ -107,6 +110,20 @@ export function installCategoriesPanel({ document: doc = document, request = req
     const signature = JSON.stringify(data.categories);
     if (signature === listSignature) return;
     listSignature = signature;
+    // The same categories in the same order: change only the words of each
+    // row, so a poll that finds a category now outside its hours, days or
+    // dates (at the station's midnight, say) moves no focus and says nothing.
+    const rows = [...list.querySelectorAll(":scope > li[data-id]")];
+    if (rows.length && rows.length === data.categories.length
+        && rows.every((row, i) => row.dataset.id === data.categories[i].id
+          && row.dataset.name === data.categories[i].name)) {
+      rows.forEach((row, i) => {
+        const text = describeCategory(data.categories[i]);
+        const span = row.firstElementChild;
+        if (span && span.textContent !== text) span.textContent = text;
+      });
+      return;
+    }
     const focused = list.contains(doc.activeElement) ? doc.activeElement.dataset : null;
     if (!data.categories.length) {
       const none = doc.createElement("li");
@@ -117,6 +134,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
     list.replaceChildren(...data.categories.map((category) => {
       const item = doc.createElement("li");
       item.dataset.id = category.id;
+      item.dataset.name = category.name; // the buttons' names say it
       const text = doc.createElement("span");
       text.textContent = describeCategory(category);
       item.append(text, " ", rowButton(category, "edit", "Edit"), " ", rowButton(category, "delete", "Delete"));
@@ -215,6 +233,11 @@ export function installCategoriesPanel({ document: doc = document, request = req
     const until = el("categories-hours-until")?.value;
     if (from) value.hours_from = from;
     if (until) value.hours_until = until;
+    // The season, sent only when set: none means any day of the year.
+    const first = el("categories-not-before")?.value;
+    const last = el("categories-not-after")?.value;
+    if (first) value.not_before = first;
+    if (last) value.not_after = last;
     return value;
   }
 
@@ -244,6 +267,18 @@ export function installCategoriesPanel({ document: doc = document, request = req
       showError("hours_until", "Allowed until must differ from Allowed from.");
       return false;
     }
+    // A half-typed date reads as empty too.
+    for (const [field, label] of [["not_before", "Not before"], ["not_after", "Do not play after"]]) {
+      if (el(FIELD_IDS[field])?.validity?.badInput) {
+        showError(field, `${label} is not a whole date. Enter a day, month and year, or clear it.`);
+        return false;
+      }
+    }
+    // ISO dates compare as text.
+    if (value.not_before && value.not_after && value.not_after < value.not_before) {
+      showError("not_after", "Do not play after must be on or after the Not before date.");
+      return false;
+    }
     return true;
   }
 
@@ -260,6 +295,10 @@ export function installCategoriesPanel({ document: doc = document, request = req
     for (const [id, key] of [["categories-hours-from", "hours_from"], ["categories-hours-until", "hours_until"]]) {
       const input = el(id);
       if (input) input.value = category?.[key]?.slice(0, 5) || "";
+    }
+    for (const [id, key] of [["categories-not-before", "not_before"], ["categories-not-after", "not_after"]]) {
+      const input = el(id);
+      if (input) input.value = category?.[key] || "";
     }
     el(category?.source === "m3u" ? "categories-source-m3u" : "categories-source-query").checked = true;
     renderPlaylists();
@@ -376,7 +415,8 @@ export function installCategoriesPanel({ document: doc = document, request = req
       match.textContent = "Not checked yet.";
     });
   }
-  for (const field of [nameInput, queryInput, playlistSelect, el("categories-hours-from"), el("categories-hours-until")]) {
+  for (const field of [nameInput, queryInput, playlistSelect, el("categories-hours-from"),
+    el("categories-hours-until"), el("categories-not-before"), el("categories-not-after")]) {
     field?.addEventListener("input", () => unmark(field));
   }
   // The days are marked as one group, so changing any one clears them all.

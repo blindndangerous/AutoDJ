@@ -330,6 +330,14 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     for (const part of form.querySelectorAll("[data-repeat]")) {
       part.hidden = !part.dataset.repeat.split(" ").includes(repeatSelect.value);
     }
+    // A one-time event's date is its whole range, so Date range is hidden
+    // for it, unless the event being edited was saved with a range: then
+    // the dates stay in view, to keep or clear.
+    const range = get("range");
+    if (range) {
+      const dated = Boolean(get("start-date").value || get("end-date").value);
+      range.hidden = repeatSelect.value === "once" && !dated;
+    }
     // A description named by aria-describedby is read even when hidden.
     const daysGroup = get("days");
     if (repeatSelect.value === "interval") daysGroup.setAttribute("aria-describedby", "schedule-days-desc");

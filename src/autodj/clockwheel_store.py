@@ -17,6 +17,12 @@ absolute path and a browser never sends one.  ``folder`` is ``""`` for the
 source folder itself.  A category step names a rotation category by its ID
 (see :mod:`autodj.categories`), so renaming the category keeps the step.
 
+Any step may also keep to chosen days and hours: ``days`` (0 is Monday),
+``hours_from`` and ``hours_until`` ("22:00"), with the rule rotation
+categories use (:func:`autodj.categories.daypart_refusal`).  Outside them
+the step is skipped, as an empty one is.  A step without them is written
+without the keys, so an older AutoDJ still reads the file.
+
 Step types live in a registry, like the scheduler's actions.  Loading a
 clockwheel with a type nobody registered fails with an error that names
 the type.  A feature adds its own type (carts, time checks, ad breaks)
@@ -285,9 +291,16 @@ def validate_step(value: Any) -> dict[str, Any]:
             f"{', '.join(step_types())}; a clockwheel that uses {kind!r} needs the "
             "AutoDJ version that added it"
         )
-    validated = validator(value)
+    # Days and hours belong to every step type, so they are checked here and
+    # the type's own validator never sees them.
+    from autodj.categories import STEP_HOURS_KEYS, parse_step_hours
+
+    hours = parse_step_hours(value)
+    validated = validator({key: item for key, item in value.items() if key not in STEP_HOURS_KEYS})
     if not isinstance(validated, dict) or validated.get("type") != kind:
         raise ValueError(f"The {kind!r} step validator returned an invalid step")
+    if hours is not None:
+        validated.update(hours.to_json())
     return validated
 
 
