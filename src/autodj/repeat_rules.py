@@ -543,9 +543,8 @@ def records_from_plays(rows: Iterable[Mapping[str, Any]], now: float) -> list[Pl
     return records
 
 
-#: The most track starts the artist, album and title rules remember.  A
-#: week of two-minute tracks fits; a larger window looks only this far back.
-HISTORY_LIMIT = 5000
+#: The most recent track starts the artist, album and title rules remember.
+HISTORY_LIMIT = 50000
 
 
 def prune_history(history: Any, rules: RepeatRules, now: float, minimum_seconds: float = 0) -> None:

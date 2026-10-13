@@ -317,6 +317,30 @@ describe("dismissible, hoverable status message", () => {
     expect(document.activeElement).toBe($("before"));
   });
 
+  // WebKit does not focus a clicked button: the press itself took focus
+  // off the control that had it and left it on the body.  The press's
+  // default is held back, so focus never moves in any browser.
+  it("keeps focus where it was when Dismiss is pressed with the mouse", () => {
+    $("before").focus();
+    showVisibleStatus("Saved.", document);
+    const press = new window.MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 });
+    $("status-toast-dismiss").querySelector("span").dispatchEvent(press);
+    expect(press.defaultPrevented).toBe(true);
+    $("status-toast-dismiss").click();
+    expect($("status-toast-box").hidden).toBe(true);
+    expect(document.activeElement).toBe($("before"));
+  });
+
+  it("leaves presses elsewhere, and other mouse buttons, alone", () => {
+    showVisibleStatus("Saved.", document);
+    const elsewhere = new window.MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 });
+    $("before").dispatchEvent(elsewhere);
+    expect(elsewhere.defaultPrevented).toBe(false);
+    const secondary = new window.MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 2 });
+    $("status-toast-dismiss").dispatchEvent(secondary);
+    expect(secondary.defaultPrevented).toBe(false);
+  });
+
   it("puts focus back after Escape from its own button", () => {
     $("before").focus();
     showVisibleStatus("Saved.", document);

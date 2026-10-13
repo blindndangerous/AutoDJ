@@ -571,11 +571,20 @@ class TestHistoryBounds:
         assert len(history) == HISTORY_LIMIT
         assert history[0].path == "10.flac"
 
+    def test_week_of_two_minute_songs_keeps_plays_beyond_old_cap(self) -> None:
+        rules = RepeatRules(track_window=0, artist_window=0, artist_minutes=10080)
+        history = deque(_record(i, started=float(i * 120)) for i in range(5040))
+        oldest = history[0]
+        prune_history(history, rules, now=5039 * 120 + 1)
+        assert len(history) == 5040
+        assert history[0] is oldest
+        assert plays_to_load(rules) == 50000
+
     def test_plays_to_load(self) -> None:
         assert plays_to_load(RepeatRules(track_window=500, artist_window=3)) == 500
         assert plays_to_load(RepeatRules(track_window=0, artist_window=0, title_window=7)) == 7
         assert plays_to_load(RepeatRules(track_window=10, title_minutes=60)) == HISTORY_LIMIT
-        assert plays_to_load(RepeatRules(track_window=9000, title_minutes=60)) == 9000
+        assert plays_to_load(RepeatRules(track_window=9000, title_minutes=60)) == HISTORY_LIMIT
         assert plays_to_load(RepeatRules(0, 0, 0, 0, 0, 0, album_window=0)) == 0
 
     def test_a_start_in_the_future_never_counts_for_a_rule_without_minutes(self) -> None:

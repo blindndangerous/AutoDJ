@@ -854,8 +854,8 @@ def test_a_run_matches_the_live_player_pick_for_pick(tmp_path: Path, monkeypatch
     starts = NOON
     for number in range(25):
         if number:
-            # The next song is picked as the current one starts.
-            context = live._pick_context()
+            # The next song is picked as the current one starts, for when it ends.
+            context = live._pick_context(at=live._handoff_time(current))
             upcoming, _mode, _liners, cursor, _key = live._choose_station_next(current, context)
             live._pending_clock_cursor = cursor
             starts += current.length

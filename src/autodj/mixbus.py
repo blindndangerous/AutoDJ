@@ -88,6 +88,11 @@ class RenderedTrack:
         next_entry_offset: Sample of *next_entry*'s own file where it
             enters at the start of the overlap (after any skipped leading
             silence).
+        break_events: ``(start, break_id, end)`` for each announcer break
+            (#88) mixed into the handoff: the frames of *audio* where its
+            voice starts and where its speech ends.  A render with breaks
+            keeps its next track whatever the queue does, because the
+            break names it.
     """
 
     entry: IndexEntry
@@ -110,6 +115,7 @@ class RenderedTrack:
     overlap_frames: int = 0
     next_entry_offset: int = 0
     liner_events: tuple[tuple[int, IndexEntry, bool], ...] = ()
+    break_events: tuple[tuple[int, str, int], ...] = ()
     reserved_liners: tuple[IndexEntry, ...] = ()
     next_reserved_liners: tuple[IndexEntry, ...] = ()
     loudness_processing: str = ""
@@ -119,6 +125,8 @@ class RenderedTrack:
     clock_name: str | None = None
     clock_boundary: float | None = None
     next_clock_boundary: float | None = None
+    clock_step: dict | None = None
+    next_clock_step: dict | None = None
     liner_plan_key: str = ""
     full_audio: np.ndarray | None = None
     source_start_offset: int = 0

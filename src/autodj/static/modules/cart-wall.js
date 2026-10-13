@@ -14,10 +14,14 @@
 // Start, end and stop come from the server over the websocket and are
 // spoken once, through #sr-status, so a scheduled cart is heard on any
 // tab.  The wall's own status region reports what the user just did.
+//
+// "expired" and "not playable yet" follow the station's day: a page left
+// open past midnight relabels the carts in place, without a sound or a
+// move of focus, when the day changes.
 
 import { requestBinary, requestJson, withDisabled } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { srSpeak } from "./dom-helpers.js";
+import { srSpeak, stationDay } from "./dom-helpers.js";
 import { shortcutsEnabled } from "./hotkeys.js";
 import { announceStatus } from "./live-region.js";
 
@@ -64,6 +68,8 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   prepare = () => null,
   playAudio = async () => false,
   stopAudio = () => {},
+  now = () => new Date(),
+  interval = setInterval,
 } = {}) {
   if (!root) return null;
   const el = (id) => root.querySelector(`#${id}`);
@@ -183,6 +189,22 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
     }
   }
 
+  // The station's day changed while the page was open: say "expired" or
+  // "not playable yet" on the carts it changes, in place.  Only the text
+  // changes, so focus stays where it is and nothing is announced.
+  function followStationDay() {
+    const current = page();
+    const day = stationDay(data?.timezone, now());
+    if (!current || !day || day === data.today) return;
+    data.today = day;
+    current.slots.forEach((assigned, i) => {
+      const label = cartLabel(i + 1, assigned, day);
+      if (buttons[i].firstChild.textContent !== label) buttons[i].firstChild.textContent = label;
+      const item = slotSelect.options[i];
+      if (item && item.textContent !== label) item.textContent = label;
+    });
+  }
+
   async function refresh(resetEditor = false) {
     const epoch = ++requestEpoch;
     try {
@@ -274,7 +296,11 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
         await refresh(true);
         say(`Saved. ${cartLabel(number, page()?.slots[number - 1], data?.today)}.`);
       } catch (error) {
-        say(`Could not save cart ${number}. ${error.message}`, true);
+        // A refusal that names its field is shown and linked there, as the
+        // page's own checks are.
+        const field = { name, clip, not_before: notBefore, not_after: notAfter }[error.field];
+        if (field) invalid(field, `Could not save cart ${number}. ${error.message}`);
+        else say(`Could not save cart ${number}. ${error.message}`, true);
       }
     });
   }
@@ -398,6 +424,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   el("cart-upload").addEventListener("click", (event) => void upload(event.currentTarget));
   deleteUpload.addEventListener("click", () => void removeUpload());
   el("cart-stop").addEventListener("click", () => void stop());
+  interval(followStationDay, 60_000);
 
   return {
     refresh: () => refresh(false),
