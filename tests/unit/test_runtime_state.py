@@ -16,6 +16,7 @@ from autodj.repeat_settings import RepeatRule, RepeatSettings
 from autodj.runtime_state import (
     STATE_VERSION,
     load_into_bridge,
+    migrate_state_file,
     save_from_player,
     state_file_for,
 )
@@ -281,6 +282,18 @@ def test_v1_migration_safely_handles_legacy_harmonic_toggle(
     assert player._cfg.playback.crossfade_seconds == 8.0
     if warned:
         assert "invalid djmix.harmonic_mixing" in caplog.text
+
+
+def test_state_migration_rejects_non_integer_current_version(tmp_path: Path) -> None:
+    original = b'{"schema_version":2.0}'
+    path = tmp_path / "web_state.json"
+    path.write_bytes(original)
+
+    with pytest.raises(ValueError, match=r"unsupported schema_version 2\.0"):
+        migrate_state_file(path, apply=False)
+
+    assert path.read_bytes() == original
+    assert not path.with_name("web_state.json.v1.bak").exists()
 
 
 def test_runtime_refuses_v1_and_save_leaves_it_untouched(tmp_path: Path, caplog) -> None:

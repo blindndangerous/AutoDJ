@@ -517,3 +517,20 @@ def test_invalid_legacy_history_blocks_migration_before_writes(
             index_dir, tmp_path / "music", tmp_path / "liners", {}, apply=True
         )
     assert _tree(index_dir) == before
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_invalid_legacy_history_blocks_schema3_conversion_before_writes(
+    tmp_path: Path, apply: bool
+) -> None:
+    index_dir, music_dir = _fixture(tmp_path, paths=("old.flac",))
+    with closing(sqlite3.connect(index_dir / "library.db")) as db:
+        db.execute("CREATE TABLE catalog_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        db.execute("INSERT INTO catalog_settings VALUES ('play_history','[null]')")
+        db.commit()
+    before = _tree(index_dir)
+
+    with pytest.raises(ValueError, match="legacy play-history"):
+        index_migration.migrate_catalog(index_dir, music_dir, tmp_path / "liners", {}, apply=apply)
+
+    assert _tree(index_dir) == before

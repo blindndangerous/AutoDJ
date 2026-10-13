@@ -140,7 +140,7 @@ def migrate_state_file(path: Path, *, apply: bool = False) -> bool:
     if not isinstance(data, dict):
         raise ValueError(f"{path} must contain a JSON object")
     version = data.get("schema_version")
-    if version == STATE_VERSION:
+    if type(version) is int and version == STATE_VERSION:
         return False
     if type(version) is not int or version != 1:
         raise ValueError(f"{path} has unsupported schema_version {version!r}")
