@@ -1,6 +1,7 @@
 """Native clockwheel validation, persistence, PAL conversion and loading."""
 
 import json
+import threading
 from pathlib import Path
 from types import MethodType, SimpleNamespace
 
@@ -216,6 +217,11 @@ def _player(tmp_path, setting, sources):
         _cfg=SimpleNamespace(index=SimpleNamespace(active_dir=tmp_path), presets={}),
         _library=SimpleNamespace(catalog=catalog),
     )
+    player._clock_lock = threading.RLock()
+    player._clock_selection_lock = threading.RLock()
+    player._clock_revision = 0
+    player._clock = None
+    player._pending_clock_update = None
     player._load_clockwheel = MethodType(Player._load_clockwheel, player)
     player.activate_clock = MethodType(Player.activate_clock, player)
     player._now = MethodType(Player._now, player)
