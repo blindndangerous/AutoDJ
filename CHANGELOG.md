@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Negative liner **Overlap start** values down to -15 seconds start the next song first, then place
+  liner content within its intro when it fits. For example, if a -3 second request has one second
+  available before vocals, the liner starts one second after the song. If the main content is longer
+  than the intro, existing liner-first timing remains; the liner tail continues over the song.
+  Track info announces when a negative value makes the cue-preview controls unavailable (#159).
 - **Why this track?** names the clockwheel step that selected the song, with its number and
   the same description shown in the clockwheel list. Music and category steps say whether they
   choose the least recently played song or choose at random. The description stays with the

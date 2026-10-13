@@ -26,7 +26,7 @@ function mount() {
       <p id="source-folders-status"></p><ul id="source-folders"></ul>
     </section>
     <button id="edit-current-points"></button><section id="points-editor" hidden>
-      <h3 id="points-heading">Song points</h3><p id="points-liner-help" hidden></p><label id="points-allow-outro-label" hidden><input id="points-allow-outro" type="checkbox"> Allow start over outro</label>
+      <h3 id="points-heading">Song points</h3><p id="points-liner-help" hidden></p><small id="negative-overlap-help" hidden>A negative value delays the liner. Preview and Use preview position are unavailable for negative values.</small><label id="points-allow-outro-label" hidden><input id="points-allow-outro" type="checkbox"> Allow start over outro</label>
       <input id="points-path"><button id="points-load"></button>
       ${["start", "intro", "outro", "segue", "end", "overlap_start"].map((name) => `<label><input data-point="${name}"><span data-point-source="${name}"></span></label><button data-preview="${name}"></button><button data-set-current="${name}"></button>`).join("")}
       <audio id="points-preview"></audio>
@@ -80,8 +80,11 @@ describe("clock folder and points controls", () => {
   it("parses seconds and MM:SS while preserving empty points", () => {
     expect(parsePointTime("5.3")).toBe(5.3);
     expect(parsePointTime("1:05.5")).toBe(65.5);
+    expect(parsePointTime("-3.5")).toBe(-3.5);
+    expect(parsePointTime("-0:03.5")).toBe(-3.5);
     expect(parsePointTime("")).toBeNull();
     expect(formatPointTime(65.5)).toBe("1:05.5");
+    expect(formatPointTime(-65.5)).toBe("-1:05.5");
     expect(() => parsePointTime("1:75")).toThrow();
   });
 
@@ -346,6 +349,40 @@ describe("clock folder and points controls", () => {
     document.querySelector('[data-point="start"]').value = "invalid";
     document.querySelector('[data-set-current="overlap_start"]').click();
     expect(document.getElementById("points-status").textContent).toContain("Enter seconds or minutes:seconds");
+  });
+
+  it("saves negative liner overlap as a song-relative delay and disables track preview controls", async () => {
+    const request = vi.fn(async (url) => url === "/api/library/points"
+      ? { points: { start: 0, segue: 5, end: 8, overlap_start: -3 } }
+      : { path: "N:/voice/same.wav", kind: "liner", length: 8, points: { start: 0, segue: 5, end: 8, overlap_start: -3 } });
+    installLibraryFolders({ document, request });
+    document.dispatchEvent(new CustomEvent("autodj:edit-points", { detail: { path: "N:/voice/same.wav", kind: "liner" } }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.getElementById("negative-overlap-help").hidden).toBe(false);
+    expect(document.querySelector('[data-preview="overlap_start"]').disabled).toBe(true);
+    expect(document.querySelector('[data-set-current="overlap_start"]').disabled).toBe(true);
+    document.getElementById("points-save").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(JSON.parse(request.mock.calls.find(([url]) => url === "/api/library/points")[1].body).points.overlap_start).toBe(-3);
+  });
+
+  it("announces preview availability when a liner overlap changes sign", async () => {
+    const request = vi.fn(async () => ({ path: "N:/voice/id.wav", kind: "liner", length: 8, points: { overlap_start: 0 } }));
+    installLibraryFolders({ document, request });
+    document.dispatchEvent(new CustomEvent("autodj:edit-points", { detail: { path: "N:/voice/id.wav", kind: "liner" } }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const input = document.querySelector('[data-point="overlap_start"]');
+    input.focus();
+    input.value = "-3";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    const status = document.getElementById("points-status");
+    await vi.waitFor(() => expect(status.textContent).toContain("unavailable for negative values"));
+    expect(document.activeElement).toBe(input);
+    input.value = "0";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.waitFor(() => expect(status.textContent).toContain("available again"));
+    expect(document.querySelector('[data-preview="overlap_start"]').disabled).toBe(false);
+    expect(document.querySelector('[data-set-current="overlap_start"]').disabled).toBe(false);
   });
 
   it("saves the liner outro option and keeps it checked when saved points reload", async () => {

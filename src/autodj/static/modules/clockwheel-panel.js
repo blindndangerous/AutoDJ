@@ -382,6 +382,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
           invalid(input, "Enter the duration as seconds or minutes:seconds, for example 90 or 1:30.");
         }
         if (number === null || !Number.isFinite(number)) invalid(input, `Enter a number for ${field}.`);
+        if (field === "duration" && number < 0) invalid(input, "Duration must be non-negative.");
         return number;
       };
       const result = {

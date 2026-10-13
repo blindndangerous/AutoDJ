@@ -893,6 +893,19 @@ describe("clockwheel step conditions, for screen readers", () => {
     ]);
   });
 
+  it("rejects negative clockwheel durations now that signed cue times are accepted", async () => {
+    await open(fakeServer());
+    startMusicStep();
+    const [row] = conditions();
+    setField(row, "duration");
+    setOperator(row, "gte");
+    const value = row.querySelectorAll("input[type=text]")[1];
+    value.value = "-3";
+    byId("clock-add-step").click();
+    await vi.waitFor(() => expect(status()).toBe("Duration must be non-negative."));
+    expect(value.getAttribute("aria-invalid")).toBe("true");
+  });
+
   it("clears marks on rows after the one that fails", async () => {
     await open(fakeServer());
     startMusicStep();
