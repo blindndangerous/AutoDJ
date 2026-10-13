@@ -141,10 +141,12 @@ def _selection(value: Mapping[str, Any]) -> tuple[str, bool]:
 
 
 def _condition(value: Any) -> dict[str, Any]:
-    from autodj.clock_conditions import validate_metadata_condition
+    from autodj.clock_conditions import validate_category_condition, validate_metadata_condition
 
     if not isinstance(value, dict) or not isinstance(value.get("field"), str):
         raise ValueError("Each condition needs a field")
+    if value["field"] == "category":
+        return validate_category_condition(value)
     if value["field"] != "folder":
         return validate_metadata_condition(value)
     if set(value) - {"field", "source", "folder", "recursive"}:
@@ -182,7 +184,10 @@ def _folder_step(value: Mapping[str, Any]) -> dict[str, Any]:
         match = value.get("match", "all")
         if match not in ("all", "any"):
             raise ValueError("Choose Match all or Match any for the step")
-        step.update(match=match, conditions=[_condition(item) for item in conditions])
+        normalized = [_condition(item) for item in conditions]
+        if value["type"] != "music" and any(c["field"] == "category" for c in normalized):
+            raise ValueError("Category conditions are only available for music steps")
+        step.update(match=match, conditions=normalized)
     else:
         condition = _condition(
             {
@@ -194,6 +199,13 @@ def _folder_step(value: Mapping[str, Any]) -> dict[str, Any]:
     if require_following:
         step["require_following"] = True
     return step
+
+
+def step_categories(step: Mapping[str, Any]) -> set[str]:
+    """The category references in either a legacy step or its conditions."""
+    if step["type"] == "category":
+        return {step["category"]}
+    return {c["category"] for c in step.get("conditions", ()) if c["field"] == "category"}
 
 
 def step_conditions(step: Mapping[str, Any]) -> list[dict[str, Any]]:

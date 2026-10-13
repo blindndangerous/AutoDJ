@@ -4,12 +4,20 @@ Four independent rules decide whether a candidate may play yet:
 
 - **Track**: the exact file played recently.
 - **Artist**: any artist credited on the candidate was credited on a recent
-  track, or is related to one (see :class:`RelatedArtists`).
+  track.
 - **Album**: the candidate has an album name recently played.
 - **Title**: the candidate's song title, after :func:`title_key` folds away
   case, punctuation, accents and version notes such as "(Live)", matches a
   recent title.  So "Jingle Bells", "Jingle Bells (Live)" and
   "JINGLE BELLS - Remastered 2009" are one song.
+
+Two more rules use files in the index folder, each turned on in Settings:
+
+- **Related artist**: an artist linked in ``related-artists.toml`` to an
+  artist credited on a recent track (see :class:`RelatedArtists`).
+- **Related track**: a track grouped in ``related-tracks.toml`` with a
+  recent track, such as a song and one that samples it (see
+  :class:`RelatedTracks`).
 
 Each rule looks back a number of tracks, a number of minutes, or both;
 a candidate is held back when either one catches it.
@@ -109,7 +117,7 @@ _VERSION_NOTE = re.compile(
     r"|(?:19|20)\d\d)\b",
     re.IGNORECASE,
 )
-_CREDIT_NOTE = re.compile(r"^\s*(?:feat\b|ft\b|featuring\b|with\b|from\b|prod\b)", re.IGNORECASE)
+_CREDIT_NOTE = re.compile(r"^\s*(?:feat\b|ft\b|featuring\b|with\b|w/|from\b|prod\b)", re.IGNORECASE)
 _BRACKETED = re.compile(r"[(\[{]([^)\]}]*)[)\]}]")
 _DASH_SUFFIX = re.compile(r"\s+[-–—]\s+")
 _INLINE_FEAT = re.compile(r"\s(?:feat\.?|featuring)\s.*$", re.IGNORECASE)
@@ -173,7 +181,7 @@ SINGLE_ACTS: tuple[str, ...] = (
 )
 
 _FEAT_BRACKET = re.compile(
-    r"[(\[]\s*(?:feat\.?|ft\.?|featuring|with)\s+([^)\]]*)[)\]]", re.IGNORECASE
+    r"[(\[]\s*(?:(?:feat\.?|ft\.?|featuring|with)\s+|w/\s*)([^)\]]*)[)\]]", re.IGNORECASE
 )
 _STRONG_SPLIT = re.compile(
     r"\s+(?:feat\.?|ft\.?|featuring|vs\.?|versus)\s+|\s*[;\x00]\s*", re.IGNORECASE
@@ -368,16 +376,127 @@ def load_related_artists(path: str | Path | None) -> RelatedArtists:
     if not path:
         return RelatedArtists()
     file = Path(path)
+    data = _read_related_file(file, "related artists", RelatedArtistsFileTooLargeError)
+    return parse_related_artists(data, str(file))
+
+
+def _read_related_file(file: Path, kind: str, too_large: type[ValueError]) -> dict[str, Any]:
+    """Parse the TOML at *file*, checking its size first so a huge file is never read."""
     if not file.is_file():
-        raise FileNotFoundError(f"related artists file not found: {file}")
+        raise FileNotFoundError(f"{kind} file not found: {file}")
     if file.stat().st_size > MAX_RELATED_ARTISTS_BYTES:
-        raise RelatedArtistsFileTooLargeError(f"related artists file is larger than 1 MiB: {file}")
+        raise too_large(f"{kind} file is larger than 1 MiB: {file}")
     try:
         with file.open("rb") as handle:
-            data = tomllib.load(handle)
+            return tomllib.load(handle)
     except tomllib.TOMLDecodeError as exc:
         raise ValueError(f"{file}: not valid TOML: {exc}") from exc
-    return parse_related_artists(data, str(file))
+
+
+# ---------------------------------------------------------------------------
+# Related tracks
+# ---------------------------------------------------------------------------
+
+#: A track as the related tracks file names it: (artist key, title key).
+TrackKey = tuple[str, str]
+
+
+@dataclass(frozen=True)
+class RelatedTracks:
+    """Groups of tracks that sound alike on air, such as a song and one that samples it.
+
+    Every track in a group holds back every other track in it, both ways.
+    Groups are not joined: a track in two groups holds back the tracks of
+    both, but those tracks do not hold each other back.
+
+    Attributes:
+        links: Track key -> the track keys it holds back.
+        names: Track key -> "Artist - Title" as written, for log messages.
+    """
+
+    links: Mapping[TrackKey, frozenset[TrackKey]] = field(default_factory=dict)
+    names: Mapping[TrackKey, str] = field(default_factory=dict)
+
+    def related_to(self, key: TrackKey) -> frozenset[TrackKey]:
+        """The track keys a recent track with *key* holds back, besides itself."""
+        return self.links.get(key, frozenset())
+
+    def name(self, key: TrackKey) -> str:
+        """The "Artist - Title" *key* was written as."""
+        return self.names.get(key, " - ".join(key))
+
+
+def related_track_key(text: str) -> TrackKey | None:
+    """The key of "Artist - Title" (split at the first " - "), or ``None`` when it is not one."""
+    artist, separator, title = text.partition(" - ")
+    key = (artist_key(artist), title_key(title))
+    return key if separator and all(key) else None
+
+
+def parse_related_tracks(data: Mapping[str, Any], source: str) -> RelatedTracks:
+    """Validate a related tracks table (the parsed TOML file).
+
+    The ``[related]`` table maps a track to a list of tracks; the track and
+    its list are one group, and every track in a group holds back every
+    other.  Each track is written "Artist - Title" with the lead artist::
+
+        [related]
+        "Rick James - Super Freak" = ["MC Hammer - U Can't Touch This"]
+
+    Case, punctuation, a leading "The", featured artists and version notes
+    such as "(Radio Edit)" do not matter, as in the artist and title rules.
+
+    Raises:
+        ValueError: An unknown key, a value of the wrong type, or a track
+            not written "Artist - Title".  The message names *source*.
+    """
+    unknown = set(data) - {"related"}
+    if unknown:
+        raise ValueError(f"{source}: unknown keys {sorted(unknown)}; use [related]")
+    related = data.get("related", {})
+    if not isinstance(related, Mapping):
+        raise ValueError(f'{source}: [related] must be a table of "Artist - Title" = [tracks]')
+    links: dict[TrackKey, set[TrackKey]] = {}
+    names: dict[TrackKey, str] = {}
+    for track, others in related.items():
+        if not isinstance(others, list) or not all(isinstance(other, str) for other in others):
+            raise ValueError(
+                f"{source}: [related] {track!r} must be a list of tracks, "
+                f'for example ["MC Hammer - U Can\'t Touch This"]'
+            )
+        group: list[TrackKey] = []
+        for text in (track, *others):
+            key = related_track_key(text)
+            if key is None:
+                raise ValueError(f'{source}: [related] {text!r} is not written "Artist - Title"')
+            names.setdefault(key, text)
+            group.append(key)
+        for key in group:
+            links.setdefault(key, set()).update(other for other in group if other != key)
+    return RelatedTracks({key: frozenset(values) for key, values in links.items() if values}, names)
+
+
+class RelatedTracksFileTooLargeError(ValueError):
+    """The related tracks file is over 1 MiB, the same limit as related artists."""
+
+
+def load_related_tracks(path: str | Path | None) -> RelatedTracks:
+    """Read and validate the related tracks file at *path*.
+
+    The size is checked before reading, so a huge file is never loaded.
+
+    Raises:
+        FileNotFoundError: *path* is set but there is no such file.
+        RelatedTracksFileTooLargeError: The file is over 1 MiB.
+        ValueError: The file is not valid TOML (the cause is the
+            :class:`tomllib.TOMLDecodeError`) or not a valid related
+            tracks file (see :func:`parse_related_tracks`).
+    """
+    if not path:
+        return RelatedTracks()
+    file = Path(path)
+    data = _read_related_file(file, "related tracks", RelatedTracksFileTooLargeError)
+    return parse_related_tracks(data, str(file))
 
 
 # ---------------------------------------------------------------------------
@@ -401,12 +520,19 @@ class RepeatRules:
     Attributes:
         track_window: Picks before the same file may play again.
         track_minutes: Minutes before the same file may play again.
-        artist_window: Picks before an artist (or a related one, or the
-            same album) may play again.
+        artist_window: Picks before an artist may play again.
         artist_minutes: The same, in minutes.
         title_window: Picks before the same song title may play again.
         title_minutes: The same, in minutes.
         related: Links between artists, and single acts.
+        related_artist_window: Picks before an artist related to a recent
+            one may play; ``None`` uses ``artist_window``.
+        related_artist_minutes: The same, in minutes; ``None`` uses
+            ``artist_minutes``.
+        related_tracks: Groups of tracks that hold each other back.
+        related_track_window: Picks before a track related to a recent
+            one may play.
+        related_track_minutes: The same, in minutes.
     """
 
     track_window: int = 50
@@ -418,6 +544,23 @@ class RepeatRules:
     related: RelatedArtists = field(default_factory=RelatedArtists)
     album_window: int = 0
     album_minutes: float = 0.0
+    related_artist_window: int | None = None
+    related_artist_minutes: float | None = None
+    related_tracks: RelatedTracks = field(default_factory=RelatedTracks)
+    related_track_window: int = 0
+    related_track_minutes: float = 0.0
+
+    @property
+    def related_artist_limits(self) -> tuple[int, float]:
+        """The related artist rule's track count and minutes."""
+        return (
+            self.artist_window
+            if self.related_artist_window is None
+            else self.related_artist_window,
+            self.artist_minutes
+            if self.related_artist_minutes is None
+            else self.related_artist_minutes,
+        )
 
     @classmethod
     def from_playback(
@@ -426,6 +569,7 @@ class RepeatRules:
         *,
         track_window: int | None = None,
         related: RelatedArtists | None = None,
+        related_tracks: RelatedTracks | None = None,
     ) -> RepeatRules:
         """Build the rules from a ``[playback]`` section.
 
@@ -434,6 +578,7 @@ class RepeatRules:
             track_window: Use this track count instead of the configured
                 count (the player shrinks it to fit a small library).
             related: The loaded related artists.
+            related_tracks: The loaded related tracks.
         """
         settings = playback.repeat_rules
 
@@ -444,6 +589,9 @@ class RepeatRules:
         album_window, album_minutes = values(settings.album)
         title_window, title_minutes = values(settings.title)
         configured_track_window, track_minutes = values(settings.track)
+        related_artist_window, related_artist_minutes = values(settings.related_artist)
+        related_track_window, related_track_minutes = values(settings.related_track)
+        use_tracks = related_tracks is not None and settings.use_related_tracks
         return cls(
             track_window=int(configured_track_window if track_window is None else track_window),
             track_minutes=track_minutes,
@@ -458,18 +606,39 @@ class RepeatRules:
             ),
             album_window=album_window,
             album_minutes=album_minutes,
+            related_artist_window=related_artist_window,
+            related_artist_minutes=related_artist_minutes,
+            related_tracks=related_tracks if use_tracks and related_tracks else RelatedTracks(),
+            related_track_window=related_track_window if use_tracks else 0,
+            related_track_minutes=related_track_minutes if use_tracks else 0.0,
         )
 
     @property
     def keep_tracks(self) -> int:
-        """How many recent tracks the artist, album and title rules can look at."""
-        return max(0, self.artist_window, self.album_window, self.title_window)
+        """How many recent tracks the artist, album, title and related rules can look at."""
+        related_window = self.related_artist_limits[0] if self.related.links else 0
+        return max(
+            0,
+            self.artist_window,
+            self.album_window,
+            self.title_window,
+            related_window,
+            self.related_track_window if self.related_tracks.links else 0,
+        )
 
     @property
     def keep_seconds(self) -> float:
         """How many seconds of history any minute window can look at."""
+        related_minutes = self.related_artist_limits[1] if self.related.links else 0.0
         return (
-            max(self.track_minutes, self.artist_minutes, self.album_minutes, self.title_minutes)
+            max(
+                self.track_minutes,
+                self.artist_minutes,
+                self.album_minutes,
+                self.title_minutes,
+                related_minutes,
+                self.related_track_minutes if self.related_tracks.links else 0.0,
+            )
             * 60.0
         )
 
@@ -543,9 +712,8 @@ def records_from_plays(rows: Iterable[Mapping[str, Any]], now: float) -> list[Pl
     return records
 
 
-#: The most track starts the artist, album and title rules remember.  A
-#: week of two-minute tracks fits; a larger window looks only this far back.
-HISTORY_LIMIT = 5000
+#: The most recent track starts the artist, album and title rules remember.
+HISTORY_LIMIT = 50000
 
 
 def prune_history(history: Any, rules: RepeatRules, now: float, minimum_seconds: float = 0) -> None:
@@ -632,7 +800,7 @@ def _key_cache(keys: TrackKeyCache | ArtistSplitter | None) -> TrackKeyCache:
 
 
 #: Reasons a candidate is held back, in the order they are checked.
-REASONS = ("same artist", "related artist", "same album", "same title")
+REASONS = ("same artist", "related artist", "same album", "same title", "related track")
 
 
 class RepeatFilter:
@@ -652,6 +820,8 @@ class RepeatFilter:
         keys: Looks up each candidate's keys; a bare splitter gets a
             fresh cache.
         names: Looks up the written name of an artist key, for logs.
+        related_tracks: Track keys held back through a related track ->
+            the recent track key that holds it back.
     """
 
     def __init__(
@@ -662,19 +832,25 @@ class RepeatFilter:
         titles: Collection[str] = (),
         keys: TrackKeyCache | ArtistSplitter | None = None,
         names: RelatedArtists | None = None,
+        related_tracks: Mapping[TrackKey, TrackKey] | None = None,
     ) -> None:
         self.artists = frozenset(artists)
         self.related = dict(related or {})
         self._related_keys = frozenset(self.related)
         self.albums = frozenset(albums)
         self.titles = frozenset(titles)
+        self.related_tracks = dict(related_tracks or {})
+        # Titles first, so a candidate whose title matches nothing skips the artist pairs.
+        self._related_titles = frozenset(title for _, title in self.related_tracks)
         self._keys = _key_cache(keys)
         self._names = names or RelatedArtists()
         self.held_back: dict[str, str] = {}
 
     def __bool__(self) -> bool:
         """True when any rule can hold a candidate back."""
-        return bool(self.artists or self.related or self.albums or self.titles)
+        return bool(
+            self.artists or self.related or self.albums or self.titles or self.related_tracks
+        )
 
     def reason(self, entry: Any) -> str | None:
         """Why *entry* is held back, as a short phrase, or ``None``."""
@@ -689,6 +865,10 @@ class RepeatFilter:
             return "same album"
         if keys.title and keys.title in self.titles:
             return "same title"
+        if keys.title in self._related_titles and any(
+            (artist, keys.title) in self.related_tracks for artist in keys.artists
+        ):
+            return "related track"
         return None
 
     def __call__(self, entry: Any) -> bool:
@@ -724,39 +904,63 @@ def build_filter(
     cache = _key_cache(keys)
     count = len(history)
     artists: set[str] = set()
+    related_sources: set[str] = set()
     albums: set[str] = set()
     titles: set[str] = set()
+    related_tracks: dict[TrackKey, TrackKey] = {}
     paths: list[str] = []
-    # No age is below -inf, so a rule without minutes counts tracks only.
-    artist_seconds = rules.artist_minutes * 60.0 if rules.artist_minutes > 0 else -math.inf
-    album_seconds = rules.album_minutes * 60.0 if rules.album_minutes > 0 else -math.inf
-    title_seconds = rules.title_minutes * 60.0 if rules.title_minutes > 0 else -math.inf
-    track_seconds = rules.track_minutes * 60.0 if rules.track_minutes > 0 else -math.inf
+
+    def seconds(minutes: float) -> float:
+        # No age is below -inf, so a rule without minutes counts tracks only.
+        return minutes * 60.0 if minutes > 0 else -math.inf
+
+    related_window, related_minutes = rules.related_artist_limits
+    if not rules.related.links:
+        related_window, related_minutes = 0, 0.0
+    track_links = rules.related_tracks
+    related_track_window = rules.related_track_window if track_links.links else 0
+    artist_seconds = seconds(rules.artist_minutes)
+    related_seconds = seconds(related_minutes)
+    album_seconds = seconds(rules.album_minutes)
+    title_seconds = seconds(rules.title_minutes)
+    related_track_seconds = seconds(rules.related_track_minutes if track_links.links else 0.0)
+    track_seconds = seconds(rules.track_minutes)
     for position, record in enumerate(history):
         back = count - position  # 1 = the latest track
         age = now - record.started
         by_artist = back <= rules.artist_window or age < artist_seconds
+        by_related = back <= related_window or age < related_seconds
         by_album = back <= rules.album_window or age < album_seconds
         by_title = back <= rules.title_window or age < title_seconds
-        if by_artist or by_album or by_title:
+        by_related_track = back <= related_track_window or age < related_track_seconds
+        if by_artist or by_related or by_album or by_title or by_related_track:
             track = cache.keys(record)
             if by_artist:
                 artists |= track.artists
+            if by_related:
+                related_sources |= track.artists
             if by_album:
                 albums.add(track.album)
             if by_title:
                 titles.add(track.title)
+            if by_related_track and track.title:
+                for artist in track.artists:
+                    for linked in track_links.related_to((artist, track.title)):
+                        related_tracks.setdefault(linked, (artist, track.title))
         if age < track_seconds:
             paths.append(record.path)
     related: dict[str, str] = {}
-    for key in artists:
+    for key in related_sources:
         for other in rules.related.related_to(key):
             if other not in artists:
                 related.setdefault(other, key)
     artists.discard("")
     albums.discard("")
     titles.discard("")
-    return RepeatFilter(artists, related, albums, titles, cache, rules.related), paths
+    repeat = RepeatFilter(
+        artists, related, albums, titles, cache, rules.related, related_tracks=related_tracks
+    )
+    return repeat, paths
 
 
 __all__ = [
@@ -769,8 +973,11 @@ __all__ = [
     "PlayRecord",
     "RelatedArtists",
     "RelatedArtistsFileTooLargeError",
+    "RelatedTracks",
+    "RelatedTracksFileTooLargeError",
     "RepeatFilter",
     "RepeatRules",
+    "TrackKey",
     "TrackKeyCache",
     "TrackKeys",
     "album_key",
@@ -778,9 +985,12 @@ __all__ = [
     "build_filter",
     "featured_in_title",
     "load_related_artists",
+    "load_related_tracks",
     "parse_related_artists",
+    "parse_related_tracks",
     "plays_to_load",
     "prune_history",
     "records_from_plays",
+    "related_track_key",
     "title_key",
 ]

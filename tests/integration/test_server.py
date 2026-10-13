@@ -796,7 +796,13 @@ class TestRepeatSettings:
         response = client.post("/api/playback-settings", json=payload)
 
         assert response.status_code == 200
-        assert response.json()["playback"]["repeat_rules"] == payload["repeat_rules"]
+        # Without their own limits, related artists keep the artist rule's.
+        assert response.json()["playback"]["repeat_rules"] == {
+            **payload["repeat_rules"],
+            "related_artist": payload["repeat_rules"]["artist"],
+            "related_track": {"tracks": 20, "minutes": 0.0},
+            "use_related_tracks": False,
+        }
         assert bridge.player._state.rules.related.related_to("alpha") == {"beta"}
 
         path.write_text('[related]\n"Alpha" = ["Gamma"]\n', encoding="utf-8")
@@ -845,6 +851,51 @@ class TestRepeatSettings:
         assert bridge.get_settings()["playback"]["related_artists_problem"].startswith(
             "The related artists file is not valid"
         )
+
+    def test_related_tracks_load_on_save_with_their_own_limits(self, bridge, tmp_path) -> None:
+        client = self._client(bridge, tmp_path)
+        path = bridge.player._cfg.index.active_dir / "related-tracks.toml"
+        path.write_text('[related]\n"Alpha - One" = ["Beta - Two"]\n', encoding="utf-8")
+        payload = self._payload()
+        payload["repeat_rules"]["related_track"] = {"tracks": 7, "minutes": 15}
+        payload["repeat_rules"]["use_related_tracks"] = True
+
+        response = client.post("/api/playback-settings", json=payload)
+
+        assert response.status_code == 200
+        rules = bridge.player._state.rules
+        assert rules.related_tracks.related_to(("beta", "two")) == {("alpha", "one")}
+        assert (rules.related_track_window, rules.related_track_minutes) == (7, 15.0)
+        playback = response.json()["playback"]
+        assert playback["repeat_rules"]["use_related_tracks"] is True
+        assert playback["related_tracks_problem"] is None
+        assert playback["related_tracks_default_file"] == str(path.resolve())
+
+    def test_invalid_related_tracks_file_keeps_live_repeat_settings(self, bridge, tmp_path) -> None:
+        client = self._client(bridge, tmp_path)
+        path = bridge.player._cfg.index.active_dir / "related-tracks.toml"
+        path.write_text('[related]\n"Alpha - One" = ["Beta - Two"]\n', encoding="utf-8")
+        payload = self._payload()
+        payload["repeat_rules"]["use_related_tracks"] = True
+        assert client.post("/api/playback-settings", json=payload).status_code == 200
+        state_rules = bridge.player._state.rules
+        bridge.save_persistent_state.reset_mock()
+        path.write_text('[related]\n"Alpha" = ["Beta - Two"]\n', encoding="utf-8")
+
+        response = client.post("/api/playback-settings", json=payload)
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "The related tracks file is not valid."
+        assert bridge.player._state.rules is state_rules
+        bridge.save_persistent_state.assert_not_called()
+        assert bridge.get_settings()["playback"]["related_tracks_problem"] == (
+            "The related tracks file is not valid."
+        )
+
+        # Turned off, the broken file is not read and the save goes through.
+        payload["repeat_rules"]["use_related_tracks"] = False
+        assert client.post("/api/playback-settings", json=payload).status_code == 200
+        assert not bridge.player._state.rules.related_tracks.links
 
     def test_api_rejects_related_file_path(self, bridge, tmp_path) -> None:
         client = self._client(bridge, tmp_path)

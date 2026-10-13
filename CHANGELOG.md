@@ -10,6 +10,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Clockwheel Music steps can combine categories with folder and metadata conditions. Use
+  Match any to combine categories, or Match all to narrow a category by year, BPM or other
+  fields. Songs matching more than one condition are included once. Existing category steps
+  open in the same condition editor and keep their selection and repeat settings. Category
+  hours and the list of clockwheels using each category still apply.
+
+- Related tracks (#101). Settings > Picking > Repeats has a **Use related tracks** checkbox, off
+  by default, with its own Tracks and Minutes limits (20 tracks to start with). It holds back
+  tracks that sound alike on air, such as a song and one that samples it, listed as
+  "Artist - Title" groups in `index/<name>/related-tracks.toml`. Every track in a group holds
+  back the others in both directions. AutoDJ copies a small sample there on first use and never
+  replaces your copy; an invalid file is refused on save and skipped with a warning at startup.
+  The rotation tester, `autodj doctor` and `autodj backup` include the file.
+- Related artists have their own Tracks and Minutes limits under **Use related artists**.
+  Settings saved before this keep using the artist limits.
+- A "(w/ X)" note in a title now credits X, like "(feat. X)" and "(with X)", for the artist
+  repeat rules, related artists and DMCA mode, and is ignored when titles are compared.
+- Negative liner **Overlap start** values down to -15 seconds start the next song first, then place
+  liner content within its intro when it fits. For example, if a -3 second request has one second
+  available before vocals, the liner starts one second after the song. If the main content is longer
+  than the intro, existing liner-first timing remains; the liner tail continues over the song.
+  Track info announces when a negative value makes the cue-preview controls unavailable (#159).
+- **Why this track?** names the clockwheel step that selected the song, with its number and
+  the same description shown in the clockwheel list. Music and category steps say whether they
+  choose the least recently played song or choose at random. The description stays with the
+  selected song when the clock changes, including the opening song.
+- Library Rescan can override saved fields with populated embedded tags; missing tags keep the
+  saved values, cue points and analysis remain intact for unchanged files.
+
 - Seasons for rotation categories (#140): under **When the songs may play**, a category can have a
   **Not before** date, a **Do not play after** date, or both, such as 1 to 26 December for
   Christmas songs. Outside them its songs are left out of every pick mode and a clockwheel step
@@ -68,7 +97,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the run works in the background with a progress bar and a Cancel button, announces its end
   once, and shows the results as headings and lists. See
   [Operations](docs/operations.md#testing-the-rotation).
-
 - Editing tags from Track info (#53). A Tags section has fields for title, artist, album, genre,
   year, BPM, key and ISRC. Save tags writes only the changed fields into the file with mutagen
   (MP3, FLAC, M4A, Ogg Vorbis, Opus, WAV and AIFF) and updates the library at once, keeping the
@@ -77,8 +105,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   flushed to disk and replaces the original only once every changed field reads back, so a failed
   save leaves the original as it was; an MP3 keeps its ID3 version. A song playing or up next is
   refused until it has played, and only files inside the library folders are changed. When beets
-  manages the library, the same fields can be written to the beets database too. A refused field
-  is marked invalid with its reason linked to it and focused; a save is said once and focus stays
+  manages the library, the same fields can be written to the beets database too, in the same
+  order as each file save. A refused field is marked invalid with its reason linked to it and
+  focused; a save is said once and focus stays
   on Save tags. The dialog that asks to save before switching tracks now reads its explanation when
   it opens and has a Keep editing button, which does what Escape does.
 
@@ -400,8 +429,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - The multi-station soak test now runs for a few seconds in every test run, stops and starts
     the second station while both render, and checks that nothing is left behind (the bus timing
     is judged only in a long run). It can run for hours and write memory and processor samples to
-    a file. See "Soak test" in
-    `docs/operations.md`.
+    a file. See "Soak test" in `docs/operations.md`.
+
+- Clockwheel Delete and Undo leave an open step edit alone. Duplicating or moving steps
+  keeps the edit attached to its original step and updates its displayed number (#146).
+
+- Repeat rules that use minutes now keep and load up to 50,000 recent plays, so fast song rotations
+  retain more of the selected time window across picks and restarts.
 - Dayparting checks a category's hours for when the song is expected to start rather than when
   it is picked (#140), so a song no longer starts a few minutes after its window has closed. The
   rotation tester checks them the same way, and so does the song change planned a song early for
@@ -537,10 +571,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Analysis worker status counts waiting songs without sorting or building a list of their
+  paths (#166).
+
+- History exports load details only for the requested dates, while retaining the next play
+  needed to calculate duration (#165). Reports use a separate database snapshot so they do not
+  hold up play-history writes. Stored history remains unlimited.
+
 - Clockwheel picks on a large library take less work, the same songs as before: in DMCA mode a
   pick checks each song against only the few albums and artists at a limit (and none while nothing
   is), the songs a clock can pick from are kept between picks until the library or the hours
-  change, and least-recently-played steps compare play times without reworking every path.
+  change, and least-recently-played steps reuse their last-played lookup when retrying with
+  looser repeat limits (#167).
 
 - The clockwheel's reset timing now measures every song from its start cue to its end cue (or its
   segue or outro, when earlier) for all clockwheels, not only for liner steps with "Only play if

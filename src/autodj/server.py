@@ -534,6 +534,13 @@ class LibraryFolderUpdateBody(BaseModel):
     advanced: bool | None = None
 
 
+class LibraryRescanBody(BaseModel):
+    """Options for an explicit library rescan."""
+
+    model_config = ConfigDict(extra="forbid")
+    override_tags: StrictBool = False
+
+
 class SongPointsBody(BaseModel):
     """Editable points; the catalog validates their times against the recording."""
 
@@ -1629,9 +1636,9 @@ def create_app(
         return library.snapshot()
 
     @app.post("/api/library/rescan")
-    async def api_library_rescan() -> dict:
+    async def api_library_rescan(body: LibraryRescanBody | None = None) -> dict:
         library = _catalog_library()
-        library.start_scan()
+        library.start_scan(override_tags=body.override_tags if body else False)
         return library.snapshot()
 
     @app.get("/api/library/points")
