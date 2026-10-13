@@ -240,3 +240,18 @@ async def test_a_busy_writer_leaves_the_cache_open_but_still_closes_the_rest(
 
     assert "DJ-meta cache closed" not in log
     assert log[-3:] == ["library closed", "master closed", "push stopped"]
+
+
+async def test_a_reader_still_running_keeps_the_library_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An hour preview that did not stop must not have the library closed under it (#126)."""
+    log: list[str] = []
+    runtime, registry, shared, _bridge = _rig(tmp_path, monkeypatch, log)
+    await runtime.start()
+    await shared.start()
+
+    assert await registry.shutdown(shared, 1.0, readers_stopped=False) == (True, True)
+
+    assert "library closed" not in log
+    assert log[-2:] == ["master closed", "push stopped"]

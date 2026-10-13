@@ -2359,6 +2359,52 @@ describe("static accessibility contracts", () => {
     expect(rules.join("\n")).toContain("accent-color: var(--accent)");
   });
 
+  it("gives the hour preview a headed table, one polite status and token colours", () => {
+    installDocument({ html: htmlSource });
+    const card = document.querySelector("#hour-preview-card");
+    expect(card.tagName).toBe("DETAILS");
+    expect(card.closest("#panel-now")).not.toBeNull();
+    // Closed until opened: each preview runs a dry run on the server.
+    expect(card.open).toBe(false);
+    expect(card.querySelector(":scope > summary > h2").textContent.trim()).toBe("Hour preview");
+    const span = document.getElementById("hour-preview-span");
+    expect(span.tagName).toBe("SELECT");
+    expect(document.querySelector('label[for="hour-preview-span"]').textContent.trim()).toBe("Show");
+    expect([...span.options].map((option) => option.textContent))
+      .toEqual(["Next 30 minutes", "Next hour", "Next 2 hours", "Next 3 hours"]);
+    expect(span.value).toBe("60");
+    const help = document.getElementById(span.getAttribute("aria-describedby"));
+    expect(help.textContent).toContain("Fixed items");
+    expect(help.textContent).toContain("Predicted items");
+    expect(help.textContent).toContain("Nothing on air changes.");
+    const button = document.getElementById("hour-preview-refresh");
+    expect(button.getAttribute("type")).toBe("button");
+    expect(button.textContent.trim()).toBe("Refresh preview");
+    // One polite status, for Refresh preview; the summary, the backtiming
+    // list and the table refresh silently.
+    const live = [...card.querySelectorAll("[aria-live], [role='status'], [role='alert'], [role='log']")];
+    expect(live.map((node) => node.id)).toEqual(["hour-preview-status"]);
+    expect(live[0].getAttribute("aria-live")).toBe("polite");
+    for (const id of ["hour-preview-summary", "hour-preview-points", "hour-preview-table"]) {
+      expect(document.getElementById(id).closest("[aria-live], [role=status]")).toBeNull();
+    }
+    // A real table: a caption and a header for each column.
+    const table = document.getElementById("hour-preview-table");
+    expect(table.querySelector("caption").textContent.trim()).toBe("What plays next");
+    expect([...table.querySelectorAll("thead th")].map((th) => [th.textContent.trim(), th.getAttribute("scope")]))
+      .toEqual([["Starts", "col"], ["What", "col"], ["Length", "col"], ["Status", "col"]]);
+    const backtiming = document.getElementById("hour-preview-backtiming");
+    expect(document.getElementById(backtiming.getAttribute("aria-labelledby")).tagName).toBe("H3");
+    // Shift+H is in the shortcut list.
+    expect(document.querySelector("#hotkey-help-modal").textContent).toContain("Shift+H");
+    // Colours come from the theme tokens only, so both themes follow.
+    const rules = stripCssComments(cssSource).match(/#hour-preview-[^{]*\{[^}]*\}/g);
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgb|hsl/i);
+    // Predicted rows look different, but the Status column says so in words too.
+    expect(rules.join("\n")).toMatch(/tr\.is-predicted td\s*\{[^}]*font-style: italic/);
+  });
+
   it("gives Track info's tag editor labelled native fields, linkable errors and one status", () => {
     installDocument({ html: htmlSource });
     const section = document.querySelector("#panel-track-info #tags-editor");

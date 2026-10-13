@@ -20,7 +20,7 @@
 // Lowercase n = skip, uppercase N (Shift+N) = speak next track.
 // Shift+L speaks the current lyric line; lowercase l is unused.
 // s/S and m/M are shuffle and mute in either case, so no status key may
-// use them.  Status keys: T N R B K L E V Q J.
+// use them.  Status keys: T N R B K L E V Q J H.
 //
 // Reserved for the cart wall (modules/cart-wall.js), which handles them
 // only while focus is on the wall: the digits, minus, equals, Page Up and
@@ -145,6 +145,8 @@ export function installHotkeys({
   seekDelta, getBpm,
   getTrack, getNextTrack, getRemaining, getLyricLine,
   getPosition, getQueue, getJobStatus,
+  // Shift+H: says how the hour lands, from the hour preview (#126).
+  speakHour = null,
   isEnabled = () => true,
   shortcutToggle = null,
   // What Space / k do: Play / Pause, or in stream mode start or stop
@@ -291,6 +293,10 @@ export function installHotkeys({
         break;
       case "J":
         srSpeak(getJobStatus ? getJobStatus() : "No library job has run.");
+        break;
+      case "H":
+        if (speakHour) void speakHour();
+        else srSpeak("No hour preview yet.");
         break;
       case "?":
         if (!toggleShortcutsModal()) return;
