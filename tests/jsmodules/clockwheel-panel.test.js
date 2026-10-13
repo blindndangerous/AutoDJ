@@ -648,7 +648,8 @@ describe("clockwheel editor", () => {
   it("shows when saved active-wheel changes are waiting for restart", async () => {
     await open(fakeServer({ pending_update: true }));
     expect(byId("clock-next").textContent).toBe("Saved changes are waiting for the next clock restart.");
-    expect(status()).toBe("Saved changes are waiting for the next clock restart.");
+    // A forced announcement clears the status, then writes it on the next tick.
+    await vi.waitFor(() => expect(status()).toBe("Saved changes are waiting for the next clock restart."));
   });
 
   it("hides Apply timing for an inactive wheel", async () => {
