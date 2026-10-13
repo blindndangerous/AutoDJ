@@ -476,6 +476,83 @@ def test_settings_migration_preserves_existing_catalog_source_roots(tmp_path: Pa
         }
 
 
+def test_catalog_state_migrates_without_music_root_and_keeps_registered_sources(
+    tmp_path: Path,
+) -> None:
+    index_dir = tmp_path / "index"
+    index_dir.mkdir()
+    registered_music = tmp_path / "registered-music"
+    registered_liners = tmp_path / "registered-liners"
+    registered_music.mkdir()
+    registered_liners.mkdir()
+    with LibraryCatalog(index_dir / "library.db") as catalog:
+        catalog.add_source(registered_music, "music", recursive=False, advanced=False)
+        catalog.add_source(registered_liners, "liner", recursive=False, advanced=False)
+    with closing(sqlite3.connect(index_dir / "library.db")) as db:
+        db.execute(
+            "INSERT INTO catalog_settings VALUES ('play_history', ?)",
+            (
+                json.dumps(
+                    [
+                        {
+                            "title": "Old song",
+                            "artist": "Singer",
+                            "duration": 120,
+                            "played_at": "2024-01-01T00:00:00+00:00",
+                        }
+                    ]
+                ),
+            ),
+        )
+        db.commit()
+    state = index_dir / "web_state.json"
+    state.write_text('{"schema_version":1,"djmix":{"harmonic_mixing":false}}')
+
+    index_migration.migrate_catalog(index_dir, None, tmp_path / "unused-liners", {}, apply=True)
+
+    with LibraryCatalog(index_dir / "library.db") as catalog:
+        assert {(source["path"], source["kind"]) for source in catalog.sources()} == {
+            (str(registered_music.resolve()).casefold(), "music"),
+            (str(registered_liners.resolve()).casefold(), "liner"),
+        }
+    with closing(sqlite3.connect(index_dir / "library.db")) as db:
+        assert db.execute("SELECT title,artist,duration FROM play_history").fetchall() == [
+            ("Old song", "Singer", 120.0)
+        ]
+    assert json.loads(state.read_text())["djmix"]["harmonic_mode"] == "off"
+    assert not index_migration.migration_required(index_dir)[0]
+
+
+def test_rootless_catalog_upgrade_does_not_invent_a_music_source(tmp_path: Path) -> None:
+    index_dir = tmp_path / "index"
+    index_dir.mkdir()
+    with closing(sqlite3.connect(index_dir / "library.db")) as db:
+        db.execute("CREATE TABLE catalog_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        db.execute("INSERT INTO catalog_settings VALUES ('sources_seeded','false')")
+        db.execute("INSERT INTO catalog_settings VALUES ('play_history','[]')")
+        db.commit()
+
+    index_migration.migrate_catalog(index_dir, None, tmp_path / "unused-liners", {}, apply=True)
+
+    with closing(sqlite3.connect(index_dir / "library.db")) as db:
+        assert db.execute("SELECT path,kind FROM catalog_sources").fetchall() == []
+    assert index_migration.migration_required(index_dir) == (
+        True,
+        "initial folder registration is incomplete",
+    )
+
+
+def test_published_relative_index_requires_music_root_before_any_writes(tmp_path: Path) -> None:
+    index_dir, _music_dir = _fixture(tmp_path, paths=("old.flac",))
+    before = _tree(index_dir)
+
+    with pytest.raises(ValueError, match="--music-dir is required"):
+        index_migration.migrate_catalog(index_dir, None, tmp_path / "liners", {}, apply=True)
+
+    assert _tree(index_dir) == before
+    assert not (tmp_path / ".migration-backups").exists()
+
+
 def test_migrate_imports_schema4_and_resumes_after_interruption(tmp_path: Path) -> None:
     index_dir, music_dir = _fixture(tmp_path, paths=("old.flac",))
     (music_dir / "old.flac").write_bytes(b"audio bytes")
