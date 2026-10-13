@@ -2680,6 +2680,60 @@ describe("static accessibility contracts", () => {
     for (const rule of rules) expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
   });
 
+  it("gives Shows labelled native fields, keyboard list buttons, one status and token colours", () => {
+    installDocument({ html: htmlSource });
+    const card = document.getElementById("shows-card");
+    expect(card.tagName).toBe("SECTION");
+    expect(card.closest("#panel-library")).not.toBeNull();
+    expect(document.getElementById(card.getAttribute("aria-labelledby")).tagName).toBe("H2");
+    // Every field has a visible label of its own, no aria-label in its place.
+    for (const [id, label] of [
+      ["shows-name", "Name"], ["shows-category", "Category"], ["shows-clockwheel", "Clockwheel"],
+      ["shows-target", "Target length (minutes)"], ["shows-start", "Pick as if at"],
+      ["shows-search", "Search the library"],
+    ]) {
+      const control = document.getElementById(id);
+      expect(control.hasAttribute("aria-label"), id).toBe(false);
+      expect(card.querySelector(`label[for="${id}"]`).textContent.trim(), id).toBe(label);
+    }
+    // Help is linked; the form's error is words on the page, hidden, never live.
+    for (const id of ["shows-category", "shows-clockwheel", "shows-target", "shows-start", "shows-search"]) {
+      const described = document.getElementById(id).getAttribute("aria-describedby").split(/\s+/);
+      for (const help of described) expect(document.getElementById(help).classList.contains("setting-desc"), id).toBe(true);
+    }
+    const error = document.getElementById("shows-form-error");
+    expect(error.classList.contains("field-error")).toBe(true);
+    expect(error.hidden).toBe(true);
+    expect(error.closest("[aria-live]")).toBeNull();
+    // Where the songs come from is a native radio group with a legend.
+    const sourceGroup = document.getElementById("shows-source");
+    expect(sourceGroup.tagName).toBe("FIELDSET");
+    expect(sourceGroup.querySelector("legend").textContent.trim()).toBe("Songs come from");
+    for (const radio of sourceGroup.querySelectorAll('input[type="radio"]')) {
+      expect(radio.parentElement.classList.contains("settings-check")).toBe(true);
+    }
+    // The list is an ordered list named by its heading, with its keys in words.
+    const songs = document.getElementById("shows-songs");
+    expect(songs.tagName).toBe("OL");
+    expect(document.getElementById(songs.getAttribute("aria-labelledby")).tagName).toBe("H3");
+    expect(document.getElementById(songs.getAttribute("aria-describedby")).textContent).toMatch(/Move up and Move down/);
+    // The heading takes focus when the list opens, without a tab stop.
+    expect(document.getElementById("shows-editor-heading").getAttribute("tabindex")).toBe("-1");
+    for (const id of ["shows-add", "shows-stop", "shows-generate", "shows-search-run", "shows-play-now", "shows-close", "shows-cancel"]) {
+      expect(document.getElementById(id).getAttribute("type"), id).toBe("button");
+    }
+    expect(document.getElementById("shows-save").getAttribute("type")).toBe("submit");
+    // One polite status, not nested in another live region.
+    const live = [...card.querySelectorAll("[aria-live], [role='status'], [role='alert']")];
+    expect(live.map((node) => node.id)).toEqual(["shows-status"]);
+    expect(live[0].getAttribute("aria-live")).toBe("polite");
+    expect(live[0].getAttribute("aria-atomic")).toBe("true");
+    // Colours come from the theme tokens only, so both themes follow.
+    const rules = stripCssComments(cssSource).match(/[^{}]*#shows-[^{}]*\{[^{}]*\}/g);
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
+  });
+
   it("gives the preview output device a labelled native select and silent help", () => {
     installDocument({ html: htmlSource });
     const select = document.getElementById("preview-device");

@@ -21,6 +21,7 @@ import calendar
 import functools
 import json
 import logging
+import threading
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -457,6 +458,12 @@ class Action:
     so a liner airs over the next song; or ``"none"``. Audio handlers prepare
     the clip and return a playback callable; preparation must succeed before
     the interruption. The callable runs on a worker thread.
+
+    ``hard``, when given, runs a hard event instead of ``handle`` and does
+    its own interruption (a show starts its first song at once).  Without
+    ``soft_waits`` a soft event runs when it is due rather than waiting for
+    the song playing to end, and never interrupts (a show queues its songs
+    behind the song playing).
     """
 
     name: str
@@ -464,6 +471,8 @@ class Action:
     handle: Callable[[dict[str, str]], Awaitable[Callable[[], None] | None]]
     fields: tuple[ActionField, ...] = ()
     interrupt: Literal["before", "after", "none"] = "after"
+    hard: Callable[[dict[str, str]], Awaitable[None]] | None = None
+    soft_waits: bool = True
 
     def metadata(self) -> dict[str, Any]:
         """Describe the action for the web form (reads ``names`` lists)."""
@@ -551,6 +560,12 @@ class Scheduler:
         self.actions: dict[str, Action] = {}
         self.events: dict[str, ScheduledEvent] = {}
         self.runs: list[RunRecord] = []
+        # Events this version cannot run (an action it does not have), kept
+        # as they were so a save never loses them.
+        self.kept: list[ScheduledEvent] = []
+        # Held while the events dict changes, so another thread (the request
+        # desk asking when the next show starts) can copy it safely.
+        self.lock = threading.Lock()
         # Soft events waiting for the current song to end, in due order.
         self.pending: list[str] = []
         self.started = False
@@ -605,14 +620,23 @@ class Scheduler:
         dropped = []
         for event in data.events:
             action = self.actions.get(event.action)
+            if action is None:
+                # Another version's action (a newer one's, say): never run,
+                # never shown, but written back as it was with every save.
+                logger.warning(
+                    "Scheduled event %r is kept but cannot run in this version: unknown action %s",
+                    event.name,
+                    event.action,
+                )
+                self.kept.append(event)
+                continue
             try:
-                if action is None:
-                    raise EventError("action", f"unknown action {event.action}")
                 event.params = action.check(event.params)
             except EventError as exc:
                 dropped.append(f"{event.name}: {exc}")
                 continue
-            self.events[event.id] = event
+            with self.lock:
+                self.events[event.id] = event
         self.runs = data.runs[-MAX_RUNS:]
         if dropped:
             self._keep_bad_copy("; ".join(dropped))
@@ -620,7 +644,9 @@ class Scheduler:
     def save(self) -> None:
         """Write the schedule atomically."""
         document = ScheduleFile(
-            schema_version=SCHEMA_VERSION, events=list(self.events.values()), runs=self.runs
+            schema_version=SCHEMA_VERSION,
+            events=[*self.events.values(), *self.kept],
+            runs=self.runs,
         ).model_dump(mode="json")
         # An event without a date range is written without the two keys, so
         # an older AutoDJ, which refuses unknown keys, still reads the file.
@@ -668,11 +694,12 @@ class Scheduler:
 
     async def add(self, spec: EventSpec) -> ScheduledEvent:
         """Add an event; raise :class:`EventError` when it is not valid."""
-        if len(self.events) >= MAX_EVENTS:
+        if len(self.events) + len(self.kept) >= MAX_EVENTS:
             raise EventError("", f"The schedule holds at most {MAX_EVENTS} events")
         params = await self._checked(spec)
         event = ScheduledEvent(**{**spec.model_dump(), "params": params, "id": uuid.uuid4().hex})
-        self.events[event.id] = event
+        with self.lock:
+            self.events[event.id] = event
         await self._changed()
         return event
 
@@ -682,14 +709,16 @@ class Scheduler:
             raise KeyError(event_id)
         params = await self._checked(spec)
         event = ScheduledEvent(**{**spec.model_dump(), "params": params, "id": event_id})
-        self.events[event_id] = event
+        with self.lock:
+            self.events[event_id] = event
         self._forget_pending(event_id)
         await self._changed()
         return event
 
     async def remove(self, event_id: str) -> ScheduledEvent:
         """Delete an event; raise ``KeyError`` for an unknown ID."""
-        event = self.events.pop(event_id)
+        with self.lock:
+            event = self.events.pop(event_id)
         self._forget_pending(event_id)
         await self._changed()
         return event
@@ -757,6 +786,10 @@ class Scheduler:
             if action is None:
                 raise ValueError(f"Action {event.action} is not available")
             hard = event.timing == "hard"
+            if hard and action.hard is not None:
+                await action.hard(dict(event.params))
+                logger.info("Scheduled event %r ran: %s", event.name, summary)
+                return await self._record(event, "ok", "")
             play = await action.handle(dict(event.params))
             if hard and action.interrupt == "before":
                 self._interrupt()
@@ -794,7 +827,7 @@ class Scheduler:
             if now - due > MISSED_AFTER:
                 logger.warning("Scheduled event %r due at %s was missed", event.name, due)
                 await self._record(event, "missed", "Missed while the computer slept or stalled")
-            elif event.timing == "soft" and self._song_playing():
+            elif event.timing == "soft" and self._waits(event) and self._song_playing():
                 if event.id not in self.pending:
                     self.pending.append(event.id)
             else:
@@ -804,6 +837,11 @@ class Scheduler:
             await self._publish({"type": "schedule_changed"})
         if self.pending and not self._song_playing():
             await self._run_pending()
+
+    def _waits(self, event: ScheduledEvent) -> bool:
+        """Whether a soft *event* waits for the song playing to end."""
+        action = self.actions.get(event.action)
+        return action is None or action.soft_waits
 
     def track_changed(self) -> None:
         """Run the soft events that waited for the song that just ended (event loop)."""
@@ -819,6 +857,23 @@ class Scheduler:
             event = self.events.get(event_id)
             if event is not None:
                 await self.run(event)
+
+    def runs_within(self, action: str, within: timedelta) -> list[tuple[datetime, ScheduledEvent]]:
+        """The next run of each enabled *action* event within *within* from now (any thread).
+
+        Only those events are looked at, copied under :attr:`lock`.
+        """
+        with self.lock:
+            events = [
+                event for event in self.events.values() if event.enabled and event.action == action
+            ]
+        now = self._clock()
+        found = []
+        for event in events:
+            when = next_run(event, now, self.zone)
+            if when is not None and when - now <= within:
+                found.append((when, event))
+        return sorted(found, key=lambda row: row[0])
 
     def upcoming(self, count: int) -> list[tuple[datetime, ScheduledEvent]]:
         """Return the next *count* runs across every enabled event, soonest first."""

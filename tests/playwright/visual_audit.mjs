@@ -53,6 +53,10 @@
 //         Tags form, a refused save with its errors, the Save or Discard
 //         dialog, and Matched intros with a song intro (skipped now) and an
 //         artist intro, then Upload intro refused with its error linked;
+//       - Library tools > Shows, its server answers stood in for: a show on
+//         the air with a skipped song, the saved shows, one show's list open
+//         with its Move up, Move down and Remove buttons and a search result,
+//         and Save show refused with its error linked to Name;
 //       - Voice tracks, with the microphone and recorder stubbed and the
 //         open song change stood in for: shown idle, recording, with a
 //         take, and with the microphone refused (its error linked to
@@ -431,6 +435,78 @@ async function openDaypartErrors(page, visit) {
   await visit("library/step-hours-error");
 }
 
+// Library tools > Shows (#106): the server's answers are stood in for, so a
+// show on the air, a saved list and a search result look the same on an empty
+// library as on a full one.  The titles are long and unbroken, for the reflow
+// checks.
+const SHOW_ID = "d".repeat(32);
+const SHOW_SONGS = [
+  { path: "/music/1.flac", title: "Example Artist, An_Exceptionally_Long_Title_Without_Any_Spaces_From_A_Tagless_File_0003",
+    missing: false, seconds: 215, length_text: "3:35", length_words: "3 minutes 35 seconds" },
+  { path: "/music/2.flac", title: "Another Example, Second Song", missing: false, seconds: 187,
+    length_text: "3:07", length_words: "3 minutes 7 seconds" },
+  { path: "/music/gone.flac", title: "gone.flac", missing: true, seconds: 0, length_text: "", length_words: "" },
+];
+const SHOW = {
+  id: SHOW_ID, name: "Remembering the 2000s", source: "category", category: "hits", clockwheel: "",
+  source_text: "Category Remembering the 2000s", target_minutes: 60, count: 3, missing: 1,
+  total_seconds: 402, total_text: "6:42", total_words: "6 minutes 42 seconds",
+  generated_at: "2026-10-12T20:00:00+00:00", note: "The list is 6 minutes 42 seconds, shorter than the target of 1 hour: the songs the repeat rules and the DMCA limits allow ran out.",
+  events: ["Saturday throwback"],
+};
+const SHOWS = {
+  shows: [SHOW],
+  categories: [{ id: "hits", name: "Remembering the 2000s" }],
+  clockwheels: ["Throwback"],
+  on_air: {
+    id: SHOW_ID, name: "Remembering the 2000s", total: 3, played: 1, waiting: 1, to_come: 0,
+    skipped: [{ path: "/music/gone.flac", title: "gone.flac", reason: "it is not in the library" }],
+    skipped_count: 1, started_at: "2026-10-12T20:00:00+00:00",
+  },
+  problem: null,
+  limits: { max_shows: 200, max_songs: 500, min_minutes: 5, max_minutes: 360 },
+  timezone: "UTC",
+};
+const showPages = new WeakSet();
+
+async function standInForShows(page) {
+  if (showPages.has(page)) return;
+  showPages.add(page);
+  await page.route("**/api/shows**", (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "POST" && path === "/api/shows") {
+      return route.fulfill({ status: 400, contentType: "application/json",
+        body: JSON.stringify({ detail: "A show named Remembering the 2000s already exists", field: "name" }) });
+    }
+    const body = path === "/api/shows" ? SHOWS : { ...SHOW, songs: SHOW_SONGS };
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await page.route("**/api/search?*", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({ results: [{ path: "/music/9.flac", title: "An_Exceptionally_Long_Title_Without_Any_Spaces_0009",
+      artist: "Example Artist", album: "", length: 200, display_name: "" }] }),
+  }));
+}
+
+// Shows: one list open with a search result, then Save show refused by the
+// server with its error on the page, linked to Name and focused.
+async function openShowStates(page, visit) {
+  await page.locator("#shows-list button[data-action='open']").first().click();
+  await page.locator("#shows-songs li[data-index]").first().waitFor({ state: "visible" });
+  await page.locator("#shows-search").fill("example");
+  await page.locator("#shows-search-run").click();
+  await page.locator("#shows-results li").first().waitFor({ state: "visible" });
+  await visit("library/show-list");
+  await page.locator("#shows-close").click();
+  await page.locator("#shows-add").click();
+  await page.locator("#shows-name").fill("Remembering the 2000s");
+  await page.locator("#shows-save").click();
+  await page.locator("#shows-form-error").waitFor({ state: "visible" });
+  await visit("library/show-error");
+  await page.locator("#shows-cancel").click();
+}
+
 // Voice tracks (#128): the open song change and a booked list are stood
 // in for (the audit server takes no breaks), and the microphone and the
 // recorder are stubbed before any page script, so Record works with no
@@ -589,6 +665,7 @@ async function eachTarget(page, visit) {
   await standInForHourPreview(page);
   await standInForListenerStats(page);
   await standInForVoiceTracker(page);
+  await standInForShows(page);
   await standInForStations(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   for (const view of VIEWS) {
@@ -605,7 +682,10 @@ async function eachTarget(page, visit) {
       await settle(page);
       await visit(view);
       if (view === "track-info") await openTrackTags(page, visit);
-      if (view === "library") await openDaypartErrors(page, visit);
+      if (view === "library") {
+        await openDaypartErrors(page, visit);
+        await openShowStates(page, visit);
+      }
       if (view === "voice") await openVoiceStates(page, visit);
       if (view === "now") await openStationMenu(page, visit);
       continue;

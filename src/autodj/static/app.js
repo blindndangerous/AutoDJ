@@ -31,6 +31,7 @@ import { tableRow } from "./modules/table-row.js";
 import { installTableNavigation } from "./modules/table-navigation.js";
 import { installLibraryFolders } from "./modules/library-folders.js";
 import { installCategoriesPanel } from "./modules/categories-panel.js";
+import { installShowsPanel } from "./modules/shows-panel.js";
 import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
 import { describeStep } from "./modules/clockwheel-step.js";
 import { installRotationTest } from "./modules/rotation-test.js";
@@ -284,6 +285,7 @@ let authExpiryHandled = false;
 let libraryFoldersControls = null;
 let clockwheelPanelControls = null;
 let categoriesPanelControls = null;
+let showsPanelControls = null;
 let schedulerPanelControls = null;
 let rotationTestControls = null;
 let hourPreviewControls = null;
@@ -372,6 +374,8 @@ function clearStationViews() {
   resetSettingsState(_settingsEls());
   settingsStatus.textContent = "";
   clockwheelPanelControls?.clearProtectedData();
+  // Shows are the station's own (#106).
+  showsPanelControls?.clearProtectedData();
   schedulerPanelControls?.clear();
   rotationTestControls?.clear();
   hourPreviewControls?.clear();
@@ -1434,6 +1438,10 @@ function connectWS({ quiet = false } = {}) {
         cartWallControls?.event(message);
       } else if (message.type === "schedule_changed" || message.type === "schedule_run") {
         void schedulerPanelControls?.refresh();
+        // A schedule event may play a show: its list says which events do.
+        void showsPanelControls?.refresh();
+      } else if (message.type === "shows_changed") {
+        void showsPanelControls?.refresh();
       } else applyState(message);
     } catch (_) {}
   };
@@ -1489,6 +1497,7 @@ function connectWS({ quiet = false } = {}) {
           libraryFoldersControls?.resume();
           clockwheelPanelControls?.resume();
           categoriesPanelControls?.resume();
+          showsPanelControls?.resume();
           void schedulerPanelControls?.refresh();
           void rotationTestControls?.refresh();
           hourPreviewControls?.resume();
@@ -1680,6 +1689,7 @@ function refreshStationPanels() {
   void nowPlayingSettings?.load();
   clockwheelPanelControls?.resume();
   void clockwheelPanelControls?.refresh();
+  showsPanelControls?.resume();
   void schedulerPanelControls?.refresh();
   void rotationTestControls?.refresh();
   hourPreviewControls?.resume();
@@ -2877,6 +2887,7 @@ libraryFoldersControls = installLibraryFolders({
 clockwheelPanelControls = installClockwheelPanel();
 // A saved or deleted category reaches the clockwheel step form at once.
 categoriesPanelControls = installCategoriesPanel({ onChange: () => clockwheelPanelControls?.refresh() });
+showsPanelControls = installShowsPanel();
 schedulerPanelControls = installSchedulerPanel();
 rotationTestControls = installRotationTest();
 hourPreviewControls = installHourPreview();
@@ -2984,6 +2995,7 @@ function startAuthenticatedApp(initialState) {
   libraryFoldersControls?.resume();
   clockwheelPanelControls?.resume();
   categoriesPanelControls?.resume();
+  showsPanelControls?.resume();
   void schedulerPanelControls?.refresh();
   void rotationTestControls?.refresh();
   hourPreviewControls?.resume();
