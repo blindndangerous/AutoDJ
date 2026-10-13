@@ -230,7 +230,15 @@ def _within_root(path: Path, root: Path) -> None:
         BackupError: Naming the link and the folder.
     """
     if not path.resolve().is_relative_to(root.resolve()):
-        raise BackupError(f"{path} points outside backup folder {root}; remove the link first")
+        raise BackupError(
+            f"{path} points outside backup folder {root}; replace that linked path with a real file or folder"
+        )
+
+
+def _single_link(path: Path) -> None:
+    """Refuse hard-link aliases, whose other name cannot be checked for containment."""
+    if path.stat().st_nlink > 1:
+        raise BackupError(f"hard-linked backup file {path}; use a separate file copy instead")
 
 
 def _folder_files(root: Path, pattern: str = "**/*") -> list[Path]:
@@ -246,9 +254,12 @@ def _folder_files(root: Path, pattern: str = "**/*") -> list[Path]:
     if not root.is_dir():
         return []
     if pattern == "*.sts":
-        return [
+        found = [
             path for path in sorted(root.glob(pattern)) if path.is_file() and not _is_link(path)
         ]
+        for path in found:
+            _single_link(path)
+        return found
     found = []
     for directory, folders, files in os.walk(root, followlinks=False):
         for name in folders:
@@ -259,6 +270,7 @@ def _folder_files(root: Path, pattern: str = "**/*") -> list[Path]:
             path = Path(directory) / name
             _within_root(path, root)
             if path.is_file():
+                _single_link(path)
                 found.append(path)
     return sorted(found)
 
@@ -289,10 +301,14 @@ def _snapshot(cfg: AutoDJConfig, roots: dict[str, Path], snapshot: Path) -> dict
                 (manifest.vectors_file, manifest.vectors_sha256),
             ):
                 _within_root(active / name, active)
+                _single_link(active / name)
                 shutil.copyfile(active / name, index / name)
                 if im.sha256_file(index / name) != digest:
                     raise BackupError(f"{active / name} does not match its SHA-256 in the manifest")
-            shutil.copyfile(active / im.MANIFEST_NAME, index / im.MANIFEST_NAME)
+            manifest_path = active / im.MANIFEST_NAME
+            _within_root(manifest_path, active)
+            _single_link(manifest_path)
+            shutil.copyfile(manifest_path, index / im.MANIFEST_NAME)
         state = [("index", name) for name in _STATE_FILES]
         state += [
             (f"stations/{spec.slug}/index", name) for spec in cfg.stations for name in STATION_FILES
@@ -304,6 +320,7 @@ def _snapshot(cfg: AutoDJConfig, roots: dict[str, Path], snapshot: Path) -> dict
             _within_root(original, roots[key])
             if not original.is_file():
                 continue
+            _single_link(original)
             copy = snapshot / key / name
             copy.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(original, copy)
@@ -311,10 +328,16 @@ def _snapshot(cfg: AutoDJConfig, roots: dict[str, Path], snapshot: Path) -> dict
     for name in ("dj_meta.db", "library.db", "related-artists.toml", "related-tracks.toml"):
         if (active / name).exists():
             _within_root(active / name, active)
+            _single_link(active / name)
     for name in ("dj_meta.db", "library.db"):
         database = active / name
         if not database.is_file():
             continue
+        for suffix in ("-wal", "-shm"):
+            sidecar = database.with_name(database.name + suffix)
+            if sidecar.exists():
+                _within_root(sidecar, active)
+                _single_link(sidecar)
         with (
             closing(sqlite3.connect(readonly_uri(database), uri=True)) as source,
             closing(sqlite3.connect(index / name)) as target,
@@ -324,6 +347,7 @@ def _snapshot(cfg: AutoDJConfig, roots: dict[str, Path], snapshot: Path) -> dict
     for name in ("related-artists.toml", "related-tracks.toml"):
         related = active / name
         if related.is_file():
+            _single_link(related)
             shutil.copyfile(related, index / name)
     for path in sorted(index.iterdir()):
         members.setdefault(f"index/{path.name}", path)

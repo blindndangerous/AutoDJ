@@ -713,3 +713,26 @@ def test_a_junction_replaced_by_a_restore_is_removed_as_a_link(tmp_path: Path) -
     assert not (cfg.index.active_dir / "liners").is_junction()
     assert (real / "keep.wav").read_bytes() == b"keep"
     assert _leftovers(tmp_path / "index") == []
+
+
+@pytest.mark.parametrize("kind", ["liner", "state", "preset"])
+def test_backup_refuses_hard_linked_files(tmp_path: Path, kind: str) -> None:
+    cfg = _config(tmp_path)
+    external = tmp_path / "private.bin"
+    external.write_bytes(b"private")
+    relative = {"liner": "liners/alias.wav", "state": "web_state.json"}
+    path = (
+        cfg.index.active_dir / relative[kind]
+        if kind != "preset"
+        else cfg.index.active_dir.parent / "stereo-tool-presets/alias.sts"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.hardlink_to(external)
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable: {exc}")
+    archive = tmp_path / "unsafe.zip"
+    with pytest.raises(BackupError, match="hard-linked backup file"):
+        create_backup(cfg, archive, force=False)
+    assert not archive.exists()
+    assert external.read_bytes() == b"private"
