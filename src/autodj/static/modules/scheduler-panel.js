@@ -101,7 +101,8 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
   }
 
   function eventText(event) {
-    const timing = event.timing === "hard" ? "Hard timing" : "Soft timing";
+    const wait = event.wait_seconds > 0 ? `, waits up to ${event.wait_seconds} seconds` : "";
+    const timing = event.timing === "hard" ? `Hard timing${wait}` : "Soft timing";
     const state = `${event.enabled ? "" : " Disabled."}${event.ended ? " Ended, no runs left." : ""}`;
     return `${event.name}: ${event.repeat_text}. ${event.action_text}. ${timing}.${state}`;
   }
@@ -365,6 +366,7 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     get("start-date").value = event?.start_date ?? "";
     get("end-date").value = event?.end_date ?? "";
     get("timing").value = event?.timing ?? "soft";
+    get("wait").value = String(event?.wait_seconds ?? 0);
     get("enabled").checked = event ? event.enabled : true;
     showRepeatFields();
     form.hidden = false;
@@ -407,7 +409,8 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     const ids = {
       name: "name", action: "action", repeat: "repeat", date: "date", time: "time",
       interval_minutes: "interval", window_start: "window-start", window_end: "window-end",
-      start_date: "start-date", end_date: "end-date", timing: "timing", enabled: "enabled",
+      start_date: "start-date", end_date: "end-date", timing: "timing",
+      wait_seconds: "wait", enabled: "enabled",
     };
     const control = ids[field] && get(ids[field]);
     return control ? [control] : [];
@@ -471,7 +474,20 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     if (repeat === "once" && ((from && day < from) || (until && day > until))) {
       return ["date", "Date must be within the start and end dates"];
     }
+    if (get("timing").value === "hard" && waitSeconds() === null) {
+      return ["wait_seconds", "Wait up to seconds must be a whole number from 0 to 300"];
+    }
     return null;
+  }
+
+  // The wait as a whole number of seconds from 0 to 300; empty is 0.
+  function waitSeconds() {
+    const input = get("wait");
+    // A number input gives "" for text that is not a number.
+    if (input.validity?.badInput) return null;
+    const text = input.value.trim();
+    const value = text === "" ? 0 : Number(text);
+    return Number.isInteger(value) && value >= 0 && value <= 300 ? value : null;
   }
 
   function payload() {
@@ -481,6 +497,8 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     const body = {
       name: nameInput.value.trim(), action: actionSelect.value, params, repeat,
       timing: get("timing").value, enabled: get("enabled").checked,
+      // Only hard timing waits; the field is hidden for soft.
+      wait_seconds: get("timing").value === "hard" ? waitSeconds() : 0,
     };
     // An empty date is no limit; the server reads a missing one the same way.
     if (get("start-date").value) body.start_date = get("start-date").value;

@@ -46,6 +46,7 @@ function makeEls() {
     pbPureShuffle:   cb(),
     pbShowLyrics:    cb(),
     pbAnchorSeed:    cb(),
+    pbHourFit:       cb(),
     pbLoudness:      sel(["off", "replaygain", "smooth", "stereotool"]),
     pbRgTarget:      num(),
     pbQuietBoost:    num(),
@@ -354,6 +355,8 @@ describe("installSettingsControls", () => {
       .toEqual(["/api/playback-settings", { prefetch_next_track: false }]);
     expect(change(els.pbSilenceTrigger, false))
       .toEqual(["/api/playback-settings", { silence_trigger_crossfade: false }]);
+    expect(change(els.pbHourFit, true))
+      .toEqual(["/api/playback-settings", { hour_fit: true }]);
     els.discEvery.value = "7";
     expect(change(els.discEnabled, true)).toEqual(["/api/discovery", { every: 7 }]);
     expect(els.discEvery.disabled).toBe(false);

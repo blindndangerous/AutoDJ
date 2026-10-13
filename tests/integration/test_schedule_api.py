@@ -38,6 +38,35 @@ def event(**changes: Any) -> dict[str, Any]:
     return {**DAILY, "time": "09:00", **changes}
 
 
+def test_hour_fit_playback_settings_round_trip(rig: tuple[TestClient, PlayerBridge, Path]) -> None:
+    client, bridge, active = rig
+    response = client.post(
+        "/api/playback-settings", json={"hour_fit": True, "hour_fit_window_minutes": 12}
+    )
+    assert response.status_code == 200, response.text
+    assert bridge.player._cfg.playback.hour_fit is True
+    assert bridge.player._cfg.playback.hour_fit_window_minutes == 12
+    assert bridge.get_settings()["playback"]["hour_fit"] is True
+    assert bridge.get_settings()["playback"]["hour_fit_window_minutes"] == 12
+    saved = json.loads((active / "web_state.json").read_text(encoding="utf-8"))
+    assert saved["playback"]["hour_fit"] is True
+
+
+def test_hard_wait_seconds_round_trips_through_api(
+    rig: tuple[TestClient, PlayerBridge, Path],
+) -> None:
+    client, _bridge, active = rig
+    created = client.post("/api/schedule", json=event(timing="hard", wait_seconds=45))
+    assert created.status_code == 201, created.text
+    assert created.json()["wait_seconds"] == 45
+    assert client.get("/api/schedule").json()["events"][0]["wait_seconds"] == 45
+    saved = json.loads((active / "schedule.json").read_text(encoding="utf-8"))
+    assert saved["events"][0]["wait_seconds"] == 45
+    refused = client.post("/api/schedule", json=event(timing="hard", wait_seconds=301))
+    assert refused.status_code == 400
+    assert refused.json()["field"] == "wait_seconds"
+
+
 def test_create_edit_enable_run_and_delete(rig: tuple[TestClient, PlayerBridge, Path]) -> None:
     client, _bridge, active = rig
     created = client.post("/api/schedule", json=event())

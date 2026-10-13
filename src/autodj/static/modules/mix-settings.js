@@ -63,6 +63,11 @@ const NUMBER_FIELDS = [
     read: (st) => st.playback?.pick_temperature,
   },
   {
+    key: "pbHourFitWindow", url: "/api/playback-settings", field: "hour_fit_window_minutes",
+    label: "Minutes before to start fitting", min: 1, max: 30, integer: true,
+    read: (st) => st.playback?.hour_fit_window_minutes,
+  },
+  {
     // Shown in percent, stored as a fraction.
     key: "djMaxStretch", url: "/api/djmix", field: "beatmatch_max_stretch",
     label: "Beatmatch stretch limit", min: 0, max: 50, integer: false,

@@ -56,6 +56,8 @@ def _make_player() -> SimpleNamespace:
         crossfade_bass_cutoff_hz=180.0,
         pick_top_k=1,
         pick_temperature=0.3,
+        hour_fit=False,
+        hour_fit_window_minutes=10,
     )
     cfg = SimpleNamespace(
         index=SimpleNamespace(active_dir=None),
@@ -160,6 +162,8 @@ def _warnings(caplog: pytest.LogCaptureFixture, field: str) -> int:
         ({"playback": {"is_muted": "true"}}, "is_muted"),
         ({"playback": {"prefetch_next_track": "false"}}, "prefetch_next_track"),
         ({"playback": {"pick_top_k": 0}}, "pick_top_k"),
+        ({"playback": {"hour_fit": "true"}}, "hour_fit"),
+        ({"playback": {"hour_fit_window_minutes": 31}}, "hour_fit_window_minutes"),
         ({"playback": {"stream_station_name": ""}}, "stream_station_name"),
         ({"djmix": {"filter_sweep_floor_hz": 1.0}}, "filter_sweep_floor_hz"),
         ({"playback": "invalid"}, "playback"),
@@ -625,6 +629,8 @@ class TestRoundTrip:
         p1._cfg.playback.crossfade_bass_cutoff_hz = 120.0
         p1._cfg.playback.pick_top_k = 5
         p1._cfg.playback.pick_temperature = 0.8
+        p1._cfg.playback.hour_fit = True
+        p1._cfg.playback.hour_fit_window_minutes = 15
         p1._cfg.replaygain.max_clip_safe_gain = 0.9
         p1._bpm_range = (100.0, 132.0)
         p1._discovery_every = 9
@@ -697,6 +703,8 @@ class TestRoundTrip:
             "stream_max_listeners_per_address",
             "crossfade_bass_cutoff_hz",
             "pick_top_k",
+            "hour_fit",
+            "hour_fit_window_minutes",
             "pick_temperature",
             "replaygain_max_clip_safe_gain",
             "repeat_rules",

@@ -2681,8 +2681,15 @@ items, the fixed points with their sentences, and the summary.
 What it approximates, as the rotation tester does: a song runs from its saved start to its segue,
 or its length less the crossfade; liners and booked breaks add their full length; automatic
 liners, matched intros not yet mixed, time checks and carts are left out; and a scheduled change of song picking applies from
-the first song after its time. It shows where the last songs of the hour land; it does not yet
-choose them to fit.
+the first song after its time. With hour fitting on, predicted picks use the same fitting choice
+as live picks.
+
+To fit song changes near a fixed point, tick **Fit songs to the hour** in Settings > Song picking
+(`hour_fit = true` under `[playback]` for the station). **Minutes before to start fitting**
+(`hour_fit_window_minutes`) defaults to 10 and accepts 1 to 30. The setting is off by default.
+The picker considers the next top of hour, clockwheel restart or hard schedule event within that
+window and prefers a song whose estimated handoff lands closest to it. See
+[Hour fitting](track-selection.md#hour-fitting) for the eligible pool and cost.
 
 ## Backup
 
@@ -2999,6 +3006,16 @@ runs at once. A hard event runs at its time and fades out the current song throu
 skip: after the change for profile, preset, song picking and discovery events, so the next song
 follows it, and before the liner for liner events. Stream and Stereo Tool preset events never
 skip.
+
+For a hard event, `wait_seconds` optionally waits for the current song when it will finish within
+that many seconds after the event time. The action then runs at the song change without a skip.
+If the song stalls or stays paused past the limit, the event runs at the limit through the normal
+hard skip path.
+The default is 0, which keeps immediate hard timing; accepted values are 0 to 300 seconds. Set it
+in the event's **Wait up to seconds** field, shown when Timing is Hard, or as `wait_seconds` in
+the schedule API. Soft events already wait and do not accept a nonzero value. An event with no
+wait is saved without the key, so an older AutoDJ still reads the schedule; one with a wait is
+refused by an older version, which keeps a copy of the file.
 
 **Run now** runs an event's action at once, to test it. Each run, failure and missed event goes
 to the server log and to **Recent runs**, which keeps the last 200.

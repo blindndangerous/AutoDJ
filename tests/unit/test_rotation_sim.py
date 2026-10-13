@@ -845,8 +845,9 @@ def test_runs_do_not_depend_on_the_hash_seed(tmp_path: Path) -> None:
     [{}, {"daypart": {"days": 1, "start_hours": [0, 12]}, "hourpart": {"plays": 2}}],
     ids=["repeat rules", "with time of day rules"],
 )
+@pytest.mark.parametrize("fit", [False, True], ids=["normal", "hour fit"])
 def test_a_run_matches_the_live_player_pick_for_pick(
-    tmp_path: Path, monkeypatch, rules: dict
+    tmp_path: Path, monkeypatch, rules: dict, fit: bool
 ) -> None:
     """The dry run's player is the live one plus a clock: same seed, same picks."""
     import random as module
@@ -854,7 +855,15 @@ def test_a_run_matches_the_live_player_pick_for_pick(
     from autodj import player as player_module
     from autodj.catalog import normalize_path
 
-    music = [song(n, f"Artist {n % 9}", album=f"Album {n % 5}") for n in range(40)]
+    music = [
+        song(
+            n,
+            f"Artist {n % 9}",
+            album=f"Album {n % 5}",
+            length=150 + (n % 8) * 24 if fit else 200,
+        )
+        for n in range(40)
+    ]
     source = make_station(
         tmp_path,
         music,
@@ -864,7 +873,7 @@ def test_a_run_matches_the_live_player_pick_for_pick(
         ],
         clockwheels=[{"name": "Main", "steps": [category_step("a"), category_step("b")]}],
         active_clock="Main",
-        playback={"pick_mode": "clock", "repeat_rules": rules},
+        playback={"pick_mode": "clock", "repeat_rules": rules, "hour_fit": fit},
     )
     simulated = [path for _, path in _sequence(source, 9, picks=25)]
 

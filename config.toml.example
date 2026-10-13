@@ -297,6 +297,12 @@ post_queue_seed = "last_queued"
 pick_top_k = 1
 pick_temperature = 0.3
 
+# Optional hour fitting. During last 10 minutes before next top of hour,
+# clockwheel restart or hard schedule event, prefer an eligible song whose
+# end is closest to that time. Window accepts 1 to 30 minutes.
+hour_fit = false
+hour_fit_window_minutes = 10
+
 # How the current key is shown: "camelot" (8A / 8B, matching the in-page
 # wheel) or "musical" (C, Am, F#m).  Picker maths is unaffected.
 key_notation = "camelot"

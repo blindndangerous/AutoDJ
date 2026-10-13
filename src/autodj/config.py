@@ -376,6 +376,9 @@ class PlaybackConfig(_Section):
     # Recommended starting point for variety: k=10, temperature=0.3.
     pick_top_k: int = 1
     pick_temperature: float = 0.3
+    # Prefer an eligible song whose handoff lands near the next fixed point.
+    hour_fit: bool = False
+    hour_fit_window_minutes: int = 10
     # Display notation for the current track's key in the now-playing
     # badge + advance log.  Either "camelot" (Mixed In Key wheel labels
     # like 8A / 8B) or "musical" (letter names: C, Am, F#m).  Camelot
@@ -534,6 +537,13 @@ class PlaybackConfig(_Section):
         self.pick_top_k = int(self.pick_top_k)
         if self.pick_top_k < 1:
             raise ValueError(f"playback.pick_top_k must be >= 1, got {self.pick_top_k}")
+        if type(self.hour_fit) is not bool:
+            raise ValueError("playback.hour_fit must be true or false")
+        if (
+            type(self.hour_fit_window_minutes) is not int
+            or not 1 <= self.hour_fit_window_minutes <= 30
+        ):
+            raise ValueError("playback.hour_fit_window_minutes must be between 1 and 30")
         self.pick_temperature = float(self.pick_temperature)
         self.key_notation = _validate_key_notation(str(self.key_notation))
         self.audio_device = self.audio_device or None

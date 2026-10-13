@@ -540,6 +540,8 @@ def _copy_player(
     player.settings_lock = threading.RLock()
     # The station's own folders: another station keeps its own clockwheels.
     player.station_paths = snapshot.station_paths
+    player._hour_fit_events = tuple(source.events)
+    player._hour_fit_timezone = source.timezone
     player._sim_now = start
     player._state.clock = lambda: player._sim_now
     if snapshot.related_artists is not None:

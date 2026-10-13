@@ -75,6 +75,7 @@ FIELD_LABELS = {
     "start_date": "Start date",
     "end_date": "End date",
     "timing": "Timing",
+    "wait_seconds": "Wait up to seconds",
     "enabled": "Enabled",
 }
 
@@ -143,6 +144,7 @@ class EventSpec(BaseModel):
     start_date: Date | None = None
     end_date: Date | None = None
     timing: Timing = "soft"
+    wait_seconds: StrictInt = Field(default=0, ge=0, le=300)
     enabled: StrictBool = True
 
     @model_validator(mode="after")
@@ -150,6 +152,8 @@ class EventSpec(BaseModel):
         """Require the fields the repeat rule uses and drop the others."""
         for name in ("time", "window_start", "window_end"):
             _whole_minute(getattr(self, name), name)
+        if self.timing != "hard" and self.wait_seconds:
+            raise EventError("wait_seconds", "Wait up to seconds needs hard timing")
         if self.repeat == "once" and self.date is None:
             raise EventError("date", "Enter a date for a one-time event")
         if self.repeat != "interval" and self.time is None:
@@ -529,6 +533,7 @@ class Scheduler:
         *,
         interrupt: Callable[[], None] = lambda: None,
         song_playing: Callable[[], bool] = lambda: False,
+        song_remaining: Callable[[], float] = lambda: float("inf"),
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         """Create an empty scheduler; :meth:`start` loads the file.
@@ -547,12 +552,14 @@ class Scheduler:
         self._publisher = publish
         self._interrupt = interrupt
         self._song_playing = song_playing
+        self._song_remaining = song_remaining
         self._clock = clock
         self.actions: dict[str, Action] = {}
         self.events: dict[str, ScheduledEvent] = {}
         self.runs: list[RunRecord] = []
         # Soft events waiting for the current song to end, in due order.
         self.pending: list[str] = []
+        self._pending_hard_deadline: dict[str, datetime] = {}
         self.started = False
         self.cursor = clock()
         self._tasks: set[asyncio.Task[None]] = set()
@@ -622,12 +629,15 @@ class Scheduler:
         document = ScheduleFile(
             schema_version=SCHEMA_VERSION, events=list(self.events.values()), runs=self.runs
         ).model_dump(mode="json")
-        # An event without a date range is written without the two keys, so
-        # an older AutoDJ, which refuses unknown keys, still reads the file.
+        # An event without a date range or a wait is written without those
+        # keys, so an older AutoDJ, which refuses unknown keys, still reads
+        # the file.
         for event in document["events"]:
             for key in ("start_date", "end_date"):
                 if event[key] is None:
                     del event[key]
+            if not event["wait_seconds"]:
+                del event["wait_seconds"]
         self.path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(self.path, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
 
@@ -719,6 +729,7 @@ class Scheduler:
 
     def _forget_pending(self, event_id: str) -> None:
         self.pending = [item for item in self.pending if item != event_id]
+        self._pending_hard_deadline.pop(event_id, None)
 
     # -- running --------------------------------------------------------
 
@@ -749,14 +760,14 @@ class Scheduler:
         await self._publish({"type": "schedule_run", "run": record.model_dump(mode="json")})
         return record
 
-    async def run(self, event: ScheduledEvent) -> RunRecord:
+    async def run(self, event: ScheduledEvent, *, interrupt: bool = True) -> RunRecord:
         """Run *event*'s action now; a failure is recorded, never raised."""
         action = self.actions.get(event.action)
         summary = self.summary(event)
         try:
             if action is None:
                 raise ValueError(f"Action {event.action} is not available")
-            hard = event.timing == "hard"
+            hard = interrupt and event.timing == "hard"
             play = await action.handle(dict(event.params))
             if hard and action.interrupt == "before":
                 self._interrupt()
@@ -797,11 +808,31 @@ class Scheduler:
             elif event.timing == "soft" and self._song_playing():
                 if event.id not in self.pending:
                     self.pending.append(event.id)
+            elif (
+                event.timing == "hard"
+                and event.wait_seconds
+                and (action := self.actions.get(event.action)) is not None
+                and action.interrupt != "none"
+                and self._song_playing()
+                and 0 <= self._song_remaining() + (now - due).total_seconds() <= event.wait_seconds
+            ):
+                if event.id not in self.pending:
+                    self.pending.append(event.id)
+                self._pending_hard_deadline.setdefault(
+                    event.id, due + timedelta(seconds=event.wait_seconds)
+                )
             else:
                 await self.run(event)
         if disabled:
             self._save_quietly()
             await self._publish({"type": "schedule_changed"})
+        if self._song_playing():
+            for event_id, deadline in list(self._pending_hard_deadline.items()):
+                if now >= deadline:
+                    waited = self.events.get(event_id)
+                    self._forget_pending(event_id)
+                    if waited is not None:
+                        await self.run(waited)
         if self.pending and not self._song_playing():
             await self._run_pending()
 
@@ -817,8 +848,9 @@ class Scheduler:
         waiting, self.pending = self.pending, []
         for event_id in waiting:
             event = self.events.get(event_id)
+            no_skip = self._pending_hard_deadline.pop(event_id, None) is not None
             if event is not None:
-                await self.run(event)
+                await self.run(event, interrupt=not no_skip)
 
     def upcoming(self, count: int) -> list[tuple[datetime, ScheduledEvent]]:
         """Return the next *count* runs across every enabled event, soonest first."""
