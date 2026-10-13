@@ -219,7 +219,8 @@ def snapshot_player(player: Any) -> PlayerSnapshot:
         cfg = copy.deepcopy(player._cfg)
         settings = {name: getattr(player, name) for name in _COPIED if hasattr(player, name)}
         clock = getattr(player, "_clock", None)
-        snapshot_clock = dict(clock) if clock else None
+        # Deep, so nothing the copy holds (the restart minutes) is shared.
+        snapshot_clock = copy.deepcopy(clock) if clock else None
         clock_status = getattr(player, "_clock_status", None)
         related = getattr(player, "_related_artists", None)
         related_tracks = getattr(player, "_related_tracks", None)
@@ -785,6 +786,30 @@ class Progress:
     fraction: float = 0.0
 
 
+def average_length(entries: Iterable[Any]) -> float:
+    """The average length of *entries* that have one: what a song without a length counts as."""
+    lengths = [entry.length for entry in entries if entry.length > 0]
+    return sum(lengths) / len(lengths) if lengths else _FALLBACK_LENGTH_S
+
+
+def song_seconds(player: Player, entry: Any, average: float) -> float:
+    """How long *entry* plays before the next song starts, as a dry run times it.
+
+    From its saved start to its segue or outro with saved-point
+    transitions, its length less the crossfade otherwise; *average* when
+    that comes to a second or less.  The hour preview times its songs the
+    same way (:mod:`autodj.hour_preview`).
+    """
+    playback = player._cfg.playback
+    if playback.transition_mode == "saved_points":
+        begin, segue = player._clock_music_span(entry)
+        seconds = segue - begin
+    else:
+        crossfade = float(getattr(playback, "crossfade_seconds", 0.0) or 0.0)
+        seconds = (entry.length or 0.0) - crossfade
+    return seconds if seconds > 1.0 else average
+
+
 def simulate(
     source: SimulationSource,
     request: SimulationRequest,
@@ -835,9 +860,7 @@ def _simulate(
         hours = DEFAULT_HOURS
     limit = request.picks if request.picks is not None else MAX_PICKS
     end = start + (hours if hours is not None else MAX_HOURS) * 3600.0
-    lengths = [entry.length for entry in entries if entry.length > 0]
-    average = sum(lengths) / len(lengths) if lengths else _FALLBACK_LENGTH_S
-    crossfade = float(getattr(player._cfg.playback, "crossfade_seconds", 0.0) or 0.0)
+    average = average_length(entries)
     from autodj._bridge import PlayerBridge
 
     bridge = PlayerBridge(player=player, sim=player._sim, library=library, ledger=player._ledger)
@@ -850,12 +873,7 @@ def _simulate(
         return player._cfg.playback.transition_mode == "saved_points"
 
     def duration(entry: Any) -> float:
-        if station_mode():
-            begin, segue = player._clock_music_span(entry)
-            seconds = segue - begin
-        else:
-            seconds = (entry.length or 0.0) - crossfade
-        return seconds if seconds > 1.0 else average
+        return song_seconds(player, entry, average)
 
     def when(stamp: float) -> str:
         return datetime.fromtimestamp(stamp, schedule.zone).isoformat(timespec="minutes")

@@ -17,6 +17,8 @@
 //         against the bar, and the Camelot wheel lit for 8A: every wedge
 //         edge, the compatible outline and the current wedge 3:1 against
 //         their neighbours, its numbers 4.5:1;
+//       - Now Playing's Hour preview opened, with a stood-in answer: its
+//         table of fixed and predicted rows and its backtiming list;
 //       - the status message with its Dismiss button, as a confirmation
 //         and as an error, through axe-core as well;
 //   - in the System light mode only (layout does not change with colour):
@@ -225,6 +227,49 @@ const TIME_CHECKS = {
 };
 const timeCheckPages = new WeakSet();
 
+// Now Playing, Hour preview (#126), opened: the server's answer is stood
+// in for, so its table, with fixed and predicted rows, and its backtiming
+// list are measured on an empty library.  One title has no spaces, for
+// the reflow checks.
+const HOUR_PREVIEW_ITEM = (title, status, fixed, starts, words) => ({
+  kind: "song",
+  status,
+  fixed,
+  status_text: fixed ? { on_air: "Fixed: on the air", ready: "Fixed: ready to play", queued: "Fixed: in the queue" }[status] : "Predicted",
+  title,
+  starts_text: starts,
+  starts_words: words,
+  seconds: 200,
+  length_text: "3:20",
+  length_words: "3 minutes 20 seconds",
+});
+const HOUR_PREVIEW = {
+  station: "default",
+  minutes: 60,
+  reason: null,
+  summary: "Top of the hour, 1 PM: lands about 35 seconds early, at the song change into Example Artist, Song 4 (predicted) at 12:59 PM and 25 seconds. That song runs 2 minutes 45 seconds past 1 PM. Next hour: 3 fixed and 2 predicted, until 1:10 PM.",
+  items: [
+    HOUR_PREVIEW_ITEM("Example Artist, Song 1", "on_air", true, "12:49:10 PM", "12:49 PM and 10 seconds"),
+    HOUR_PREVIEW_ITEM("Another Example, An_Exceptionally_Long_Title_Without_Any_Spaces_From_A_Tagless_File_0001", "ready", true, "12:52:30 PM", "12:52 PM and 30 seconds"),
+    HOUR_PREVIEW_ITEM("Example Artist, Song 3", "queued", true, "12:55:50 PM", "12:55 PM and 50 seconds"),
+    HOUR_PREVIEW_ITEM("Example Artist, Song 4", "predicted", false, "12:59:25 PM", "12:59 PM and 25 seconds"),
+    HOUR_PREVIEW_ITEM("Example Artist, Song 5", "predicted", false, "1:02:45 PM", "1:02 PM and 45 seconds"),
+  ],
+  points: [{ kind: "hour", text: "Top of the hour, 1 PM: lands about 35 seconds early." }],
+  counts: { fixed: 3, predicted: 2 },
+  stopped: null,
+  notes: ["Predicted songs come from a dry run of the station's own picker."],
+};
+const hourPreviewPages = new WeakSet();
+
+async function standInForHourPreview(page) {
+  if (hourPreviewPages.has(page)) return;
+  hourPreviewPages.add(page);
+  await page.route("**/api/hour-preview*", (route) => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify(HOUR_PREVIEW),
+  }));
+}
+
 async function standInForTimeChecks(page) {
   if (timeCheckPages.has(page)) return;
   timeCheckPages.add(page);
@@ -380,6 +425,7 @@ async function eachTarget(page, visit) {
   await standInForRotationTest(page);
   await standInForTrackInfo(page);
   await standInForTimeChecks(page);
+  await standInForHourPreview(page);
   await standInForVoiceTracker(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   for (const view of VIEWS) {
@@ -390,6 +436,9 @@ async function eachTarget(page, visit) {
     await page.waitForTimeout(100);
     if (view !== "settings") {
       await openEveryCard(page);
+      if (view === "now") {
+        await page.locator("#hour-preview-table").waitFor({ state: "visible", timeout: 10000 });
+      }
       await settle(page);
       await visit(view);
       if (view === "track-info") await openTrackTags(page, visit);
@@ -898,11 +947,18 @@ async function toastBehaviourProblems(page) {
   // message, Tab once to Dismiss (so the ring is the keyboard one), then
   // Enter.  Focus must go back to that stop.
   const start = await page.evaluate(() => {
+    const hiddenInClosedDetails = (element) => {
+      const closed = element.parentElement?.closest("details:not([open])");
+      return Boolean(closed) && !(element.tagName === "SUMMARY" && element.parentElement === closed);
+    };
     const box = document.getElementById("status-toast-box");
     const stops = [...document.querySelectorAll(
       "a[href], button, input, select, textarea, summary, [tabindex]",
     )].filter((element) => element.tabIndex >= 0 && !element.disabled
       && !box.contains(element) && element.getClientRects().length
+      // Inside a closed <details> only its summary takes focus, though some
+      // engines still give the hidden content boxes.
+      && !hiddenInClosedDetails(element)
       && !(element.type === "radio" && !element.checked)
       && (box.compareDocumentPosition(element) & window.Node.DOCUMENT_POSITION_PRECEDING));
     const last = stops.at(-1);

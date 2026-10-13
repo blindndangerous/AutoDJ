@@ -168,6 +168,16 @@ class RenderAhead:
                 self._cond.notify_all()
             return track
 
+    def ready(self) -> RenderedTrack | None:
+        """The rendered track waiting for the bus, or ``None``; nothing changes.
+
+        Only a finished render that matches the cursor counts: a fallback
+        kept by :meth:`refresh` is being replaced, so it is left out.  For
+        readers such as the hour preview (:mod:`autodj.hour_preview`).
+        """
+        with self._cond:
+            return self._ready
+
     def request_plan(self) -> None:
         """Run the *plan* hook again soon, if a rendered track is waiting.
 

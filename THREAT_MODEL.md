@@ -34,6 +34,14 @@ AutoDJ is a single-user local music player with these exposed surfaces:
   expressions are refused, so a query costs at most one pass over the library, and playlist
   files larger than 8 MB are not read. `categories.json` is written atomically and a damaged one
   is set aside, not used.
+- The hour preview (`/api/hour-preview`) requires a paired browser. It only reads the station:
+  the playing render, the render cursor, the open song change and the queue; its dry run picks
+  with a copy of the player that has its own random generator, so it cannot steer the station's
+  real random choices. Its cost is bounded: the span is 15 to 180 minutes, every preview runs on
+  one worker thread below normal priority, the same station and span share one preview, at most
+  8 previews wait (one more gets 503), the dry run stops at 80 songs or after about 4 seconds
+  (checked before each pick), and a preview is reused for 45 seconds while what is fixed stays
+  the same. Shutdown joins the worker and leaves the library open if it has not stopped.
 - Machine tokens let a program on another computer use one narrow API without a browser. The
   only scope so far is "analysis worker" (`autodj worker`); see "Machine tokens and analysis
   workers" below.

@@ -33,6 +33,7 @@ import { installCategoriesPanel } from "./modules/categories-panel.js";
 import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
 import { describeStep } from "./modules/clockwheel-step.js";
 import { installRotationTest } from "./modules/rotation-test.js";
+import { installHourPreview } from "./modules/hour-preview.js";
 import { installSchedulerPanel } from "./modules/scheduler-panel.js";
 import { installCartWall } from "./modules/cart-wall.js";
 import { installVoiceTracker } from "./modules/voice-tracker.js";
@@ -221,6 +222,7 @@ let clockwheelPanelControls = null;
 let categoriesPanelControls = null;
 let schedulerPanelControls = null;
 let rotationTestControls = null;
+let hourPreviewControls = null;
 let cartWallControls = null;
 let voiceTrackerControls = null;
 let reconnectGeneration = 0;
@@ -319,6 +321,7 @@ function clearProtectedSessionData() {
   categoriesPanelControls?.clearProtectedData();
   schedulerPanelControls?.clear();
   rotationTestControls?.clear();
+  hourPreviewControls?.clear();
   cartWallControls?.clear();
   // Signing out stops a recording and lets the microphone go.
   voiceTrackerControls?.clear();
@@ -479,6 +482,7 @@ function applyState(s) {
   _lastState = s;
   bumpLinerTrackCount(s);
   timeCheckControls?.noteTrack(s);
+  hourPreviewControls?.noteState(s);
   noteTrackForHistory(s);
 
   // Stream mode never starts the deck engine, whatever browser_playback
@@ -1368,6 +1372,7 @@ function connectWS() {
           categoriesPanelControls?.resume();
           void schedulerPanelControls?.refresh();
           void rotationTestControls?.refresh();
+          hourPreviewControls?.resume();
           connectWS();
         },
       });
@@ -1989,6 +1994,7 @@ installHotkeys({
   },
   getQueue:    () => _lastState && _lastState.queue,
   getJobStatus: () => libraryJobStatusText(_lastState && _lastState.library_job),
+  speakHour: () => hourPreviewControls?.speakSummary(),
   isEnabled: authenticatedInteractionEnabled,
   shortcutToggle: document.getElementById("hotkeys-enabled"),
   // In stream mode Play / Pause stops the station for every listener, so
@@ -2429,6 +2435,7 @@ clockwheelPanelControls = installClockwheelPanel();
 categoriesPanelControls = installCategoriesPanel({ onChange: () => clockwheelPanelControls?.refresh() });
 schedulerPanelControls = installSchedulerPanel();
 rotationTestControls = installRotationTest();
+hourPreviewControls = installHourPreview();
 
 import { installLiners, bumpLinerTrackCount } from "./modules/liners.js";
 import { installTimeChecks } from "./modules/time-checks.js";
@@ -2533,6 +2540,7 @@ function startAuthenticatedApp(initialState) {
   categoriesPanelControls?.resume();
   void schedulerPanelControls?.refresh();
   void rotationTestControls?.refresh();
+  hourPreviewControls?.resume();
   installLibraryJobs(_libEls);
   // Audio dependencies are owned by the audio engine. Inject closures
   // that read its live bindings and stop liner playback after auth expiry.
