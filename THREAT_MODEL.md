@@ -63,6 +63,13 @@ AutoDJ is a single-user local music player with these exposed surfaces:
   sent to the browser.
   Recording status and controls are paired routes; the public stream cannot control recording.
   Backups include the recording settings and running state, not the recorded files.
+- Paired Stream settings can manage relay destinations and source passwords. Relay definitions
+  live in a station-local `relays.json`; the file is atomically written with mode 0600 on POSIX
+  (on Windows the inherited directory ACL governs access; `chmod(0o600)` only sets read-only)
+  and excluded from backups. Relay APIs and status files expose connection details and safe errors,
+  never passwords. Environment passwords override saved passwords and are read-only in the UI.
+  Relay source connections do not support TLS, so passwords sent to those servers are not encrypted
+  by AutoDJ; use a trusted network or a server that protects its source connection separately.
 
 Cloud sync, multi-user roles, billing, and public Internet hosting are out of scope. Use TLS for any
 network where observers could read HTTP traffic, and terminate it in AutoDJ itself with

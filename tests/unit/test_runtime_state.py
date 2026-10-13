@@ -619,6 +619,9 @@ class TestRoundTrip:
         p1._cfg.playback.liners_duck_db = -9.0
         p1._cfg.stream.bitrate = 192
         p1._cfg.stream.station_name = "Kitchen Radio"
+        p1._cfg.stream.genre = "Jazz"
+        p1._cfg.stream.description = "Late night radio"
+        p1._cfg.stream.url = "https://radio.example/"
         p1._cfg.djmix.beatmatch_max_stretch = 0.12
         p1._cfg.djmix.beatmatch_glide_bars = 4
         p1._cfg.djmix.filter_sweep_floor_hz = 400.0
@@ -692,6 +695,9 @@ class TestRoundTrip:
             "stream_bitrate",
             "stream_continuous",
             "stream_station_name",
+            "stream_genre",
+            "stream_description",
+            "stream_url",
             "nowplaying_show_next",
             "dmca_enabled",
             "stream_max_listeners_per_address",
@@ -730,6 +736,9 @@ class TestRoundTrip:
         assert stored["playback"]["prefetch_next_track"] is False
         assert stored["playback"]["silence_trigger_crossfade"] is False
         assert stored["playback"]["stream_station_name"] == "Kitchen Radio"
+        assert stored["playback"]["stream_genre"] == "Jazz"
+        assert stored["playback"]["stream_description"] == "Late night radio"
+        assert stored["playback"]["stream_url"] == "https://radio.example/"
 
         p2 = _make_player()
         _load(p2, tmp_path)
