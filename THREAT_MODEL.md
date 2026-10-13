@@ -485,6 +485,33 @@ rolled on its own random source, so the rotation tester and the hour preview kee
 songs the station picks. A library scan removes the intros of songs it found gone only when it
 read every folder, so a share that is away loses none.
 
+### Ad breaks
+
+Ad spots and breaks (#51) are managed in the Ads tab. Their routes, `/api/ads` and
+`/api/stations/<slug>/ads`, are browser routes: the signed-in session when `access_token` is set
+and an allowed `Origin` for every change, never a machine token. A spot upload is capped by the
+middleware at the largest `[ads] max_upload_mb` of any station plus 64 KiB before any route reads
+it; the route checks the declared length against its own station's cap, the body must arrive
+within 60 seconds plus one second per 256 KiB, the type must be a liner audio type (415 for any
+other), and the file streams to a hidden part file under a name the server makes up
+(`spot-<id><ext>`) in the station's `ads` folder, never a name from the request. It is then decoded
+like an announcer break, header first, demuxer forced, at most `[ads] max_spot_seconds`, on the one
+decode thread; a file that does not decode or holds no sound is refused and deleted. A station
+keeps at most `[ads] max_spots` spots and 50 breaks. JSON changes (spots, breaks, rules) are read
+by the route itself at most 16 KiB, and the break route's POST is also capped by the middleware.
+Text fields are trimmed, control characters removed and lengths capped; the report and its CSV are
+built from the station's own log, and CSV cells starting with a formula character are written as
+text. Listen serves only the file a stored spot names, never a path, and only a regular file.
+
+On the air, a due break's spots are booked on the open song change from the station's
+once-a-second upkeep on a worker thread, never the event loop or the audio thread, and decoded and
+mixed by the render-ahead worker as standalone breaks; their files are the station's own, so a
+finished break never deletes them, and they take no room in the announcer breaks' upload caps.
+`ads.json` is replaced atomically; an entry in it that is not valid is skipped, logged, said in the
+tab and written back unchanged; a file that is not a file of ads is set aside. The play log is
+append-only, flushed per write; a damaged line is skipped and counted, never fatal, and a write
+that fails is kept in memory and written at the next upkeep.
+
 ## Radio stream listening
 
 `GET /api/nowplaying` and `HEAD /api/nowplaying` are public and exempt from pairing, and so is the

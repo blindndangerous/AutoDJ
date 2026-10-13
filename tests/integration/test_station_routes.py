@@ -173,6 +173,17 @@ STATION = frozenset(
         # The voice tracker (#128): browser routes, by station.
         "/voice-tracks",
         "/voice-tracks/{break_id}",
+        # Ad breaks and their report (#51).
+        "/ads",
+        "/ads/spots",
+        "/ads/spots/{spot_id}",
+        "/ads/spots/{spot_id}/audio",
+        "/ads/breaks",
+        "/ads/breaks/{break_id}",
+        "/ads/breaks/{break_id}/run",
+        "/ads/settings",
+        "/ads/report",
+        "/ads/report/export",
         # Listener requests (#49): the operator's list and decisions.
         "/requests",
         "/requests/{request_id}/approve",

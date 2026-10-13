@@ -54,6 +54,13 @@
 //         and lets the microphone go, a refused booking is shown,
 //         linked to Book voice track, focus staying there, and leaving
 //         the tab stops a recording and says so once;
+//       - Ads, with its spots, breaks and report stood in for: the lists,
+//         the spot form refused (its error linked to the file field), the
+//         break form, and the report's two tables; by keyboard Add spot
+//         focuses the file field, a refused save keeps focus there and
+//         says the error once, Cancel returns to Add spot, and Show report
+//         keeps focus, says the totals once and shows tables with column
+//         and row headers in regions that take focus;
 //       - the status message stays while the pointer is over it, goes
 //         after the pointer leaves, lets a click on its frame (outside the
 //         message and the button) through to the page underneath, and its
@@ -112,7 +119,7 @@ const SHOTS = process.env.AUTODJ_SCREENSHOTS || "";
 const CPU_THROTTLE = Number(process.env.AUTODJ_CPU_THROTTLE || 0);
 const AXE = fileURLToPath(import.meta.resolve("axe-core/axe.min.js"));
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
-const VIEWS = ["now", "queue", "carts", "voice", "track-info", "history", "settings", "library"];
+const VIEWS = ["now", "queue", "carts", "voice", "ads", "track-info", "history", "settings", "library"];
 const MAX_TAB_STOPS = 80;
 // Focus rings measured per target in the Light and System modes.  Every
 // stop is measured in the Dark mode (fullFocus) and in the layout pass,
@@ -450,6 +457,140 @@ async function openVoiceStates(page, visit) {
   await page.evaluate(() => { window.__micRefusal = ""; });
 }
 
+// Ads (#51): the spots, breaks and report are stood in for (the audit
+// server airs no ads), so the lists, the forms with a refused field and
+// the report's two tables are measured with long words in them.
+const ADS_VIEW = {
+  station: "default", enabled: true, reason: null, problem: null, timezone: "UTC",
+  limits: { max_bytes: 20971520, max_seconds: 120, max_spots: 200, max_breaks: 50, max_spots_per_break: 10 },
+  settings: { separation_minutes: 15, late_minutes: 10, miss_after_minutes: 30 },
+  spots: [
+    { id: "a".repeat(32), title: "An_Exceptionally_Long_Spot_Title_Without_Any_Spaces_0001", advertiser: "Example Motors",
+      campaign: "Autumn", category: "Car dealers", start_date: "2026-10-01", end_date: "2026-10-31",
+      dates_text: "Flight from 1 October 2026 until 31 October 2026", in_flight: true, flight_text: "",
+      max_per_day: 4, max_per_hour: 1, enabled: true, seconds: 30, plays_today: 2, booked: false, missing: false },
+    { id: "b".repeat(32), title: "Fresh bread", advertiser: "Sample Bakery", campaign: "", category: "",
+      start_date: null, end_date: null, dates_text: "", in_flight: true, flight_text: "",
+      max_per_day: 0, max_per_hour: 0, enabled: false, seconds: 15, plays_today: 0, booked: false, missing: true },
+  ],
+  breaks: [
+    { id: "c".repeat(32), name: "Quarter past", minutes: [15, 45], days: [0, 1, 2, 3, 4], from_hour: 6, until_hour: 20,
+      start_date: null, end_date: null, max_spots: 3, max_seconds: 90, enabled: true,
+      when_text: "At :15, :45 past the hour, from 06:00 until 20:00, on Monday, Tuesday, Wednesday, Thursday and Friday",
+      next_at: "2026-10-13T12:15:00+00:00", next_text: "Tuesday 13 October 2026 at 12:15" },
+  ],
+  pending: [{ break_name: "Quarter past", scheduled_text: "Tuesday 13 October 2026 at 11:45", source_text: "Minutes past the hour" }],
+  recent: [
+    { id: "d".repeat(32), scheduled_text: "13 October 2026 at 11:15:00", aired_text: "13 October 2026 at 11:19:30",
+      delay_minutes: 4.5, status: "aired", status_text: "Aired", break_name: "Quarter past", source_text: "Minutes past the hour",
+      spot_id: "a".repeat(32), title: "Fall sale", advertiser: "Example Motors", campaign: "Autumn", seconds: 30, reason: "" },
+  ],
+};
+const ADS_REPORT = {
+  station: "default", from: "2026-10-01", to: "2026-10-13", count: 2, truncated: false, damaged: 0, late_minutes: 10,
+  totals: { aired: 1, late: 1, missed: 1, waiting: 0, missed_breaks: 0 },
+  summary: [{ advertiser: "Example Motors", campaign: "An_Exceptionally_Long_Campaign_Name_0001", aired: 1, late: 1, missed: 1, waiting: 0, seconds: 30 }],
+  rows: [
+    { id: "e".repeat(32), scheduled_text: "13 October 2026 at 12:15:00", aired_text: "13 October 2026 at 12:31:00",
+      delay_minutes: 16, status: "late", status_text: "Aired late", break_name: "Quarter past", source_text: "Minutes past the hour",
+      spot_id: "a".repeat(32), title: "Fall sale", advertiser: "Example Motors", campaign: "Autumn", seconds: 30, reason: "" },
+    { id: "f".repeat(32), scheduled_text: "13 October 2026 at 12:45:00", aired_text: "", delay_minutes: null,
+      status: "missed", status_text: "Missed", break_name: "Quarter past", source_text: "Run now",
+      spot_id: "a".repeat(32), title: "Fall sale", advertiser: "Example Motors", campaign: "Autumn", seconds: 30,
+      reason: "skipped before it aired" },
+  ],
+};
+const adsPages = new WeakSet();
+
+async function standInForAds(page) {
+  if (adsPages.has(page)) return;
+  adsPages.add(page);
+  const json = (body) => ({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  await page.route("**/api/ads", (route) => (route.request().method() === "GET"
+    ? route.fulfill(json(ADS_VIEW)) : route.continue()));
+  await page.route("**/api/ads/report?**", (route) => route.fulfill(json(ADS_REPORT)));
+}
+
+// Ads with the spot form refused (its error linked to the file field), the
+// break form open, and the report shown as its two tables.
+async function openAdsStates(page, visit) {
+  await page.locator("#ads-spots li button").first().waitFor({ state: "visible" });
+  await page.locator("#ads-spot-add").click();
+  await page.locator("#ads-spot-save").click();
+  await page.locator("#ads-spot-error").waitFor({ state: "visible" });
+  await visit("ads/spot-error");
+  await page.locator("#ads-spot-cancel").click();
+  await page.locator("#ads-break-add").click();
+  await visit("ads/break-form");
+  await page.locator("#ads-break-cancel").click();
+  await page.locator("#ads-report-show").click();
+  await page.locator("#ads-rows-wrap").waitFor({ state: "visible" });
+  await visit("ads/report");
+}
+
+// The Ads tab by keyboard: Add spot puts focus on the file field; saving
+// with no file names it in words, links the words to it, says them once
+// and keeps focus there; Cancel goes back to Add spot; Show report keeps
+// focus on its button, says the totals once and shows two tables with
+// headers, each in a region that takes focus.
+async function adsProblems(page) {
+  await standInForAds(page);
+  await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
+  await page.locator("#tab-ads").click();
+  await page.locator("#ads-spots li button").first().waitFor({ state: "visible" });
+  const problems = [];
+  await page.evaluate(() => {
+    window.__adsSaid = [];
+    const region = document.getElementById("ads-status");
+    new window.MutationObserver(() => {
+      if (region.textContent) window.__adsSaid.push(region.textContent);
+    }).observe(region, { childList: true, characterData: true, subtree: true });
+  });
+  const focusId = () => page.evaluate(() => document.activeElement?.id || document.activeElement?.tagName.toLowerCase());
+  await page.locator("#ads-spot-add").focus();
+  await page.keyboard.press("Enter");
+  if (await focusId() !== "ads-spot-file") problems.push(`Add spot moved focus to ${await focusId()}`);
+  await page.locator("#ads-spot-save").focus();
+  await page.keyboard.press("Enter");
+  await page.locator("#ads-spot-error").waitFor({ state: "visible", timeout: 5000 }).catch(() => {});
+  await page.waitForTimeout(300);
+  const refused = await page.evaluate(() => ({
+    error: document.getElementById("ads-spot-error").textContent.trim(),
+    invalid: document.getElementById("ads-spot-file").getAttribute("aria-invalid"),
+    linked: (document.getElementById("ads-spot-file").getAttribute("aria-describedby") || "").split(" "),
+    focus: document.activeElement?.id,
+    said: [...window.__adsSaid],
+  }));
+  if (!refused.error) problems.push("saving with no file shows no error");
+  if (refused.invalid !== "true") problems.push("the file field is not marked invalid");
+  if (!refused.linked.includes("ads-spot-error")) problems.push("the error is not linked to the file field");
+  if (refused.focus !== "ads-spot-file") problems.push(`a refused save moved focus to ${refused.focus}`);
+  if (refused.said.length !== 1) problems.push(`a refused save said ${JSON.stringify(refused.said)}`);
+  await page.locator("#ads-spot-cancel").focus();
+  await page.keyboard.press("Enter");
+  if (await focusId() !== "ads-spot-add") problems.push(`Cancel moved focus to ${await focusId()}`);
+  await page.evaluate(() => { window.__adsSaid = []; });
+  await page.locator("#ads-report-show").focus();
+  await page.keyboard.press("Enter");
+  await page.locator("#ads-rows-wrap").waitFor({ state: "visible", timeout: 5000 }).catch(() => {});
+  await page.waitForTimeout(300);
+  const report = await page.evaluate(() => ({
+    focus: document.activeElement?.id,
+    said: [...window.__adsSaid],
+    headers: [...document.querySelectorAll("#ads-rows-table thead th[scope='col']")].length,
+    rowHeaders: [...document.querySelectorAll("#ads-rows tr > th[scope='row']")].length,
+  }));
+  if (report.focus !== "ads-report-show") problems.push(`Show report moved focus to ${report.focus}`);
+  if (report.said.length !== 1 || !/^Ad report from/.test(report.said[0])) problems.push(`Show report said ${JSON.stringify(report.said)}`);
+  if (report.headers !== 6 || report.rowHeaders !== 2) problems.push("the report table lacks its headers");
+  // Past the export controls, the totals table's region takes focus.
+  await page.locator("#ads-report-export").focus();
+  await page.keyboard.press("Tab");
+  const region = await focusId();
+  if (region !== "ads-totals-wrap") problems.push(`Tab after Export reached ${region}, not the totals table`);
+  return problems;
+}
+
 // The switcher shows only with two stations.  A server with one gets a
 // stopped stand-in in this page's /api/stations, which is measured but
 // never chosen.
@@ -528,6 +669,7 @@ async function eachTarget(page, visit) {
   await standInForTimeChecks(page);
   await standInForHourPreview(page);
   await standInForVoiceTracker(page);
+  await standInForAds(page);
   await standInForStations(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   for (const view of VIEWS) {
@@ -546,6 +688,7 @@ async function eachTarget(page, visit) {
       if (view === "track-info") await openTrackTags(page, visit);
       if (view === "library") await openDaypartErrors(page, visit);
       if (view === "voice") await openVoiceStates(page, visit);
+      if (view === "ads") await openAdsStates(page, visit);
       if (view === "now") await openStationMenu(page, visit);
       continue;
     }
@@ -1581,6 +1724,8 @@ export async function audit(name, launcher) {
     if (tokenScope.length) out.behaviour.tokenScope = tokenScope;
     const voiceTracker = await voiceTrackerProblems(page);
     if (voiceTracker.length) out.behaviour.voiceTracker = voiceTracker;
+    const ads = await adsProblems(page);
+    if (ads.length) out.behaviour.ads = ads;
     const switcher = await stationSwitcherProblems(page);
     if (switcher.length) out.behaviour.stationSwitcher = switcher;
     // 200 % text at the same window width.

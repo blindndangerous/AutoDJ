@@ -6,15 +6,18 @@ of it is already fixed and which is a guess:
 
 * fixed: the song on the air; what the render-ahead worker has rendered,
   with the liners and announcer breaks mixed into it; the song picked to
-  follow it; the open song change and the breaks booked on it (#88); and
-  the request queue, which plays before any pick;
+  follow it; the open song change and the breaks booked on it (#88), ad
+  spots among them (#51); and the request queue, which plays before any pick;
 * predicted: what the station's own picker would choose after that, from a
   dry run (:mod:`autodj.rotation_sim`) that starts where the fixed part
-  ends, with the station's clockwheel place, history and schedule.
+  ends, with the station's clockwheel place, history and schedule; and the
+  ad breaks due in the span, each at the first predicted song change at or
+  after its time, with its spots guessed by the ad schedule's own rules.
 
 It then backtimes to each fixed point in the span: the top of each hour,
-each clockwheel restart and each scheduled event.  For each it says how
-early or late the nearest song change lands, and which song is the reason.
+each clockwheel restart, each scheduled event and each ad break.  For
+each it says how early or late the nearest song change lands, and which
+song is the reason.
 
 Nothing on the air changes.  The live player is only read: its renders,
 its render cursor, the open song change and the queue, under the locks
@@ -104,7 +107,13 @@ STATUS_WORDS = {
     "predicted": "Predicted",
 }
 
-BREAK_KINDS = {"dj": "DJ", "news": "News", "weather": "Weather", "music_news": "Music news"}
+BREAK_KINDS = {
+    "dj": "DJ",
+    "news": "News",
+    "weather": "Weather",
+    "music_news": "Music news",
+    "ad": "Ad",
+}
 
 NOTES = (
     "Predicted songs come from a dry run of the station's own picker, starting where the fixed "
@@ -115,6 +124,8 @@ NOTES = (
     "Automatic liners, matched intros not yet mixed, time checks and carts are left out; a "
     "scheduled change of song picking "
     "applies from the first song after its time.",
+    "An ad break not yet booked is predicted at the first predicted song change at or after its "
+    "time, with the spots its rules would pick now; once booked on a song change it is fixed.",
 )
 
 NOTHING_PLAYING = "Nothing is playing, so there is nothing to time. Start playback first."
@@ -686,6 +697,7 @@ def predict(
     seed: int,
     budget: float = BUDGET_SECONDS,
     limit: int | None = None,
+    ad_runs: Sequence[Any] = (),
 ) -> tuple[list[Item], float, str | None]:
     """Pick on from where *decided* ends until *end*, with a copy of the station's player.
 
@@ -699,7 +711,7 @@ def predict(
     """
     with _quiet_logs():
         songs = MAX_PREDICTED if limit is None else limit
-        return _predict(source, snapshot, decided, end, seed, budget, songs)
+        return _predict(source, snapshot, decided, end, seed, budget, songs, ad_runs)
 
 
 def _predict(
@@ -710,8 +722,12 @@ def _predict(
     seed: int,
     budget: float,
     limit: int,
+    ad_runs: Sequence[Any] = (),
 ) -> tuple[list[Item], float, str | None]:
     began = time.perf_counter()
+    # Ad breaks not yet booked (#51), soonest first: each joins the first
+    # predicted song change at or after its time.
+    ads = deque(sorted(ad_runs, key=lambda run: run.at))
     current = decided.last
     handoff = decided.handoff
     if current is None or handoff >= end:
@@ -773,6 +789,11 @@ def _predict(
             stopped = f"no song could be picked after {current.display_name}: {exc}"
             break
         moment = handoff
+        while ads and ads[0].at <= handoff:
+            run = ads.popleft()
+            if run.seconds > 0:  # a break no spot can fill airs nothing
+                found.append(Item("break", moment, run.seconds, "predicted", label=run.label))
+                moment += run.seconds
         if added and player._cfg.playback.transition_mode == "saved_points":
             rows, delay = _preview_liner_group(
                 player, current, entry, [liner for liner, _ in added], moment
@@ -1185,8 +1206,15 @@ def build_preview(
     if decided.reason is not None:
         return view
     snapshot = source.snapshot or snapshot_player(source.player)
+    forecasts = _ad_forecasts(source, now, end)
     predicted, ends, stopped = predict(
-        source, snapshot, decided, end, seed=seed_for(decided.signature()), budget=budget
+        source,
+        snapshot,
+        decided,
+        end,
+        seed=seed_for(decided.signature()),
+        budget=budget,
+        ad_runs=forecasts,
     )
     timeline = [*decided.items, *predicted]
     songs = [item for item in timeline if item.kind == "song"]
@@ -1214,6 +1242,12 @@ def build_preview(
         events=source.events,
         describe=describe,
     )
+    points.extend(
+        Point("event", run.at, run.label, "soft", run.detail)
+        for run in forecasts
+        if run.own_point and now < run.at <= end
+    )
+    points.sort(key=lambda point: (point.at, point.kind != "event"))
     view["points_note"] = (
         f"Only the first {MAX_POINTS} of {len(points)} fixed points are timed."
         if len(points) > MAX_POINTS
@@ -1229,6 +1263,18 @@ def build_preview(
     )
     view["summary"] = _summary(view, landings, zone, minutes)
     return view
+
+
+def _ad_forecasts(source: SimulationSource, now: float, end: float) -> list[Any]:
+    """The ad breaks the station expects from *now* to *end*, not yet booked (#51)."""
+    ads = source.ads
+    if ads is None:
+        return []
+    try:
+        return list(ads.forecast(now, end, source.events))
+    except Exception:  # a store that cannot be read must not stop the preview
+        logger.exception("Could not forecast the ad breaks")
+        return []
 
 
 def _item_view(item: Item, zone: ZoneInfo) -> dict[str, Any]:
@@ -1466,6 +1512,7 @@ class HourPreviews:
                     source.events,
                     versions,
                     category_signature,
+                    getattr(source.ads, "revision", None),
                 )
             ).encode("utf-8")
         ).hexdigest()
@@ -1511,6 +1558,7 @@ def _source(station: Any) -> SimulationSource:
         events=events,
         timezone=station.timezone,
         liner_dates=station.paths.liner_dates,
+        ads=getattr(station, "ads", None),
     )
 
 

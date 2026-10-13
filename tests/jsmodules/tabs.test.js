@@ -103,16 +103,18 @@ describe("tab arrow keys", () => {
     }
   });
 
-  it("places Carts, Voice tracks, then Track info, after Queue & Search in cached markup and keyboard order", async () => {
+  it("places Carts, Voice tracks, Ads, then Track info, after Queue & Search in cached markup and keyboard order", async () => {
     installIndex();
     const carts = document.getElementById("tab-carts");
     const voice = document.getElementById("tab-voice");
+    const ads = document.getElementById("tab-ads");
     const info = document.getElementById("tab-track-info");
     expect(document.getElementById("tab-queue").nextElementSibling).toBe(carts);
     expect(carts.nextElementSibling).toBe(voice);
-    expect(voice.nextElementSibling).toBe(info);
+    expect(voice.nextElementSibling).toBe(ads);
+    expect(ads.nextElementSibling).toBe(info);
     // A cached page with the tabs in another order is put right.
-    info.parentElement.append(voice, carts, info);
+    info.parentElement.append(ads, voice, carts, info);
     vi.resetModules();
     const { initViewRouter: freshRouter } = await import(
       "../../src/autodj/static/modules/tabs.js");
@@ -120,7 +122,8 @@ describe("tab arrow keys", () => {
     const queue = document.getElementById("tab-queue");
     expect(queue.nextElementSibling).toBe(carts);
     expect(carts.nextElementSibling).toBe(voice);
-    expect(voice.nextElementSibling).toBe(info);
+    expect(voice.nextElementSibling).toBe(ads);
+    expect(ads.nextElementSibling).toBe(info);
     queue.focus();
     queue.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     expect(document.activeElement).toBe(carts);
@@ -129,6 +132,9 @@ describe("tab arrow keys", () => {
     expect(document.activeElement).toBe(voice);
     expect(document.getElementById("panel-voice").hidden).toBe(false);
     voice.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(document.activeElement).toBe(ads);
+    expect(document.getElementById("panel-ads").hidden).toBe(false);
+    ads.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     expect(document.activeElement).toBe(info);
     window.location.hash = "";
   });
@@ -144,6 +150,20 @@ describe("tab arrow keys", () => {
     await vi.waitFor(() => expect(document.querySelector("#panel-voice").hidden).toBe(false));
     expect(document.activeElement.id).toBe("voice-heading");
     expect(window.location.hash).toBe("#voice");
+    window.location.hash = "";
+  });
+
+  it("focuses the Ads heading when the tab is chosen", async () => {
+    installIndex();
+    window.location.hash = "#now";
+    vi.resetModules();
+    const { initViewRouter: freshRouter } = await import(
+      "../../src/autodj/static/modules/tabs.js");
+    freshRouter();
+    document.querySelector("#tab-ads").click();
+    await vi.waitFor(() => expect(document.querySelector("#panel-ads").hidden).toBe(false));
+    expect(document.activeElement.id).toBe("ads-heading");
+    expect(window.location.hash).toBe("#ads");
     window.location.hash = "";
   });
 

@@ -38,6 +38,7 @@ import { installHourPreview } from "./modules/hour-preview.js";
 import { installSchedulerPanel } from "./modules/scheduler-panel.js";
 import { installCartWall } from "./modules/cart-wall.js";
 import { installVoiceTracker } from "./modules/voice-tracker.js";
+import { installAdsPanel } from "./modules/ads-panel.js";
 import { createStreamMode, createStreamSettings } from "./modules/stream-mode.js";
 import { createRecordingControls } from "./modules/recording-controls.js";
 import { installNowPlayingSettings } from "./modules/nowplaying-settings.js";
@@ -251,6 +252,7 @@ let rotationTestControls = null;
 let hourPreviewControls = null;
 let cartWallControls = null;
 let voiceTrackerControls = null;
+let adsControls = null;
 let listenerRequestControls = null;
 let reconnectGeneration = 0;
 let reconnectTimer = null;
@@ -338,6 +340,7 @@ function clearStationViews() {
   // Signing out or switching stations stops a recording and lets the
   // microphone go.
   voiceTrackerControls?.clear();
+  adsControls?.clear();
   listenerRequestControls?.clear();
   _linerEls.lnFileList.replaceChildren();
   _linerEls.lnFolderDisplay.textContent = "";
@@ -1472,7 +1475,7 @@ const btnStationStart = document.getElementById("station-start");
 const btnStationStop = document.getElementById("station-stop");
 const stationStopRow = document.getElementById("station-stop-row");
 // The panels that show one station; their names add the station's.
-const STATION_PANELS = ["now", "queue", "carts", "voice", "track-info", "history", "settings"];
+const STATION_PANELS = ["now", "queue", "carts", "voice", "ads", "track-info", "history", "settings"];
 let offAirTimer = null;
 let stationOffAir = false;
 
@@ -1627,6 +1630,7 @@ function refreshStationPanels() {
   void cartWallControls?.refresh();
   void timeCheckControls?.refresh();
   void voiceTrackerControls?.refresh();
+  void adsControls?.refresh();
   void linerControls?.refresh();
   void profileControls?.refresh();
   void fetchHistory(1);
@@ -2948,6 +2952,8 @@ function startAuthenticatedApp(initialState) {
   void cartWallControls?.refresh();
   voiceTrackerControls = installVoiceTracker();
   void voiceTrackerControls?.refresh();
+  adsControls = installAdsPanel();
+  void adsControls?.refresh();
   if (initialState) {
     applyState(initialState);
     connectWS();

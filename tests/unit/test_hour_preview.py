@@ -508,6 +508,59 @@ def test_server_audio_reads_renders_the_open_change_and_its_breaks(tmp_path: Pat
     assert view["items"][9]["title"].startswith("Gold ")
 
 
+class _Ads:
+    """The station's ad desk, as the preview reads it: one break due at 12:25."""
+
+    revision = (1, 0)
+
+    def __init__(self) -> None:
+        from autodj.ads import Forecast
+
+        self.asked: list[tuple[float, float]] = []
+        self.runs = [
+            Forecast(NOW + 900, "Ad break: Top", 60.0, "Ad break, 2 spots, about 60 seconds"),
+        ]
+
+    def forecast(self, now: float, end: float, events: Any = ()) -> list[Any]:
+        self.asked.append((now, end))
+        return self.runs
+
+
+def test_an_ad_break_not_yet_booked_is_predicted_and_timed(tmp_path: Path) -> None:
+    source, _power, gold = _station(tmp_path)
+    _playing(source, gold[0], NOW - 50)
+    source.player._state.next_track = gold[1]
+    plain = build_preview(source, 60, now=NOW)
+    source.ads = _Ads()
+    view = build_preview(source, 60, now=NOW)
+    assert source.ads.asked == [(NOW, NOW + 3600)]
+    (ad,) = [item for item in view["items"] if item["kind"] == "break"]
+    assert ad["title"] == "Ad break: Top" and ad["status_text"] == "Predicted"
+    assert ad["fixed"] is False
+
+    # It joins the first predicted song change after 12:25, and what follows
+    # starts a minute later than without it.
+    def songs(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [item for item in items if item["status"] == "predicted" and item["kind"] == "song"]
+
+    before, after = songs(plain["items"]), songs(view["items"])
+    assert before[0]["starts_at"] == after[0]["starts_at"]
+    moved = next(
+        index for index, item in enumerate(after) if item["starts_at"] != before[index]["starts_at"]
+    )
+    shift = datetime.fromisoformat(after[moved]["starts_at"]) - datetime.fromisoformat(
+        before[moved]["starts_at"]
+    )
+    assert shift.total_seconds() == pytest.approx(60)
+    (point,) = [entry for entry in view["points"] if entry["label"] == "Ad break: Top"]
+    assert point["kind"] == "event" and point["detail"] == "Ad break, 2 spots, about 60 seconds"
+    # A desk that fails leaves the preview as it was.
+    source.ads.forecast = lambda *_args: 1 / 0
+    assert not [
+        item for item in build_preview(source, 60, now=NOW)["items"] if item["kind"] == "break"
+    ]
+
+
 def test_a_render_under_way_leaves_only_the_next_song_fixed(tmp_path: Path) -> None:
     source, _power, gold = _station(tmp_path)
     player = source.player
