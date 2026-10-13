@@ -14,7 +14,8 @@
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
-import { describeConditions, NUMERIC_OPERATORS, TEXT_OPERATORS } from "./clockwheel-step.js";
+import { createConditionRow, readConditionRows } from "./condition-editor.js";
+import { describeConditions } from "./clockwheel-step.js";
 import { parsePointTime } from "./library-folders.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
@@ -195,66 +196,23 @@ export function installCategoriesPanel({ document: doc = document, request = req
   }
 
   function filterRow(value = {}) {
-    const row = doc.createElement("fieldset");
-    row.className = "clock-condition";
-    const legend = doc.createElement("legend");
-    legend.textContent = `Condition ${filterHost.children.length + 1}`;
-    row.append(legend);
-    const control = (labelText, tag = "input", options = []) => {
-      const id = `category-condition-${++filterId}`;
-      const label = doc.createElement("label");
-      const node = doc.createElement(tag);
-      label.htmlFor = id;
-      label.textContent = labelText;
-      node.id = id;
-      if (tag === "select") for (const [v, text] of options) {
-        const option = doc.createElement("option"); option.value = v; option.textContent = text; node.append(option);
-      }
-      row.append(label, node);
-      return node;
-    };
-    const fields = ["folder", "year", "bpm", "duration", "artist", "title", "album", "genre", "beets"];
-    const field = control("Condition type", "select", fields.map((v) => [v, v === "bpm" ? "BPM" : v[0].toUpperCase() + v.slice(1)]));
-    const folderChoices = (data.folders || []).map((x) => [x.id, x.path]);
-    if (value.source && !folderChoices.some(([id]) => id === value.source)) folderChoices.unshift([value.source, `${value.source} (unavailable)`]);
-    const sourceSelect = control("Library folder", "select", folderChoices);
-    const folder = control("Subfolder"); folder.type = "text";
-    const recursive = control("Include subfolders"); recursive.type = "checkbox";
-    const operator = control("Operator", "select");
-    const input = control("Value"); input.type = "text";
-    const upper = control("Upper value"); upper.type = "text";
-    const genreChoices = (data.genres || []).map((v) => [v, v]);
-    if (value.field === "genre" && value.value && !genreChoices.some(([v]) => v === value.value)) genreChoices.unshift([value.value, `${value.value} (unavailable)`]);
-    const genre = control("Genre", "select", genreChoices);
-    const beetsChoices = (data.beets_fields || []).map((v) => [v, v]);
-    if (value.field === "beets" && value.name && !beetsChoices.some(([v]) => v === value.name)) beetsChoices.unshift([value.name, `${value.name} (unavailable)`]);
-    const name = control("Beets field", "select", beetsChoices);
-    const remove = doc.createElement("button"); remove.type = "button"; remove.textContent = `Remove condition ${filterHost.children.length + 1}`; row.append(remove);
-    field.value = value.field || (sourceSelect.options.length ? "folder" : "title");
-    sourceSelect.value = value.source || sourceSelect.options[0]?.value || "";
-    folder.value = value.folder || ""; recursive.checked = Boolean(value.recursive);
-    input.value = value.value ?? ""; upper.value = value.upper ?? "";
-    genre.value = value.field === "genre" ? value.value || "" : ""; name.value = value.name || name.options[0]?.value || "";
-    let selected = value.operator || "";
-    const sync = () => {
-      const f = field.value, isFolder = f === "folder", numeric = ["year", "bpm", "duration"].includes(f);
-      for (const node of [sourceSelect, folder, recursive]) node.hidden = node.previousElementSibling.hidden = !isFolder;
-      genre.hidden = genre.previousElementSibling.hidden = f !== "genre";
-      name.hidden = name.previousElementSibling.hidden = f !== "beets";
-      let choices = TEXT_OPERATORS;
-      if (isFolder || f === "genre") choices = [["is", "is"], ["is_not", "is not"]];
-      else if (numeric) choices = NUMERIC_OPERATORS;
-      else if (f === "beets") choices = [["is", "Is (text)"], ["is_not", "Is not (text)"], ...TEXT_OPERATORS.slice(2), ["eq", "Equals (number)"], ...NUMERIC_OPERATORS.slice(1)];
-      const previous = operator.value || selected;
-      operator.replaceChildren(...choices.map(([v, text]) => { const option = doc.createElement("option"); option.value = v; option.textContent = text; return option; }));
-      operator.value = choices.some(([v]) => v === previous) ? previous : choices[0][0]; selected = operator.value;
-      input.hidden = input.previousElementSibling.hidden = isFolder || f === "genre";
-      upper.hidden = upper.previousElementSibling.hidden = !["between", "outside"].includes(operator.value);
-    };
-    field.addEventListener("change", sync); operator.addEventListener("change", sync);
-    remove.addEventListener("click", () => { row.remove(); [...filterHost.children].forEach((item, i) => { item.querySelector("legend").textContent = `Condition ${i + 1}`; item.querySelector("button").textContent = `Remove condition ${i + 1}`; }); });
-    sync();
-    return { row, field, sourceSelect, folder, recursive, operator, input, upper, genre, name };
+    return createConditionRow({
+      document: doc,
+      nextId: () => `category-condition-${++filterId}`,
+      index: filterHost.children.length + 1,
+      value,
+      fields: ["folder", "year", "bpm", "duration", "artist", "title", "album", "genre", "beets"],
+      sourceChoices: (data.folders || []).map((item) => [item.id, item.path]),
+      genreChoices: (data.genres || []).map((item) => [item, item]),
+      beetsChoices: (data.beets_fields || []).map((item) => [item, item]),
+      onRemove: (row) => {
+        row.remove();
+        [...filterHost.children].forEach((item, index) => {
+          item.querySelector("legend").textContent = `Condition ${index + 1}`;
+          item.querySelector("button").textContent = `Remove condition ${index + 1}`;
+        });
+      },
+    });
   }
 
   function renderFilterConditions(conditions = []) {
@@ -263,39 +221,15 @@ export function installCategoriesPanel({ document: doc = document, request = req
   }
 
   function readFilterConditions(interactive = true) {
-    return [...filterHost.children].map((row) => {
-      const selects = [...row.querySelectorAll("select")], field = selects[0].value, operator = selects[2].value;
-      const invalid = (control, message) => {
-        if (interactive) { control.setAttribute("aria-invalid", "true"); control.focus(); }
-        throw Object.assign(new Error(message), { field: "conditions" });
-      };
-      if (field === "folder") {
-        const sub = row.querySelector('input[type="text"]');
-        const folder = sub.value.trim().replaceAll("\\", "/").replace(/^[/\\]+|[/\\]+$/g, "");
-        if (!selects[1].value) invalid(selects[1], "Choose a registered music folder.");
-        if (folder && (folder.split("/").some((part) => !part || part === "." || part === "..") || folder.includes(":"))) invalid(sub, 'The subfolder must stay inside its library folder, with no "..".');
-        return { field, source: selects[1].value, folder, recursive: row.querySelector('input[type="checkbox"]').checked, ...(operator === "is_not" ? { operator } : {}) };
-      }
-      if (field === "genre") {
-        if (!selects[3].value) invalid(selects[3], "Choose a genre.");
-        return { field, operator, value: selects[3].value };
-      }
-      const inputs = [...row.querySelectorAll('input[type="text"]')], raw = inputs[1].value.trim();
-      if (!raw) invalid(inputs[1], `Enter a value for ${field}.`);
-      const numeric = ["year", "bpm", "duration"].includes(field) || (field === "beets" && ["eq", "not_eq", "lt", "lte", "gt", "gte", "between", "outside"].includes(operator));
-      const parse = (text, control) => {
-        let value;
-        try { value = field === "duration" ? parsePointTime(text) : Number(text); } catch { invalid(control, "Enter a duration in seconds or minutes:seconds."); }
-        if (!Number.isFinite(value) || (field !== "beets" && value < 0)) invalid(control, `Enter a valid value for ${field}.`);
-        return value;
-      };
-      const result = { field, ...(field === "beets" ? { name: selects[4].value } : {}), operator, value: numeric ? parse(raw, inputs[1]) : raw };
-      if (field === "beets" && (!result.name || data.beets_error || !(data.beets_fields || []).includes(result.name))) invalid(selects[4], data.beets_error || "Choose an available Beets field.");
-      if (["between", "outside"].includes(operator)) {
-        const high = inputs[2].value.trim(); if (!high) invalid(inputs[2], "Enter the upper value.");
-        result.upper = numeric ? parse(high, inputs[2]) : high;
-      }
-      return result;
+    return readConditionRows([...filterHost.children], {
+      interactive,
+      parsePointTime,
+      folderRequired: "Choose a registered music folder.",
+      numberError: (field) => `Enter a valid value for ${field}.`,
+      durationError: "Enter a duration in seconds or minutes:seconds.",
+      beetsAvailable: (name) => Boolean(name) && !data.beets_error && (data.beets_fields || []).includes(name),
+      beetsError: () => data.beets_error || "Choose an available Beets field.",
+      errorField: "conditions",
     });
   }
 

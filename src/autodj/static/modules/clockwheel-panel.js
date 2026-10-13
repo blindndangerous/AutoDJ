@@ -21,7 +21,8 @@ import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, reques
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
 import { parsePointTime } from "./library-folders.js";
-import { describeStep, NUMERIC_OPERATORS, TEXT_OPERATORS } from "./clockwheel-step.js";
+import { createConditionRow, readConditionRows } from "./condition-editor.js";
+import { describeStep } from "./clockwheel-step.js";
 export { describeStep } from "./clockwheel-step.js";
 import { fillStepHours, installStepHours, readStepHours } from "./step-hours.js";
 
@@ -159,117 +160,22 @@ export function installClockwheelPanel({ document: doc = document, request = req
   }
 
   function conditionRow(value = {}) {
-    const row = doc.createElement("fieldset");
-    row.className = "clock-condition";
-    const legend = doc.createElement("legend");
-    legend.textContent = `Condition ${el("clock-step-conditions").children.length + 1}`;
-    row.append(legend);
-    const control = (labelText, tag = "input", options = []) => {
-      const id = `clock-condition-${++conditionId}`;
-      const label = doc.createElement("label");
-      const node = doc.createElement(tag);
-      label.htmlFor = id;
-      label.textContent = labelText;
-      node.id = id;
-      if (tag === "select") {
-        for (const [v, text] of options) {
-          const option = doc.createElement("option");
-          option.value = v;
-          option.textContent = text;
-          node.append(option);
-        }
-      }
-      row.append(label, node);
-      return node;
-    };
     const fields = ["folder", "year", "bpm", "duration", "artist", "title", "album", "genre", "beets"];
     if (typeSelect.value === "music") fields.push("category");
-    const field = control("Condition type", "select", fields.map((v) => [v, v === "bpm" ? "BPM" : v[0].toUpperCase() + v.slice(1)]));
     const sourceList = data.sources.filter((s) => s.kind === (typeSelect.value === "liner" ? "liner" : "music"));
-    const source = control("Library folder", "select", sourceList.map((s) => [s.id, s.path]));
-    const folder = control("Subfolder", "input");
-    folder.type = "text";
-    const recursive = control("Include subfolders", "input");
-    recursive.type = "checkbox";
-    const operator = control("Operator", "select");
-    const input = control("Value", "input");
-    input.type = "text";
-    input.setAttribute("aria-describedby", CONDITION_HELP);
-    const upper = control("Upper value", "input");
-    upper.type = "text";
-    upper.setAttribute("aria-describedby", CONDITION_HELP);
-    const genre = control("Genre", "select", (data.genres || []).map((v) => [v, v]));
-    const beetsOptions = (data.beets_fields || []).map((v) => [v, v]);
-    if (value.field === "beets" && value.name && !beetsOptions.some(([v]) => v === value.name)) {
-      beetsOptions.unshift([value.name, `${value.name} (unavailable)`]);
-    }
-    const name = control("Beets field", "select", beetsOptions);
-    name.setAttribute("aria-describedby", CONDITION_HELP);
-    const categoryOptions = data.categories.map((item) => [item.id, item.name]);
-    if (value.field === "category" && value.category && !categoryOptions.some(([v]) => v === value.category)) {
-      categoryOptions.unshift([value.category, `${value.category} (unavailable)`]);
-    }
-    const category = control("Music category", "select", categoryOptions);
-    const remove = doc.createElement("button");
-    remove.type = "button";
-    remove.dataset.removeCondition = "";
-    remove.textContent = `Remove condition ${el("clock-step-conditions").children.length + 1}`;
-    row.append(remove);
-    field.value = value.field || (source.options.length ? "folder" : "title");
-    if (value.source && !sourceList.some((item) => item.id === value.source)) {
-      const option = doc.createElement("option");
-      option.value = value.source;
-      option.textContent = `${value.source} (unavailable)`;
-      source.add(option);
-    }
-    source.value = value.source || source.options[0]?.value || "";
-    folder.value = value.folder || "";
-    recursive.checked = Boolean(value.recursive);
-    input.value = value.value ?? "";
-    upper.value = value.upper ?? "";
-    if (value.field === "genre" && value.value && !(data.genres || []).includes(value.value)) {
-      const option = doc.createElement("option");
-      option.value = value.value;
-      option.textContent = `${value.value} (unavailable)`;
-      genre.add(option);
-    }
-    genre.value = value.field === "genre" ? value.value || "" : "";
-    category.value = value.category || "";
-    name.value = value.name || name.options[0]?.value || "";
-    let selectedOperator = value.operator || "";
-    const sync = () => {
-      const f = field.value;
-      const numeric = ["year", "bpm", "duration"].includes(f);
-      const isFolder = f === "folder";
-      source.hidden = folder.hidden = recursive.hidden = !isFolder;
-      source.previousElementSibling.hidden = folder.previousElementSibling.hidden = recursive.previousElementSibling.hidden = !isFolder;
-      genre.hidden = genre.previousElementSibling.hidden = f !== "genre";
-      category.hidden = category.previousElementSibling.hidden = f !== "category";
-      name.hidden = name.previousElementSibling.hidden = f !== "beets";
-      let choices = TEXT_OPERATORS;
-      if (isFolder || f === "genre" || f === "category") choices = [["is", "is"], ["is_not", "is not"]];
-      else if (numeric) choices = NUMERIC_OPERATORS;
-      else if (f === "beets") {
-        choices = [["is", "Is (text)"], ["is_not", "Is not (text)"], ...TEXT_OPERATORS.slice(2), ["eq", "Equals (number)"], ...NUMERIC_OPERATORS.slice(1)];
-      }
-      const previousOperator = operator.value || selectedOperator;
-      operator.replaceChildren(...choices.map(([v, text]) => {
-        const option = doc.createElement("option");
-        option.value = v;
-        option.textContent = text;
-        return option;
-      }));
-      operator.value = choices.some(([v]) => v === previousOperator) ? previousOperator : choices[0][0];
-      selectedOperator = operator.value;
-      operator.hidden = operator.previousElementSibling.hidden = false;
-      input.hidden = input.previousElementSibling.hidden = isFolder || f === "genre" || f === "category";
-      upper.hidden = upper.previousElementSibling.hidden = !["between", "outside"].includes(operator.value);
-      input.previousElementSibling.textContent = f === "duration" ? "Value (seconds or MM:SS)" : "Value";
-      upper.previousElementSibling.textContent = f === "duration" ? "Upper value (seconds or MM:SS)" : "Upper value";
-    };
-    field.addEventListener("change", () => { sync(); updateBeetsNotice(); });
-    operator.addEventListener("change", sync);
-    remove.addEventListener("click", () => {
+    return createConditionRow({
+      document: doc,
+      nextId: () => `clock-condition-${++conditionId}`,
+      index: el("clock-step-conditions").children.length + 1,
+      value,
+      fields,
+      sourceChoices: sourceList.map((item) => [item.id, item.path]),
+      genreChoices: (data.genres || []).map((item) => [item, item]),
+      beetsChoices: (data.beets_fields || []).map((item) => [item, item]),
+      categoryChoices: data.categories.map((item) => [item.id, item.name]),
+      helpId: CONDITION_HELP,
+      onFieldChange: updateBeetsNotice,
+      onRemove: (row) => {
       const host = row.parentElement;
       const index = [...host.children].indexOf(row);
       row.remove();
@@ -282,9 +188,8 @@ export function installClockwheelPanel({ document: doc = document, request = req
       // The condition that took its place, or the one before it when it was last.
       (left[Math.min(index, left.length - 1)]?.querySelector("select") || el("clock-add-condition")).focus();
       say(`Condition ${index + 1} removed, ${left.length} ${left.length === 1 ? "condition" : "conditions"} left.`);
+      },
     });
-    sync();
-    return { row, field, source, folder, recursive, operator, input, upper, genre, category, name };
   }
 
   function renderConditions(values = [{}]) {
@@ -357,71 +262,16 @@ export function installClockwheelPanel({ document: doc = document, request = req
       if (interactive) el("clock-add-condition").focus();
       throw new Error("Add at least one condition.");
     }
-    const invalid = (input, message) => {
-      if (interactive) {
-        input.setAttribute("aria-invalid", "true");
-        input.focus();
-      }
-      throw new Error(message);
-    };
-    for (const row of rows) row.querySelectorAll("[aria-invalid]").forEach((input) => input.removeAttribute("aria-invalid"));
-    return rows.map((row) => {
-      const selects = [...row.querySelectorAll("select")];
-      const field = selects[0].value;
-      if (field === "folder") {
-        const source = selects[1].value;
-        const folderField = row.querySelector("input[type=text]");
-        const folder = folderField.value.trim().replaceAll("\\", "/").replace(/^[/\\]+|[/\\]+$/g, "");
-        if (!source) {
-          invalid(selects[1], "Choose a library folder for each folder condition.");
-        }
-        if (folder && (folder.split("/").some((part) => !part || part === "." || part === "..") || folder.includes(":"))) {
-          invalid(folderField, 'The subfolder must stay inside its library folder, with no "..".');
-        }
-        return { field, source, folder, recursive: row.querySelector("input[type=checkbox]").checked, ...(selects[2].value === "is_not" ? { operator: "is_not" } : {}) };
-      }
-      if (field === "genre") {
-        if (!selects[3].value) invalid(selects[3], "Choose a genre.");
-        return { field, operator: selects[2].value, value: selects[3].value };
-      }
-      if (field === "category") {
-        if (!selects[5].value) invalid(selects[5], "Choose a saved music category.");
-        return { field, category: selects[5].value, ...(selects[2].value === "is_not" ? { operator: "is_not" } : {}) };
-      }
-
-      const inputs = row.querySelectorAll("input[type=text]");
-      const operator = selects[2].value;
-      const raw = inputs[1].value.trim();
-      if (!raw) invalid(inputs[1], `Enter a value for ${field}.`);
-      const numeric = ["year", "bpm", "duration"].includes(field)
-        || (field === "beets" && ["eq", "not_eq", "lt", "lte", "gt", "gte", "between", "outside"].includes(operator));
-      const parse = (value, input) => {
-        let number;
-        try {
-          number = field === "duration" ? parsePointTime(value) : Number(value);
-        } catch {
-          invalid(input, "Enter the duration as seconds or minutes:seconds, for example 90 or 1:30.");
-        }
-        if (number === null || !Number.isFinite(number)) invalid(input, `Enter a number for ${field}.`);
-        if (field === "duration" && number < 0) invalid(input, "Duration must be non-negative.");
-        return number;
-      };
-      const result = {
-        field,
-        ...(field === "beets" ? { name: selects[4].value } : {}),
-        operator,
-        value: numeric ? parse(raw, inputs[1]) : raw,
-      };
-      if (field === "beets" && !result.name) invalid(selects[4], data.beets_error || "Beets fields are unavailable.");
-      if (field === "beets" && (data.beets_error || !(data.beets_fields || []).includes(result.name))) {
-        invalid(selects[4], data.beets_error || `Beets field ${result.name} is unavailable.`);
-      }
-      if (["between", "outside"].includes(operator)) {
-        const high = inputs[2].value.trim();
-        if (!high) invalid(inputs[2], "Enter the upper value for the range.");
-        result.upper = numeric ? parse(high, inputs[2]) : high;
-      }
-      return result;
+    return readConditionRows(rows, {
+      interactive,
+      parsePointTime,
+      folderRequired: "Choose a library folder for each folder condition.",
+      durationError: "Enter the duration as seconds or minutes:seconds, for example 90 or 1:30.",
+      numberError: (field) => field === "duration" ? "Duration must be non-negative." : `Enter a number for ${field}.`,
+      negativeError: (field) => field === "duration" ? "Duration must be non-negative." : `Enter a number for ${field}.`,
+      upperRequired: "Enter the upper value for the range.",
+      beetsAvailable: (name) => Boolean(name) && !data.beets_error && (data.beets_fields || []).includes(name),
+      beetsError: (name) => data.beets_error || (!name ? "Beets fields are unavailable." : `Beets field ${name} is unavailable.`),
     });
   }
 
