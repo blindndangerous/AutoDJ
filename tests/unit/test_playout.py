@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from autodj.playout import render_handoff
+from autodj.playout import liner_chain_placement, render_handoff
 from autodj.stereo import SAMPLE_RATE
 
 
@@ -96,6 +96,7 @@ def test_positive_liner_overlap_preserves_full_plague_tail_after_music_entry():
         {"start": 0, "intro": 0},
         fade_seconds=1.5,
         liner=audio(8.809, 0.2),
+        liner_segue=5.3,
         overlap_start=5.3,
     )
     assert handoff.liner_s == pytest.approx(5)
@@ -124,7 +125,7 @@ def test_liner_segue_fits_main_content_before_vocals_and_keeps_tail(intro, liner
     assert handoff.next_overlay[-1, 0] == pytest.approx(0.2)
 
 
-def test_explicit_overlap_overrides_liner_segue():
+def test_explicit_overlap_respects_liner_segue_before_cold_vocals():
     handoff = render_handoff(
         audio(12),
         {"segue": 5, "end": 12},
@@ -133,7 +134,24 @@ def test_explicit_overlap_overrides_liner_segue():
         overlap_start=5.3,
         liner_segue=6,
     )
-    assert handoff.incoming_s == pytest.approx(10.3)
+    assert handoff.incoming_s == pytest.approx(11)
+
+
+@pytest.mark.parametrize("intro,release", [(None, 4.6), (1.0, 3.6), (1.3, 3.3), (2.0, 3.3)])
+def test_positive_overlap_waits_until_liner_main_ends_before_incoming_vocals(intro, release):
+    handoff = render_handoff(
+        audio(10),
+        {"start": 0, "segue": 8, "end": 10},
+        {"start": 0, "intro": intro},
+        liner=audio(4.86, 0.2),
+        liner_segue=4.6,
+        overlap_start=3.3,
+        outro_lead_limit=0,
+    )
+    assert handoff.liner_s == pytest.approx(8)
+    assert handoff.incoming_s == pytest.approx(8 + release)
+    assert len(handoff.next_overlay) / SAMPLE_RATE == pytest.approx(4.86 - release)
+    assert handoff.next_overlay[-1, 0] == pytest.approx(0.2)
 
 
 @pytest.mark.parametrize("intro, requested_delay, expected_delay", [(5, 3, 3), (3, 3, 1)])
@@ -195,6 +213,29 @@ def test_negative_overlap_keeps_tail_after_a_short_liner_segue():
     assert handoff.incoming_s == pytest.approx(8)
     assert len(handoff.next_overlay) == 8 * SAMPLE_RATE
     assert handoff.next_overlay[-1, 0] == pytest.approx(0.2)
+
+
+@pytest.mark.parametrize("overlap", [None, 0, 2.5, -2])
+def test_saved_cue_placement_helper_matches_rendered_transition(overlap):
+    outgoing = {"start": 0.5, "outro": 5, "segue": 8, "end": 12}
+    incoming = {"start": 1, "intro": 3.5}
+    main_frames = round(3.3 * SAMPLE_RATE)
+    start, segue = round(0.5 * SAMPLE_RATE), round(8 * SAMPLE_RATE)
+    safe_outro = round(5 * SAMPLE_RATE)
+    liner_start, incoming_frame = liner_chain_placement(
+        start, segue, safe_outro, main_frames, round(2.5 * SAMPLE_RATE), overlap, 1.0
+    )
+    rendered = render_handoff(
+        audio(12),
+        outgoing,
+        incoming,
+        liner=audio(6),
+        liner_segue=3.3,
+        overlap_start=overlap,
+        outro_lead_limit=1.0,
+    )
+    assert rendered.liner_s == pytest.approx(liner_start / SAMPLE_RATE)
+    assert rendered.incoming_s == pytest.approx(incoming_frame / SAMPLE_RATE)
 
 
 @pytest.mark.parametrize("overlap", [-15.01, float("nan"), float("inf")])

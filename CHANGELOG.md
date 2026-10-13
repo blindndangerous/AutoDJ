@@ -40,7 +40,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the new **Shift+H** shortcut say the summary. Every station has its own, at
   `/api/hour-preview` and `/api/stations/<name>/hour-preview`. Previews run on one low-priority
   worker thread, stop after 80 songs or about 4 seconds, and are shared and reused for 45 seconds
-  while nothing new is fixed.
+  while the timeline and picking inputs stay current. Refresh preview always rebuilds from the
+  current inputs; queued and predicted voice liners use saved overlap cues for their estimated
+  placement.
 
 - A public player page and an embeddable player (#52), each off until `[player_page]` turns it
   on, per station. `/player` (or `/stations/<slug>/player`) has a Play button that becomes Stop,
@@ -492,6 +494,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Positive liner overlap points now respect the next song's intro, just like zero and
+  negative values. A cold opening waits until the liner's segue; its remaining tail can
+  still overlap. Some songs now start later where the old overlap would have covered
+  their vocals. Stored cue values and outgoing fades are unchanged (#194).
 - Track info preview audio stops when leaving the tab or saving cue points, while keeping
   its position available for further editing (#186).
 - Audio prepared before a clockwheel edit no longer restores the old step position or restart

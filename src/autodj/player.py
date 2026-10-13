@@ -4413,6 +4413,8 @@ class Player:
             release = max(constraints)
         elif fit_main_frames:
             release = max(release, fit_main_frames / SAMPLE_RATE - incoming_intro)
+        # Every clip's main content must finish before the incoming vocals.
+        release = max(release, main_frames / SAMPLE_RATE - incoming_intro)
         handoff = render_handoff(
             np.zeros((1, 2), dtype=np.float32) if is_liner else source,
             {"start": 0, "end": 0, "segue": 0} if is_liner else points,

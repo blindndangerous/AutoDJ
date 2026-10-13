@@ -1619,6 +1619,7 @@ function _seekByDelta(deltaSec) {
   // Comma and period leave focus where it is, so the new position is
   // said in the seek slider's own words.
   if (dur > 0) srSpeak(`${fmtTime(target)} of ${fmtTime(dur)}`);
+  hourPreviewControls?.noteSeek();
   void postJsonBestEffort("/api/seek", { delta: deltaSec }, reportBackgroundRequestError);
 }
 
@@ -1650,6 +1651,7 @@ function _seekToFrac(frac, opts) {
     if (progressLbl) progressLbl.textContent = `${fmtTime(seconds)} / ${fmtTime(dur)}`;
   }
   if (!opts || opts.post !== false) {
+    hourPreviewControls?.noteSeek();
     void postJsonBestEffort("/api/seek", { seconds }, reportBackgroundRequestError);
   }
 }
