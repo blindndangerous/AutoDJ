@@ -19,6 +19,10 @@
 //         their neighbours, its numbers 4.5:1;
 //       - Now Playing's Hour preview opened, with a stood-in answer: its
 //         table of fixed and predicted rows and its backtiming list;
+//       - Settings > Stream (when the server streams) with its Listener
+//         statistics stood in for: the summary, the tables by format and
+//         by day (a long run of days, every format) and the session
+//         lengths, and the address list of the formats that are on;
 //       - the status message with its Dismiss button, as a confirmation
 //         and as an error, through axe-core as well;
 //   - in the System light mode only (layout does not change with colour):
@@ -323,6 +327,45 @@ const HOUR_PREVIEW = {
 };
 const hourPreviewPages = new WeakSet();
 
+// Settings > Stream > Listener statistics (#50), stood in for so its
+// tables, summary and session lengths are measured filled, with every
+// format and a long run of days, on a server nobody has listened to.
+const STATS_DAY = (date, peak, sessions) => ({
+  date, peak, peak_at: peak ? "21:45" : null, sessions, seconds: sessions * 1260,
+  longest: sessions ? 11400 : 0, bands: [1, 2, 0, Math.max(0, sessions - 4), 1, 0],
+  formats: peak ? { mp3: { peak, sessions, seconds: sessions * 1260 } } : {},
+});
+const LISTENER_STATS = {
+  keep_days: 90,
+  days_shown: 30,
+  today: "2026-10-13",
+  now: { total: 12, formats: { mp3: 7, aac: 3, opus: 2 } },
+  days: [
+    STATS_DAY("2026-10-13", 14, 38), STATS_DAY("2026-10-12", 9, 21),
+    STATS_DAY("2026-10-11", 0, 0), STATS_DAY("2026-10-10", 100, 1234),
+  ],
+  period: {
+    sessions: 1293, seconds: 1629180, longest: 11400, peak: 100, peak_date: "2026-10-10",
+    peak_at: "21:45", bands: [4, 8, 0, 1281, 4, 0],
+    formats: {
+      mp3: { peak: 100, sessions: 1293, seconds: 1629180 },
+      aac: { peak: 3, sessions: 40, seconds: 50400 },
+      opus: { peak: 2, sessions: 12, seconds: 15120 },
+    },
+  },
+  bands: ["Under 1 minute", "1 to 5 minutes", "5 to 15 minutes", "15 minutes to 1 hour",
+    "1 to 3 hours", "3 hours or more"],
+};
+const listenerStatsPages = new WeakSet();
+
+async function standInForListenerStats(page) {
+  if (listenerStatsPages.has(page)) return;
+  listenerStatsPages.add(page);
+  await page.route("**/stream/stats?*", (route) => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify(LISTENER_STATS),
+  }));
+}
+
 async function standInForHourPreview(page) {
   if (hourPreviewPages.has(page)) return;
   hourPreviewPages.add(page);
@@ -527,6 +570,7 @@ async function eachTarget(page, visit) {
   await standInForTrackInfo(page);
   await standInForTimeChecks(page);
   await standInForHourPreview(page);
+  await standInForListenerStats(page);
   await standInForVoiceTracker(page);
   await standInForStations(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });

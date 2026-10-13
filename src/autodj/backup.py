@@ -8,7 +8,8 @@ that wrote it and the list of files) and these members:
 - ``index/dj_meta.db``, ``index/library.db``, ``index/web_state.json``,
   ``index/related-artists.toml``, ``index/related-tracks.toml``, ``index/schedule.json``,
   ``index/carts.json``,
-  ``index/time_checks.json``, ``index/listener_bans.json``, ``index/recording.json``,
+  ``index/time_checks.json``, ``index/listener_bans.json``, ``index/listener_stats.json``,
+  ``index/recording.json``,
   ``index/categories.json``, ``index/liner_dates.json`` and ``index/matched_intros.json``
   from the active index folder.
 - ``liners/...``, ``carts/...``, ``time_checks/...``, ``profiles/...``, ``clockwheels/...``
@@ -74,6 +75,7 @@ INDEX_FILES = (
     "carts.json",
     "time_checks.json",
     "listener_bans.json",
+    "listener_stats.json",
     "recording.json",
     "categories.json",
     "liner_dates.json",
@@ -96,6 +98,7 @@ _STATE_FILES = (
     "carts.json",
     "time_checks.json",
     "listener_bans.json",
+    "listener_stats.json",
     "recording.json",
     "categories.json",
     "liner_dates.json",

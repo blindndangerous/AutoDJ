@@ -43,6 +43,7 @@ from autodj.clockwheel_store import (
     validate_clockwheel,
     validate_name,
 )
+from autodj.config import MAX_STATS_DAYS
 from autodj.playlog import (
     missing_fields,
     parse_bound,
@@ -1111,9 +1112,44 @@ def install_station_routes(router: StationRouter) -> None:
             raise HTTPException(status_code=404, detail="Ban not found")
         return {"address": address}
 
+    @router.get("/stream/stats")
+    async def api_stream_stats(
+        station: StationDep, days: Annotated[int, Query(ge=1, le=MAX_STATS_DAYS)] = 30
+    ) -> JSONResponse:
+        """Listener statistics for the last *days* days: counts only, no addresses (#50)."""
+        _require_stream_mode(station)
+        stats = station.listener_stats
+        if stats is None:
+            raise HTTPException(status_code=404, detail="Not Found")
+        bridge = station.bridge
+        listening = (
+            bridge.mounts.counts()
+            if bridge.mounts is not None
+            else {"mp3": int(bridge.stream.listener_count)}
+        )
+        summary = await asyncio.to_thread(stats.summary, days, listening)
+        return JSONResponse(summary, headers=_NO_STORE)
+
+    @router.get("/stream/stats/export")
+    async def api_stream_stats_export(station: StationDep) -> Response:
+        """Download every kept day of listener statistics as CSV."""
+        _require_stream_mode(station)
+        stats = station.listener_stats
+        if stats is None:
+            raise HTTPException(status_code=404, detail="Not Found")
+        body = await asyncio.to_thread(stats.csv_text)
+        return Response(
+            body.encode("utf-8"),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                **_NO_STORE,
+                "Content-Disposition": f'attachment; filename="autodj-listeners-{station.slug}.csv"',
+            },
+        )
+
     @router.post("/stream/settings")
     async def api_stream_settings(station: StationDep, body: StreamSettingsBody) -> dict:
-        """Change the stream bitrate (listeners reconnect), continuous play or name."""
+        """Change the stream bitrates (listeners reconnect), continuous play, name or statistics."""
         access = _require_stream_mode(station)
         bridge = station.bridge
         cfg = station.cfg
@@ -1127,6 +1163,24 @@ def install_station_routes(router: StationRouter) -> None:
                 await asyncio.to_thread(bridge.set_stream_bitrate, body.bitrate)
             except EncoderUnavailableError as exc:
                 raise HTTPException(status_code=503, detail="stream encoder failed") from exc
+        for name, value in (("aac", body.aac_bitrate), ("opus", body.opus_bitrate)):
+            if value is None:
+                continue
+            try:
+                await asyncio.to_thread(bridge.set_stream_format_bitrate, name, value)
+            except (EncoderUnavailableError, OSError) as exc:
+                logger.error("Could not start the %s stream encoder", name, exc_info=True)
+                raise HTTPException(
+                    status_code=503, detail=f"The {name} stream encoder could not start"
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if body.stats_days is not None:
+            cfg.stream.stats_days = body.stats_days
+            if station.listener_stats is not None:
+                # Days no longer kept go now, not at the next tick.
+                await asyncio.to_thread(station.listener_stats.tick)
+                await asyncio.to_thread(station.listener_stats.flush)
         if body.continuous is not None:
             cfg.stream.continuous = body.continuous
         if body.station_name is not None:

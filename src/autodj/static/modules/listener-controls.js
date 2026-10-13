@@ -2,6 +2,8 @@
 import { requestJson } from "./api-client.js";
 import { announceStatus } from "./live-region.js";
 
+const FORMAT_NAMES = { aac: "AAC", opus: "Opus" };
+
 export function createListenerControls(doc, status, saveLimit) {
   const list = doc.getElementById("listener-control-list");
   const bans = doc.getElementById("listener-ban-list");
@@ -94,7 +96,9 @@ export function createListenerControls(doc, status, saveLimit) {
       }
       row._listener = item;
       const connected = new Date(item.connected_at * 1000).toLocaleString();
-      row.querySelector("span").textContent = `${item.address}, ${item.player}, connected ${connected}. `;
+      // The AAC and Opus streams (#50) are named; the MP3 one is the usual stream.
+      const format = FORMAT_NAMES[item.format] ? `, ${FORMAT_NAMES[item.format]}` : "";
+      row.querySelector("span").textContent = `${item.address}, ${item.player}${format}, connected ${connected}. `;
       const duplicate = names.get(`${item.address}, ${item.player}`) > 1;
       const timeKey = `${item.address}\u0000${item.player}\u0000${connected}`;
       const session = (repeatedTimes.get(timeKey) || 0) + 1;

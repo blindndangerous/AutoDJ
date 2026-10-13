@@ -119,3 +119,34 @@ def test_unknown_stream_keys_warn_without_discarding_supported_settings(caplog):
     cfg = StreamConfig.from_dict({"unknown": 1, "bitrate": 192, "enabled": True})
     assert cfg.bitrate == 192 and cfg.enabled is True
     assert "Ignoring unknown config keys in [stream]: ['unknown']" in caplog.text
+
+
+def test_extra_formats_are_off_and_statistics_kept_90_days_by_default() -> None:
+    cfg = StreamConfig()
+    assert (cfg.aac_bitrate, cfg.opus_bitrate, cfg.stats_days) == (0, 0, 90)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("aac_bitrate", 64), ("aac_bitrate", 256), ("opus_bitrate", 48), ("opus_bitrate", 192)],
+)
+def test_extra_format_bitrates(key: str, value: int) -> None:
+    assert getattr(StreamConfig.from_dict({key: value}), key) == value
+
+
+@pytest.mark.parametrize(
+    ("data", "error"),
+    [
+        ({"aac_bitrate": 320}, ValueError),
+        ({"opus_bitrate": 256}, ValueError),
+        ({"aac_bitrate": "96"}, TypeError),
+        ({"opus_bitrate": True}, TypeError),
+        ({"stats_days": -1}, ValueError),
+        ({"stats_days": 3651}, ValueError),
+        ({"stats_days": 1.5}, TypeError),
+        ({"stats_days": False}, TypeError),
+    ],
+)
+def test_bad_extra_format_and_statistics_settings(data: dict, error: type[Exception]) -> None:
+    with pytest.raises(error):
+        StreamConfig.from_dict(data)

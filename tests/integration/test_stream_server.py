@@ -400,6 +400,25 @@ def test_stream_info(stream_app) -> None:
         "listeners": 2,
         "state": "idle",
         "relays": [],
+        # Without extra mounts only MP3 is on; AAC and Opus show as off.
+        "formats": [
+            {
+                "format": "mp3",
+                "label": "MP3",
+                "bitrate": 320,
+                "path": "/stream.mp3",
+                "listeners": 2,
+            },
+            {"format": "aac", "label": "AAC", "bitrate": 0, "path": "/stream.aac", "listeners": 0},
+            {
+                "format": "opus",
+                "label": "Opus",
+                "bitrate": 0,
+                "path": "/stream.opus",
+                "listeners": 0,
+            },
+        ],
+        "stats_days": 90,
     }
 
 

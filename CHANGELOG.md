@@ -10,6 +10,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- More stream formats (#50): beside the MP3 stream, a station can serve the same mix in AAC
+  (`/stream.aac`) and Opus (`/stream.opus`), and at `/stations/<name>.aac` and `.opus`, each at
+  its own bitrate. Turn them on in Settings, Stream, **More formats** (AAC quality, Opus
+  quality), or with `[stream] aac_bitrate` and `opus_bitrate`; Settings lists every format's
+  address with its own Copy button. Each format runs its own encoder on the same mix, through
+  its own short queue, so a slow encoder never holds up the mix or the other formats; each costs
+  a few percent of one CPU core (measurements in the operations guide). AAC players get song
+  titles as MP3 players do; Opus streams carry none. `max_listeners` now counts the listeners of
+  every format together, and a listener on any format starts an idle set.
+- Listener statistics (#50): Settings, Stream, **Listener statistics** says in words and in two
+  tables how many are listening now on each format, each day's peak and when it was, the number
+  of sessions, listening hours, the average and longest session, and how long sessions lasted,
+  for the last 7, 30 or 90 days or every day kept. **Download statistics (CSV)** saves one row
+  per day. Only daily counts are kept, never an address or player name, for
+  `[stream] stats_days` days (90 by default; 0 keeps none), in each station's
+  `listener_stats.json`, which backups include. Routes: `/api/stream/stats` and
+  `/api/stream/stats/export`, and the same under `/api/stations/<name>/`.
 - Saving edits to the active clockwheel can now apply at its next restart, immediately from
   step 1, or immediately continuing at the next step number. A song already playing and its
   committed handoff finish normally. With no restart minutes, deferred edits apply when the

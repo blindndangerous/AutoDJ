@@ -233,6 +233,9 @@ class PlayerBridge:
     # The relays to other servers (:class:`~autodj.relay.RelayManager`),
     # when any are configured.
     relays: Any = None
+    # The stream in every format (:class:`~autodj.stream_mounts.StreamMounts`):
+    # the MP3 stream above and the AAC and Opus mounts that are on.
+    mounts: Any = None
     public_state_changed: Callable[[], Any] | None = None
     track_started_callback: Callable[[], None] | None = None
     # History is appended on the mix-bus thread, trimmed by the station's
@@ -267,17 +270,58 @@ class PlayerBridge:
         """Whether the mix is served as a radio stream."""
         return self.stream is not None
 
-    def attach_stream(self, *, stream: Any, station: Any, relays: Any = None) -> None:
+    def attach_stream(
+        self, *, stream: Any, station: Any, relays: Any = None, mounts: Any = None
+    ) -> None:
         """Switch the bridge into stream mode.
 
         Args:
             stream: The :class:`~autodj.stream.StreamOutput`.
             station: The :class:`~autodj.station.Station`.
             relays: The :class:`~autodj.relay.RelayManager`, if any.
+            mounts: The :class:`~autodj.stream_mounts.StreamMounts`, if any.
         """
         self.stream = stream
         self.station = station
         self.relays = relays
+        self.mounts = mounts
+
+    def listener_total(self) -> int:
+        """Listeners on every format of the stream together."""
+        if self.mounts is not None:
+            return int(self.mounts.listener_count)
+        return int(self.stream.listener_count) if self.stream is not None else 0
+
+    def stream_output(self, name: str) -> Any:
+        """The output serving format *name* (``"mp3"``, ``"aac"``...), or ``None`` when off."""
+        if self.mounts is not None:
+            return self.mounts.get(name)
+        return self.stream if name == "mp3" else None
+
+    def stream_formats(self) -> list[dict]:
+        """Each format the station can stream in: its bitrate (0 when off), address and listeners."""
+        from autodj.stream_formats import FORMATS
+
+        base = self.stream_path.removesuffix(".mp3")
+        result = []
+        for name, fmt in FORMATS.items():
+            output = self.stream_output(name)
+            result.append(
+                {
+                    "format": name,
+                    "label": fmt.label,
+                    "bitrate": (
+                        int(self.player._cfg.stream.bitrate)
+                        if name == "mp3"
+                        else int(output.bitrate)
+                        if output is not None
+                        else 0
+                    ),
+                    "path": f"{base}.{name}",
+                    "listeners": int(output.listener_count) if output is not None else 0,
+                }
+            )
+        return result
 
     def relay_status(self) -> list[dict]:
         """Return each relay's name, server type, target and state; no passwords."""
@@ -345,9 +389,11 @@ class PlayerBridge:
             "continuous": bool(self.player._cfg.stream.continuous),
             "station_name": self.player._cfg.stream.station_name,
             "show_next": self.player._cfg.nowplaying.show_next,
-            "listeners": int(self.stream.listener_count),
+            "listeners": self.listener_total(),
             "state": self.station.state,
             "relays": self.relay_status(),
+            "formats": self.stream_formats(),
+            "stats_days": int(self.player._cfg.stream.stats_days),
         }
 
     def set_stream_bitrate(self, bitrate: int) -> None:
@@ -368,6 +414,23 @@ class PlayerBridge:
         self.stream.set_bitrate(bitrate)
         self.player._cfg.stream.bitrate = bitrate
 
+    def set_stream_format_bitrate(self, name: str, bitrate: int) -> None:
+        """Turn the AAC or Opus stream on at *bitrate*, or off with 0, and remember it.
+
+        Args:
+            name: ``"aac"`` or ``"opus"``.
+            bitrate: One of the format's bitrates, or 0.
+
+        Raises:
+            ValueError: Not an extra format or one of its bitrates.
+            EncoderUnavailableError: Its encoder could not be started;
+                nothing changed.
+        """
+        if self.mounts is None:
+            raise ValueError("this stream has no extra formats")
+        self.mounts.set_bitrate(name, bitrate)
+        setattr(self.player._cfg.stream, f"{name}_bitrate", bitrate)
+
     def on_track_started(self, entry: Any) -> None:
         """Record a track the mix bus started; retitle the stream.
 
@@ -386,6 +449,8 @@ class PlayerBridge:
         if self.stream is not None:
             artist, title = getattr(entry, "artist", "") or "", getattr(entry, "title", "") or ""
             self.stream.set_title(artist, title)
+            if self.mounts is not None:
+                self.mounts.set_title(artist, title)
             if self.relays is not None:
                 self.relays.set_title(artist, title)
         worker = self._liner_worker
@@ -1183,7 +1248,7 @@ class PlayerBridge:
             "stream_server_audio": self.stream_mode
             and bool(getattr(self.player, "_server_audio_too", False)),
             "stream_state": self.station.state if self.stream_mode else None,
-            "stream_listeners": int(self.stream.listener_count) if self.stream_mode else 0,
+            "stream_listeners": self.listener_total() if self.stream_mode else 0,
             "stream_relays": self.relay_status(),
             "stream_event": self._current_station_event(),
             "playout": {
@@ -1850,6 +1915,9 @@ class PlayerBridge:
                 "nowplaying_show_next": cfg.nowplaying.show_next,
                 "dmca_enabled": cfg.dmca.enabled,
                 "stream_max_listeners_per_address": cfg.stream.max_listeners_per_address,
+                "stream_aac_bitrate": int(cfg.stream.aac_bitrate),
+                "stream_opus_bitrate": int(cfg.stream.opus_bitrate),
+                "stream_stats_days": int(cfg.stream.stats_days),
                 "volume": float(p._state.volume),
                 "is_muted": bool(p._state.is_muted),
             },

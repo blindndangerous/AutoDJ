@@ -490,7 +490,8 @@ def _is_public_path(path: str, slugs: AbstractSet[str] = frozenset()) -> bool:
     """Return whether a request path is accessible without authentication.
 
     Listening (``/stream.mp3`` and ``/stream.m3u``, and
-    ``/stations/<slug>.mp3`` and ``.m3u`` for a configured station) does
+    ``/stations/<slug>.mp3`` and ``.m3u`` for a configured station, and the
+    same with ``.aac`` and ``.opus``, the other stream formats) does
     not require pairing; control APIs require a session.  A configured
     station's public now-playing feed is public under its station path too,
     and so are its pages, ``/stations/<slug>/status``, ``/player``,
@@ -501,7 +502,7 @@ def _is_public_path(path: str, slugs: AbstractSet[str] = frozenset()) -> bool:
         return relative in _PUBLIC_STATION_ROUTES
     return (
         path in _PUBLIC_FILES
-        or path in {"/stream.mp3", "/stream.m3u"}
+        or path in _STREAM_FILES
         or _is_station_stream(path, slugs)
         or _is_station_page(path, slugs)
         or _safe_public_prefix(path, "/modules/")
@@ -519,13 +520,19 @@ def _is_station_page(path: str, slugs: AbstractSet[str]) -> bool:
     return name != path and bool(slash) and rest in _STATION_PAGES and slug in slugs
 
 
+#: A stream address's extensions: each format's (#50) and the playlist's.
+_STREAM_EXTENSIONS = frozenset({"mp3", "aac", "opus", "m3u"})
+#: The default station's stream addresses.
+_STREAM_FILES = frozenset(f"/stream.{ext}" for ext in _STREAM_EXTENSIONS)
+
+
 def _is_station_stream(path: str, slugs: AbstractSet[str]) -> bool:
-    """Whether *path* is ``/stations/<slug>.mp3`` or ``.m3u`` for a configured *slug*."""
+    """Whether *path* is ``/stations/<slug>.mp3`` (or another stream extension) for *slug*."""
     name = path.removeprefix("/stations/")
     if name == path:
         return False
     slug, dot, ext = name.rpartition(".")
-    return bool(dot) and ext in {"mp3", "m3u"} and slug in slugs
+    return bool(dot) and ext in _STREAM_EXTENSIONS and slug in slugs
 
 
 def _route_template(scope: Scope) -> str:
