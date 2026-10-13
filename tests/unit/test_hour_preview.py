@@ -964,13 +964,32 @@ class _Plays:
         return []
 
 
-def _parity_station(tmp_path: Path):
+def _parity_station(tmp_path: Path, timed: bool = False):
+    """The parity station; *timed* turns on the daypart and quarter-hour rules (#129)."""
+    playback: dict[str, Any] = {"pick_mode": "clock"}
+    if timed:
+        playback["repeat_rules"] = {"daypart": {"days": 2}, "hourpart": {"plays": 2}}
     source, power, gold = _station(
-        tmp_path, dmca=True, related={"Power 1": ["Power 2"], "Gold 3": ["Gold 4"]}
+        tmp_path,
+        dmca=True,
+        related={"Power 1": ["Power 2"], "Gold 3": ["Gold 4"]},
+        playback=playback,
     )
     source.player._ledger = source.ledger = _Plays()
     # As the station's library tick does every two seconds.
     apply_repeat_windows(source.player)
+    if timed:
+        # The two days before played these songs around this time of day.
+        played = [*power, *gold[:30]]
+        source.player._state.restore_history(
+            [
+                PlayRecord.of(entry, NOW - days * 86400 + number * 200)
+                for days in (2, 1)
+                for number, entry in enumerate(played)
+            ]
+        )
+        held = source.player._pick_context(at=NOW).repeat
+        assert held.daypart and held.hourpart
     return source, power, gold
 
 
@@ -1011,8 +1030,9 @@ def _live_picks(player: Any, current: Any, handoff: float, end: float, seed: int
     return picks
 
 
-def test_the_preview_picks_what_the_live_station_would(tmp_path: Path) -> None:
-    source, _power, gold = _parity_station(tmp_path)
+@pytest.mark.parametrize("timed", [False, True], ids=["repeat rules", "with time of day rules"])
+def test_the_preview_picks_what_the_live_station_would(tmp_path: Path, timed: bool) -> None:
+    source, _power, gold = _parity_station(tmp_path, timed)
     player = source.player
     _playing(source, gold[0], NOW - 50)
     player._state.next_track = gold[1]
@@ -1033,8 +1053,9 @@ def test_the_preview_picks_what_the_live_station_would(tmp_path: Path) -> None:
     assert [item.entry.path for item in predicted] == live
 
 
-def test_the_rotation_tester_picks_what_the_live_station_would(tmp_path: Path) -> None:
-    source, _power, _gold = _parity_station(tmp_path)
+@pytest.mark.parametrize("timed", [False, True], ids=["repeat rules", "with time of day rules"])
+def test_the_rotation_tester_picks_what_the_live_station_would(tmp_path: Path, timed: bool) -> None:
+    source, _power, _gold = _parity_station(tmp_path, timed)
     tested: list[str] = []
     simulate(
         source,

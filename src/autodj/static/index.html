@@ -517,7 +517,7 @@
          any other result is said once in #intros-status. -->
     <section id="intros-editor" aria-labelledby="intros-heading" hidden>
       <h3 id="intros-heading">Matched intros</h3>
-      <p class="setting-desc" id="intros-help">Short voice clips that play as this song starts, such as “Here’s the new one from this artist”. When the song’s intro, from Start to Intro, is long enough, the voice talks it up and ends as the singing starts; otherwise it plays just before the song. An intro for this song comes first; an intro for the artist plays on any of the artist’s songs. A matched intro takes the place of the automatic liner at that song change.</p>
+      <p class="setting-desc" id="intros-help">Short voice clips that play as this song starts, such as “Here’s the new one from this artist”. When the song’s intro, from Start to Intro, is long enough, the voice talks it up and ends as the singing starts; otherwise it plays just before the song. An intro for this song comes first; an intro for the artist plays on any of the artist’s songs. By default, a matched intro can take the place of the automatic liner at that song change. Voice liners has an option to use matched intros only when no liner is scheduled.</p>
       <p class="setting-desc" id="intros-inactive" hidden></p>
       <!-- Intros the station's file holds that are not valid: skipped, kept
            in the file, and said here in words (never live). -->
@@ -1066,7 +1066,7 @@
          when focus enters Repeats, not repeated on all twelve boxes. -->
     <fieldset aria-describedby="repeat-rules-desc">
       <legend>Repeats</legend>
-      <p class="setting-desc" id="repeat-rules-desc">Each rule has a Tracks limit and a Minutes limit; when both are set, a repeat waits for both. 0 turns a limit off. Tracks are whole numbers, up to 100000 for the same track and up to 5000 for the others. Minutes go up to 10080 (one week) and can have decimals.</p>
+      <p class="setting-desc" id="repeat-rules-desc">The artist, album, track, title and related rules each have a Tracks limit and a Minutes limit; when both are set, a repeat waits for both. 0 turns a limit off. Tracks are whole numbers, up to 100000 for the same track and up to 5000 for the others. Minutes go up to 10080 (one week) and can have decimals. The daypart and quarter-hour rules, last, keep a song from playing at the same time every day. When no song passes the rules, they give way for that pick rather than stop the music.</p>
       <fieldset>
         <legend>Prevent the same artist from repeating within</legend>
         <div class="settings-row">
@@ -1154,6 +1154,30 @@
           <input type="number" id="repeat-related-track-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
         </div>
       </fieldset>
+      <fieldset aria-describedby="repeat-daypart-desc">
+        <legend>Prevent a song from playing in the same daypart</legend>
+        <p class="setting-desc" id="repeat-daypart-desc">Holds back a song that played in the daypart the next song starts in, earlier today or on any of the days before. 0 days turns this off; up to 7.</p>
+        <div class="settings-row">
+          <label for="repeat-daypart-days">Days</label>
+          <input type="number" id="repeat-daypart-days" min="0" max="7" step="1" value="0" inputmode="numeric">
+        </div>
+        <div class="settings-row">
+          <label for="repeat-daypart-hours">Daypart start hours</label>
+          <input type="text" id="repeat-daypart-hours" value="0, 6, 10, 15, 19" inputmode="numeric" autocomplete="off" spellcheck="false" aria-describedby="repeat-daypart-hours-desc">
+        </div>
+        <p class="setting-desc" id="repeat-daypart-hours-desc">Hours from 0 to 23 on the station's clock, separated by commas. Each daypart lasts until the next start, and the last one runs past midnight to the first. 0, 6, 10, 15, 19 is overnight, morning drive, midday, afternoon drive and evening. List all 24 hours to keep a song out of the hour it played in the day before.</p>
+      </fieldset>
+      <fieldset aria-describedby="repeat-hourpart-desc">
+        <legend>Prevent a song from playing in the same quarter of the hour</legend>
+        <p class="setting-desc" id="repeat-hourpart-desc">Holds back a song when one of its last plays in the past week started in the same quarter of the hour as the next song: :00 to :14, :15 to :29, :30 to :44 or :45 to :59. 0 plays turns this off; at 3, a song moves round all four quarters.</p>
+        <div class="settings-row">
+          <label for="repeat-hourpart-plays">Plays</label>
+          <input type="number" id="repeat-hourpart-plays" min="0" max="3" step="1" value="0" inputmode="numeric">
+        </div>
+      </fieldset>
+      <!-- A refused value's message; the script moves it under the field it
+           names and links it there with aria-describedby. -->
+      <p class="field-error" id="repeat-error" hidden></p>
       <button type="button" id="repeat-save">Save repeat settings</button>
     </fieldset>
 
@@ -1449,6 +1473,13 @@
     </div>
     <span class="setting-desc" id="ln-enabled-desc">
         Enable automatic liners at the intervals below. Queued liners and clockwheel liner slots still play when this is off.
+    </span>
+    <div class="settings-check">
+      <input type="checkbox" id="ln-matched-intro-only-without-liner" aria-describedby="ln-matched-intro-only-without-liner-desc">
+      <label for="ln-matched-intro-only-without-liner">Only when no liner is scheduled</label>
+    </div>
+    <span class="setting-desc" id="ln-matched-intro-only-without-liner-desc">
+      Matched song intros play only when no queued, clockwheel or automatic liner is scheduled for that song change. Off, a matched intro can take the place of an automatic liner.
     </span>
 
     <fieldset data-show-when="ln-enabled">
@@ -3011,14 +3042,17 @@
   Placeholder text renders before /api/version resolves so a SR user
   landing here mid-fetch hears something coherent and there is no
   layout shift on populate.
+
+  When the server knows its commit, app.js wraps #ver-build in a link to
+  that commit on GitHub, so the link's name starts with its visible text,
+  "build 1a2b3c4" (2.5.3), and a hidden suffix says where it goes.
 -->
 <footer id="page-footer">
   <p id="version-stamp">
     AutoDJ
     <span id="ver-version">loading…</span>
     <span class="ver-sep" aria-hidden="true">·</span>
-    build
-    <span id="ver-commit">…</span>
+    <span id="ver-build">build <span id="ver-commit">…</span></span>
     <span class="ver-sep" aria-hidden="true">·</span>
     <time id="ver-built" datetime="">…</time>
   </p>

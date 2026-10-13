@@ -1810,7 +1810,7 @@ describe("static accessibility contracts", () => {
 
     for (const selector of [
       "#now-playing-meta", "#cue-summary", "#cue-details", "#queue-list",
-      "#library-log", "#version-stamp",
+      "#library-log", "#version-stamp", "#ver-build",
       // The sighted status mirror and the silent job clock must never
       // become a second announcement path for the same message.
       "#status-toast", "#playback-stale-note", "#cue-legend", "#camelot-legend",
@@ -1820,7 +1820,7 @@ describe("static accessibility contracts", () => {
       expect(node.hasAttribute("aria-live"), selector).toBe(false);
     }
     for (const selector of [
-      "#now-playing-meta", "#cue-summary", "#cue-details", "#version-stamp",
+      "#now-playing-meta", "#cue-summary", "#cue-details", "#version-stamp", "#ver-build",
       "#status-toast", "#playback-stale-note", "#lib-job-elapsed",
       "#cue-legend", "#camelot-legend",
     ]) {
@@ -2358,6 +2358,50 @@ describe("static accessibility contracts", () => {
     expect(rules.length).toBeGreaterThan(0);
     for (const rule of rules) expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgb|hsl/i);
     expect(rules.join("\n")).toContain("accent-color: var(--accent)");
+  });
+
+  it("gives the daypart and quarter-hour repeat rules labelled native fields and silent help", () => {
+    installDocument({ html: htmlSource });
+    const repeats = document.querySelector("#repeat-save").closest("fieldset");
+    expect(repeats.closest("#spanel-picking")).not.toBeNull();
+    for (const [id, label, type, legend] of [
+      ["repeat-daypart-days", "Days", "number", "Prevent a song from playing in the same daypart"],
+      ["repeat-daypart-hours", "Daypart start hours", "text",
+        "Prevent a song from playing in the same daypart"],
+      ["repeat-hourpart-plays", "Plays", "number",
+        "Prevent a song from playing in the same quarter of the hour"],
+    ]) {
+      const input = document.getElementById(id);
+      expect(input.getAttribute("type")).toBe(type);
+      expect(input.getAttribute("inputmode")).toBe("numeric");
+      expect(input.hasAttribute("required")).toBe(false);
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+      const group = input.closest("fieldset");
+      expect(group.parentElement.closest("fieldset")).toBe(repeats);
+      expect(group.querySelector(":scope > legend").textContent.trim()).toBe(legend);
+      // The group's help is read once, on entering it, and never announced.
+      const help = document.getElementById(group.getAttribute("aria-describedby"));
+      expect(help.closest("fieldset")).toBe(group);
+      expect(help.textContent).toMatch(/turns this off/);
+      expect(help.hasAttribute("aria-live")).toBe(false);
+    }
+    const format = document.getElementById(
+      document.getElementById("repeat-daypart-hours").getAttribute("aria-describedby"));
+    expect(format.textContent).toContain("separated by commas");
+    // A refused value is said in words on the page, not only in the status
+    // message; the script links it to the field (repeat-settings.test.js).
+    const error = document.getElementById("repeat-error");
+    expect(error.classList.contains("field-error")).toBe(true);
+    expect(error.hidden).toBe(true);
+    expect(error.closest("fieldset")).toBe(repeats);
+    expect(error.hasAttribute("aria-live")).toBe(false);
+    // Text and number fields share the 44 px native control height (2.5.8) and
+    // the invalid edge, which is not colour alone: aria-invalid and the message say it.
+    const css = stripCssComments(cssSource);
+    const rule = css.match(/([^{}]*)\{[^{}]*min-height:\s*44px[^{}]*\}/g)
+      .find((block) => block.includes('input[type="text"]') && block.includes("padding"));
+    expect(rule).toContain('input[type="number"]');
+    expect(css).toContain('input[aria-invalid="true"]');
   });
 
   it("gives the hour preview a headed table, one polite status and token colours", () => {

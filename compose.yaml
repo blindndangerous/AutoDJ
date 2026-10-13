@@ -19,6 +19,9 @@ services:
     build:
       context: .
       dockerfile: Containerfile
+      args:
+        # The commit shown in the web page's footer; see docs/operations.md.
+        AUTODJ_COMMIT: ${AUTODJ_COMMIT:-}
     image: autodj:local
     container_name: autodj
     restart: unless-stopped

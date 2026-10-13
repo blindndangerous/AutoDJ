@@ -441,6 +441,137 @@ def test_the_station_mixes_a_matched_intro_instead_of_an_automatic_liner(
     assert list(store._heard) and store._heard[0][0] == intro_id
 
 
+def test_an_intro_skipped_before_its_event_is_released(tmp_path: Path) -> None:
+    player, (a, b, c, _d), _points, _desk = make_station(tmp_path)
+    store = _store(tmp_path)
+    player.matched_intros = store
+    store.release = MagicMock(side_effect=AssertionError("callback must not take the store lock"))
+    intro_id = _add(store, track_id=f"song-{Path(b.path).stem}", cooldown_minutes=60)
+    chosen = player._matched_intro(b, (), NOW)
+    assert chosen is not None
+    first = player._render_track(a, b, 0, intro=chosen)
+    player._start_playing(first)
+    player._start_playing(player._render_track(b, c, 0))
+
+    assert store.needs_upkeep()
+    assert store.choose(f"song-{Path(b.path).stem}", "", NOW + 1) is not None
+    store.upkeep()
+    assert intro_id in store._reserved
+
+
+def test_an_intro_heard_before_a_skip_keeps_its_cooldown(tmp_path: Path) -> None:
+    player, (a, b, c, _d), _points, _desk = make_station(tmp_path)
+    store = _store(tmp_path)
+    player.matched_intros = store
+    intro_id = _add(store, track_id=f"song-{Path(b.path).stem}", cooldown_minutes=60)
+    chosen = player._matched_intro(b, (), NOW)
+    assert chosen is not None
+    first = player._render_track(a, b, 0, intro=chosen)
+    player._start_playing(first)
+    player._on_position(first.intro_events[0][0] + 1)
+    player._start_playing(player._render_track(b, c, 0))
+
+    store.upkeep()
+    assert intro_id not in store._reserved
+    assert store.all()[intro_id].last_aired is not None
+    assert store.choose(f"song-{Path(b.path).stem}", "", store._aired[intro_id] + 1) is None
+
+
+def test_stopping_before_an_intro_event_releases_its_reservation(tmp_path: Path) -> None:
+    player, (a, b, _c, _d), _points, _desk = make_station(tmp_path)
+    store = _store(tmp_path)
+    player.matched_intros = store
+    intro_id = _add(store, track_id=f"song-{Path(b.path).stem}", cooldown_minutes=60)
+    chosen = player._matched_intro(b, (), NOW)
+    assert chosen is not None
+    player._start_playing(player._render_track(a, b, 0, intro=chosen))
+
+    player.end_set()
+    assert store.choose(f"song-{Path(b.path).stem}", "", NOW + 1) is not None
+    store.upkeep()
+    assert intro_id in store._reserved
+
+
+def test_matched_intro_only_without_liner_uses_scheduled_auto_liner_first(
+    tmp_path: Path,
+) -> None:
+    player, (a, b, c, _d), _points, _desk = make_station(tmp_path)
+    player._cfg.playback.matched_intro_only_without_liner = True
+    player._state.queue[:] = [b]
+    player._set_render_cursor(a, 0, "seed")
+    intro = _chosen(tmp_path, 1.5)
+    player._matched_intro = MagicMock(return_value=intro)
+    player._auto_liner = MagicMock(return_value=(((c, False),), "handoff"))
+    player._render_track = MagicMock(return_value=None)
+
+    assert player._next_rendered() is None
+
+    player._auto_liner.assert_called()
+    player._matched_intro.assert_not_called()
+    assert all(
+        call.kwargs["liners"] == ((c, False),) for call in player._render_track.call_args_list
+    )
+    assert all("intro" not in call.kwargs for call in player._render_track.call_args_list)
+
+
+def test_matched_intro_only_without_liner_keeps_queued_liner_precedence(
+    tmp_path: Path,
+) -> None:
+    player, (a, b, c, _d), _points, _desk = make_station(tmp_path)
+    player._cfg.playback.matched_intro_only_without_liner = True
+    player._state.queue[:] = [b]
+    player._set_render_cursor(a, 0, "seed")
+    player._choose_station_next = MagicMock(return_value=(b, "queue", ((c, True),), None, ""))
+    player._matched_intro = MagicMock(return_value=_chosen(tmp_path, 1.5))
+    player._auto_liner = MagicMock(return_value=((), ""))
+    player._render_track = MagicMock(return_value=None)
+
+    assert player._next_rendered() is None
+
+    player._matched_intro.assert_not_called()
+    player._auto_liner.assert_not_called()
+    assert player._render_track.call_args.kwargs["liners"] == ((c, True),)
+    assert "intro" not in player._render_track.call_args.kwargs
+
+
+@pytest.mark.parametrize("queued_liner", [False, True])
+def test_liner_only_setting_and_hour_preview_follow_the_rendered_handoff(
+    tmp_path: Path, queued_liner: bool
+) -> None:
+    from autodj.hour_preview import _mixed_in
+
+    player, (a, b, c, _d), _points, _desk = make_station(tmp_path)
+    player._cfg.playback.matched_intro_only_without_liner = True
+    store = _store(tmp_path)
+    player.matched_intros = store
+    intro_id = _add(store, track_id=f"song-{Path(b.path).stem}", seconds=3.0)
+    player._set_render_cursor(a, 0, "seed")
+    if queued_liner:
+        player._library.entries_snapshot = lambda kind="music": (
+            (c,) if kind == "liner" else (a, b, c, _d)
+        )
+        player._state.queue[:] = [c, b]
+    else:
+        player._state.queue[:] = [b]
+        player._auto_liner = MagicMock(return_value=((), ""))
+
+    render = player._next_rendered()
+    assert render is not None
+    items = _mixed_in(render, NOW, NOW, None, "ready", [])
+
+    if queued_liner:
+        assert render.liner_events
+        assert render.intro_events == ()
+        assert intro_id not in store._reserved
+        assert [item.kind for item in items] == ["liner"]
+    else:
+        assert not render.liner_events
+        assert render.intro_events
+        assert _intro_span(render)[1] == pytest.approx(13.0, abs=1e-3)
+        assert _incoming(render) == pytest.approx(13.0, abs=1e-3)
+        assert [item.kind for item in items] == ["intro"]
+
+
 def test_a_dj_break_in_the_change_wins_over_the_intro(tmp_path: Path) -> None:
     player, (_a, b, _c, _d), _points, desk = make_station(tmp_path)
     store = _store(tmp_path)

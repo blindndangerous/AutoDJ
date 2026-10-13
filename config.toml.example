@@ -224,7 +224,10 @@ crossfade_seconds = 3.0
 # Both can be set.
 # Older repeat keys are rejected. Remove them by hand and re-enter limits in
 # Settings > Picking > Repeats. Optional starting values use the same structure:
-# repeat_rules = { track = { tracks = 50, minutes = 0 }, artist = { tracks = 8, minutes = 0 }, related_artist = { tracks = 8, minutes = 0 }, album = { tracks = 0, minutes = 0 }, title = { tracks = 0, minutes = 0 }, related_track = { tracks = 20, minutes = 0 }, use_related_artists = false, use_related_tracks = false, versions_as_one_song = false }
+# repeat_rules = { track = { tracks = 50, minutes = 0 }, artist = { tracks = 8, minutes = 0 }, related_artist = { tracks = 8, minutes = 0 }, album = { tracks = 0, minutes = 0 }, title = { tracks = 0, minutes = 0 }, related_track = { tracks = 20, minutes = 0 }, use_related_artists = false, use_related_tracks = false, versions_as_one_song = false, daypart = { days = 0, start_hours = [0, 6, 10, 15, 19] }, hourpart = { plays = 0 } }
+# daypart.days (0 to 7) holds back a song that played in the same daypart today or on the days
+# before; start_hours are where the dayparts start, in station hours. hourpart.plays (0 to 3)
+# holds back a song from the quarter of the hour its last plays started in. 0 turns each off.
 # Track counts other than the track rule's are capped at 5000. The related-artist file is
 # fixed at index/<name>/related-artists.toml and the related-track file at
 # index/<name>/related-tracks.toml; each is read only when enabled.

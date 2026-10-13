@@ -193,6 +193,7 @@ class PlaybackSettingsBody(BaseModel):
     skip_style: str | None = None
     liners_enabled: bool | None = None
     liners_talk_up: bool | None = None
+    matched_intro_only_without_liner: bool | None = None
     # 0 turns a liner trigger off.
     liners_every_n_songs: Annotated[int, Field(ge=0)] | None = None
     liners_every_minutes: NonNegativeFloat | None = None

@@ -1986,6 +1986,16 @@
 #page-footer #ver-commit {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
+/* The commit link: --accent on --bg clears 4.5:1 in both themes, the
+   underline tells it from the text around it (1.4.1), and it stands
+   24 px tall (2.5.8).  The focus ring is the shared :focus-visible one. */
+#page-footer #ver-commit-link {
+  display: inline-block;
+  min-height: 24px;
+  line-height: 24px;
+  color: var(--accent);
+  text-decoration: underline;
+}
 
 /* Settings > Stream ------------------------------------------------- */
 
