@@ -21,16 +21,17 @@ import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, reques
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
 import { parsePointTime } from "./library-folders.js";
+import { describeStep, NUMERIC_OPERATORS, TEXT_OPERATORS } from "./clockwheel-step.js";
+export { describeStep } from "./clockwheel-step.js";
+import { fillStepHours, installStepHours, readStepHours } from "./step-hours.js";
 
 const NAME = /^[A-Za-z0-9 _-]{1,64}$/;
 const RESERVED = /^(con|prn|aux|nul|com\d|lpt\d)$/i;
 const JSON_HEADERS = { "Content-Type": "application/json" };
 const copy = (value) => JSON.parse(JSON.stringify(value));
 const FOLDER_TYPES = new Set(["music", "liner"]);
-const NUMERIC_OPERATORS = [["eq", "is"], ["lt", "less than"], ["lte", "at most"], ["gt", "greater than"], ["gte", "at least"], ["between", "between"]];
 // The wildcard and MM:SS help under the conditions, for each value field.
 const CONDITION_HELP = "clock-step-conditions-help";
-const TEXT_OPERATORS = [["is", "is"], ["contains", "contains"], ["matches", "matches"]];
 // Field wrappers shown for each step type; the rest are hidden.
 const FIELDS_FOR = {
   music: ["conditions", "selection", "enforce-rules"],
@@ -50,66 +51,6 @@ export function parseResyncMinutes(text) {
   const values = parts.map(Number);
   if (values.some((value) => value > 59)) throw new Error("Each restart minute must be from 0 to 59.");
   return [...new Set(values)].sort((a, b) => a - b);
-}
-
-function lastPart(path) {
-  const parts = String(path).split(/[\\/]/).filter(Boolean);
-  return parts[parts.length - 1] || String(path);
-}
-
-function selectionExtras(step) {
-  const extras = [];
-  if (step.selection === "random") extras.push("at random");
-  if (step.enforce_rules === false) extras.push("ignoring repeat rules");
-  return extras;
-}
-
-// A Beets field as words: original_year is the first-release year.
-function beetsFieldName(name) {
-  return name === "original_year" ? "first release year" : String(name ?? "").replaceAll("_", " ");
-}
-
-// "music from Rock, at random": what one step does, for its list item.
-export function describeStep(step, sources = [], categories = []) {
-  if (step.type === "category") {
-    const category = categories.find((item) => item.id === step.category);
-    const where = category ? `category ${category.name}` : "a category that no longer exists";
-    return [`music from ${where}`, ...selectionExtras(step)].join(", ");
-  }
-  if (FOLDER_TYPES.has(step.type)) {
-    if (!step.conditions) {
-      const source = sources.find((item) => item.id === step.source);
-      const where = step.folder || (source ? lastPart(source.path) : "a folder that is no longer registered");
-      const extras = [];
-      if (step.recursive) extras.push("with subfolders");
-      if (step.selection === "random") extras.push("at random");
-      if (step.enforce_rules === false) extras.push("ignoring repeat rules");
-      if (step.type === "liner" && step.require_following) extras.push("only if the following track fits before the next reset");
-      return [`${step.type} from ${where}`, ...extras].join(", ");
-    }
-    const conditions = step.conditions;
-    const where = conditions.map((condition) => {
-      if (condition.field === "folder") {
-        const source = sources.find((item) => item.id === condition.source);
-        const folder = condition.folder || (source ? lastPart(source.path) : "a folder that is no longer registered");
-        return `${folder}${condition.recursive ? " (with subfolders)" : ""}`;
-      }
-      const field = condition.field === "beets" ? `Beets ${beetsFieldName(condition.name)}`
-        : condition.field === "duration" ? "Duration (seconds)"
-          : condition.field === "bpm" ? "BPM"
-            : condition.field[0].toUpperCase() + condition.field.slice(1);
-      const operator = [...NUMERIC_OPERATORS, ...TEXT_OPERATORS].find(([value]) => value === condition.operator)?.[1] || condition.operator;
-      return `${field} ${operator} ${condition.value}${condition.operator === "between" ? ` and ${condition.upper}` : ""}`;
-    }).join(step.match === "any" ? " or " : " and ");
-    const extras = [];
-    if (step.selection === "random") extras.push("at random");
-    if (step.enforce_rules === false) extras.push("ignoring repeat rules");
-    if (step.type === "liner" && step.require_following) extras.push("only if the following track fits before the next reset");
-    return [`${step.type} from ${where}`, ...extras].join(", ");
-  }
-  if (step.type === "track") return `track ${step.path}`;
-  if (step.type === "settings") return `switch to preset ${step.preset}`;
-  return `${String(step.type).replaceAll("_", " ")} step`;
 }
 
 export function installClockwheelPanel({ document: doc = document, request = requestJson } = {}) {
@@ -147,6 +88,8 @@ export function installClockwheelPanel({ document: doc = document, request = req
   const clockUrl = (name) => `/api/library/clock/${encodeURIComponent(name)}`;
   const send = (url, method, body) => request(url, body === undefined ? { method } : { method, headers: JSON_HEADERS, body: JSON.stringify(body) });
   const count = (n) => `${n} ${n === 1 ? "step" : "steps"}`;
+  // A step with days and hours says them after what it plays.
+  installStepHours(doc);
   const describe = (step) => describeStep(step, data.sources, data.categories);
   const position = (index) => `Step ${index + 1} of ${clock.steps.length}, ${describe(clock.steps[index])}`;
 
@@ -696,6 +639,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     renderConditions([{}]);
     const requireFollowing = el("clock-step-require-following");
     if (requireFollowing) requireFollowing.checked = false;
+    fillStepHours(doc);
     if (legend) legend.textContent = "Add a step";
     addButton.textContent = "Add step";
     if (cancelEdit) cancelEdit.hidden = true;
@@ -722,6 +666,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     if (legend) legend.textContent = `Edit step ${index + 1}`;
     addButton.textContent = `Update step ${index + 1}`;
     if (cancelEdit) cancelEdit.hidden = false;
+    fillStepHours(doc, step);
     typeSelect.focus();
     say(`Editing ${position(index)}.`);
   }
@@ -804,7 +749,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   addButton.addEventListener("click", () => {
     if (!clock) { say("Open or create a clockwheel first.", true); return; }
     let step;
-    try { step = formStep(); } catch (error) { say(error.message, true); return; }
+    try { step = { ...formStep(), ...readStepHours(doc) }; } catch (error) { say(error.message, true); return; }
     if (editing !== null) {
       const index = editing;
       clock.steps[index] = step;

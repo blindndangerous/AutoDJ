@@ -45,7 +45,11 @@ def _build_why(player: Any, cur: Any) -> list[str]:
 
     prev = getattr(player, "_previous_track", None)
     mode = getattr(player, "_last_pick_mode", "similarity")
-    return explain_pick(prev, cur, mode=mode)
+    reasons = explain_pick(prev, cur, mode=mode)
+    step = getattr(player, "_last_clock_step", None)
+    if mode in {"clock", "seed"} and step and reasons:
+        reasons[0] = f"Clockwheel step {step['number']}."
+    return reasons
 
 
 def _library_job_snapshot() -> dict:
@@ -520,7 +524,8 @@ class PlayerBridge:
             nxt = state.next_track
         elif cur is not None:
             try:
-                nxt = p._pick_next(cur)
+                # *cur* has ended or was skipped: the pick plays now.
+                nxt = p._pick_next(cur, at=p._now())
             except Exception:  # pragma: no cover -- defensive log-only path
                 # Picker failed (empty index after prune, FAISS error, ...).
                 # Leave state untouched so the browser keeps playing the
@@ -532,6 +537,7 @@ class PlayerBridge:
             return
 
         state.current_track = nxt
+        p.note_browser_start(nxt)
         # Lazy-capture seed on first advance (seed never goes through advance_now as nxt).
         with self._history_lock:
             if not self._history_started and cur is not None:
@@ -585,7 +591,8 @@ class PlayerBridge:
                 seed_for_next = state.pre_queue_seed
             state.pre_queue_seed = None
         try:
-            state.next_track = p._pick_next(seed_for_next)
+            # The pick follows *nxt*, which has just started, whatever it is seeded from.
+            state.next_track = p._pick_next(seed_for_next, at=p._browser_handoff(nxt))
         except Exception:  # pragma: no cover -- defensive log-only path
             # Browser will see "no upcoming track" until the next advance
             # rebuilds it.  Warning so the default INFO floor surfaces
@@ -1066,6 +1073,9 @@ class PlayerBridge:
             "last_transition_fx": getattr(self.player, "_last_transition_fx", "none"),
             "next_transition_fx": self._next_transition_fx(current, upcoming),
             "why_this_track": _build_why(self.player, current),
+            "clock_step": getattr(self.player, "_last_clock_step", None)
+            if getattr(self.player, "_last_pick_mode", "") in {"clock", "seed"}
+            else None,
             "library_job": _library_job_snapshot(),
             # Browser-side audio drives playback only when the server is
             # headless (dry_run: no --server-audio, or missing audio deps) and

@@ -592,6 +592,7 @@ def _liner_filter(source: SimulationSource, snapshot: PlayerSnapshot, player: _S
         _ReadOnlyLinerDates(source.liner_dates),
         lambda: station_wall(player._cfg, player._sim_now).date(),
         liner_id,
+        lambda at: station_wall(player._cfg, at).date(),
     )
     return gate.playable
 
@@ -881,7 +882,8 @@ def _simulate(
         player._seed_clock_cursor = None
         player._seed_clock_name = None
         try:
-            context = player._pick_context()
+            # A first song starts as it is picked, as the live start pick does.
+            context = player._pick_context(at=now)
             entry = player._random_start_entry()
         except Exception:
             return None
@@ -942,7 +944,8 @@ def _simulate(
         player._sim_now = now
         apply_schedule(now)
         tally.pending_skips = []
-        context = player._pick_context()
+        # As the station does, dayparting reads the hours at the song's start.
+        context = player._pick_context(at=handoff)
         liners: tuple[tuple[Any, bool], ...] = ()
         try:
             if station_mode():

@@ -607,6 +607,66 @@ class TestLiners:
         body = tc.get("/api/liners").json()
         assert "hello.mp3" in body["files"]
 
+    def test_a_new_liner_upload_does_not_inherit_left_behind_dates(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        from autodj.clip_dates import ClipDates, LinerDates
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(tmp_path / "active")
+        tc = TestClient(create_app(bridge))
+        store = LinerDates(tc.app.state.stations.default.paths.liner_dates)
+        # promo.mp3 was deleted outside AutoDJ; its dates stayed behind.
+        store.set("promo.mp3", ClipDates(not_after="2000-01-01"))
+        store.set("id.wav", ClipDates(not_after="2000-01-01"))
+        files = {"file": ("promo.mp3", b"audio-bytes", "audio/mpeg")}
+        assert tc.post("/api/liners/upload", files=files).status_code == 200
+        assert set(store.all()) == {"id.wav"}
+        listed = {entry["id"]: entry for entry in tc.get("/api/liners").json()["items"]}
+        assert listed["promo.mp3"]["playable"] is True
+        # Replacing a liner on purpose keeps its dates.
+        (folder / "id.wav").write_bytes(b"\x00")
+        replaced = tc.post(
+            "/api/liners/upload?replace=true",
+            files={"file": ("id.wav", b"new-bytes", "audio/wav")},
+        )
+        assert replaced.status_code == 200, replaced.text
+        assert set(store.all()) == {"id.wav"}
+
+    def test_an_upload_waits_while_the_dates_file_cannot_be_read(
+        self, bridge, tmp_path, monkeypatch
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        from autodj.clip_dates import ClipDates, LinerDates
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        (folder / "id.wav").write_bytes(b"\x00")
+        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(tmp_path / "active")
+        tc = TestClient(create_app(bridge))
+        store = tc.app.state.stations.default.liner_gate.store
+        store.set("promo.mp3", ClipDates(not_after="2000-01-01"))
+        store.set("id.wav", ClipDates(not_after="2000-01-01"))
+
+        def unreadable(*_args: object) -> None:
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(LinerDates, "forget", unreadable)
+        monkeypatch.setattr(LinerDates, "set", unreadable)
+        files = {"file": ("promo.mp3", b"audio-bytes", "audio/mpeg")}
+        refused = tc.post("/api/liners/upload", files=files)
+        assert refused.status_code == 503
+        assert "could not be read just now" in refused.json()["detail"]
+        assert not (folder / "promo.mp3").exists()
+        deleted = tc.delete("/api/liners/file/id.wav")
+        assert deleted.status_code == 200
+        assert deleted.json()["deleted"] == "id.wav"
+        assert "could not be forgotten just now" in deleted.json()["message"]
+
     def test_liner_upload_enforces_configured_limit(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
@@ -3009,7 +3069,7 @@ class TestPostQueueSeed:
         # _pick_next called for prefetch refresh after pop -> seed = nxt
         # (the just-played queued track), not pre_queue_seed (which is
         # None in last_queued mode).
-        bridge.player._pick_next.assert_called_with(last_queued)
+        assert bridge.player._pick_next.call_args.args == (last_queued,)
 
     def test_pre_queue_mode_rewinds_to_pre_queue_track(self, bridge) -> None:
         bridge.player._dry_run = True
@@ -3022,7 +3082,7 @@ class TestPostQueueSeed:
         bridge.player._pick_next.return_value = _make_entry(99)
         bridge.advance_now()
         # Queue drained -> _pick_next seed should be pre_queue, not target.
-        bridge.player._pick_next.assert_called_with(pre_queue)
+        assert bridge.player._pick_next.call_args.args == (pre_queue,)
         assert bridge.player._state.pre_queue_seed is None
 
     def test_pre_queue_seed_cleared_when_queue_manually_emptied(self, bridge) -> None:

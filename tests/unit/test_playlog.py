@@ -5,8 +5,10 @@ from __future__ import annotations
 import csv
 import io
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -145,6 +147,89 @@ class TestPlaysBetween:
         )
         assert [p.title for p in plays] == ["Late"]
         assert plays[0].duration == 120
+
+    def test_range_returns_only_matches_with_following_play_outside_range(self, library):
+        catalog, paths = library
+        catalog.write_history(
+            [
+                _row("old", paths["song"], "Old", T0 - timedelta(days=100)),
+                _row("in", paths["song"], "In", T0),
+                _row("cut", paths["song"], "Interrupted", T0 + timedelta(seconds=10)),
+                _row("next", paths["other"], "Next", T0 + timedelta(seconds=30)),
+                _row("future", paths["song"], "Future", T0 + timedelta(days=100)),
+            ]
+        )
+        catalog.write_history([], interrupted=["cut"])
+        rows = catalog.play_log(start=T0, end=T0 + timedelta(seconds=20))
+        assert [row["title"] for row in rows] == ["In"]
+        assert datetime.fromisoformat(rows[0]["following_at"]) == T0 + timedelta(seconds=30)
+        read, _ = _tags()
+        assert (
+            plays_between(catalog, T0, T0 + timedelta(seconds=20), read_tags=read)[0].duration == 30
+        )
+        assert len(catalog.play_log()) == 4  # stored history was not trimmed
+
+    def test_range_preserves_offsets_precision_and_insertion_order(self, library):
+        catalog, paths = library
+        offset = timezone(timedelta(hours=-4))
+        catalog.write_history(
+            [
+                _row("offset", paths["song"], "Offset", T0.astimezone(offset)),
+                _row("earlier", paths["song"], "Earlier", T0 - timedelta(seconds=1)),
+                _row("micro", paths["song"], "Micro", T0 + timedelta(microseconds=1)),
+                _row("end", paths["song"], "End", T0 + timedelta(microseconds=2)),
+            ]
+        )
+        rows = catalog.play_log(start=T0, end=T0 + timedelta(microseconds=2))
+        assert [row["title"] for row in rows] == ["Offset", "Micro"]
+        # The following play is by insertion order, not a timestamp sort.
+        assert datetime.fromisoformat(rows[0]["following_at"]) == T0 - timedelta(seconds=1)
+
+    def test_range_accepts_legacy_naive_dates_and_keeps_stations_separate(self, library):
+        catalog, paths = library
+        local = datetime(2026, 9, 1, 12, 0)
+        catalog.write_history([_row("legacy", paths["song"], "Local", local)])
+        catalog.write_history(
+            [_row("other", paths["song"], "Other station", local)], station="other"
+        )
+        start = local.astimezone()
+        rows = catalog.play_log(start=start, end=start + timedelta(seconds=1))
+        assert [row["title"] for row in rows] == ["Local"]
+        assert rows[0]["following_at"] is None
+
+    def test_report_snapshot_does_not_block_play_history_writes(self, library, monkeypatch):
+        catalog, paths = library
+        catalog.write_history([_row("old", paths["song"], "Old", T0)])
+        entered, release = threading.Event(), threading.Event()
+        parse = catalog_module.history_start
+
+        def slow_parse(value):
+            entered.set()
+            assert release.wait(5)
+            return parse(value)
+
+        monkeypatch.setattr(catalog_module, "history_start", slow_parse)
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            report = workers.submit(catalog.play_log, start=T0, end=T0 + timedelta(hours=1))
+            try:
+                assert entered.wait(5)
+                write = workers.submit(
+                    catalog.write_history,
+                    [_row("new", paths["other"], "New", T0 + timedelta(seconds=30))],
+                )
+                write.result(timeout=5)
+            finally:
+                release.set()
+            rows = report.result(timeout=5)
+        assert [row["title"] for row in rows] == ["Old"]
+        assert rows[0]["following_at"] is None  # same snapshot, before the concurrent write
+
+    def test_range_requires_both_bounds(self, library):
+        catalog, _ = library
+        with pytest.raises(ValueError, match="Both"):
+            catalog.play_log(start=T0)
+        with pytest.raises(ValueError, match="after its start"):
+            catalog.play_log(start=T0, end=T0)
 
     def test_columns_come_from_history_catalog_and_tags(self, library) -> None:
         catalog, paths = library
