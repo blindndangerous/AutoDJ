@@ -404,6 +404,23 @@ def test_station_paths_keep_their_body_limits() -> None:
     assert client.post("/api/stations/nope/schedule", json={}).status_code == 404
 
 
+def test_show_routes_cap_post_and_put_bodies_at_both_addresses() -> None:
+    """Shows (#106): the caps hold for POST and PUT, with a show ID in the path."""
+    client, _bridge = _app()
+    show = "a" * 32
+    small = {"name": "x" * 20_000}
+    for prefix in ("/api", "/api/stations/default"):
+        assert client.post(f"{prefix}/shows", json=small).status_code == 413
+        assert client.put(f"{prefix}/shows/{show}", json=small).status_code == 413
+        assert client.post(f"{prefix}/shows/{show}/generate", json=small).status_code == 413
+        assert client.post(f"{prefix}/shows/{show}/start", json=small).status_code == 413
+        songs = {"songs": ["/music/" + "x" * 4000] * 300}
+        assert client.put(f"{prefix}/shows/{show}/songs", json=songs).status_code == 413
+    # A list well under the cap reaches the route (which finds no such show).
+    fits = client.put(f"/api/shows/{show}/songs", json={"songs": ["/music/a.flac"] * 500})
+    assert fits.status_code == 404
+
+
 def test_the_audit_log_names_the_station_route(caplog: pytest.LogCaptureFixture) -> None:
     import json
     import logging

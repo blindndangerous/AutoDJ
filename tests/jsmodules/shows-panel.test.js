@@ -284,3 +284,67 @@ describe("editing a list", () => {
     expect(document.activeElement).toBe(rowButton(0, "open"));
   });
 });
+
+describe("review fixes", () => {
+  it("marks list edits unavailable while the list is generated, and says why", async () => {
+    const server = await open();
+    await openList(server);
+    let finish;
+    const original = server.request;
+    server.request = vi.fn((url, options = {}) => (url.endsWith("/generate")
+      ? new Promise((resolve) => { finish = () => resolve(original(url, options)); })
+      : original(url, options)));
+    controls.destroy();
+    installIndex();
+    controls = installShowsPanel({ document, request: server.request });
+    await vi.waitFor(() => expect(items()).toHaveLength(1));
+    await openList(server);
+    byId("shows-generate").click();
+    await vi.waitFor(() => expect(songButton(1, "remove").getAttribute("aria-disabled")).toBe("true"));
+    expect(songButton(1, "up").getAttribute("aria-disabled")).toBe("true");
+    songButton(1, "remove").click();
+    await vi.waitFor(() => expect(status()).toBe("The list is being generated; change it when that is done."));
+    expect(songRows()).toHaveLength(3);
+    expect(server.calls.filter((call) => call.url.endsWith("/songs"))).toHaveLength(0);
+    finish();
+    await vi.waitFor(() => expect(songRows()).toHaveLength(2));
+    expect(songButton(0, "remove").hasAttribute("aria-disabled")).toBe(false);
+  });
+
+  it("says a failed refresh once, not on every retry", async () => {
+    const server = await open();
+    const original = server.request;
+    server.request.mockImplementation(async (url, options) => {
+      if (url === "/api/shows") throw new Error("The AutoDJ server is not reachable.");
+      return original(url, options);
+    });
+    byId("shows-status").textContent = "";
+    await controls.refresh();
+    await vi.waitFor(() => expect(status()).toBe("Could not load shows: The AutoDJ server is not reachable."));
+    byId("shows-status").textContent = "";
+    await controls.refresh();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(status()).toBe("");
+  });
+
+  it("says an error that names no field without marking one", async () => {
+    const server = await open();
+    server.refuse = new FieldError("The shows file could not be saved", null);
+    rowButton(0, "edit").click();
+    byId("shows-form").dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(status()).toBe("The shows file could not be saved"));
+    expect(byId("shows-name").hasAttribute("aria-invalid")).toBe(false);
+    expect(byId("shows-form-error").hidden).toBe(true);
+  });
+
+  it("warns about a song listed twice and focuses the previous song after removing the last", async () => {
+    const server = await open();
+    server.songs[ID] = [song(1), song(2), song(1)];
+    await openList(server);
+    expect(songRows()[0].querySelector(".show-song").textContent).toContain("warning: also number 3 in the list");
+    expect(byId("shows-summary").textContent).toContain("Warning: 1 song is in the list more than once");
+    songButton(2, "remove").click();
+    expect(document.activeElement).toBe(songButton(1, "remove"));
+    expect(byId("shows-summary").textContent).not.toContain("Warning");
+  });
+});

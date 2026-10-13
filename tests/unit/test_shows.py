@@ -255,7 +255,8 @@ def _runner(source: Any, tmp_path: Path, songs: list[str], **spec: Any):
     show_id, _show = store.add(_spec(**spec))
     store.update(show_id, lambda show: with_songs(show, songs))
     published = _Published()
-    return ShowRunner(bridge, store, published), bridge, store, show_id, published
+    runner = ShowRunner(bridge, store, published, state_path=tmp_path / "show_on_air.json")
+    return runner, bridge, store, show_id, published
 
 
 def _queue(source: Any) -> list[str]:
@@ -456,6 +457,18 @@ def test_preview_shows_reads_the_scheduled_shows(tmp_path: Path) -> None:
     assert json.loads(found.signature())[1][0][2] == [hits[0].path]
 
 
+def _settle(runner: ShowRunner) -> None:
+    """A song change as the station reports it, and the runner's work after it."""
+
+    async def run() -> None:
+        runner.track_changed()
+        await asyncio.sleep(0)
+        for task in list(runner._tasks):
+            await task
+
+    asyncio.run(run())
+
+
 def test_a_hard_start_plays_the_first_song_at_once(tmp_path: Path) -> None:
     source, hits, gold = _station(tmp_path)
     state = source.player._state
@@ -465,10 +478,128 @@ def test_a_hard_start_plays_the_first_song_at_once(tmp_path: Path) -> None:
     # The stand-in ledger keeps no history rows.
     source.ledger.remember_history = lambda _row: None
     asyncio.run(runner.start(show_id, now=True))
-    # Browser playback: Play now advanced to the show's first song at once.
-    assert state.current_track is hits[0]
-    # The browser's next song comes from the queue at once; the show follows on.
-    assert [state.next_track.path, *_queue(source)] == [entry.path for entry in hits[1 : 1 + AHEAD]]
+    # Browser playback: the skip took the show's first song from the queue,
+    # and the browser's next song came from it too.
+    assert state.current_track.path == hits[0].path
+    assert state.next_track.path == hits[1].path
+    _settle(runner)
+    assert _queue(source) == [entry.path for entry in hits[2:4]]
     status = runner.status()
-    assert (status["played"], status["waiting"], status["to_come"]) == (1, AHEAD, 1)
+    assert (status["played"], status["to_come"]) == (2, 0)
     assert [item["reason"] for item in status["skipped"]] == ["it is not in the library"]
+
+
+def test_a_hard_start_in_browser_playback_keeps_the_operators_play_next(tmp_path: Path) -> None:
+    source, hits, gold = _station(tmp_path)
+    state = source.player._state
+    _playing(source, gold[0], time.time() - 30)
+    state.queued_next = gold[7]
+    runner, *_rest, show_id, _published = _runner(
+        source, tmp_path, [entry.path for entry in hits[:3]]
+    )
+    source.ledger.remember_history = lambda _row: None
+    asyncio.run(runner.start(show_id, now=True))
+    # The operator's Play next song is not dropped: it plays, then the show.
+    assert state.current_track is gold[7]
+    assert [state.next_track.path, *_queue(source)][:2] == [hits[0].path, hits[1].path]
+
+
+def test_stopping_leaves_a_listeners_request_for_the_same_song(tmp_path: Path) -> None:
+    source, hits, gold = _station(tmp_path)
+    state = source.player._state
+    _playing(source, gold[0], time.time() - 30)
+    runner, *_rest, show_id, _published = _runner(
+        source, tmp_path, [entry.path for entry in hits[:4]]
+    )
+    asyncio.run(runner.start(show_id))
+    # A listener asks for the show's second song: the library's own entry.
+    state.queue.append(hits[1])
+    assert _queue(source) == [hits[0].path, hits[1].path, hits[1].path]
+    assert runner.is_show_entry(state.queue[1]) and not runner.is_show_entry(state.queue[2])
+    asyncio.run(runner.stop())
+    assert list(state.queue) == [hits[1]]
+    assert state.queue[0] is hits[1]
+
+
+def test_the_show_on_the_air_resumes_after_a_restart(tmp_path: Path) -> None:
+    source, hits, gold = _station(tmp_path)
+    state = source.player._state
+    _playing(source, gold[0], time.time() - 30)
+    songs = [entry.path for entry in hits[:5]]
+    runner, bridge, store, show_id, published = _runner(source, tmp_path, songs)
+    asyncio.run(runner.start(show_id))
+    # The first song plays; the next is fed.
+    state.queue.pop(0)
+    _playing(source, hits[0], time.time())
+    _settle(runner)
+    saved = json.loads((tmp_path / "show_on_air.json").read_text(encoding="utf-8"))
+    assert (saved["show_id"], saved["next_index"], saved["played"]) == (show_id, 1, 1)
+    # A restart: the queue is gone, a new runner reads the saved place.
+    state.queue.clear()
+    again = ShowRunner(bridge, store, published, state_path=tmp_path / "show_on_air.json")
+    assert again.status() is None
+    _settle(again)
+    assert again.status()["played"] == 1
+    assert _queue(source) == songs[1 : 1 + AHEAD]
+
+
+def test_a_show_whose_time_has_passed_is_not_resumed(tmp_path: Path) -> None:
+    source, hits, gold = _station(tmp_path)
+    _playing(source, gold[0], time.time() - 30)
+    runner, bridge, store, show_id, published = _runner(
+        source, tmp_path, [entry.path for entry in hits[:3]]
+    )
+    asyncio.run(runner.start(show_id))
+    source.player._state.queue.clear()
+    later = time.time() + 3 * 3600
+    again = ShowRunner(
+        bridge, store, published, state_path=tmp_path / "show_on_air.json", clock=lambda: later
+    )
+    _settle(again)
+    assert again.status() is None
+    assert _queue(source) == []
+    assert not (tmp_path / "show_on_air.json").exists()
+
+
+def test_a_damaged_file_that_cannot_be_set_aside_is_never_written_over(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "shows.json"
+    path.write_text("not json", encoding="utf-8")
+    store = ShowStore(path)
+
+    def refuse(_self: Path, _target: Path) -> None:
+        raise PermissionError("in use")
+
+    monkeypatch.setattr(Path, "replace", refuse)
+    assert store.all() == {}
+    with pytest.raises(OSError, match="could not be set aside"):
+        store.add(_spec())
+    assert path.read_text(encoding="utf-8") == "not json"
+
+
+def test_the_preview_shows_a_scheduled_show_song_dmca_would_skip(tmp_path: Path) -> None:
+    event = ScheduledEvent(
+        id="a" * 32,
+        name="Saturday throwback",
+        action="show",
+        params={"show": "c" * 32},
+        repeat="daily",
+        time=clock_time(12, 30),
+    )
+    source, _hits, gold = _station(tmp_path, events=[event], dmca=True)
+    _playing(source, gold[0], NOW - 50)
+    # Five songs by one artist: past three in a row they break the artist limit.
+    same = [song(700 + n, "One Artist", album=f"Album {n}", length=180.0) for n in range(5)]
+    source.library._music = (*source.library._music, *same)
+    source.library._by_path.update({entry.path: entry for entry in same})
+    shows = PreviewShows(scheduled={"c" * 32: ("Remembering the 2000s", tuple(same))})
+    from dataclasses import replace
+
+    view = build_preview(replace(source, shows=shows), 90, now=NOW)
+    rows = [item for item in view["items"] if item["status"] in {"show", "skipped"}]
+    assert [item["status"] for item in rows] == ["show"] * 3 + ["skipped"] * 2
+    assert rows[-1]["status_text"] == (
+        "Skipped from show Remembering the 2000s: it would break a DMCA limit"
+    )
+    assert rows[-1]["seconds"] == 0

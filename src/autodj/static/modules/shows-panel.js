@@ -11,10 +11,14 @@
 // says nothing.  Focus: Add and Edit move it to Name; Save to the saved
 // show's Open list button; Cancel back to the button that opened the form;
 // Open list to the list's heading; Move up and Move down keep it on the
-// same button of the moved song; Remove moves it to the next song (or the
-// search box); Close list to the show's Open list button; Delete to the
-// next show (or Add show).  A refused field gets aria-invalid, the error
-// text as part of its description, and focus.
+// same button of the moved song; Remove moves it to the next song's
+// Remove, or the previous song's when it was the last (the search box when
+// none is left); Close list to the show's Open list button; Delete to the
+// next show (or Add show).  A field the server names gets aria-invalid, the
+// error text as part of its description, and focus; an error that names no
+// field is only said.  While the list is being generated, Move up, Move
+// down, Remove and Add stay in the tab order but are marked unavailable and
+// say why.  A refresh that fails is said once, until one succeeds again.
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
@@ -63,7 +67,17 @@ export function summaryText(show) {
   if (!show.count) return `No songs yet. Target ${plural(show.target_minutes, "minute", "minutes")}.`;
   let text = `${plural(show.count, "song", "songs")}, ${show.total_words}; target ${plural(show.target_minutes, "minute", "minutes")}.`;
   if (show.missing) text += ` ${plural(show.missing, "song is", "songs are")} no longer in the library and will be skipped.`;
+  if (show.repeated) text += ` Warning: ${plural(show.repeated, "song is", "songs are")} in the list more than once, and each copy plays.`;
   return text;
+}
+
+// Each path's places in the list (1-based), for the songs listed more than once.
+function repeatedPlaces(songs) {
+  const places = new Map();
+  songs.forEach((song, index) => {
+    places.set(song.path, [...(places.get(song.path) || []), index + 1]);
+  });
+  return new Map([...places].filter(([, numbers]) => numbers.length > 1));
 }
 
 export function installShowsPanel({ document: doc = document, request = requestJson } = {}) {
@@ -100,6 +114,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   let songsSignature = "";
   let saving = Promise.resolve();
   let generating = false;
+  let loadFailed = false;
   let timer = null;
   let generation = 0;
   let suspended = false;
@@ -324,7 +339,9 @@ export function installShowsPanel({ document: doc = document, request = requestJ
       rowFor(show.id)?.focus();
       say(added ? `Saved ${show.name}. Press Open list, then Generate list, to pick its songs.` : `Saved ${show.name}.`);
     } catch (error) {
-      if (current(epoch, mine)) showError(error.field || "name", error.message);
+      if (!current(epoch, mine)) return;
+      if (FIELD_IDS[error.field]) showError(error.field, error.message);
+      else say(error.message, true);
     }
   }
 
@@ -373,21 +390,31 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     } else {
       text.append(`${song.title}, `, lengthSpan(song.length_text, song.length_words));
     }
+    const others = (repeated.get(song.path) || []).filter((place) => place !== index + 1);
+    if (others.length) {
+      text.append(`; warning: also number ${others.join(" and ")} in the list`);
+    }
     const which = song.title;
     const up = namedButton("up", "Move up", which, { index: String(index) });
     const down = namedButton("down", "Move down", which, { index: String(index) });
-    // At the ends the button stays in the tab order and says why it does nothing.
-    if (index === 0) up.setAttribute("aria-disabled", "true");
-    if (index === songs.length - 1) down.setAttribute("aria-disabled", "true");
-    row.append(text, up, down, namedButton("remove", "Remove", which, { index: String(index) }));
+    const removeButton = namedButton("remove", "Remove", which, { index: String(index) });
+    // At the ends, and while the list is generated, the buttons stay in the
+    // tab order and say why they do nothing.
+    if (index === 0 || generating) up.setAttribute("aria-disabled", "true");
+    if (index === songs.length - 1 || generating) down.setAttribute("aria-disabled", "true");
+    if (generating) removeButton.setAttribute("aria-disabled", "true");
+    row.append(text, up, down, removeButton);
     item.append(row);
     return item;
   }
 
+  let repeated = new Map();
+
   function renderSongs(focus = null) {
-    const signature = JSON.stringify(songs);
+    const signature = JSON.stringify([songs, generating]);
     if (signature === songsSignature && !focus) return;
     songsSignature = signature;
+    repeated = repeatedPlaces(songs);
     if (!songs.length) {
       const none = doc.createElement("li");
       none.className = "no-results";
@@ -402,11 +429,35 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     }
   }
 
+  // Draws the list again, keeping focus on the same button when it was in it.
+  function redrawSongs() {
+    const focused = doc.activeElement;
+    const place = songsList.contains(focused) && focused.dataset?.action
+      ? { action: focused.dataset.action, index: focused.dataset.index } : null;
+    songsSignature = "";
+    renderSongs(place);
+    for (const add of results.querySelectorAll("button[data-action='add']")) {
+      if (generating) add.setAttribute("aria-disabled", "true");
+      else add.removeAttribute("aria-disabled");
+    }
+  }
+
+  // While the list is generated, an edit would be overwritten: it is refused, in words.
+  function refusedWhileGenerating() {
+    if (!generating) return false;
+    say("The list is being generated; change it when that is done.");
+    return true;
+  }
+
   function renderSummary() {
     if (!open) return;
     const summary = el("shows-summary");
     const total = songs.reduce((sum, song) => sum + (song.missing ? 0 : Number(song.seconds) || 0), 0);
-    const view = { ...open, count: songs.length, missing: songs.filter((song) => song.missing).length, total_words: wordsFor(total) };
+    const repeatedCount = [...repeatedPlaces(songs).values()].reduce((sum, places) => sum + places.length - 1, 0);
+    const view = {
+      ...open, count: songs.length, missing: songs.filter((song) => song.missing).length,
+      repeated: repeatedCount, total_words: wordsFor(total),
+    };
     if (summary) summary.textContent = summaryText(view);
     const note = el("shows-note");
     if (note) { note.textContent = open.note || ""; note.hidden = !open.note; }
@@ -425,7 +476,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     songs = show.songs || [];
     const name = el("shows-editor-name");
     if (name) name.textContent = show.name;
-    renderSongs();
+    redrawSongs();
     renderSummary();
   }
 
@@ -486,6 +537,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   }
 
   function move(index, delta) {
+    if (refusedWhileGenerating()) return;
     const target = index + delta;
     const action = delta < 0 ? "up" : "down";
     if (target < 0 || target >= songs.length) {
@@ -497,15 +549,18 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     songs.splice(index, 1);
     songs.splice(target, 0, moved);
     renderSongs({ action, index: String(target) });
+    renderSummary();
     void saveSongs(`Moved ${moved.title} to number ${target + 1} of ${songs.length}.`);
   }
 
   function removeSong(index) {
+    if (refusedWhileGenerating()) return;
     const gone = songs[index];
     if (!gone) return;
     songs = songs.filter((_song, i) => i !== index);
     const next = Math.min(index, songs.length - 1);
     renderSongs(next >= 0 ? { action: "remove", index: String(next) } : { action: "none", index: "-1" });
+    renderSummary();
     void saveSongs(`Removed ${gone.title}.`);
   }
 
@@ -528,12 +583,13 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
     generating = true;
     button?.setAttribute("aria-disabled", "true");
+    redrawSongs();
     say(`Generating the list for ${open.name}.`);
     try {
       await saving;
       const show = await send(url(id, "/generate"), "POST", value);
       if (!current(epoch, mine) || open?.id !== id) return;
-      songsSignature = "";
+      generating = false;
       applyOpen(show);
       void refresh();
       say(`Generated ${summaryText(show)}${show.note ? ` ${show.note}` : ""}`);
@@ -547,6 +603,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     } finally {
       generating = false;
       button?.removeAttribute("aria-disabled");
+      if (open?.id === id) redrawSongs();
     }
   }
 
@@ -573,6 +630,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
         const shown = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
         text.append(`${title}, `, lengthSpan(shown, wordsFor(seconds)));
         const add = namedButton("add", "Add", title, { index: String(index) });
+        if (generating) add.setAttribute("aria-disabled", "true");
         add.dataset.path = song.path;
         add.dataset.title = title;
         add.dataset.seconds = String(seconds);
@@ -588,7 +646,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   }
 
   function addSong(button) {
-    if (!open) return;
+    if (!open || refusedWhileGenerating()) return;
     const max = data.limits?.max_songs || 500;
     if (songs.length >= max) { say(`A show holds at most ${max} songs.`, true); return; }
     const seconds = Number(button.dataset.seconds) || 0;
@@ -597,6 +655,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
       length_text: button.dataset.shown, length_words: wordsFor(seconds),
     }];
     renderSongs();
+    renderSummary();
     void saveSongs(`Added ${button.dataset.title} as number ${songs.length}.`);
   }
 
@@ -692,8 +751,11 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
     try {
       await load();
+      loadFailed = false;
     } catch (error) {
-      if (current(epoch, mine)) say(`Could not load shows: ${error.message}`, true);
+      // Said once on failing, not on every 15-second retry.
+      if (current(epoch, mine) && !loadFailed) say(`Could not load shows: ${error.message}`, true);
+      if (current(epoch, mine)) loadFailed = true;
     }
   }
 

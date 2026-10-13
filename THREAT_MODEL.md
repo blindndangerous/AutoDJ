@@ -49,7 +49,8 @@ AutoDJ is a single-user local music player with these exposed surfaces:
   is the rotation tester's dry run on a copy of the player (its own clock, history and random
   generator, nothing written), one at a time for the whole server (409 for another), on its own
   thread below normal priority, for at most 20 seconds, cancelled at shutdown. A show holds at
-  most 500 songs and a station at most 200 shows. On the air a show only queues its songs, a
+  most 500 songs and a station at most 200 shows; request bodies are capped before they are read
+  (8 KiB, 1 MiB for a list of songs), for PUT as for POST. On the air a show only queues its songs, a
   couple at a time, from the event loop's worker threads, holding `queue_lock` only to compare
   and insert; in DMCA mode a song that would break a limit is skipped, never played.
   `shows.json` is written atomically; an invalid show is skipped and kept, a file that is not a

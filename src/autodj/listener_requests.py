@@ -48,7 +48,7 @@ import time
 import uuid
 from collections import OrderedDict, deque
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -654,8 +654,12 @@ class RequestDesk:
         track_ids: TrackIds,
         monotonic: Callable[[], float] = time.monotonic,
         on_queued: Callable[[], object] = lambda: None,
+        shows: Any = None,
     ) -> None:
         self.slug = slug
+        # The station's ShowRunner (#106): a show on the air keeps its place
+        # ahead of requests, and no request is promised a time it cannot keep.
+        self.shows = shows
         # Called after a request joins the queue (refreshes the public feed).
         self._on_queued = on_queued
         self.cfg = cfg
@@ -750,8 +754,38 @@ class RequestDesk:
     def _similarity(self, a: str, b: str) -> float | None:
         return self.bridge.sim.similarity(a, b)
 
+    def _show_on_air(self) -> str | None:
+        """The name of the show on the air, or ``None``."""
+        return self.shows.on_air_name() if self.shows is not None else None
+
+    def _show_ahead(self) -> str | None:
+        """A show on the air or due within the request window, or ``None``."""
+        return self.shows.ahead(self._horizon()) if self.shows is not None else None
+
+    def _after_show(self, slots: Sequence[RequestSlot]) -> list[RequestSlot]:
+        """Only the places after the show's own waiting songs (#106): the show wins."""
+        shows = self.shows
+        if shows is None:
+            return list(slots)
+        last = max(
+            (
+                slot.position
+                for slot in slots
+                if slot.after is not None and shows.is_show_entry(slot.after)
+            ),
+            default=-1,
+        )
+        return [slot for slot in slots if slot.position > last]
+
+    def _placed(self, entry: IndexEntry, slots: Sequence[RequestSlot]) -> Placement:
+        placement = place(entry, self._after_show(slots), self._similarity)
+        show = self._show_on_air()
+        if show is None or placement.slot is None:
+            return placement
+        return replace(placement, note=f"After the show {show}. {placement.note}")
+
     def _placement(self, entry: IndexEntry) -> Placement:
-        return place(entry, self.bridge.request_slots(entry, self._horizon()), self._similarity)
+        return self._placed(entry, self.bridge.request_slots(entry, self._horizon()))
 
     def _queue_where_it_fits(self, entry: IndexEntry) -> Placement:
         """Place *entry* and queue it there (:meth:`PlayerBridge.insert_request`).
@@ -765,7 +799,7 @@ class RequestDesk:
         chosen: list[Placement] = []
 
         def choose(slots: list[RequestSlot]) -> RequestSlot | None:
-            chosen.append(place(entry, slots, self._similarity))
+            chosen.append(self._placed(entry, slots))
             return chosen[-1].slot
 
         self.bridge.insert_request(entry, self._horizon(), choose)
@@ -839,10 +873,13 @@ class RequestDesk:
             self._on_queued()
             request = self.book.add(entry, name, QUEUED, placement.note)
             logger.info("Listener request queued: %s (%s)", entry.display_name, placement.note)
+            # During a show, or with one about to start, the song waits for
+            # the show's end: no time is promised.
+            when = "after the station's show" if self._show_ahead() else rough_wait(slot.starts_in)
             return Outcome(
                 200,
                 "Request accepted",
-                f"Thanks{_for(request.name)}. {_song(entry)} should play {rough_wait(slot.starts_in)}.",
+                f"Thanks{_for(request.name)}. {_song(entry)} should play {when}.",
             )
         request = self.book.add(entry, name, PENDING, placement.note)
         logger.info("Listener request waiting: %s", entry.display_name)
@@ -850,7 +887,12 @@ class RequestDesk:
             200,
             "Request received",
             f"Thanks{_for(request.name)}. The station will look at your request for "
-            f"{_song(entry)}. If it is approved, it should play within the next hour or so.",
+            f"{_song(entry)}. If it is approved, it should play "
+            + (
+                "after the station's show."
+                if self._show_ahead() is not None
+                else "within the next hour or so."
+            ),
         )
 
     # -- what the operator does ---------------------------------------------

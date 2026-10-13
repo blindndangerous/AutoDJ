@@ -179,10 +179,12 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   error read with it and focused; Open list moving focus to the list heading and saying the total
   once; each song's Move up, Move down and Remove buttons named with the song, focus staying on
   the moved song's button with its new number said once, Move up on the first song read as
-  unavailable and saying why; Remove moving focus to the next song (or the search box); Search
+  unavailable and saying why; Remove moving focus to the next song, or the previous one after the
+  last (the search box when none is left); the list buttons unavailable while it is generated; a
+  song listed twice read with its warning; Search
   results with their Add buttons, the added song said once; Generate list saying the result once
   with focus kept on the button; Stop show leaving focus on Add show; and nothing said by the
-  15-second refresh or a song change.
+  15-second refresh or a song change, and a failing refresh said once.
 - EQ: each band's slider, its spoken value, and resetting the bands.
 - History: the History tab's table read with table navigation, its pagination, the empty state,
   and a new song added to the top of page 1 without the reading position moving or anything said.

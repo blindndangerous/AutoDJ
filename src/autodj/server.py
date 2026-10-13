@@ -761,6 +761,8 @@ def _header_text(value: str) -> str:
 
 # A schedule event is a few hundred bytes; this leaves ample room.
 _SCHEDULE_BODY_MAX_BYTES = 16 * 1024
+# A show's list (#106): 500 paths, each well under 2 KiB in practice.
+SHOWS_SONGS_BODY_MAX_BYTES = 1024 * 1024
 
 
 def create_app(
@@ -998,6 +1000,12 @@ def create_app(
         UPLOAD_PATH: lambda: _break_upload_cap(stations),
         VOICE_UPLOAD_PATH: lambda: _break_upload_cap(stations),
         "/api/rotation-test": lambda: SMALL_BODY_MAX_BYTES,
+        # Shows (#106): POST and PUT; a list of up to 500 songs is the largest.
+        "/api/shows": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/shows/{show_id}": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/shows/{show_id}/songs": lambda: SHOWS_SONGS_BODY_MAX_BYTES,
+        "/api/shows/{show_id}/generate": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/shows/{show_id}/start": lambda: SMALL_BODY_MAX_BYTES,
         "/api/library/tags": lambda: TAG_BODY_MAX_BYTES,
         WORKER_PREFIX + "result": lambda: RESULT_BODY_MAX_BYTES,
         **{

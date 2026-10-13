@@ -326,11 +326,18 @@ def install_shows(router: StationRouter) -> None:
 
     @router.put("/shows/{show_id}/songs", response_model=None)
     async def shows_songs(
-        station: StationDep, show_id: str, body: SongsBody
+        station: StationDep, request: Request, show_id: str, body: SongsBody
     ) -> dict[str, Any] | JSONResponse:
-        """Save a show's list, in order."""
+        """Save a show's list, in order; 409 while the list is being generated."""
         _check_id(show_id)
         store = _store(station)
+        if _generations(request).generating(station.slug, show_id):
+            return _rejected(
+                "",
+                "The list is being generated; your change was not saved. "
+                "Try again when it is done.",
+                409,
+            )
 
         def save() -> dict[str, Any]:
             current = store.get(show_id)
@@ -384,14 +391,9 @@ def install_shows(router: StationRouter) -> None:
                 cancelled=cancelled,
             )
 
-        try:
-            result = await _generations(request).run(work)
-        except ShowBusy as exc:
-            return _rejected(exc.field, exc.message, 409)
-        except ShowError as exc:
-            return _rejected(exc.field, exc.message)
+        generations = _generations(request)
 
-        def save() -> dict[str, Any]:
+        def save(result: Any) -> dict[str, Any]:
             store.update(
                 show_id,
                 lambda current: with_songs(
@@ -401,7 +403,14 @@ def install_shows(router: StationRouter) -> None:
             return _one_view(station, show_id)
 
         try:
-            view = await asyncio.to_thread(save)
+            # Held until the new list is saved: edits to it wait (409) meanwhile.
+            with generations.reserved(station.slug, show_id):
+                result = await generations.run(work)
+                view = await asyncio.to_thread(save, result)
+        except ShowBusy as exc:
+            return _rejected(exc.field, exc.message, 409)
+        except ShowError as exc:
+            return _rejected(exc.field, exc.message)
         except KeyError:
             raise _gone() from None
         except OSError as exc:

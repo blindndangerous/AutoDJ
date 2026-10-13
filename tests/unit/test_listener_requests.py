@@ -554,3 +554,41 @@ def test_a_queue_that_keeps_changing_turns_a_request_away(tmp_path: Path) -> Non
     outcome = desk.submit(ids.shown(bridge.entries[3].path), "", "192.0.2.1")
     assert (outcome.status, outcome.headline) == (503, "The station is busy")
     assert desk.book.recent() == []
+
+
+class _ShowOnAir:
+    """A show on the air (#106) whose own waiting entry is *mine*."""
+
+    def __init__(self, mine: IndexEntry | None, name: str | None = "Remembering the 2000s"):
+        self.mine = mine
+        self.name = name
+
+    def on_air_name(self) -> str | None:
+        return self.name
+
+    def ahead(self, _within_s: float) -> str | None:
+        return self.name
+
+    def is_show_entry(self, entry: IndexEntry) -> bool:
+        return entry is self.mine
+
+
+def test_a_request_goes_after_the_show_on_the_air_and_promises_no_time(tmp_path: Path) -> None:
+    desk, bridge, ids, _ = _desk(tmp_path, approval="auto")
+    show_song = bridge.entries[1]
+    desk.shows = _ShowOnAir(show_song)
+    # Before the show's waiting song would fit best, but the show keeps its place.
+    bridge.slots = [_slot(0, bridge.playing, show_song), _slot(1, show_song)]
+    outcome = desk.submit(ids.shown(bridge.entries[4].path), "", "192.0.2.1")
+    assert outcome.headline == "Request accepted"
+    assert outcome.detail == "Thanks. Song 4 by Artist 4 should play after the station's show."
+    assert bridge.queue == [bridge.entries[4].path]
+    assert desk.book.recent()[0].note.startswith("After the show Remembering the 2000s. Fits after")
+
+
+def test_a_show_about_to_start_also_holds_back_the_promise(tmp_path: Path) -> None:
+    desk, bridge, ids, _ = _desk(tmp_path)
+    desk.shows = _ShowOnAir(None, name=None)
+    desk.shows.ahead = lambda _within_s: "Remembering the 2000s"  # type: ignore[method-assign]
+    outcome = desk.submit(ids.shown(bridge.entries[3].path), "Sam", "192.0.2.1")
+    assert outcome.detail.endswith("If it is approved, it should play after the station's show.")

@@ -559,6 +559,9 @@ class Scheduler:
         self.actions: dict[str, Action] = {}
         self.events: dict[str, ScheduledEvent] = {}
         self.runs: list[RunRecord] = []
+        # Events this version cannot run (an action it does not have), kept
+        # as they were so a save never loses them.
+        self.kept: list[ScheduledEvent] = []
         # Soft events waiting for the current song to end, in due order.
         self.pending: list[str] = []
         self.started = False
@@ -610,7 +613,6 @@ class Scheduler:
         except (OSError, ValueError) as exc:
             self._keep_bad_copy(str(exc).splitlines()[0])
             return
-        dropped = []
         for event in data.events:
             action = self.actions.get(event.action)
             try:
@@ -618,17 +620,24 @@ class Scheduler:
                     raise EventError("action", f"unknown action {event.action}")
                 event.params = action.check(event.params)
             except EventError as exc:
-                dropped.append(f"{event.name}: {exc}")
+                # Another version's action (a newer one's, say): never run,
+                # never shown, but written back as it was with every save.
+                logger.warning(
+                    "Scheduled event %r is kept but cannot run in this version: %s",
+                    event.name,
+                    exc,
+                )
+                self.kept.append(event)
                 continue
             self.events[event.id] = event
         self.runs = data.runs[-MAX_RUNS:]
-        if dropped:
-            self._keep_bad_copy("; ".join(dropped))
 
     def save(self) -> None:
         """Write the schedule atomically."""
         document = ScheduleFile(
-            schema_version=SCHEMA_VERSION, events=list(self.events.values()), runs=self.runs
+            schema_version=SCHEMA_VERSION,
+            events=[*self.events.values(), *self.kept],
+            runs=self.runs,
         ).model_dump(mode="json")
         # An event without a date range is written without the two keys, so
         # an older AutoDJ, which refuses unknown keys, still reads the file.
@@ -676,7 +685,7 @@ class Scheduler:
 
     async def add(self, spec: EventSpec) -> ScheduledEvent:
         """Add an event; raise :class:`EventError` when it is not valid."""
-        if len(self.events) >= MAX_EVENTS:
+        if len(self.events) + len(self.kept) >= MAX_EVENTS:
             raise EventError("", f"The schedule holds at most {MAX_EVENTS} events")
         params = await self._checked(spec)
         event = ScheduledEvent(**{**spec.model_dump(), "params": params, "id": uuid.uuid4().hex})

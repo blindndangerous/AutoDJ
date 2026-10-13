@@ -39,8 +39,7 @@ import re
 import threading
 import time
 import uuid
-from collections import Counter
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
@@ -225,12 +224,20 @@ class ShowStore:
         return found.st_mtime_ns, found.st_size, found.st_ino
 
     def _keep_bad_copy(self, reason: str) -> None:
+        """Set the invalid file aside.
+
+        Raises:
+            OSError: It could not be set aside: nothing may be written over it.
+        """
         bad = self.path.with_name(f"{self.path.name}.bad-{uuid.uuid4().hex[:8]}")
         try:
             self.path.replace(bad)
-        except OSError:
+        except OSError as exc:
             logger.exception("Could not set aside the invalid shows file %s", self.path)
-            return
+            raise OSError(
+                f"The shows file {self.path.name} is not valid and could not be set aside; "
+                "nothing is saved over it"
+            ) from exc
         logger.error("Shows file %s is invalid (%s); set it aside as %s", self.path, reason, bad)
 
     def _load_locked(self) -> dict[str, Show]:
@@ -249,6 +256,7 @@ class ShowStore:
             try:
                 document = _ShowsFile.model_validate_json(data)
             except ValueError as exc:
+                # Raises when it cannot be moved, so a save never writes over it.
                 self._keep_bad_copy(str(exc).splitlines()[0])
                 stamp = None
             else:
@@ -585,6 +593,31 @@ class ShowGenerations:
         self._lock = threading.Lock()
         self._busy: tuple[threading.Thread, threading.Event] | None = None
         self._closing = False
+        # The shows whose list is being generated and saved, by station and ID.
+        self._shows: set[tuple[str, str]] = set()
+
+    @contextlib.contextmanager
+    def reserved(self, station: str, show_id: str) -> Iterator[None]:
+        """Mark one show's list as being generated until the block ends (and saved).
+
+        Raises:
+            ShowBusy: That show's list is being generated already.
+        """
+        key = (station, show_id)
+        with self._lock:
+            if key in self._shows:
+                raise ShowBusy("", "This show's list is being generated; try again shortly")
+            self._shows.add(key)
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._shows.discard(key)
+
+    def generating(self, station: str, show_id: str) -> bool:
+        """Whether that show's list is being generated now."""
+        with self._lock:
+            return (station, show_id) in self._shows
 
     async def run(self, work: Callable[[Callable[[], bool]], Generated]) -> Generated:
         """Run ``work(cancelled)`` on a thread of its own and wait for it.
@@ -665,9 +698,12 @@ class _OnAir:
     name: str
     songs: tuple[str, ...]
     started_at: float
+    # After this a show cut short by a restart is not resumed.
+    ends_by: float
     next_index: int = 0
-    # Songs queued and not yet seen leaving the queue, in order.
-    waiting: list[str] = field(default_factory=list)
+    # The show's own queue entries (copies, told apart by identity from a
+    # listener's request of the same song), not yet seen leaving the queue.
+    waiting: list[Any] = field(default_factory=list)
     played: int = 0
     skipped: list[dict[str, str]] = field(default_factory=list)
     skipped_count: int = 0
@@ -676,6 +712,10 @@ class _OnAir:
         self.skipped_count += 1
         if len(self.skipped) < MAX_SKIPPED:
             self.skipped.append({"path": path, "title": title, "reason": reason})
+
+    def holds(self, entry: Any) -> bool:
+        """Whether *entry* is one of the show's own waiting queue entries."""
+        return any(entry is mine for mine in self.waiting)
 
 
 def dmca_limits_at(bridge: Any, entry: Any, view: Any, position: int) -> tuple[str, ...]:
@@ -699,12 +739,21 @@ def dmca_limits_at(bridge: Any, entry: Any, view: Any, position: int) -> tuple[s
     return tuple(complement(records, when, player._track_keys()).broken(entry))
 
 
+#: A show cut short by a restart resumes only until its list would have
+#: ended, counted from its start, plus this much (seconds).
+RESUME_GRACE_S = 15 * 60
+ON_AIR_VERSION = 1
+
+
 class ShowRunner:
     """Air one station's shows: feed the queue from the list, check DMCA, end when it ends.
 
     Starting, song changes and stopping run on the event loop, one at a time;
-    the queue work (a projection of the DMCA limits and a short insert under
-    ``queue_lock``) runs in a worker thread.  Nothing runs on the audio thread.
+    the queue work (a projection of the DMCA limits and a short compare and
+    insert under ``queue_lock``) runs in a worker thread.  Nothing runs on the
+    audio thread.  The show on the air is written to *state_path* as it goes,
+    so a restart resumes it at the first song that had not played, unless
+    its list would have ended by then.
     """
 
     def __init__(
@@ -713,17 +762,21 @@ class ShowRunner:
         store: ShowStore,
         publish: Callable[[dict[str, Any]], Awaitable[None]],
         *,
+        state_path: Path | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._bridge = bridge
         self._store = store
         self._publisher = publish
         self._clock = clock
+        self._state_path = state_path
         self._turn = asyncio.Lock()
-        # Guards _on_air for the preview, which reads it from its own thread.
+        # Guards _on_air for the preview and the request desk, which read it
+        # from their own threads.
         self._state_lock = threading.Lock()
         self._on_air: _OnAir | None = None
         self._tasks: set[asyncio.Task[None]] = set()
+        self._resume: dict[str, Any] | None = self._read_state()
 
     # -- reading ---------------------------------------------------------
 
@@ -734,14 +787,13 @@ class ShowRunner:
             if air is None:
                 return None
             total = len(air.songs)
-            to_come = total - air.next_index
             return {
                 "id": air.show_id,
                 "name": air.name,
                 "total": total,
                 "played": air.played,
                 "waiting": len(air.waiting),
-                "to_come": to_come,
+                "to_come": total - air.next_index,
                 "skipped": list(air.skipped),
                 "skipped_count": air.skipped_count,
                 "started_at": air.started_at,
@@ -755,6 +807,96 @@ class ShowRunner:
                 return None
             return air.name, air.songs[air.next_index :]
 
+    def on_air_name(self) -> str | None:
+        """The name of the show on the air, or ``None`` (any thread)."""
+        with self._state_lock:
+            return self._on_air.name if self._on_air is not None else None
+
+    #: Set by the station: the name of a show the schedule starts within the
+    #: given seconds, or ``None``.
+    starts_within: Callable[[float], str | None] | None = None
+
+    def ahead(self, within_s: float) -> str | None:
+        """The show on the air, or one due to start within *within_s* seconds (any thread)."""
+        name = self.on_air_name()
+        if name is None and self.starts_within is not None:
+            try:
+                name = self.starts_within(within_s)
+            except Exception:
+                logger.debug("Could not read the schedule's next show", exc_info=True)
+                name = None
+        return name
+
+    def is_show_entry(self, entry: Any) -> bool:
+        """Whether *entry* is one of the show's own waiting queue entries (any thread)."""
+        with self._state_lock:
+            return self._on_air is not None and self._on_air.holds(entry)
+
+    # -- the saved place --------------------------------------------------
+
+    def _read_state(self) -> dict[str, Any] | None:
+        path = self._state_path
+        if path is None:
+            return None
+        try:
+            saved = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError):
+            logger.warning("The saved show on the air in %s cannot be read; not resumed", path)
+            return None
+        fields_ok = (
+            isinstance(saved, dict)
+            and saved.get("version") == ON_AIR_VERSION
+            and isinstance(saved.get("show_id"), str)
+            and isinstance(saved.get("name"), str)
+            and isinstance(saved.get("songs"), list)
+            and all(isinstance(song, str) for song in saved["songs"])
+            and isinstance(saved.get("next_index"), int)
+            and isinstance(saved.get("ends_by"), (int, float))
+        )
+        if not fields_ok:
+            logger.warning("The saved show on the air in %s is not valid; not resumed", path)
+            return None
+        return dict(saved)
+
+    def _write_state(self, air: _OnAir | None) -> None:
+        """Save the show on the air (or forget it); a failure is logged, never raised."""
+        path = self._state_path
+        if path is None:
+            return
+        try:
+            if air is None:
+                path.unlink(missing_ok=True)
+                return
+            with self._state_lock:
+                document = {
+                    "version": ON_AIR_VERSION,
+                    "show_id": air.show_id,
+                    "name": air.name,
+                    "songs": list(air.songs),
+                    # The first song that has not played: the waiting ones
+                    # leave the queue with a restart.
+                    "next_index": air.next_index - len(air.waiting),
+                    "played": air.played,
+                    "skipped_count": air.skipped_count,
+                    "started_at": air.started_at,
+                    "ends_by": air.ends_by,
+                }
+            path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write(path, json.dumps(document, ensure_ascii=False) + "\n")
+        except OSError:
+            logger.exception("Could not save the show on the air to %s", path)
+
+    def _ends_by(self, songs: Sequence[str], start: float) -> float:
+        """When a list started at *start* would have ended, plus the resume grace."""
+        total = 0.0
+        for path in songs:
+            entry = self._bridge.entry_for_path(path)
+            if entry is not None:
+                total += max(0.0, float(entry.length or 0.0))
+        return start + total + RESUME_GRACE_S
+
     # -- changing --------------------------------------------------------
 
     async def _publish(self) -> None:
@@ -763,11 +905,17 @@ class ShowRunner:
         except Exception:
             logger.exception("Could not tell the web pages about a show change")
 
+    def _plays_now_on_bus(self) -> bool:
+        bridge = self._bridge
+        return bool(getattr(bridge, "stream_mode", False) or bridge._bus_mode())
+
     async def start(self, show_id: str, *, now: bool = False) -> str:
         """Put the show on the air: its first songs go to the front of the queue.
 
         With *now* (a hard event) its first song plays at once, fading out
-        the song playing, as Play now does; otherwise it follows the song
+        the song playing: through Play now with server audio or a stream,
+        and as a skip in browser playback, where a "play next" song the
+        operator chose still plays first.  Otherwise it follows the song
         playing.  A show already on the air stops first, and its waiting
         songs leave the queue.
 
@@ -783,36 +931,56 @@ class ShowRunner:
             raise ValueError("That show no longer exists")
         if not show.songs:
             raise ValueError(f"Show {show.name} has no songs; generate its list first")
-        player = self._bridge.player
-        if player._state.current_track is None:
+        if self._bridge.player._state.current_track is None:
             raise ValueError(f"Nothing is playing, so show {show.name} did not start")
+        songs = tuple(show.songs)
+        started = self._clock()
+        ends_by = await asyncio.to_thread(self._ends_by, songs, started)
+        air = _OnAir(show_id, show.name, songs, started, ends_by)
         async with self._turn:
+            self._resume = None
             await asyncio.to_thread(self._clear_blocking)
-            air = _OnAir(show_id, show.name, tuple(show.songs), self._clock())
-            with self._state_lock:
-                self._on_air = air
-            first = await asyncio.to_thread(self._first_now_blocking, air) if now else None
-            # The songs after the first are queued before it starts, so its
-            # render is followed by the show's second song.
-            await asyncio.to_thread(self._feed_blocking)
-            if first is not None:
-                await asyncio.to_thread(self._bridge.play_next, first.path, True)
-            with self._state_lock:
-                queued = len(air.waiting) + (first is not None)
-                skipped = air.skipped_count
-                if self._on_air is air and not air.waiting and first is None:
-                    self._on_air = None
+            queued, skipped = await self._begin(air, now=now)
         await self._publish()
         if not queued:
             raise ValueError(
                 f"Show {show.name} did not start: none of its songs could be queued "
                 f"({skipped} skipped; see the log)"
             )
-        logger.info("Show %r started: %d songs", show.name, len(show.songs))
-        return f"Show {show.name} started: {len(show.songs)} songs."
+        logger.info("Show %r started: %d songs", show.name, len(songs))
+        return f"Show {show.name} started: {len(songs)} songs."
+
+    async def _begin(self, air: _OnAir, *, now: bool) -> tuple[int, int]:
+        """Put *air* on the air (hold ``_turn``); how many songs it queued and skipped."""
+        with self._state_lock:
+            self._on_air = air
+        first = None
+        on_bus = now and self._plays_now_on_bus()
+        if on_bus:
+            first = await asyncio.to_thread(self._first_now_blocking, air)
+        # The songs after the first are queued before it starts, so its
+        # render is followed by the show's second song.
+        await asyncio.to_thread(self._feed_blocking)
+        if first is not None:
+            await asyncio.to_thread(self._bridge.play_next, first.path, True)
+        elif now and not on_bus:
+            with self._state_lock:
+                started = bool(air.waiting)
+            if started:
+                # Browser playback: the skip takes the queue's head, which is
+                # the show's first song unless a "play next" song waits.
+                await asyncio.to_thread(self._bridge.skip)
+        with self._state_lock:
+            queued = len(air.waiting) + (first is not None)
+            skipped = air.skipped_count
+            if self._on_air is air and not air.waiting and first is None:
+                self._on_air = None
+                air = None  # type: ignore[assignment]
+        await asyncio.to_thread(self._write_state, air)
+        return queued, skipped
 
     async def stop(self) -> str | None:
-        """Take the show off the air; its waiting songs leave the queue.
+        """Take the show off the air; its own waiting entries leave the queue.
 
         Returns:
             The show's name, or ``None`` when no show was on the air.
@@ -828,11 +996,14 @@ class ShowRunner:
         return air.name
 
     def track_changed(self) -> None:
-        """Queue the show's next songs after a song change (event loop)."""
+        """Queue the show's next songs after a song change, or resume one (event loop)."""
         with self._state_lock:
-            if self._on_air is None:
-                return
-        task = asyncio.get_running_loop().create_task(self._after_change())
+            idle = self._on_air is None
+        if idle and self._resume is None:
+            return
+        task = asyncio.get_running_loop().create_task(
+            self._resume_saved() if idle else self._after_change()
+        )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
@@ -845,6 +1016,46 @@ class ShowRunner:
             return
         if changed:
             await self._publish()
+
+    async def _resume_saved(self) -> None:
+        """Resume the show a restart cut short, once something plays; or forget it."""
+        async with self._turn:
+            saved, self._resume = self._resume, None
+            if saved is None or self._on_air is not None:
+                return
+            if self._clock() > float(saved["ends_by"]):
+                logger.info(
+                    "Show %r was on the air before the restart; its time has passed, "
+                    "so it is not resumed",
+                    saved["name"],
+                )
+                await asyncio.to_thread(self._write_state, None)
+                return
+            songs = tuple(saved["songs"])
+            start_at = max(0, min(int(saved["next_index"]), len(songs)))
+            air = _OnAir(
+                str(saved["show_id"]),
+                str(saved["name"]),
+                songs,
+                float(saved.get("started_at") or self._clock()),
+                float(saved["ends_by"]),
+                next_index=start_at,
+                played=int(saved.get("played") or 0),
+                skipped_count=int(saved.get("skipped_count") or 0),
+            )
+            try:
+                queued, _skipped = await self._begin(air, now=False)
+            except Exception:
+                logger.exception("Could not resume show %r", air.name)
+                return
+        if queued:
+            logger.info(
+                "Show %r resumed after a restart at song %d of %d",
+                air.name,
+                start_at + 1,
+                len(songs),
+            )
+        await self._publish()
 
     def _first_now_blocking(self, air: _OnAir) -> Any:
         """The first song that can play at once, counted as played; ``None`` when none can.
@@ -876,29 +1087,42 @@ class ShowRunner:
         return None
 
     def _clear_blocking(self) -> None:
-        """Take the show off the air and its waiting songs out of the queue."""
+        """Take the show off the air and its own entries out of the queue.
+
+        It counts first what already left the queue, then removes each of the
+        show's entries by its place in the queue as read, never a listener's
+        request or the operator's song for the same file.
+        """
         with self._state_lock:
-            air, self._on_air = self._on_air, None
-        if air is None:
-            return
-        for path in air.waiting:
-            self._bridge.queue_remove(path)
+            air = self._on_air
+        if air is not None:
+            bridge = self._bridge
+            for _step in range(4 * (len(air.waiting) + 2)):
+                view = bridge._queue_view()
+                with self._state_lock:
+                    self._account(air, view)
+                    index = next(
+                        (i for i, entry in enumerate(view.queue) if air.holds(entry)), None
+                    )
+                if index is None:
+                    break
+                if bridge.queue_remove_if(index, view):
+                    with self._state_lock:
+                        air.waiting = [
+                            mine for mine in air.waiting if mine is not view.queue[index]
+                        ]
+            with self._state_lock:
+                if self._on_air is air:
+                    self._on_air = None
+        self._write_state(None)
 
     def _account(self, air: _OnAir, view: Any) -> bool:
-        """Count the show songs that left the queue (played, or removed by hand)."""
-        present = Counter(
-            entry.path
-            for entry in ([view.queued_next] if view.queued_next is not None else [])
-            + list(view.queue)
-        )
-        kept: list[str] = []
-        for path in air.waiting:
-            if present[path] > 0:
-                present[path] -= 1
-                kept.append(path)
-            else:
-                air.played += 1
+        """Count the show's entries that left the queue (played, or removed by hand)."""
+        present = [view.queued_next] if view.queued_next is not None else []
+        present.extend(view.queue)
+        kept = [mine for mine in air.waiting if any(mine is entry for entry in present)]
         changed = len(kept) != len(air.waiting)
+        air.played += len(air.waiting) - len(kept)
         air.waiting = kept
         return changed
 
@@ -922,15 +1146,14 @@ class ShowRunner:
                 if self._on_air is not air:
                     return changed
                 changed = self._account(air, view) or changed
-            waiting = set(air.waiting)
+                mine = [air.holds(entry) for entry in view.queue]
             # A waiting show song that would now break a DMCA limit (something
             # was queued before it, say) leaves the queue.
             recheck = next(
                 (
                     (index, entry, broken)
                     for index, entry in enumerate(view.queue)
-                    if entry.path in waiting
-                    and (broken := dmca_limits_at(bridge, entry, view, index))
+                    if mine[index] and (broken := dmca_limits_at(bridge, entry, view, index))
                 ),
                 None,
             )
@@ -940,7 +1163,7 @@ class ShowRunner:
                     reason = "it would break the DMCA limit: " + "; ".join(broken)
                     logger.warning("Show %r: %s skipped: %s", air.name, entry.display_name, reason)
                     with self._state_lock:
-                        air.waiting.remove(entry.path)
+                        air.waiting = [item for item in air.waiting if item is not entry]
                         air.skip(entry.path, song_title(entry), reason)
                     changed = True
                 continue
@@ -955,11 +1178,9 @@ class ShowRunner:
                     air.skip(path, _file_name(path), "it is not in the library")
                 changed = True
                 continue
-            # After the show's last waiting song, or first in the queue.
-            position = 0
-            for index, queued in enumerate(view.queue):
-                if queued.path in waiting:
-                    position = index + 1
+            # After the show's last waiting song, or first in the queue: ahead
+            # of songs queued before the show, listener requests included.
+            position = max((index + 1 for index, held in enumerate(mine) if held), default=0)
             broken = dmca_limits_at(bridge, entry, view, position)
             if broken:
                 reason = "it would break the DMCA limit: " + "; ".join(broken)
@@ -969,14 +1190,19 @@ class ShowRunner:
                     air.skip(path, song_title(entry), reason)
                 changed = True
                 continue
-            if bridge.queue_insert_if(entry, position, view):
+            # The show's own copy, so it is told apart from a listener's
+            # request or the operator's song for the same file.
+            own = copy.copy(entry)
+            if bridge.queue_insert_if(own, position, view):
                 with self._state_lock:
                     air.next_index += 1
-                    air.waiting.append(path)
+                    air.waiting.append(own)
                 changed = True
+        ended = False
         with self._state_lock:
             if self._on_air is air and air.next_index >= len(air.songs) and not air.waiting:
                 self._on_air = None
+                ended = True
                 logger.info(
                     "Show %r ended: %d played, %d skipped; normal programming resumes",
                     air.name,
@@ -984,6 +1210,8 @@ class ShowRunner:
                     air.skipped_count,
                 )
                 changed = True
+        if changed:
+            self._write_state(None if ended else air)
         return changed
 
 

@@ -213,6 +213,11 @@ class StationPaths:
         return self.state_dir / "shows.json"
 
     @property
+    def show_on_air(self) -> Path:
+        """The show on the air and its place, so a restart resumes it (#106)."""
+        return self.state_dir / "show_on_air.json"
+
+    @property
     def intros(self) -> Path:
         """The audio of the matched intros."""
         return self.state_dir / "intros"

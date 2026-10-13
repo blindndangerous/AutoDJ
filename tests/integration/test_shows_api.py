@@ -172,3 +172,19 @@ def test_starting_and_stopping_say_why_not(client: TestClient) -> None:
     assert client.post(f"/api/shows/{'f' * 32}/start").status_code == 409
     stopped = client.delete("/api/shows/on-air")
     assert (stopped.status_code, stopped.json()["detail"]) == (409, "No show is on the air")
+
+
+def test_the_list_cannot_be_changed_while_it_is_generated(client: TestClient, station) -> None:
+    from autodj.shows import ShowGenerations
+
+    _source, hits, _gold = station
+    show = client.post("/api/shows", json=SHOW).json()
+    generations = client.app.state.show_generations = ShowGenerations()
+    with generations.reserved("default", show["id"]):
+        refused = client.put(f"/api/shows/{show['id']}/songs", json={"songs": [hits[0].path]})
+        assert refused.status_code == 409
+        assert "being generated" in refused.json()["detail"]
+        again = client.post(f"/api/shows/{show['id']}/generate", json={})
+        assert again.status_code == 409
+    saved = client.put(f"/api/shows/{show['id']}/songs", json={"songs": [hits[0].path]})
+    assert saved.status_code == 200

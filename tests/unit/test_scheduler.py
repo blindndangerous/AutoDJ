@@ -425,13 +425,27 @@ def test_duplicate_ids_make_the_file_bad(tmp_path: Path) -> None:
     assert len(list(tmp_path.glob("schedule.json.bad-*"))) == 1
 
 
-def test_an_event_for_an_unknown_action_is_dropped_and_the_file_kept(tmp_path: Path) -> None:
+def test_an_event_for_an_unknown_action_is_kept_as_it_was_but_never_runs(tmp_path: Path) -> None:
+    """Another version's action (#106: an older AutoDJ and Play a show) survives a save."""
     path = tmp_path / "schedule.json"
-    write_schedule(path, [stored("a" * 32), stored("b" * 32, action="cart")])
+    other = stored("b" * 32, action="cart", params={"page": "1"})
+    write_schedule(path, [stored("a" * 32), other])
     rig = Rig(path)
     rig.schedule.start()
     assert list(rig.schedule.events) == ["a" * 32]
-    assert len(list(tmp_path.glob("schedule.json.bad-*"))) == 1
+    assert list(tmp_path.glob("schedule.json.bad-*")) == []
+    # A save after any change writes it back unchanged.
+    rig.add(name="Evening", time="19:00")
+    events = json.loads(path.read_text(encoding="utf-8"))["events"]
+    saved = next(event for event in events if event["id"] == "b" * 32)
+    assert saved == {
+        key: value
+        for key, value in other.model_dump(mode="json").items()
+        if key not in ("start_date", "end_date") or value is not None
+    }
+    rig.tick_at("2026-10-12 07:00")
+    assert "b" * 32 not in {run.event_id for run in rig.schedule.runs}
+    assert "a" * 32 in {run.event_id for run in rig.schedule.runs}
 
 
 def test_actions_register_before_start_only(tmp_path: Path) -> None:

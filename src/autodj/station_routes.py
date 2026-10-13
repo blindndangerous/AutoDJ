@@ -803,8 +803,23 @@ def equip_station(
 
     # Shows (#106): a list of songs prepared ahead that a schedule event airs.
     station.shows = ShowStore(station.paths.shows)
-    station.show_runner = ShowRunner(bridge, station.shows, publish)
+    station.show_runner = ShowRunner(
+        bridge, station.shows, publish, state_path=station.paths.show_on_air
+    )
     schedule.register(show_action(station.show_runner, station.shows))
+
+    def show_starts_within(within_s: float) -> str | None:
+        # Called from the request desk's threads, which only read the schedule.
+        from datetime import UTC, datetime
+
+        now = datetime.now(UTC)
+        for when, event in schedule.upcoming(5):
+            if event.action == "show" and (when - now).total_seconds() <= within_s:
+                show = station.shows.get(str(event.params.get("show", "")))
+                return show.name if show is not None else event.name
+        return None
+
+    station.show_runner.starts_within = show_starts_within
 
     from autodj.breaks import BreakDesk
 
@@ -830,6 +845,7 @@ def equip_station(
             tokens=FORM_TOKENS,
             track_ids=TrackIds(TRACK_SECRET),
             on_queued=station.nowplaying.refresh,
+            shows=station.show_runner,
         )
 
     from autodj.categories import station_wall

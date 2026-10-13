@@ -106,6 +106,7 @@ STATUS_WORDS = {
     "booked": "Fixed: booked break",
     "queued": "Fixed: in the queue",
     "show": "Fixed: from a show",
+    "skipped": "Skipped: it would break a DMCA limit",
     "predicted": "Predicted",
 }
 
@@ -546,6 +547,11 @@ def read_station(
     if show is not None:
         name, entries_left = show
         for entry in list(entries_left)[: max(0, MAX_QUEUED - len(queued))]:
+            # As on the air: a song that would break a DMCA limit is skipped.
+            before = [song for song, _at in unplayed if song.path not in liners]
+            if _dmca_breaks(player, now, current, before, entry):
+                items.append(Item("skipped", moment, 0.0, "skipped", entry, name))
+                continue
             seconds = _remaining(player, entry, 0.0, average)
             items.append(Item("song", moment, seconds, "show", entry, name))
             unplayed.append((entry, moment))
@@ -572,6 +578,20 @@ _Found = tuple[
     float,
     tuple[int | None, str | None, float | None],
 ]
+
+
+def _dmca_breaks(
+    player: Any, now: float, current: Any, before: Sequence[Any], entry: Any
+) -> tuple[str, ...]:
+    """The DMCA limits *entry* would break after *current* and *before*; none when the mode is off."""
+    if not player._cfg.dmca.enabled:
+        return ()
+    from autodj.dmca import complement, projected_history
+
+    with player._pick_lock:
+        history = list(player._state.play_history)
+    records, when = projected_history(history, now, current, list(before))
+    return tuple(complement(records, when, player._track_keys()).broken(entry))
 
 
 def _read_bus(player: Any, desk: Any, now: float, average: float) -> _Found | None:
@@ -799,6 +819,11 @@ def _predict(
                 _apply_event(player, bridge, event)
         if show_songs:
             entry = show_songs.pop(0)
+            # As on the air: a song that would break a DMCA limit is skipped.
+            limits = player._pick_context(at=handoff).complement
+            if limits is not None and limits.broken(entry):
+                found.append(Item("skipped", handoff, 0.0, "skipped", entry, show_name))
+                continue
             record(entry, handoff)
             seconds = song_seconds(player, entry, average)
             found.append(Item("song", handoff, seconds, "show", entry, show_name))
@@ -1234,7 +1259,8 @@ def build_preview(
     )
     timeline = [*decided.items, *predicted]
     songs = [item for item in timeline if item.kind == "song"]
-    changes = song_changes(timeline)
+    # A skipped show song takes no time and opens no song change.
+    changes = song_changes([item for item in timeline if item.kind != "skipped"])
     if not predicted and songs:
         last = songs[-1]
         ends = max(ends, last.starts + last.seconds)
@@ -1285,6 +1311,8 @@ def _status_text(item: Item) -> str:
     """What an item's status says; a show's songs name the show."""
     if item.status == "show" and item.label:
         return f"Fixed: show {item.label}"
+    if item.status == "skipped" and item.label:
+        return f"Skipped from show {item.label}: it would break a DMCA limit"
     return STATUS_WORDS[item.status]
 
 
