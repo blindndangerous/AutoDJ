@@ -708,6 +708,8 @@ class TestRoundTrip:
             "library_size",
             "related_artists_default_file",
             "related_artists_problem",
+            "related_tracks_default_file",
+            "related_tracks_problem",
         }
         # Config-only absolute path is neither browser-visible nor persisted.
         assert "liners_folder" not in saved["playback"]
@@ -718,6 +720,7 @@ class TestRoundTrip:
         assert "available_presets" not in stored
         assert "library_size" not in stored["playback"]
         assert "related_artists_problem" not in stored["playback"]
+        assert "related_tracks_problem" not in stored["playback"]
         assert "liners_folder" not in stored["playback"]
         # The gapless switches are web settings now, saved like the rest.
         assert stored["playback"]["prefetch_next_track"] is False
@@ -734,6 +737,7 @@ class TestRoundTrip:
             not in {
                 "library_size",
                 "related_artists_default_file",
+                "related_tracks_default_file",
                 "liners_folder",
             }
         }

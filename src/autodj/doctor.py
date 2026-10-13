@@ -580,6 +580,34 @@ def _relay_checks(
     )
 
 
+def _related_tracks_check(cfg: AutoDJConfig) -> DoctorCheck:
+    """Read the related tracks file the way the player will at startup."""
+    from autodj.related_artist_file import DEFAULT_RELATED_TRACKS_FILE
+    from autodj.repeat_rules import load_related_tracks
+
+    path = cfg.index.active_dir / DEFAULT_RELATED_TRACKS_FILE
+    if not path.exists():
+        return DoctorCheck(
+            "related-tracks",
+            CheckStatus.PASS,
+            f"Sample will be copied to {path} when AutoDJ starts",
+        )
+    try:
+        related = load_related_tracks(path)
+    except (OSError, ValueError) as exc:
+        return DoctorCheck(
+            "related-tracks",
+            CheckStatus.WARN,
+            "related tracks file not usable; AutoDJ starts without it",
+            f"{exc}. Fix {path} and save Settings > Picking > Repeats again.",
+        )
+    return DoctorCheck(
+        "related-tracks",
+        CheckStatus.PASS,
+        f"{len(related.links)} tracks with related tracks from {path}",
+    )
+
+
 def _related_artists_check(cfg: AutoDJConfig) -> DoctorCheck:
     """Read the related artists file the way the player will at startup."""
     from autodj.related_artist_file import DEFAULT_RELATED_ARTISTS_FILE
@@ -632,6 +660,7 @@ def run_doctor(
             _stream_check(cfg),
             *_relay_checks(cfg),
             _related_artists_check(cfg),
+            _related_tracks_check(cfg),
             _time_checks_check(cfg),
             *_voice_pack_checks(cfg),
             _categories_check(cfg),

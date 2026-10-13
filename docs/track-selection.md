@@ -67,8 +67,8 @@ any scoring. In order:
    that mode.
    Unknown key or mode (-1) is accepted, not rejected.
 4. The player's repeat filter lets the track through: no artist, related
-   artist, album, or song title it names played too recently (see "Repeat
-   avoidance" below). The older `excluded_artists`, `excluded_albums` and
+   artist, album, or song title it names played too recently, and no track
+   related to it did (see "Repeat avoidance" below). The older `excluded_artists`, `excluded_albums` and
    `excluded_titles` sets still work for other callers.
 
 Note the asymmetry between 2 and 3. An un-analysed track passes harmonic
@@ -123,12 +123,16 @@ New installations start with a 50-track limit for the same track and an 8-track
 limit for the same artist. Album, title and all minute limits start at zero.
 Saved settings take precedence over these defaults.
 
-Edit all four rules under **Settings > Picking > Repeats**:
+Edit the rules under **Settings > Picking > Repeats**:
 
-- Artist: any artist credited on a recent track, including related artists when enabled.
+- Artist: any artist credited on a recent track.
+- Related artists: an artist linked to a recent one in the related artists file, when
+  **Use related artists** is on.
 - Album: the same album name, independent of the artist limit.
 - Track: the same audio file.
 - Title: the same song title across versions, such as a radio edit and a live recording.
+- Related tracks: a track grouped with a recent one in the related tracks file, such as a song
+  and one that samples it, when **Use related tracks** is on.
 
 Each has a Tracks box and a Minutes box. Zero turns off that limit. When both
 are set, a candidate must clear both limits. Minutes count from when a track
@@ -148,8 +152,9 @@ Old repeat keys in `config.toml` and `web_state.json` are ignored with a warning
 Re-enter any limits that still use those keys in Settings > Picking > Repeats.
 Current repeat rules are preserved, and Doctor offers optional cleanup with a backup.
 Optional config defaults use
-`[playback.repeat_rules]`, with `track`, `artist`, `album` and `title` tables
-containing `tracks` and `minutes`; saved web settings take precedence.
+`[playback.repeat_rules]`, with `track`, `artist`, `related_artist`, `album`, `title` and
+`related_track` tables containing `tracks` and `minutes`, and the `use_related_artists` and
+`use_related_tracks` switches; saved web settings take precedence.
 
 ### Titles
 
@@ -166,9 +171,9 @@ Satisfaction" is not shortened to "Satisfaction".
 counts for the artist rule. The full credit always counts as one artist.
 
 - "feat.", "ft.", "featuring", "vs.", "versus", a semicolon and the
-  separator of multi-value tags always split. So does a "(feat. X)" or
-  "(with X)" note in the artist or the title, so "Uptown Funk (feat. Bruno
-  Mars)" counts for Bruno Mars.
+  separator of multi-value tags always split. So does a "(feat. X)",
+  "(with X)" or "(w/ X)" note in the artist or the title, so "Uptown Funk
+  (feat. Bruno Mars)" counts for Bruno Mars.
 - "&", "and", "+", "x", "with", "/" and commas split only when every part
   looks like a separately credited artist: it has at least two words, or it
   is the whole artist credit of another track in the library. Parts such as
@@ -191,8 +196,10 @@ Artist names ignore case, accents, punctuation and a leading "The".
 
 ### Related artists
 
-The **Use related artists** checkbox applies the artist limits to links in a
-TOML file. The default is `index/<name>/related-artists.toml`; AutoDJ copies the
+The **Use related artists** checkbox holds back the artists linked in a TOML file
+to an artist that played within the Related artists Tracks and Minutes limits, which
+start at the artist rule's 8 tracks. Settings saved before related artists had their own
+limits keep using the artist limits. The file is `index/<name>/related-artists.toml`; AutoDJ copies the
 shipped sample there only when it is absent. Upgrades never replace an existing
 user copy. The Settings page shows this fixed location. The browser cannot
 choose another path. The file must be at most 1 MiB.
@@ -209,6 +216,38 @@ leaving the previous rules in use. At startup, an invalid file produces a
 warning and the other repeat rules still work. The Repeats panel and
 `autodj doctor` report the problem.
 
+### Related tracks
+
+The **Use related tracks** checkbox, off by default, holds back tracks that sound alike on
+air, such as a song and a later one that samples it, for as long as the Related tracks
+Tracks and Minutes limits say (20 tracks to start with). The groups are in
+`index/<name>/related-tracks.toml`; AutoDJ copies the shipped sample there only when it is
+absent, and never replaces your copy. The file must be at most 1 MiB. Edit it, then save
+repeat settings to reload it.
+
+Each entry in the `[related]` table is one group, a track and a list of tracks, written as
+"Artist - Title" with the lead artist:
+
+```toml
+[related]
+"Rick James - Super Freak" = ["MC Hammer - U Can't Touch This", "Nicki Minaj - Super Freaky Girl"]
+"Snow - Informer" = ["Daddy Yankee - Con Calma"]
+```
+
+- Every track in a group holds back every other one, in both directions, so a pair needs one
+  line and three tracks that share a sample go in one group.
+- Groups are not joined: a track in two groups holds back the tracks of both, but they do not
+  hold each other back.
+- "Artist - Title" is split at the first " - ". The title is compared like the title rule
+  (case, punctuation and version notes such as "(Radio Edit)" and "(feat. ...)" do not
+  matter), and the artist like the artist rule. A track matches when any artist it credits,
+  featured artists included, and its title match an entry.
+- Tracks not in the library are ignored.
+
+An invalid file is refused when you save with **Use related tracks** on, leaving the previous
+rules in use. At startup, an invalid file produces a warning and the other repeat rules still
+work. The Repeats panel and `autodj doctor` report the problem.
+
 ### Where the rules apply
 
 - Similarity and anchored picks pass the rules to `find_next_for_path`.
@@ -220,7 +259,7 @@ warning and the other repeat rules still work. The Repeats panel and
   Clock slots using least recently played work the same way.
 - Clock slots marked EnforceRules use the rules; NoRules slots ignore them,
   as before. When every matching track is held back, the clock relaxes the
-  artist, album and title rules for that pick, then the track window, and
+  artist, album, title and related rules for that pick, then the track window, and
   logs which one it relaxed.
 - When no track passes, the rules are relaxed rather than stopping the
   music. The fallback pick after a failed pick ignores them, as before.
@@ -229,12 +268,12 @@ warning and the other repeat rules still work. The Repeats panel and
 - Tracks you queue, play now, or choose as the seed are never held back.
 
 Each pick that held candidates back logs a line at info level, such as
-"Repeat rules held back 3 candidates (1 same artist, 1 related artist, 1 same
-title)". A similarity pick only counts the nearest candidates it looked at.
+"Repeat rules held back 4 candidates (1 same artist, 1 related artist, 1 same
+title, 1 related track)". A similarity pick only counts the nearest candidates it looked at.
 Least-recent picks count only the candidates checked before finding an eligible
 song. Random picks check the whole pool, so their counts may be higher.
 At DEBUG level, `autodj.player.repeat` also records each candidate examined by
-the artist, related-artist, album or title rules, its reason, and the selected
+the artist, related-artist, album, title or related-track rules, its reason, and the selected
 path. The row means the candidate was excluded from that pool by the repeat
 rule; the rule can be relaxed before selection. These rows do not include
 tracks excluded only by the separate track-count or minute windows.

@@ -28,9 +28,16 @@ function installPage() {
     albumTracks: $("repeat-album-tracks"), albumMinutes: $("repeat-album-minutes"),
     trackTracks: $("repeat-track-tracks"), trackMinutes: $("repeat-track-minutes"),
     titleTracks: $("repeat-title-tracks"), titleMinutes: $("repeat-title-minutes"),
+    relatedArtistTracks: $("repeat-related-artist-tracks"),
+    relatedArtistMinutes: $("repeat-related-artist-minutes"),
+    relatedTrackTracks: $("repeat-related-track-tracks"),
+    relatedTrackMinutes: $("repeat-related-track-minutes"),
     useRelatedArtists: $("repeat-use-related-artists"),
+    useRelatedTracks: $("repeat-use-related-tracks"),
     defaultFile: $("repeat-related-default"),
     fileStatus: $("repeat-related-status"),
+    tracksDefaultFile: $("repeat-related-tracks-default"),
+    tracksFileStatus: $("repeat-related-tracks-status"),
     save: $("repeat-save"),
   };
 }
@@ -62,9 +69,10 @@ const describedBy = (element) => (element.getAttribute("aria-describedby") || ""
   .split(/\s+/).filter(Boolean).map((id) => document.getElementById(id));
 
 const fullRules = {
-  artist: { tracks: 8, minutes: 0 }, album: { tracks: 0, minutes: 0 },
-  track: { tracks: 50, minutes: 0 }, title: { tracks: 0, minutes: 0 },
-  use_related_artists: true,
+  artist: { tracks: 8, minutes: 0 }, related_artist: { tracks: 8, minutes: 0 },
+  album: { tracks: 0, minutes: 0 }, track: { tracks: 50, minutes: 0 },
+  title: { tracks: 0, minutes: 0 }, related_track: { tracks: 20, minutes: 0 },
+  use_related_artists: true, use_related_tracks: false,
 };
 
 describe("Repeats markup", () => {
@@ -79,12 +87,13 @@ describe("Repeats markup", () => {
       "Prevent the same album from repeating within",
       "Prevent the same track from repeating within",
       "Prevent the same title from repeating within",
+      "Related tracks",
     ]);
     for (const control of outer.querySelectorAll("input")) {
       expect(control.labels).toHaveLength(1);
       expect(control.labels[0].textContent.trim()).not.toBe("");
     }
-    for (const rule of ["artist", "album", "track", "title"]) {
+    for (const rule of ["artist", "relatedArtist", "album", "track", "title", "relatedTrack"]) {
       const group = els[`${rule}Tracks`].closest("fieldset");
       expect(els[`${rule}Minutes`].closest("fieldset")).toBe(group);
       expect(els[`${rule}Tracks`].labels[0].textContent).toBe("Tracks");
@@ -126,6 +135,26 @@ describe("Repeats markup", () => {
     // Shown on load, not spoken: failures go through the settings status.
     expect(status.hasAttribute("aria-live")).toBe(false);
     expect(status.getAttribute("role")).toBeNull();
+    // Its own limits sit in the same group.
+    expect(els.relatedArtistTracks.closest("fieldset")).toBe(group);
+  });
+
+  it("puts Use related tracks, its file note, status line and limits in one group", () => {
+    const els = installPage();
+    const group = els.useRelatedTracks.closest("fieldset");
+    expect(group.querySelector(":scope > legend").textContent).toBe("Related tracks");
+    expect(els.useRelatedTracks.labels[0].textContent).toBe("Use related tracks");
+    expect(els.useRelatedTracks.checked).toBe(false);
+    const [note, status] = describedBy(els.useRelatedTracks);
+    expect(note.closest("fieldset")).toBe(group);
+    expect(note.textContent).toContain("related-tracks.toml in the index folder");
+    expect(note.textContent).toContain("Artist - Title");
+    expect(note.contains(els.tracksDefaultFile)).toBe(true);
+    expect(status).toBe(els.tracksFileStatus);
+    expect(status.hidden).toBe(true);
+    expect(status.hasAttribute("aria-live")).toBe(false);
+    expect(els.relatedTrackTracks.closest("fieldset")).toBe(group);
+    expect(els.relatedTrackTracks.value).toBe("20");
   });
 });
 
@@ -152,6 +181,65 @@ describe("repeat settings", () => {
     expect(body).toEqual({ repeat_rules: { ...fullRules, artist: { tracks: 7, minutes: 0 } } });
     expect(Object.keys(body.repeat_rules)).not.toContain("related_artists_file");
     expect(control).toBe(els.save);
+  });
+
+  it("applies and saves the related artist and related track limits", async () => {
+    const { els, postSettings } = setup();
+    applyRepeatSettings({ playback: {
+      repeat_rules: { ...fullRules, use_related_tracks: true,
+        related_track: { tracks: 6, minutes: 45 } },
+      related_tracks_default_file: "C:/station/related-tracks.toml",
+      related_tracks_problem: null,
+    } }, els);
+    expect(els.useRelatedTracks.checked).toBe(true);
+    expect(els.relatedTrackTracks.value).toBe("6");
+    expect(els.relatedTrackMinutes.value).toBe("45");
+    expect(els.tracksDefaultFile.textContent).toBe("C:/station/related-tracks.toml");
+
+    type(els.relatedArtistMinutes, "90");
+    els.save.click();
+    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledOnce());
+    expect(postSettings.mock.calls[0][1]).toEqual({ repeat_rules: {
+      ...fullRules, use_related_tracks: true, related_track: { tracks: 6, minutes: 45 },
+      related_artist: { tracks: 8, minutes: 90 },
+    } });
+  });
+
+  it("names the related rule in an invalid limit's message", async () => {
+    const { els, postSettings, settingsStatus } = setup();
+    applyRepeatSettings({ playback: { repeat_rules: fullRules } }, els);
+    type(els.relatedTrackTracks, "5001");
+    els.save.click();
+    expect(document.activeElement).toBe(els.relatedTrackTracks);
+    await vi.waitFor(() => expect(settingsStatus.textContent)
+      .toBe("Related tracks tracks must be a whole number from 0 to 5000."));
+    expect(postSettings).not.toHaveBeenCalled();
+  });
+
+  it("shows a related tracks problem found at startup in its own status line", () => {
+    const { els } = setup();
+    const problem = "The related tracks file is not valid: line 2. Related tracks are off "
+      + "until the file is fixed and repeat settings are saved.";
+    applyRepeatSettings({ playback: { repeat_rules: fullRules, related_tracks_problem: problem } }, els);
+    expect(els.tracksFileStatus.hidden).toBe(false);
+    expect(els.tracksFileStatus.textContent).toBe(problem);
+    expect(els.fileStatus.hidden).toBe(true);
+    applyRepeatSettings({ playback: { repeat_rules: fullRules, related_tracks_problem: null } }, els);
+    expect(els.tracksFileStatus.hidden).toBe(true);
+  });
+
+  it("focuses Use related tracks when the server refuses the related tracks file", async () => {
+    const message = "The related tracks file is not valid.";
+    const { els, settingsStatus } = setup(failingPost(400, message));
+    applyRepeatSettings({ playback: { repeat_rules: { ...fullRules, use_related_tracks: true } } }, els);
+    els.save.click();
+    await vi.waitFor(() => expect(els.useRelatedTracks.getAttribute("aria-invalid")).toBe("true"));
+    expect(document.activeElement).toBe(els.useRelatedTracks);
+    expect(els.useRelatedArtists.hasAttribute("aria-invalid")).toBe(false);
+    expect(els.tracksFileStatus.textContent).toBe(message);
+    expect(els.fileStatus.hidden).toBe(true);
+    await vi.waitFor(() => expect(settingsStatus.textContent).toBe(
+      `Use related tracks: ${message} Fix the file or turn this off, then save again.`));
   });
 
   it("shows a related artists problem found at startup in the status line", () => {
