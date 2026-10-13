@@ -37,6 +37,8 @@ _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 #: Files whose bytes decide what the model computes.
 _WEIGHT_SUFFIXES = frozenset({".safetensors", ".bin", ".pt", ".pth", ".ckpt", ".json"})
 _CHUNK = 1 << 20
+#: The coarsest modification-time resolution in common use (FAT and exFAT).
+_MTIME_BLUR_NS = 2_000_000_000
 _digests: dict[tuple, str] = {}
 _digests_lock = threading.Lock()
 
@@ -53,12 +55,17 @@ def weights_digest(folder: Path) -> str:
     """``sha256:`` and a digest of every weight and config file's name and bytes.
 
     Remembered per file sizes and modification times, so a large model is
-    read once per process.
+    read once per process.  A file rewritten at the same size within one
+    tick of the filesystem clock keeps its size and time, so, as git does
+    for its index, a digest is only remembered once every file is older
+    than that clock can blur.
     """
+    started = time.time_ns()
     files = _weight_files(folder)
+    stats = [path.stat() for path in files]
     key = tuple(
-        (str(path.relative_to(folder)), path.stat().st_size, path.stat().st_mtime_ns)
-        for path in files
+        (str(path.relative_to(folder)), stat.st_size, stat.st_mtime_ns)
+        for path, stat in zip(files, stats, strict=True)
     )
     with _digests_lock:
         found = _digests.get((str(folder), key))
@@ -71,8 +78,9 @@ def weights_digest(folder: Path) -> str:
             while chunk := handle.read(_CHUNK):
                 digest.update(chunk)
     value = f"sha256:{digest.hexdigest()}"
-    with _digests_lock:
-        _digests[(str(folder), key)] = value
+    if all(stat.st_mtime_ns < started - _MTIME_BLUR_NS for stat in stats):
+        with _digests_lock:
+            _digests[(str(folder), key)] = value
     return value
 
 
