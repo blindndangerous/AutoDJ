@@ -6212,8 +6212,13 @@ class Player:
             # through tempo matching or transition effects: rate-adjust only
             # each music stem and use a plain fade across the shared overlap.
             a_start = max(0, a_start_full - start_offset)
-            if a_start + crossfade > len(audio_a):
-                crossfade = max(0, len(audio_a) - a_start)
+            available_a = len(audio_a) - a_start
+            if not liner_a:
+                available_a = round(available_a / rate_a)
+            available_b = len(audio_b_loaded) - intro
+            if not liner_b:
+                available_b = round(available_b / rate_b)
+            crossfade = min(crossfade, max(0, available_a), max(0, available_b))
             if crossfade > 0 and len(audio_b_loaded) >= intro + crossfade:
                 if liner_a:
                     a_prefix = audio_a[:a_start]
@@ -6256,6 +6261,18 @@ class Player:
                     playback_rate=current_rate,
                     next_playback_rate=rate_b,
                 )
+            return RenderedTrack(
+                current,
+                audio_a if liner_a else resample_music(audio_a, rate_a),
+                next_entry,
+                0,
+                "none",
+                start_offset=start_offset,
+                next_entry_offset=intro,
+                loudness_processing=processing,
+                playback_rate=rate_a,
+                next_playback_rate=rate_b,
+            )
         drop = self._drop_mix(
             current,
             next_entry,

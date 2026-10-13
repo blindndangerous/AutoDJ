@@ -1278,6 +1278,25 @@ class TestRenderTrackFeatures:
         rendered = self._render(self._make_player_with_audio(transition_effect="banana"))
         assert rendered.transition_fx == "none"
 
+    def test_short_incoming_music_after_liner_uses_plain_fade(self) -> None:
+        player = self._make_player_with_audio(transition_effect="echo_out")
+        player._cfg.playback.music_speed_percent = 10
+        current, following = player._sim.entries[:2]
+        player._is_liner = lambda entry: entry is current
+        current_audio = np.zeros((4 * 44100, 2), dtype=np.float32)
+        short_audio = np.zeros((4410, 2), dtype=np.float32)
+        with patch.object(
+            player,
+            "_load_playout_audio",
+            side_effect=[current_audio, short_audio],
+        ):
+            rendered = player._render_track(current, following, 0)
+        assert rendered is not None
+        assert rendered.transition_fx == "none"
+        assert rendered.audio is not None
+        assert 0 < len(rendered.audio) < len(current_audio)
+        assert rendered.next_start_offset == len(short_audio)
+
 
 class TestRenderedEffectLevels:
     """The server mix never plays an effect louder than the music.

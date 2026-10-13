@@ -833,6 +833,7 @@ const _settingsEls = () => ({
   pbPrefetch: document.getElementById("pb-prefetch"),
   pbSilenceTrigger: document.getElementById("pb-silence-trigger"),
   pbMusicSpeed: _musicSpeedNumber,
+  pbMusicSpeedSlider: _musicSpeedSlider,
 });
 
 function postSettings(url, body, control, { onError } = {}) {

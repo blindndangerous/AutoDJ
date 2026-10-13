@@ -1326,7 +1326,7 @@
         <label for="pb-music-speed-slider" class="visually-hidden">Music speed</label>
         <input type="range" id="pb-music-speed-slider" min="-10" max="10" step="0.01" value="0"
                aria-describedby="pb-music-speed-desc">
-        <output id="pb-music-speed-value" for="pb-music-speed-slider">0%</output>
+        <output id="pb-music-speed-value" for="pb-music-speed-slider" aria-live="off">0%</output>
       </div>
       <span class="setting-desc" id="pb-music-speed-desc">
         Adjust music speed from 10% slower to 10% faster. Pitch changes with speed. BPM-matched skips combine both rates, so pitch shifts during the skip. Voice liners and previews keep their normal speed. Browser playback applies changes when safe; stream and server audio apply them at the next unrendered buffer boundary.

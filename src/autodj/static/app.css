@@ -1081,6 +1081,7 @@
     .settings-row label {
       min-width: 10rem;
     }
+    .music-speed-slider-row label { min-width: 0; }
     .settings-row input[type="number"] {
       width: 6rem;
     }

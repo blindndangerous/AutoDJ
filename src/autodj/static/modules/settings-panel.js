@@ -301,6 +301,7 @@ export function applySettingsState(st, els) {
   for (const spec of FIELDS) {
     const control = els[spec.key];
     if (!control) continue;
+    if (spec.key === "pbMusicSpeed" && doc.activeElement === els.pbMusicSpeedSlider) continue;
     const value = pushedValue(spec, control, st);
     if (value == null || saveHolds(control, value)) continue;
     if (isToggle(control)) control.checked = value;
