@@ -70,7 +70,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     return { refresh: async () => {}, clearProtectedData() {}, resume() {}, destroy() {} };
   }
 
-  const empty = () => ({ names: [], active: null, sources: [], presets: [], categories: [], cursor: 0, notice: null });
+  const empty = () => ({ names: [], active: null, sources: [], presets: [], categories: [], cursor: 0, notice: null, pending_update: false });
   let data = empty();
   let clock = null; // the working copy, or null when none is open
   let isNew = false; // created in the page and never saved
@@ -80,6 +80,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   let listSignature = "";
   let optionsSignature = "";
   let lastNotice = null;
+  let lastPendingUpdate = false;
   let timer = null;
   let generation = 0;
   let suspended = false;
@@ -440,8 +441,14 @@ export function installClockwheelPanel({ document: doc = document, request = req
     if (!clock || isNew) next.textContent = "";
     else if (clock.name !== data.active) next.textContent = `${clock.name} is not the active clockwheel.`;
     else if (dirty) next.textContent = "Save to play these changes.";
+    else if (data.pending_update) next.textContent = "Saved changes are waiting for the next clock restart.";
     else if (!clock.steps.length) next.textContent = "";
     else next.textContent = `Plays next: ${position((data.cursor || 0) % clock.steps.length)}.`;
+    const pending = Boolean(data.pending_update && clock && clock.name === data.active);
+    if (pending && !lastPendingUpdate) say("Saved changes are waiting for the next clock restart.");
+    lastPendingUpdate = pending;
+    const apply = el("clock-apply-timing");
+    if (apply) apply.hidden = !clock || isNew || clock.name !== data.active;
   }
 
   function renderSteps(focusIndex = null, action = "edit") {
@@ -814,6 +821,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   function discardChanges() {
     if (!dirty || !clock) return Promise.resolve(true);
     return confirmAction(doc, {
+      station: true,
       title: `Discard changes to ${clock.name}?`,
       message: "The changes to its steps have not been saved.",
       confirmLabel: "Discard changes",
@@ -930,9 +938,21 @@ export function installClockwheelPanel({ document: doc = document, request = req
     }
     resync.removeAttribute("aria-invalid");
     const body = { version: 1, name: clock.name, steps: clock.steps, resync_minutes: minutes };
-    const saved = await command(() => send(isNew ? "/api/library/clock" : clockUrl(clock.name), isNew ? "POST" : "PUT", body),
+    const timing = el("clock-apply-timing")?.value || "next_restart";
+    const url = isNew ? "/api/library/clock" : `${clockUrl(clock.name)}?apply_timing=${encodeURIComponent(timing)}`;
+    const saved = await command(() => send(url, isNew ? "POST" : "PUT", body),
       (result) => load(result));
-    if (saved) say(`Saved ${saved.name}, ${count(saved.steps.length)}.`);
+    if (saved) {
+      const activeEdit = !isNew && data.active === saved.name;
+      const timingMessage = activeEdit
+        ? timing === "next_restart"
+          ? " Changes apply at the next clock restart."
+          : timing === "continue"
+            ? " Changes apply immediately, continuing at the next step."
+            : " Changes apply immediately from step 1."
+        : "";
+      say(`Saved ${saved.name}, ${count(saved.steps.length)}.${timingMessage}`);
+    }
   });
 
   el("clock-duplicate")?.addEventListener("click", async () => {
@@ -964,6 +984,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     let deleted = null;
     // The request runs while the dialog is open; the result is said after it closes.
     await confirmAction(doc, {
+      station: true,
       title: `Delete clockwheel ${name}?`,
       message: name === data.active
         ? "It is the active clockwheel, so no clockwheel plays until you activate another."
@@ -1033,7 +1054,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     data = empty();
     undoHistory = [];
     clock = null; isNew = false; dirty = false;
-    listSignature = ""; optionsSignature = ""; lastNotice = null;
+    listSignature = ""; optionsSignature = ""; lastNotice = null; lastPendingUpdate = false;
     list.replaceChildren();
     nameInput.value = "";
     resync.value = "0";

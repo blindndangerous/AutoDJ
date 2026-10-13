@@ -76,17 +76,20 @@ SHARED = frozenset(
 )
 # Public listening addresses: the default station's, and any station's
 # stream and playlist (/stations/<slug>.mp3 and .m3u), status page
-# (/stations/<slug>/status), player page and embeddable player by name.
+# (/stations/<slug>/status), player page, embeddable player and request page
+# by name.
 DEFAULT_STATION_PUBLIC = frozenset(
     {
         "/status",
         "/player",
         "/embed",
+        "/requests",
         "/stream.{ext}",
         "/stations/{station_file}",
         "/stations/{slug}/status",
         "/stations/{slug}/player",
         "/stations/{slug}/embed",
+        "/stations/{slug}/requests",
     }
 )
 # Routes that act on one station, relative to the API root.  Each answers
@@ -170,6 +173,11 @@ STATION = frozenset(
         # The voice tracker (#128): browser routes, by station.
         "/voice-tracks",
         "/voice-tracks/{break_id}",
+        # Listener requests (#49): the operator's list and decisions.
+        "/requests",
+        "/requests/{request_id}/approve",
+        "/requests/{request_id}/play-next",
+        "/requests/{request_id}/reject",
         # Matched intros (#127): browser routes, by station.
         "/intros",
         "/intros/{intro_id}/audio",
@@ -355,12 +363,18 @@ def test_station_relative_maps_only_configured_stations() -> None:
         ("get", "/stations/default/status/x", 401),
         ("get", "/stations/default/nowplaying", 401),
         ("get", "/stations//status", 401),
+        # Its request page is public too, and answers 404 while requests
+        # are off (the default); its paired list never is.
+        ("get", "/stations/default/requests", 404),
+        ("post", "/stations/default/requests", 404),
+        ("get", "/stations/nope/requests", 401),
+        ("get", "/api/stations/default/requests", 401),
+        ("get", "/api/requests", 401),
         # Its player pages are public too, and answer 404 while they are
         # off (the default); under any other name they need a session.
         ("get", "/stations/default/player", 404),
         ("head", "/stations/default/embed", 404),
         ("get", "/stations/nope/player", 401),
-        ("get", "/stations/default/requests", 401),
         # and so do the station list and starting or stopping a station.
         ("get", "/api/stations", 401),
         ("post", "/api/stations/default/start", 401),
@@ -434,3 +448,67 @@ async def test_a_failed_close_audits_the_station_socket_route(
         if record.name == "autodj.audit"
     ]
     assert routes == [STATION_PREFIX + "/ws"]
+
+
+def test_the_page_sends_every_station_route_to_the_station_it_controls() -> None:
+    """modules/stations.js routes each of these to /api/stations/<slug>/ (#70).
+
+    A station route missing there would act on the default station while
+    the page shows another one.
+    """
+    import re
+
+    source = (
+        Path(__file__).parents[2] / "src" / "autodj" / "static" / "modules" / "stations.js"
+    ).read_text(encoding="utf-8")
+    block = source.split("export const STATION_ROUTES = Object.freeze([", 1)[1].split("]);", 1)[0]
+    listed = re.findall(r'"([^"]+)"', block)
+    machine = {route for route in STATION if route.startswith("/announcer")}
+    assert len(listed) == len(set(listed))
+    assert set(listed) == STATION - machine - {"/ws"}
+
+
+def test_each_push_lists_the_stations_when_there_are_several() -> None:
+    import asyncio
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from autodj.server import _broadcast_state_once, _BroadcastFailureLog, _share_station
+
+    sent: list[str] = []
+
+    async def capture(_clients, _lock, payload, **_kwargs):
+        sent.append(payload)
+        return set()
+
+    bridge = SimpleNamespace(get_state=lambda: {"queue": []})
+    entries = [{"slug": "default", "name": "AutoDJ"}, {"slug": "nightowl", "name": "Night Owl"}]
+    with patch("autodj.server._broadcast_and_prune", capture):
+        for station_list in (None, lambda: entries):
+            asyncio.run(
+                _broadcast_state_once(
+                    bridge,  # type: ignore[arg-type]
+                    {object()},  # type: ignore[arg-type]
+                    asyncio.Lock(),
+                    _BroadcastFailureLog(),
+                    station_list=station_list,
+                )
+            )
+    assert "stations" not in json.loads(sent[0])
+    assert json.loads(sent[1])["stations"] == entries
+
+    def station() -> SimpleNamespace:
+        return SimpleNamespace(slug="default", bridge=SimpleNamespace(), station_list=None)
+
+    for slugs, listed in (({"default"}, False), ({"default", "nightowl"}, True)):
+        registry = SimpleNamespace(
+            slugs=lambda slugs=slugs: frozenset(slugs),
+            summaries=lambda: entries,
+            stereo_tool_user=lambda exclude: None,
+            stereo_tool_lock=None,
+            owns_liner=lambda slug, path: True,
+        )
+        runtime = station()
+        _share_station(registry, runtime)  # type: ignore[arg-type]
+        assert (runtime.station_list is not None) is listed

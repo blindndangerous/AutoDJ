@@ -403,6 +403,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
   }
   async function savePoints(errorTarget = null) {
     if (saving || !currentPath) return false;
+    doc.getElementById("points-preview")?.pause();
     saving = true;
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
@@ -471,7 +472,11 @@ export function installLibraryFolders({ document: doc = document, request = requ
         if (keep) keep.disabled = false;
         if (saved) dialog.close("save");
       }
-      function reject() { if (!saving) dialog.close("discard"); }
+      function reject() {
+        if (saving) return;
+        doc.getElementById("points-preview")?.pause();
+        dialog.close("discard");
+      }
       function stay() { if (!saving) dialog.close("keep"); }
       function cancel(event) { if (saving) event.preventDefault(); }
       function closed() {
@@ -670,5 +675,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     if (preview) { preview.pause(); preview.removeAttribute("src"); preview.load(); }
   }
   function resume() { suspended = false; updatePolling(); }
-  return { refresh, openEditor, clearProtectedData, resume, destroy() { clearProtectedData(); tags.destroy(); intros.destroy(); returnButton.remove(); window.removeEventListener("hashchange", updatePolling); doc.removeEventListener("visibilitychange", updatePolling); doc.removeEventListener("autodj:edit-points", onEditPoints); } };
+  // Matched intros are each station's own (#70); the rest of Track info is shared.
+  const refreshIntros = () => intros.refresh();
+  return { refresh, openEditor, clearProtectedData, resume, refreshIntros, destroy() { clearProtectedData(); tags.destroy(); intros.destroy(); returnButton.remove(); window.removeEventListener("hashchange", updatePolling); doc.removeEventListener("visibilitychange", updatePolling); doc.removeEventListener("autodj:edit-points", onEditPoints); } };
 }

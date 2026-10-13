@@ -88,14 +88,15 @@ from autodj.listener_access import (
     AddressLimitError,
     BannedAddressError,
     ListenerAuthLimiter,
-    forwarded_allow_ips,
     normalize_address,
+    trusted_proxy_setting,
 )
 from autodj.machine_tokens import MachineTokenStore
 from autodj.matched_intros_api import UPLOAD_PATH as INTRO_UPLOAD_PATH
 from autodj.model_identity import CachedModelCommit
 from autodj.pairing import DeviceRegistry
 from autodj.player_page import install_player_pages
+from autodj.request_page import install_request_pages
 from autodj.scheduler import system_timezone
 from autodj.secret_files import machine_tokens_path, paired_devices_path
 from autodj.security import (
@@ -363,8 +364,12 @@ async def _broadcast_state_once(
     failures: _BroadcastFailureLog,
     listener_revision: int | None = None,
     recording_status: Callable[[], dict[str, object]] | None = None,
+    station_list: Callable[[], list[dict[str, Any]]] | None = None,
 ) -> None:
     """Push the player state to every WebSocket client, if any are connected.
+
+    With several stations, *station_list* gives every station's entry, as
+    ``GET /api/stations`` does, so the page's station switcher stays current.
 
     A failure (building the state, encoding it, or sending it) is logged
     through *failures* and never raised, so the next push still runs:
@@ -380,6 +385,8 @@ async def _broadcast_state_once(
             state["stream_listener_revision"] = listener_revision
         if recording_status is not None:
             state["recording"] = recording_status()
+        if station_list is not None:
+            state["stations"] = station_list()
         payload = json.dumps(state)
         await _broadcast_and_prune(clients, clients_lock, payload)
     except Exception as exc:
@@ -1341,6 +1348,8 @@ def create_app(
             raise HTTPException(status_code=404, detail="Not Found") from None
         return status_page(station, by_name=True)
 
+    # The listener request page (#49), off unless [requests] turns it on.
+    install_request_pages(app, stations)
     # The player page and embeddable player (#52), off unless [player_page]
     # turns them on for the station.
     install_player_pages(app, stations)
@@ -2038,6 +2047,8 @@ def _share_station(stations: StationRegistry, station: StationRuntime) -> None:
     station.bridge.stereo_tool_elsewhere = lambda: stations.stereo_tool_user(exclude=slug)
     station.bridge.stereo_tool_lock = stations.stereo_tool_lock
     station.owns_liner = functools.partial(stations.owns_liner, slug)
+    if len(stations.slugs()) > 1:
+        station.station_list = stations.summaries
 
 
 def _station_broadcast(station: StationRuntime) -> Callable[[], Coroutine[Any, Any, None]]:
@@ -2061,6 +2072,7 @@ def _station_broadcast(station: StationRuntime) -> Callable[[], Coroutine[Any, A
                 failures,
                 listener_access.revision if listener_access is not None else None,
                 recorder.status if recorder is not None else None,
+                station.station_list,
             )
 
     return broadcast
@@ -2192,6 +2204,7 @@ def _extra_station(
         paths=StationPaths.for_station(spec.cfg, slug),
         preset=spec.cfg.playback.stereotool_preset,
         build=build,
+        requests_enabled=spec.cfg.requests.enabled,
         player_page=spec.cfg.player_page,
     )
 
@@ -2465,13 +2478,19 @@ def serve(
         "port": port,
         "log_level": "warning",
     }
+    # Uvicorn rewrites request.client and scheme only for configured proxy
+    # peers, in every mode: the listener limits, the pairing lockout and the
+    # request page's per-address limits all key on the client address.
+    # Without [stream] trusted_proxies, an existing FORWARDED_ALLOW_IPS is
+    # honoured; without either, only a proxy on this machine.
+    uvicorn_kwargs["proxy_headers"] = True
+    allow, proxy_warnings = trusted_proxy_setting(cfg.stream.trusted_proxies, os.environ)
+    uvicorn_kwargs["forwarded_allow_ips"] = allow
+    for warning in proxy_warnings:
+        logger.warning("%s", warning)
     if stream or extra_stations:
         # HTTP/1.0 radio players need close-delimited audio, not chunked framing.
         uvicorn_kwargs["http"] = "h11"
-        # Uvicorn rewrites request.client and scheme only for configured proxy peers.
-        uvicorn_kwargs["proxy_headers"] = True
-        # Empty means a proxy on this machine, as Uvicorn trusts by default.
-        uvicorn_kwargs["forwarded_allow_ips"] = forwarded_allow_ips(cfg.stream.trusted_proxies)
         uvicorn_kwargs["timeout_graceful_shutdown"] = _STREAM_SHUTDOWN_GRACE_SECONDS
     reloaders: list[CertificateReloader] = []
     if ssl_certfile is not None and ssl_keyfile is not None:

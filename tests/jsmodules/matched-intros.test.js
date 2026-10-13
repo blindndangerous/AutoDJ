@@ -119,6 +119,30 @@ describe("Track info matched intros", () => {
     expect(el("intro-applies-song").checked).toBe(true);
   });
 
+  it("plays and reloads the intros of the station the page controls (#70)", async () => {
+    const stations = await import("../../src/autodj/static/modules/stations.js");
+    stations.setKnownStations([
+      { slug: "default", name: "AutoDJ", state: "playing" },
+      { slug: "nightowl", name: "Night Owl Radio", state: "playing" },
+    ]);
+    const request = vi.fn(async () => LISTING);
+    const editor = install(request);
+    editor.load(RECORD);
+    await settle();
+    stations.selectStation("nightowl");
+    try {
+      el("intros-song-list").querySelector("button").click();
+      await settle();
+      expect(el("intro-playback").getAttribute("src"))
+        .toBe(`/api/stations/nightowl/intros/${ITEM.id}/audio`);
+      request.mockClear();
+      await editor.refresh();
+      expect(request).toHaveBeenCalledWith(expect.stringMatching(/^\/api\/intros\?track_id=/));
+    } finally {
+      stations.selectStation("default");
+    }
+  });
+
   it("Listen is a toggle that plays on the preview player", async () => {
     const editor = install(vi.fn(async () => LISTING));
     editor.load(RECORD);

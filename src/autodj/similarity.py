@@ -253,6 +253,21 @@ class SimilarityIndex:
             idx = self._path_to_idx.get(path)
             return self._public_entries[idx] if idx is not None else None
 
+    def similarity(self, path_a: str, path_b: str) -> float | None:
+        """How alike two tracks sound: the cosine of their embeddings, or ``None``.
+
+        ``None`` when either track has no embedding in this index.
+        """
+        with self._reload_lock:
+            a = self._path_to_idx.get(path_a)
+            b = self._path_to_idx.get(path_b)
+            if a is None or b is None:
+                return None
+            # The index holds normalized vectors, so the inner product is the cosine.
+            va = cast(npt.NDArray[np.float32], self.faiss_index.reconstruct(a))
+            vb = cast(npt.NDArray[np.float32], self.faiss_index.reconstruct(b))
+        return float(np.dot(va, vb))
+
     def _public_entry(self, entry: IndexEntry) -> IndexEntry:
         """Return immutable public view for one internal candidate."""
         idx = self._path_to_idx[entry.path]

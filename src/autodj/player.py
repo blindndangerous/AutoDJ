@@ -801,6 +801,7 @@ class Player:
     _clock_next_boundary: float | None = None
     # The clockwheel _seed_clock_cursor is a place in (#133).
     _seed_clock_name: str | None = None
+    _seed_clock_revision: int | None = None
     _seed_clock_step: dict | None = None
     _seed_clock_following: tuple[IndexEntry, IndexEntry, int, dict | None] | None = None
     liner_scheduler: Any = None
@@ -935,6 +936,16 @@ class Player:
         # "why this track" sentence list shown in the web UI.
         self._last_pick_mode: str = "seed"
         self._last_clock_step: dict | None = None
+        self._clock_revision = 0
+        # Edits wait for worker picks/renders, never for audio callbacks.
+        self._clock_selection_lock = threading.RLock()
+        # Short published clock writes only: selection -> clock -> settings;
+        # callbacks take set -> clock, and never take the selection lock.
+        self._clock_lock = threading.RLock()
+        self._pending_clock_update: tuple[dict[str, Any], list[Any], int] | None = None
+        self._pending_clock_name: str | None = None
+        self._chosen_clock_revision: int | None = None
+        self._pending_clock_cursor_revision: int | None = None
         # Previous track played — kept so the explainer can compute deltas
         # against the current pick.
         self._previous_track: IndexEntry | None = None
@@ -1159,6 +1170,7 @@ class Player:
                 # Taken before the pick, so a clockwheel selected meanwhile
                 # leaves the seed's place out rather than mislabelled.
                 self._seed_clock_name = self._clock_name()
+                self._seed_clock_revision = self._clock_revision
                 picked = self._clock_pick(context, None)
                 if picked.entry is None:
                     return self._empty_category_fallback(None, context)
@@ -1231,10 +1243,13 @@ class Player:
         render cursor.
         """
         clock = self._clock_name()
-        if self._pending_clock_name != clock:
+        pending_revision = getattr(self, "_pending_clock_cursor_revision", None)
+        clock_revision = getattr(self, "_clock_revision", 0)
+        if self._pending_clock_name != clock or pending_revision != clock_revision:
             self._pending_clock_cursor = None
             self._pending_clock_boundary = None
             self._pending_clock_name = clock
+            self._pending_clock_cursor_revision = clock_revision
 
     def configure_clock(self) -> None:
         """Load the active clockwheel without marking any selected music played.
@@ -1244,7 +1259,15 @@ class Player:
         setting and the clockwheel file are read first; only the swap
         holds the settings lock.
         """
-        Player._configure_clock(self)  # also for the test doubles that borrow it
+        with self._clock_selection_lock:
+            Player._configure_clock(self)  # also for the test doubles that borrow it
+
+    def configure_clock_after_selection(self) -> None:
+        """Load the latest saved wheel after an explicit selection."""
+        with self._clock_selection_lock:
+            with self._clock_lock:
+                self._pending_clock_update = None
+            self.configure_clock()
 
     def _configure_clock(self) -> None:
         if self._library is None:
@@ -1259,6 +1282,10 @@ class Player:
             setting = self._library.catalog.get_setting("clock", {})
         if not isinstance(setting, dict):
             setting = {}
+        with self._clock_lock:
+            if self._pending_clock_update is not None and setting.get("name") == self._clock_name():
+                return
+            self._pending_clock_update = None
         if "slots" in setting:
             from autodj.clockwheel_store import OLD_CLOCK_MESSAGE
 
@@ -1269,11 +1296,15 @@ class Player:
         if not name:
             self._clock_off("No clockwheel is active")
             return
-        self.activate_clock(name, setting.get("cursor", 0))
+        pending_reset = bool(setting.get("pending_restart_reset"))
+        self.activate_clock(name, 0 if pending_reset else setting.get("cursor", 0))
+        if pending_reset and ledger is not None and self._clock is not None:
+            ledger.remember_setting("clock", self._clock)
 
     def _clock_off(self, status: str) -> None:
         """Turn the clockwheel off, with *status* saying why."""
-        with settings_lock(self):
+        with self._clock_selection_lock, self._clock_lock, settings_lock(self):
+            self._pending_clock_update = None
             self._clock = None
             self._seed_clock_following = None
             self._clock_next_boundary = None
@@ -1299,18 +1330,102 @@ class Player:
 
         # Each step's days and hours, by step index (None for a step without).
         step_hours = tuple(parse_step_hours(step) for step in clock["steps"])
-        with settings_lock(self):
+        with self._clock_selection_lock, self._clock_lock, settings_lock(self):
+            if (
+                Player._clock_name(self) != name
+                or getattr(self, "_clock_definition", None) != clock
+            ):
+                self._clock_revision += 1
+                self._pending_clock_cursor = None
+                self._pending_clock_boundary = None
+            self._clock_definition = clock
+            self._clock_steps = clock["steps"]
+            self._clock_step_hours = step_hours
+            self._pending_clock_cursor_revision = self._clock_revision
+            self._pending_clock_update = None
             self._clock = {
                 "name": name,
                 "cursor": cursor,
                 "resync_minutes": clock["resync_minutes"],
             }
             self._clock_slots = slots
-            self._clock_steps = clock["steps"]
-            self._clock_step_hours = step_hours
             self._clock_status = "Ready"
             self._seed_clock_following = None
             self._clock_next_boundary = boundary.timestamp() if boundary else None
+
+    def apply_clockwheel_update(self, name: str, timing: str = "immediate") -> None:
+        """Apply a saved active wheel now or at its next restart boundary."""
+        clock, slots = self._load_clockwheel(name)
+        with self._clock_selection_lock, self._clock_lock, settings_lock(self):
+            refresh = self._apply_loaded_clockwheel_update(name, timing, clock, slots)
+        if refresh:
+            self.refresh_render_ahead()
+
+    def _apply_loaded_clockwheel_update(
+        self, name: str, timing: str, clock: dict[str, Any], slots: list[Any]
+    ) -> bool:
+        if self._clock_name() != name:
+            return False
+        old_name = self._clock_name()
+        changed = old_name != name or getattr(self, "_clock_definition", None) != clock
+        if not changed:
+            self._pending_clock_update = None
+            if self._clock is not None and self._clock.get("pending_restart_reset"):
+                self._clock = {
+                    key: value
+                    for key, value in self._clock.items()
+                    if key != "pending_restart_reset"
+                }
+                if (ledger := self._ledger) is not None:
+                    ledger.remember_setting("clock", self._clock)
+            return False
+        revision = self._clock_revision + 1
+        if timing == "next_restart" and old_name == name and self._clock is not None:
+            self._pending_clock_update = (clock, slots, revision)
+            self._pending_clock_name = name
+            self._clock = {**self._clock, "pending_restart_reset": True}
+            if (ledger := self._ledger) is not None:
+                ledger.remember_setting("clock", self._clock)
+            return False
+        cursor = 0
+        if timing == "continue" and old_name == name and self._clock is not None:
+            cursor = self._clock.get("cursor", 0)
+            playing = getattr(self, "_playing_render", None)
+            if (
+                playing is not None
+                and playing.next_clock_name == name
+                and playing.next_clock_revision == self._clock_revision
+                and playing.next_clock_cursor is not None
+            ):
+                cursor = playing.next_clock_cursor
+            if not isinstance(cursor, int) or not 0 <= cursor < len(clock["steps"]):
+                cursor = 0
+        self._pending_clock_update = None
+        self._clock_revision = revision
+        self._clock_definition = clock
+        self._seed_clock_following = None
+        self._clock_slots = slots
+        self._clock_steps = clock["steps"]
+        from autodj.categories import parse_step_hours
+
+        self._clock_step_hours = tuple(parse_step_hours(step) for step in clock["steps"])
+        self._clock = {"name": name, "cursor": cursor, "resync_minutes": clock["resync_minutes"]}
+        self._clock_status = "Ready"
+        from datetime import datetime
+
+        from autodj.clockwheel import next_boundary
+
+        boundary = next_boundary(
+            datetime.fromtimestamp(self._now()).astimezone(), clock["resync_minutes"]
+        )
+        self._clock_next_boundary = boundary.timestamp() if boundary else None
+        if (ledger := self._ledger) is not None:
+            ledger.remember_setting("clock", self._clock)
+        self._pending_clock_cursor = None
+        self._pending_clock_boundary = None
+        self._pending_clock_name = name
+        self._pending_clock_cursor_revision = self._clock_revision
+        return True
 
     def _load_clockwheel(self, name: str) -> tuple[dict[str, Any], list[Any]]:
         """Read clockwheel *name* and turn its steps into playable slots."""
@@ -1580,8 +1695,47 @@ class Player:
             liner_step_snapshot=self._clock_step_snapshot(picked.liner_step_index, steps),
         )
 
-    def _clock_step_snapshot(self, index: int | None, steps: Sequence[dict]) -> dict | None:
+    def _promote_pending_clock(self) -> None:
+        with self._clock_lock, settings_lock(self):
+            self._promote_pending_clock_locked()
+
+    def _promote_pending_clock_locked(self) -> None:
+        pending = self._pending_clock_update
+        if pending is None:
+            return
+        clock, slots, revision = pending
+        name = (self._clock or {}).get("name")
+        self._clock_definition = clock
+        self._clock_slots = slots
+        self._clock_steps = clock["steps"]
+        from autodj.categories import parse_step_hours
+
+        self._clock_step_hours = tuple(parse_step_hours(step) for step in clock["steps"])
+        self._clock_revision = revision
+        self._seed_clock_following = None
+        self._clock = {"name": name, "cursor": 0, "resync_minutes": clock["resync_minutes"]}
+        self._pending_clock_update = None
+        from datetime import datetime
+
+        from autodj.clockwheel import next_boundary
+
+        boundary = next_boundary(
+            datetime.fromtimestamp(self._now()).astimezone(), clock["resync_minutes"]
+        )
+        self._clock_next_boundary = boundary.timestamp() if boundary else None
+        self._pending_clock_cursor = 0
+        self._pending_clock_name = name
+        self._pending_clock_cursor_revision = revision
+        self._pending_clock_boundary = self._clock_next_boundary
+        if (ledger := self._ledger) is not None:
+            ledger.remember_setting("clock", self._clock)
+
+    def _clock_step_snapshot(
+        self, index: int | None, steps: Sequence[dict] | None = None
+    ) -> dict | None:
         """Freeze the selected native step and labels for the Why display."""
+        if steps is None:
+            steps = getattr(self, "_clock_steps", ())
         if index is None or not 0 <= index < len(steps):
             return None
         step = deepcopy(steps[index])
@@ -2011,6 +2165,7 @@ class Player:
             context.queue_reserved, (*self._pending_reserved_liners, *also_reserved)
         )
         self._chosen_clock_step = None
+        self._chosen_clock_revision = self._clock_revision
         self._forget_other_clock_place()
         cursor = self._pending_clock_cursor
         seed = self._seed_clock_following
@@ -2030,7 +2185,23 @@ class Player:
                     seed[2],
                     "",
                 )
+            starting_cursor = (self._clock or {}).get("cursor", 0) if cursor is None else cursor
+            boundary = self._pending_clock_boundary or getattr(self, "_clock_next_boundary", None)
+            natural_restart = self._pending_clock_update is not None and boundary is None
+            if natural_restart and starting_cursor == 0:
+                self._promote_pending_clock()
+                self._chosen_clock_revision = self._clock_revision
+                cursor = 0
             picked = self._clock_pick(context, cursor)
+            if (
+                natural_restart
+                and picked.entry is not None
+                and picked.step_index is not None
+                and picked.step_index < starting_cursor
+            ):
+                self._promote_pending_clock()
+                self._chosen_clock_revision = self._clock_revision
+                picked = self._clock_pick(context, 0)
             self._chosen_clock_step = picked.step_snapshot
             if picked.entry is None:
                 # Only empty or deleted categories left nothing to play.
@@ -2039,9 +2210,7 @@ class Player:
                     raise ValueError(self._clock_status)
                 upcoming, mode = rescue, "fallback"
             else:
-                boundary = self._pending_clock_boundary or getattr(
-                    self, "_clock_next_boundary", None
-                )
+                restart = False
                 if boundary is not None:
                     from datetime import datetime
 
@@ -2051,17 +2220,33 @@ class Player:
                     track_start, track_segue = self._clock_music_span(picked.entry)
                     duration_s = track_segue - track_start
                     if resync_due(when, duration_s, boundary):
-                        reset = self._clock_pick(context, 0)
-                        if reset.entry is not None:
-                            picked = reset
-                            self._chosen_clock_step = reset.step_snapshot
-                            self._clock_status = "Restarting the clock at the nearest song handoff"
-                            following = next_boundary(
-                                datetime.fromtimestamp(max(boundary, when)).astimezone(),
-                                (self._clock or {}).get("resync_minutes", [0]),
-                            )
-                            boundary = following.timestamp() if following else None
-                            self._pending_clock_boundary = boundary
+                        restart = True
+                if restart:
+                    assert boundary is not None
+                    self._promote_pending_clock()
+                    reset = self._clock_pick(context, 0)
+                    self._chosen_clock_revision = self._clock_revision
+                    if reset.entry is None:
+                        rescue = self._empty_category_fallback(current, context)
+                        if rescue is None:
+                            raise ValueError(self._clock_status)
+                        self._chosen_clock_step = None
+                        return (
+                            rescue,
+                            "fallback",
+                            tuple((entry, True) for entry in liners),
+                            None,
+                            "",
+                        )
+                    picked = reset
+                    self._chosen_clock_step = reset.step_snapshot
+                    self._clock_status = "Restarting the clock at the nearest song handoff"
+                    following = next_boundary(
+                        datetime.fromtimestamp(max(boundary, when)).astimezone(),
+                        (self._clock or {}).get("resync_minutes", [0]),
+                    )
+                    boundary = following.timestamp() if following else None
+                    self._pending_clock_boundary = boundary
                 upcoming = self._dmca_checked(picked.entry, context)
                 mode, cursor = "clock", picked.next_cursor
                 if (
@@ -2279,6 +2464,10 @@ class Player:
         stop.set()
 
     def _next_rendered(self) -> RenderedTrack | None:
+        with self._clock_selection_lock:
+            return self._next_rendered_serial()
+
+    def _next_rendered_serial(self) -> RenderedTrack | None:
         """Pick and render the next track for the mix bus.
 
         Renders the pending track from the carried offset into a freshly
@@ -2326,29 +2515,24 @@ class Player:
                             clock_cursor=getattr(self, "_seed_clock_cursor", None),
                             clock_name=self._seed_clock_name,
                             clock_step=self._seed_clock_step,
+                            clock_revision=self._seed_clock_revision,
                         )
                     self._seed_clock_step = None
+                    self._seed_clock_revision = None
                 if current is None:
                     return None
             offset, pick_mode = self._pending_offset, self._pending_pick_mode
-            clock_step = self._pending_clock_step
+            clock_step = getattr(self, "_pending_clock_step", None)
             current_from_queue = self._pending_from_queue
             previous = self._pending_previous
             mixed_in_fx, mixed_in_ratio = self._pending_mixed_in
             glide = self._pending_glide
             reserved_liners = self._pending_reserved_liners
-            # The clockwheel this render's places belong to.
-            self._forget_other_clock_place()
-            clock_name = self._pending_clock_name
-            clock_cursor = self._pending_clock_cursor
-            clock_boundary = self._pending_clock_boundary or getattr(
-                self, "_clock_next_boundary", None
-            )
             station_mode = (
                 self._library is not None and self._cfg.playback.transition_mode == "saved_points"
             )
             liners: tuple[tuple[IndexEntry, bool], ...] = ()
-            next_cursor, liner_key = clock_cursor, ""
+            next_cursor, liner_key = None, ""
             next_clock_step = None
             context = self._pick_context(
                 pending=current,
@@ -2358,7 +2542,18 @@ class Player:
                 at=self._handoff_time(current),
             )
             next_entry: IndexEntry | None
-            # The open song change planned a song ago, with its breaks (#88).
+            self._forget_other_clock_place()
+            clock_name = self._pending_clock_name
+            clock_revision = self._pending_clock_cursor_revision
+            clock_cursor = self._pending_clock_cursor
+            clock_boundary = self._pending_clock_boundary or getattr(
+                self, "_clock_next_boundary", None
+            )
+            next_clock_name = clock_name
+            next_clock_revision = clock_revision
+            next_clock_boundary = clock_boundary
+            next_cursor, liner_key = clock_cursor, ""
+            next_clock_step = None
             plan = self._claim_slot_plan(current) if station_mode else None
             breaks: tuple[Break, ...] = ()
             # An intro matched to the next song (#127) takes the automatic
@@ -2373,7 +2568,9 @@ class Player:
                         plan.next_cursor,
                     )
                     next_clock_step = plan.clock_step
-                    self._pending_clock_boundary = plan.boundary_after
+                    next_clock_revision = getattr(plan, "clock_revision", None)
+                    next_clock_name = plan.clock_name
+                    next_clock_boundary = plan.boundary_after
                     breaks = self._take_breaks(plan)
                     intro = self._matched_intro(next_entry, breaks, context.at)
                     if not breaks and not liners and intro is None:
@@ -2383,15 +2580,16 @@ class Player:
                         self._choose_station_next(current, context, auto_liner=False)
                     )
                     next_clock_step = self._chosen_clock_step
+                    if next_mode == "clock":
+                        next_clock_name = self._pending_clock_name
+                        next_clock_revision = self._chosen_clock_revision
+                        next_clock_boundary = self._pending_clock_boundary
                     intro = self._matched_intro(next_entry, (), context.at)
                     if not liners and intro is None:
                         liners, liner_key = self._auto_liner(current, next_entry)
                 else:
                     next_entry, next_mode = self._choose_next(current, context)
             except Exception as exc:
-                # A failed search already fell back to a random track, so
-                # this is an empty (or all-silent) library: play this track
-                # out and park on an empty cursor.
                 logger.warning(
                     "No track can follow %s (%s); it plays out alone.", current.path, exc
                 )
@@ -2447,9 +2645,10 @@ class Player:
                 glide=rendered.next_glide if rendered else None,
                 reserved_liners=rendered.next_reserved_liners if rendered else (),
                 clock_cursor=next_cursor,
-                clock_boundary=self._pending_clock_boundary or clock_boundary,
-                clock_name=clock_name,
+                clock_boundary=next_clock_boundary,
+                clock_name=next_clock_name,
                 clock_step=next_clock_step,
+                clock_revision=next_clock_revision,
             )
             if rendered is not None:
                 return replace(
@@ -2470,8 +2669,11 @@ class Player:
                     clock_step=clock_step,
                     next_clock_step=next_clock_step,
                     clock_name=clock_name,
+                    clock_revision=clock_revision,
+                    next_clock_name=next_clock_name,
+                    next_clock_revision=next_clock_revision,
                     clock_boundary=clock_boundary,
-                    next_clock_boundary=self._pending_clock_boundary,
+                    next_clock_boundary=next_clock_boundary,
                     liner_plan_key=liner_key,
                 )
         return None
@@ -2490,6 +2692,7 @@ class Player:
         clock_boundary: float | None = None,
         clock_name: str | None = None,
         clock_step: dict | None = None,
+        clock_revision: int | None = None,
     ) -> None:
         """Point the render-ahead cursor at *entry* (worker idle or queued).
 
@@ -2512,6 +2715,7 @@ class Player:
         self._pending_reserved_liners = reserved_liners
         self._pending_clock_cursor = clock_cursor
         self._pending_clock_name = clock_name
+        self._pending_clock_cursor_revision = clock_revision
         self._pending_clock_step = clock_step
         self._pending_clock_boundary = clock_boundary
 
@@ -2537,6 +2741,7 @@ class Player:
             clock_boundary=track.clock_boundary,
             clock_name=track.clock_name,
             clock_step=track.clock_step,
+            clock_revision=track.clock_revision,
         )
 
     def _skip_past_render(self, track: RenderedTrack) -> None:
@@ -2556,8 +2761,9 @@ class Player:
             reserved_liners=track.next_reserved_liners,
             clock_cursor=track.next_clock_cursor,
             clock_boundary=track.next_clock_boundary,
-            clock_name=track.clock_name,
+            clock_name=track.next_clock_name,
             clock_step=track.next_clock_step,
+            clock_revision=track.next_clock_revision,
         )
 
     # ------------------------------------------------------------------
@@ -2636,6 +2842,10 @@ class Player:
         return max(0.0, (end - self._playback_pos[0]) / SAMPLE_RATE)
 
     def _plan_slot(self, ready: RenderedTrack) -> None:
+        with self._clock_selection_lock:
+            self._plan_slot_serial(ready)
+
+    def _plan_slot_serial(self, ready: RenderedTrack) -> None:
         """Plan the song change after *ready*: pick what follows its next track.
 
         The render-ahead worker's plan hook, run once *ready* waits for the
@@ -2715,6 +2925,7 @@ class Player:
             reserved=reserved,
             ending_offset_s=self._pending_offset / SAMPLE_RATE,
             clock_name=self._pending_clock_name,
+            clock_revision=getattr(self, "_chosen_clock_revision", self._clock_revision),
             clock_step=getattr(self, "_chosen_clock_step", None),
         )
         with self._slot_lock:
@@ -2740,7 +2951,9 @@ class Player:
                 # been replaced, so there is nothing of it to undo here.
                 return None
             self._slot_plan = None
-        if plan.clock_name != self._pending_clock_name:
+        if plan.clock_name != self._pending_clock_name or (
+            plan.mode == "clock" and plan.clock_revision != self._clock_revision
+        ):
             # Another clockwheel was selected (#133): the plan's place and
             # resync time belong to the old one, which the cursor already
             # forgot, so only its breaks go.
@@ -2904,8 +3117,10 @@ class Player:
             cursor = getattr(self, "_seed_clock_cursor", None)
             self._seed_clock_cursor = None
             clock = self._seed_clock_name
+            clock_revision = self._seed_clock_revision
             clock_step = self._seed_clock_step
             self._seed_clock_step = None
+            self._seed_clock_revision = None
             self._render_ahead.reset(
                 lambda: self._set_render_cursor(
                     entry,
@@ -2914,6 +3129,7 @@ class Player:
                     clock_cursor=cursor,
                     clock_name=clock,
                     clock_step=clock_step,
+                    clock_revision=clock_revision,
                 )
             )
         if self.liner_scheduler is not None and hasattr(self.liner_scheduler, "release_plan"):
@@ -3080,6 +3296,8 @@ class Player:
         has anything, because the queue takes priority.  A render with
         announcer breaks is never stale: the breaks name its next track.
         """
+        if track.next_pick_mode == "clock" and track.next_clock_revision != self._clock_revision:
+            return True
         if track.break_events or self._pinned_before(track):
             return False
         if self._library is not None and self._cfg.playback.transition_mode == "saved_points":
@@ -3148,15 +3366,17 @@ class Player:
         self._active_processing_mode = rendered.loudness_processing
         # A track rendered before another clockwheel was selected carries a
         # place in the old one, which must not move the new one (#133).
-        if (
-            self._clock is not None
-            and rendered.clock_cursor is not None
-            and rendered.clock_name == self._clock.get("name")
-        ):
-            self._clock = {**self._clock, "cursor": rendered.clock_cursor}
-            if (ledger := self._ledger) is not None:
-                ledger.remember_setting("clock", self._clock)
-            self._clock_next_boundary = rendered.clock_boundary
+        with self._clock_lock:
+            if (
+                self._clock is not None
+                and rendered.clock_cursor is not None
+                and rendered.clock_name == self._clock.get("name")
+                and rendered.clock_revision == self._clock_revision
+            ):
+                self._clock = {**self._clock, "cursor": rendered.clock_cursor}
+                if (ledger := self._ledger) is not None:
+                    ledger.remember_setting("clock", self._clock)
+                self._clock_next_boundary = rendered.clock_boundary
         if entry is not self._state.current_track:
             self._previous_track = self._state.current_track
         self._state.current_track = entry
@@ -3193,14 +3413,20 @@ class Player:
                 self._heard_next_entry = True
                 if (ledger := self._ledger) is not None:
                     ledger.remember_play(playing.next_entry.path)
-                    if (
-                        self._clock is not None
-                        and playing.next_clock_cursor is not None
-                        and playing.clock_name == self._clock.get("name")
-                    ):
-                        self._clock = {**self._clock, "cursor": playing.next_clock_cursor}
-                        ledger.remember_setting("clock", self._clock)
-                        self._clock_next_boundary = playing.next_clock_boundary
+                    with self._clock_lock:
+                        if (
+                            self._clock is not None
+                            and playing.next_clock_cursor is not None
+                            and (playing.next_clock_name or playing.clock_name)
+                            == self._clock.get("name")
+                            and playing.next_clock_revision == self._clock_revision
+                        ):
+                            self._clock = {
+                                **self._clock,
+                                "cursor": playing.next_clock_cursor,
+                            }
+                            ledger.remember_setting("clock", self._clock)
+                            self._clock_next_boundary = playing.next_clock_boundary
             for index, (at, entry, queued) in enumerate(playing.liner_events):
                 if frames > at and index not in self._heard_liner_events:
                     self._heard_liner_events.add(index)
@@ -4211,6 +4437,8 @@ class Player:
             release = max(constraints)
         elif fit_main_frames:
             release = max(release, fit_main_frames / SAMPLE_RATE - incoming_intro)
+        # Every clip's main content must finish before the incoming vocals.
+        release = max(release, main_frames / SAMPLE_RATE - incoming_intro)
         handoff = render_handoff(
             np.zeros((1, 2), dtype=np.float32) if is_liner else source,
             {"start": 0, "end": 0, "segue": 0} if is_liner else points,
