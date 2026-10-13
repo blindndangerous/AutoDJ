@@ -28,7 +28,6 @@ from typing import TYPE_CHECKING, Any
 
 from autodj.config import is_loopback_bind
 from autodj.index_manifest import has_legacy_index
-
 from autodj.repeat_settings import removed_saved_repeat_keys
 from autodj.sqlite_utils import readonly_uri
 
