@@ -35,6 +35,11 @@
 //         its help, 24 px targets, a described button, a visible reason
 //         where the browser cannot choose a device, and a change said
 //         politely without moving focus;
+//       - Settings > Analysis workers, Machine tokens: the Station choice
+//         is hidden until Token use is an announcer, then shows as a
+//         named select with linked help and 24 px targets, focus staying
+//         on Token use; it is measured in every theme mode (axe-core and
+//         non-text contrast) and at 320 px with that choice shown;
 //       - the status message stays while the pointer is over it, goes
 //         after the pointer leaves, lets a click on its frame (outside the
 //         message and the button) through to the page underneath, and its
@@ -187,6 +192,64 @@ async function openTrackTags(page, visit) {
   await page.locator("#track-info-dialog").waitFor({ state: "hidden" });
 }
 
+// Settings > Time checks with two voice packs, one with play dates and
+// outside them, so the pack list and the Voice pack play dates form are
+// shown (the audit server has no packs).  Only reading is stood in for.
+const TIME_CHECKS = {
+  enabled: true, hour_format: "12", rule: "after_hour_song", enabled_packs: ["Studio", "Christmas"],
+  pack_order: "rotate", missing_minutes: 1440, missing_examples: [], tts_available: false,
+  timezone: "UTC", duck_db: -12,
+  packs: [
+    { name: "Studio", enabled: true, minutes_covered: 1440, summary: "1440 of 1440 minutes covered.",
+      not_before: null, not_after: null, dates_text: "", playable: true, unplayable_text: "" },
+    { name: "Christmas", enabled: true, minutes_covered: 1440, summary: "1440 of 1440 minutes covered.",
+      not_before: "2026-12-01", not_after: "2026-12-26",
+      dates_text: "Plays from 1 December 2026 until 26 December 2026", playable: false,
+      unplayable_text: "not playable before 1 December 2026" },
+  ],
+};
+const timeCheckPages = new WeakSet();
+
+async function standInForTimeChecks(page) {
+  if (timeCheckPages.has(page)) return;
+  timeCheckPages.add(page);
+  await page.route("**/api/time-checks", (route) => (route.request().method() === "GET"
+    ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(TIME_CHECKS) })
+    : route.continue()));
+}
+
+// A backwards date range: the error shown on the page, linked to Do not
+// play after and focused, as a refused save shows it.
+async function openPackDatesError(page, visit) {
+  await page.locator("#tc-dates").waitFor({ state: "visible" });
+  await page.locator("#tc-not-before").fill("2026-12-26");
+  await page.locator("#tc-not-after").fill("2026-12-01");
+  await page.locator("#tc-dates-save").click();
+  await page.locator("#tc-dates-error").waitFor({ state: "visible" });
+  await visit("settings/time-checks/dates-error");
+  await page.locator("#tc-not-after").fill("2026-12-31");
+}
+
+// Library tools: a category's season and a clockwheel step's hours, each
+// refused with its error on the page, linked to the field and focused.
+async function openDaypartErrors(page, visit) {
+  await page.locator("#categories-add").click();
+  await page.locator("#categories-name").fill("Christmas");
+  await page.locator("#categories-query").fill("genre:Christmas");
+  await page.locator("#categories-not-before").fill("2026-12-26");
+  await page.locator("#categories-not-after").fill("2026-12-01");
+  await page.locator("#categories-save").click();
+  await page.locator("#categories-form-error").waitFor({ state: "visible" });
+  await visit("library/category-dates-error");
+  await page.locator("#categories-cancel").click();
+  await page.locator("#clock-name").fill("Audit");
+  await page.locator("#clock-create").click();
+  await page.locator("#clock-step-hours-from").fill("22:00");
+  await page.locator("#clock-add-step").click();
+  await page.locator("#clock-step-hours-error").waitFor({ state: "visible" });
+  await visit("library/step-hours-error");
+}
+
 async function openEveryCard(page) {
   await page.evaluate(() => {
     for (const details of document.querySelectorAll("details")) details.open = true;
@@ -222,6 +285,7 @@ async function newPage(context) {
 async function eachTarget(page, visit) {
   await standInForRotationTest(page);
   await standInForTrackInfo(page);
+  await standInForTimeChecks(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   for (const view of VIEWS) {
     await page.locator(`#tab-${view}`).click();
@@ -234,6 +298,7 @@ async function eachTarget(page, visit) {
       await settle(page);
       await visit(view);
       if (view === "track-info") await openTrackTags(page, visit);
+      if (view === "library") await openDaypartErrors(page, visit);
       continue;
     }
     const ids = await page.$$eval("#settings-tabs [role='tab']:not([hidden])",
@@ -245,6 +310,7 @@ async function eachTarget(page, visit) {
       await settle(page);
       await visit(`settings/${id.replace(/^stab-/, "")}`);
       if (id === "stab-picking") await openRotationTest(page, visit);
+      if (id === "stab-time-checks") await openPackDatesError(page, visit);
     }
   }
 }
@@ -564,6 +630,12 @@ async function auditTheme(browser, mode, out) {
         record("toast", target, await toastProblems(page));
       }
       if (target === "settings/display") record("toast", target, await toastProblems(page));
+      if (target === "settings/workers") {
+        await chooseAnnouncer(page);
+        record("axe", `${target} announcer`, await axeViolations(page));
+        record("nonText", `${target} announcer`, await controlBoundaryProblems(page));
+        await chooseAnnouncer(page, false);
+      }
       if (SHOTS) {
         // A message showing in every shot, so the toast is seen in both
         // themes; on Now Playing the wheel lit as well.
@@ -766,6 +838,53 @@ async function toastBehaviourProblems(page) {
 }
 
 // The preview output device setting, in whatever this engine supports.
+// Settings > Analysis workers with an announcer token chosen: the Station
+// choice shows (#88).  Back to the default choice with `false`.
+async function chooseAnnouncer(page, announcer = true) {
+  await page.locator("#token-scope").selectOption(announcer ? "announcer" : "analysis-worker");
+  await page.locator("#token-station-row").waitFor({ state: announcer ? "visible" : "hidden" });
+}
+
+async function tokenScopeProblems(page) {
+  await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
+  await page.locator("#tab-settings").click();
+  await page.locator("#stab-workers").click();
+  const scope = page.locator("#token-scope");
+  await scope.waitFor({ state: "visible" });
+  const problems = [];
+  const shown = () => page.evaluate(() => {
+    const row = document.getElementById("token-station-row");
+    const select = document.getElementById("token-station");
+    const help = document.getElementById("token-station-desc");
+    const box = (node) => node.getBoundingClientRect().toJSON();
+    return {
+      visible: Boolean(row.getClientRects().length && help.getClientRects().length),
+      label: select.labels?.[0]?.textContent.trim(),
+      describedBy: select.getAttribute("aria-describedby") || "",
+      options: select.options.length,
+      select: box(select),
+      scope: box(document.getElementById("token-scope")),
+      focus: document.activeElement?.id,
+    };
+  });
+  if ((await shown()).visible) problems.push("the station choice shows for a worker token");
+  await scope.focus();
+  await chooseAnnouncer(page);
+  const info = await shown();
+  if (!info.visible) problems.push("the station choice does not show for an announcer token");
+  if (info.label !== "Station") problems.push(`station label is ${JSON.stringify(info.label)}`);
+  if (info.describedBy !== "token-station-desc") problems.push("station help is not linked");
+  if (info.options < 1) problems.push("no station to choose");
+  if (info.focus !== "token-scope") problems.push(`choosing moved focus to ${info.focus}`);
+  for (const [what, rect] of [["station", info.select], ["token use", info.scope]]) {
+    if (rect.width < 24 || rect.height < 24) {
+      problems.push(`${what} select is ${Math.round(rect.width)}x${Math.round(rect.height)}`);
+    }
+  }
+  await chooseAnnouncer(page, false);
+  return problems;
+}
+
 async function previewOutputProblems(page) {
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   await page.locator("#tab-settings").click();
@@ -848,6 +967,8 @@ export async function audit(name, launcher) {
     if (toast.length) out.behaviour.toast = toast;
     const preview = await previewOutputProblems(page);
     if (preview.length) out.behaviour.previewOutput = preview;
+    const tokenScope = await tokenScopeProblems(page);
+    if (tokenScope.length) out.behaviour.tokenScope = tokenScope;
     // 200 % text at the same window width.
     await wide.addInitScript(() => {
       document.addEventListener("DOMContentLoaded", () => {
@@ -867,6 +988,12 @@ export async function audit(name, launcher) {
     await eachTarget(phone, async (target) => {
       const overflow = await horizontalOverflow(phone);
       if (overflow) out.reflow320[target] = overflow;
+      if (target === "settings/workers") {
+        await chooseAnnouncer(phone);
+        const shown = await horizontalOverflow(phone);
+        if (shown) out.reflow320[`${target} announcer`] = shown;
+        await chooseAnnouncer(phone, false);
+      }
     });
     await narrow.close();
     return out;

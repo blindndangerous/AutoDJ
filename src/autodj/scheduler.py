@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import calendar
+import functools
 import json
 import logging
 import uuid
@@ -86,8 +87,15 @@ class EventError(ValueError):
         self.field = field_name
 
 
+@functools.cache
 def system_timezone() -> str:
-    """Return the system's IANA time zone name, or ``"UTC"`` when it has none."""
+    """Return the system's IANA time zone name, or ``"UTC"`` when it has none.
+
+    Asked once per process: every pick and clip check that reads the
+    station's time without ``[server] station_timezone`` comes here, so a
+    host with no known zone warns once, not on every song.  Changing the
+    system zone takes a restart, as ``station_timezone`` does.
+    """
     from tzlocal import get_localzone_name
 
     try:
