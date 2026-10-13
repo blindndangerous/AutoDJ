@@ -22,6 +22,16 @@ Two more rules use files in the index folder, each turned on in Settings:
 Each rule looks back a number of tracks, a number of minutes, or both;
 a candidate is held back when either one catches it.
 
+Two more rules keep a song from playing at the same time of day, day after
+day (daypart and hourpart separation, #129), both off unless set:
+
+- **Same daypart**: the song played in the daypart the pick starts in
+  (such as morning drive, 6 to 10) today or on one of the days before.
+- **Same quarter hour**: one of the song's last few plays started in the
+  quarter of the hour the pick starts in.
+
+They relax with the artist, album and title rules when nothing else fits.
+
 With **Count versions as one song** on, the files of one song (the same
 lead artist and :func:`title_key`, such as a radio edit and a remix) are one
 song when picking (see :class:`SongVersions`): the track rule holds back
@@ -62,18 +72,30 @@ import math
 import re
 import tomllib
 import unicodedata
+from bisect import bisect_right
 from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+from autodj.repeat_settings import DEFAULT_DAYPART_START_HOURS
 
 logger = logging.getLogger(__name__)
 
 #: The longest minute window a repeat rule accepts: one week.
 MAX_REPEAT_MINUTES = 10080.0
+
+#: The rules that relax together when no candidate passes them, for log lines.
+RELAXED_RULES = (
+    "the artist, related artist, album, title, related track, daypart and quarter-hour rules"
+)
+
+#: The shortest a play is taken to last when working out how many saved plays cover the
+#: daypart and quarter-hour rules' days.  Liners are not saved as plays, so songs are longer.
+SHORTEST_PLAY_SECONDS = 60.0
 
 # ---------------------------------------------------------------------------
 # Text keys
@@ -545,6 +567,13 @@ class RepeatRules:
         related_track_minutes: The same, in minutes.
         versions_as_one_song: Count a song's versions as one song (see
             :class:`SongVersions`).
+        daypart_days: Days before today whose same daypart holds a song
+            back; 0 turns the rule off.
+        daypart_starts: The station hours the dayparts start at, in
+            order.  The last daypart runs on to the first start of the
+            next day.
+        hourpart_plays: A song's latest plays whose quarter of the hour
+            holds it back; 0 turns the rule off.
     """
 
     track_window: int = 50
@@ -562,6 +591,9 @@ class RepeatRules:
     related_track_window: int = 0
     related_track_minutes: float = 0.0
     versions_as_one_song: bool = False
+    daypart_days: int = 0
+    daypart_starts: tuple[int, ...] = DEFAULT_DAYPART_START_HOURS
+    hourpart_plays: int = 0
 
     @property
     def related_artist_limits(self) -> tuple[int, float]:
@@ -625,6 +657,9 @@ class RepeatRules:
             related_track_window=related_track_window if use_tracks else 0,
             related_track_minutes=related_track_minutes if use_tracks else 0.0,
             versions_as_one_song=settings.versions_as_one_song,
+            daypart_days=settings.daypart.days,
+            daypart_starts=tuple(settings.daypart.start_hours),
+            hourpart_plays=settings.hourpart.plays,
         )
 
     @property
@@ -642,7 +677,17 @@ class RepeatRules:
 
     @property
     def keep_seconds(self) -> float:
-        """How many seconds of history any minute window can look at."""
+        """How many seconds of history any rule can look at.
+
+        The daypart rule looks at the days it covers, and two more for the
+        daypart that runs past midnight and a clock change; the
+        quarter-hour rule at :data:`HOURPART_DAYS`.
+        """
+        return max(self.minute_seconds, self.time_of_day_seconds)
+
+    @property
+    def minute_seconds(self) -> float:
+        """How many seconds of history the minute windows look at (0 when none is set)."""
         related_minutes = self.related_artist_limits[1] if self.related.links else 0.0
         return (
             max(
@@ -655,6 +700,16 @@ class RepeatRules:
             )
             * 60.0
         )
+
+    @property
+    def time_of_day_seconds(self) -> float:
+        """How many seconds of history the daypart and quarter-hour rules look at (0 when off)."""
+        seconds = 0.0
+        if self.daypart_days:
+            seconds = (self.daypart_days + 2) * 86400.0
+        if self.hourpart_plays:
+            seconds = max(seconds, HOURPART_DAYS * 86400.0)
+        return seconds
 
 
 @dataclass(frozen=True)
@@ -749,13 +804,20 @@ def plays_to_load(rules: RepeatRules, minimum_seconds: float = 0) -> int:
     """How many saved plays to load at startup so every window starts full.
 
     The track window's count, the artist and title windows' counts, and,
-    when any rule counts minutes, up to :data:`HISTORY_LIMIT` plays.
+    when any rule counts minutes, up to :data:`HISTORY_LIMIT` plays.  When
+    only the daypart and quarter-hour rules look back in time, as many
+    plays as their days can hold at :data:`SHORTEST_PLAY_SECONDS` each.
     """
-    needed = (
-        HISTORY_LIMIT
-        if max(rules.keep_seconds, minimum_seconds) > 0
-        else min(rules.keep_tracks, HISTORY_LIMIT)
-    )
+    counted = min(rules.keep_tracks, HISTORY_LIMIT)
+    if max(rules.minute_seconds, minimum_seconds) > 0:
+        needed = HISTORY_LIMIT
+    elif rules.time_of_day_seconds:
+        needed = min(
+            HISTORY_LIMIT,
+            max(counted, math.ceil(rules.time_of_day_seconds / SHORTEST_PLAY_SECONDS)),
+        )
+    else:
+        needed = counted
     return max(rules.track_window, needed)
 
 
@@ -913,7 +975,64 @@ class SongVersions:
 
 
 #: Reasons a candidate is held back, in the order they are checked.
-REASONS = ("same artist", "related artist", "same album", "same title", "related track")
+REASONS = (
+    "same artist",
+    "related artist",
+    "same album",
+    "same title",
+    "related track",
+    "same daypart",
+    "same quarter hour",
+)
+
+
+def _local_start(day: date, hour: int, zone: tzinfo) -> float:
+    """Unix seconds of *hour* o'clock on *day* in *zone*."""
+    return datetime(day.year, day.month, day.day, hour, tzinfo=zone).timestamp()
+
+
+def daypart_spans(
+    at: float, starts: Sequence[int], days: int, zone: tzinfo = UTC
+) -> list[tuple[float, float]]:
+    """The daypart *at* falls in, today and on each of the *days* before, newest first.
+
+    Each span is ``(start, end)`` in Unix seconds, the end not included.
+    *starts* are the station hours the dayparts start at, in order; the
+    last daypart runs to the first start of the next day, so with starts
+    of 6 and 19 a song at 2 in the morning is in the evening daypart that
+    began at 19 the day before.  *zone* is the station's time zone, so a
+    daypart keeps its hours across a clock change.
+    """
+    local = datetime.fromtimestamp(at, zone)
+    index = bisect_right(starts, local.hour) - 1
+    day = local.date()
+    if index < 0:  # Before the first start: still in the last daypart of the day before.
+        index = len(starts) - 1
+        day -= timedelta(days=1)
+    spans = []
+    for back in range(days + 1):
+        first = day - timedelta(days=back)
+        if index + 1 < len(starts):
+            end = _local_start(first, starts[index + 1], zone)
+        else:
+            end = _local_start(first + timedelta(days=1), starts[0], zone)
+        spans.append((_local_start(first, starts[index], zone), end))
+    return spans
+
+
+#: How many days back the quarter-hour rule looks for a song's latest plays.  A pattern
+#: older than a week is not one a listener hears, and the bound keeps the history short.
+HOURPART_DAYS = 7
+
+
+def quarter_hour(at: float) -> int:
+    """The quarter of the hour Unix time *at* falls in, 0 to 3.
+
+    Read in UTC.  Every time zone in use is a whole number of quarter
+    hours from UTC, so two times share a quarter in UTC exactly when they
+    share it on the station's clock; the quarter's number may differ.
+    """
+    return int(at // 900) % 4
 
 
 class RepeatFilter:
@@ -935,6 +1054,12 @@ class RepeatFilter:
         names: Looks up the written name of an artist key, for logs.
         related_tracks: Track keys held back through a related track ->
             the recent track key that holds it back.
+        daypart: Songs (see :func:`song_identity`) that played in the
+            pick's daypart today or on the days before.
+        hourpart: Songs whose latest plays started in the pick's quarter
+            of the hour.
+        versions_as_one_song: Name songs by their :func:`song_key`, so
+            every version of a song is held back with it.
     """
 
     def __init__(
@@ -946,6 +1071,10 @@ class RepeatFilter:
         keys: TrackKeyCache | ArtistSplitter | None = None,
         names: RelatedArtists | None = None,
         related_tracks: Mapping[TrackKey, TrackKey] | None = None,
+        *,
+        daypart: Collection[str | TrackKey] = (),
+        hourpart: Collection[str | TrackKey] = (),
+        versions_as_one_song: bool = False,
     ) -> None:
         self.artists = frozenset(artists)
         self.related = dict(related or {})
@@ -957,12 +1086,22 @@ class RepeatFilter:
         self._related_titles = frozenset(title for _, title in self.related_tracks)
         self._keys = _key_cache(keys)
         self._names = names or RelatedArtists()
+        self.daypart = frozenset(daypart)
+        self.hourpart = frozenset(hourpart)
+        self._versions = versions_as_one_song
+        self._timed = bool(self.daypart or self.hourpart)
         self.held_back: dict[str, str] = {}
 
     def __bool__(self) -> bool:
         """True when any rule can hold a candidate back."""
         return bool(
-            self.artists or self.related or self.albums or self.titles or self.related_tracks
+            self.artists
+            or self.related
+            or self.albums
+            or self.titles
+            or self.related_tracks
+            or self.daypart
+            or self.hourpart
         )
 
     def reason(self, entry: Any) -> str | None:
@@ -982,6 +1121,12 @@ class RepeatFilter:
             (artist, keys.title) in self.related_tracks for artist in keys.artists
         ):
             return "related track"
+        if self._timed:
+            song = (keys.song or entry.path) if self._versions else entry.path
+            if song in self.daypart:
+                return "same daypart"
+            if song in self.hourpart:
+                return "same quarter hour"
         return None
 
     def __call__(self, entry: Any) -> bool:
@@ -998,16 +1143,76 @@ class RepeatFilter:
         return ", ".join(f"{counts[reason]} {reason}" for reason in REASONS if counts[reason])
 
 
+def song_identity(record: Any, keys: TrackKeyCache, versions_as_one_song: bool) -> str | TrackKey:
+    """What the daypart and quarter-hour rules call *record*'s song.
+
+    Its path, or with Count versions as one song its :func:`song_key`
+    (its path when it has none), so every version of a song counts.
+    """
+    if versions_as_one_song:
+        return keys.keys(record).song or record.path
+    return record.path
+
+
+def _time_separation(
+    history: Sequence[PlayRecord],
+    rules: RepeatRules,
+    at: float,
+    zone: tzinfo,
+    cache: TrackKeyCache,
+) -> tuple[set[str | TrackKey], set[str | TrackKey]]:
+    """The songs the daypart and quarter-hour rules hold back for a song starting at *at*.
+
+    Worked out once per pick, walking *history* (oldest first) from the
+    newest play back to the oldest either rule can see; each candidate is
+    then a set lookup.  Like :func:`prune_history`, the walk takes the
+    history to be in the order the plays started.
+    """
+    versions = rules.versions_as_one_song
+    daypart: set[str | TrackKey] = set()
+    if rules.daypart_days and rules.daypart_starts:
+        spans = daypart_spans(at, rules.daypart_starts, rules.daypart_days, zone)
+        oldest, latest = spans[-1][0], spans[0][1]
+        for record in reversed(history):
+            started = record.started
+            if started < oldest:
+                break
+            if started < latest and any(begin <= started < end for begin, end in spans):
+                daypart.add(song_identity(record, cache, versions))
+    hourpart: set[str | TrackKey] = set()
+    plays = rules.hourpart_plays
+    if plays:
+        quarter = quarter_hour(at)
+        since = at - HOURPART_DAYS * 86400.0
+        counted: dict[str | TrackKey, int] = {}
+        for record in reversed(history):
+            started = record.started
+            if started < since:
+                break
+            song = (cache.keys(record).song or record.path) if versions else record.path
+            seen = counted.get(song, 0)
+            if seen < plays:
+                counted[song] = seen + 1
+                if int(started // 900) % 4 == quarter:
+                    hourpart.add(song)
+    return daypart, hourpart
+
+
 def build_filter(
     history: Sequence[PlayRecord],
     rules: RepeatRules,
     now: float,
     keys: TrackKeyCache | ArtistSplitter,
+    *,
+    at: float | None = None,
+    zone: tzinfo = UTC,
 ) -> tuple[RepeatFilter, list[str]]:
     """Work out what *history* (oldest first) holds back at time *now*.
 
     *keys* looks up each record's keys; pass the player's
     :class:`TrackKeyCache` so tracks from the library are not split again.
+    The daypart and quarter-hour rules judge a song that starts at *at*
+    (*now* when not given) on the station's clock in *zone*.
 
     Returns:
         The artist, album and title filter, and the paths the track
@@ -1070,17 +1275,30 @@ def build_filter(
     artists.discard("")
     albums.discard("")
     titles.discard("")
+    daypart, hourpart = _time_separation(history, rules, now if at is None else at, zone, cache)
     repeat = RepeatFilter(
-        artists, related, albums, titles, cache, rules.related, related_tracks=related_tracks
+        artists,
+        related,
+        albums,
+        titles,
+        cache,
+        rules.related,
+        related_tracks=related_tracks,
+        daypart=daypart,
+        hourpart=hourpart,
+        versions_as_one_song=rules.versions_as_one_song,
     )
     return repeat, paths
 
 
 __all__ = [
     "HISTORY_LIMIT",
+    "HOURPART_DAYS",
     "MAX_RELATED_ARTISTS_BYTES",
     "MAX_REPEAT_MINUTES",
     "REASONS",
+    "RELAXED_RULES",
+    "SHORTEST_PLAY_SECONDS",
     "SINGLE_ACTS",
     "ArtistSplitter",
     "PlayRecord",
@@ -1097,6 +1315,7 @@ __all__ = [
     "album_key",
     "artist_key",
     "build_filter",
+    "daypart_spans",
     "featured_in_title",
     "load_related_artists",
     "load_related_tracks",
@@ -1104,8 +1323,10 @@ __all__ = [
     "parse_related_tracks",
     "plays_to_load",
     "prune_history",
+    "quarter_hour",
     "records_from_plays",
     "related_track_key",
+    "song_identity",
     "song_key",
     "title_key",
 ]

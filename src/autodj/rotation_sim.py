@@ -83,6 +83,8 @@ RULES = (
     "same album",
     "same title",
     "related track",
+    "same daypart",
+    "same quarter hour",
     "track repeat window",
     "dayparting",
     "back to back",

@@ -2509,6 +2509,11 @@ artists file is `index/<name>/related-artists.toml` and is read only when
 `index/<name>/related-tracks.toml` and is read only when **Use related tracks** is enabled.
 Each must be at most 1 MiB.
 
+The daypart and quarter-hour rules (both off to start with) keep a song from playing at the same
+time of day, day after day. They read the hours on the station's clock (`[server]
+station_timezone`), and each station keeps its own. See
+[Time of day](track-selection.md#time-of-day) for how they work.
+
 ## Testing the rotation
 
 The rotation tester plays a span of time, or a number of songs, through the station's own song
@@ -2567,7 +2572,8 @@ The report, in words or JSON, gives:
   played;
 - songs never played, with a count and the first ten, overall and per category;
 - how often each rule had to be relaxed, and which: same artist, related artist, same album, same
-  title, related track, the track repeat window, dayparting and back-to-back repeats, plus fallbacks to a random
+  title, related track, same daypart, same quarter hour, the track repeat window, dayparting and
+  back-to-back repeats, plus fallbacks to a random
   song. A clockwheel step set not to enforce the rules is counted apart;
 - clockwheel steps that were skipped or came up empty, with the reason, such as "all matching
   entries blocked by rules" or "outside its hours";

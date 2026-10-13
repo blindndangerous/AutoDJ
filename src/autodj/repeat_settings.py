@@ -6,7 +6,7 @@ import logging
 from collections.abc import Mapping
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 REMOVED_REPEAT_KEYS = frozenset(
     {
@@ -33,10 +33,10 @@ def ignore_unknown_repeat_keys(data: object, section: str = "playback.repeat_rul
     if unknown:
         logger.warning("Ignoring unknown config keys in [%s]: %s", section, sorted(unknown))
     cleaned = {key: value for key, value in data.items() if key in known}
-    for name in RULE_NAMES:
+    for name, model in NESTED_RULES.items():
         rule = cleaned.get(name)
         if isinstance(rule, Mapping):
-            rule_keys = set(RepeatRule.model_fields)
+            rule_keys = set(model.model_fields)
             unknown = set(rule) - rule_keys
             if unknown:
                 logger.warning(
@@ -75,6 +75,42 @@ class RepeatRule(BaseModel):
     minutes: Annotated[float, Field(strict=True, ge=0, le=10080, allow_inf_nan=False)] = 0.0
 
 
+#: Where the default dayparts start, in station hours: overnight, morning drive, midday,
+#: afternoon drive and evening.
+DEFAULT_DAYPART_START_HOURS = (0, 6, 10, 15, 19)
+#: The most days the daypart rule looks back.
+MAX_DAYPART_DAYS = 7
+#: The most plays of a song the quarter-hour rule looks at; at 3 a song moves round all four.
+MAX_HOURPART_PLAYS = 3
+
+
+class DaypartRule(BaseModel):
+    """Keep a song out of the daypart it played in today or on the *days* before."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    days: Annotated[int, Field(strict=True, ge=0, le=MAX_DAYPART_DAYS)] = 0
+    start_hours: list[Annotated[int, Field(strict=True, ge=0, le=23)]] = Field(
+        default_factory=lambda: list(DEFAULT_DAYPART_START_HOURS), min_length=1, max_length=24
+    )
+
+    @field_validator("start_hours")
+    @classmethod
+    def distinct_hours(cls, hours: list[int]) -> list[int]:
+        """The hours in order; an hour given twice is refused."""
+        if len(set(hours)) != len(hours):
+            raise ValueError("daypart start hours must not repeat an hour")
+        return sorted(hours)
+
+
+class HourpartRule(BaseModel):
+    """Keep a song out of the quarter of the hour its last *plays* plays started in."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    plays: Annotated[int, Field(strict=True, ge=0, le=MAX_HOURPART_PLAYS)] = 0
+
+
 class RepeatSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -87,6 +123,8 @@ class RepeatSettings(BaseModel):
     use_related_artists: StrictBool = False
     use_related_tracks: StrictBool = False
     versions_as_one_song: StrictBool = False
+    daypart: DaypartRule = DaypartRule()
+    hourpart: HourpartRule = HourpartRule()
 
     @model_validator(mode="before")
     @classmethod
@@ -102,3 +140,11 @@ class RepeatSettings(BaseModel):
             if getattr(self, name).tracks > 5000:
                 raise ValueError(f"{name} tracks must be between 0 and 5000")
         return self
+
+
+#: Each table inside the repeat rules, and the model that reads it.
+NESTED_RULES: dict[str, type[BaseModel]] = {
+    **dict.fromkeys(RULE_NAMES, RepeatRule),
+    "daypart": DaypartRule,
+    "hourpart": HourpartRule,
+}

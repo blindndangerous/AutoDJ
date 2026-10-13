@@ -358,6 +358,20 @@ async function openPackDatesError(page, visit) {
   await page.locator("#tc-not-after").fill("2026-12-31");
 }
 
+// Song picking > Repeats: daypart start hours refused in the browser, the
+// field marked invalid and focused, its message shown under it (#129).  Nothing is saved.
+async function openRepeatHoursError(page, visit) {
+  const hours = page.locator("#repeat-daypart-hours");
+  await hours.waitFor({ state: "visible" });
+  const before = await hours.inputValue();
+  await hours.fill("6, 6");
+  await page.locator("#repeat-save").click();
+  await page.locator('#repeat-daypart-hours[aria-invalid="true"]').waitFor();
+  await page.locator("#repeat-error").waitFor({ state: "visible" });
+  await visit("settings/picking/repeat-hours-error");
+  await hours.fill(before);
+}
+
 // Library tools: a category's season and a clockwheel step's hours, each
 // refused with its error on the page, linked to the field and focused.
 async function openDaypartErrors(page, visit) {
@@ -640,7 +654,10 @@ async function eachTarget(page, visit) {
       await openEveryCard(page);
       await settle(page);
       await visit(`settings/${id.replace(/^stab-/, "")}`);
-      if (id === "stab-picking") await openRotationTest(page, visit);
+      if (id === "stab-picking") {
+        await openRotationTest(page, visit);
+        await openRepeatHoursError(page, visit);
+      }
       if (id === "stab-time-checks") await openPackDatesError(page, visit);
     }
   }
