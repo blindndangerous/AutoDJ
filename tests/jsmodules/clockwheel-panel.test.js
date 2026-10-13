@@ -368,7 +368,7 @@ describe("clockwheel editor", () => {
     expect(status()).toBe("");
   });
 
-  it("navigates step names with arrows, edits with Enter and asks before Delete removes a step", async () => {
+  it("navigates step names with arrows, edits with Enter and deletes like the button", async () => {
     await open(fakeServer());
     rowCell(1, "edit").focus();
     rowCell(1, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
@@ -393,14 +393,10 @@ describe("clockwheel editor", () => {
     rowCell(2, "edit").focus();
     rowCell(2, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     expect(byId("clock-step-legend").textContent).toBe("Edit step 3");
+    byId("clock-cancel-edit").click();
     rowCell(2, "edit").focus();
     rowCell(2, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }));
-    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
-    expect(byId("confirm-title").textContent).toBe("Delete step 3, track Album/Song.flac?");
-    expect(byId("confirm-accept").textContent).toBe("Delete step");
-    expect(document.activeElement).toBe(byId("confirm-cancel"));
-    expect(rows()).toHaveLength(3);
-    byId("confirm-accept").click();
+    expect(byId("confirm-dialog").open).toBe(false);
     await vi.waitFor(() => expect(status()).toBe("Deleted step 3, track Album/Song.flac. 2 steps remain. Not saved yet."));
     expect(byId("confirm-dialog").open).toBe(false);
     expect(rows()).toHaveLength(2);
@@ -448,32 +444,121 @@ describe("clockwheel editor", () => {
     expect([...byId("clock-slots").querySelectorAll('[role="gridcell"]')].filter((item) => item.tabIndex === 0)).toEqual([rowCell(1, "duplicate")]);
   });
 
-  it("keeps the step when the Delete key's question is cancelled", async () => {
-    await open(fakeServer());
-    rowCell(0, "duplicate").focus();
-    rowCell(0, "duplicate").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }));
-    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
-    expect(byId("confirm-title").textContent).toBe("Delete step 1, music from Rock, least recently played?");
-    expect(document.activeElement).toBe(byId("confirm-cancel"));
-    byId("confirm-cancel").click();
-    await vi.waitFor(() => expect(document.activeElement).toBe(rowCell(0, "duplicate")));
-    expect(rows()).toHaveLength(3);
+  it("undoes either Delete path and restores the removed step's focus without saving", async () => {
+    const server = await open(fakeServer());
+    expect(byId("clock-undo").disabled).toBe(true);
+    rowButton(0, "delete").click();
+    expect(rows()).toHaveLength(2);
+    expect(byId("confirm-dialog").open).toBe(false);
+    expect(byId("clock-undo").disabled).toBe(false);
+    byId("clock-undo").click();
     expect(rowText(0)).toBe("music from Rock, least recently played");
-    expect(byId("clock-next").textContent).not.toBe("Save to play these changes.");
-    expect(status()).toBe("");
+    expect(document.activeElement).toBe(rowCell(0, "edit"));
+    expect(byId("clock-undo").disabled).toBe(true);
+    rowCell(0, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }));
+    document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true }));
+    expect(rows()).toHaveLength(3);
+    expect(document.activeElement).toBe(rowCell(0, "edit"));
+    await vi.waitFor(() => expect(status()).toBe("Undid the last step change. Not saved yet."));
+    expect(server.calls.every((call) => call.method === "GET")).toBe(true);
   });
 
-  it("deletes the last step after the Delete key's question and moves focus to the step type", async () => {
+  it("refuses Delete and Undo while a step edit is open and keeps the form values", async () => {
+    await open(fakeServer());
+    rowButton(0, "delete").click();
+    rowButton(1, "edit").click();
+    byId("clock-step-path").value = "Unsaved/Path";
+    expect(byId("clock-undo").disabled).toBe(true);
+    expect(rowButton(0, "delete").disabled).toBe(true);
+
+    rowButton(0, "delete").click();
+    rowCell(0, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }));
+    byId("clock-undo").click();
+    const undo = new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true });
+    byId("clock-step-path").dispatchEvent(undo);
+
+    expect(undo.defaultPrevented).toBe(false);
+    expect(rows()).toHaveLength(2);
+    expect(byId("clock-step-path").value).toBe("Unsaved/Path");
+    expect(byId("clock-step-legend").textContent).toBe("Edit step 2");
+    byId("clock-cancel-edit").click();
+    expect(byId("clock-undo").disabled).toBe(false);
+    byId("clock-undo").click();
+    expect(rows()).toHaveLength(3);
+  });
+
+  it("keeps an unsaved edit on its own step when an earlier step is duplicated or moved", async () => {
+    await open(fakeServer());
+    rowButton(2, "edit").click();
+    byId("clock-step-path").value = "Unsaved/Path.flac";
+    rowButton(0, "duplicate").click();
+    expect(byId("clock-step-legend").textContent).toBe("Edit step 4");
+    expect(byId("clock-add-step").textContent).toBe("Update step 4");
+    rowButton(3, "move-up").click();
+    expect(byId("clock-step-legend").textContent).toBe("Edit step 3");
+    expect(byId("clock-step-path").value).toBe("Unsaved/Path.flac");
+    byId("clock-step-type").dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true }));
+    expect(rows()).toHaveLength(4);
+    byId("clock-add-step").click();
+    expect(rowText(2)).toBe("track Unsaved/Path.flac");
+    expect(rowText(3)).toContain("liner from Top");
+  });
+
+  it("restores the last deleted step with Ctrl+Z from Step type", async () => {
     const server = fakeServer();
     server.clocks.Morning.steps = [MUSIC];
     await open(server);
-    rowCell(0, "edit").focus();
     rowCell(0, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }));
-    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
-    byId("confirm-accept").click();
-    await vi.waitFor(() => expect(status()).toBe("Deleted step 1, music from Rock, least recently played. No steps are left. Not saved yet."));
     expect(rows()).toHaveLength(0);
     expect(document.activeElement).toBe(byId("clock-step-type"));
+    document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true }));
+    expect(rows()).toHaveLength(1);
+    expect(document.activeElement).toBe(rowCell(0, "edit"));
+  });
+
+  it("undoes move, duplicate, add and update in order, without intercepting text undo", async () => {
+    await open(fakeServer());
+    rowButton(0, "move-down").click();
+    rowButton(1, "duplicate").click();
+    byId("clock-step-type").value = "settings";
+    byId("clock-step-type").dispatchEvent(new Event("change"));
+    byId("clock-step-preset").value = "night";
+    byId("clock-add-step").click();
+    rowButton(4, "edit").click();
+    byId("clock-step-preset").value = "wakeup";
+    byId("clock-add-step").click();
+    expect(rowText(4)).toBe("switch to preset wakeup");
+    const textUndo = new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true });
+    byId("clock-name").dispatchEvent(textUndo);
+    expect(textUndo.defaultPrevented).toBe(false);
+    expect(rows()).toHaveLength(5);
+    byId("clock-undo").click();
+    expect(rowText(4)).toBe("switch to preset night");
+    byId("clock-undo").click();
+    expect(rows()).toHaveLength(4);
+    byId("clock-undo").click();
+    expect(rows()).toHaveLength(3);
+    byId("clock-undo").click();
+    expect(rowText(0)).toBe("music from Rock, least recently played");
+    expect(byId("clock-undo").disabled).toBe(true);
+  });
+
+  it("keeps undo across refresh and failed saves, and clears it on save or sign-out", async () => {
+    const server = await open(fakeServer());
+    rowButton(0, "delete").click();
+    await controls.refresh();
+    expect(byId("clock-undo").disabled).toBe(false);
+    server.fail = new Error("Could not save");
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toBe("Could not save"));
+    expect(byId("clock-undo").disabled).toBe(false);
+    server.fail = null;
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 2 steps."));
+    expect(byId("clock-undo").disabled).toBe(true);
+    rowButton(0, "delete").click();
+    controls.clearProtectedData();
+    expect(byId("clock-undo").disabled).toBe(true);
   });
 
   it("moves a step with Alt+Down, keeps focus on it and says the new position", async () => {
@@ -891,6 +976,19 @@ describe("clockwheel step conditions, for screen readers", () => {
       { field: "artist", operator: "is", value: "Björk" },
       { field: "duration", operator: "between", value: 65, upper: 90 },
     ]);
+  });
+
+  it("rejects negative clockwheel durations now that signed cue times are accepted", async () => {
+    await open(fakeServer());
+    startMusicStep();
+    const [row] = conditions();
+    setField(row, "duration");
+    setOperator(row, "gte");
+    const value = row.querySelectorAll("input[type=text]")[1];
+    value.value = "-3";
+    byId("clock-add-step").click();
+    await vi.waitFor(() => expect(status()).toBe("Duration must be non-negative."));
+    expect(value.getAttribute("aria-invalid")).toBe("true");
   });
 
   it("clears marks on rows after the one that fails", async () => {

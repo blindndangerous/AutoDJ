@@ -458,6 +458,8 @@ def test_clock_omits_only_liner_when_pair_will_not_fit(
         (0, 0.25, True, None),
         (0, 2.25, True, None),
         (3, 2.25, True, None),
+        (-3, 5.25, False, None),
+        (-3, 2.25, False, None),
         (None, 2.25, False, 2.5),
         (3, 2.25, False, 2.5),
     ],
@@ -606,6 +608,87 @@ def test_voice_followed_by_id_never_starts_id_before_song_segue(station):
     result = player._render_track(a, b, 0, liners=((voice, True), (jingle, True)))
     assert result.liner_events == ((6 * SR, voice, True), (10 * SR, jingle, True))
     assert len(result.audio) - result.overlap_frames == 12 * SR
+
+
+def test_later_negative_liner_cue_does_not_delay_an_earlier_zero_liner(station):
+    player, (a, b, voice, jingle), points = station
+    points[b.path]["intro"] = 6
+    points[voice.path].update(start=0, segue=1, end=1, overlap_start=0)
+    points[jingle.path].update(start=0, segue=1, end=1, overlap_start=-3)
+    result = player._render_track(a, b, 0, liners=((voice, False), (jingle, False)))
+    assert result.liner_events == ((10 * SR, voice, False), (11 * SR, jingle, False))
+    assert len(result.audio) - result.overlap_frames == 10 * SR
+
+
+def test_first_negative_attached_liner_starts_after_music_and_keeps_tail(station):
+    player, (a, b, voice, _), points = station
+    points[b.path]["intro"] = 6
+    points[voice.path].update(start=0.5, segue=2, end=4, overlap_start=-3)
+    result = player._render_track(a, b, 0, liners=((voice, False),))
+    assert result.liner_events == ((13 * SR, voice, False),)
+    assert len(result.audio) - result.overlap_frames == 10 * SR
+    assert result.full_audio[round(14 * SR), 1] == pytest.approx(0.5)
+    assert result.full_audio[round(16.25 * SR), 1] == pytest.approx(0.5)
+
+
+def test_seed_liner_negative_cue_starts_it_after_incoming_music(station):
+    player, (_, b, voice, jingle), points = station
+    points[b.path]["intro"] = 6
+    points[voice.path].update(start=0.5, segue=2, end=4, overlap_start=-3)
+    points[jingle.path].update(start=0, segue=1, end=1, overlap_start=0)
+    result = player._render_track(voice, b, 0, liners=((jingle, False),))
+    assert result.full_audio[0, 0] == pytest.approx(0.25)
+    assert result.full_audio[round(1.2 * SR), 1] == pytest.approx(0)
+    assert result.full_audio[round(1.25 * SR), 1] == pytest.approx(0.5)
+    assert result.liner_events == ((round(4.75 * SR), jingle, False),)
+
+
+@pytest.mark.parametrize("overlap,second_start", [(None, 2), (0, 2), (0.75, 2), (-3, 4)])
+@pytest.mark.parametrize("start_offset", [0, SR])
+def test_liner_chain_events_follow_audio_with_trimmed_start(
+    station, monkeypatch, overlap, second_start, start_offset
+):
+    player, (_, b, voice, jingle), points = station
+    points[b.path]["intro"] = 5.25
+    points[voice.path].update(start=0.5, segue=2.5, end=2.5, overlap_start=overlap)
+    points[jingle.path].update(start=0.2, segue=1.2, end=1.2, overlap_start=0)
+    load = player._load_playout_audio
+
+    def marked_audio(entry):
+        audio = load(entry)
+        if entry is jingle:
+            audio[:, 1] = 0.75
+        return audio
+
+    monkeypatch.setattr(player, "_load_playout_audio", marked_audio)
+    result = player._render_track(voice, b, start_offset, liners=((jingle, True),))
+    at = round(second_start * SR) - max(0, start_offset - round(0.5 * SR))
+    assert result.liner_events == ((at, jingle, True),)
+    assert result.audio[at - 1, 1] == pytest.approx(0.5)
+    assert result.audio[at, 1] == pytest.approx(0.75)
+
+
+@pytest.mark.parametrize("standalone", [False, True])
+@pytest.mark.parametrize("second_overlap,release", [(0, 2), (None, 7), (3, 4)])
+def test_long_liner_after_negative_liner_still_respects_its_overlap(
+    station, standalone, second_overlap, release
+):
+    player, (a, b, voice, jingle), points = station
+    player._library.catalog.record_for_path = lambda _path: {"allow_outro": False}
+    points[b.path]["intro"] = 5.25
+    points[voice.path].update(start=0, segue=1, end=1, overlap_start=-3)
+    points[jingle.path].update(start=0, segue=6, end=6, overlap_start=second_overlap)
+    result = player._render_track(
+        voice if standalone else a,
+        b,
+        0,
+        liners=((jingle, True),) if standalone else ((voice, True), (jingle, True)),
+    )
+    first = 0 if standalone else 10
+    assert result.liner_events[-1] == ((first + 1) * SR, jingle, True)
+    assert len(result.audio) - result.overlap_frames == (first + release) * SR
+    # Even the full-overlap liner must finish before the incoming vocals.
+    assert first + 7 <= first + release + 5
 
 
 @pytest.fixture
