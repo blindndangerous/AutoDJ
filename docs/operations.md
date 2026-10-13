@@ -1250,8 +1250,9 @@ listeners" or "Oldies Hour, off air"; the station the page controls has a tick a
   name.
 - **What switches:** every control on the Now Playing, Queue & Search, Carts, Voice tracks, Track
   info, History and Settings tabs then acts on the chosen station, and they show its state: its
-  song, queue, history, settings, carts, schedule, clockwheels, liners, profiles, time checks,
-  stream, listeners, recording and webhooks. Library tools, search results, library folders,
+  song, queue, history, settings, carts, schedule, clockwheels, hour preview, liners, profiles,
+  time checks, matched intros, stream, listeners, recording and webhooks. Library tools, search
+  results, library folders,
   song points, Stereo Tool presets and paired devices are shared by all stations.
 - **How it says so:** the heading becomes "AutoDJ: Night Owl Radio", the browser tab's title
   ends with "Night Owl Radio - AutoDJ", the page's main landmark is named after the station, and
