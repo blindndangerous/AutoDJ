@@ -1407,7 +1407,9 @@ destinations that point outside their configured folder.
 
 `autodj backup` includes every configured station. The default station's files keep their names
 in the archive; another station's are under `stations/<slug>/`, for example
-`stations/nightowl/index/web_state.json` and `stations/nightowl/liners/...`. A folder two
+`stations/nightowl/index/web_state.json`, `stations/nightowl/index/relays.json` and
+`stations/nightowl/liners/...`. Relay settings include source passwords. Backups are plain ZIP
+files without encryption, so store them with the same care as those credentials. A folder two
 stations share, such as one liner folder for both, is stored once, under the default station's
 name, and the archive notes that it was shared. If you restore it with a configuration that gives
 that station a folder of its own, the folder is restored to the default station's place only, and
