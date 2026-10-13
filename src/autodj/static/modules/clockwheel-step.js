@@ -20,7 +20,7 @@ function beetsFieldName(name) {
   return name === "original_year" ? "first release year" : String(name ?? "").replaceAll("_", " ");
 }
 
-export function describeCondition(condition, sources = [], categories = []) {
+function describeCondition(condition, sources = [], categories = []) {
   if (condition.field === "folder") {
     const source = sources.find((item) => item.id === condition.source);
     const folder = source ? condition.folder || lastPart(source.path)

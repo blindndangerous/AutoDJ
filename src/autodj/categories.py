@@ -1064,7 +1064,13 @@ class CategoryIndex:
     def members(self) -> dict[str, tuple[str, frozenset[str]]]:
         """Each category's ID mapped to its name and the paths of its songs."""
         categories, results = self.resolutions()
-        return {category.id: (category.name, results[category.id].paths) for category in categories}
+        # Keep stale paths in ``resolutions`` for the UI to display during a
+        # transient source failure, but never let playback treat them as current.
+        return {
+            category.id: (category.name, results[category.id].paths)
+            for category in categories
+            if not results[category.id].error
+        }
 
     def closed_now(self, wall: datetime) -> tuple[frozenset[str], dict[str, str]]:
         """The songs that may not play at local wall time *wall*, and why.

@@ -485,6 +485,31 @@ def test_a_busy_source_keeps_the_songs_it_held_last_time(tmp_path, caplog):
     assert "Category A: The playlist file A.m3u is missing" in caplog.text
 
 
+def test_failed_category_keeps_display_paths_but_not_playback_members(tmp_path):
+    from autodj.clockwheel import ClockSlot, condition_paths
+
+    songs = [song(tmp_path / "0.flac"), song(tmp_path / "1.flac")]
+    index = CategoryIndex(config(tmp_path), Entries(songs))
+    index.folder.mkdir(parents=True)
+    target = index.folder / "A.m3u"
+    target.write_text(f"{songs[0].path}\n", encoding="utf-8")
+    index.save([playlist("A", "A.m3u")])
+    assert index.members()["p1"][1] == {songs[0].path}
+
+    target.unlink()
+    _categories, results = index.resolutions()
+    assert results["p1"].paths == {songs[0].path}  # retained for display
+    assert results["p1"].error == "The playlist file A.m3u is missing"
+    assert "p1" not in index.members()
+
+    for operator in ("is", "is_not"):
+        slot = ClockSlot(
+            kind="music",
+            conditions=({"field": "category", "category": "p1", "operator": operator},),
+        )
+        assert condition_paths(slot, songs, categories=index.members()) == set()
+
+
 def test_an_empty_category_is_logged_and_check_counts_an_unsaved_one(tmp_path, caplog):
     songs = [song(tmp_path / "a.flac", genre="Rock")]
     index = CategoryIndex(config(tmp_path), Entries(songs))
