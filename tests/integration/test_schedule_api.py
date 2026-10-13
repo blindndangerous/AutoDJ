@@ -146,7 +146,7 @@ def test_song_picking_lists_each_clockwheel_and_switches_to_it(
     result = client.post(f"/api/schedule/{created.json()['id']}/run").json()
     assert result["result"] == "ok", result
     bridge.library.ledger.select_clock.assert_called_with("Morning", None, None)
-    bridge.player.configure_clock.assert_called()
+    bridge.player.configure_clock_after_selection.assert_called()
     assert bridge.player._cfg.playback.pick_mode == "clock"
     missing = client.post(
         "/api/schedule", json=event(action="pick_mode", params={"mode": "clock:Night"})

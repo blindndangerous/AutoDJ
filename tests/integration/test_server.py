@@ -802,6 +802,7 @@ class TestRepeatSettings:
             "related_artist": payload["repeat_rules"]["artist"],
             "related_track": {"tracks": 20, "minutes": 0.0},
             "use_related_tracks": False,
+            "versions_as_one_song": False,
         }
         assert bridge.player._state.rules.related.related_to("alpha") == {"beta"}
 

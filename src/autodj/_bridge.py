@@ -49,7 +49,22 @@ def _build_why(player: Any, cur: Any) -> list[str]:
     step = getattr(player, "_last_clock_step", None)
     if mode in {"clock", "seed"} and step and reasons:
         reasons[0] = f"Clockwheel step {step['number']}."
+    reasons.extend(_versions_note(player, cur))
     return reasons
+
+
+def _versions_note(player: Any, cur: Any) -> list[str]:
+    """A sentence saying *cur* is one of its song's versions, with Count versions as one song on."""
+    from autodj.repeat_rules import SongVersions
+
+    song_versions = getattr(player, "_song_versions", None)
+    versions = song_versions() if callable(song_versions) and cur is not None else None
+    if not isinstance(versions, SongVersions):
+        return []
+    count = len(versions.versions(cur.path))
+    if count < 2:
+        return []
+    return [f"One of {count} versions of this song, which count as one song."]
 
 
 def _library_job_snapshot() -> dict:
@@ -1491,7 +1506,7 @@ class PlayerBridge:
         projection, the key cache or the library.
         """
         from autodj.dmca import complement, projected_history
-        from autodj.repeat_rules import build_filter
+        from autodj.repeat_rules import SongVersions, build_filter
 
         player = self.player
         state = player._state
@@ -1506,6 +1521,11 @@ class PlayerBridge:
         now = state.clock()
         rules = state.rules
         keys = player._track_keys()
+        # Count versions as one song: the picker holds back every version of
+        # a song that played, so a request must too (as _versions_note reads it).
+        song_versions = getattr(player, "_song_versions", None)
+        found = song_versions() if callable(song_versions) else None
+        versions = found if isinstance(found, SongVersions) else None
         dmca = bool(player._cfg.dmca.enabled)
         slots: list[RequestSlot] = []
         for position in range(len(queue) + 1):
@@ -1517,7 +1537,11 @@ class PlayerBridge:
             ahead = [*recent, *(e.path for e in (current, *waiting) if e is not None)]
             window = deque(ahead, maxlen=track_window) if track_window else deque()
             problems: list[str] = []
-            if entry.path in window or entry.path in minute_paths:
+            held = {*window, *minute_paths}
+            if versions is not None:
+                # With Count versions as one song, every version of a song held back.
+                held = set(versions.with_versions(held))
+            if entry.path in held:
                 problems.append("same song")
             if (why := repeat.reason(entry)) is not None:
                 problems.append(why)

@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from autodj.library import LibraryManager
     from autodj.listener_access import ListenerAccess
     from autodj.listener_requests import RequestDesk
+    from autodj.matched_intros import MatchedIntros
     from autodj.recorder import Recorder
     from autodj.scheduler import Scheduler
     from autodj.stream import StreamOutput
@@ -199,6 +200,16 @@ class StationPaths:
     def listener_requests(self) -> Path:
         """Listener requests: those waiting, and the recent decisions."""
         return self.state_dir / "listener_requests.json"
+
+    @property
+    def matched_intros(self) -> Path:
+        """Intros matched to songs and artists (#127)."""
+        return self.state_dir / "matched_intros.json"
+
+    @property
+    def intros(self) -> Path:
+        """The audio of the matched intros."""
+        return self.state_dir / "intros"
 
     @property
     def listener_bans(self) -> Path:
@@ -517,6 +528,38 @@ def prune_liner_dates(station: StationRuntime) -> list[str]:
     return forgotten
 
 
+def prune_matched_intros(station: StationRuntime) -> list[str]:
+    """Forget *station*'s intros for songs that are gone, with their audio; the IDs forgotten.
+
+    Called only after a clean scan (see :class:`SharedLibrary`).  A song is
+    gone when that scan found its file missing from a folder that is there,
+    so a share that is not mounted forgets nothing.  An intro whose song has
+    no library record (its source removed, say) is kept, and so is every
+    artist intro: the artist may come back.
+    """
+    store = getattr(station, "intros", None)
+    library = station.bridge.library
+    if store is None or library is None:
+        return []
+    intros = store.all()
+    gone = []
+    for intro_id, intro in intros.items():
+        if intro.track_id is None:
+            continue
+        record = library.catalog.record_for_id(intro.track_id)
+        if record is not None and library.is_gone(record["path"]):
+            gone.append(intro_id)
+    forgotten = store.forget(gone) if gone else []
+    if forgotten:
+        logger.info(
+            "Station %s: removed %d matched intros whose songs are gone: %s",
+            station.slug,
+            len(forgotten),
+            ", ".join(forgotten),
+        )
+    return forgotten
+
+
 def _registered_liners(
     bridge: PlayerBridge, owns: Callable[[str], bool] | None = None
 ) -> list[tuple[str, Path]]:
@@ -688,6 +731,7 @@ class StationRuntime:
     time_checks: TimeChecks
     carts: StationCarts
     breaks: BreakDesk
+    intros: MatchedIntros
     # Pushes the state to this station's WebSocket clients once a second.
     broadcast: Callable[[], Coroutine[Any, Any, None]]
 
@@ -1076,6 +1120,12 @@ class StationRuntime:
                     await asyncio.to_thread(desk.maintain)
             except Exception:
                 logger.exception("Break upkeep failed")
+            intros = getattr(self, "intros", None)
+            try:
+                if intros is not None and intros.needs_upkeep():
+                    await asyncio.to_thread(intros.upkeep)
+            except Exception:
+                logger.exception("Matched intro upkeep failed")
 
 
 # ---------------------------------------------------------------------------
@@ -1707,12 +1757,16 @@ class SharedLibrary:
             self._ticker = asyncio.create_task(self._tick())
 
     def _scan_done(self) -> None:
-        """After a scan (on its thread): forget the play dates of liners now gone."""
+        """After a clean scan (on its thread): forget liner dates and song intros now gone."""
         for station in self._stations.all():
             try:
                 prune_liner_dates(station)
             except Exception:
                 logger.exception("Station %s: could not tidy the liner dates", station.slug)
+            try:
+                prune_matched_intros(station)
+            except Exception:
+                logger.exception("Station %s: could not tidy the matched intros", station.slug)
 
     async def close(self, writers_quiesced: bool, *, readers_stopped: bool = True) -> bool:
         """Close the DJ-meta cache if no writer remains, then the library.

@@ -454,8 +454,36 @@ processed decoding, the intro lift, the duration probe, liner and cart decoding 
 the ALAC transcoder for browser playback. A library file or a liner that probes as a playlist can
 therefore reach no network address. The encoders that read raw samples AutoDJ writes to their
 pipe (the stream encoder and the mastering chain, `-f f32le -i pipe:0`) probe nothing and need no
-whitelist. Only break uploads also force the demuxer, because liners, carts and library files may
+whitelist. Only break and matched intro uploads also force the demuxer, because liners, carts and library files may
 legitimately be any type FFmpeg reads.
+
+### Matched intros
+
+Matched intros (#127) are voice clips an operator attaches to a song, or to the song's artist, in
+Track info. Their routes, `/api/intros` and `/api/stations/<slug>/intros`, are browser routes:
+they need the signed-in session when `access_token` is set and an allowed `Origin` for an upload
+or a delete, like every other change, and never take a machine token. An upload has the liner
+upload's limits: the middleware caps the body at `[server] liner_upload_max_mib` plus 64 KiB
+before any route reads it, the declared length is checked again, the body must arrive within 60
+seconds plus one second per 256 KiB, the type must be a liner audio type (415 for any other), and
+the file streams to a hidden part file under a name the server makes up (`intro-<id><ext>`) in
+the station's `intros` folder, never a name from the request. It is then decoded the way an
+announcer break is, with the header checked first, the demuxer forced, at most 60 seconds, on the
+one decode thread; a file that does not decode or holds no speech is refused and deleted. The
+song is named by its library ID, which must be a song in the library; an artist intro takes the
+artist from that song's record, so no free text becomes a match rule. Each station keeps at most
+2000 intros. Listen serves only a file named by an intro the station keeps, never a path, and
+refuses anything but a regular file. An intro in the file that is not valid is skipped (it never
+plays), logged and said in Track info, and written back unchanged with every save; a file that is
+not a file of intros at all is set aside; one that cannot be read just now is never written over.
+
+On the air, an intro is chosen and decoded by the render-ahead worker one song ahead and mixed into
+the song change like a break; the mix bus only reports it heard by adding to a queue that never
+waits, and the station's tick writes when it aired. A matched intro takes the place of the
+automatic liner at that change, and a DJ break booked for the change wins over it. Its chance is
+rolled on its own random source, so the rotation tester and the hour preview keep predicting the
+songs the station picks. A library scan removes the intros of songs it found gone only when it
+read every folder, so a share that is away loses none.
 
 ## Radio stream listening
 

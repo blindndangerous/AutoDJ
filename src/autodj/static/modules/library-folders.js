@@ -6,6 +6,7 @@ import { installTableNavigation } from "./table-navigation.js";
 import { lastSeenWords } from "./devices.js";
 import { formatPlayedAt } from "./history-format.js";
 import { announceStatus } from "./live-region.js";
+import { installMatchedIntros } from "./matched-intros.js";
 import { installTagEditor } from "./tag-editor.js";
 import { returnToView } from "./tabs.js";
 
@@ -97,6 +98,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       renderDetails(record);
     },
   });
+  const intros = installMatchedIntros({ document: doc, request, isCurrent: () => !suspended });
   // Unsaved cue points or tags: switching tracks asks first.
   const unsaved = () => savedFields !== fieldSnapshot() || tags.dirty();
 
@@ -401,6 +403,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
   }
   async function savePoints(errorTarget = null) {
     if (saving || !currentPath) return false;
+    doc.getElementById("points-preview")?.pause();
     saving = true;
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
@@ -469,7 +472,11 @@ export function installLibraryFolders({ document: doc = document, request = requ
         if (keep) keep.disabled = false;
         if (saved) dialog.close("save");
       }
-      function reject() { if (!saving) dialog.close("discard"); }
+      function reject() {
+        if (saving) return;
+        doc.getElementById("points-preview")?.pause();
+        dialog.close("discard");
+      }
       function stay() { if (!saving) dialog.close("keep"); }
       function cancel(event) { if (saving) event.preventDefault(); }
       function closed() {
@@ -514,6 +521,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       setPointFields(data.points || {}, data.point_sources || {});
       renderDetails(data);
       tags.load(data);
+      intros.load(data);
       editor.hidden = false;
       const preview = doc.getElementById("points-preview");
       if (preview) {
@@ -545,6 +553,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
         if (error.status === 404) {
           currentPath = null;
           tags.clear();
+          intros.clear();
           editor.hidden = true;
           pointPath.value = "";
           const details = doc.getElementById("track-info-details");
@@ -631,6 +640,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     editor.inert = false;
     editor.hidden = true;
     tags.clear();
+    intros.clear();
     currentPath = null;
     currentKind = "music";
     currentName = "this track";
@@ -665,5 +675,5 @@ export function installLibraryFolders({ document: doc = document, request = requ
     if (preview) { preview.pause(); preview.removeAttribute("src"); preview.load(); }
   }
   function resume() { suspended = false; updatePolling(); }
-  return { refresh, openEditor, clearProtectedData, resume, destroy() { clearProtectedData(); tags.destroy(); returnButton.remove(); window.removeEventListener("hashchange", updatePolling); doc.removeEventListener("visibilitychange", updatePolling); doc.removeEventListener("autodj:edit-points", onEditPoints); } };
+  return { refresh, openEditor, clearProtectedData, resume, destroy() { clearProtectedData(); tags.destroy(); intros.destroy(); returnButton.remove(); window.removeEventListener("hashchange", updatePolling); doc.removeEventListener("visibilitychange", updatePolling); doc.removeEventListener("autodj:edit-points", onEditPoints); } };
 }

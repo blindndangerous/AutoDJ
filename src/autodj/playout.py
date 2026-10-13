@@ -95,7 +95,39 @@ def liner_release_frames(main_frames: int, intro_frames: int, overlap_start: flo
         )
     if overlap_start == 0:
         return max(0, main_frames - intro_frames)
-    return min(main_frames, _frames(overlap_start, "overlap_start"))
+    return max(
+        main_frames - intro_frames, min(main_frames, _frames(overlap_start, "overlap_start"))
+    )
+
+
+def liner_chain_placement(
+    start_frame: int,
+    segue_frame: int,
+    safe_outro_frame: int,
+    main_frames: int,
+    intro_frames: int,
+    overlap_start: float | None,
+    outro_lead_limit: float | None = None,
+) -> tuple[int, int]:
+    """Place a cue-trimmed liner chain and incoming track without audio arrays."""
+    if outro_lead_limit is not None:
+        safe_outro_frame = max(
+            safe_outro_frame, segue_frame - _frames(outro_lead_limit, "outro_lead_limit")
+        )
+    if overlap_start is not None and overlap_start < 0:
+        release = liner_release_frames(main_frames, intro_frames, overlap_start)
+        liner_start = max(safe_outro_frame, segue_frame - release)
+        incoming_frame = max(segue_frame, liner_start + release)
+    elif overlap_start == 0:
+        liner_start = max(
+            safe_outro_frame, min(segue_frame, segue_frame + intro_frames - main_frames)
+        )
+        incoming_frame = max(segue_frame, liner_start + main_frames - intro_frames)
+    else:
+        release = liner_release_frames(main_frames, intro_frames, overlap_start)
+        liner_start = max(safe_outro_frame, segue_frame - release)
+        incoming_frame = max(segue_frame, liner_start + release)
+    return liner_start, max(incoming_frame, start_frame)
 
 
 def _audio(value: np.ndarray | None, name: str, *, optional: bool = False) -> np.ndarray | None:
@@ -209,27 +241,15 @@ def render_handoff(
                 _frames(outro_point, "outro") if outro_point is not None else segue_frame,
             ),
         )
-        if outro_lead_limit is not None:
-            safe_outro = max(
-                safe_outro, segue_frame - _frames(outro_lead_limit, "outro_lead_limit")
-            )
-        if overlap_start is not None and overlap_start < 0:
-            release = liner_release_frames(main_frames, incoming_intro_frames, overlap_start)
-            liner_start = max(safe_outro, segue_frame - release)
-            incoming_frame = max(segue_frame, liner_start + release)
-        elif overlap_start == 0:
-            liner_start = max(
-                safe_outro, min(segue_frame, segue_frame + incoming_intro_frames - main_frames)
-            )
-            incoming_frame = max(segue_frame, liner_start + main_frames - incoming_intro_frames)
-        else:
-            release = (
-                main_frames
-                if overlap_start is None
-                else min(main_frames, _frames(overlap_start, "overlap_start"))
-            )
-            liner_start = max(safe_outro, segue_frame - release)
-            incoming_frame = max(segue_frame, liner_start + release)
+        liner_start, incoming_frame = liner_chain_placement(
+            start_frame,
+            segue_frame,
+            safe_outro,
+            main_frames,
+            incoming_intro_frames,
+            overlap_start,
+            outro_lead_limit,
+        )
 
     fade_frames = _frames(float(fade_seconds), "fade_seconds")
     fade_start = max(start_frame, segue_frame - fade_frames // 3)

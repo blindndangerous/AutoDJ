@@ -86,6 +86,7 @@ class RepeatSettings(BaseModel):
     related_track: RepeatRule = RepeatRule(tracks=20)
     use_related_artists: StrictBool = False
     use_related_tracks: StrictBool = False
+    versions_as_one_song: StrictBool = False
 
     @model_validator(mode="before")
     @classmethod

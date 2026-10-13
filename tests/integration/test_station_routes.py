@@ -178,6 +178,10 @@ STATION = frozenset(
         "/requests/{request_id}/approve",
         "/requests/{request_id}/play-next",
         "/requests/{request_id}/reject",
+        # Matched intros (#127): browser routes, by station.
+        "/intros",
+        "/intros/{intro_id}/audio",
+        "/intros/{intro_id}",
         "/ws",
     }
 )

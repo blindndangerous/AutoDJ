@@ -184,3 +184,20 @@ def test_dmca_problems_are_kept_apart(bridge) -> None:
     (first,) = bridge.request_slots(replace(_make_entry(3), artist="A3"), horizon_s=0)
     assert first.dmca and set(first.dmca) <= set(first.problems)
     assert first.before.title == "Song 5"  # after the "play next" song
+
+
+def test_another_version_of_a_song_just_played_is_the_same_song(bridge) -> None:
+    """With Count versions as one song, a request follows the picker's track rule."""
+    from autodj.repeat_rules import SongVersions, TrackKeyCache
+
+    _ready(bridge)
+    live = replace(_song(1), path="Z:/Music/song_1_live.flac", album="Live")
+    versions = SongVersions([_song(1), live], TrackKeyCache())
+    assert versions.versions(live.path) == (_song(1).path, live.path)
+    bridge.player._song_versions.return_value = versions
+    slots = bridge.request_slots(live, horizon_s=3600)
+    # Song 1 is queued first, so after it the live version is the same song.
+    assert "same song" not in slots[0].problems
+    assert "same song" in slots[1].problems
+    bridge.player._song_versions.return_value = None
+    assert "same song" not in bridge.request_slots(live, horizon_s=3600)[1].problems

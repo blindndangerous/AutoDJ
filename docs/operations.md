@@ -2077,6 +2077,90 @@ page's `Origin`, never an announcer token. `POST` takes the announcer upload's f
 `ending_id`, `upcoming_id`, `placement`, `allow_outro` and `file`), with no `kind`: a voice track is
 always a DJ break.
 
+## Matched intros
+
+A matched intro is a short voice clip tied to one song, or to every song by one artist, such as
+"Here's the new one from Example Artist". When that song comes up, AutoDJ mixes the clip into the
+song change that leads into it. Matched intros need saved-point playback (Transition mode: Use
+saved segue points) with the server mixing the audio (server audio or a stream), as breaks do;
+otherwise Track info says why and they do not play.
+
+### Adding one
+
+Open **Track info** for the song (from Now Playing, History, or the lists in Queue & Search) and
+go to **Matched intros**, below the cue points. It lists the intros **For this song** and **For
+any song by** the song's artist, each with how often it plays, its play dates and how many seconds
+of speech it holds, and a **Listen** and a **Remove** button. Listen plays the clip on the Preview
+output device when one is chosen in Settings, Sound, and is pressed until the clip ends or you
+press it again. Remove asks first and deletes the clip.
+
+Under **Add an intro**:
+
+- **Audio file**: MP3, WAV, Ogg, M4A, FLAC or AAC, at most `[server] liner_upload_max_mib` (the
+  liner upload limit) and one minute long. AutoDJ trims the silence before and after the voice.
+- **Plays on**: **This song**, or **Any song by** the artist. The artist comes from the song's
+  artist tag; a song without one takes only an intro for itself. A credit such as "Someone feat.
+  Example Artist" counts as a song by Example Artist too.
+- **Label**: optional words to tell intros apart, shown in the list and the hour preview.
+- **Chance (percent)**: 1 to 100. At 50 the intro plays about every other time its song comes up.
+- **Wait between plays (minutes)**: 0 to 10080 (a week), 60 by default. After an intro plays, or
+  while a song change that holds it waits to air, it is passed over until this much time has gone.
+- **Not before** and **Do not play after**: optional days, both included, in the station time zone,
+  as for liners (see [Liner and cart play dates](#liner-and-cart-play-dates)).
+
+Choose **Upload intro**. A field the page or the server refuses is marked, its error is shown under
+it and it takes focus; any other result is said once.
+
+### How one is chosen and placed
+
+AutoDJ picks the intro as it prepares the song change, one song ahead. The song's own intros come
+first; when none of them can play, the artist's are tried. An intro is passed over outside its
+dates (by the day the song change airs) and within its wait; of the rest, the one heard longest ago
+is taken if its chance comes up. If a song intro misses its chance, the artist's intros are tried.
+The chance is rolled on a random source of its own, so the rotation tester and the hour preview
+keep predicting the same songs.
+
+A matched intro takes the place of the automatic liner at that song change, and the liner trigger
+stays due for the next one. Liners the queue or the clockwheel put in the change still play, before
+the intro, and so do news, weather and music news breaks. A DJ break booked for the change, from
+an announcer program or the Voice tracks tab, wins: the DJ already talks the song up, so no intro
+is added.
+
+When the song's intro (Start to Intro) is at least as long as the speech, the intro talks the song
+up: the voice starts with the song and ends before the singing, and the music ducks under it as it
+does under a break (`[breaks] duck_db`, or `[playback] liners_duck_db` when that is unset). When the
+intro is shorter, or the song has no Intro point, the clip plays just before the song, which starts
+as the speech ends. With Smooth or Stereo Tool processing the clip gets the voice liner processing.
+A clip that cannot be decoded is left out and the music plays on. The hour preview lists an intro
+once its song change is mixed, as "Matched intro" and its label.
+
+### Where they are kept
+
+Each station keeps its own: `matched_intros.json` in the station's state folder (the active index
+folder for the default station) and the audio in its `intros` folder, under names AutoDJ makes up.
+Backups include both for the default station. A song intro follows the song's library ID, so a tag
+edit or a move the scan recognises keeps it. A library scan that read every folder and found a
+song's file gone removes that song's intros and their audio; a share that is not mounted, or a scan
+that could not read a folder, removes nothing, and artist intros are never removed by a scan. When
+`matched_intros.json` cannot be read just now, the intros last read are used and saves are refused.
+An intro in the file that is not valid (edited by hand, say) is skipped and logged, and Track info
+says which, under the Matched intros heading; the other intros still play, and every save writes
+the skipped one back as it was, so correct it in the file and it plays again. Only a file that is
+not a file of intros at all is set aside, as `matched_intros.json.bad-<id>`. The time an intro last aired
+is written to the file by the station's once-a-second upkeep, off the audio thread.
+
+For scripts and other stations, the routes are under `/api/intros` and
+`/api/stations/<slug>/intros`, with the browser session and the page's `Origin`:
+
+- `GET /api/intros?track_id=<library ID>`: the song's intros (`song`), its artist's (`artist`),
+  the song, the limits, and whether the station plays them (`active`, with a `reason`). Without
+  `track_id`, every intro of the station (`intros`).
+- `POST /api/intros`: `multipart/form-data` with `file`, `track_id`, and optionally `applies_to`
+  (`song` or `artist`), `label`, `chance`, `cooldown_minutes`, `not_before` and `not_after`
+  (`YYYY-MM-DD`). `201` answers with the intro; a refused field answers with `detail` and `field`.
+- `GET /api/intros/<id>/audio`: the clip.
+- `DELETE /api/intros/<id>`: remove the intro and its audio.
+
 ## Play log export
 
 AutoDJ keeps every completed play in `library.db`, with no expiry. Export the plays between two
@@ -2320,9 +2404,10 @@ minutes, hour, 2 hours or 3 hours under **Show**.
 
 Each row says in its Status column whether it is fixed or predicted:
 
-- **Fixed: on the air**: the song playing now, with the liners and breaks mixed into it.
-- **Fixed: ready to play**: what the server has already rendered, with its liners and breaks
-  (server audio and stream mode only).
+- **Fixed: on the air**: the song playing now, with the liners, breaks and matched intros mixed
+  into it.
+- **Fixed: ready to play**: what the server has already rendered, with its liners, breaks and
+  matched intros (server audio and stream mode only).
 - **Fixed: picked**: the song chosen to follow, and with `[breaks] enabled = true` the song after
   it (the open song change) and its liners.
 - **Fixed: booked break**: an announcer break booked on the open song change.
@@ -2372,7 +2457,7 @@ items, the fixed points with their sentences, and the summary.
 
 What it approximates, as the rotation tester does: a song runs from its saved start to its segue,
 or its length less the crossfade; liners and booked breaks add their full length; automatic
-liners, time checks and carts are left out; and a scheduled change of song picking applies from
+liners, matched intros not yet mixed, time checks and carts are left out; and a scheduled change of song picking applies from
 the first song after its time. It shows where the last songs of the hour land; it does not yet
 choose them to fit.
 
@@ -2747,6 +2832,17 @@ press **Save clockwheel** to keep the result.
 These list keys do not replace the playback or spoken-status shortcuts. Nothing is saved until you press **Save clockwheel**; opening
 another clockwheel with unsaved changes asks first. **Restart at these minutes past each hour**
 sends the clockwheel back to step 1 at the song change nearest each minute.
+
+When you save edits to the active clockwheel, **Apply saved changes** defaults to **At the next
+clock restart**. The current clock keeps playing until its next scheduled restart, and the saved
+edit becomes the new step 1 there. If the restart-minute list is empty, the next restart is the
+wheel's natural wrap to step 1. The editor announces when a saved edit begins waiting. If AutoDJ
+restarts while an edit is waiting, it loads the latest saved definition at step 1. Choose **Immediately, start at step 1**
+to use the new steps for the earliest selection that has not already been lined up; the current
+track and an already committed handoff stay in place. Choose **Immediately, continue at next step**
+to keep the next step number when it still exists in the edited wheel; otherwise playback starts at
+step 1. Reordering or deleting steps can shift which step that position refers to. A server restart
+loads the latest saved clockwheel definition. API clients that omit `apply_timing` keep the immediate behavior.
 
 For a voice liner step, **Only play if the following track fits before the next reset** is off
 by default. Turn it on to leave out the liner when the liner and the selected song would run
