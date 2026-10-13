@@ -696,7 +696,7 @@ def run_doctor(
     checks += [_related_artists_check(cfg), _related_tracks_check(cfg)]
     if default:
         checks += [_time_checks_check(cfg), *_voice_pack_checks(cfg)]
-    checks += [_categories_check(cfg), _config_keys_check(cfg)]
+    checks += [_categories_check(cfg), _config_keys_check(cfg), *_restore_check(cfg)]
     if default:
         checks += [_recording_check(cfg), _liners_check(cfg)]
     for spec in cfg.stations:
@@ -704,6 +704,41 @@ def run_doctor(
             checks += _station_checks(cfg, spec)
     checks += _station_folders_check(cfg)
     return DoctorReport(tuple(checks))
+
+
+def _restore_check(cfg: AutoDJConfig) -> tuple[DoctorCheck, ...]:
+    """Report what an interrupted or untidy restore left; nothing when there is nothing."""
+    from autodj.backup import restore_leftovers
+
+    try:
+        found = restore_leftovers(cfg)
+    except (OSError, ValueError) as exc:
+        return (
+            DoctorCheck("restore", CheckStatus.WARN, "cannot look for restore leftovers", str(exc)),
+        )
+    if not found:
+        return ()
+    strays = [str(path) for path in found.strays]
+    detail: dict[str, Any] = {
+        "journal": str(found.journal) if found.journal else None,
+        "strays": strays,
+    }
+    if found.state in ("installing", "unreadable"):
+        return (
+            DoctorCheck(
+                "restore",
+                CheckStatus.FAIL,
+                "a restore did not finish: some files are new and some old",
+                detail,
+                "recover-restore",
+            ),
+        )
+    summary = (
+        "a restore finished but left old copies"
+        if found.state == "installed"
+        else f"{len(strays)} hidden {'copy' if len(strays) == 1 else 'copies'} left by an earlier restore"
+    )
+    return (DoctorCheck("restore", CheckStatus.WARN, summary, detail, "recover-restore"),)
 
 
 def _table(paths: StationPaths | None, section: str) -> str:

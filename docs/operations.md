@@ -2459,8 +2459,12 @@ For an archive made by 0.19, restore it with 0.19 first, then upgrade and conver
 needed. Version 0.20 can open an existing schema-4 index directly; the application version bump
 does not change that index format. Make a new backup after upgrading to include the station catalog.
 
-Stop AutoDJ, and any `autodj index` or `autodj analyse` run, before you restore. Restore cannot
-tell whether AutoDJ is running, and a running AutoDJ would keep using the files it replaces.
+Stop AutoDJ, and any `autodj index` or `autodj analyse` run, before you restore: a running AutoDJ
+would keep using the files a restore replaces. `autodj serve` holds a lock file,
+`.autodj-serve.lock`, in the index folder it serves for as long as it runs, and restore refuses
+while it is held ("AutoDJ is serving ...; stop it before restoring"). The operating system drops
+the lock when the server ends, however it ends. Restore cannot see an `autodj index` or
+`autodj analyse` run, so stop those yourself.
 
 ```bash
 # Linux/WSL2 Bash
@@ -2508,10 +2512,21 @@ Restore first checks that the archive fits: it refuses one that unpacks to more 
 or to more than the free space beside its destinations. It unpacks every file into a temporary
 folder beside its destination and checks the index before it replaces anything, so a damaged
 archive changes nothing. It then sets every file and folder it replaces aside under a hidden name
-(`.<name>.old-<id>`), puts the new ones in, and deletes what it set aside only once all are in.
-If any replacement fails, everything is put back as it was and restore says nothing was changed.
-Only a crash or a power cut in the middle can leave set-aside files; run the same restore again,
-and delete the `.old-` files once AutoDJ looks right. Restore then runs `autodj doctor` and says so if doctor
+(`.<name>.old-<id>`), together with any SQLite journal or WAL files beside a database, puts the
+new ones in, and deletes what it set aside only once all are in. If any replacement fails,
+everything is put back as it was and restore says nothing was changed. If an old copy cannot be
+deleted at the end, the restore still succeeds and names the copy; `autodj doctor` can move it out
+of the way.
+
+Each step is written first to a journal, `.autodj-restore.json` in the index folder, which is
+deleted when the restore finishes. If AutoDJ, the machine or the power stops part way, the
+journal is left behind: `autodj serve` refuses to start while a restore is half done, restore
+refuses to start another, and `autodj doctor` reports it and, in a terminal, offers to roll it
+back, putting every old file back where it was. A restore that stopped after every new file was
+in place only has old copies left, and doctor offers to move them away. Doctor also reports
+hidden `.old-` and `.restore-` copies no journal names. It always asks first, even with `--fix`,
+and it deletes nothing: whatever it moves goes into `restore-leftovers-<time>` in the index
+folder, for you to delete when AutoDJ looks right. Restore then runs `autodj doctor` and says so if doctor
 finds a required failure; do not serve until doctor passes. Use the same configuration for backup,
 restore, and doctor that the previous `serve` process used. Keep the archive until playback,
 profiles and liners look right.

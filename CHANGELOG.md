@@ -275,8 +275,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   file and folder it replaces is set aside first and put back if any replacement fails, so a
   failure part way no longer leaves a mix of old and new files. It checks the archive's size
   against a 256 GiB cap and the free space before unpacking, and refuses file names Windows
-  reserves for devices or that end in a dot or a space. A backup copies every station's state
-  files under the index's lock, so they are one moment's. A link that leaves its folder,
+  reserves for devices, holding `* ? " < > |` or ending in a dot or a space. Each step is
+  written to a journal first: a restore stopped by a crash is reported by `autodj doctor`, which
+  offers to roll it back (asking first and moving rather than deleting), and `autodj serve`
+  refuses to start until it is. Restore refuses while `autodj serve` holds its new lock on the
+  index folder. SQLite journal and WAL files beside a replaced database are set aside with it. Old
+  copies that cannot be deleted at the end no longer fail a finished restore. A backup copies every
+  station's state files with the index generation under the index's lock, checks the free space
+  first and skips AutoDJ's own temporary files; restored files keep their saved permissions.
+  `autodj doctor --station` runs only that station's repairs, and an index rebuild is always asked
+  for, even with `--fix`. A link that leaves its folder,
   including a Windows junction, makes the backup fail with its name instead of copying outside
   files (#193); a link within the folder is saved as a file. Restore refuses links in an archive
   and destinations that a link takes elsewhere. Hard-linked files are refused because their other

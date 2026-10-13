@@ -212,3 +212,30 @@ def test_backup_failure_does_not_start_analyse(tmp_path: Path) -> None:
     assert final is initial
     assert failed
     run.assert_not_called()
+
+
+def test_rebuild_index_is_asked_for_even_with_fix(tmp_path: Path) -> None:
+    cfg = config_for(tmp_path)
+    initial = report_for("rebuild-index")
+    with (
+        patch("autodj.doctor_commands.sys.stdin.isatty", return_value=True),
+        patch("autodj.doctor_commands.click.confirm", return_value=False) as confirm,
+        patch("autodj.doctor_commands.subprocess.run") as run,
+    ):
+        _final, failed = run_recovery_commands(cfg, initial, auto_fix=True)
+    assert confirm.call_count == 1
+    run.assert_not_called()
+    assert not failed
+
+
+def test_rebuild_index_never_runs_unasked_outside_a_terminal(tmp_path: Path) -> None:
+    cfg = config_for(tmp_path)
+    initial = report_for("rebuild-index")
+    with (
+        patch("autodj.doctor_commands.sys.stdin.isatty", return_value=False),
+        patch("autodj.doctor_commands.click.confirm") as confirm,
+        patch("autodj.doctor_commands.subprocess.run") as run,
+    ):
+        run_recovery_commands(cfg, initial, auto_fix=True)
+    confirm.assert_not_called()
+    run.assert_not_called()

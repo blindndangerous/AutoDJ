@@ -65,7 +65,14 @@ def run_recovery_commands(
         display = "autodj " + subprocess.list2cmdline(args)
         click.echo(f"Suggested recovery: {display}")
         click.echo(_EFFECTS[action])
-        if not auto_fix and not click.confirm("Run this command now?", default=False):
+        # A full rebuild re-embeds the whole library: --fix never starts
+        # one on its own; it is asked for even then.
+        if action == "rebuild-index" and auto_fix and not sys.stdin.isatty():
+            click.echo("Not rebuilding the index without asking; run doctor in a terminal.")
+            continue
+        if (not auto_fix or action == "rebuild-index") and not click.confirm(
+            "Run this command now?", default=False
+        ):
             continue
         try:
             if action == "rebuild-dj-meta":

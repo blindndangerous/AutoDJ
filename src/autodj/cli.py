@@ -551,8 +551,10 @@ def cmd_doctor(
     if as_json and fix:
         raise click.UsageError("--json is read-only; run repairs separately with --fix.")
     offer_repairs = not as_json and (sys.stdin.isatty() if fix is None else fix)
+    # With --station only that station's own repairs run: nothing server-wide.
+    server_repairs = offer_repairs and station is None
     try:
-        cfg = _doctor_load_config(ctx.obj["config_path"], offer_repairs, fix is True, as_json)
+        cfg = _doctor_load_config(ctx.obj["config_path"], server_repairs, fix is True, as_json)
     except click.exceptions.Exit:
         if not as_json:
             raise
@@ -577,12 +579,18 @@ def cmd_doctor(
         click.echo("Rechecking after repairs...")
         report = run_doctor(cfg, station=station)
         click.echo(render_text(report))
-    if offer_repairs and _doctor_create_directories(cfg, report, fix is True):
+    if offer_repairs and _doctor_create_directories(
+        cfg, report, fix is True, server=server_repairs
+    ):
+        click.echo("Rechecking after repairs...")
+        report = run_doctor(cfg, station=station)
+        click.echo(render_text(report))
+    if server_repairs and _doctor_recover_restore(cfg, report):
         click.echo("Rechecking after repairs...")
         report = run_doctor(cfg, station=station)
         click.echo(render_text(report))
     recovery_failed = False
-    if offer_repairs:
+    if server_repairs:
         from autodj.doctor_commands import run_recovery_commands
 
         report, recovery_failed = run_recovery_commands(
@@ -663,7 +671,49 @@ def _doctor_repair_saved_settings(cfg: AutoDJConfig, report: DoctorReport, auto_
     return changed
 
 
-def _doctor_create_directories(cfg: AutoDJConfig, report: DoctorReport, auto_fix: bool) -> bool:
+def _doctor_recover_restore(cfg: AutoDJConfig, report: DoctorReport) -> bool:
+    """Offer to roll back or finish an interrupted restore; always asks, even with --fix.
+
+    Nothing is deleted: what is moved out of the way goes into a
+    ``restore-leftovers-<time>`` folder in the index folder.
+    """
+    import time
+
+    from autodj.backup import BackupError, recover_restore
+
+    check = next((c for c in report.checks if c.repair == "recover-restore"), None)
+    if check is None:
+        return False
+    keep = Path(cfg.index.index_dir) / f"restore-leftovers-{time.strftime('%Y%m%d-%H%M%S')}"
+    if check.status.value == "fail":
+        click.echo(
+            "A restore stopped part way. Doctor can put every old file back where it was; the "
+            f"files the restore had already put in place go into {keep}."
+        )
+        question = "Roll back the interrupted restore?"
+    else:
+        click.echo(
+            f"A restore left old copies or hidden folders. Doctor can move them into {keep}; "
+            "nothing is deleted."
+        )
+        question = "Move them out of the way?"
+    if not sys.stdin.isatty():
+        click.echo("Not changing a restore without asking; run `autodj doctor` in a terminal.")
+        return False
+    if not click.confirm(question, default=False):
+        return False
+    try:
+        done = recover_restore(cfg, keep)
+    except BackupError as exc:
+        raise click.ClickException(str(exc)) from exc
+    for line in done:
+        click.echo(line)
+    return True
+
+
+def _doctor_create_directories(
+    cfg: AutoDJConfig, report: DoctorReport, auto_fix: bool, *, server: bool = True
+) -> bool:
     """Offer only missing writable storage directories identified by the checks.
 
     These are the index and model folders and each other station's own
@@ -679,7 +729,7 @@ def _doctor_create_directories(cfg: AutoDJConfig, report: DoctorReport, auto_fix
             path = _station_state_dir(cfg, check.station)
             label = f"folder for station {check.station}"
         else:
-            path = paths.get(check.name) if check.station is None else None
+            path = paths.get(check.name) if check.station is None and server else None
             label = f"{check.name} directory"
         if path is None or check.status is not CheckStatus.WARN or path.exists():
             continue
@@ -1627,6 +1677,36 @@ class _ServeCommand(click.Command):
             raise
 
 
+def _claim_index_for_serve(ctx: click.Context, active_dir: Path) -> None:
+    """Refuse to serve a half-restored index; hold the serve lock while serving.
+
+    A restore that stopped part way leaves its journal: some files are new
+    and some old, so the server does not start until ``autodj doctor`` has
+    rolled it back.  The serve lock makes ``autodj restore`` refuse while
+    this server runs; it is released when the command ends.
+    """
+    from autodj.backup import BackupError, hold_serve_lock, pending_restore_state
+
+    restore_state = pending_restore_state(active_dir)
+    if restore_state not in (None, "installed"):
+        console.print(
+            "[bold red]A restore of this index folder did not finish, so some files are new and "
+            "some old.[/] Run `autodj doctor` to put the old files back, then start AutoDJ again."
+        )
+        sys.exit(1)
+    if restore_state == "installed":
+        console.print(
+            "[yellow]A restore left old copies beside the index folder; `autodj doctor` can move "
+            "them out of the way.[/]"
+        )
+    try:
+        serve_lock = hold_serve_lock(active_dir)
+    except BackupError as exc:
+        console.print(f"[bold red]{escape(str(exc))}[/]")
+        sys.exit(1)
+    ctx.call_on_close(serve_lock.release)
+
+
 @cli.command("serve", cls=_ServeCommand)
 @click.option(
     "--seed",
@@ -1815,8 +1895,11 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         selected_index_name = index_name
     from autodj.index_manifest import IndexConsistencyError
 
+    active_dir = cfg.index.index_dir / selected_index_name
+    _claim_index_for_serve(ctx, active_dir)
+
     try:
-        sim = _load_index_for_serve(cfg, active_dir=cfg.index.index_dir / selected_index_name)
+        sim = _load_index_for_serve(cfg, active_dir=active_dir)
     except IndexConsistencyError as exc:
         console.print(f"[bold red]{escape(str(exc))}[/]")
         sys.exit(1)

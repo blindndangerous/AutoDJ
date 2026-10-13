@@ -673,7 +673,10 @@ With several stations, the archive also holds each other station's state files a
 under `stations/<slug>/`, including its `listener_bans.json` and `recording.json`, and the
 manifest lists the stations. A folder shared with another station is stored once. The backup
 may not be written inside any station's folders either. Every station's state files are copied
-under the index's publication lock with the index, so they are one moment's. A link that leaves
+under the index's publication lock together with the index generation; each SQLite database is
+copied through SQLite's backup API, which gives a consistent copy of that database a moment
+later, and the generation is checked against its digests after the lock is released. Backups skip
+AutoDJ's own temporary and set-aside files and check the free space first. A link that leaves
 its folder (a file link pointing elsewhere, a state file linked elsewhere, or any linked
 subfolder, symbolic link or Windows junction) makes the backup fail with the link's name, so a
 link cannot pull another file on the machine into an archive; a file link within the same folder
@@ -690,8 +693,10 @@ station-name pattern (so it can never name a folder outside `stations/`), is not
 is configured with a `[stations.<slug>]` table; a backup holding any other station is refused
 before anything is unpacked, as is one whose folders would land in the same place or hold one
 another or a state folder. Names Windows reserves for devices (`CON`, `PRN`, `AUX`, `NUL`,
-`COM1` to `COM9`, `LPT1` to `LPT9`, in any case and with any extension) and names ending in a dot
-or a space are refused. An archive that declares more than 256 GiB, or more than the free space
+`CONIN$`, `CONOUT$`, `CLOCK$`, `COM1` to `COM9`, `LPT1` to `LPT9`, in any case and with any
+extension), names holding `*`, `?`, `"`, `<`, `>` or `|`, and names ending in a dot or a space are
+refused. Restored files keep the permission bits they were saved with, so a private file comes
+back private on Linux and macOS. An archive that declares more than 256 GiB, or more than the free space
 beside its destinations, is refused before anything is unpacked; a member never unpacks to more
 than its declared size.
 Every file is unpacked beside its destination and the index is checked before anything is
@@ -699,9 +704,12 @@ replaced. Restored liners, profiles and uploaded preset folders replace the curr
 The index files
 are checked against the SHA-256 digests in their manifest; other files have no digests. Every
 file and folder that is replaced is first set aside, and a replacement that fails puts all of
-them back; only a crash part way leaves set-aside `.old-` files, and running the restore again
-finishes it. The operator must
-stop AutoDJ first, because restore cannot tell whether it runs. Filesystem locations remain
+them back. Every step is written to a journal first, so a crash part way can be rolled back by
+`autodj doctor`, which asks first and moves rather than deletes; `autodj serve` refuses to start
+while a restore is half done. SQLite journal and WAL files beside a replaced database are set aside
+with it, so a stale journal is never replayed into a restored database. `autodj serve` holds a lock
+file in the index folder it serves, and restore refuses while it is held; an `autodj index` or
+`autodj analyse` run holds no such lock, so the operator stops those first. Filesystem locations remain
 trusted through operating-system ACLs. AutoDJ does not defend against an attacker who already
 controls them and can race filesystem operations.
 

@@ -342,3 +342,67 @@ def test_cli_repairs_a_station_saved_settings_with_consent_and_a_backup(
         assert backups == []
     # The filter keeps the default station's file out of it.
     assert default_state.read_bytes() == original
+
+
+def test_station_filter_runs_no_server_wide_repairs(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    stray = cfg.index.active_dir / f".liners.old-{'d' * 32}"
+    stray.mkdir()
+    with (
+        patch("autodj.cli._load_cfg_or_exit", return_value=cfg),
+        patch(
+            "autodj.doctor._model_cache_check",
+            return_value=DoctorCheck("model-cache", CheckStatus.PASS, "ok"),
+        ),
+        patch("autodj.doctor_commands.run_recovery_commands") as recovery,
+        patch("autodj.doctor_repair.plan_unknown_key_repairs") as key_repairs,
+        patch("autodj.backup.recover_restore") as recover,
+        patch("click.testing._NamedTextIOWrapper.isatty", return_value=True),
+    ):
+        CliRunner().invoke(cli, ["doctor", "--fix", "--station", "nightowl"], input="y\ny\ny\n")
+    recovery.assert_not_called()
+    key_repairs.assert_not_called()
+    recover.assert_not_called()
+    assert stray.exists()
+
+
+def _interrupted_restore(cfg: AutoDJConfig) -> Path:
+    """A journal for a restore that moved web_state.json aside and stopped."""
+    state = cfg.index.active_dir / "web_state.json"
+    aside = cfg.index.active_dir / f".web_state.json.old-{'e' * 32}"
+    aside.write_text('{"old": true}', encoding="utf-8")
+    journal = {
+        "version": 1,
+        "state": "installing",
+        "stages": [],
+        "steps": [{"op": "aside", "path": str(state), "aside": str(aside)}],
+        "leftovers": [],
+    }
+    (cfg.index.active_dir / ".autodj-restore.json").write_text(
+        json.dumps(journal), encoding="utf-8"
+    )
+    return state
+
+
+@pytest.mark.parametrize(("answer", "rolled_back"), [("n\n", False), ("y\n", True)])
+def test_doctor_rolls_back_an_interrupted_restore_only_when_asked(
+    tmp_path: Path, answer: str, rolled_back: bool
+) -> None:
+    cfg = _config(tmp_path)
+    state = _interrupted_restore(cfg)
+    result = _cli(cfg, ["--fix"], answer=answer, tty=True)
+    assert "A restore stopped part way." in result.output
+    assert "Roll back the interrupted restore?" in result.output
+    assert state.exists() is rolled_back
+    if rolled_back:
+        assert json.loads(state.read_text(encoding="utf-8")) == {"old": True}
+        assert not (cfg.index.active_dir / ".autodj-restore.json").exists()
+
+
+def test_doctor_never_rolls_back_unasked_outside_a_terminal(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    state = _interrupted_restore(cfg)
+    result = _cli(cfg, ["--fix"], tty=False)
+    assert "run `autodj doctor` in a terminal" in result.output
+    assert not state.exists()
+    assert result.exit_code == 1
