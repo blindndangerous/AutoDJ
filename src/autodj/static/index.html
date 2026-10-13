@@ -469,7 +469,7 @@
     <section id="points-editor" aria-labelledby="points-heading" hidden>
       <h3 id="points-heading">Cue points</h3>
       <p>Preview this file to check its cues. Use preview position copies the preview’s time; it does not use or change the station’s playback position.</p>
-      <p id="points-liner-help" hidden>Segue marks the end of the liner’s main content; End keeps the remaining tail. A blank Overlap start uses Segue, or End when Segue is blank. With Allow start over outro unchecked, the liner starts at the outgoing song’s Segue; checked, it may start over the Outro. Set Overlap start to 0 to let the next song’s intro overlap the liner when timing allows. A positive value is the number of seconds after the liner’s saved Start at which the next song may enter. It cannot be later than the liner’s Segue. A negative value starts the liner after the next song begins, limited by its intro.</p>
+      <p id="points-liner-help" hidden>Segue marks the end of the liner’s main content; End keeps the remaining tail. A blank Overlap start uses Segue, or End when Segue is blank. With Allow start over outro unchecked, the liner starts at the outgoing song’s Segue; checked, it may start over the Outro. Set Overlap start to 0 to let the next song’s intro overlap the liner when timing allows. A positive value is the earliest time after the liner’s saved Start at which the next song may enter. Every overlap value respects the next song’s intro: with no intro, the song waits until the liner’s Segue, while its remaining tail may overlap. It cannot be later than the liner’s Segue. A negative value starts the liner after the next song begins, limited by its intro.</p>
       <label id="points-allow-outro-label" hidden><input type="checkbox" id="points-allow-outro" aria-describedby="points-liner-help"> Allow start over outro</label>
       <label for="points-path">Track path</label>
       <input id="points-path" type="text" autocomplete="off" readonly>
@@ -2106,6 +2106,22 @@
     <!-- Outside the list, so it stays put while rows come and go.  It asks
          before clearing, in #confirm-dialog. -->
     <button type="button" id="queue-clear" aria-describedby="station-context">Clear queue</button>
+  </details>
+
+  <!-- Listener requests from the public request page; shown only when
+       [requests] is on.  The lists are plain text and refresh silently;
+       each button's result is said once in #requests-status. -->
+  <details class="card" id="requests-card" open hidden>
+    <summary id="requests-heading"><h2>Listener requests</h2></summary>
+    <p id="requests-summary">No requests waiting.</p>
+    <div id="requests-status"
+         role="status"
+         aria-live="polite"
+         aria-atomic="true"
+         class="visually-hidden"></div>
+    <ul id="requests-list" aria-label="Waiting requests" hidden></ul>
+    <h3 id="requests-recent-heading" hidden>Recent decisions</h3>
+    <ul id="requests-recent" aria-labelledby="requests-recent-heading" hidden></ul>
   </details>
 
   <!-- Search and browse share one paginated result list. -->

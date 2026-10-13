@@ -78,6 +78,10 @@
 //     WCAG 2.2 A/AA rules, the theme applied, and every focus stop's
 //     outline 3:1; in the System light mode reflow at 320 px and 200 %
 //     text.
+//   - the listener request pages, where the server has them turned on:
+//     /requests and each listed station's /stations/<slug>/requests, as
+//     first shown, after a search that finds nothing and with a search
+//     refused: the same checks, plus every control's boundary 3:1.
 //   - the player pages, where the server has them turned on: /player and
 //     /embed, and each listed station's /stations/<slug>/player and
 //     /embed: the same checks, plus every control's boundary 3:1
@@ -1381,6 +1385,17 @@ async function publicPagePaths(page) {
         const response = await fetch(path, { method: "HEAD" });
         if (response.status !== 404) pages.push({ path, kind });
       }
+      // The request page ([requests]): as first shown, with a search that
+      // finds nothing, and with a search refused (its error tied to the field).
+      const requests = status.replace(/status$/, "requests");
+      const response = await fetch(requests, { method: "HEAD" });
+      if (response.status !== 404) {
+        pages.push({ path: requests, kind: "requests" });
+        if (response.ok) {
+          pages.push({ path: `${requests}?q=zz+nothing+like+it`, kind: "requests" });
+          pages.push({ path: `${requests}?q=a`, kind: "requests" });
+        }
+      }
     }
     return pages;
   });
@@ -1495,7 +1510,7 @@ async function auditStatusPages(browser, out) {
         await installContrastHelpers(page);
         if (kind !== "status") problems.push(...await controlBoundaryProblems(page));
         problems.push(...await focusProblems(page, "body", { measureColour: true }));
-        if (kind !== "status" && mode.name === "system-light" && !pinned) {
+        if ((kind === "player" || kind === "embed") && mode.name === "system-light" && !pinned) {
           await page.reload({ waitUntil: "networkidle" });
           problems.push(...await playerBehaviourProblems(page));
         }

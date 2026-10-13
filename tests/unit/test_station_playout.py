@@ -35,7 +35,7 @@ def station(monkeypatch):
         a.path: {"start": 0, "outro": 8, "segue": 10, "end": 15},
         b.path: {"start": 0.25, "intro": 2.25, "segue": 18, "end": 20},
         voice.path: {"start": 0, "end": 4, "overlap_start": 0},
-        jingle.path: {"start": 0, "end": 8.8, "overlap_start": 5.3},
+        jingle.path: {"start": 0, "segue": 5.3, "end": 8.8, "overlap_start": 5.3},
     }
     audio = {}
     for entry, value in zip(entries, (1, 0.25, 0.5, 0.5), strict=True):
@@ -845,6 +845,7 @@ def test_clock_omits_only_liner_when_pair_will_not_fit(
         (-3, 2.25, False, None),
         (None, 2.25, False, 2.5),
         (3, 2.25, False, 2.5),
+        (3.3, 0.25, False, None),
     ],
 )
 def test_clock_pair_estimate_matches_saved_point_render(
@@ -862,6 +863,27 @@ def test_clock_pair_estimate_matches_saved_point_render(
     current, when = (None, 0) if standalone else (a, 10)
     assert player._clock_liner_fits(current, voice, b, when, boundary)
     assert not player._clock_liner_fits(current, voice, b, when, boundary - 0.01)
+
+
+@pytest.mark.parametrize("standalone", [False, True])
+@pytest.mark.parametrize("intro", [0.0, 1.0, 1.3])
+@pytest.mark.parametrize("start_offset", [0, SR])
+def test_positive_liner_overlap_keeps_main_content_before_incoming_vocals(
+    station, standalone, intro, start_offset
+):
+    player, (a, b, voice, _), points = station
+    points[b.path]["intro"] = intro
+    points[voice.path].update(start=0, segue=4, end=4, overlap_start=3.3)
+    result = player._render_track(
+        voice if standalone else a,
+        b,
+        start_offset,
+        liners=() if standalone else ((voice, False),),
+    )
+
+    music_entry = (len(result.audio) - result.overlap_frames) / SR
+    main_end = (4 if standalone else 12) - start_offset / SR
+    assert music_entry + max(0, intro - points[b.path]["start"]) >= main_end
 
 
 def test_clock_checks_the_actual_song_after_dmca_replacement(station, monkeypatch):
@@ -1081,8 +1103,7 @@ def test_long_liner_after_negative_liner_still_respects_its_overlap(
     first = 0 if standalone else 10
     assert result.liner_events[-1] == ((first + 1) * SR, jingle, True)
     assert len(result.audio) - result.overlap_frames == (first + release) * SR
-    # Even the full-overlap liner must finish before the incoming vocals.
-    assert first + 7 <= first + release + 5
+    assert (len(result.audio) - result.overlap_frames) / SR + 5 >= first + 7
 
 
 @pytest.fixture

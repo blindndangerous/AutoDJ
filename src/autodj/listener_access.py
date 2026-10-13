@@ -9,7 +9,7 @@ import math
 import secrets
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +65,50 @@ def proxy_allowlist(trusted: list[str]) -> list[str]:
 #: this machine, as Uvicorn trusts by default.  A TLS reverse proxy on the
 #: same host then still makes its requests HTTPS (#88).
 LOOPBACK_PROXIES: tuple[str, ...] = ("127.0.0.1/32", "::1/128")
+
+
+def trusted_proxy_setting(
+    trusted: list[str], environ: Mapping[str, str]
+) -> tuple[list[str] | str, list[str]]:
+    """What Uvicorn trusts forwarded headers from, and warnings to log at startup.
+
+    ``[stream] trusted_proxies`` wins; without it, an existing
+    ``FORWARDED_ALLOW_IPS`` environment variable (Uvicorn's own setting) is
+    honoured as it is; without either, only a proxy on this machine.  Each
+    trusted peer that is not this machine gets a warning: AutoDJ believes
+    the client address and scheme it reports, so it must be a proxy that
+    appends or overwrites ``X-Forwarded-For``, and it must terminate TLS
+    (and say so with ``X-Forwarded-Proto: https``) before machine tokens
+    are accepted through it.
+    """
+    warnings: list[str] = []
+    from_env = environ.get("FORWARDED_ALLOW_IPS", "").strip()
+    allow: list[str] | str
+    if trusted:
+        allow = forwarded_allow_ips(trusted)
+        entries = list(trusted)
+        if from_env:
+            warnings.append(
+                "Ignoring FORWARDED_ALLOW_IPS: [stream] trusted_proxies is set and is used instead."
+            )
+    elif from_env:
+        allow = from_env
+        entries = [item.strip() for item in from_env.split(",") if item.strip()]
+    else:
+        return forwarded_allow_ips([]), warnings
+    for entry in entries:
+        try:
+            loopback = ipaddress.ip_network(entry, strict=False).is_loopback
+        except ValueError:
+            loopback = False  # "*" or a name: not provably this machine
+        if not loopback:
+            warnings.append(
+                f"Trusting X-Forwarded-For and X-Forwarded-Proto from {entry}. It must append or "
+                "overwrite X-Forwarded-For (never pass a client's own header through), and it "
+                "must terminate TLS and send X-Forwarded-Proto: https before machine tokens are "
+                "accepted through it."
+            )
+    return allow, warnings
 
 
 def forwarded_allow_ips(trusted: list[str]) -> list[str]:

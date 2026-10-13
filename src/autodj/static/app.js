@@ -251,6 +251,7 @@ let rotationTestControls = null;
 let hourPreviewControls = null;
 let cartWallControls = null;
 let voiceTrackerControls = null;
+let listenerRequestControls = null;
 let reconnectGeneration = 0;
 let reconnectTimer = null;
 
@@ -337,6 +338,7 @@ function clearStationViews() {
   // Signing out or switching stations stops a recording and lets the
   // microphone go.
   voiceTrackerControls?.clear();
+  listenerRequestControls?.clear();
   _linerEls.lnFileList.replaceChildren();
   _linerEls.lnFolderDisplay.textContent = "";
   _linerEls.lnStatus.textContent = "";
@@ -1966,6 +1968,7 @@ function _seekByDelta(deltaSec) {
   // Comma and period leave focus where it is, so the new position is
   // said in the seek slider's own words.
   if (dur > 0) srSpeak(`${fmtTime(target)} of ${fmtTime(dur)}`);
+  hourPreviewControls?.noteSeek();
   void postJsonBestEffort("/api/seek", { delta: deltaSec }, reportBackgroundRequestError);
 }
 
@@ -1997,6 +2000,7 @@ function _seekToFrac(frac, opts) {
     if (progressLbl) progressLbl.textContent = `${fmtTime(seconds)} / ${fmtTime(dur)}`;
   }
   if (!opts || opts.post !== false) {
+    hourPreviewControls?.noteSeek();
     void postJsonBestEffort("/api/seek", { seconds }, reportBackgroundRequestError);
   }
 }
@@ -2797,6 +2801,7 @@ hourPreviewControls = installHourPreview();
 
 import { installLiners, bumpLinerTrackCount } from "./modules/liners.js";
 import { installTimeChecks } from "./modules/time-checks.js";
+import { installListenerRequests } from "./modules/listener-requests.js";
 
 let timeCheckControls = null;
 let linerControls = null;
@@ -2926,6 +2931,7 @@ function startAuthenticatedApp(initialState) {
       playBrowserClip(arrayBuf, duckDb, activeLinerSources, epoch),
   };
   timeCheckControls = installTimeChecks(linerAudio);
+  listenerRequestControls = installListenerRequests();
   linerControls = installLiners(_linerEls, { postSettings, ...linerAudio });
   // When the server mixes, it plays the cart itself and the page only
   // shows and announces it.

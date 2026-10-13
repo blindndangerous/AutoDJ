@@ -33,7 +33,7 @@ _EFFECTS = {
 
 
 def run_recovery_commands(
-    cfg: AutoDJConfig, report: DoctorReport, *, auto_fix: bool
+    cfg: AutoDJConfig, report: DoctorReport, *, auto_fix: bool, station: str | None = None
 ) -> tuple[DoctorReport, bool]:
     """Offer each recovery once, retaining config and interpreter; recheck after execution."""
     from autodj.doctor import CheckStatus, render_text, run_doctor
@@ -65,7 +65,14 @@ def run_recovery_commands(
         display = "autodj " + subprocess.list2cmdline(args)
         click.echo(f"Suggested recovery: {display}")
         click.echo(_EFFECTS[action])
-        if not auto_fix and not click.confirm("Run this command now?", default=False):
+        # A full rebuild re-embeds the whole library: --fix never starts
+        # one on its own; it is asked for even then.
+        if action == "rebuild-index" and auto_fix and not sys.stdin.isatty():
+            click.echo("Not rebuilding the index without asking; run doctor in a terminal.")
+            continue
+        if (not auto_fix or action == "rebuild-index") and not click.confirm(
+            "Run this command now?", default=False
+        ):
             continue
         try:
             if action == "rebuild-dj-meta":
@@ -85,5 +92,5 @@ def run_recovery_commands(
             click.echo(f"Could not run recovery: {exc}", err=True)
             failed = True
         click.echo("Rechecking after recovery...")
-        report = run_doctor(cfg)
+        report = run_doctor(cfg, station=station)
         click.echo(render_text(report))
