@@ -10,6 +10,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Matched intros (#127): Track info has a **Matched intros** section where you upload a short
+  voice clip for that song, or for any song by its artist, such as "Here's the new one from
+  Example Artist", and Listen to it or Remove it. When the song comes up, saved-point playback on
+  server audio or a stream mixes the clip into its song change: it talks the song up when the song's intro is long enough
+  for the speech, and otherwise plays just before the song. The song's own intros come first,
+  then the artist's. Each intro has a chance, a wait between plays (60 minutes by default) and
+  optional play dates. A matched intro takes the place of the automatic liner at that change, and
+  a DJ break booked for the change wins over it. Uploads have the liner upload limits and are
+  decoded like announcer breaks, at most one minute long. Intros are kept per station in
+  `matched_intros.json` and the `intros` folder, included in backups; a clean library scan removes
+  the intros of songs it found gone, and a share that is away loses none. The hour preview lists
+  an intro once its song change is mixed. Routes: `/api/intros` and
+  `/api/stations/<name>/intros`. See [Matched intros](docs/operations.md#matched-intros).
+
 - An hour preview with backtiming (#126): Now Playing > **Hour preview** lists what plays over
   the next 30 minutes to 3 hours with each item's estimated start time, and says in words on
   every row whether it is fixed (on the air, ready to play, picked, a booked break, in the queue)

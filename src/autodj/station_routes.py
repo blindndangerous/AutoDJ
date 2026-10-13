@@ -805,6 +805,17 @@ def equip_station(
     station.breaks = BreakDesk(lambda: station.cfg.breaks, station.paths.announcements)
     bridge.player.break_desk = station.breaks
 
+    from autodj.categories import station_wall
+    from autodj.matched_intros import MatchedIntros
+
+    # Play dates are judged by the station's day when the intro airs.
+    station.intros = MatchedIntros(
+        station.paths.matched_intros,
+        station.paths.intros,
+        day_at=lambda at: station_wall(station.cfg, at).date(),
+    )
+    bridge.player.matched_intros = station.intros
+
 
 # ---------------------------------------------------------------------------
 # The router
@@ -866,6 +877,7 @@ def install_station_routes(router: StationRouter) -> None:
     from autodj.breaks_api import install_breaks
     from autodj.carts import install_carts
     from autodj.hour_preview import install_hour_preview
+    from autodj.matched_intros_api import install_matched_intros
     from autodj.rotation_api import install_rotation_test
     from autodj.scheduler_api import install_scheduler
     from autodj.time_checks import install_time_checks
@@ -1721,6 +1733,7 @@ def install_station_routes(router: StationRouter) -> None:
     install_scheduler(router)
     install_time_checks(router)
     install_breaks(router)
+    install_matched_intros(router)
     install_rotation_test(router)
     install_hour_preview(router)
 

@@ -166,7 +166,7 @@ def test_clock_step_provenance_follows_each_rendered_track(station, monkeypatch)
         )
     )
 
-    def choose(_current, _context):
+    def choose(_current, _context, **_kwargs):
         player._chosen_clock_step = next(steps)
         return b if player._pending_entry is a else voice, "clock", (), None, ""
 

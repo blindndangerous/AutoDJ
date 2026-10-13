@@ -112,7 +112,8 @@ NOTES = (
     "Song times use saved start and segue cues, or the configured crossfade. Liner placement "
     "uses saved start, end, segue and overlap cues; trimmed audio tails can still vary from "
     "the catalog length.",
-    "Automatic liners, time checks and carts are left out; a scheduled change of song picking "
+    "Automatic liners, matched intros not yet mixed, time checks and carts are left out; a "
+    "scheduled change of song picking "
     "applies from the first song after its time.",
 )
 
@@ -133,13 +134,14 @@ class Item:
     """One thing the station plays.
 
     Attributes:
-        kind: ``"song"``, ``"liner"`` or ``"break"``.
+        kind: ``"song"``, ``"liner"``, ``"break"`` or ``"intro"`` (an intro
+            matched to the next song, #127).
         starts: When it starts, in wall-clock seconds.
         seconds: For a song, how long until the next song starts; for a
             liner or break, its cue-trimmed duration.
         status: A key of :data:`STATUS_WORDS`.
-        entry: The song or liner; ``None`` for a break.
-        label: A break's kind and description.
+        entry: The song or liner; ``None`` for a break or an intro.
+        label: A break's kind and description, or an intro's label.
     """
 
     kind: str
@@ -325,7 +327,7 @@ def _mixed_in(
     status: str,
     queued: list[Any],
 ) -> list[Item]:
-    """The liners and breaks mixed into *track*, whose audio starts at *base*.
+    """The liners, breaks and matched intros mixed into *track*, whose audio starts at *base*.
 
     Ones already over are left out; one under way is on the air.  Liners
     taken from the queue are added to *queued*.
@@ -346,6 +348,13 @@ def _mixed_in(
             continue
         label = _break_label(desk, break_id)
         found.append(Item("break", at, length, "on_air" if at <= now else status, label=label))
+    for frame, _intro_id, end, intro_label in getattr(track, "intro_events", ()):
+        at = base + frame / SAMPLE_RATE
+        length = max(0.0, (end - frame) / SAMPLE_RATE)
+        if at + length <= now:
+            continue
+        label = f"Matched intro: {intro_label}" if intro_label else "Matched intro"
+        found.append(Item("intro", at, length, "on_air" if at <= now else status, label=label))
     return found
 
 
@@ -1044,6 +1053,8 @@ def item_title(item: Item) -> str:
     """ "Artist, Title" for a song (a comma, which a screen reader pauses on)."""
     if item.kind == "break":
         return item.label or "Break"
+    if item.kind == "intro":
+        return item.label or "Matched intro"
     entry = item.entry
     artist = (getattr(entry, "artist", "") or "").strip()
     title = (getattr(entry, "title", "") or "").strip()
