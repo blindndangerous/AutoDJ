@@ -129,6 +129,7 @@ const pbKeySyncFx     = document.getElementById("pb-key-sync-fx");
 const pbBeatmatchSkip = document.getElementById("pb-beatmatch-on-skip");
 const pbSkipStyle     = document.getElementById("pb-skip-style");
 const lnTalkUp        = document.getElementById("ln-talk-up");
+const lnMatchedIntroOnlyWithoutLiner = document.getElementById("ln-matched-intro-only-without-liner");
 const pbTransitionMode = document.getElementById("pb-transition-mode");
 const pbPostQueueSeed  = document.getElementById("pb-post-queue-seed");
 const keyNotation     = document.getElementById("key-notation");
@@ -826,6 +827,7 @@ const _settingsEls = () => ({
   pbReplayGain, pbLoudness: pbReplayGain,
   pbSavedPointsNote: document.getElementById("pb-saved-points-note"),
   pbBeatSyncFx, pbKeySyncFx, pbBeatmatchSkip, pbSkipStyle, lnTalkUp,
+  lnMatchedIntroOnlyWithoutLiner,
   pbTransitionMode, pbPostQueueSeed,
   keyNotation, keyPreferFlats,
   bpmLo, bpmHi,
@@ -1228,6 +1230,10 @@ const _repeatEls = {
   useRelatedArtists: document.getElementById("repeat-use-related-artists"),
   useRelatedTracks: document.getElementById("repeat-use-related-tracks"),
   versionsAsOneSong: document.getElementById("repeat-versions-as-one-song"),
+  daypartDays: document.getElementById("repeat-daypart-days"),
+  daypartHours: document.getElementById("repeat-daypart-hours"),
+  hourpartPlays: document.getElementById("repeat-hourpart-plays"),
+  error: document.getElementById("repeat-error"),
   defaultFile: document.getElementById("repeat-related-default"),
   fileStatus: document.getElementById("repeat-related-status"),
   tracksDefaultFile: document.getElementById("repeat-related-tracks-default"),

@@ -15,6 +15,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   safe; voice liners and previews stay at their normal speed. In stream and server-audio modes,
   the new speed takes effect at the next unrendered audio-buffer boundary. Cue points, lyrics,
   catalog durations and playback progress remain on the source-file timeline.
+- Daypart and hourpart song separation (#129): two new repeat rules in Settings > Song picking >
+  Repeats keep a song from playing at the same time every day. **Prevent a song from playing in
+  the same daypart** holds back a song that played in the daypart the next song starts in (such
+  as morning drive, 6 to 10) earlier today or on up to 7 days before; the **Daypart start hours**
+  are yours to set, 0, 6, 10, 15, 19 to start with. **Prevent a song from playing in the same
+  quarter of the hour** holds back a song from the quarter of the hour its last 1 to 3 plays in
+  the past week started in. Both are off until set, read the station's clock, count every version
+  of a song with **Count versions as one song** on, and give way with the artist, album and title
+  rules when nothing else fits, never the DMCA limits. The rotation tester and the hour preview
+  pick with them as the station does, and the tester reports how often each was relaxed. In
+  `config.toml` they are the `daypart` and `hourpart` tables of `[playback.repeat_rules]`; unknown
+  keys there are ignored with a warning. See
+  [Time of day](docs/track-selection.md#time-of-day).
 - Saving edits to the active clockwheel can now apply at its next restart, immediately from
   step 1, or immediately continuing at the next step number. A song already playing and its
   committed handoff finish normally. With no restart minutes, deferred edits apply when the
@@ -26,8 +39,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   server audio or a stream mixes the clip into its song change: it talks the song up when the song's intro is long enough
   for the speech, and otherwise plays just before the song. The song's own intros come first,
   then the artist's. Each intro has a chance, a wait between plays (60 minutes by default) and
-  optional play dates. A matched intro takes the place of the automatic liner at that change, and
-  a DJ break booked for the change wins over it. Uploads have the liner upload limits and are
+  optional play dates. By default, a matched intro takes the place of the automatic liner at that
+  change; Voice liners can instead limit matched intros to changes with no liner scheduled. A DJ
+  break booked for the change wins over it. Uploads have the liner upload limits and are
   decoded like announcer breaks, at most one minute long. Intros are kept per station in
   `matched_intros.json` and the `intros` folder, included in backups; a clean library scan removes
   the intros of songs it found gone, and a share that is away loses none. The hour preview lists

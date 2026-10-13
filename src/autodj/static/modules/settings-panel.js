@@ -178,6 +178,7 @@ const FIELDS = [
     read: (st) => st.playback?.beatmatch_on_skip === true },
   { key: "pbSkipStyle", field: "skip_style" },
   { key: "lnTalkUp", field: "liners_talk_up" },
+  { key: "lnMatchedIntroOnlyWithoutLiner", field: "matched_intro_only_without_liner" },
   { key: "pbTransitionMode", field: "transition_mode" },
   { key: "pbPostQueueSeed", field: "post_queue_seed" },
   // No extra announcement for these two: the select and checkbox already

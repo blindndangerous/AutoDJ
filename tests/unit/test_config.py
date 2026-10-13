@@ -422,6 +422,15 @@ class TestPlaybackConfig:
         pb = PlaybackConfig.from_dict({"liners_folder": "~/liners"})
         assert pb.liners_folder == str(Path.home() / "liners")
 
+    def test_matched_intro_without_liner_setting_defaults_off(self) -> None:
+        assert PlaybackConfig.from_dict({}).matched_intro_only_without_liner is False
+        assert (
+            PlaybackConfig.from_dict(
+                {"matched_intro_only_without_liner": True}
+            ).matched_intro_only_without_liner
+            is True
+        )
+
     def test_server_max_track_minutes_accepts_an_integer(self) -> None:
         pb = PlaybackConfig.from_dict({"server_max_track_minutes": 30})
         assert pb.server_max_track_minutes == 30.0

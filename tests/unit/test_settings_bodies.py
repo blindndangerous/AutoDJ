@@ -48,6 +48,11 @@ def test_music_speed_percent_rejects_invalid_values(value: float) -> None:
         PlaybackSettingsBody.model_validate({"music_speed_percent": value})
 
 
+def test_playback_body_accepts_matched_intro_liner_precedence_setting() -> None:
+    body = PlaybackSettingsBody.model_validate({"matched_intro_only_without_liner": True})
+    assert body.matched_intro_only_without_liner is True
+
+
 @pytest.mark.parametrize("value", (0, 7, 12))
 def test_playback_body_accepts_agc_drive_range(value: float) -> None:
     assert (

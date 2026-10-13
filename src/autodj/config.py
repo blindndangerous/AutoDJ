@@ -453,6 +453,8 @@ class PlaybackConfig(_Section):
     liners_random_max_minutes: float | None = None
     liners_pick_mode: str = "random"
     liners_duck_db: float = -12.0
+    # Matched song intros may take the automatic liner slot unless this is enabled.
+    matched_intro_only_without_liner: bool = False
     # Server mix only: time a liner due at a track start to end just
     # before the incoming vocal ("hitting the post").
     liners_talk_up: bool = False
@@ -547,6 +549,7 @@ class PlaybackConfig(_Section):
             "beatmatch_on_skip",
             "liners_enabled",
             "liners_talk_up",
+            "matched_intro_only_without_liner",
         ):
             setattr(self, name, bool(getattr(self, name)))
         self.liners_folder = (

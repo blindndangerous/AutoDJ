@@ -1284,7 +1284,8 @@ class TestRenderTrackFeatures:
         current, following = player._sim.entries[:2]
         player._is_liner = lambda entry: entry is current
         current_audio = np.zeros((4 * 44100, 2), dtype=np.float32)
-        short_audio = np.full((4410, 2), 0.1, dtype=np.float32)
+        tone = _sine_audio(0.1)
+        short_audio = np.stack((tone, tone), axis=1)
         with patch.object(
             player,
             "_load_playout_audio",
@@ -1303,7 +1304,8 @@ class TestRenderTrackFeatures:
         current, following = player._sim.entries[:2]
         player._is_liner = lambda entry: entry is current
         current_audio = np.zeros((4 * 44100, 2), dtype=np.float32)
-        short_audio = np.full((int(1.8 * 44100), 2), 0.1, dtype=np.float32)
+        tone = _sine_audio(1.8)
+        short_audio = np.stack((tone, tone), axis=1)
         with patch.object(
             player,
             "_load_playout_audio",

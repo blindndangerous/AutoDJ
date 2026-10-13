@@ -134,8 +134,10 @@ Edit the rules under **Settings > Picking > Repeats**:
 - Title: the same song title across versions, such as a radio edit and a live recording.
 - Related tracks: a track grouped with a recent one in the related tracks file, such as a song
   and one that samples it, when **Use related tracks** is on.
+- Same daypart and same quarter hour: a song that played at the same time of day before (see
+  "Time of day" below). These two have their own boxes.
 
-Each has a Tracks box and a Minutes box. Zero turns off that limit. When both
+The others each have a Tracks box and a Minutes box. Zero turns off that limit. When both
 are set, a candidate must clear both limits. Minutes count from when a track
 started to when the next pick is made. Server playout picks ahead, so a song
 may be held back a little longer than the chosen time.
@@ -154,8 +156,10 @@ Re-enter any limits that still use those keys in Settings > Picking > Repeats.
 Current repeat rules are preserved, and Doctor offers optional cleanup with a backup.
 Optional config defaults use
 `[playback.repeat_rules]`, with `track`, `artist`, `related_artist`, `album`, `title` and
-`related_track` tables containing `tracks` and `minutes`, and the `use_related_artists`,
-`use_related_tracks` and `versions_as_one_song` switches; saved web settings take precedence.
+`related_track` tables containing `tracks` and `minutes`, the `use_related_artists`,
+`use_related_tracks` and `versions_as_one_song` switches, a `daypart` table with `days` and
+`start_hours`, and an `hourpart` table with `plays`; saved web settings take precedence. An
+unknown key in any of these tables is ignored with a warning.
 
 ### Titles
 
@@ -283,19 +287,71 @@ together. DMCA limits still count every actual play against its credited artists
 grouping never reduces those counts. Related-track rules continue to use their existing
 artist/title matching, including recognised version labels.
 
+### Time of day
+
+Two rules, both off to start with, keep a song from playing at the same time every day, as
+StationPlaylist Creator's daypart and hourpart separation do.
+
+**Prevent a song from playing in the same daypart** holds back a song that played in the
+daypart the next song starts in, earlier today or on any of the **Days** before (1 to 7; 0 turns
+it off). The dayparts are set by **Daypart start hours**, hours from 0 to 23 separated by commas.
+Each daypart lasts until the next start, and the last one runs past midnight to the first. The
+default, 0, 6, 10, 15, 19, makes five: overnight, morning drive (6 to 10), midday, afternoon drive
+and evening. So with 1 day, a song that played at 8:40 yesterday morning cannot play between 6
+and 10 today, but it can at noon. With the starts 6 and 19, a song at 2 in the morning is in
+the evening daypart that began at 19 the day before. One start makes the whole day one daypart;
+all 24 hours keep a song out of the hour it played in the day before.
+
+**Prevent a song from playing in the same quarter of the hour** holds back a song when one of
+its last **Plays** plays (1 to 3; 0 turns it off) in the past week started in the quarter of the
+hour the next song starts in: :00 to :14, :15 to :29, :30 to :44 or :45 to :59. At 1 a song
+never starts in the same quarter twice running; at 3 it moves round all four. Plays more than a
+week old do not count.
+
+- The hours are the station's (`[server] station_timezone`, else the computer's), and a daypart
+  keeps its hours across a clock change. Quarters of the hour compare exactly in every time
+  zone, except across Lord Howe Island's half-hour clock change.
+- Both rules judge the time the next song is expected to start, as dayparting does, not the time
+  the pick is made. Server playout picks ahead, so this is the time the song goes on air.
+- A song is its file, or with **Count versions as one song** on, every version of it.
+- They belong to the same group as the artist, related artist, album, title and related track
+  rules, and give way together with them when nothing else fits. When that happens depends on
+  the pick mode (see "Where the rules apply"): a clockwheel step relaxes the group first and the
+  track window only after; Random walk and Least recently played relax the track window first
+  and the group after; a similarity pick relaxes the group while keeping the track window, and
+  if that still finds nothing, searches again with the track window relaxed and the group back
+  on. The DMCA limits are never relaxed for them. The log and the rotation tester name them
+  "same daypart" and "same quarter hour".
+- They need plays from before a restart, so while either is on AutoDJ keeps the plays of the
+  days they look at: the daypart days plus two, and a week for the quarter hour. At startup it
+  loads as many saved plays as those days can hold at one minute a song (4,320 for one daypart
+  day, 10,080 for the quarter hour), or up to 50,000 when a Minutes limit or DMCA mode is on.
+
+Each pick works out the songs the two rules hold back once, from the play history, and then
+checks each candidate with a set lookup. Measured on the Alienware test machine with a made-up
+77,000-track library and a 50,000-play history, medians of 41 runs: building the pick's rules
+took 10.3 ms with both rules off and 12.9 ms with both on, of which the new walk was 2.0 ms
+(3.9 ms with Count versions as one song on). Checking all 77,000 tracks against the rules took
+55 ms with them off and 61 ms with them on.
+
 ### Where the rules apply
 
-- Similarity and anchored picks pass the rules to `find_next_for_path`.
+- Similarity and anchored picks pass the rules to `find_next_for_path`. When
+  nothing passes, the search drops the repeat rules but keeps the track
+  window; if it still finds nothing, it searches again avoiding only the
+  tracks around this one, with the repeat rules back on (dropped once more if
+  needed).
 - Discovery picks from the least similar quarter of the tracks the rules
   allow.
 - Random walk picks among the tracks the rules allow. Least recently played
   checks songs from oldest play time to newest and stops at the first one
-  allowed. Never-played songs come first; ties are tried in random order.
+  allowed. When nothing passes, both relax the track window first, then the
+  repeat rules. Never-played songs come first; ties are tried in random order.
   Clock slots using least recently played work the same way.
 - Clock slots marked EnforceRules use the rules; NoRules slots ignore them,
   as before. When every matching track is held back, the clock relaxes the
-  artist, album, title and related rules for that pick, then the track window, and
-  logs which one it relaxed.
+  artist, album, title, related, daypart and quarter-hour rules for that pick, then the
+  track window, and logs which one it relaxed.
 - When no track passes, the rules are relaxed rather than stopping the
   music. The fallback pick after a failed pick ignores them, as before.
 - Automatic picks exclude the playing, prepared and starting tracks even when
@@ -304,11 +360,12 @@ artist/title matching, including recognised version labels.
 
 Each pick that held candidates back logs a line at info level, such as
 "Repeat rules held back 4 candidates (1 same artist, 1 related artist, 1 same
-title, 1 related track)". A similarity pick only counts the nearest candidates it looked at.
+title, 1 same daypart)". A similarity pick only counts the nearest candidates it looked at.
 Least-recent picks count only the candidates checked before finding an eligible
 song. Random picks check the whole pool, so their counts may be higher.
 At DEBUG level, `autodj.player.repeat` also records each candidate examined by
-the artist, related-artist, album, title or related-track rules, its reason, and the selected
+the artist, related-artist, album, title, related-track, daypart or quarter-hour rules, its
+reason, and the selected
 path. The row means the candidate was excluded from that pool by the repeat
 rule; the rule can be relaxed before selection. These rows do not include
 tracks excluded only by the separate track-count or minute windows.

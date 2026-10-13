@@ -35,6 +35,10 @@ function installPage() {
     useRelatedArtists: $("repeat-use-related-artists"),
     useRelatedTracks: $("repeat-use-related-tracks"),
     versionsAsOneSong: $("repeat-versions-as-one-song"),
+    daypartDays: $("repeat-daypart-days"),
+    daypartHours: $("repeat-daypart-hours"),
+    hourpartPlays: $("repeat-hourpart-plays"),
+    error: $("repeat-error"),
     defaultFile: $("repeat-related-default"),
     fileStatus: $("repeat-related-status"),
     tracksDefaultFile: $("repeat-related-tracks-default"),
@@ -74,6 +78,7 @@ const fullRules = {
   album: { tracks: 0, minutes: 0 }, track: { tracks: 50, minutes: 0 },
   title: { tracks: 0, minutes: 0 }, related_track: { tracks: 20, minutes: 0 },
   use_related_artists: true, use_related_tracks: false, versions_as_one_song: false,
+  daypart: { days: 0, start_hours: [0, 6, 10, 15, 19] }, hourpart: { plays: 0 },
 };
 
 describe("Repeats markup", () => {
@@ -89,6 +94,8 @@ describe("Repeats markup", () => {
       "Prevent the same track from repeating within",
       "Prevent the same title from repeating within",
       "Related tracks",
+      "Prevent a song from playing in the same daypart",
+      "Prevent a song from playing in the same quarter of the hour",
     ]);
     for (const control of outer.querySelectorAll("input")) {
       expect(control.labels).toHaveLength(1);
@@ -158,6 +165,33 @@ describe("Repeats markup", () => {
     expect(els.relatedTrackTracks.value).toBe("20");
   });
 
+  it("groups the daypart and quarter-hour rules, off by default, each with its description", () => {
+    const els = installPage();
+    const daypart = els.daypartDays.closest("fieldset");
+    expect(els.daypartHours.closest("fieldset")).toBe(daypart);
+    expect(els.daypartDays.labels[0].textContent).toBe("Days");
+    expect(els.daypartDays.value).toBe("0");
+    expect(els.daypartDays.max).toBe("7");
+    expect(els.daypartHours.labels[0].textContent).toBe("Daypart start hours");
+    expect(els.daypartHours.value).toBe("0, 6, 10, 15, 19");
+    const [groupNote] = describedBy(daypart);
+    expect(groupNote.closest("fieldset")).toBe(daypart);
+    expect(groupNote.textContent).toContain("0 days turns this off");
+    const [hoursNote] = describedBy(els.daypartHours);
+    expect(hoursNote.textContent).toContain("separated by commas");
+    expect(hoursNote.textContent).toContain("morning drive");
+
+    const hourpart = els.hourpartPlays.closest("fieldset");
+    expect(hourpart).not.toBe(daypart);
+    expect(els.hourpartPlays.labels[0].textContent).toBe("Plays");
+    expect(els.hourpartPlays.value).toBe("0");
+    expect(els.hourpartPlays.max).toBe("3");
+    const [playsNote] = describedBy(hourpart);
+    expect(playsNote.closest("fieldset")).toBe(hourpart);
+    expect(playsNote.textContent).toContain("quarter of the hour");
+    expect(playsNote.textContent).toContain("0 plays turns this off");
+  });
+
   it("puts Count versions as one song in the same track group with its description", () => {
     const els = installPage();
     const group = els.versionsAsOneSong.closest("fieldset");
@@ -172,6 +206,87 @@ describe("Repeats markup", () => {
 });
 
 describe("repeat settings", () => {
+  it("applies and saves the daypart and quarter-hour rules, hours in order", async () => {
+    const { els, postSettings } = setup();
+    const timed = { ...fullRules, daypart: { days: 2, start_hours: [0, 5, 9] },
+      hourpart: { plays: 1 } };
+    applyRepeatSettings({ playback: { repeat_rules: timed } }, els);
+    expect(els.daypartDays.value).toBe("2");
+    expect(els.daypartHours.value).toBe("0, 5, 9");
+    expect(els.hourpartPlays.value).toBe("1");
+
+    type(els.daypartHours, " 19 ,6,0 ");
+    type(els.hourpartPlays, "3");
+    els.save.click();
+    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledOnce());
+    expect(postSettings.mock.calls[0][1]).toEqual({ repeat_rules: {
+      ...timed, daypart: { days: 2, start_hours: [0, 6, 19] }, hourpart: { plays: 3 },
+    } });
+  });
+
+  it.each([
+    ["daypartDays", "8", "Same daypart days must be a whole number from 0 to 7."],
+    ["daypartDays", "1.5", "Same daypart days must be a whole number from 0 to 7."],
+    ["daypartHours", "6, 24", "Daypart start hours must be whole numbers from 0 to 23, "
+      + "separated by commas, with no hour given twice."],
+    ["daypartHours", "6, 6", "Daypart start hours must be whole numbers from 0 to 23, "
+      + "separated by commas, with no hour given twice."],
+    ["daypartHours", "", "Daypart start hours must be whole numbers from 0 to 23, "
+      + "separated by commas, with no hour given twice."],
+    ["daypartHours", "6 10", "Daypart start hours must be whole numbers from 0 to 23, "
+      + "separated by commas, with no hour given twice."],
+    ["hourpartPlays", "4", "Same quarter hour plays must be a whole number from 0 to 3."],
+  ])("refuses %s %j, marks and focuses it, and names the rule", async (name, value, message) => {
+    const { els, postSettings, settingsStatus } = setup();
+    applyRepeatSettings({ playback: { repeat_rules: fullRules } }, els);
+    type(els[name], value);
+    expect(els[name].getAttribute("aria-invalid")).toBe(null);
+    els.save.click();
+    expect(els[name].getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(els[name]);
+    await vi.waitFor(() => expect(settingsStatus.textContent).toBe(message));
+    expect(postSettings).not.toHaveBeenCalled();
+    // The message is also on the page, under the field and linked to it.
+    expect(els.error.hidden).toBe(false);
+    expect(els.error.textContent).toBe(message);
+    expect(els.error.previousElementSibling).toBe(els[name].closest(".settings-row"));
+    expect(describedBy(els[name])).toContain(els.error);
+    expect(els.error.hasAttribute("aria-live")).toBe(false);
+    type(els[name], name === "daypartHours" ? "0, 12" : "1");
+    expect(els[name].hasAttribute("aria-invalid")).toBe(false);
+    expect(els.error.hidden).toBe(true);
+    expect(describedBy(els[name])).not.toContain(els.error);
+    if (name === "daypartHours") {
+      // Its own format help stays linked.
+      expect(describedBy(els[name]).map((node) => node.id)).toEqual(["repeat-daypart-hours-desc"]);
+    } else {
+      expect(els[name].hasAttribute("aria-describedby")).toBe(false);
+    }
+  });
+
+  it("moves the field error to the next refused box and clears it on a good save", async () => {
+    const { els, postSettings } = setup();
+    applyRepeatSettings({ playback: { repeat_rules: fullRules } }, els);
+    type(els.artistTracks, "5001");
+    els.save.click();
+    expect(describedBy(els.artistTracks)).toContain(els.error);
+    expect(els.error.textContent).toBe("Same artist tracks must be a whole number from 0 to 5000.");
+    type(els.artistTracks, "8");
+    type(els.trackMinutes, "-1");
+    els.save.click();
+    expect(els.artistTracks.hasAttribute("aria-describedby")).toBe(false);
+    expect(describedBy(els.trackMinutes)).toContain(els.error);
+    expect(els.error.previousElementSibling).toBe(els.trackMinutes.closest(".settings-row"));
+    // Editing another box leaves the error with its own field.
+    type(els.albumTracks, "3");
+    expect(els.error.hidden).toBe(false);
+    els.trackMinutes.value = "0";
+    els.save.click();
+    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(els.error.hidden).toBe(true));
+    expect(els.trackMinutes.hasAttribute("aria-describedby")).toBe(false);
+  });
+
   it("applies server values, keeps typed edits across pushes, and saves no file path", async () => {
     const { els, postSettings } = setup();
     applyRepeatSettings({ playback: {

@@ -59,6 +59,7 @@ function makeEls() {
     pbBeatmatchSkip: cb(),
     pbSkipStyle:     sel(["fade", "echo_out", "backspin", "loop_roll"]),
     lnTalkUp:        cb(),
+    lnMatchedIntroOnlyWithoutLiner: cb(),
     pbTransitionMode: sel(["full_intro_outro", "fixed", "saved_points"]),
     pbPickMode:      sel(["similarity", "random", "least_recent", "clock"]),
     bpmLo:           num(),
@@ -148,6 +149,12 @@ describe("applySettingsState", () => {
     // The vocal guard is on unless the server says it is off.
     applySettingsState({ djmix: { harmonic_mode: "off" }, playback: {} }, els);
     expect(els.djVocalGuard.checked).toBe(true);
+  });
+
+  it("shows the matched intro liner precedence setting", () => {
+    const els = makeEls();
+    applySettingsState({ playback: { matched_intro_only_without_liner: true } }, els);
+    expect(els.lnMatchedIntroOnlyWithoutLiner.checked).toBe(true);
   });
 
   it("prefers explicit pick and loudness modes, while reading legacy flags", () => {
@@ -340,6 +347,8 @@ describe("installSettingsControls", () => {
       .toEqual(["/api/playback-settings", { skip_style: "backspin" }]);
     expect(change(els.lnTalkUp, true))
       .toEqual(["/api/playback-settings", { liners_talk_up: true }]);
+    expect(change(els.lnMatchedIntroOnlyWithoutLiner, true))
+      .toEqual(["/api/playback-settings", { matched_intro_only_without_liner: true }]);
     expect(change(els.djVocalGuard, false)).toEqual(["/api/djmix", { vocal_guard: false }]);
     expect(change(els.pbPrefetch, false))
       .toEqual(["/api/playback-settings", { prefetch_next_track: false }]);

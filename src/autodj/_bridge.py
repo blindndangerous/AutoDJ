@@ -1846,6 +1846,9 @@ class PlayerBridge:
                 "liners_pick_mode": pb.liners_pick_mode,
                 "liners_duck_db": pb.liners_duck_db,
                 "liners_talk_up": bool(pb.liners_talk_up),
+                "matched_intro_only_without_liner": bool(
+                    getattr(pb, "matched_intro_only_without_liner", False)
+                ),
                 "stream_bitrate": int(cfg.stream.bitrate),
                 "stream_continuous": bool(cfg.stream.continuous),
                 "stream_station_name": cfg.stream.station_name,
