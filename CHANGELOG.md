@@ -498,6 +498,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   negative values. A cold opening waits until the liner's segue; its remaining tail can
   still overlap. Some songs now start later where the old overlap would have covered
   their vocals. Stored cue values and outgoing fades are unchanged (#194).
+- Track info preview audio stops when leaving the tab or saving cue points, while keeping
+  its position available for further editing (#186).
 - Audio prepared before a clockwheel edit no longer restores the old step position or restart
   time when it begins playing (#153).
 - Clock skip logs now include the step number and reason for every skipped step, including
