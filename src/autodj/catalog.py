@@ -45,6 +45,17 @@ _RETAG_FIELDS = frozenset({"title", "artist", "album", "genre", "year", "bpm", "
 _USER_TAGS = ("bpm", "key")
 
 
+def history_start(value: object) -> datetime | None:
+    """Read stored play times, treating legacy naive times as local time."""
+    if not isinstance(value, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.astimezone()
+
+
 def _user_tags(value: Any, fingerprint: str) -> list[str]:
     """The hand-set fields that still apply to the file with *fingerprint*.
 
@@ -604,31 +615,51 @@ class LibraryCatalog:
             )
             return [dict(row) for row in rows]
 
-    def play_log(self, station: str = DEFAULT_STATION) -> list[dict]:
-        """Return every completed play of *station*, oldest first, with its record's details.
+    def play_log(
+        self,
+        station: str = DEFAULT_STATION,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list[dict]:
+        """Read completed plays in insertion order, optionally within a report range.
 
-        ``path``, ``album`` and ``kind`` come from the catalog record the
-        play refers to (by id, so a moved file gives its new path), or from
-        the record at the played path.  ``album`` and ``kind`` are ``None``
-        when neither exists, as for plays migrated from the old
-        settings-based history, which also have no path.  ``performances``
-        is how many listeners heard the play (see :mod:`autodj.playlog`), or
-        ``None`` for plays logged before AutoDJ counted them.
+        Ranged rows include the next completed play's time, even outside the
+        range, so reports retain their duration clipping. Date parsing keeps
+        legacy local times and offset timestamps consistent with reports.
         """
-        with self._lock:
-            rows = (
-                self._db()
-                .execute(
-                    "SELECT h.played_at,h.duration,h.title,h.artist,"
-                    "COALESCE(e.path,h.path) AS path,e.album,e.kind,"
-                    "h.performances "
-                    "FROM play_history h LEFT JOIN catalog_entries e ON e.id="
-                    "COALESCE(h.entry_id,(SELECT id FROM catalog_entries WHERE path=h.path)) "
-                    "WHERE h.interrupted=0 AND h.station=? ORDER BY h.rowid",
-                    (station,),
+        if (start is None) != (end is None):
+            raise ValueError("Both start and end are required")
+        if start is not None and end is not None and end <= start:
+            raise ValueError("The end of the range must be after its start.")
+        following, where = "", ""
+        # Use a separate snapshot so report reads do not hold the writer lock.
+        with self.reader() as reader:
+            db = reader._conn
+            db.row_factory = sqlite3.Row
+            if start is not None and end is not None:
+
+                def in_range(value: object) -> bool:
+                    moment = history_start(value)
+                    return moment is not None and start <= moment < end
+
+                # shortcut: legacy times need per-row parsing; index normalized times if scans grow costly.
+                db.create_function("in_report_range", 1, in_range)
+                where = " AND in_report_range(h.played_at)"
+                following = (
+                    ", (SELECT n.played_at FROM play_history n "
+                    "WHERE n.station=h.station AND n.interrupted=0 AND n.rowid>h.rowid "
+                    "ORDER BY n.rowid LIMIT 1) AS following_at"
                 )
-                .fetchall()
-            )
+            rows = db.execute(
+                "SELECT h.played_at,h.duration,h.title,h.artist,"  # nosec B608 -- fixed SQL fragments; values bound
+                "COALESCE(e.path,h.path) AS path,e.album,e.kind,h.performances "
+                + following
+                + " FROM play_history h LEFT JOIN catalog_entries e ON e.id="  # nosec B608 -- fixed SQL fragments
+                "COALESCE(h.entry_id,(SELECT id FROM catalog_entries WHERE path=h.path)) "
+                "WHERE h.interrupted=0 AND h.station=?" + where + " ORDER BY h.rowid",
+                (station,),
+            ).fetchall()
             return [dict(row) for row in rows]
 
     def change_versions(self) -> dict[str, int]:

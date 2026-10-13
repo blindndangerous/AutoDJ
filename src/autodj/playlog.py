@@ -48,7 +48,7 @@ from datetime import date, datetime, time, timedelta
 from pathlib import PurePath
 
 from autodj.audio_meta import read_reporting_tags
-from autodj.catalog import DEFAULT_STATION, LibraryCatalog, _under
+from autodj.catalog import DEFAULT_STATION, LibraryCatalog, _under, history_start
 
 COLUMNS = (
     "start",
@@ -129,16 +129,6 @@ def parse_bound(text: str, *, end: bool = False) -> datetime:
     return moment if moment.tzinfo else moment.astimezone()
 
 
-def _started(value: object) -> datetime | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return moment if moment.tzinfo else moment.astimezone()
-
-
 def _relative(path: str, sources: Sequence[dict]) -> str:
     """Return *path* relative to the outermost source folder that holds it."""
     for source in sources:  # sorted by path, so an outer folder comes first
@@ -176,16 +166,15 @@ def plays_between(
         raise ValueError("The end of the range must be after its start.")
     sources = catalog.sources()
     liner_sources = [source for source in sources if source["kind"] == "liner"]
-    rows = catalog.play_log(station)
-    starts = [_started(row["played_at"]) for row in rows]
+    rows = catalog.play_log(station, start=start, end=end)
     files: dict[str, tuple[str, str, str]] = {}
     plays = []
-    for index, row in enumerate(rows):
-        started = starts[index]
+    for row in rows:
+        started = history_start(row["played_at"])
         if started is None or not start <= started < end:
             continue
         length = float(row["duration"])
-        following = starts[index + 1] if index + 1 < len(starts) else None
+        following = history_start(row["following_at"])
         if following is not None and following >= started:
             length = min(length, (following - started).total_seconds())
         path = row["path"] or ""
