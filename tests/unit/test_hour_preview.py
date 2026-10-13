@@ -592,7 +592,10 @@ def test_cache_freshness_covers_handoff_rules_schedule_library_and_refresh(
     previews.get(source, 60)
     previews.get(source, 60)
     assert len(builds) == 1
-    decided = replace(decided, handoff=980)  # Same tracks and statuses after a seek.
+    decided = replace(decided, now=1015)  # Playing normally keeps the handoff fixed.
+    previews.get(source, 60)
+    assert len(builds) == 1
+    decided = replace(decided, handoff=1090)  # A short seek also needs fresh times.
     monkeypatch.setattr(hour_preview, "read_station", lambda *_args, **_kwargs: decided)
     previews.get(source, 60)
     source.player._cfg.playback.repeat_rules = "two"
@@ -603,6 +606,14 @@ def test_cache_freshness_covers_handoff_rules_schedule_library_and_refresh(
     previews.get(source, 60)
     previews.get(source, 60, force=True)
     assert len(builds) == 6
+    category_versions = [0]
+    monkeypatch.setattr(
+        source.library.categories, "cache_signature", lambda: tuple(category_versions)
+    )
+    previews.get(source, 60)
+    category_versions[0] += 1
+    previews.get(source, 60)
+    assert len(builds) == 8
 
 
 def test_previews_run_on_their_own_worker_thread(tmp_path: Path, monkeypatch) -> None:

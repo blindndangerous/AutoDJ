@@ -922,6 +922,12 @@ class CategoryIndex:
             tuple(playlists),
         )
 
+    def cache_signature(self) -> tuple:
+        """Cheap freshness key for consumers caching category-dependent results."""
+        with self._lock:
+            entries = self._entries()
+            return (id(entries), self._signature(self.categories(), entries))
+
     def resolutions(self) -> tuple[tuple[Category, ...], dict[str, Resolution]]:
         """The saved categories and what each holds, worked out again if a source changed."""
         with self._lock:

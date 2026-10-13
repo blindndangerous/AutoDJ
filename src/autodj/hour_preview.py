@@ -493,8 +493,11 @@ def read_station(player: Any, desk: Any = None, *, now: float | None = None) -> 
             if incoming is not None and incoming.path not in liners:
                 rows, delay = _preview_liner_group(player, last, incoming, group, moment)
             else:
-                rows = [(item, moment, float(item.length or 0.0)) for item in group]
-                delay = sum(length for _, _, length in rows)
+                rows, delay = [], 0.0
+                for item in group:
+                    length = float(item.length or 0.0)
+                    rows.append((item, moment + delay, length))
+                    delay += length
             for liner, starts, seconds in rows:
                 items.append(Item("liner", starts, seconds, "queued", liner))
                 unplayed.append((liner, starts))
@@ -1416,17 +1419,21 @@ class HourPreviews:
                 "_seed_path",
                 "_discovery_every",
                 "_clock",
+                "_clock_steps",
+                "_pending_clock_update",
             )
         )
         catalog = getattr(getattr(player, "_library", None), "catalog", None)
         version_reader = getattr(catalog, "change_versions", None)
         versions = version_reader() if version_reader else None
-        # The minute bucket catches large timeline changes; UI seeks force a fresh preview.
+        categories = getattr(getattr(player, "_library", None), "categories", None)
+        category_signature = categories.cache_signature() if categories else None
+        # The wall-clock handoff stays steady during playback but moves after a seek.
         signature = hashlib.sha256(
             repr(
                 (
                     decided.signature(),
-                    round((decided.handoff - decided.now) / 60),
+                    round(decided.handoff),
                     decided.clock_boundary,
                     repr(getattr(player, "_cfg", None)),
                     settings,
@@ -1435,6 +1442,7 @@ class HourPreviews:
                     repr(getattr(desk, "config", None)),
                     source.events,
                     versions,
+                    category_signature,
                 )
             ).encode("utf-8")
         ).hexdigest()
