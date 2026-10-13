@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -193,6 +195,73 @@ def test_a_beets_failure_still_saves_the_file(tagged, tmp_path: Path) -> None:
     assert response.json()["beets"] == "failed"
     assert response.json()["beets_error"]
     assert read_file_tags(song).artist == "Band"
+
+
+def test_concurrent_beets_saves_keep_the_latest_tags_and_mtime(
+    tagged, tmp_path: Path, monkeypatch
+) -> None:
+    from autodj import tags_api
+
+    client, manager, song, _bridge = tagged
+    manager.cfg.library.beets_db = _beets(tmp_path, song)
+    first_beets_call = threading.Event()
+    release_first_beets_call = threading.Event()
+    second_lookup = threading.Event()
+    lookup_count = 0
+    lookup_lock = threading.Lock()
+    real_entry_for_path = manager.entry_for_path
+    real_update_beets = tags_api.update_beets
+
+    def observe_lookup(path):
+        nonlocal lookup_count
+        with lookup_lock:
+            lookup_count += 1
+            if lookup_count == 2:
+                second_lookup.set()
+        return real_entry_for_path(path)
+
+    beets_count = 0
+    beets_lock = threading.Lock()
+
+    def delay_first_beets(*args):
+        nonlocal beets_count
+        with beets_lock:
+            beets_count += 1
+            first = beets_count == 1
+        if first:
+            first_beets_call.set()
+            assert tags_api._lock_for(song).locked()
+            assert release_first_beets_call.wait(5)
+        return real_update_beets(*args)
+
+    monkeypatch.setattr(manager, "entry_for_path", observe_lookup)
+    monkeypatch.setattr(tags_api, "update_beets", delay_first_beets)
+
+    def save(artist: str):
+        return client.post(
+            "/api/library/tags",
+            json={"path": str(song), "tags": {"artist": artist}, "beets": True},
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(save, "First")
+        try:
+            assert first_beets_call.wait(5)
+            second = pool.submit(save, "Second")
+            assert second_lookup.wait(5)
+            release_first_beets_call.set()
+            assert first.result(timeout=10).status_code == 200
+            assert second.result(timeout=10).status_code == 200
+        finally:
+            release_first_beets_call.set()
+
+    conn = sqlite3.connect(manager.cfg.library.beets_db)
+    artist, mtime = conn.execute("SELECT artist, mtime FROM items").fetchone()
+    conn.close()
+    assert artist == "Second"
+    assert mtime == song.stat().st_mtime
+    assert read_file_tags(song).artist == "Second"
+    assert manager.catalog.record_for_path(song)["artist"] == "Second"
 
 
 def test_a_song_beets_does_not_know_says_so(tagged, tmp_path: Path) -> None:

@@ -77,8 +77,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   flushed to disk and replaces the original only once every changed field reads back, so a failed
   save leaves the original as it was; an MP3 keeps its ID3 version. A song playing or up next is
   refused until it has played, and only files inside the library folders are changed. When beets
-  manages the library, the same fields can be written to the beets database too. A refused field
-  is marked invalid with its reason linked to it and focused; a save is said once and focus stays
+  manages the library, the same fields can be written to the beets database too, in the same
+  order as each file save. A refused field is marked invalid with its reason linked to it and
+  focused; a save is said once and focus stays
   on Save tags. The dialog that asks to save before switching tracks now reads its explanation when
   it opens and has a Keep editing button, which does what Escape does.
 
