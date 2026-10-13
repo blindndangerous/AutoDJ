@@ -536,10 +536,14 @@ def test_rootless_catalog_upgrade_does_not_invent_a_music_source(tmp_path: Path)
 
     with closing(sqlite3.connect(index_dir / "library.db")) as db:
         assert db.execute("SELECT path,kind FROM catalog_sources").fetchall() == []
-    assert index_migration.migration_required(index_dir) == (
-        True,
-        "initial folder registration is incomplete",
-    )
+        assert db.execute(
+            "SELECT value FROM catalog_settings WHERE key='sources_seeded'"
+        ).fetchone() == ("true",)
+    assert not index_migration.migration_required(index_dir)[0]
+    index_migration.migrate_catalog(index_dir, None, tmp_path / "unused-liners", {}, apply=True)
+    with closing(sqlite3.connect(index_dir / "library.db")) as db:
+        assert db.execute("SELECT path,kind FROM catalog_sources").fetchall() == []
+    assert not index_migration.migration_required(index_dir)[0]
 
 
 def test_published_relative_index_requires_music_root_before_any_writes(tmp_path: Path) -> None:
@@ -551,6 +555,24 @@ def test_published_relative_index_requires_music_root_before_any_writes(tmp_path
 
     assert _tree(index_dir) == before
     assert not (tmp_path / ".migration-backups").exists()
+
+
+def test_migrate_index_cli_accepts_music_root_override_when_config_has_none(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    cfg.library.music_dir = None
+    legacy_music = tmp_path / "legacy-music"
+    legacy_music.mkdir()
+    index_dir, _ = _fixture(tmp_path, paths=("old.flac",), index_dir=cfg.index.active_dir)
+
+    with patch("autodj.cli._load_cfg_or_exit", return_value=cfg):
+        result = CliRunner().invoke(cli, ["migrate-index", "--music-dir", str(legacy_music)])
+
+    assert result.exit_code == 0, result.output
+    assert str(legacy_music.resolve()) in result.output
+    assert "Dry run" in result.output
+    assert not (index_dir / "library.db").exists()
 
 
 def test_migrate_imports_schema4_and_resumes_after_interruption(tmp_path: Path) -> None:
