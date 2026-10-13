@@ -1231,6 +1231,18 @@ example `liners/nightowl` inside the default station's `liners`), the inner fold
 to the inner station only. This holds for automatic liners, clockwheel liner steps, the Liners
 list and the clips a cart can use.
 
+### Stereo Tool: one station at a time
+
+One Stereo Tool licence covers one running copy, so AutoDJ lets only one station use Stereo Tool
+at a time. A second station set to `loudness_processing = "stereotool"` does not start while
+another station uses it, and choosing Stereo Tool in a station's settings, or applying a profile
+that does, is refused with a message naming the station that has it. A station that has just
+left Stereo Tool still counts until its current song ends. Use `"smooth"` for the other
+stations; with a second licence, a later version can lift this limit.
+
+Stereo Tool presets are shared by every station, and each station chooses its own. A preset that
+any station uses, running or stopped, cannot be deleted; the message names the station.
+
 ### The station switcher
 
 With more than one station configured, the banner of the web page has a **Station** button after
@@ -1279,18 +1291,6 @@ listeners" or "Oldies Hour, off air"; the station the page controls has a tick a
   than the default one has **Stop Night Owl Radio**, which asks first.
 
 Every page has its own choice, so two browsers can control two stations at once.
-
-### Stereo Tool: one station at a time
-
-One Stereo Tool licence covers one running copy, so AutoDJ lets only one station use Stereo Tool
-at a time. A second station set to `loudness_processing = "stereotool"` does not start while
-another station uses it, and choosing Stereo Tool in a station's settings, or applying a profile
-that does, is refused with a message naming the station that has it. A station that has just
-left Stereo Tool still counts until its current song ends. Use `"smooth"` for the other
-stations; with a second licence, a later version can lift this limit.
-
-Stereo Tool presets are shared by every station, and each station chooses its own. A preset that
-any station uses, running or stopped, cannot be deleted; the message names the station.
 
 ### Logs
 
