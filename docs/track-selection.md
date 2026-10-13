@@ -171,9 +171,9 @@ Satisfaction" is not shortened to "Satisfaction".
 counts for the artist rule. The full credit always counts as one artist.
 
 - "feat.", "ft.", "featuring", "vs.", "versus", a semicolon and the
-  separator of multi-value tags always split. So does a "(feat. X)" or
-  "(with X)" note in the artist or the title, so "Uptown Funk (feat. Bruno
-  Mars)" counts for Bruno Mars.
+  separator of multi-value tags always split. So does a "(feat. X)",
+  "(with X)" or "(w/ X)" note in the artist or the title, so "Uptown Funk
+  (feat. Bruno Mars)" counts for Bruno Mars.
 - "&", "and", "+", "x", "with", "/" and commas split only when every part
   looks like a separately credited artist: it has at least two words, or it
   is the whole artist credit of another track in the library. Parts such as

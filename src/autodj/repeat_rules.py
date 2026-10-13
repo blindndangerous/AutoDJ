@@ -117,7 +117,7 @@ _VERSION_NOTE = re.compile(
     r"|(?:19|20)\d\d)\b",
     re.IGNORECASE,
 )
-_CREDIT_NOTE = re.compile(r"^\s*(?:feat\b|ft\b|featuring\b|with\b|from\b|prod\b)", re.IGNORECASE)
+_CREDIT_NOTE = re.compile(r"^\s*(?:feat\b|ft\b|featuring\b|with\b|w/|from\b|prod\b)", re.IGNORECASE)
 _BRACKETED = re.compile(r"[(\[{]([^)\]}]*)[)\]}]")
 _DASH_SUFFIX = re.compile(r"\s+[-–—]\s+")
 _INLINE_FEAT = re.compile(r"\s(?:feat\.?|featuring)\s.*$", re.IGNORECASE)
@@ -181,7 +181,7 @@ SINGLE_ACTS: tuple[str, ...] = (
 )
 
 _FEAT_BRACKET = re.compile(
-    r"[(\[]\s*(?:feat\.?|ft\.?|featuring|with)\s+([^)\]]*)[)\]]", re.IGNORECASE
+    r"[(\[]\s*(?:(?:feat\.?|ft\.?|featuring|with)\s+|w/\s*)([^)\]]*)[)\]]", re.IGNORECASE
 )
 _STRONG_SPLIT = re.compile(
     r"\s+(?:feat\.?|ft\.?|featuring|vs\.?|versus)\s+|\s*[;\x00]\s*", re.IGNORECASE

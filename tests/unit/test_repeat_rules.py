@@ -65,6 +65,7 @@ class TestTitleKey:
             "Jingle Bells {Demo}",
             "Jingle Bells – Single Version",
             "Jingle Bells (with Somebody)",
+            "Jingle Bells (w/ Somebody)",
             "Jingle Bells (From “A Movie”)",
         ],
     )
@@ -234,10 +235,14 @@ class TestArtistSplitter:
         keys = ArtistSplitter().credited("Mark Ronson", "Uptown Funk (feat. Bruno Mars)")
         assert keys == {"mark ronson", "bruno mars"}
         assert ArtistSplitter().credited("", "") == frozenset()
+        keys = ArtistSplitter().credited("Lady Gaga", "Rain On Me (w/ Ariana Grande)")
+        assert keys == {"lady gaga", "ariana grande"}
 
     def test_featured_in_title(self) -> None:
         assert featured_in_title("Song (feat. A B) feat. C D") == ["A B", "C D"]
         assert featured_in_title("Song") == []
+        assert featured_in_title("Song (w/ A B & C D)") == ["A B & C D"]
+        assert featured_in_title("Song (W/A B)") == ["A B"]
 
     @given(st.text(max_size=50))
     def test_the_full_credit_always_counts(self, credit: str) -> None:
