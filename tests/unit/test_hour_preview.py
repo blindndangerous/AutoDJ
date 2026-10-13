@@ -616,6 +616,29 @@ def test_cache_freshness_covers_handoff_rules_schedule_library_and_refresh(
     assert len(builds) == 8
 
 
+def test_category_signature_does_not_hold_the_category_pick_lock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source, _power, _gold = _station(tmp_path)
+    categories = source.library.categories
+    original_entries = categories._entries
+    original_signature = categories._signature
+    lock_states: list[bool] = []
+
+    def entries():
+        lock_states.append(categories._lock.locked())
+        return original_entries()
+
+    def signature(saved, current_entries):
+        lock_states.append(categories._lock.locked())
+        return original_signature(saved, current_entries)
+
+    monkeypatch.setattr(categories, "_entries", entries)
+    monkeypatch.setattr(categories, "_signature", signature)
+    categories.cache_signature()
+    assert lock_states == [False, False]
+
+
 def test_previews_run_on_their_own_worker_thread(tmp_path: Path, monkeypatch) -> None:
     source, _power, gold = _station(tmp_path)
     _playing(source, gold[0], time.time() - 30)
@@ -648,6 +671,26 @@ def test_browser_playback_lists_a_queued_next_song_once(tmp_path: Path) -> None:
         ("picked", power[3].path),
         ("queued", power[4].path),
     ]
+
+
+def test_queued_liners_in_fixed_mode_keep_their_full_lengths(tmp_path: Path, monkeypatch) -> None:
+    source, _power, gold = _station(tmp_path)
+    player = source.player
+    player._cfg.playback.transition_mode = "fixed"
+    _playing(source, gold[0], NOW - 50)
+    liner_entry = source.library.entries_snapshot("liner")[0]
+    player._state.next_track = gold[1]
+    player._state.queue.extend([liner_entry, gold[2]])
+    monkeypatch.setattr(
+        hour_preview,
+        "_preview_liner_group",
+        lambda *_args: pytest.fail("fixed transitions must not apply saved liner cues"),
+    )
+    decided = read_station(player, now=NOW)
+    liner_item = next(item for item in decided.items if item.kind == "liner")
+    following = next(item for item in decided.items if item.entry is gold[2])
+    assert liner_item.seconds == liner_entry.length
+    assert following.starts == pytest.approx(liner_item.starts + liner_entry.length)
 
 
 def test_a_position_from_another_render_is_not_used(tmp_path: Path) -> None:
@@ -790,6 +833,24 @@ def test_asks_for_the_same_preview_share_one_answer(tmp_path: Path, monkeypatch)
         previews.submit(source, 180)
     release.set()
     assert all(future.result(timeout=10) for future in (first, *waiting))
+    assert previews.shutdown(5.0)
+
+
+def test_forced_refreshes_share_the_same_running_or_queued_work(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source, _power, gold = _station(tmp_path)
+    _playing(source, gold[0], time.time() - 30)
+    release, started = threading.Event(), threading.Event()
+    _slow_previews(monkeypatch, release, started)
+    previews = HourPreviews(waiting=1)
+    first = previews.submit(source, 60, force=True)
+    assert started.wait(10)
+    assert previews.submit(source, 60, force=True) is first
+    queued = previews.submit(source, 30)
+    release.set()
+    assert first.result(timeout=10)
+    assert queued.result(timeout=10)
     assert previews.shutdown(5.0)
 
 

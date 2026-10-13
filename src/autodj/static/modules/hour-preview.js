@@ -144,9 +144,13 @@ export function installHourPreview({
   let timer = null;
   let songTimer = null;
   let songKey = null;
-  // Bumped by clear() and by each new request: an older answer is dropped.
+  // User asks supersede other user asks. Quiet refreshes have their own ticket
+  // so they cannot cancel an explicit Refresh preview confirmation.
   let session = 0;
-  let latest = 0;
+  let latestUser = 0;
+  let latestQuiet = 0;
+  let nextRequest = 0;
+  let renderedRequest = 0;
   // The failure of a quiet refresh last said, so it is said once.
   let quietError = null;
 
@@ -179,19 +183,34 @@ export function installHourPreview({
 
   // Ask for the preview; resolves to the view, or null when it failed or an
   // answer for a newer request (or a cleared session) superseded it.
-  async function load({ force = false } = {}) {
+  async function load({ force = false, quiet = false } = {}) {
     const mine = session;
-    latest += 1;
-    const ticket = latest;
+    const requestSequence = ++nextRequest;
+    const userTicket = quiet ? latestUser : ++latestUser;
+    const quietTicket = quiet ? ++latestQuiet : null;
     const minutes = Number(span.value) || 60;
     let view;
     try {
       view = await request(`${ENDPOINT}?minutes=${minutes}${force ? "&refresh=true" : ""}`);
     } catch (error) {
-      if (mine !== session || ticket !== latest) return null;
+      if (
+        mine !== session
+        || (quiet
+          ? quietTicket !== latestQuiet || userTicket !== latestUser
+          : userTicket !== latestUser)
+      ) return null;
       throw error;
     }
-    if (mine !== session || ticket !== latest) return null;
+    if (
+      mine !== session
+      || (quiet
+        ? quietTicket !== latestQuiet || userTicket !== latestUser
+        : userTicket !== latestUser)
+    ) return null;
+    // Keep timeline display ordered by request start, while allowing a still
+    // current explicit request to announce the latest visible result.
+    if (requestSequence < renderedRequest) return quiet ? null : lastView;
+    renderedRequest = requestSequence;
     show(view);
     return view;
   }
@@ -200,7 +219,7 @@ export function installHourPreview({
   // opening.  It says nothing, except a failure, once, until one succeeds.
   async function quietRefresh(force = false) {
     try {
-      const view = await load({ force });
+      const view = await load({ force, quiet: true });
       if (view) quietError = null;
       return view;
     } catch (error) {

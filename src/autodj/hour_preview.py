@@ -492,7 +492,11 @@ def read_station(player: Any, desk: Any = None, *, now: float | None = None) -> 
                 end += 1
             group = queued[index:end]
             incoming = queued[end] if end < len(queued) else None
-            if incoming is not None and incoming.path not in liners:
+            if (
+                incoming is not None
+                and incoming.path not in liners
+                and player._cfg.playback.transition_mode == "saved_points"
+            ):
                 rows, delay = _preview_liner_group(player, last, incoming, group, moment)
             else:
                 rows, delay = [], 0.0
@@ -1310,6 +1314,7 @@ class HourPreviews:
         self._cond = threading.Condition()
         self._kept: dict[_Key, tuple[float, str, dict[str, Any]]] = {}
         self._asked: dict[_Key, concurrent.futures.Future[dict[str, Any]]] = {}
+        self._forced: dict[_Key, concurrent.futures.Future[dict[str, Any]]] = {}
         self._waiting: deque[_Job] = deque()
         self._thread: threading.Thread | None = None
         self._closing = False
@@ -1333,13 +1338,15 @@ class HourPreviews:
         with self._cond:
             if self._closing:
                 raise PreviewsClosed("The server is shutting down")
-            shared = self._asked.get(key) if not force else None
+            shared = self._forced.get(key) if force else self._asked.get(key)
             if shared is not None:
                 return shared
             if len(self._waiting) >= self._limit:
                 raise PreviewBusy("The hour preview is busy; try again in a few seconds")
             future: concurrent.futures.Future[dict[str, Any]] = concurrent.futures.Future()
             self._asked[key] = future
+            if force:
+                self._forced[key] = future
             self._waiting.append(_Job(key, future, source, minutes, desk, describe, force))
             if self._thread is None:
                 self._thread = threading.Thread(
@@ -1376,6 +1383,8 @@ class HourPreviews:
                 with self._cond:
                     if self._asked.get(job.key) is job.future:
                         del self._asked[job.key]
+                    if self._forced.get(job.key) is job.future:
+                        del self._forced[job.key]
 
     def shutdown(self, timeout: float) -> bool:
         """Take no more previews, cancel the waiting ones and join the worker.
@@ -1390,6 +1399,7 @@ class HourPreviews:
                 job.future.cancel()
             self._waiting.clear()
             self._asked.clear()
+            self._forced.clear()
             thread = self._thread
             self._cond.notify_all()
         if thread is None:
