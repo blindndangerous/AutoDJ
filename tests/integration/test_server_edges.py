@@ -110,6 +110,19 @@ class TestLinerTestRoute:
 
         assert resp.json() == {"played": "a.wav"}
 
+    def test_a_liner_outside_its_play_dates_is_refused_with_a_reason(self, bridge) -> None:
+        bridge.liner_scheduler = MagicMock()
+        bridge.liner_scheduler.refusal.return_value = "expired after 26 December 2026"
+        bridge.station = MagicMock(state="playing")
+
+        resp = TestClient(create_app(bridge)).post("/api/liners/test", json={"name": "a.wav"})
+
+        assert resp.json() == {
+            "played": None,
+            "message": "That liner was skipped: it is expired after 26 December 2026.",
+        }
+        bridge.liner_scheduler.fire.assert_not_called()
+
     def test_rejects_unknown_fields(self, bridge) -> None:
         """Extra body fields are refused rather than silently ignored."""
         resp = TestClient(create_app(bridge)).post(

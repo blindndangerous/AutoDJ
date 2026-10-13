@@ -101,9 +101,16 @@ def install_categories(
         return uses
 
     def daypart(category: CategorySpec) -> dict[str, Any]:
-        """The allowed days and hours in words, and whether they allow now."""
-        now = station_now(bridge.player._cfg)
-        return {"daypart_text": describe_daypart(category), "allowed_now": category.allows(now)}
+        """The allowed days, hours and dates in words, whether they allow now, and if not, which."""
+        from autodj.categories import daypart_refusal
+
+        refused = daypart_refusal(category, station_now(bridge.player._cfg))
+        return {
+            "daypart_text": describe_daypart(category),
+            "allowed_now": refused is None,
+            # "hours", "days" or "dates": what holds the songs back now; None when nothing does.
+            "outside_now": refused,
+        }
 
     def listing(categories: CategoryIndex) -> dict[str, Any]:
         saved, results = categories.resolutions()

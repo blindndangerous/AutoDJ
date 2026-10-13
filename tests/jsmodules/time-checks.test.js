@@ -119,6 +119,81 @@ describe("voice packs", () => {
     await controls.refresh();
     expect(byId("tc-packs-empty").hidden).toBe(false);
     expect(byId("tc-pack-list").children).toHaveLength(0);
+    expect(byId("tc-dates").hidden).toBe(true);
+  });
+
+  it("says each pack's play dates and saves them for the chosen pack", async () => {
+    const dated = { not_before: "2026-12-01", not_after: "2026-12-26",
+      dates_text: "Plays from 1 December 2026 until 26 December 2026",
+      playable: false, unplayable_text: "not playable before 1 December 2026" };
+    const request = vi.fn(async (url, options = {}) => {
+      const packs = [
+        { name: "Studio", enabled: true, minutes_covered: 1440, summary: "All covered." },
+        { name: "Christmas", enabled: true, minutes_covered: 1440, summary: "All covered.",
+          ...(url.includes("/packs/") || request.saved ? dated : {}) },
+      ];
+      if (url.includes("/packs/")) request.saved = JSON.parse(options.body);
+      return { enabled: true, hour_format: "12", rule: "off", timezone: "UTC", duck_db: -12,
+        missing_minutes: 0, tts_available: false, enabled_packs: ["Studio", "Christmas"],
+        pack_order: "rotate", packs };
+    });
+    const controls = installTimeChecks({ request, interval: () => {} });
+    await controls.refresh();
+    const group = byId("tc-dates");
+    expect(group.hidden).toBe(false);
+    expect(group.tagName).toBe("FIELDSET");
+    expect(group.querySelector("legend").textContent).toBe("Voice pack play dates");
+    expect(byId(group.getAttribute("aria-describedby")).textContent).toContain("both days included");
+    for (const id of ["tc-dates-pack", "tc-not-before", "tc-not-after"]) {
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim(), id).toBeTruthy();
+    }
+    expect(byId("tc-not-before").type).toBe("date");
+    byId("tc-dates-pack").value = "Christmas";
+    byId("tc-dates-pack").dispatchEvent(new Event("change"));
+    byId("tc-not-before").value = "2026-12-01";
+    byId("tc-not-after").value = "2026-12-26";
+    byId("tc-dates-save").click();
+    expect(await liveText()).toBe(
+      "Saved. Voice pack Christmas: Plays from 1 December 2026 until 26 December 2026.");
+    const call = request.mock.calls.find(([url]) => url.includes("/packs/"));
+    expect(call[0]).toBe("/api/time-checks/packs/Christmas/dates");
+    expect(request.saved).toEqual({ not_before: "2026-12-01", not_after: "2026-12-26" });
+    const box = [...byId("tc-pack-list").querySelectorAll("input")][1];
+    expect(byId(box.getAttribute("aria-describedby")).textContent).toBe(
+      "All covered. Plays from 1 December 2026 until 26 December 2026. "
+      + "Skipped now: not playable before 1 December 2026.");
+  });
+
+  it("names a backwards range and a refused one, linked to the field", async () => {
+    const request = server();
+    const controls = installTimeChecks({ request, interval: () => {} });
+    await controls.refresh();
+    const until = byId("tc-not-after");
+    byId("tc-not-before").value = "2026-12-26";
+    until.value = "2026-12-01";
+    byId("tc-dates-save").click();
+    const message = "Do not play after must be on or after the Not before date.";
+    await vi.waitFor(() => expect(document.activeElement).toBe(until));
+    expect(until.getAttribute("aria-invalid")).toBe("true");
+    expect(until.getAttribute("aria-describedby")).toBe("tc-dates-error");
+    expect(byId("tc-dates-error").textContent).toBe(message);
+    expect(byId("tc-dates-error").hidden).toBe(false);
+    expect(request.mock.calls.some(([url]) => url.includes("/packs/"))).toBe(false);
+    until.value = "2026-12-31";
+    until.dispatchEvent(new Event("input"));
+    expect(until.hasAttribute("aria-invalid")).toBe(false);
+    await vi.waitFor(() => expect(byId("tc-dates-save").disabled).toBe(false));
+
+    request.mockImplementationOnce(async () => {
+      const error = new Error("Not before: Input should be a valid date");
+      error.field = "not_before";
+      throw error;
+    });
+    byId("tc-dates-save").click();
+    await vi.waitFor(() => expect(document.activeElement).toBe(byId("tc-not-before")));
+    expect(byId("tc-not-before").getAttribute("aria-describedby")).toBe("tc-dates-error");
+    expect(byId("tc-dates-error").textContent).toBe(
+      "Could not save the play dates. Not before: Input should be a valid date");
   });
 
   it("saves ticked packs and the order by name, out loud, and keeps focus on refresh", async () => {
