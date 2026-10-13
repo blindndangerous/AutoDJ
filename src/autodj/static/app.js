@@ -29,6 +29,7 @@ import { installSeekController } from "./modules/seek-controller.js";
 import { installLibraryFolders } from "./modules/library-folders.js";
 import { installCategoriesPanel } from "./modules/categories-panel.js";
 import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
+import { describeStep } from "./modules/clockwheel-step.js";
 import { installRotationTest } from "./modules/rotation-test.js";
 import { installHourPreview } from "./modules/hour-preview.js";
 import { installSchedulerPanel } from "./modules/scheduler-panel.js";
@@ -1082,7 +1083,14 @@ const _lyricEls = { lyricsCard, lyricsList };
 let _lastWhyKey = "";
 
 function applyWhyState(s) {
-  const reasons = (s && s.why_this_track) || [];
+  const reasons = [...((s && s.why_this_track) || [])];
+  const clockStep = s && s.clock_step;
+  if (clockStep) {
+    const generic = `Clockwheel step ${clockStep.number}.`;
+    const at = reasons.indexOf(generic);
+    if (at !== -1) reasons.splice(at, 1);
+    reasons.unshift(`Clockwheel step ${clockStep.number}: ${describeStep(clockStep.step, clockStep.sources, clockStep.categories)}.`);
+  }
   // Re-render only when the sentence list actually changes — keeps the
   // aria-live region from re-announcing on every per-second WS tick.
   const key = reasons.join("|") + "@" + (s.current_track ? s.current_track.path : "");
@@ -1161,9 +1169,16 @@ const _repeatEls = {
   trackMinutes: document.getElementById("repeat-track-minutes"),
   titleTracks: document.getElementById("repeat-title-tracks"),
   titleMinutes: document.getElementById("repeat-title-minutes"),
+  relatedArtistTracks: document.getElementById("repeat-related-artist-tracks"),
+  relatedArtistMinutes: document.getElementById("repeat-related-artist-minutes"),
+  relatedTrackTracks: document.getElementById("repeat-related-track-tracks"),
+  relatedTrackMinutes: document.getElementById("repeat-related-track-minutes"),
   useRelatedArtists: document.getElementById("repeat-use-related-artists"),
+  useRelatedTracks: document.getElementById("repeat-use-related-tracks"),
   defaultFile: document.getElementById("repeat-related-default"),
   fileStatus: document.getElementById("repeat-related-status"),
+  tracksDefaultFile: document.getElementById("repeat-related-tracks-default"),
+  tracksFileStatus: document.getElementById("repeat-related-tracks-status"),
   save: document.getElementById("repeat-save"),
 };
 installRepeatSettings(_repeatEls, { postSettings, settingsStatus });

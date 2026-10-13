@@ -18,6 +18,7 @@ from autodj.processing import PREPARATION_VERSION, TARGET_LUFS
 from autodj.server import (
     LibraryFolderBody,
     LibraryFolderUpdateBody,
+    LibraryRescanBody,
     SongPointsBody,
     create_app,
 )
@@ -78,7 +79,19 @@ def test_folder_choices_persist_and_removing_a_source_keeps_files(library_api, t
     assert manager.start_scan.call_args_list == [
         mock_call({source["id"]}),
         mock_call({source["id"]}),
-        mock_call(),
+        mock_call(override_tags=False),
+    ]
+
+
+def test_rescan_passes_explicit_tag_override_option(library_api):
+    manager, call, _app = library_api
+
+    call("POST", "/api/library/rescan")
+    call("POST", "/api/library/rescan", LibraryRescanBody(override_tags=True))
+
+    assert manager.start_scan.call_args_list == [
+        mock_call(override_tags=False),
+        mock_call(override_tags=True),
     ]
 
 
@@ -119,6 +132,20 @@ def test_points_validate_and_keep_manual_values_without_analysis(library_api, tm
     )
     assert saved["points"]["overlap_start"] == 5.3
     assert saved["points"]["segue"] == 5.5
+    saved = call(
+        "POST",
+        "/api/library/points",
+        SongPointsBody(path=str(liner), points={"overlap_start": -3}),
+    )
+    assert saved["points"]["overlap_start"] == -3
+    assert manager.catalog.points(liner)["overlap_start"] == -3
+    with pytest.raises(HTTPException) as invalid:
+        call(
+            "POST",
+            "/api/library/points",
+            SongPointsBody(path=str(liner), points={"overlap_start": -16}),
+        )
+    assert invalid.value.status_code == 400
     with pytest.raises(HTTPException) as invalid:
         call("POST", "/api/library/points", SongPointsBody(path=str(liner), points={"intro": 1}))
     assert invalid.value.status_code == 400

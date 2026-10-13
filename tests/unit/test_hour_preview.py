@@ -39,6 +39,7 @@ from autodj.hour_preview import (
     span_words,
 )
 from autodj.mixbus import RenderedTrack
+from autodj.player import apply_repeat_windows
 from autodj.repeat_rules import PlayRecord
 from autodj.rotation_sim import (
     SimulationRequest,
@@ -725,3 +726,144 @@ def test_shutdown_cancels_waiting_previews_and_joins_the_worker(
     assert previews.shutdown(5.0) is True
     # This server's worker has ended (other tests' servers may keep their own).
     assert previews._thread is not None and not previews._thread.is_alive()
+
+
+# -- parity with live picking --------------------------------------------------------
+
+
+class _Plays:
+    """A ledger that remembers plays, as the station's own does."""
+
+    def __init__(self, played: dict[str, float] | None = None) -> None:
+        self.played = dict(played or {})
+
+    def setting_key(self, name: str) -> str:
+        return name
+
+    def get_setting(self, _name: str, default: Any = None) -> Any:
+        return default
+
+    def last_played(self) -> dict[str, float]:
+        return self.played
+
+    def remember_play(self, path: str, timestamp: float | None = None) -> None:
+        # Keyed as the station's ledger keys them.
+        from autodj.catalog import normalize_path
+
+        self.played[normalize_path(path)] = float(timestamp or 0.0)
+
+    def remember_setting(self, _name: str, _value: Any) -> None:
+        """The live place is kept on the player in this test."""
+
+    def recent_plays(self, _limit: int) -> list[dict]:
+        return []
+
+    def pending_history(self) -> list[dict]:
+        return []
+
+
+def _parity_station(tmp_path: Path):
+    source, power, gold = _station(
+        tmp_path, dmca=True, related={"Power 1": ["Power 2"], "Gold 3": ["Gold 4"]}
+    )
+    source.player._ledger = source.ledger = _Plays()
+    # As the station's library tick does every two seconds.
+    apply_repeat_windows(source.player)
+    return source, power, gold
+
+
+def _live_picks(player: Any, current: Any, handoff: float, end: float, seed: int | None) -> list:
+    """Pick on the live player as the render worker does, on a clock that follows the songs.
+
+    *seed*, when given, starts its random choices afresh.
+    """
+    clock = [handoff]
+    player._now = lambda: clock[0]
+    player._state.clock = lambda: clock[0]
+    if seed is not None:
+        player._random = random.Random(seed)
+    average = average_length(player.playable_entries())
+    liners = {entry.path for entry in player._library.entries_snapshot("liner")}
+    state = player._state
+    picks = []
+    while handoff < end:
+        clock[0] = handoff - song_seconds(player, current, average)
+        context = player._pick_context(at=handoff)
+        entry, _mode, added, cursor, _key = player._choose_station_next(current, context)
+        player._pending_clock_cursor = cursor
+        moment = handoff
+        for clip, _queued in added:
+            player._ledger.remember_play(clip.path, moment)
+            picks.append(clip.path)
+            moment += float(clip.length or 0.0)
+        clock[0] = moment
+        # As Player._start_playing does when the song starts.
+        player._previous_track = state.current_track
+        state.current_track = entry
+        state.record_played(entry)
+        state.track_number += 1
+        player._ledger.remember_play(entry.path, moment)
+        picks.append(entry.path)
+        assert entry.path not in liners
+        current, handoff = entry, moment + song_seconds(player, entry, average)
+    return picks
+
+
+def test_the_preview_picks_what_the_live_station_would(tmp_path: Path) -> None:
+    source, _power, gold = _parity_station(tmp_path)
+    player = source.player
+    _playing(source, gold[0], NOW - 50)
+    player._state.next_track = gold[1]
+    player._pending_clock_cursor = 1
+    player._pending_clock_name = "Main"
+    decided = read_station(player, now=NOW)
+    end = NOW + 2 * 3600
+    predicted, _ends, stopped = hour_preview.predict(
+        source, snapshot_player(player), decided, end, seed=42
+    )
+    assert stopped is None and len(predicted) > 20
+    # The live player, from the same place, with the same random choices.
+    player._state.current_track = gold[1]
+    player._state.record_played(gold[1])
+    player._state.play_history[-1] = PlayRecord.of(gold[1], decided.items[1].starts)
+    player._ledger.remember_play(gold[1].path, decided.items[1].starts)
+    live = _live_picks(player, gold[1], decided.handoff, end, 42)
+    assert [item.entry.path for item in predicted] == live
+
+
+def test_the_rotation_tester_picks_what_the_live_station_would(tmp_path: Path) -> None:
+    source, _power, _gold = _parity_station(tmp_path)
+    tested: list[str] = []
+    simulate(
+        source,
+        SimulationRequest(picks=40, start=NOW, seed=9),
+        on_pick=lambda _at, entry: tested.append(entry.path),
+    )
+    player = source.player
+    clock = [NOW]
+    player._now = lambda: clock[0]
+    player._state.clock = lambda: clock[0]
+    player._random = random.Random(9)
+    player._seed_clock_cursor = None
+    player._seed_clock_name = None
+    player._pick_context(at=NOW)
+    first = player._random_start_entry()
+    player._pending_clock_cursor = player._seed_clock_cursor
+    player._pending_clock_name = player._seed_clock_name
+    player._previous_track = player._state.current_track
+    player._state.current_track = first
+    player._state.record_played(first)
+    player._state.track_number += 1
+    player._ledger.remember_play(first.path, NOW)
+    average = average_length(player.playable_entries())
+    live = [
+        first.path,
+        *_live_picks(
+            player,
+            first,
+            NOW + song_seconds(player, first, average),
+            NOW + 10 * 3600,
+            None,  # the start pick has already drawn from the same choices
+        ),
+    ]
+    assert tested == live[: len(tested)]

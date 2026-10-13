@@ -19,9 +19,10 @@ import sqlite3
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from concurrent.futures import Future, wait
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from itertools import chain
 from pathlib import Path
@@ -64,6 +65,7 @@ from autodj.repeat_rules import (
     ArtistSplitter,
     PlayRecord,
     RelatedArtists,
+    RelatedTracks,
     RepeatFilter,
     RepeatRules,
     TrackKeyCache,
@@ -367,6 +369,7 @@ def apply_repeat_windows(player: Any) -> None:
             pb,
             track_window=effective_no_repeat_window(pb.repeat_rules.track.tracks, library_size),
             related=getattr(player, "_related_artists", None),
+            related_tracks=getattr(player, "_related_tracks", None),
         )
     )
 
@@ -795,7 +798,8 @@ class Player:
     _clock_next_boundary: float | None = None
     # The clockwheel _seed_clock_cursor is a place in (#133).
     _seed_clock_name: str | None = None
-    _seed_clock_following: tuple[IndexEntry, IndexEntry, int] | None = None
+    _seed_clock_step: dict | None = None
+    _seed_clock_following: tuple[IndexEntry, IndexEntry, int, dict | None] | None = None
     liner_scheduler: Any = None
     # This station's announcer breaks (a BreakDesk, #88), or None; see break_desk.
     _break_desk: Any = None
@@ -924,6 +928,7 @@ class Player:
         # track was selected.  Read by the bridge to build the
         # "why this track" sentence list shown in the web UI.
         self._last_pick_mode: str = "seed"
+        self._last_clock_step: dict | None = None
         # Previous track played — kept so the explainer can compute deltas
         # against the current pick.
         self._previous_track: IndexEntry | None = None
@@ -944,6 +949,7 @@ class Player:
         )
         from autodj.related_artist_file import (
             load_configured_related_artists,
+            load_configured_related_tracks,
             unused_related_artists_message,
         )
 
@@ -958,6 +964,17 @@ class Player:
             self._related_artists = RelatedArtists()
             self.related_artists_problem = unused_related_artists_message(exc)
             logger.warning("Related artists file was not used: %s", exc)
+        try:
+            self._related_tracks = (
+                load_configured_related_tracks(cfg.index.active_dir)
+                if cfg.playback.repeat_rules.use_related_tracks
+                else RelatedTracks()
+            )
+            self.related_tracks_problem = None
+        except (OSError, ValueError) as exc:
+            self._related_tracks = RelatedTracks()
+            self.related_tracks_problem = unused_related_artists_message(exc, "tracks")
+            logger.warning("Related tracks file was not used: %s", exc)
         # (library entries, their keys), rebuilt when the library changes;
         # see _track_keys.  Its own lock: the build can take a while on a
         # large library, and _pick_lock must never make a track start wait.
@@ -966,7 +983,10 @@ class Player:
         self._state = PlayerState(
             dmca_enabled=cfg.dmca.enabled,
             repeat_rules=RepeatRules.from_playback(
-                cfg.playback, track_window=effective, related=self._related_artists
+                cfg.playback,
+                track_window=effective,
+                related=self._related_artists,
+                related_tracks=self._related_tracks,
             ),
         )
         self._skip_event = threading.Event()
@@ -987,6 +1007,7 @@ class Player:
         self._pending_entry: IndexEntry | None = None
         self._pending_offset: int = 0
         self._pending_pick_mode: str = "seed"
+        self._pending_clock_step: dict | None = None
         # Whether the pending track was peeked from the user queue.  Queue
         # picks are peeked when rendered and removed from the queue only
         # when the track starts (see _take_render), so the queue the
@@ -1119,6 +1140,7 @@ class Player:
         In DMCA mode it keeps the complement too (see :meth:`_dmca_checked`).
         """
         self._seed_clock_following = None
+        self._seed_clock_step = None
         chosen: IndexEntry | None
         dmca = self._pick_context() if self._state.dmca_enabled else None
         if self._library is not None:
@@ -1134,6 +1156,10 @@ class Player:
                 if picked.entry is None:
                     return self._empty_category_fallback(None, context)
                 upcoming = self._dmca_checked(picked.entry, context)
+                song_step = picked.step_snapshot
+                self._seed_clock_step = (
+                    picked.liner_step_snapshot if picked.liner is not None else picked.step_snapshot
+                )
                 if picked.liner is not None:
                     if picked.liner_requires_following:
                         if not self._clock_liner_fits(
@@ -1144,9 +1170,15 @@ class Player:
                             getattr(self, "_clock_next_boundary", None),
                         ):
                             self._seed_clock_cursor = picked.next_cursor
+                            self._seed_clock_step = song_step
                             return upcoming
                         # Keep the song whose length we checked, including on a re-render.
-                        self._seed_clock_following = (picked.liner, upcoming, picked.next_cursor)
+                        self._seed_clock_following = (
+                            picked.liner,
+                            upcoming,
+                            picked.next_cursor,
+                            song_step,
+                        )
                     self._seed_clock_cursor = (picked.next_cursor - 1) % len(self._clock_slots)
                     return picked.liner
                 self._seed_clock_cursor = picked.next_cursor
@@ -1267,6 +1299,7 @@ class Player:
                 "resync_minutes": clock["resync_minutes"],
             }
             self._clock_slots = slots
+            self._clock_steps = clock["steps"]
             self._clock_step_hours = step_hours
             self._clock_status = "Ready"
             self._seed_clock_following = None
@@ -1340,13 +1373,18 @@ class Player:
         return clock, validate_clock(slots)
 
     def _clock_pick(self, context: _PickContext, cursor: int | None) -> Any:
-        from autodj.clockwheel import ClockPick, ConditionPaths, pick_slot
+        from autodj.clockwheel import ClockPick, ConditionPaths, _normalized, pick_slot
 
-        if self._clock is None:
+        with settings_lock(self):
+            clock = self._clock
+            slots = getattr(self, "_clock_slots", ())
+            steps = getattr(self, "_clock_steps", ())
+            step_hours = getattr(self, "_clock_step_hours", ())
+        if clock is None:
             return ClockPick(
                 None, None, 0, [getattr(self, "_clock_status", None) or "No clockwheel is active"]
             )
-        position = self._clock.get("cursor", 0) if cursor is None else cursor
+        position = clock.get("cursor", 0) if cursor is None else cursor
 
         recent = set(context.recent)
         entries = self.playable_entries()
@@ -1361,6 +1399,15 @@ class Player:
         )
         ledger = self._ledger
         last_played = ledger.last_played() if ledger is not None else {}
+        normalized_history = (
+            {
+                _normalized(path): stamp
+                for path, stamp in last_played.items()
+                if isinstance(path, str)
+            }
+            if any(slot.selection == "least_recent" for slot in slots)
+            else None
+        )
         liners = self._library.entries_snapshot("liner")
         # Liner steps pass over liners outside their play dates; the step
         # conditions are still worked out from every liner, so they stay cached.
@@ -1368,11 +1415,19 @@ class Player:
         # Judged by the day the liner airs, before the song being picked.
         playable_liners = liner_filter(liners, context.at) if liner_filter is not None else liners
         categories = self._category_members()
+        self._clock_category_error = "Categories could not be read" if categories is None else None
+        categories = categories or {}
         beets_items: Mapping[str, Mapping[str, Any]] | None = None
         condition_errors = {}
+        if self._clock_category_error:
+            for index, slot in enumerate(slots):
+                if slot.kind == "category" or any(
+                    condition["field"] == "category" for condition in slot.conditions
+                ):
+                    condition_errors[index] = self._clock_category_error
         fields = {
             condition["name"]
-            for slot in self._clock_slots
+            for slot in slots
             for condition in slot.conditions
             if condition["field"] == "beets"
         }
@@ -1380,7 +1435,7 @@ class Player:
             known, items, error = self._library.clock_beets.snapshot(fields)
             # The same mapping until Beets is read again, so the cache below holds.
             beets_items = items or None
-            for index, slot in enumerate(self._clock_slots):
+            for index, slot in enumerate(slots):
                 for condition in slot.conditions:
                     if condition["field"] == "beets":
                         if error:
@@ -1397,11 +1452,11 @@ class Player:
         else:
             self._clock_condition_errors = ()
         cache = getattr(self, "_clock_condition_cache", None)
-        if cache is None or not cache.current(self._clock_slots, entries, liners, beets_items):
-            cache = ConditionPaths(self._clock_slots, entries, liners, beets_items)
+        if cache is None or not cache.current(slots, entries, liners, beets_items, categories):
+            cache = ConditionPaths(slots, entries, liners, beets_items, categories)
             self._clock_condition_cache = cache
 
-        closed_steps = self._closed_clock_steps(context)
+        closed_steps = self._closed_clock_steps(context, step_hours)
 
         def pick(
             use_rules: bool,
@@ -1426,7 +1481,7 @@ class Player:
             else:
                 pool = tuple(entry for entry in entries if allowed(entry))
             return pick_slot(
-                self._clock_slots,
+                slots,
                 position,
                 pool,
                 last_played,
@@ -1442,6 +1497,7 @@ class Player:
                 else condition_errors,
                 condition_cache=cache,
                 closed_categories=context.closed_categories if hours else None,
+                normalized_history=normalized_history,
             )
 
         # Like the other pick modes, relax rather than stop the music: first
@@ -1510,15 +1566,64 @@ class Player:
                 self._clock_status = f"Settings step skipped: {exc}"
         if picked.entry is not None:
             _log_repeat_blocks(context.repeat, picked.entry)
-        return picked
+        return replace(
+            picked,
+            step_snapshot=self._clock_step_snapshot(picked.step_index, steps),
+            liner_step_snapshot=self._clock_step_snapshot(picked.liner_step_index, steps),
+        )
 
-    def _closed_clock_steps(self, context: _PickContext) -> dict[int, str]:
+    def _clock_step_snapshot(self, index: int | None, steps: Sequence[dict]) -> dict | None:
+        """Freeze the selected native step and labels for the Why display."""
+        if index is None or not 0 <= index < len(steps):
+            return None
+        step = deepcopy(steps[index])
+        source_ids = {step["source"]} if "source" in step else set()
+        source_ids.update(
+            condition["source"]
+            for condition in step.get("conditions", ())
+            if condition.get("field") == "folder"
+        )
+        try:
+            sources = (
+                [
+                    {"id": source["id"], "path": Path(source["path"]).name}
+                    for source in self._library.catalog.sources()
+                    if source["id"] in source_ids
+                ]
+                if source_ids
+                else []
+            )
+        except Exception:
+            sources = []
+        category_ids = {step["category"]} if step["type"] == "category" else set()
+        category_ids.update(
+            condition["category"]
+            for condition in step.get("conditions", ())
+            if condition.get("field") == "category"
+        )
+        category_index = getattr(self._library, "categories", None)
+        try:
+            categories = (
+                [
+                    {"id": category.id, "name": category.name}
+                    for category in category_index.categories()
+                    if category.id in category_ids
+                ]
+                if category_index is not None and category_ids
+                else []
+            )
+        except Exception:
+            categories = []
+        return {"number": index + 1, "step": step, "sources": sources, "categories": categories}
+
+    def _closed_clock_steps(
+        self, context: _PickContext, step_hours: Sequence[Any]
+    ) -> dict[int, str]:
         """The clockwheel steps outside their days and hours, by index, and why.
 
         Checked at the expected start of the song being picked, as the
         categories' hours are.
         """
-        step_hours = getattr(self, "_clock_step_hours", ())
         if not any(step_hours):
             return {}
         wall = self._station_now(context.at)
@@ -1570,13 +1675,8 @@ class Player:
         parts.append(base[begin:])
         return tuple(chain.from_iterable(parts))
 
-    def _category_members(self) -> dict[str, tuple[str, frozenset[str]]]:
-        """Each rotation category's name and songs, or none when they cannot be read.
-
-        The category index works them out again only when the categories,
-        beets, a playlist file or the library changed.  A failure leaves the
-        category steps empty, so the clock moves on to its other steps.
-        """
+    def _category_members(self) -> dict[str, tuple[str, frozenset[str]]] | None:
+        """Return category membership, or None when the index cannot be read."""
         index = getattr(self._library, "categories", None)
         if index is None:
             return {}
@@ -1584,27 +1684,26 @@ class Player:
             members: dict[str, tuple[str, frozenset[str]]] = index.members()
         except Exception:
             logger.exception("Clock: the rotation categories could not be read")
-            return {}
+            return None
         return members
 
     def _empty_category_fallback(
         self, current: IndexEntry | None, context: _PickContext
     ) -> IndexEntry | None:
-        """A song from the whole library when a clock with category steps found none.
+        """A song from the whole library when legacy category steps found none.
 
         A category emptied by a failed playlist script or a deleted category
         must not silence a clockwheel made of category steps, so the pick
         falls back as the other pick modes do (the clock keeps its place).
-        A clock of folder and track steps only, or with conditions, is left
-        as it was, unless its songs are there and only their categories'
-        days and hours (dayparting) hold them back.
+        A clock with folders, tracks or explicit conditions is left as it was,
+        unless dayparting alone holds its songs back.
         """
         slots = getattr(self, "_clock_slots", None) or ()
         # Dayparting alone emptied the clock: its songs exist but are outside
         # their hours, so an allowed song plays, whatever the steps are.
         if not getattr(self, "_clock_closed_only", False):
             if any(getattr(slot, "conditions", ()) for slot in slots):
-                return None  # Explicit conditions must not fall back to unfiltered music.
+                return None
             if not any(getattr(slot, "kind", None) == "category" for slot in slots):
                 return None
         reason = ValueError(f"the clockwheel has no song to play: {self._clock_status}")
@@ -1851,10 +1950,13 @@ class Player:
             0.0, min(liner_end, main_end if main_end is not None else liner_end) - liner_start
         )
         overlap = cues.get("overlap_start")
-        release = main if overlap is None else min(overlap, main)
-        if overlap == 0:
-            intro = max(0.0, (self.saved_points(upcoming).get("intro") or start) - start)
-            release = max(0.0, main - intro)
+        from autodj.playout import liner_release_frames
+
+        intro = max(0.0, (self.saved_points(upcoming).get("intro") or start) - start)
+        release = (
+            liner_release_frames(round(main * SAMPLE_RATE), round(intro * SAMPLE_RATE), overlap)
+            / SAMPLE_RATE
+        )
         lead = 0.0
         record = self._library.catalog.record_for_path(liner.path) if self._library else None
         if current is not None and record and record.get("allow_outro", False):
@@ -1890,6 +1992,7 @@ class Player:
         liners, queued = self._station_queue(
             context.queue_reserved, (*self._pending_reserved_liners, *also_reserved)
         )
+        self._chosen_clock_step = None
         self._forget_other_clock_place()
         cursor = self._pending_clock_cursor
         seed = self._seed_clock_following
@@ -1899,6 +2002,9 @@ class Player:
             upcoming, mode = self._dmca_checked(queued, context, queued=True), "queue"
         elif self._cfg.playback.pick_mode == "clock":
             if seed is not None:
+                self._chosen_clock_step = (
+                    seed[3] if len(seed) > 3 else getattr(self, "_seed_clock_step", None)
+                )
                 return (
                     self._dmca_checked(seed[1], context),
                     "clock",
@@ -1907,6 +2013,7 @@ class Player:
                     "",
                 )
             picked = self._clock_pick(context, cursor)
+            self._chosen_clock_step = picked.step_snapshot
             if picked.entry is None:
                 # Only empty or deleted categories left nothing to play.
                 rescue = self._empty_category_fallback(current, context)
@@ -1929,6 +2036,7 @@ class Player:
                         reset = self._clock_pick(context, 0)
                         if reset.entry is not None:
                             picked = reset
+                            self._chosen_clock_step = reset.step_snapshot
                             self._clock_status = "Restarting the clock at the nearest song handoff"
                             following = next_boundary(
                                 datetime.fromtimestamp(max(boundary, when)).astimezone(),
@@ -2166,10 +2274,13 @@ class Player:
                             "seed",
                             clock_cursor=getattr(self, "_seed_clock_cursor", None),
                             clock_name=self._seed_clock_name,
+                            clock_step=self._seed_clock_step,
                         )
+                    self._seed_clock_step = None
                 if current is None:
                     return None
             offset, pick_mode = self._pending_offset, self._pending_pick_mode
+            clock_step = self._pending_clock_step
             current_from_queue = self._pending_from_queue
             previous = self._pending_previous
             mixed_in_fx, mixed_in_ratio = self._pending_mixed_in
@@ -2187,6 +2298,7 @@ class Player:
             )
             liners: tuple[tuple[IndexEntry, bool], ...] = ()
             next_cursor, liner_key = clock_cursor, ""
+            next_clock_step = None
             context = self._pick_context(
                 pending=current,
                 starting=previous,
@@ -2206,6 +2318,7 @@ class Player:
                         plan.liners,
                         plan.next_cursor,
                     )
+                    next_clock_step = plan.clock_step
                     self._pending_clock_boundary = plan.boundary_after
                     breaks = self._take_breaks(plan)
                     if not breaks and not liners:
@@ -2214,6 +2327,7 @@ class Player:
                     next_entry, next_mode, liners, next_cursor, liner_key = (
                         self._choose_station_next(current, context)
                     )
+                    next_clock_step = self._chosen_clock_step
                 else:
                     next_entry, next_mode = self._choose_next(current, context)
             except Exception as exc:
@@ -2263,6 +2377,7 @@ class Player:
                 clock_cursor=next_cursor,
                 clock_boundary=self._pending_clock_boundary or clock_boundary,
                 clock_name=clock_name,
+                clock_step=next_clock_step,
             )
             if rendered is not None:
                 return replace(
@@ -2280,6 +2395,8 @@ class Player:
                     reserved_liners=reserved_liners,
                     clock_cursor=clock_cursor,
                     next_clock_cursor=next_cursor,
+                    clock_step=clock_step,
+                    next_clock_step=next_clock_step,
                     clock_name=clock_name,
                     clock_boundary=clock_boundary,
                     next_clock_boundary=self._pending_clock_boundary,
@@ -2300,6 +2417,7 @@ class Player:
         clock_cursor: int | None = None,
         clock_boundary: float | None = None,
         clock_name: str | None = None,
+        clock_step: dict | None = None,
     ) -> None:
         """Point the render-ahead cursor at *entry* (worker idle or queued).
 
@@ -2322,6 +2440,7 @@ class Player:
         self._pending_reserved_liners = reserved_liners
         self._pending_clock_cursor = clock_cursor
         self._pending_clock_name = clock_name
+        self._pending_clock_step = clock_step
         self._pending_clock_boundary = clock_boundary
 
     def _rewind_render_cursor(self, track: RenderedTrack) -> None:
@@ -2344,6 +2463,7 @@ class Player:
             clock_cursor=track.clock_cursor,
             clock_boundary=track.clock_boundary,
             clock_name=track.clock_name,
+            clock_step=track.clock_step,
         )
 
     def _skip_past_render(self, track: RenderedTrack) -> None:
@@ -2364,6 +2484,7 @@ class Player:
             clock_cursor=track.next_clock_cursor,
             clock_boundary=track.next_clock_boundary,
             clock_name=track.clock_name,
+            clock_step=track.next_clock_step,
         )
 
     # ------------------------------------------------------------------
@@ -2520,6 +2641,7 @@ class Player:
             reserved=reserved,
             ending_offset_s=self._pending_offset / SAMPLE_RATE,
             clock_name=self._pending_clock_name,
+            clock_step=getattr(self, "_chosen_clock_step", None),
         )
         with self._slot_lock:
             self._slot_plan = plan
@@ -2708,9 +2830,16 @@ class Player:
             cursor = getattr(self, "_seed_clock_cursor", None)
             self._seed_clock_cursor = None
             clock = self._seed_clock_name
+            clock_step = self._seed_clock_step
+            self._seed_clock_step = None
             self._render_ahead.reset(
                 lambda: self._set_render_cursor(
-                    entry, offset, pick_mode, clock_cursor=cursor, clock_name=clock
+                    entry,
+                    offset,
+                    pick_mode,
+                    clock_cursor=cursor,
+                    clock_name=clock,
+                    clock_step=clock_step,
                 )
             )
         if self.liner_scheduler is not None and hasattr(self.liner_scheduler, "release_plan"):
@@ -2750,6 +2879,7 @@ class Player:
             self._playing_render = None
             self._state.current_track = None
             self._state.next_track = None
+            self._last_clock_step = None
             self._playback_pos[0] = 0
             self._playback_len = 0
             self._current_lyrics = []
@@ -2961,6 +3091,7 @@ class Player:
         self._last_transition_fx = rendered.mixed_in_fx
         self._beatmatch_ratio = rendered.mixed_in_ratio
         self._last_pick_mode = rendered.pick_mode
+        self._last_clock_step = rendered.clock_step
         seed_start = entry is self._seed_awaiting_start
         with self._pick_lock:
             if seed_start:
@@ -3811,6 +3942,9 @@ class Player:
             entry.path == current.path for entry in self._library.entries_snapshot("liner")
         )
         clips, events, release = [], [], 0.0
+        negative_constraints, zero_constraints = [], []
+        has_negative_overlap = has_ordinary_overlap = False
+        first_overlap_negative = False
         outro_lead_limit = None
         frames = 0
         main_frames = 0
@@ -3825,6 +3959,13 @@ class Player:
                 else min(frames, max(0, round(segue * SAMPLE_RATE) - source_start))
             )
             overlap_point = points.get("overlap_start")
+            has_negative_overlap = overlap_point is not None and overlap_point < 0
+            has_ordinary_overlap = overlap_point is None or overlap_point > 0
+            first_overlap_negative = has_negative_overlap
+            if has_negative_overlap:
+                negative_constraints.append((0, overlap_point, main_frames))
+            elif overlap_point == 0:
+                zero_constraints.append((0, main_frames))
             release = (
                 main_frames / SAMPLE_RATE
                 if overlap_point is None
@@ -3839,6 +3980,7 @@ class Player:
         ) -> tuple[int, int] | None:
             """Append one voice to the chain; its first frame and its speech's frames."""
             nonlocal frames, main_frames, release, fit_main_frames, outro_lead_limit
+            nonlocal has_negative_overlap, has_ordinary_overlap, first_overlap_negative
             first = round((cues.get("start") or 0) * SAMPLE_RATE)
             last = round((cues.get("end") or length) * SAMPLE_RATE)
             clip = audio[first:last]
@@ -3856,6 +3998,15 @@ class Player:
                 if overlap_point is None
                 else min(float(overlap_point), (main_frames - frames) / SAMPLE_RATE)
             )
+            if overlap_point is not None and overlap_point < 0:
+                has_negative_overlap = True
+                negative_constraints.append((frames, overlap_point, main_frames - frames))
+            elif overlap_point == 0:
+                zero_constraints.append((frames, main_frames - frames))
+            else:
+                has_ordinary_overlap = True
+            if not clips:
+                first_overlap_negative = overlap_point is not None and overlap_point < 0
             if overlap > 0 or overlap_point is None:
                 release = max(release, frames / SAMPLE_RATE + overlap)
             if overlap_point == 0:
@@ -3898,11 +4049,28 @@ class Player:
         if breaks:
             spoken = self._add_breaks(breaks, incoming_points, add_clip)
         duck_db = self._break_duck_db() if spoken else 0.0
-        if fit_main_frames:
-            incoming_intro = max(
-                0.0,
-                (incoming_points.get("intro") or 0.0) - (incoming_points.get("start") or 0.0),
+        incoming_intro = max(
+            0.0,
+            (incoming_points.get("intro") or 0.0) - (incoming_points.get("start") or 0.0),
+        )
+        if has_negative_overlap:
+            from autodj.playout import liner_release_frames
+
+            intro_frames = round(incoming_intro * SAMPLE_RATE)
+            constraints = [
+                offset / SAMPLE_RATE
+                + liner_release_frames(main, intro_frames, overlap) / SAMPLE_RATE
+                for offset, overlap, main in negative_constraints
+            ]
+            constraints.extend(
+                (offset + main - intro_frames) / SAMPLE_RATE for offset, main in zero_constraints
             )
+            if has_ordinary_overlap:
+                constraints.append(release)
+            if not first_overlap_negative:
+                constraints.append(0.0)
+            release = max(constraints)
+        elif fit_main_frames:
             release = max(release, fit_main_frames / SAMPLE_RATE - incoming_intro)
         handoff = render_handoff(
             np.zeros((1, 2), dtype=np.float32) if is_liner else source,
@@ -3942,8 +4110,12 @@ class Player:
         full_audio = handoff.full_audio
         audio = full_audio[start - source_start :]
         liner_start = (
-            source_start if is_liner else round((handoff.liner_s or 0.0) * SAMPLE_RATE)
-        ) - start
+            0
+            if handoff.liner_s is None
+            else round(handoff.liner_s * SAMPLE_RATE)
+            - handoff.start_offset
+            - (start - source_start)
+        )
         return RenderedTrack(
             current,
             audio,
