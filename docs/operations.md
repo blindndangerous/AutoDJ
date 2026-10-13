@@ -79,11 +79,12 @@ In a terminal, analysis commands show completed-track progress. Redirected outpu
 logs keep plain progress messages.
 
 In the web page, add, remove and rescan music and voice liner folders in the **Library tools**
-tab. Browse what they hold in **Queue & Search**, after Search: **Browse library** lists all
-music, all voice liners or one registered folder, 100 tracks a page, and **Browse voice liners**
-lists the liner files with Delete, Track info and Play dates (see
-[Liner and cart play dates](#liner-and-cart-play-dates)). Track info's Return to Queue & Search button
-puts focus back on the button that opened it.
+tab. Its folder table shows each folder's type, path and scan options. **Queue & Search** uses one
+paginated list: choose Music or Voice liners, choose all folders or one folder, and optionally
+search by artist or title. Each result has Play now, Play next, Add to queue and Track info.
+Manage liner files, including Delete and Play dates, under **Settings > Voice liners** (see
+[Liner and cart play dates](#liner-and-cart-play-dates)). Track info's Return button puts focus
+back on the result that opened it.
 
 With `[playback] import_external_cues` on (the default), intro and outro markers set in Mixxx,
 Rekordbox or Traktor take the place of the detected intro and outro, so the crossfade follows
@@ -2205,7 +2206,7 @@ such as a promotion that must stop after the event. Both days are included, and 
 read in the station time zone (`[server] station_timezone`). Leave both empty to play the clip
 on any day.
 
-- **Voice liners:** in Queue & Search, **Browse voice liners**, press **Play dates** on a liner.
+- **Voice liners:** in **Settings > Voice liners**, press **Play dates** on a liner.
   Outside its dates, automatic liners (in the browser and on the server), clockwheel liner steps
   and scheduled liner events skip it, and a scheduled event's run says why in Recent runs. The
   liner list says the dates in words, such as "Plays until 26 December 2026", and adds "Skipped

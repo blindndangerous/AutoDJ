@@ -808,7 +808,7 @@ describe("liner play dates", () => {
       Object.assign(listed, { today: "2026-12-27", items: [], files: [] });
       vi.setSystemTime(new Date("2026-12-27T07:01:00Z"));
       vi.advanceTimersByTime(60_000);
-      await vi.waitFor(() => expect(document.activeElement?.id).toBe("browse-liners-heading"));
+      await vi.waitFor(() => expect(document.activeElement?.id).toBe("ln-files-heading"));
     } finally {
       vi.useRealTimers();
     }

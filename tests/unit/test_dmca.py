@@ -491,3 +491,5 @@ def test_an_empty_or_failing_category_never_stops_the_station(caplog) -> None:
         picked, mode, *_rest = player._choose_station_next(current, player._pick_context())
     assert (picked.title, mode) == ("Fine", "fallback")
     assert "rotation categories could not be read" in caplog.text
+    assert "Categories could not be read" in player._clock_status
+    assert "the category no longer exists" not in player._clock_status

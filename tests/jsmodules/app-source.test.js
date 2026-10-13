@@ -1498,9 +1498,12 @@ describe("app request behavior", () => {
     try {
       const { fetchImpl } = await setupApp({
         onRequest: (url) => url.startsWith("/api/history")
-          ? jsonResponse({ total: 1, page: 1, pages: 1, items: [{
+          ? jsonResponse({ total: 2, page: 1, pages: 1, items: [{
             event_id: "play-1", path: "M:/song.flac", played_at: "2026-01-01T00:00:00Z",
             title: "Song", artist: "Artist", duration: 60,
+          }, {
+            event_id: "play-2", path: "M:/other.flac", played_at: "2025-12-31T23:00:00Z",
+            title: "Other", artist: "Another", duration: 120,
           }] })
           : url.startsWith("/api/library/points?")
             ? jsonResponse({ path: "M:/song.flac", title: "Song", artist: "Artist", kind: "music", points: {} })
@@ -1512,8 +1515,23 @@ describe("app request behavior", () => {
         expect(found).not.toBeNull();
         return found;
       });
-      expect(button.getAttribute("aria-label")).toBe("Track info for Artist — Song");
-      button.focus();
+      expect(button.hasAttribute("aria-label")).toBe(false);
+      expect(button.textContent).toBe("Track info");
+      const tbody = document.querySelector("#history-tbody");
+      const cells = [...tbody.querySelectorAll("td")];
+      expect(cells.map((cell) => cell.getAttribute("role"))).toEqual([
+        "gridcell", "rowheader", "gridcell", "gridcell",
+        "gridcell", "rowheader", "gridcell", "gridcell",
+      ]);
+      expect(cells.filter((cell) => cell.tabIndex === 0)).toEqual([cells[0]]);
+      expect(button.tabIndex).toBe(-1);
+      cells[0].focus();
+      cells[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+      expect(document.activeElement).toBe(cells[4]);
+      cells[4].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+      expect(document.activeElement).toBe(cells[0]);
+      cells[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+      expect(document.activeElement).toBe(button);
       button.click();
       await vi.waitFor(() => expect(document.querySelector("#panel-track-info").hidden).toBe(false));
       expect(document.querySelector("#track-info-heading").textContent).toBe("Track info: Artist — Song");
@@ -1532,6 +1550,9 @@ describe("app request behavior", () => {
       expect(historyCalls()).toHaveLength(beforeReturn);
       expect(document.querySelector("#history-tbody .history-info")).toBe(button);
       expect(focusEvents.filter((node) => node.classList?.contains("history-info"))).toEqual([button]);
+      expect(button.tabIndex).toBe(0);
+      button.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+      expect(document.activeElement).toBe(cells[2]);
       expect(document.querySelector("#sr-status").textContent).toBe("");
     } finally {
       window.location.hash = "";
@@ -1659,7 +1680,7 @@ describe("app request behavior", () => {
     }
   });
 
-  it("returns to Now Playing and the Queue & Search liner button", async () => {
+  it("returns to Now Playing and the Settings liner button", async () => {
     window.location.hash = "#now";
     try {
       await setupApp({
@@ -1675,9 +1696,9 @@ describe("app request behavior", () => {
       document.querySelector("#track-info-return").click();
       await vi.waitFor(() => expect(document.activeElement).toBe(nowButton));
 
-      // The voice liner list is in Queue & Search, after Browse library.
-      window.location.hash = "#queue";
-      await vi.waitFor(() => expect(document.querySelector("#panel-queue").hidden).toBe(false));
+      // Liner file maintenance is in Settings > Voice liners.
+      document.querySelector("#stab-liners").click();
+      await vi.waitFor(() => expect(document.querySelector("#spanel-liners").hidden).toBe(false));
       const { renderLinerFileList } = await vi.importActual("../../src/autodj/static/modules/liners.js");
       const list = document.querySelector("#ln-file-list");
       renderLinerFileList(list, [{ id: "liner-1", name: "liner.wav", path: "N:/liner.wav" }], vi.fn());
@@ -1685,17 +1706,17 @@ describe("app request behavior", () => {
       liner.focus();
       liner.click();
       await vi.waitFor(() => expect(document.querySelector("#panel-track-info").hidden).toBe(false));
-      expect(document.querySelector("#track-info-return").textContent).toBe("Return to Queue & Search");
+      expect(document.querySelector("#track-info-return").textContent).toBe("Return to Settings");
       document.querySelector("#track-info-return").click();
       await vi.waitFor(() => expect(document.activeElement).toBe(liner));
-      expect(document.querySelector("#panel-queue").hidden).toBe(false);
+      expect(document.querySelector("#spanel-liners").hidden).toBe(false);
     } finally {
       window.location.hash = "";
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
   });
 
-  // Browse library moved from Library tools into Queue & Search (#47).
+  // Search and folder browsing use the same library result table.
   const browseTracks = (url) => {
     const params = new URL(url, "http://x").searchParams;
     const offset = Number(params.get("offset"));
@@ -1704,9 +1725,9 @@ describe("app request behavior", () => {
       results: [{ path: "M:/song.flac", title: "Song", artist: "Artist", kind: params.get("kind") }],
     });
   };
-  const browseInfo = () => document.querySelector('#library-browse-results [data-points="true"]');
+  const resultInfo = () => document.querySelector('#search-results [data-points="true"]');
 
-  it("returns from Track info to the Browse library row in Queue & Search", async () => {
+  it("returns from Track info to its shared library row in Queue & Search", async () => {
     window.location.hash = "#queue";
     try {
       await setupApp({ onRequest: (url) => url.startsWith("/api/library/tracks?")
@@ -1715,56 +1736,41 @@ describe("app request behavior", () => {
           ? jsonResponse({ path: "M:/song.flac", title: "Song", kind: "music", points: {} })
           : jsonResponse({ folders: [], ok: true }) });
       await vi.waitFor(() => expect(document.querySelector("#panel-queue").hidden).toBe(false));
-      document.querySelector("#library-browse").click();
-      await vi.waitFor(() => expect(browseInfo()).not.toBeNull());
-      const info = browseInfo();
+      document.querySelector("#search-input").value = "song";
+      document.querySelector("#btn-search").click();
+      await vi.waitFor(() => expect(resultInfo()).not.toBeNull());
+      const info = resultInfo();
       info.focus();
       info.click();
       await vi.waitFor(() => expect(document.querySelector("#panel-track-info").hidden).toBe(false));
       const back = document.querySelector("#track-info-return");
-      expect(back.hidden).toBe(false);
       expect(back.textContent).toBe("Return to Queue & Search");
       back.click();
       await vi.waitFor(() => expect(document.activeElement).toBe(info));
-      expect(document.querySelector("#panel-queue").hidden).toBe(false);
-      expect(document.querySelector("#sr-status").textContent).toBe("");
     } finally {
       window.location.hash = "";
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
   });
 
-  it("returns to the redrawn Browse row, not the same track in Search results", async () => {
+  it("returns to the redrawn shared result row", async () => {
     window.location.hash = "#queue";
     try {
       await setupApp({ onRequest: (url) => url.startsWith("/api/library/tracks?")
         ? browseTracks(url)
-        : url.startsWith("/api/search?")
-          ? jsonResponse({ results: [{ path: "M:/song.flac", title: "Song", artist: "Artist" }] })
-          : url.startsWith("/api/library/points?")
-            ? jsonResponse({ path: "M:/song.flac", title: "Song", kind: "music", points: {} })
-            : jsonResponse({ folders: [], ok: true }) });
+        : url.startsWith("/api/library/points?")
+          ? jsonResponse({ path: "M:/song.flac", title: "Song", kind: "music", points: {} })
+          : jsonResponse({ folders: [], ok: true }) });
       await vi.waitFor(() => expect(document.querySelector("#panel-queue").hidden).toBe(false));
       document.querySelector("#search-input").value = "song";
       document.querySelector("#btn-search").click();
-      await vi.waitFor(() => expect(document.querySelector('#search-results [data-points="true"]')).not.toBeNull());
-      document.querySelector("#library-browse").click();
-      await vi.waitFor(() => expect(browseInfo()).not.toBeNull());
-      const original = browseInfo();
-      expect(original.getAttribute("aria-label"))
-        .toBe(document.querySelector('#search-results [data-points="true"]').getAttribute("aria-label"));
+      await vi.waitFor(() => expect(resultInfo()).not.toBeNull());
+      const original = resultInfo();
       original.click();
       await vi.waitFor(() => expect(document.querySelector("#panel-track-info").hidden).toBe(false));
-      // While Track info is open the search is emptied and the browse list
-      // is drawn again: the match is counted within the browse list only.
-      const searchInput = document.querySelector("#search-input");
-      searchInput.value = "";
-      searchInput.dispatchEvent(new Event("input"));
-      expect(document.querySelector('#search-results [data-points="true"]')).toBeNull();
-      document.querySelector("#library-browse").click();
-      await vi.waitFor(() => expect(browseInfo()).not.toBe(original));
-      const replacement = browseInfo();
-      expect(replacement).not.toBeNull();
+      document.querySelector("#btn-search").click();
+      await vi.waitFor(() => expect(resultInfo()).not.toBe(original));
+      const replacement = resultInfo();
       document.querySelector("#track-info-return").click();
       await vi.waitFor(() => expect(document.activeElement).toBe(replacement));
       expect(document.querySelector("#sr-status").textContent).toBe("");
@@ -1774,37 +1780,31 @@ describe("app request behavior", () => {
     }
   });
 
-  it("pages Browse library in Queue & Search without losing focus", async () => {
+  it("pages the shared library results without losing focus", async () => {
     window.location.hash = "#queue";
     try {
       await setupApp({ onRequest: (url) => url.startsWith("/api/library/tracks?")
         ? browseTracks(url)
         : jsonResponse({ folders: [], ok: true }) });
       await vi.waitFor(() => expect(document.querySelector("#panel-queue").hidden).toBe(false));
-      const count = document.querySelector("#library-browse-count");
-      document.querySelector("#library-browse").click();
-      await vi.waitFor(() => expect(count.textContent).toBe("150 tracks found; showing 1\u20131."));
+      const count = document.querySelector("#search-count");
+      document.querySelector("#btn-search").click();
+      await vi.waitFor(() => expect(count.textContent).toBe("150 tracks found; showing 1–1."));
       const next = document.querySelector("#library-browse-next");
       const previous = document.querySelector("#library-browse-previous");
       expect(next.disabled).toBe(false);
       next.focus();
-      const writes = [];
-      new window.MutationObserver(() => { if (count.textContent) writes.push(count.textContent); })
-        .observe(count, { childList: true, characterData: true, subtree: true });
       next.click();
-      await vi.waitFor(() => expect(count.textContent).toBe("150 tracks found; showing 101\u2013101."));
-      // Next is now unavailable, so focus moves to Previous, not the page top.
+      await vi.waitFor(() => expect(count.textContent).toBe("150 tracks found; showing 101–101."));
       expect(next.disabled).toBe(true);
       expect(document.activeElement).toBe(previous);
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(writes).toEqual(["150 tracks found; showing 101\u2013101."]);
     } finally {
       window.location.hash = "";
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
   });
 
-  it("loads the Browse library folders when Queue & Search opens", async () => {
+  it("loads type-specific folder choices when Queue & Search opens", async () => {
     window.location.hash = "#now";
     try {
       const { fetchImpl } = await setupApp({ onRequest: (url) => url === "/api/library/folders"
@@ -1817,12 +1817,14 @@ describe("app request behavior", () => {
       expect(folderCalls()).toHaveLength(0);
       document.querySelector("#tab-queue").click();
       await vi.waitFor(() => expect(document.querySelector("#panel-queue").hidden).toBe(false));
-      const select = document.querySelector("#library-browse-folder");
-      await vi.waitFor(() => expect([...select.options].map((option) => option.value)).toEqual([
-        "all-music", "all-liners", "folder:music:1", "folder:liner:2",
-      ]));
+      const kind = document.querySelector("#library-kind");
+      const select = document.querySelector("#library-folder");
+      await vi.waitFor(() => expect([...select.options].map((option) => option.value)).toEqual(["all", "folder:1"]));
       expect(folderCalls()).toHaveLength(1);
-      expect(select.value).toBe("all-music");
+      kind.value = "liner";
+      kind.dispatchEvent(new Event("change", { bubbles: true }));
+      expect([...select.options].map((option) => option.value)).toEqual(["all", "folder:2"]);
+      expect(select.value).toBe("all");
     } finally {
       window.location.hash = "";
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1914,7 +1916,7 @@ describe("app request behavior", () => {
       });
       const tbody = document.querySelector("#history-tbody");
       await vi.waitFor(() => expect(tbody.children).toHaveLength(50));
-      const focused = tbody.querySelectorAll(".history-info")[49];
+      const focused = tbody.querySelectorAll("tr")[49].cells[2];
       focused.focus();
       items = [fresh, ...old.slice(0, 49)];
       webSocket.onmessage({ data: JSON.stringify({ current_track: { path: "M:/new.flac" },
@@ -1922,7 +1924,7 @@ describe("app request behavior", () => {
         is_muted: false, is_paused: false, next_track: null, queue: [], settings: null, volume: 1 }) });
       await vi.waitFor(() => expect(tbody.querySelector("[data-history-id='new']")).not.toBeNull());
       expect(focused.isConnected).toBe(false);
-      expect(document.activeElement).toBe(tbody.querySelectorAll(".history-info")[49]);
+      expect(document.activeElement).toBe(tbody.querySelectorAll("tr")[49].cells[2]);
       await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent).toContain("no longer in the displayed History rows"));
     } finally {
       window.location.hash = "";
@@ -1984,11 +1986,16 @@ describe("app request behavior", () => {
         ? jsonResponse({ total: items.length, page: 1, pages: 1, items }) : jsonResponse({ ok: true }) });
       const tbody = document.querySelector("#history-tbody");
       await vi.waitFor(() => expect(tbody.querySelectorAll(".history-info")).toHaveLength(3));
-      tbody.querySelectorAll(".history-info")[1].focus();
+      const focusedCell = tbody.querySelectorAll("tr")[1].cells[2];
+      focusedCell.focus();
+      document.querySelector("#hist-refresh").click();
+      await vi.waitFor(() => expect(tbody.querySelectorAll("tr")).toHaveLength(3));
+      expect(document.activeElement).toBe(tbody.querySelectorAll("tr")[1].cells[2]);
       items = [items[0], items[2]];
       document.querySelector("#hist-refresh").click();
       await vi.waitFor(() => expect(tbody.querySelectorAll(".history-info")).toHaveLength(2));
-      expect(document.activeElement.dataset.historyId).toBe("three");
+      expect(document.activeElement).toBe(tbody.querySelectorAll("tr")[1].cells[2]);
+      expect(document.activeElement.closest("tr").querySelector(".history-info").dataset.historyId).toBe("three");
       expect(document.querySelector("#sr-status").textContent).toContain("no longer on this History page");
     } finally {
       window.location.hash = "";
@@ -2827,8 +2834,8 @@ describe("stream mode", () => {
         browser_playback: true,
         current_track: { path: "current.mp3", title: "Current" },
       },
-      onRequest: (url) => (url.startsWith("/api/search")
-        ? jsonResponse({ results: [{ path: "song.mp3", title: "Song", artist: "Band" }] })
+      onRequest: (url) => (url.startsWith("/api/library/tracks?")
+        ? jsonResponse({ results: [{ path: "song.mp3", title: "Song", artist: "Band", kind: "music" }], total: 1, offset: 0 })
         : jsonResponse({ ok: true })),
     });
     const mediaSession = await import("../../src/autodj/static/modules/media-session.js");
