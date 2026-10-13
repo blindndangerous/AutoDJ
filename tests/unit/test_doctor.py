@@ -213,8 +213,8 @@ def test_corrupt_dj_meta_fails_without_touching_file(tmp_path: Path) -> None:
     assert db.stat().st_mtime_ns == before
 
 
-def test_dj_meta_with_absolute_key_fails_like_serve(tmp_path: Path) -> None:
-    """A dj_meta.db keyed by absolute paths is refused at load, so doctor must fail it."""
+def test_dj_meta_with_absolute_key_is_valid(tmp_path: Path) -> None:
+    """Absolute keys are the current canonical format and pass Doctor checks."""
     cfg = _config(tmp_path)
     cfg.index.active_dir.mkdir()
     db = cfg.index.active_dir / "dj_meta.db"
@@ -225,10 +225,44 @@ def test_dj_meta_with_absolute_key_fails_like_serve(tmp_path: Path) -> None:
 
     check = doctor._dj_meta_database_check(cfg)
 
-    assert check.status is doctor.CheckStatus.FAIL
-    assert check.summary == "old DJ metadata cache"
-    assert "Delete it and run `autodj analyse`" in check.detail
-    assert check.repair == "rebuild-dj-meta"
+    assert check.status is doctor.CheckStatus.PASS
+    assert check.summary == "integrity valid"
+    assert check.repair is None
+
+
+def test_music_path_check_uses_registered_roots_when_catalog_exists(tmp_path: Path) -> None:
+    from autodj.catalog import LibraryCatalog
+
+    cfg = _config(tmp_path)
+    cfg.library.music_dir.rmdir()  # configured fallback is unused after sources were saved
+    registered = tmp_path / "registered music"
+    registered.mkdir()
+    cfg.index.active_dir.mkdir(parents=True, exist_ok=True)
+    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+        catalog.add_source(registered, kind="music")
+
+    check = doctor._music_paths_check(cfg)
+
+    assert check.status is CheckStatus.PASS
+    assert [Path(path) for path in check.detail["registered"]] == [registered]
+
+
+def test_music_path_check_reports_missing_registered_root(tmp_path: Path) -> None:
+    from autodj.catalog import LibraryCatalog
+
+    cfg = _config(tmp_path)
+    registered = tmp_path / "registered music"
+    registered.mkdir()
+    cfg.index.active_dir.mkdir(parents=True, exist_ok=True)
+    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+        catalog.add_source(registered, kind="music")
+    registered.rmdir()
+
+    check = doctor._music_paths_check(cfg)
+
+    assert check.status is CheckStatus.FAIL
+    assert check.summary == "registered music folders unavailable"
+    assert [Path(path) for path in check.detail["unavailable"]] == [registered]
 
 
 def test_sqlite_checks_close_read_only_connections(tmp_path: Path) -> None:

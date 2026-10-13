@@ -807,7 +807,7 @@ class LibraryManager:
                     if cache is not None:
                         cache.rekey_many([(source, str(track.path))])
                 except ValueError:
-                    # The legacy cache is rooted at one configured directory.
+                    # Invalid legacy cache paths must not prevent library scanning.
                     pass
                 finally:
                     missing.discard(source)
@@ -838,7 +838,7 @@ class LibraryManager:
             cache = get_cache(self.cfg.index.active_dir, music_dir=self.cfg.library.music_dir)
             meta = cache.get(str(path)) if cache is not None else None
         except ValueError:
-            # The legacy cache is rooted at one configured directory.
+            # Invalid legacy cache paths must not prevent library scanning.
             return {}
         if meta is None:
             return {}

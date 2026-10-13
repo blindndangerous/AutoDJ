@@ -27,11 +27,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from autodj.config import is_loopback_bind
-from autodj.index_manifest import (
-    OldDjMetaCacheError,
-    first_absolute_path,
-    has_legacy_index,
-)
+from autodj.index_manifest import has_legacy_index
+
 from autodj.repeat_settings import removed_saved_repeat_keys
 from autodj.sqlite_utils import readonly_uri
 
@@ -204,6 +201,51 @@ def _beets_db_check(cfg: AutoDJConfig) -> DoctorCheck:
     )
 
 
+def _music_paths_check(cfg: AutoDJConfig) -> DoctorCheck:
+    """Check registered music roots, falling back to config before catalog setup."""
+    catalog_path = cfg.index.active_dir / "library.db"
+    if not catalog_path.is_file():
+        return _path_check("music-path", cfg.library.music_dir, writable=False)
+    try:
+        conn = _connect(readonly_uri(catalog_path), uri=True)
+        with closing(conn):
+            tables = {
+                str(row[0])
+                for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            if "catalog_sources" not in tables:
+                return _path_check("music-path", cfg.library.music_dir, writable=False)
+            roots = [
+                Path(str(row[0]))
+                for row in conn.execute(
+                    "SELECT path FROM catalog_sources WHERE kind='music' ORDER BY path"
+                )
+            ]
+    except (OSError, sqlite3.DatabaseError) as exc:
+        return DoctorCheck(
+            "music-path",
+            CheckStatus.WARN,
+            "registered folders not checked",
+            f"The library catalog could not be read; see the index check ({exc}).",
+        )
+    if not roots:
+        return DoctorCheck("music-path", CheckStatus.PASS, "no music folders registered")
+    unavailable = [str(root) for root in roots if not root.is_dir() or not os.access(root, os.R_OK)]
+    if unavailable:
+        return DoctorCheck(
+            "music-path",
+            CheckStatus.FAIL,
+            "registered music folders unavailable",
+            {"unavailable": unavailable},
+        )
+    return DoctorCheck(
+        "music-path",
+        CheckStatus.PASS,
+        f"{len(roots)} registered music folder(s) readable",
+        {"registered": [str(root) for root in roots]},
+    )
+
+
 def _saved_settings_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> DoctorCheck:
     """Report obsolete saved settings and offer optional cleanup."""
     from autodj.stations import StationPaths
@@ -323,13 +365,6 @@ def _dj_meta_database_check(cfg: AutoDJConfig) -> DoctorCheck:
             if integrity != ["ok"]:
                 raise sqlite3.DatabaseError("integrity_check: " + "; ".join(integrity))
             count = int(conn.execute("SELECT COUNT(*) FROM dj_meta").fetchone()[0])
-            absolute = first_absolute_path(conn, "dj_meta")
-        if absolute is not None:
-            raise OldDjMetaCacheError(path, absolute)
-    except OldDjMetaCacheError as exc:
-        return DoctorCheck(
-            "dj-meta-db", CheckStatus.FAIL, "old DJ metadata cache", str(exc), "rebuild-dj-meta"
-        )
     except OSError as exc:
         return DoctorCheck(
             "dj-meta-db",
@@ -669,7 +704,7 @@ def run_doctor(
         checks.append(_dmca_check(cfg))
     checks += [
         _python_check(python_version),
-        _path_check("music-path", cfg.library.music_dir, writable=False),
+        _music_paths_check(cfg),
         _beets_db_check(cfg),
         _path_check("index-path", cfg.index.index_dir, writable=True),
         _path_check("model-path", cfg.index.model_dir, writable=True),

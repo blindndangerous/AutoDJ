@@ -17,7 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   required per-instance licences and executable paths (#163).
 - Library Analyse, Enrich and Detailed Stats now read the current catalog. Analyse runs CPU DJ-meta
   work without MuQ, publishes automatic cues while preserving manual cues, and skips completed
-  tracks. The web summary stats remain separate. The web no longer starts the legacy prune job.
+  tracks across all registered folders. Existing DJ-meta cache entries are preserved. The web summary
+  stats remain separate. The web no longer starts the legacy prune job.
 - The Library panel can preview and confirm removal of tracks missing from available source folders.
   A clean scan and unchanged preview are required; more than 20% missing requires a second
   confirmation. Catalog cues and vectors are removed with the record, while audio files and play
@@ -31,6 +32,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `library.db`, carrying vectors and catalog state without reanalyzing audio. It also explicitly
   upgrades version-1 web settings, old play-history JSON, and initial folder registrations, with a
   preview, recovery copy, and safe retry after interruption.
+- Shows (#106): Library tools has a **Shows** card where you plan a show such as "Remembering
+  the 2000s" ahead of time as a list of songs. Choose where its songs come from (a category, so
+  any genre, year or beets field, or a clockwheel with its step conditions) and a target length,
+  then **Generate list**: a dry run of the station's own picker, the one the rotation tester
+  uses, picks the songs under the repeat rules and DMCA limits without touching the air,
+  optionally as if at a later date and time. The list is then yours: **Move up**, **Move down**
+  and **Remove** buttons on every song (keyboard operable, focus stays on the moved song), songs
+  added from a library search, and the total length against the target. A schedule event with
+  the new action **Play a show** airs it at a date and time, once or repeating; hard timing plays
+  its first song at once, fading out the song playing, and soft timing queues it to follow the
+  song playing. On the air the list feeds the queue two songs
+  ahead, so liners, time checks and breaks behave as with queued songs, and normal programming
+  resumes when the list ends. Show songs are pre-approved for the repeat rules, but a song that
+  would break a DMCA limit is skipped and logged, checked again at every song change. The card
+  says which show is on the air and what was skipped, with **Stop show**. The hour preview lists
+  the rest of a show on the air, and a scheduled show's songs from its time, as fixed, and a
+  song the DMCA limits would skip as skipped. Shows are
+  kept per station in `shows.json` (a damaged entry is skipped and kept, as with matched intros)
+  and included in every station's backup. A show cut short by a restart resumes at its earliest
+  unplayed song while its list would still be running; the card says so until then, and Stop
+  show cancels it. `show_on_air.json`, which holds that place, is left out of backups and cleared
+  by a restore. Queue & Search removes and moves the very entry pressed, so a listener's
+  request and a show song of the same file never swap. While a show is on the air (or about to
+  start) listener requests go after its songs and are told "after the station's show" rather
+  than a time. A song may be listed twice, with a warning. Routes: `/api/shows` and
+  `/api/stations/<name>/shows`, with request bodies capped for POST and PUT. See
+  [Shows](docs/operations.md#shows).
+- A schedule event whose action this version does not have, such as one a newer AutoDJ added,
+  is now kept exactly as it was with every save instead of being set aside, so moving between
+  versions loses no event. An event with settings its action does not accept is still set
+  aside as before.
 - Settings > Stream can edit Icecast and Shoutcast relays while the station runs. Relay definitions
   and passwords are saved per station; environment-managed passwords remain read-only. Station
   name, genre, description and website URL are sent where each stream protocol supports them.

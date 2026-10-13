@@ -1345,6 +1345,38 @@ class TestCmdAnalyse:
         assert captured["limit"] == 2
         assert captured["prune"] is False
 
+    def test_analyse_covers_other_folders_and_preserves_manual_cues(self, tmp_path: Path) -> None:
+        from autodj.catalog import LibraryCatalog
+        from autodj.dj_meta import DjMeta, close_cache
+
+        cfg = self._cfg_with_index(tmp_path, entries=2)
+        cfg.library.music_dir = tmp_path / "unused-old-root"
+        cfg.index.throttle_ms = 0
+        cfg.playback.import_external_cues = False
+        with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+            entries = catalog.entries_snapshot("music")
+            catalog.set_points(entries[0].path, {"intro": 9.0}, source="user")
+        close_cache()
+        try:
+            with (
+                patch("autodj.config.load_config", return_value=cfg),
+                patch(
+                    "autodj.indexer._analyse_one_track",
+                    return_value=DjMeta(intro_end_s=5.0, outro_start_s=170.0, analysed=True),
+                ) as analyse,
+            ):
+                result = CliRunner().invoke(cli, ["analyse"])
+                assert result.exit_code == 0, result.output
+                assert analyse.call_count == 2
+                again = CliRunner().invoke(cli, ["analyse"])
+                assert again.exit_code == 0, again.output
+                assert analyse.call_count == 2
+            with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+                assert catalog.points(entries[0].path)["intro"] == 9.0
+                assert catalog.points(entries[1].path)["intro"] == 5.0
+        finally:
+            close_cache()
+
     def test_backfill_exception_exits_one(self, tmp_path: Path) -> None:
         cfg = self._cfg_with_index(tmp_path)
         with (

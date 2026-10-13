@@ -658,6 +658,15 @@ def frame_guard(send: Send) -> Send:
     return guarded
 
 
+def _segment_pattern(path: str) -> re.Pattern[str]:
+    """*path* as a pattern in which each ``{name}`` segment matches any one segment."""
+    parts = [
+        "[^/]+" if part.startswith("{") and part.endswith("}") else re.escape(part)
+        for part in path.split("/")
+    ]
+    return re.compile("^" + "/".join(parts) + "$")
+
+
 class SecurityMiddleware:
     """Enforce HTTP request policy before any downstream body consumer."""
 
@@ -670,7 +679,10 @@ class SecurityMiddleware:
         machine_auth: Callable[[str, str], object | None] | None = None,
         station_slugs: Callable[[], AbstractSet[str]] | None = None,
     ) -> None:
-        """Wrap *app*; *body_limits* maps a POST path to its request-body cap in bytes.
+        """Wrap *app*; *body_limits* maps a path to its request-body cap in bytes.
+
+        The cap applies to POST and PUT.  A ``{name}`` segment in a path
+        stands for any one segment (``/api/shows/{show_id}/songs``).
 
         *station_slugs* names the configured stations.  A path under
         ``/api/stations/<slug>/`` for one of them is checked as the default
@@ -688,10 +700,20 @@ class SecurityMiddleware:
         """
         self.app = app
         self._policy = policy
-        self._body_limits = body_limits
+        self._body_limits = {key: cap for key, cap in body_limits.items() if "{" not in key}
+        self._body_patterns = [
+            (_segment_pattern(key), cap) for key, cap in body_limits.items() if "{" in key
+        ]
         self._machine_scopes = dict(machine_scopes or {})
         self._machine_auth = machine_auth
         self._station_slugs = station_slugs or frozenset
+
+    def _body_limit(self, path: str) -> Callable[[], int] | None:
+        """The body cap for *path*: its own, or a pattern's with ``{name}`` segments."""
+        found = self._body_limits.get(path)
+        if found is not None:
+            return found
+        return next((cap for pattern, cap in self._body_patterns if pattern.match(path)), None)
 
     def _machine_scope(self, path: str) -> str | None:
         """The token scope *path* needs, or ``None`` for a browser route."""
@@ -810,7 +832,7 @@ class SecurityMiddleware:
         # Capped like the default station's route even for a name that is no
         # station: that request answers 404, but only after reading its body.
         limited = station_relative(path, None) or path
-        body_limit = self._body_limits.get(limited) if method == "POST" else None
+        body_limit = self._body_limit(limited) if method in ("POST", "PUT") else None
         downstream_receive = receive
         if body_limit is not None:
             cap = body_limit()
