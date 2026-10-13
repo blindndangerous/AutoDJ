@@ -32,6 +32,7 @@ import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
 import { installRotationTest } from "./modules/rotation-test.js";
 import { installSchedulerPanel } from "./modules/scheduler-panel.js";
 import { installCartWall } from "./modules/cart-wall.js";
+import { installVoiceTracker } from "./modules/voice-tracker.js";
 import { createStreamMode, createStreamSettings } from "./modules/stream-mode.js";
 import { createRecordingControls } from "./modules/recording-controls.js";
 import { installNowPlayingSettings } from "./modules/nowplaying-settings.js";
@@ -218,6 +219,7 @@ let categoriesPanelControls = null;
 let schedulerPanelControls = null;
 let rotationTestControls = null;
 let cartWallControls = null;
+let voiceTrackerControls = null;
 let reconnectGeneration = 0;
 let reconnectTimer = null;
 
@@ -318,6 +320,8 @@ function clearProtectedSessionData() {
   schedulerPanelControls?.clear();
   rotationTestControls?.clear();
   cartWallControls?.clear();
+  // Signing out stops a recording and lets the microphone go.
+  voiceTrackerControls?.clear();
   const browseFolder = document.getElementById("library-browse-folder");
   if (browseFolder) {
     const option = (value, label) => {
@@ -2539,6 +2543,8 @@ function startAuthenticatedApp(initialState) {
     stopAudio: stopActiveCarts,
   });
   void cartWallControls?.refresh();
+  voiceTrackerControls = installVoiceTracker();
+  void voiceTrackerControls?.refresh();
   applyState(initialState);
   connectWS();
   // Opening the page straight at #history fires no hashchange, so the

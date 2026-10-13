@@ -26,6 +26,14 @@
 // only while focus is on the wall: the digits, minus, equals, Page Up and
 // Page Down.  No shortcut here may use them.
 //
+// Reserved for the voice tracker (modules/voice-tracker.js): Alt+R, only
+// while the Voice tracks tab shows.  Every shortcut here ignores Alt, and
+// Alt with an arrow (clockwheel steps) is the page's other Alt shortcut.
+// Alt+R is free in Firefox, Chrome and Edge on Windows (no menu or
+// browser command uses it; Firefox's menu bar keys are F E V S B T H),
+// the page gives no element accesskey="r", and NVDA and JAWS pass it
+// through to the page in browse and focus mode alike.
+//
 // WCAG 2.1.4: single-key shortcuts can be switched off with the
 // Settings > Keyboard checkbox.  The choice is kept per browser in
 // localStorage and defaults to on; storage that is blocked or throws

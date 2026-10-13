@@ -204,7 +204,9 @@ Every command takes `--help`, for example `uv run autodj serve --help`. The glob
   tokens from the command line, as Settings, Analysis workers does; a new token is printed once.
   `create NAME --scope announcer --station SLUG` makes a token for an announcer program that sends
   that station DJ breaks, news and weather; see
-  [Announcer breaks](docs/operations.md#announcer-breaks-dj-breaks-news-and-weather).
+  [Announcer breaks](docs/operations.md#announcer-breaks-dj-breaks-news-and-weather). The
+  web UI's Voice tracks tab records and books a DJ break from the browser's microphone with no
+  token; see [Voice tracking](docs/operations.md#voice-tracking-from-the-browser).
 - `autodj migrate-index` previews a schema-3 to schema-4 conversion; add `--apply` to save a
   recovery copy and convert without repeating analysis. Interactive `serve` offers this too.
 - `autodj enrich` refreshes key and mode from your beets database.

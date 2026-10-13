@@ -10,6 +10,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Voice tracking from the browser (#128): a new **Voice tracks** tab, after Carts, records a DJ
+  break with the computer's microphone for the open song change and books it, as an announcer
+  program books one (#88). The tab names the ending song and the next one, the next song's intro,
+  the time left to book and when the change airs, and where an Automatic voice track will go:
+  over the intro as a talk-up, or between the songs. **Record** asks for the microphone only when
+  pressed and lets it go when the recording stops; **Listen back** plays the take, **Record**
+  again replaces it, **Discard recording** throws it away and **Book voice track** uploads it.
+  Placement can be Automatic, Talk up or Standalone, and a talk-up may start over the ending
+  song's outro. Booked voice tracks are listed with what became of them, and one still waiting can
+  be cancelled. A take for a song change that has moved on to other songs is not booked: record
+  again, or listen back to it and press Book again. Recording stops at three minutes (or the
+  station's shorter limit), because booking decodes the whole take in the page, and it stops,
+  keeping the take and letting the microphone go, when the tab is left or the page is hidden.
+  Announcer tokens list, look up and cancel only announcer breaks, not voice tracks.
+  - Keyboard and screen readers: every control is a named native control, and focus stays where
+    it was through record, stop, listen, book and discard. **Alt+R** starts and stops recording
+    from anywhere in the tab without moving focus. The recording state is said once, politely, at
+    start and stop, then once a minute and 30 seconds before the length limit or the song change
+    closing; the timer and the time left are on the page and never read out on their own. A
+    blocked or missing microphone, a page not on a secure connection (HTTPS, or localhost on the
+    same computer), a closed song change and a recording that is too long are said in plain
+    words, shown on the page and linked to the control they are about.
+  - Voice tracks go through the signed-in session, never an announcer token, with the page's
+    origin checked as for every other change and the upload size capped before the body is read.
+    They get the same checks, length limit, decoding and placement as announcer breaks, and share
+    their caps and quota. The browser sends a mono WAV at the playout rate; the server decodes it
+    off the event loop, one upload at a time, as it does a break. Each station has its own at
+    `/api/stations/<slug>/voice-tracks`.
 - Seasons for rotation categories (#140): under **When the songs may play**, a category can have a
   **Not before** date, a **Do not play after** date, or both, such as 1 to 26 December for
   Christmas songs. Outside them its songs are left out of every pick mode and a clockwheel step

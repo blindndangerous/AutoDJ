@@ -63,6 +63,9 @@ QUEUED, RENDERED, ON_AIR, AIRED, DROPPED, EXPIRED = (
     "expired",
 )
 TERMINAL = frozenset({AIRED, DROPPED, EXPIRED})
+#: Where a break came from: an announcer program with a token, or an
+#: operator recording it in the browser's voice tracker (#128).
+ANNOUNCER, VOICE_TRACK = "announcer", "voice_track"
 #: File types a break may be.
 EXTENSIONS: tuple[str, ...] = LINER_EXTS
 #: Finished breaks kept for status requests.
@@ -200,6 +203,7 @@ class Break:
         eta: When it was expected to air, once it is rendered.
         aired_at: When its voice started.
         updated_at: When its state last changed.
+        source: :data:`ANNOUNCER` or :data:`VOICE_TRACK`.
     """
 
     break_id: str
@@ -222,6 +226,7 @@ class Break:
     eta: float | None = None
     aired_at: float | None = None
     updated_at: float = 0.0
+    source: str = ANNOUNCER
 
     def view(self) -> dict[str, Any]:
         """What the API says about the break: never its file path or token."""
@@ -243,6 +248,7 @@ class Break:
             "eta": None if self.eta is None else round(self.eta, 3),
             "aired_at": None if self.aired_at is None else round(self.aired_at, 3),
             "updated_at": round(self.updated_at, 3),
+            "source": self.source,
         }
 
 
@@ -535,8 +541,12 @@ class BreakDesk:
         done = [item for item in reversed(items) if item.state in TERMINAL]
         return waiting + done
 
-    def cancel(self, break_id: str) -> Break:
-        """Drop a break that is still waiting for its song change.
+    def cancel(
+        self, break_id: str, reason: str = "cancelled by the announcer", source: str | None = None
+    ) -> Break:
+        """Drop a break that is still waiting for its song change, with *reason*.
+
+        With *source*, only a break from that source is found.
 
         Raises:
             BreakError: 404 for no such break; 409 when it is already
@@ -544,7 +554,7 @@ class BreakDesk:
         """
         with self._lock:
             item = self._breaks.get(break_id)
-            if item is None:
+            if item is None or (source is not None and item.source != source):
                 raise BreakError(404, "No break has that id", "not_found")
             if item.state != QUEUED:
                 raise BreakError(
@@ -556,7 +566,7 @@ class BreakDesk:
                     }.get(item.state, item.state.replace("_", " ")),
                     item.state,
                 )
-            self._finish_locked(item, DROPPED, "cancelled by the announcer")
+            self._finish_locked(item, DROPPED, reason)
             result = replace(item)
         self._flush({item.slot_id})
         return result
@@ -811,6 +821,7 @@ def placement_for(
 
 __all__ = [
     "AIRED",
+    "ANNOUNCER",
     "DROPPED",
     "EXPIRED",
     "EXTENSIONS",
@@ -820,6 +831,7 @@ __all__ = [
     "QUEUED",
     "RENDERED",
     "TERMINAL",
+    "VOICE_TRACK",
     "Break",
     "BreakCues",
     "BreakDesk",

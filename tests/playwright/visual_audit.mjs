@@ -40,6 +40,14 @@
 //         named select with linked help and 24 px targets, focus staying
 //         on Token use; it is measured in every theme mode (axe-core and
 //         non-text contrast) and at 320 px with that choice shown;
+//       - Voice tracks, with the microphone and recorder stubbed and the
+//         open song change stood in for: shown idle, recording, with a
+//         take, and with the microphone refused (its error linked to
+//         Record); Record by keyboard keeps focus and says "Recording"
+//         once, Alt+R from another control stops it without moving focus
+//         and lets the microphone go, a refused booking is shown,
+//         linked to Book voice track, focus staying there, and leaving
+//         the tab stops a recording and says so once;
 //       - the status message stays while the pointer is over it, goes
 //         after the pointer leaves, lets a click on its frame (outside the
 //         message and the button) through to the page underneath, and its
@@ -64,7 +72,7 @@ const SHOTS = process.env.AUTODJ_SCREENSHOTS || "";
 const CPU_THROTTLE = Number(process.env.AUTODJ_CPU_THROTTLE || 0);
 const AXE = fileURLToPath(import.meta.resolve("axe-core/axe.min.js"));
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
-const VIEWS = ["now", "queue", "carts", "track-info", "history", "settings", "library"];
+const VIEWS = ["now", "queue", "carts", "voice", "track-info", "history", "settings", "library"];
 const MAX_TAB_STOPS = 80;
 // Focus rings measured per target in the Light and System modes.  Every
 // stop is measured in the Dark mode (fullFocus) and in the layout pass,
@@ -250,6 +258,85 @@ async function openDaypartErrors(page, visit) {
   await visit("library/step-hours-error");
 }
 
+// Voice tracks (#128): the open song change and a booked list are stood
+// in for (the audit server takes no breaks), and the microphone and the
+// recorder are stubbed before any page script, so Record works with no
+// device and no permission prompt.  window.__micRefusal names the error
+// the next request for the microphone fails with.
+const VOICE_CONTEXT = {
+  station: "default", accepting: true, reason: null, now: null, next: null,
+  slot: {
+    slot_id: "a".repeat(32), closes_in_s: 125, airs_in_s: 330, upcoming_intro_s: 8.5,
+    pinned: true, breaks_booked: 1, auto_placement: "talk_up", auto_note: null,
+    ending: { id: "song-c", title: "An_Exceptionally_Long_Title_Without_Any_Spaces_From_A_Tagless_File_0002", artist: "Example Artist", album: "", year: null, duration_s: 214 },
+    upcoming: { id: "song-d", title: "Fourth Song", artist: "Another Example", album: "", year: null, duration_s: 187 },
+  },
+  limits: { max_bytes: 41943040, max_seconds: 300, sample_rate: 44100, dj_placement: "auto", min_intro_s: 2, max_per_slot: 2 },
+  tracks: [
+    { break_id: "b".repeat(32), label: "Third Song into Fourth Song", state: "queued", slot_id: "a".repeat(32),
+      mixed_as: null, reason: null, eta: null, source: "voice_track" },
+    { break_id: "c".repeat(32), label: "Second Song into Third Song", state: "dropped", slot_id: "e".repeat(32),
+      mixed_as: null, reason: "cancelled in the voice tracker", eta: null, source: "voice_track" },
+  ],
+};
+const voicePages = new WeakSet();
+
+async function standInForVoiceTracker(page) {
+  if (voicePages.has(page)) return;
+  voicePages.add(page);
+  await page.addInitScript(() => {
+    const stream = { getTracks: () => [{ stop() { window.__micStopped = (window.__micStopped || 0) + 1; } }] };
+    Object.defineProperty(window.Navigator.prototype, "mediaDevices", {
+      configurable: true,
+      get: () => ({
+        getUserMedia: async () => {
+          if (window.__micRefusal) throw new window.DOMException("refused", window.__micRefusal);
+          return stream;
+        },
+      }),
+    });
+    window.MediaRecorder = class extends window.EventTarget {
+      constructor() {
+        super();
+        this.mimeType = "audio/webm";
+        this.state = "inactive";
+      }
+
+      start() { this.state = "recording"; }
+
+      stop() {
+        this.state = "inactive";
+        const data = new Event("dataavailable");
+        data.data = new window.Blob(["voice"], { type: "audio/webm" });
+        this.dispatchEvent(data);
+        this.dispatchEvent(new Event("stop"));
+      }
+    };
+  });
+  await page.route("**/api/voice-tracks", (route) => (route.request().method() === "GET"
+    ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(VOICE_CONTEXT) })
+    : route.continue()));
+}
+
+// Voice tracks while recording, with a take to book, and with the
+// microphone refused: its error on the page, linked to Record.
+async function openVoiceStates(page, visit) {
+  await page.locator("#vt-slot").waitFor({ state: "visible" });
+  const record = page.locator("#vt-record");
+  await record.click();
+  await page.waitForFunction(() => document.getElementById("vt-record").getAttribute("aria-pressed") === "true");
+  await visit("voice/recording");
+  await record.click();
+  await page.waitForFunction(() => /^Recorded/.test(document.getElementById("vt-timer").textContent));
+  await visit("voice/recorded");
+  await page.locator("#vt-discard").click();
+  await page.evaluate(() => { window.__micRefusal = "NotAllowedError"; });
+  await record.click();
+  await page.locator("#vt-error").waitFor({ state: "visible" });
+  await visit("voice/error");
+  await page.evaluate(() => { window.__micRefusal = ""; });
+}
+
 async function openEveryCard(page) {
   await page.evaluate(() => {
     for (const details of document.querySelectorAll("details")) details.open = true;
@@ -286,6 +373,7 @@ async function eachTarget(page, visit) {
   await standInForRotationTest(page);
   await standInForTrackInfo(page);
   await standInForTimeChecks(page);
+  await standInForVoiceTracker(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   for (const view of VIEWS) {
     await page.locator(`#tab-${view}`).click();
@@ -299,6 +387,7 @@ async function eachTarget(page, visit) {
       await visit(view);
       if (view === "track-info") await openTrackTags(page, visit);
       if (view === "library") await openDaypartErrors(page, visit);
+      if (view === "voice") await openVoiceStates(page, visit);
       continue;
     }
     const ids = await page.$$eval("#settings-tabs [role='tab']:not([hidden])",
@@ -885,6 +974,78 @@ async function tokenScopeProblems(page) {
   return problems;
 }
 
+// The voice tracker by keyboard: Record keeps focus and says "Recording"
+// once; Alt+R from another control stops it without moving focus and lets
+// the microphone go; a refused booking is words on the page, linked to
+// Book voice track, with focus still there.
+async function voiceTrackerProblems(page) {
+  await standInForVoiceTracker(page);
+  await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
+  await page.locator("#tab-voice").click();
+  await page.locator("#vt-slot").waitFor({ state: "visible" });
+  const problems = [];
+  await page.evaluate(() => {
+    window.__voiceSaid = [];
+    const region = document.getElementById("vt-status");
+    new window.MutationObserver(() => {
+      if (region.textContent) window.__voiceSaid.push(region.textContent);
+    }).observe(region, { childList: true, characterData: true, subtree: true });
+  });
+  const state = () => page.evaluate(() => ({
+    pressed: document.getElementById("vt-record").getAttribute("aria-pressed"),
+    focus: document.activeElement?.id || document.activeElement?.tagName.toLowerCase(),
+    said: [...window.__voiceSaid],
+    stopped: window.__micStopped || 0,
+  }));
+  await page.locator("#vt-record").focus();
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(300);
+  let now = await state();
+  if (now.pressed !== "true") problems.push("Enter on Record did not start recording");
+  if (now.focus !== "vt-record") problems.push(`starting moved focus to ${now.focus}`);
+  if (now.said.length !== 1 || !/^Recording\./.test(now.said[0])) problems.push(`starting said ${JSON.stringify(now.said)}`);
+  await page.locator("#vt-placement").focus();
+  await page.keyboard.press("Alt+KeyR");
+  await page.waitForTimeout(300);
+  now = await state();
+  if (now.pressed !== "false") problems.push("Alt+R did not stop recording");
+  if (now.focus !== "vt-placement") problems.push(`Alt+R moved focus to ${now.focus}`);
+  if (now.stopped < 1) problems.push("the microphone was not let go");
+  if (now.said.length !== 2 || !/^Recording stopped/.test(now.said[1])) problems.push(`stopping said ${JSON.stringify(now.said)}`);
+  await page.locator("#vt-book").focus();
+  await page.keyboard.press("Enter");
+  await page.locator("#vt-error").waitFor({ state: "visible", timeout: 5000 }).catch(() => {});
+  const refused = await page.evaluate(() => ({
+    error: document.getElementById("vt-error").textContent.trim(),
+    shown: !document.getElementById("vt-error").hidden,
+    linked: (document.getElementById("vt-book").getAttribute("aria-describedby") || "").split(" "),
+    focus: document.activeElement?.id,
+  }));
+  if (!refused.shown || !refused.error) problems.push("a refused booking shows no error");
+  if (!refused.linked.includes("vt-error")) problems.push("the error is not linked to Book voice track");
+  if (refused.focus !== "vt-book") problems.push(`a refused booking moved focus to ${refused.focus}`);
+  await page.locator("#vt-discard").click();
+  // Leaving the tab stops a recording and lets the microphone go, said
+  // once in the page-wide region (the tab's own is hidden with it).
+  await page.locator("#vt-error").waitFor({ state: "hidden", timeout: 5000 }).catch(() => {});
+  const before = (await state()).stopped;
+  await page.locator("#vt-record").click();
+  await page.waitForFunction(() => document.getElementById("vt-record").getAttribute("aria-pressed") === "true");
+  await page.locator("#tab-carts").click();
+  await page.waitForTimeout(300);
+  const left = await page.evaluate(() => ({
+    pressed: document.getElementById("vt-record").getAttribute("aria-pressed"),
+    stopped: window.__micStopped || 0,
+    said: document.getElementById("sr-status").textContent,
+  }));
+  if (left.pressed !== "false") problems.push("leaving the tab did not stop recording");
+  if (left.stopped <= before) problems.push("leaving the tab kept the microphone");
+  if (!/^You left the Voice tracks tab/.test(left.said)) problems.push(`leaving the tab said ${JSON.stringify(left.said)}`);
+  await page.locator("#tab-voice").click();
+  await page.locator("#vt-discard").click();
+  return problems;
+}
+
 async function previewOutputProblems(page) {
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   await page.locator("#tab-settings").click();
@@ -969,6 +1130,8 @@ export async function audit(name, launcher) {
     if (preview.length) out.behaviour.previewOutput = preview;
     const tokenScope = await tokenScopeProblems(page);
     if (tokenScope.length) out.behaviour.tokenScope = tokenScope;
+    const voiceTracker = await voiceTrackerProblems(page);
+    if (voiceTracker.length) out.behaviour.voiceTracker = voiceTracker;
     // 200 % text at the same window width.
     await wide.addInitScript(() => {
       document.addEventListener("DOMContentLoaded", () => {

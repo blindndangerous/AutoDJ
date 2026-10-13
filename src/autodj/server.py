@@ -77,7 +77,7 @@ from starlette.types import Receive, Scope, Send
 
 # PlayerBridge lives in autodj._bridge; it is re-exported here.
 from autodj._bridge import PlayerBridge
-from autodj.breaks_api import ANNOUNCER_SCOPES, UPLOAD_PATH
+from autodj.breaks_api import ANNOUNCER_SCOPES, UPLOAD_PATH, VOICE_UPLOAD_PATH
 from autodj.breaks_api import MULTIPART_OVERHEAD_BYTES as BREAK_MULTIPART_OVERHEAD
 from autodj.categories_api import install_categories
 from autodj.config import BreaksConfig
@@ -937,6 +937,7 @@ def create_app(
         "/api/machine-tokens": lambda: SMALL_BODY_MAX_BYTES,
         # The largest break any station takes; each station checks its own.
         UPLOAD_PATH: lambda: _break_upload_cap(stations),
+        VOICE_UPLOAD_PATH: lambda: _break_upload_cap(stations),
         "/api/rotation-test": lambda: SMALL_BODY_MAX_BYTES,
         "/api/library/tags": lambda: TAG_BODY_MAX_BYTES,
         WORKER_PREFIX + "result": lambda: RESULT_BODY_MAX_BYTES,

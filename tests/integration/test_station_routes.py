@@ -154,6 +154,9 @@ STATION = frozenset(
         "/announcer/context",
         "/announcer/breaks",
         "/announcer/breaks/{break_id}",
+        # The voice tracker (#128): browser routes, by station.
+        "/voice-tracks",
+        "/voice-tracks/{break_id}",
         "/ws",
     }
 )
