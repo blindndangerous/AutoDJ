@@ -232,6 +232,38 @@ def test_the_blocklist_holds_artists_and_folders(tmp_path: Path) -> None:
     assert not Blocklist([], [], music).blocks(_entry(1))
 
 
+def test_rootless_blocked_folders_follow_registered_music_sources(tmp_path: Path) -> None:
+    roots = [tmp_path / "music one"]
+    block = Blocklist(
+        [],
+        ["Holiday", str(tmp_path / "private")],
+        None,
+        music_roots=lambda: roots,
+    )
+    first = _entry(1, path=str(roots[0] / "Holiday" / "song.flac"))
+    other = _entry(2, path=str(tmp_path / "music two" / "Holiday" / "song.flac"))
+    absolute = _entry(3, path=str(tmp_path / "private" / "song.flac"))
+
+    assert block.blocks(first)
+    assert not block.blocks(other)
+    assert block.blocks(absolute)
+
+    roots[:] = [tmp_path / "music two"]
+    block.refresh()
+    assert not block.blocks(first)
+    assert block.blocks(other)
+
+
+def test_request_search_refreshes_blocked_folders_when_sources_change(tmp_path: Path) -> None:
+    desk, bridge, _ids, _clock = _desk(tmp_path)
+    roots: list[Path] = []
+    desk.blocklist = Blocklist([], ["rock"], None, music_roots=lambda: roots)
+    assert any(entry is bridge.entries[1] for _, entry in desk.search("song 1"))
+
+    roots.append(Path("/music"))
+    assert desk.search("song 1") == []
+
+
 # ---------------------------------------------------------------------------
 # Where a request fits
 # ---------------------------------------------------------------------------
