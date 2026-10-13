@@ -16,6 +16,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   open in the same condition editor and keep their selection and repeat settings. Category
   hours and the list of clockwheels using each category still apply.
 
+- Count versions as one song (#177). Settings > Picking > Repeats has a **Count versions as one
+  song** checkbox under the track limits, off by default. Versions of a song by the same lead
+  artist, such as a radio edit and a remix, then come up as often as a song with one version:
+  random picks choose a song before a version, least recently played dates a song by its latest
+  played version, and similarity keeps the best version of each song. The track limits hold back
+  every version of a song that played. The rotation tester counts the versions as one song.
+
 - Related tracks (#101). Settings > Picking > Repeats has a **Use related tracks** checkbox, off
   by default, with its own Tracks and Minutes limits (20 tracks to start with). It holds back
   tracks that sound alike on air, such as a song and one that samples it, listed as

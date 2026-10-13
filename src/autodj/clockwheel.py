@@ -12,7 +12,10 @@ from collections.abc import Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from autodj.repeat_rules import SongVersions
 
 
 @dataclass(frozen=True)
@@ -170,9 +173,14 @@ def least_recent(
     rng: Any = None,
     *,
     allowed: Callable[[Any], bool] | None = None,
+    versions: SongVersions | None = None,
 ) -> Any | None:
-    """Choose the oldest allowed entry; prefer never-played and randomize ties."""
-    return _least_recent(entries, last_played.get, rng, allowed=allowed)
+    """Choose the oldest allowed entry; prefer never-played and randomize ties.
+
+    With *versions*, a song's age is that of its latest played version,
+    and the oldest version of the oldest song wins.
+    """
+    return _least_recent(entries, last_played.get, rng, allowed=allowed, versions=versions)
 
 
 def _least_recent(
@@ -181,28 +189,34 @@ def _least_recent(
     rng: Any = None,
     *,
     allowed: Callable[[Any], bool] | None = None,
+    versions: SongVersions | None = None,
 ) -> Any | None:
     if not entries:
         raise ValueError("entries must not be empty")
     chooser = rng if rng is not None else random
+    song_played = versions.last_played(played) if versions else None
+
+    def age(entry: Any) -> tuple[Any, ...]:
+        # Never played sorts first, then the oldest play.
+        stamp = played(entry.path)
+        if song_played is None:
+            return (stamp is not None, stamp)
+        song = song_played(entry.path)
+        return (song is not None, song, stamp is not None, stamp)
+
     if allowed is not None:
         ordered = list(entries)
         chooser.shuffle(ordered)
-        heap = [
-            ((stamp := played(entry.path)) is not None, stamp, index, entry)
-            for index, entry in enumerate(ordered)
-        ]
+        heap = [(*age(entry), index, entry) for index, entry in enumerate(ordered)]
         heapq.heapify(heap)
         while heap:
             entry = heapq.heappop(heap)[-1]
             if allowed(entry):
                 return entry
         return None
-    oldest = min(
-        (played(entry.path) for entry in entries),
-        key=lambda stamp: (stamp is not None, stamp),
-    )
-    candidates = [entry for entry in entries if played(entry.path) == oldest]
+    ages = [age(entry) for entry in entries]
+    oldest = min(ages)
+    candidates = [entry for entry, when in zip(entries, ages, strict=True) if when == oldest]
     return chooser.choice(candidates)
 
 
@@ -373,6 +387,7 @@ def pick_slot(
     condition_cache: ConditionPaths | None = None,
     closed_categories: Mapping[str, str] | None = None,
     normalized_history: Mapping[str, Any] | None = None,
+    versions: SongVersions | None = None,
 ) -> ClockPick:
     """Scan one clock cycle and select its next eligible music entry.
 
@@ -388,6 +403,9 @@ def pick_slot(
     ``condition_cache``, built from these *slots* and the entries the
     pools were drawn from, saves working out a conditions step again.
     ``normalized_history`` can be shared across retry scans for the same pick.
+    With ``versions`` (Count versions as one song), each song is as likely
+    as any other however many versions it has, and a song's age for least
+    recently played is that of its latest played version.
     Nothing is written to playback history by this pure selection helper.
     """
     slots = validate_clock(slots)
@@ -429,10 +447,16 @@ def pick_slot(
                 lambda path: played_by_path.get(_normalized(path)),
                 chooser,
                 allowed=allowed if slot.enforce_rules else None,
+                versions=versions,
             )
         else:
             candidates = [entry for entry in matches if not slot.enforce_rules or allowed(entry)]
-            selected = chooser.choice(candidates) if candidates else None
+            if not candidates:
+                selected = None
+            elif versions:
+                selected = versions.choice(candidates, chooser)
+            else:
+                selected = chooser.choice(candidates)
         if selected is None:
             return (
                 None,

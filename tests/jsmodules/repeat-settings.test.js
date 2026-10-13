@@ -34,6 +34,7 @@ function installPage() {
     relatedTrackMinutes: $("repeat-related-track-minutes"),
     useRelatedArtists: $("repeat-use-related-artists"),
     useRelatedTracks: $("repeat-use-related-tracks"),
+    versionsAsOneSong: $("repeat-versions-as-one-song"),
     defaultFile: $("repeat-related-default"),
     fileStatus: $("repeat-related-status"),
     tracksDefaultFile: $("repeat-related-tracks-default"),
@@ -72,7 +73,7 @@ const fullRules = {
   artist: { tracks: 8, minutes: 0 }, related_artist: { tracks: 8, minutes: 0 },
   album: { tracks: 0, minutes: 0 }, track: { tracks: 50, minutes: 0 },
   title: { tracks: 0, minutes: 0 }, related_track: { tracks: 20, minutes: 0 },
-  use_related_artists: true, use_related_tracks: false,
+  use_related_artists: true, use_related_tracks: false, versions_as_one_song: false,
 };
 
 describe("Repeats markup", () => {
@@ -156,6 +157,18 @@ describe("Repeats markup", () => {
     expect(els.relatedTrackTracks.closest("fieldset")).toBe(group);
     expect(els.relatedTrackTracks.value).toBe("20");
   });
+
+  it("puts Count versions as one song in the same track group with its description", () => {
+    const els = installPage();
+    const group = els.versionsAsOneSong.closest("fieldset");
+    expect(group).toBe(els.trackTracks.closest("fieldset"));
+    expect(els.versionsAsOneSong.labels[0].textContent).toBe("Count versions as one song");
+    expect(els.versionsAsOneSong.checked).toBe(false);
+    const [note] = describedBy(els.versionsAsOneSong);
+    expect(note.closest("fieldset")).toBe(group);
+    expect(note.textContent).toContain("same lead artist");
+    expect(note.textContent).toContain("all of its versions");
+  });
 });
 
 describe("repeat settings", () => {
@@ -203,6 +216,19 @@ describe("repeat settings", () => {
       ...fullRules, use_related_tracks: true, related_track: { tracks: 6, minutes: 45 },
       related_artist: { tracks: 8, minutes: 90 },
     } });
+  });
+
+  it("applies and saves Count versions as one song", async () => {
+    const { els, postSettings } = setup();
+    applyRepeatSettings({ playback: { repeat_rules: { ...fullRules, versions_as_one_song: true } } }, els);
+    expect(els.versionsAsOneSong.checked).toBe(true);
+    els.versionsAsOneSong.click();
+    els.save.click();
+    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledOnce());
+    expect(postSettings.mock.calls[0][1]).toEqual({ repeat_rules: fullRules });
+    // A push that still holds the old value does not undo the change on screen.
+    applyRepeatSettings({ playback: { repeat_rules: { ...fullRules, versions_as_one_song: true } } }, els);
+    expect(els.versionsAsOneSong.checked).toBe(false);
   });
 
   it("names the related rule in an invalid limit's message", async () => {
