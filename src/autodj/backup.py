@@ -9,9 +9,11 @@ that wrote it and the list of files) and these members:
   ``index/related-artists.toml``, ``index/related-tracks.toml``, ``index/schedule.json``,
   ``index/carts.json``,
   ``index/time_checks.json``, ``index/listener_bans.json``, ``index/recording.json``,
-  ``index/categories.json`` and ``index/liner_dates.json`` from the active index folder.
-- ``liners/...``, ``carts/...``, ``time_checks/...``, ``profiles/...`` and
-  ``clockwheels/...``: every file in those folders and their subfolders.  Time check
+  ``index/categories.json``, ``index/liner_dates.json`` and ``index/matched_intros.json``
+  from the active index folder.
+- ``liners/...``, ``carts/...``, ``time_checks/...``, ``profiles/...``, ``clockwheels/...``
+  and ``intros/...`` (the matched intros' audio): every file in those folders and their
+  subfolders.  Time check
   voice packs kept in subfolders of the ``time_checks`` folder come along; packs listed
   from other folders do not, as they are external libraries like the music.
 - ``stereo-tool-presets/...``: the uploaded ``.sts`` presets.
@@ -55,9 +57,18 @@ INDEX_FILES = (
     "recording.json",
     "categories.json",
     "liner_dates.json",
+    "matched_intros.json",
     im.MANIFEST_NAME,
 )
-_FOLDERS = ("liners", "carts", "time_checks", "profiles", "clockwheels", "stereo-tool-presets")
+_FOLDERS = (
+    "liners",
+    "carts",
+    "time_checks",
+    "profiles",
+    "clockwheels",
+    "intros",
+    "stereo-tool-presets",
+)
 
 
 class BackupError(RuntimeError):
@@ -77,6 +88,7 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
         "time_checks": station.time_check_clips,
         "profiles": station.profiles,
         "clockwheels": station.clockwheels,
+        "intros": station.intros,
         "stereo-tool-presets": active.parent / "stereo-tool-presets",
     }
 
@@ -167,6 +179,7 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
                     "recording.json",
                     "categories.json",
                     "liner_dates.json",
+                    "matched_intros.json",
                 )
             ]
             for path in [*sorted(snapshot.glob("*")), *state_files]:

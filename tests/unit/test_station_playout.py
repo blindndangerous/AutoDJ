@@ -159,6 +159,7 @@ def test_saved_start_survives_next_rendered_metadata(station):
 
 def test_clock_step_provenance_follows_each_rendered_track(station, monkeypatch):
     player, (a, b, voice, _), _points = station
+    player._cfg.playback.pick_mode = "clock"
     steps = iter(
         (
             {"number": 2, "step": {"type": "music", "selection": "random"}},
@@ -166,7 +167,7 @@ def test_clock_step_provenance_follows_each_rendered_track(station, monkeypatch)
         )
     )
 
-    def choose(_current, _context):
+    def choose(_current, _context, **_kwargs):
         player._chosen_clock_step = next(steps)
         return b if player._pending_entry is a else voice, "clock", (), None, ""
 
@@ -298,7 +299,10 @@ def test_clock_and_history_advance_only_when_incoming_audio_is_heard(station):
     player, (a, b, *_), _points = station
     player._clock = {"cursor": 1}
     current = replace(
-        player._render_track(a, b, 0), next_clock_cursor=3, next_clock_boundary=3600.0
+        player._render_track(a, b, 0),
+        next_clock_cursor=3,
+        next_clock_boundary=3600.0,
+        next_clock_revision=player._clock_revision,
     )
     player._start_playing(current)
     player._on_position(10 * SR)
@@ -311,6 +315,251 @@ def test_clock_and_history_advance_only_when_incoming_audio_is_heard(station):
     assert player._clock_next_boundary == 3600.0
 
 
+def test_same_name_clock_edit_invalidates_old_buffer_without_moving_live_cursor(station):
+    player, (a, b, *_), _points = station
+    player._clock = {"name": "Morning", "cursor": 2, "resync_minutes": []}
+    player._clock_definition = {"name": "Morning", "steps": [{"old": True}], "resync_minutes": []}
+    player._clock_slots = [object()]
+    player._clock_steps = [{"old": True}]
+    player._clock_revision = 4
+    player._pending_clock_name = "Morning"
+    player._pending_clock_cursor = 2
+    player._pending_clock_cursor_revision = 4
+    player._pending_clock_boundary = None
+    player._load_clockwheel = lambda _name: (
+        {"name": "Morning", "steps": [{"new": True}], "resync_minutes": []},
+        [object(), object()],
+    )
+
+    old = replace(
+        player._render_track(a, b, 0),
+        next_pick_mode="clock",
+        clock_name="Morning",
+        next_clock_name="Morning",
+        clock_cursor=1,
+        next_clock_cursor=2,
+        clock_revision=4,
+        next_clock_revision=4,
+        next_clock_boundary=None,
+    )
+    with player._render_ahead._cond:
+        player._render_ahead._ready = old
+    player.apply_clockwheel_update("Morning", "immediate")
+
+    assert player._clock_revision == 5
+    assert player._clock["cursor"] == 0
+    assert player._render_ahead._ready is None
+    assert player._render_ahead._fallback is old
+    assert player._pending_entry is a
+    # The committed outgoing track still starts; its stale buffered cursor
+    # and boundary cannot overwrite the newly applied same-name revision.
+    player._start_playing(old)
+    player._on_position(10 * SR + 1764)
+    assert player._clock["cursor"] == 0
+    player._rewind_render_cursor(old)
+    player._forget_other_clock_place()
+    assert player._pending_clock_cursor is None
+
+
+def test_immediate_clock_edit_marks_inflight_render_for_revalidation(station):
+    player, _entries, _points = station
+    player._clock = {"name": "Morning", "cursor": 0, "resync_minutes": []}
+    player._clock_definition = {"name": "Morning", "steps": [{"old": True}], "resync_minutes": []}
+    player._clock_revision = 2
+    player._load_clockwheel = lambda _name: (
+        {"name": "Morning", "steps": [{"new": True}], "resync_minutes": []},
+        [object()],
+    )
+    with player._render_ahead._cond:
+        player._render_ahead._rendering = True
+    player.apply_clockwheel_update("Morning", "immediate")
+    assert player._render_ahead._revalidate
+    with player._render_ahead._cond:
+        player._render_ahead._rendering = False
+
+
+def test_continue_clock_edit_uses_baked_next_cursor_then_live_cursor(station):
+    player, (a, b, *_), _points = station
+    old = {"name": "Morning", "steps": [{"old": True}], "resync_minutes": []}
+    edited = {"name": "Morning", "steps": [{"new": True} for _ in range(5)], "resync_minutes": []}
+    player._clock = {"name": "Morning", "cursor": 2, "resync_minutes": []}
+    player._clock_definition = old
+    player._clock_slots = [object()]
+    player._clock_steps = old["steps"]
+    player._clock_revision = 4
+    player._load_clockwheel = lambda _name: (edited, [object()] * 5)
+    player._playing_render = replace(
+        player._render_track(a, b, 0),
+        next_clock_name="Morning",
+        next_clock_revision=4,
+        next_clock_cursor=3,
+    )
+
+    player.apply_clockwheel_update("Morning", "continue")
+    assert player._clock["cursor"] == 3
+    assert player._clock_revision == 5
+
+    player._clock_revision = 5
+    player._clock_definition = old
+    player._clock = {**player._clock, "cursor": 4}
+    player._playing_render = replace(
+        player._playing_render, next_clock_revision=4, next_clock_cursor=2
+    )
+    player.apply_clockwheel_update("Morning", "continue")
+    assert player._clock["cursor"] == 4
+
+    player._clock_definition = old
+    player._clock = {**player._clock, "cursor": 5}
+    player.apply_clockwheel_update("Morning", "continue")
+    assert player._clock["cursor"] == 0
+
+
+def test_clock_revision_snapshot_survives_edit_during_audio_render(station, monkeypatch):
+    player, (a, b, *_), _points = station
+    player._cfg.playback.pick_mode = "clock"
+    player._clock = {"name": "Morning", "cursor": 0, "resync_minutes": []}
+    player._clock_definition = {"name": "Morning", "steps": [{"old": True}], "resync_minutes": []}
+    player._clock_revision = 6
+    player._set_render_cursor(a, 0, "clock", clock_cursor=0, clock_name="Morning", clock_revision=6)
+    entered_render, finish_render = threading.Event(), threading.Event()
+
+    def choose(*_args, **_kwargs):
+        player._chosen_clock_revision = player._clock_revision
+        player._chosen_clock_step = None
+        return b, "clock", (), 1, ""
+
+    def render(current, upcoming, *_args, **_kwargs):
+        entered_render.set()
+        assert finish_render.wait(5)
+        return RenderedTrack(current, np.zeros((10, 2), np.float32), upcoming, 0, "none")
+
+    monkeypatch.setattr(player, "_choose_station_next", choose)
+    monkeypatch.setattr(player, "_render_track", render)
+    player._load_clockwheel = lambda _name: (
+        {"name": "Morning", "steps": [{"new": True}], "resync_minutes": []},
+        [object()],
+    )
+    result = []
+    with player._render_ahead._cond:
+        player._render_ahead._rendering = True
+    worker = threading.Thread(target=lambda: result.append(player._next_rendered()))
+    worker.start()
+    assert entered_render.wait(5)
+    edit = threading.Thread(target=lambda: player.apply_clockwheel_update("Morning", "immediate"))
+    edit.start()
+    edit.join(0.1)
+    assert edit.is_alive(), "clock edit should wait for the in-flight render"
+    finish_render.set()
+    worker.join(5)
+    edit.join(5)
+    with player._render_ahead._cond:
+        player._render_ahead._rendering = False
+
+    assert not worker.is_alive()
+    assert not edit.is_alive()
+    assert result[0].clock_revision == 6
+    assert result[0].next_clock_revision == 6
+    assert player._clock_revision == 7
+    assert player._pending_clock_cursor_revision == 7
+    assert player._queue_pick_is_stale(result[0])
+
+
+def test_deferred_clock_edit_survives_configure_reload_and_promotes(station):
+    player, _entries, _points = station
+    old_definition = {"name": "Morning", "steps": [{"old": True}], "resync_minutes": []}
+    new_definition = {"name": "Morning", "steps": [{"new": True}], "resync_minutes": []}
+    player._clock = {"name": "Morning", "cursor": 1, "resync_minutes": []}
+    player._clock_definition = old_definition
+    player._clock_slots = ["old"]
+    player._clock_steps = old_definition["steps"]
+    player._clock_revision = 8
+    player._load_clockwheel = lambda _name: (new_definition, ["new"])
+    saved_setting = {"name": "Morning", "cursor": 1}
+
+    def remember_setting(_key, value):
+        saved_setting.clear()
+        saved_setting.update(value)
+
+    player._ledger = SimpleNamespace(
+        get_setting=lambda *_args: dict(saved_setting), remember_setting=remember_setting
+    )
+    player.apply_clockwheel_update("Morning", "next_restart")
+    assert player._clock_definition == old_definition
+    assert player._clock_slots == ["old"]
+    assert saved_setting["pending_restart_reset"] is True
+    player.configure_clock()
+    assert player._clock_definition == old_definition
+    player._promote_pending_clock()
+    assert player._clock_definition == new_definition
+    assert player._clock_slots == ["new"]
+    assert player._clock["cursor"] == 0
+    assert player._pending_clock_update is None
+    assert "pending_restart_reset" not in saved_setting
+
+
+def test_deferred_clock_restart_marker_resets_to_step_one_after_server_restart(station):
+    player, _entries, _points = station
+    old = {"name": "Morning", "steps": [{"old": True}], "resync_minutes": []}
+    latest = {"name": "Morning", "steps": [{"new": True}], "resync_minutes": []}
+    saved_setting = {"name": "Morning", "cursor": 3}
+    player._clock = {"name": "Morning", "cursor": 3, "resync_minutes": []}
+    player._clock_definition = old
+    player._clock_revision = 2
+    player._ledger = SimpleNamespace(
+        get_setting=lambda *_args: dict(saved_setting),
+        remember_setting=lambda _key, value: (saved_setting.clear(), saved_setting.update(value)),
+    )
+    player._load_clockwheel = lambda _name: (latest, ["new"])
+    player.apply_clockwheel_update("Morning", "next_restart")
+    assert saved_setting["pending_restart_reset"] is True
+
+    # A new Player has no in-memory pending definition; the persisted intent
+    # still makes startup load the current saved wheel at step one.
+    player._pending_clock_update = None
+    player._clock = None
+    player.configure_clock()
+    assert player._clock_definition == latest
+    assert player._clock["cursor"] == 0
+    assert "pending_restart_reset" not in saved_setting
+
+
+def test_deferred_edit_keeps_last_old_step_then_starts_new_step_one(station, monkeypatch):
+    from autodj.clockwheel import ClockPick
+
+    player, (a, b, *_), _points = station
+    player._cfg.playback.pick_mode = "clock"
+    old_definition = {
+        "name": "Morning",
+        "steps": [{"type": "track"} for _ in range(4)],
+        "resync_minutes": [],
+    }
+    new_definition = {
+        "name": "Morning",
+        "steps": [{"type": "track"} for _ in range(2)],
+        "resync_minutes": [],
+    }
+    player._clock = {"name": "Morning", "cursor": 3, "resync_minutes": []}
+    player._clock_definition = old_definition
+    player._clock_steps = old_definition["steps"]
+    player._clock_slots = [object()] * 4
+    player._clock_revision = 3
+    player._pending_clock_name = "Morning"
+    player._pending_clock_cursor = 3
+    player._pending_clock_cursor_revision = 3
+    player._pending_clock_update = (new_definition, [object()] * 2, 4)
+    picks = iter((ClockPick(b, None, 0, [], step_index=3), ClockPick(a, None, 1, [], step_index=0)))
+    monkeypatch.setattr(player, "_clock_pick", lambda *_args: next(picks))
+    context = player._pick_context(pending=a, peek_queue=True)
+
+    assert player._choose_station_next(a, context)[0] is b
+    assert player._clock_definition == old_definition
+    player._pending_clock_cursor = 0
+    player._clock = {**player._clock, "cursor": 0}
+    assert player._choose_station_next(b, context)[0] is a
+    assert player._clock_definition == new_definition
+    assert player._clock_revision == 4
+
+
 @pytest.mark.parametrize("rendered_in, kept", [("Night", True), ("Morning", False)])
 def test_only_places_in_the_loaded_clockwheel_move_it(station, rendered_in, kept):
     # #133: a track rendered before Night was selected carries Morning's
@@ -318,7 +567,12 @@ def test_only_places_in_the_loaded_clockwheel_move_it(station, rendered_in, kept
     player, (a, b, *_), _points = station
     player._clock = {"name": "Night", "cursor": 1}
     current = replace(
-        player._render_track(a, b, 0), clock_cursor=3, next_clock_cursor=4, clock_name=rendered_in
+        player._render_track(a, b, 0),
+        clock_cursor=3,
+        next_clock_cursor=4,
+        clock_name=rendered_in,
+        clock_revision=0,
+        next_clock_revision=0,
     )
     player._start_playing(current)
     assert player._clock["cursor"] == (3 if kept else 1)
@@ -327,6 +581,105 @@ def test_only_places_in_the_loaded_clockwheel_move_it(station, rendered_in, kept
     assert player._clock == {"name": "Night", "cursor": 4 if kept else 1}
     saved = player._library.ledger.remember_setting
     assert saved.call_count == (2 if kept else 0)
+
+
+def test_clock_render_without_revision_cannot_move_saved_cursor(station):
+    player, (a, b, *_), _points = station
+    player._clock = {"name": "Morning", "cursor": 1}
+    player._clock_revision = 4
+    current = replace(
+        player._render_track(a, b, 0),
+        clock_cursor=3,
+        clock_name="Morning",
+        clock_revision=None,
+    )
+    player._start_playing(current)
+    assert player._clock["cursor"] == 1
+
+
+def test_pending_restart_marker_survives_audio_cursor_updates(station):
+    player, (a, b, *_), _points = station
+    player._clock = {
+        "name": "Morning",
+        "cursor": 0,
+        "resync_minutes": [],
+        "pending_restart_reset": True,
+    }
+    player._clock_revision = 2
+    current = replace(
+        player._render_track(a, b, 0),
+        clock_cursor=1,
+        clock_name="Morning",
+        clock_revision=2,
+    )
+    player._start_playing(current)
+    assert player._clock["cursor"] == 1
+    assert player._clock["pending_restart_reset"] is True
+    assert (
+        player._library.ledger.remember_setting.call_args.args[1]["pending_restart_reset"] is True
+    )
+
+
+def test_slow_clock_pick_does_not_block_bus_callback_and_serializes_edit(station, monkeypatch):
+    player, (a, b, *_), _points = station
+    old = {"name": "Morning", "steps": [{"old": True}], "resync_minutes": []}
+    new = {"name": "Morning", "steps": [{"new": True}], "resync_minutes": []}
+    player._cfg.playback.pick_mode = "clock"
+    player._clock = {"name": "Morning", "cursor": 0, "resync_minutes": []}
+    player._clock_definition = old
+    player._clock_steps = old["steps"]
+    player._clock_slots = [object()]
+    player._clock_revision = 5
+    player._pending_clock_name = "Morning"
+    player._pending_clock_cursor_revision = 5
+    player._set_render_cursor(a, 0, "clock", clock_cursor=0, clock_name="Morning", clock_revision=5)
+    entered_pick, release_pick, edit_loaded = (
+        threading.Event(),
+        threading.Event(),
+        threading.Event(),
+    )
+
+    def slow_pick(*_args, **_kwargs):
+        entered_pick.set()
+        assert release_pick.wait(5)
+        player._chosen_clock_revision = 5
+        player._chosen_clock_step = None
+        return b, "clock", (), 1, ""
+
+    monkeypatch.setattr(player, "_choose_station_next", slow_pick)
+
+    def load_new(_name):
+        edit_loaded.set()
+        return new, [object()]
+
+    monkeypatch.setattr(player, "_load_clockwheel", load_new)
+    worker = threading.Thread(target=player._next_rendered)
+    edit = threading.Thread(target=lambda: player.apply_clockwheel_update("Morning", "immediate"))
+    worker.start()
+    try:
+        assert entered_pick.wait(2)
+        edit.start()
+        assert edit_loaded.wait(2)
+        assert edit.is_alive(), "clock edit did not wait for the in-flight selection"
+        started = replace(
+            player._render_track(a, b, 0),
+            clock_cursor=1,
+            clock_name="Morning",
+            clock_revision=5,
+        )
+        callback = threading.Thread(target=player._on_track_start, args=(started,))
+        callback.start()
+        callback.join(1)
+        assert not callback.is_alive(), "audio callback waited for the slow selection"
+        assert player._clock["cursor"] == 1
+    finally:
+        release_pick.set()
+        worker.join(5)
+        if edit.ident is not None:
+            edit.join(5)
+    assert not worker.is_alive()
+    assert not edit.is_alive()
+    assert player._clock_revision == 6
 
 
 @pytest.mark.parametrize("pending_in, cursor", [("Night", 2), ("Morning", None)])
@@ -338,13 +691,15 @@ def test_render_cursor_from_another_clockwheel_is_not_carried(
     player, (a, b, *_), _points = station
     player._clock = {"name": "Night", "cursor": 0}
     player._state.queue[:] = [b]
-    player._set_render_cursor(a, 0, "seed", clock_cursor=2, clock_name=pending_in)
+    player._set_render_cursor(a, 0, "seed", clock_cursor=2, clock_name=pending_in, clock_revision=0)
     result = player._next_rendered()
     assert (result.clock_cursor, result.clock_name) == (cursor, "Night")
     # Nor does the next clock pick start from the other clockwheel's place.
     player._cfg.playback.pick_mode = "clock"
     player._state.queue.clear()
-    player._set_render_cursor(a, 0, "clock", clock_cursor=2, clock_name=pending_in)
+    player._set_render_cursor(
+        a, 0, "clock", clock_cursor=2, clock_name=pending_in, clock_revision=0
+    )
     picked = MagicMock(return_value=ClockPick(b, None, 3, []))
     monkeypatch.setattr(player, "_clock_pick", picked)
     player._choose_station_next(a, player._pick_context(pending=a, peek_queue=True))
@@ -362,7 +717,13 @@ def test_resync_time_from_another_clockwheel_is_not_used(station, monkeypatch, p
     player._clock = {"name": "Night", "cursor": 0, "resync_minutes": [0]}
     player._clock_next_boundary = now + 3600
     player._set_render_cursor(
-        a, 0, "clock", clock_cursor=4, clock_boundary=now + 14, clock_name=pending_in
+        a,
+        0,
+        "clock",
+        clock_cursor=4,
+        clock_boundary=now + 14,
+        clock_name=pending_in,
+        clock_revision=0,
     )
     monkeypatch.setattr("autodj.player.time.time", lambda: now)
     picked = MagicMock(side_effect=[ClockPick(b, None, 5, []), ClockPick(b, None, 1, [])])
@@ -399,14 +760,20 @@ def test_seed_place_from_another_clockwheel_is_not_carried(
     assert (result.clock_cursor, result.clock_name) == (cursor, "Night")
 
 
-def test_clock_resync_drops_unheard_pick_without_recording_it(station, monkeypatch):
+@pytest.mark.parametrize("deferred", [False, True])
+def test_clock_resync_drops_unheard_pick_without_recording_it(station, monkeypatch, deferred):
     from autodj.clockwheel import ClockPick
 
     player, (a, b, *_), _points = station
     player._cfg.playback.pick_mode = "clock"
     player._clock = {"cursor": 4, "resync_minutes": [0]}
     now = 1_791_621_000.0
-    player._set_render_cursor(a, 0, "clock", clock_cursor=4, clock_boundary=now + 14)
+    player._set_render_cursor(
+        a, 0, "clock", clock_cursor=4, clock_boundary=now + 14, clock_revision=0
+    )
+    if deferred:
+        definition = {"steps": [{"type": "music"}], "resync_minutes": [30]}
+        player._pending_clock_update = (definition, [object()], 1)
     monkeypatch.setattr("autodj.player.time.time", lambda: now)
     picked = MagicMock(side_effect=[ClockPick(b, None, 5, []), ClockPick(b, None, 1, [])])
     monkeypatch.setattr(player, "_clock_pick", picked)
@@ -414,9 +781,17 @@ def test_clock_resync_drops_unheard_pick_without_recording_it(station, monkeypat
     entry, mode, liners, cursor, _key = player._choose_station_next(a, context)
     assert (entry, mode, liners, cursor) == (b, "clock", (), 1)
     assert [call.args[1] for call in picked.call_args_list] == [4, 0]
-    assert player._clock["cursor"] == 4
+    assert player._clock["cursor"] == (0 if deferred else 4)
+    if deferred:
+        assert player._pending_clock_update is None
+        assert player._clock_revision == player._chosen_clock_revision == 1
+        assert player._clock["resync_minutes"] == [30]
+        assert player._pending_clock_boundary > now + 14
     player._library.ledger.remember_play.assert_not_called()
-    player._library.ledger.remember_setting.assert_not_called()
+    if deferred:
+        player._library.ledger.remember_setting.assert_called_once_with("clock", player._clock)
+    else:
+        player._library.ledger.remember_setting.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -435,8 +810,16 @@ def test_clock_omits_only_liner_when_pair_will_not_fit(
 
     player, (a, b, _, jingle), _points = station
     player._cfg.playback.pick_mode = "clock"
-    player._clock = {"cursor": 4, "resync_minutes": [0]}
-    player._set_render_cursor(a, 0, "clock", clock_cursor=4, clock_boundary=boundary)
+    player._clock = {"name": "Morning", "cursor": 4, "resync_minutes": [0]}
+    player._set_render_cursor(
+        a,
+        0,
+        "clock",
+        clock_cursor=4,
+        clock_boundary=boundary,
+        clock_name="Morning",
+        clock_revision=player._clock_revision,
+    )
     monkeypatch.setattr("autodj.player.time.time", lambda: 0)
     pick = MagicMock(return_value=ClockPick(b, jingle, 2, [], liner_requires_following=required))
     monkeypatch.setattr(player, "_clock_pick", pick)
@@ -486,7 +869,10 @@ def test_clock_checks_the_actual_song_after_dmca_replacement(station, monkeypatc
 
     player, (a, b, voice, jingle), _points = station
     player._cfg.playback.pick_mode = "clock"
-    player._set_render_cursor(a, 0, "clock", clock_boundary=30)
+    player._clock = {"name": "Morning", "cursor": 0, "resync_minutes": [0]}
+    player._set_render_cursor(
+        a, 0, "clock", clock_boundary=30, clock_name="Morning", clock_revision=0
+    )
     monkeypatch.setattr("autodj.player.time.time", lambda: 0)
     monkeypatch.setattr(
         player,
@@ -504,9 +890,17 @@ def test_clock_new_cycle_liner_uses_next_reset(station, monkeypatch):
 
     player, (a, b, _, jingle), _points = station
     player._cfg.playback.pick_mode = "clock"
-    player._clock = {"cursor": 4, "resync_minutes": [0]}
+    player._clock = {"name": "Morning", "cursor": 4, "resync_minutes": [0]}
     now = 1_791_621_000.0
-    player._set_render_cursor(a, 0, "clock", clock_cursor=4, clock_boundary=now + 14)
+    player._set_render_cursor(
+        a,
+        0,
+        "clock",
+        clock_cursor=4,
+        clock_boundary=now + 14,
+        clock_name="Morning",
+        clock_revision=player._clock_revision,
+    )
     monkeypatch.setattr("autodj.player.time.time", lambda: now)
     monkeypatch.setattr(
         player,
@@ -950,6 +1344,34 @@ def test_clock_conditions_are_worked_out_once_per_library_generation(station, mo
     music = (a, b)  # The library published new entries.
     assert player._clock_pick(player._pick_context(), 0).entry is b
     assert len(built) == 2
+
+
+def test_nonclock_station_pick_does_not_hold_up_track_start(station, monkeypatch):
+    player, (a, b, *_), _points = station
+    player._cfg.playback.pick_mode = "least_recent"
+    player._set_render_cursor(a, 0, "seed")
+    started = player._render_track(b, a, 0)
+    searching, release = threading.Event(), threading.Event()
+
+    def choose(*_args, **_kwargs):
+        searching.set()
+        assert release.wait(5)
+        return b, "least_recent", (), None, ""
+
+    monkeypatch.setattr(player, "_choose_station_next", choose)
+    picker = threading.Thread(target=player._next_rendered)
+    starter = threading.Thread(target=player._start_playing, args=(started,))
+    picker.start()
+    try:
+        assert searching.wait(2)
+        starter.start()
+        starter.join(1)
+        assert not starter.is_alive(), "track start waited for a non-clock station pick"
+    finally:
+        release.set()
+        picker.join(5)
+        if starter.ident is not None:
+            starter.join(5)
 
 
 def test_clock_save_during_pick_keeps_original_slots_and_step(station, monkeypatch):

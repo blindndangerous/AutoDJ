@@ -2737,6 +2737,8 @@ describe("stream mode", () => {
       "modules/audio-engine.js: return deck.audio.play().catch((err) => {",
       "modules/audio-engine.js: await deck.audio.play();",
       "modules/library-folders.js: await preview.play();",
+      // Track info, Matched intros, Listen: a preview in the page, like Listen back.
+      "modules/matched-intros.js: await playback.play();",
       "modules/player-page.js: playing = audio.play();",
       "modules/stream-mode.js: await audio.play();",
       // Listen back: a preview in the page, which follows the page level

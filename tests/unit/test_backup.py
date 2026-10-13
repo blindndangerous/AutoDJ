@@ -422,3 +422,21 @@ def test_liner_play_dates_are_backed_up_and_restored(tmp_path: Path) -> None:
     state.unlink()
     restore_backup(cfg, archive, force=True)
     assert "promo.mp3" in json.loads(state.read_text(encoding="utf-8"))["liners"]
+
+
+def test_matched_intros_and_their_audio_are_backed_up_and_restored(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    state = cfg.index.active_dir / "matched_intros.json"
+    state.write_text('{"schema_version": 1, "intros": {}}', encoding="utf-8")
+    audio = cfg.index.active_dir / "intros" / ("intro-" + "a" * 32 + ".wav")
+    audio.parent.mkdir()
+    audio.write_bytes(b"RIFF")
+    archive = create_backup(cfg, tmp_path / "intros.zip", force=False)
+    with zipfile.ZipFile(archive) as backup:
+        assert backup.read("index/matched_intros.json") == state.read_bytes()
+        assert backup.read(f"intros/{audio.name}") == b"RIFF"
+    state.unlink()
+    audio.unlink()
+    restore_backup(cfg, archive, force=True)
+    assert json.loads(state.read_text(encoding="utf-8"))["schema_version"] == 1
+    assert audio.read_bytes() == b"RIFF"

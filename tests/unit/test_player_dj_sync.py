@@ -3,6 +3,7 @@ markers, and what the state says about how the playing track came in."""
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -202,6 +203,9 @@ def _bare_player() -> Player:
     player = Player.__new__(Player)
     player._state = PlayerState()
     player._set_generation = 0
+    player._clock_lock = threading.RLock()
+    player._clock_selection_lock = threading.RLock()
+    player._clock_revision = 0
     player._cfg = MagicMock()
     player._set_render_cursor(None, 0, "seed")
     return player
