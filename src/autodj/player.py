@@ -1421,7 +1421,9 @@ class Player:
         condition_errors = {}
         if self._clock_category_error:
             for index, slot in enumerate(slots):
-                if any(condition["field"] == "category" for condition in slot.conditions):
+                if slot.kind == "category" or any(
+                    condition["field"] == "category" for condition in slot.conditions
+                ):
                     condition_errors[index] = self._clock_category_error
         fields = {
             condition["name"]
