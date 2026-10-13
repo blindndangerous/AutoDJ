@@ -210,14 +210,14 @@ def test_long_repeat_rules_starve_a_small_category(tmp_path: Path) -> None:
     assert power["skipped"] > 0
     reasons = {item["reason"]: item["count"] for item in report["skipped_steps"]}
     assert (
-        reasons["Step 1: category Power: all matching entries blocked by rules"]
+        reasons["Step 2: category Power: all matching entries blocked by rules"]
         == power["skipped"]
     )
     # The clock moved on to Current and Gold instead, so no rule had to be relaxed.
     assert power["plays"] == 6
     assert report["relaxed"] == {}
     text = report_text(report)
-    assert "Step 1: category Power: all matching entries blocked by rules:" in text
+    assert "Step 2: category Power: all matching entries blocked by rules:" in text
 
 
 def test_a_clock_with_nothing_else_relaxes_the_track_window(tmp_path: Path) -> None:
