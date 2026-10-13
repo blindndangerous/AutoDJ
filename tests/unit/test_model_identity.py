@@ -1,6 +1,10 @@
 """Model weights are named by snapshot commit or file digest, never by branch name."""
 
+import os
+import time
 from pathlib import Path
+
+import pytest
 
 from autodj.config import IndexConfig, ModelConfig
 from autodj.model_identity import (
@@ -49,6 +53,32 @@ def test_a_manual_folder_is_named_by_a_digest_of_its_weights(tmp_path):
     lookalike = tmp_path / ("3" * 40)
     lookalike.mkdir()
     assert folder_commit(lookalike).startswith("sha256:")
+
+
+def test_weights_rewritten_within_one_clock_tick_get_a_new_digest(tmp_path):
+    """Same size and same modification time must not hide a change.
+
+    A coarse filesystem clock (FAT's two seconds, a slow Windows tick) gives
+    both writes the same time; pin it to show that case every run.
+    """
+    weights = tmp_path / "model.safetensors"
+    tick = time.time_ns()
+    weights.write_bytes(b"weights one")
+    os.utime(weights, ns=(tick, tick))
+    first = weights_digest(tmp_path)
+    weights.write_bytes(b"weights two")
+    os.utime(weights, ns=(tick, tick))
+    assert weights_digest(tmp_path) != first
+
+
+def test_settled_weights_are_read_once(tmp_path, monkeypatch):
+    weights = tmp_path / "model.safetensors"
+    weights.write_bytes(b"weights one")
+    settled = time.time_ns() - 60_000_000_000
+    os.utime(weights, ns=(settled, settled))
+    first = weights_digest(tmp_path)
+    monkeypatch.setattr(Path, "open", lambda *a, **k: pytest.fail("read again"))
+    assert weights_digest(tmp_path) == first
 
 
 def test_the_server_looks_the_commit_up_at_most_once_a_minute(tmp_path):

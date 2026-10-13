@@ -47,6 +47,10 @@ _PUBLIC_FILES = frozenset(
         "/api/nowplaying",
         # The public station status page; see status_page.py.
         "/status",
+        # The player page and embeddable player; each answers 404 unless
+        # [player_page] turns it on.  See player_page.py.
+        "/player",
+        "/embed",
         "/api/pair",
     }
 )
@@ -486,7 +490,8 @@ def _is_public_path(path: str, slugs: AbstractSet[str] = frozenset()) -> bool:
     ``/stations/<slug>.mp3`` and ``.m3u`` for a configured station) does
     not require pairing; control APIs require a session.  A configured
     station's public now-playing feed is public under its station path too,
-    and so is its status page, ``/stations/<slug>/status``.
+    and so are its pages, ``/stations/<slug>/status``, ``/player`` and
+    ``/embed``.
     """
     relative = station_relative(path, slugs)
     if relative is not None:
@@ -495,16 +500,20 @@ def _is_public_path(path: str, slugs: AbstractSet[str] = frozenset()) -> bool:
         path in _PUBLIC_FILES
         or path in {"/stream.mp3", "/stream.m3u"}
         or _is_station_stream(path, slugs)
-        or _is_station_status(path, slugs)
+        or _is_station_page(path, slugs)
         or _safe_public_prefix(path, "/modules/")
     )
 
 
-def _is_station_status(path: str, slugs: AbstractSet[str]) -> bool:
-    """Whether *path* is ``/stations/<slug>/status`` for a configured *slug*."""
+#: The public pages each station has under ``/stations/<slug>/``.
+_STATION_PAGES = frozenset({"status", "player", "embed"})
+
+
+def _is_station_page(path: str, slugs: AbstractSet[str]) -> bool:
+    """Whether *path* is a public page of a configured *slug*: ``/stations/<slug>/status``..."""
     name = path.removeprefix("/stations/")
     slug, slash, rest = name.partition("/")
-    return name != path and bool(slash) and rest == "status" and slug in slugs
+    return name != path and bool(slash) and rest in _STATION_PAGES and slug in slugs
 
 
 def _is_station_stream(path: str, slugs: AbstractSet[str]) -> bool:
@@ -598,6 +607,52 @@ def peer_address(scope: Scope) -> str:
     if isinstance(client, (tuple, list)) and client:
         return str(client[0])[:128]
     return "<unknown>"
+
+
+#: What every response says about frames unless it chose for itself.
+NO_FRAMES = "frame-ancestors 'none'"
+
+
+def frame_guard(send: Send) -> Send:
+    """Wrap *send* so no response can be shown in another page's frame (clickjacking).
+
+    A response without a Content-Security-Policy gets ``frame-ancestors
+    'none'``; one with a policy that does not mention frames has it added.
+    Either way, and for a policy that already says ``frame-ancestors
+    'none'``, ``X-Frame-Options: DENY`` is added for older browsers.  Only a
+    response whose own policy lets some site frame it (the embeddable
+    player) is left as it is.
+    """
+
+    async def guarded(message: Message) -> None:
+        if message["type"] == "http.response.start":
+            headers = list(message.get("headers", []))
+            index = next(
+                (
+                    i
+                    for i, (key, _value) in enumerate(headers)
+                    if key.lower() == b"content-security-policy"
+                ),
+                None,
+            )
+            framed = False
+            if index is None:
+                headers.append((b"content-security-policy", NO_FRAMES.encode("ascii")))
+            else:
+                policy = headers[index][1].decode("latin-1")
+                if "frame-ancestors" not in policy:
+                    headers[index] = (
+                        b"content-security-policy",
+                        f"{policy}; {NO_FRAMES}".encode("latin-1"),
+                    )
+                else:
+                    framed = NO_FRAMES not in policy
+            if not framed and not any(key.lower() == b"x-frame-options" for key, _ in headers):
+                headers.append((b"x-frame-options", b"DENY"))
+            message["headers"] = headers
+        await send(message)
+
+    return guarded
 
 
 class SecurityMiddleware:
@@ -703,6 +758,7 @@ class SecurityMiddleware:
             await self.app(scope, receive, send)
             return
 
+        send = frame_guard(send)
         request_id = new_request_id()
         state = scope.setdefault("state", {})
         state["request_id"] = request_id

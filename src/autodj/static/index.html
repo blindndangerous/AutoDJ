@@ -83,6 +83,7 @@
     <button type="button" role="tab" id="tab-now"      data-view="now"      aria-selected="true"  tabindex="0">Now Playing</button>
     <button type="button" role="tab" id="tab-queue"    data-view="queue"    aria-selected="false" tabindex="-1">Queue &amp; Search</button>
     <button type="button" role="tab" id="tab-carts"    data-view="carts"    aria-selected="false" tabindex="-1">Carts</button>
+    <button type="button" role="tab" id="tab-voice"    data-view="voice"    aria-selected="false" tabindex="-1">Voice tracks</button>
     <button type="button" role="tab" id="tab-track-info" data-view="track-info" aria-selected="false" tabindex="-1">Track info</button>
     <button type="button" role="tab" id="tab-history"  data-view="history"  aria-selected="false" tabindex="-1">History</button>
     <button type="button" role="tab" id="tab-settings" data-view="settings" aria-selected="false" tabindex="-1">Settings</button>
@@ -306,6 +307,60 @@
     <p id="handoff-status" aria-live="polite" aria-atomic="true" class="setting-desc"></p>
   </details>
 
+  <!-- Hour preview (#126, hour-preview.js): what plays next, when it is
+       expected to start, and how the hour lands against the top of the
+       hour, clockwheel restarts and scheduled events.  Closed until opened,
+       because each preview runs a dry run of the picker on the server.
+       While it is open and Now Playing is showing, the table refreshes
+       every 30 seconds and when the song changes: cells change in place,
+       focus stays where it is and nothing is said (a failure is said once).
+       Refresh preview and a new span under Show say the new summary once
+       through #hour-preview-status; Shift+H says it from anywhere.  Fixed or predicted is a word in every row, never
+       only a colour or a style. -->
+  <details class="card" id="hour-preview-card">
+    <summary><h2>Hour preview</h2></summary>
+    <p class="setting-desc" id="hour-preview-desc">Estimated start times for what plays next. Fixed items are already decided: the song on the air, what is ready to play, the songs picked to follow, booked breaks and the queue. Predicted items come from a dry run of the station's song picking and can change. Nothing on air changes.</p>
+    <div class="settings-row">
+      <label for="hour-preview-span">Show</label>
+      <select id="hour-preview-span" aria-describedby="hour-preview-desc">
+        <option value="30">Next 30 minutes</option>
+        <option value="60" selected>Next hour</option>
+        <option value="120">Next 2 hours</option>
+        <option value="180">Next 3 hours</option>
+      </select>
+    </div>
+    <button type="button" id="hour-preview-refresh">Refresh preview</button>
+    <!-- Not live: the summary changes with every refresh.  Refresh
+         preview and Shift+H say it on demand. -->
+    <p id="hour-preview-summary">Open this card to see the hour ahead.</p>
+    <p id="hour-preview-stopped" class="setting-desc" hidden></p>
+    <section id="hour-preview-backtiming" aria-labelledby="hour-preview-backtiming-heading" hidden>
+      <h3 id="hour-preview-backtiming-heading">Backtiming</h3>
+      <ul id="hour-preview-points" role="list"></ul>
+      <p id="hour-preview-points-note" class="setting-desc" hidden></p>
+    </section>
+    <table id="hour-preview-table" hidden>
+      <caption id="hour-preview-table-caption">What plays next</caption>
+      <colgroup>
+        <col class="hp-starts">
+        <col class="hp-what">
+        <col class="hp-length">
+        <col class="hp-status">
+      </colgroup>
+      <thead>
+        <tr>
+          <th scope="col">Starts</th>
+          <th scope="col">What</th>
+          <th scope="col">Length</th>
+          <th scope="col">Status</th>
+        </tr>
+      </thead>
+      <tbody id="hour-preview-tbody"></tbody>
+    </table>
+    <ul id="hour-preview-notes" class="setting-desc" role="list" hidden></ul>
+    <div id="hour-preview-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+  </details>
+
   <!-- Lyrics — collapsed disclosure, shown only when the current track
        has LRC / beets / embedded lyrics.  Read on demand: nothing speaks
        lyric lines automatically.  The active line carries
@@ -423,6 +478,82 @@
       <audio id="points-preview" controls preload="none" aria-label="Song point preview" data-preview-output></audio>
     </section>
     <p id="points-status" role="status" aria-live="polite" aria-atomic="true"></p>
+    <!-- Matched intros (modules/matched-intros.js, #127): voice clips that
+         play as this song starts.  The lists change in place; a refused
+         field is marked invalid with its error linked to it and focused;
+         any other result is said once in #intros-status. -->
+    <section id="intros-editor" aria-labelledby="intros-heading" hidden>
+      <h3 id="intros-heading">Matched intros</h3>
+      <p class="setting-desc" id="intros-help">Short voice clips that play as this song starts, such as “Here’s the new one from this artist”. When the song’s intro, from Start to Intro, is long enough, the voice talks it up and ends as the singing starts; otherwise it plays just before the song. An intro for this song comes first; an intro for the artist plays on any of the artist’s songs. A matched intro takes the place of the automatic liner at that song change.</p>
+      <p class="setting-desc" id="intros-inactive" hidden></p>
+      <!-- Intros the station's file holds that are not valid: skipped, kept
+           in the file, and said here in words (never live). -->
+      <p class="field-error" id="intros-problem" hidden></p>
+      <h4 id="intros-song-heading">For this song</h4>
+      <p id="intros-song-empty">No intros for this song.</p>
+      <!-- role="list": list-style none drops the list role in Safari. -->
+      <ul id="intros-song-list" class="intro-list" role="list" aria-labelledby="intros-song-heading"></ul>
+      <h4 id="intros-artist-heading">For the artist</h4>
+      <p id="intros-artist-empty">No intros for the artist.</p>
+      <ul id="intros-artist-list" class="intro-list" role="list" aria-labelledby="intros-artist-heading"></ul>
+      <!-- Played by Listen, never shown.  A preview, so it plays on the
+           Preview output device (modules/preview-output.js). -->
+      <audio id="intro-playback" preload="none" hidden data-preview-output></audio>
+      <form id="intros-form" novalidate>
+        <fieldset>
+          <legend>Add an intro</legend>
+          <div class="settings-row tag-field">
+            <label for="intro-file">Audio file</label>
+            <input type="file" id="intro-file" accept=".mp3,.wav,.ogg,.m4a,.flac,.aac,audio/*" aria-describedby="intro-file-help">
+            <span class="setting-desc" id="intro-file-help">MP3, WAV, Ogg, M4A, FLAC or AAC, up to one minute long. AutoDJ trims the silence before and after the voice.</span>
+            <p id="intro-file-error" class="field-error" hidden></p>
+          </div>
+          <fieldset id="intro-applies">
+            <legend>Plays on</legend>
+            <div class="settings-check">
+              <input type="radio" name="intro-applies" id="intro-applies-song" value="song" checked>
+              <label for="intro-applies-song">This song</label>
+            </div>
+            <div class="settings-check">
+              <input type="radio" name="intro-applies" id="intro-applies-artist" value="artist">
+              <label for="intro-applies-artist" id="intro-applies-artist-label">Any song by the artist</label>
+            </div>
+            <p id="intro-applies-error" class="field-error" hidden></p>
+          </fieldset>
+          <div class="settings-row tag-field">
+            <label for="intro-label">Label</label>
+            <input type="text" id="intro-label" maxlength="120" autocomplete="off" aria-describedby="intro-label-help">
+            <span class="setting-desc" id="intro-label-help">Optional. What the intro says, so you can tell intros apart.</span>
+            <p id="intro-label-error" class="field-error" hidden></p>
+          </div>
+          <div class="settings-row tag-field">
+            <label for="intro-chance">Chance (percent)</label>
+            <input type="text" id="intro-chance" value="100" inputmode="numeric" autocomplete="off" spellcheck="false" aria-describedby="intro-chance-help">
+            <span class="setting-desc" id="intro-chance-help">From 1 to 100. At 50 the intro plays about every other time its song comes up.</span>
+            <p id="intro-chance-error" class="field-error" hidden></p>
+          </div>
+          <div class="settings-row tag-field">
+            <label for="intro-cooldown">Wait between plays (minutes)</label>
+            <input type="text" id="intro-cooldown" value="60" inputmode="numeric" autocomplete="off" spellcheck="false" aria-describedby="intro-cooldown-help">
+            <span class="setting-desc" id="intro-cooldown-help">From 0 to 10080 (a week). After it plays, the intro waits this long before it plays again.</span>
+            <p id="intro-cooldown-error" class="field-error" hidden></p>
+          </div>
+          <div class="settings-row tag-field">
+            <label for="intro-not-before">Not before</label>
+            <input type="date" id="intro-not-before" aria-describedby="intro-dates-help">
+            <p id="intro-not-before-error" class="field-error" hidden></p>
+          </div>
+          <div class="settings-row tag-field">
+            <label for="intro-not-after">Do not play after</label>
+            <input type="date" id="intro-not-after" aria-describedby="intro-dates-help">
+            <p id="intro-not-after-error" class="field-error" hidden></p>
+          </div>
+          <span class="setting-desc" id="intro-dates-help">Optional. Both days are included, in the station’s time zone.</span>
+          <button type="submit" id="intro-upload">Upload intro</button>
+        </fieldset>
+      </form>
+      <p id="intros-status" role="status" aria-live="polite" aria-atomic="true"></p>
+    </section>
   </section>
   <!-- ============================================================
        View: History — session play log, most-recent first
@@ -954,6 +1085,11 @@
           <label for="repeat-track-minutes">Minutes</label>
           <input type="number" id="repeat-track-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
         </div>
+        <div class="settings-check">
+          <input type="checkbox" id="repeat-versions-as-one-song" aria-describedby="repeat-versions-desc">
+          <label for="repeat-versions-as-one-song">Count versions as one song</label>
+        </div>
+        <p class="setting-desc" id="repeat-versions-desc">Treats the versions of a song by the same lead artist, such as a radio edit and a remix, as one song. The song comes up as often as a song with one version, and the limits above hold back all of its versions.</p>
       </fieldset>
       <fieldset>
         <legend>Prevent the same title from repeating within</legend>
@@ -1170,7 +1306,7 @@
         <button type="button" id="preview-device-choose" aria-describedby="preview-device-choose-desc">Show preview device names</button>
       </div>
       <span class="setting-desc" id="preview-device-desc">
-        Where the cue point preview in Track info plays, for example headphones, so you can listen to a song before it airs. Previews never go through the station’s mix, so they are never on the stream or in a recording, and they reach the same speakers as the browser mix only when both use the same device. On a device of its own the preview has its own volume, in its player, and the page’s volume and Mute leave it alone. The choice is saved in this browser.
+        Where the cue point preview in Track info and Listen back in Voice tracks play, for example headphones, so you can listen to a song or your recording before it airs. Previews never go through the station’s mix, so they are never on the stream or in a recording, and they reach the same speakers as the browser mix only when both use the same device. On a device of its own the preview has its own volume, in its player, and the page’s volume and Mute leave it alone. The choice is saved in this browser.
         <span id="preview-device-choose-desc">Show preview device names asks for the microphone once, only to read the device names, and stops it straight away.</span>
       </span>
       <p class="setting-desc" id="preview-device-note" hidden></p>
@@ -2052,6 +2188,82 @@
     </div>
   </section>
   <!-- ============================================================
+       View: Voice tracks -- record a DJ break in the browser for the
+       open song change and book it (modules/voice-tracker.js, #128).
+       The module finds everything inside #voice-tracker.  The timer and
+       the time left are on the page, never live: the recording state is
+       said once through #vt-status.
+       ============================================================ -->
+  <section data-view="voice" id="panel-voice" role="tabpanel" hidden aria-labelledby="tab-voice">
+    <h2 id="voice-heading">Voice tracks</h2>
+    <div id="voice-tracker">
+      <p id="vt-help">
+        Record a DJ break for the open song change, listen back, then book it.
+        The song change after the next song is the one still open: the next one is already mixed.
+        Your voice plays over the next song's intro (a talk-up) or between the songs.
+        Alt+R starts and stops recording from anywhere in this tab without moving focus.
+      </p>
+
+      <section class="card" aria-labelledby="vt-slot-heading">
+        <h3 id="vt-slot-heading">Open song change</h3>
+        <p id="vt-unavailable">Loading the open song change.</p>
+        <dl id="vt-slot" class="vt-facts" hidden>
+          <dt>Ending song</dt><dd id="vt-ending"></dd>
+          <dt>Next song</dt><dd id="vt-upcoming"></dd>
+          <dt>Intro of the next song</dt><dd id="vt-intro"></dd>
+          <dt>Time left to book</dt><dd id="vt-closes"></dd>
+          <dt>Airs in about</dt><dd id="vt-airs"></dd>
+        </dl>
+      </section>
+
+      <section class="card" aria-labelledby="vt-record-heading">
+        <h3 id="vt-record-heading">Record</h3>
+        <!-- A refusal in words, linked to the control it is about. -->
+        <p id="vt-error" class="field-error" hidden></p>
+        <button type="button" id="vt-record" aria-pressed="false" aria-describedby="vt-record-desc">Record</button>
+        <span class="setting-desc" id="vt-record-desc">
+          Press to start recording from your microphone, and again (or Alt+R) to stop.
+          The browser asks for the microphone the first time. Recording stops at 3 minutes,
+          or when you leave this tab or the page is hidden.
+        </span>
+        <p id="vt-timer">Not recording.</p>
+        <!-- Played by Listen back, never shown: one named toggle instead of
+             the browser's own player controls.  A preview, so it plays on
+             the Preview output device (modules/preview-output.js). -->
+        <audio id="vt-playback" preload="auto" hidden data-preview-output></audio>
+        <div class="settings-row">
+          <label for="vt-placement">Placement</label>
+          <select id="vt-placement" aria-describedby="vt-placement-desc">
+            <option value="auto">Automatic</option>
+            <option value="talk_up">Talk up the next song's intro</option>
+            <option value="standalone">Standalone, between the songs</option>
+          </select>
+        </div>
+        <span class="setting-desc" id="vt-placement-desc"></span>
+        <div class="settings-check">
+          <input type="checkbox" id="vt-allow-outro" aria-describedby="vt-allow-outro-desc">
+          <label for="vt-allow-outro">Start over the ending song's outro</label>
+        </div>
+        <span class="setting-desc" id="vt-allow-outro-desc">
+          For a talk-up: your voice may begin while the ending song plays out, not only after it.
+        </span>
+        <div class="vt-actions">
+          <button type="button" id="vt-listen" aria-pressed="false">Listen back</button>
+          <button type="button" id="vt-book">Book voice track</button>
+          <button type="button" id="vt-discard">Discard recording</button>
+        </div>
+        <div id="vt-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+      </section>
+
+      <section class="card" aria-labelledby="vt-booked-heading">
+        <h3 id="vt-booked-heading">Booked voice tracks</h3>
+        <p id="vt-none">No voice tracks yet.</p>
+        <!-- role="list": list-style none drops the list role in Safari. -->
+        <ul id="vt-list" role="list"></ul>
+      </section>
+    </div>
+  </section>
+  <!-- ============================================================
        View: Library tools — music and voice liner folders, index /
        enrich / analyse / prune / stats jobs and the index stats, run from
        the web UI.  Browsing is in Queue & Search.
@@ -2355,7 +2567,14 @@
       </fieldset>
       <label for="clock-resync-minutes">Restart at these minutes past each hour</label>
       <input id="clock-resync-minutes" type="text" inputmode="numeric" value="0" autocomplete="off" aria-describedby="clock-resync-help">
-      <p id="clock-resync-help">Comma separated, 0 to 59, such as 0, 30. The clockwheel goes back to step 1 at the song change nearest each minute. Leave empty never to restart.</p>
+      <p id="clock-resync-help">Comma separated, 0 to 59, such as 0, 30. The clockwheel goes back to step 1 at the song change nearest each minute. Leave empty to restart only when the wheel wraps.</p>
+      <label for="clock-apply-timing">Apply saved changes</label>
+      <select id="clock-apply-timing" aria-describedby="clock-apply-help">
+        <option value="next_restart" selected>At the next clock restart</option>
+        <option value="immediate">Immediately, start at step 1</option>
+        <option value="continue">Immediately, continue at next step</option>
+      </select>
+      <p id="clock-apply-help">Continuing keeps the next step number. Moving or deleting steps can change what plays there. If that number no longer exists, the clock starts at step 1.</p>
       <button type="button" id="clock-save">Save clockwheel</button>
     </section>
   </section>
@@ -2438,6 +2657,7 @@
     <dt><kbd>Esc</kbd></dt><dd>Close this dialog</dd>
     <dt style="margin-top:0.5rem">Number keys 1 to 9 and 0, <kbd><span aria-hidden="true">-</span><span class="visually-hidden">minus</span></kbd>, <kbd><span aria-hidden="true">=</span><span class="visually-hidden">equals</span></kbd></dt><dd style="margin-top:0.5rem">Play carts 1 to 12 on the cart page shown. Only with focus on the cart wall, in the Carts tab.</dd>
     <dt><kbd>Page Up</kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd>Page Down</kbd></dt><dd>Previous <span aria-hidden="true">/</span><span class="visually-hidden">or</span> next cart page. Only with focus on the cart wall.</dd>
+    <dt><kbd>Alt+R</kbd></dt><dd>Start <span aria-hidden="true">/</span><span class="visually-hidden">or</span> stop recording a voice track. Only while the Voice tracks tab shows; focus stays where it is.</dd>
     <dt style="margin-top:0.5rem"><kbd>Shift+T</kbd></dt><dd style="margin-top:0.5rem">Speak current track (artist – title)</dd>
     <dt><kbd>Shift+N</kbd></dt><dd>Speak next track (artist, title, BPM)</dd>
     <dt><kbd>Shift+R</kbd></dt><dd>Speak time remaining</dd>
@@ -2448,6 +2668,7 @@
     <dt><kbd>Shift+V</kbd></dt><dd>Speak volume, and whether muted</dd>
     <dt><kbd>Shift+Q</kbd></dt><dd>Speak how many tracks are queued, and the first one</dd>
     <dt><kbd>Shift+J</kbd></dt><dd>Speak the library job status</dd>
+    <dt><kbd>Shift+H</kbd></dt><dd>Speak how the hour lands, from the hour preview</dd>
   </dl>
   <p style="margin-top:1rem;color:var(--text-dim);font-size:0.9em">
     NVDA users: shortcuts work in focus mode (NVDA+Space to toggle).  In browse mode, NVDA intercepts the letter keys; switch to focus mode first, or press NVDA+F2 and then the shortcut to pass that one key through.

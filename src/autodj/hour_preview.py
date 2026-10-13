@@ -1,0 +1,1372 @@
+"""The hour preview: what plays next, when it starts, and how the hour lands (#126).
+
+The preview lists what a station plays over the next hour (from 15 minutes
+to three hours), each item with its estimated start time, and says which
+of it is already fixed and which is a guess:
+
+* fixed: the song on the air; what the render-ahead worker has rendered,
+  with the liners and announcer breaks mixed into it; the song picked to
+  follow it; the open song change and the breaks booked on it (#88); and
+  the request queue, which plays before any pick;
+* predicted: what the station's own picker would choose after that, from a
+  dry run (:mod:`autodj.rotation_sim`) that starts where the fixed part
+  ends, with the station's clockwheel place, history and schedule.
+
+It then backtimes to each fixed point in the span: the top of each hour,
+each clockwheel restart and each scheduled event.  For each it says how
+early or late the nearest song change lands, and which song is the reason.
+
+Nothing on the air changes.  The live player is only read: its renders,
+its render cursor, the open song change and the queue, under the locks
+their writers hold or checked for a consistent read.  The dry run picks
+with a copy of the player that has its own clock, play history, clockwheel
+place and random generator, so a preview never draws the station's random
+choices or moves its clockwheel.  Previews run on one worker thread below
+normal priority, never on the event loop; each is kept for a few seconds
+while what is fixed stays the same, and stops at a song limit and a time
+limit.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import concurrent.futures
+import hashlib
+import logging
+import random
+import threading
+import time
+from collections import deque
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
+from typing import Any
+from zoneinfo import ZoneInfo
+
+from fastapi import HTTPException, Query, Request
+
+from autodj.rotation_sim import (
+    PlayerSnapshot,
+    SimulationSource,
+    _apply_event,
+    _copy_player,
+    _quiet_logs,
+    _Schedule,
+    average_length,
+    lower_thread_priority,
+    snapshot_player,
+    song_seconds,
+)
+from autodj.station_routes import StationDep, StationRouter
+from autodj.stereo import SAMPLE_RATE
+
+logger = logging.getLogger(__name__)
+
+#: The span a preview covers when none is asked for, in minutes.
+DEFAULT_MINUTES = 60
+#: The shortest and longest span a preview may cover, in minutes.
+MIN_MINUTES = 15
+MAX_MINUTES = 180
+#: The most songs the dry run picks for one preview.
+MAX_PREDICTED = 80
+#: The most queued items a preview lists.
+MAX_QUEUED = 100
+#: How long the dry run may work for one preview, in seconds; it then stops
+#: with what it has, and the preview says so.  A soft limit: it is checked
+#: before each pick, so one slow pick can run past it.
+BUDGET_SECONDS = 4.0
+#: How often the page refreshes an open preview, in seconds.
+PAGE_REFRESH_SECONDS = 30.0
+#: How long a preview is kept while what is fixed stays the same, in
+#: seconds: longer than the page's refresh, so an open card that finds
+#: nothing new fixed costs no dry run.
+KEEP_SECONDS = 45.0
+#: The most previews that may wait for the worker at once (each station and
+#: span waits once: later asks share its answer).
+MAX_WAITING = 8
+#: The most fixed points (hours, clockwheel restarts, events) one preview backtimes to.
+MAX_POINTS = 24
+#: A song change this close to a fixed point lands on time.
+ON_TIME_SECONDS = 1.0
+# Tries at a consistent read of the render worker's place.
+_READ_TRIES = 5
+# The pause after each predicted pick, so the audio and web threads get the
+# interpreter (as the rotation tester does).
+_PICK_PAUSE_S = 0.002
+
+#: What each status says, in words; "fixed" or "predicted" is always in the text.
+STATUS_WORDS = {
+    "on_air": "Fixed: on the air",
+    "ready": "Fixed: ready to play",
+    "picked": "Fixed: picked",
+    "booked": "Fixed: booked break",
+    "queued": "Fixed: in the queue",
+    "predicted": "Predicted",
+}
+
+BREAK_KINDS = {"dj": "DJ", "news": "News", "weather": "Weather", "music_news": "Music news"}
+
+NOTES = (
+    "Predicted songs come from a dry run of the station's own picker, starting where the fixed "
+    "part ends. They change as the real picks are made.",
+    "Times are estimates: each song runs from its saved start to its segue, or its length less "
+    "the crossfade, and liners and booked breaks add their full length.",
+    "Automatic liners, matched intros not yet mixed, time checks and carts are left out; a "
+    "scheduled change of song picking "
+    "applies from the first song after its time.",
+)
+
+NOTHING_PLAYING = "Nothing is playing, so there is nothing to time. Start playback first."
+
+
+class PreviewError(ValueError):
+    """A preview the server refuses: a span out of range."""
+
+
+# ---------------------------------------------------------------------------
+# What the station has decided
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Item:
+    """One thing the station plays.
+
+    Attributes:
+        kind: ``"song"``, ``"liner"``, ``"break"`` or ``"intro"`` (an intro
+            matched to the next song, #127).
+        starts: When it starts, in wall-clock seconds.
+        seconds: For a song, how long until the next song starts; for a
+            liner or break, its own length.
+        status: A key of :data:`STATUS_WORDS`.
+        entry: The song or liner; ``None`` for a break or an intro.
+        label: A break's kind and description, or an intro's label.
+    """
+
+    kind: str
+    starts: float
+    seconds: float
+    status: str
+    entry: Any = None
+    label: str = ""
+
+    @property
+    def fixed(self) -> bool:
+        return self.status != "predicted"
+
+
+@dataclass(frozen=True)
+class Decided:
+    """What the live station has already decided, read once.
+
+    Attributes:
+        now: When it was read.
+        items: The fixed items, in time order.
+        unplayed: Songs and liners among them that have not started, with
+            their start times: the dry run counts them as played.
+        last: The last fixed song: the dry run picks what follows it.
+        handoff: When the song after *last* starts.
+        clock_cursor: The clockwheel place the pick after *last* starts from.
+        clock_name: The clockwheel that place is in.
+        clock_boundary: The clockwheel's next restart for that pick.
+        reason: Why there is nothing to time, or ``None``.
+    """
+
+    now: float
+    items: tuple[Item, ...] = ()
+    unplayed: tuple[tuple[Any, float], ...] = ()
+    last: Any = None
+    handoff: float = 0.0
+    clock_cursor: int | None = None
+    clock_name: str | None = None
+    clock_boundary: float | None = None
+    reason: str | None = None
+
+    def signature(self) -> str:
+        """What is fixed, without the times: the same while nothing new is decided."""
+        parts = [
+            f"{item.kind}:{item.status}:{item.entry.path if item.entry is not None else item.label}"
+            for item in self.items
+        ]
+        parts.append(f"clock:{self.clock_name}:{self.clock_cursor}")
+        return "\n".join(parts)
+
+
+def _remaining(player: Any, entry: Any, offset_s: float, average: float) -> float:
+    """How long *entry* plays from *offset_s* seconds into its file until the next song."""
+    try:
+        seconds = song_seconds(player, entry, average)
+        if offset_s > 0:
+            begin = 0.0
+            if player._cfg.playback.transition_mode == "saved_points":
+                begin = player._clock_music_span(entry)[0]
+            seconds -= max(0.0, offset_s - begin)
+    except Exception:
+        # A cue that cannot be read must not stop the preview: the whole song counts.
+        seconds = float(entry.length or average) - max(0.0, offset_s)
+    return max(0.0, seconds)
+
+
+def _break_label(desk: Any, break_id: str) -> str:
+    item = desk.get(break_id) if desk is not None else None
+    if item is None:
+        return "Break"
+    kind = BREAK_KINDS.get(item.kind, item.kind.replace("_", " ").capitalize())
+    return f"{kind} break: {item.label}" if item.label else f"{kind} break"
+
+
+def _mixed_in(
+    track: Any,
+    base: float,
+    now: float,
+    desk: Any,
+    status: str,
+    queued: list[Any],
+) -> list[Item]:
+    """The liners, breaks and matched intros mixed into *track*, whose audio starts at *base*.
+
+    Ones already over are left out; one under way is on the air.  Liners
+    taken from the queue are added to *queued*.
+    """
+    found: list[Item] = []
+    for frame, entry, from_queue in getattr(track, "liner_events", ()):
+        at = base + frame / SAMPLE_RATE
+        length = float(entry.length or 0.0)
+        if at + length <= now:
+            continue
+        found.append(Item("liner", at, length, "on_air" if at <= now else status, entry))
+        if from_queue:
+            queued.append(entry)
+    for frame, break_id, end in getattr(track, "break_events", ()):
+        at = base + frame / SAMPLE_RATE
+        length = max(0.0, (end - frame) / SAMPLE_RATE)
+        if at + length <= now:
+            continue
+        label = _break_label(desk, break_id)
+        found.append(Item("break", at, length, "on_air" if at <= now else status, label=label))
+    for frame, _intro_id, end, intro_label in getattr(track, "intro_events", ()):
+        at = base + frame / SAMPLE_RATE
+        length = max(0.0, (end - frame) / SAMPLE_RATE)
+        if at + length <= now:
+            continue
+        label = f"Matched intro: {intro_label}" if intro_label else "Matched intro"
+        found.append(Item("intro", at, length, "on_air" if at <= now else status, label=label))
+    return found
+
+
+@dataclass
+class _Live:
+    """The render worker's place, read together."""
+
+    playing: Any
+    position: int
+    ready: Any
+    pending: Any
+    offset: int
+    cursor: int | None
+    clock_name: str | None
+    boundary: float | None
+    plan: Any
+    consistent: bool
+
+
+def _read_live(player: Any) -> _Live:
+    """Read the playing render, the ready one, the cursor and the open song change.
+
+    The render worker moves its cursor without a lock the page can take,
+    so the read is repeated until the cursor's serial and the playing
+    render are the same before and after it.  When the worker never holds
+    still, only the playing render is trusted.
+    """
+    live: _Live | None = None
+    for _attempt in range(_READ_TRIES):
+        serial = getattr(player, "_cursor_serial", 0)
+        playing, position, steady = _read_position(player)
+        render_ahead = getattr(player, "_render_ahead", None)
+        ready = render_ahead.ready() if render_ahead is not None else None
+        plan = None
+        slot_lock = getattr(player, "_slot_lock", None)
+        if slot_lock is not None:
+            with slot_lock:
+                held = getattr(player, "_slot_plan", None)
+                if held is not None and held.serial == serial and (held.pinned or not held.stale):
+                    plan = replace(held)
+        live = _Live(
+            playing=playing,
+            position=position,
+            ready=ready,
+            pending=getattr(player, "_pending_entry", None),
+            offset=int(getattr(player, "_pending_offset", 0) or 0),
+            cursor=getattr(player, "_pending_clock_cursor", None),
+            clock_name=getattr(player, "_pending_clock_name", None),
+            boundary=getattr(player, "_pending_clock_boundary", None)
+            or getattr(player, "_clock_next_boundary", None),
+            plan=plan,
+            consistent=True,
+        )
+        if (
+            steady
+            and getattr(player, "_cursor_serial", 0) == serial
+            and getattr(player, "_playing_render", None) is playing
+        ):
+            return live
+        time.sleep(0.005)
+    assert live is not None
+    live.consistent = False
+    return live
+
+
+def _read_position(player: Any) -> tuple[Any, int, bool]:
+    """The playing render and the position in it, read so that they belong together.
+
+    The mix bus writes the position with no lock the page can take, and
+    replaces the render first when a track starts.  So the render is read
+    before and after the position, and the position must fall inside that
+    render's audio.  Returns ``(render, position, steady)``; *steady* is
+    false when no read agreed.
+    """
+    playing = getattr(player, "_playing_render", None)
+    position = int(player._playback_pos[0])
+    for _attempt in range(_READ_TRIES):
+        playing = getattr(player, "_playing_render", None)
+        position = int(player._playback_pos[0])
+        again = getattr(player, "_playing_render", None)
+        if playing is again and (
+            playing is None
+            or playing.start_offset <= position <= playing.start_offset + len(playing.audio)
+        ):
+            return playing, position, True
+        time.sleep(0.002)
+    return playing, position, False
+
+
+def _last_record(player: Any) -> Any:
+    with player._pick_lock:
+        history = player._state.play_history
+        return history[-1] if history else None
+
+
+def _waiting(player: Any) -> list[Any]:
+    state = player._state
+    with state.queue_lock:
+        return ([state.queued_next] if state.queued_next else []) + list(state.queue)
+
+
+def _liner_paths(player: Any) -> set[str]:
+    library = getattr(player, "_library", None)
+    if library is None:
+        return set()
+    return {entry.path for entry in library.entries_snapshot("liner")}
+
+
+def read_station(player: Any, desk: Any = None, *, now: float | None = None) -> Decided:
+    """What *player* has decided, read without changing anything.
+
+    *desk* is the station's :class:`~autodj.breaks.BreakDesk`, for the
+    breaks' names and the ones booked on the open song change.
+    """
+    now = time.time() if now is None else now
+    state = player._state
+    current = state.current_track
+    if current is None:
+        return Decided(now, reason=NOTHING_PLAYING)
+    entries = player.playable_entries()
+    average = average_length(entries)
+    if getattr(player, "bus", None) is not None:
+        found = _read_bus(player, desk, now, average)
+    else:
+        found = _read_browser(player, now, average)
+    if found is None:
+        return Decided(now, reason=NOTHING_PLAYING)
+    items, unplayed, queued, last, handoff, clock = found
+    waiting = _waiting(player)
+    for used in queued:
+        for number, entry in enumerate(waiting):
+            if entry.path == used.path:
+                del waiting[number]
+                break
+    liners = _liner_paths(player)
+    moment = handoff
+    for entry in waiting[:MAX_QUEUED]:
+        if entry.path in liners:
+            length = float(entry.length or 0.0)
+            items.append(Item("liner", moment, length, "queued", entry))
+            unplayed.append((entry, moment))
+            moment += length
+            continue
+        seconds = _remaining(player, entry, 0.0, average)
+        items.append(Item("song", moment, seconds, "queued", entry))
+        unplayed.append((entry, moment))
+        last = entry
+        moment += seconds
+    cursor, clock_name, boundary = clock
+    return Decided(
+        now=now,
+        items=tuple(sorted(items, key=lambda item: item.starts)),
+        unplayed=tuple(unplayed),
+        last=last,
+        handoff=moment,
+        clock_cursor=cursor,
+        clock_name=clock_name,
+        clock_boundary=boundary,
+    )
+
+
+_Found = tuple[
+    list[Item],
+    list[tuple[Any, float]],
+    list[Any],
+    Any,
+    float,
+    tuple[int | None, str | None, float | None],
+]
+
+
+def _read_bus(player: Any, desk: Any, now: float, average: float) -> _Found | None:
+    """The fixed part when the server mixes the audio (server audio or a stream)."""
+    live = _read_live(player)
+    playing = live.playing
+    if playing is None or playing.entry is not player._state.current_track:
+        return None
+    items: list[Item] = []
+    unplayed: list[tuple[Any, float]] = []
+    queued: list[Any] = []
+    frame = min(max(0, live.position - playing.start_offset), len(playing.audio))
+    base = now - frame / SAMPLE_RATE
+    total = len(playing.audio) / SAMPLE_RATE
+    record = _last_record(player)
+    started = record.started if record is not None and record.path == playing.entry.path else base
+    following = playing.next_entry
+    if following is not None:
+        enters = base + (len(playing.audio) - playing.overlap_frames) / SAMPLE_RATE
+    else:
+        enters = base + total
+    items.append(Item("song", started, max(0.0, enters - started), "on_air", playing.entry))
+    items.extend(_mixed_in(playing, base, now, desk, "ready", queued))
+    clock = (live.cursor, live.clock_name, live.boundary)
+    if following is None:
+        return items, unplayed, queued, playing.entry, base + total, clock
+    if playing.next_from_queue:
+        queued.append(following)
+    ready_at = base + total
+    ready = live.ready
+    if not (
+        live.consistent
+        and ready is not None
+        and ready.entry is following
+        and ready.next_entry is not None
+        and live.pending is ready.next_entry
+    ):
+        # The next song's head is in the playing render; its own render is
+        # under way (or the worker moved while it was read).
+        if live.consistent and live.pending is following:
+            offset_s = live.offset / SAMPLE_RATE
+        else:
+            offset_s = playing.next_start_offset / SAMPLE_RATE
+            clock = (None, None, live.boundary)
+        handoff = ready_at + _remaining(player, following, offset_s, average)
+        items.append(Item("song", enters, max(0.0, handoff - enters), "picked", following))
+        unplayed.append((following, enters))
+        return items, unplayed, queued, following, handoff, clock
+    # The next song is rendered, with the head of the one after it.
+    after = ready.next_entry
+    after_enters = ready_at + (len(ready.audio) - ready.overlap_frames) / SAMPLE_RATE
+    items.append(Item("song", enters, max(0.0, after_enters - enters), "ready", following))
+    unplayed.append((following, enters))
+    items.extend(_mixed_in(ready, ready_at, now, desk, "ready", queued))
+    after_starts = ready_at + len(ready.audio) / SAMPLE_RATE
+    handoff = after_starts + _remaining(player, after, live.offset / SAMPLE_RATE, average)
+    items.append(Item("song", after_enters, max(0.0, handoff - after_enters), "picked", after))
+    unplayed.append((after, after_enters))
+    if ready.next_from_queue:
+        queued.append(after)
+    plan = live.plan
+    if plan is None or plan.ending is not after:
+        return items, unplayed, queued, after, handoff, clock
+    # The open song change (#88): the song after that, its liners and booked breaks.
+    moment = handoff
+    for liner, from_queue in plan.liners:
+        length = float(liner.length or 0.0)
+        items.append(Item("liner", moment, length, "picked", liner))
+        unplayed.append((liner, moment))
+        if from_queue:
+            queued.append(liner)
+        moment += length
+    if desk is not None:
+        from autodj.breaks import QUEUED
+
+        for booked in desk.listing():
+            if booked.slot_id == plan.slot_id and booked.state == QUEUED:
+                speech = max(0.0, float(booked.cues.speech))
+                label = _break_label(desk, booked.break_id)
+                items.append(Item("break", moment, speech, "booked", label=label))
+                moment += speech
+    upcoming = plan.upcoming
+    seconds = _remaining(player, upcoming, 0.0, average)
+    items.append(Item("song", moment, seconds, "picked", upcoming))
+    unplayed.append((upcoming, moment))
+    if plan.mode == "queue":
+        queued.append(upcoming)
+    clock = (plan.next_cursor, plan.clock_name, plan.boundary_after or live.boundary)
+    return items, unplayed, queued, upcoming, moment + seconds, clock
+
+
+def _read_browser(player: Any, now: float, average: float) -> _Found | None:
+    """The fixed part when the page plays the audio: the song playing and the next one."""
+    state = player._state
+    current = state.current_track
+    record = _last_record(player)
+    noted = getattr(player, "_browser_started", None)
+    if noted is not None and noted[0] is current:
+        started = float(noted[1])
+    elif record is not None and record.path == current.path:
+        started = record.started
+    else:
+        rate = max(1, int(getattr(player, "_current_sr", SAMPLE_RATE) or SAMPLE_RATE))
+        started = now - player._playback_pos[0] / rate
+    ends = max(now, started + _remaining(player, current, 0.0, average))
+    items = [Item("song", started, ends - started, "on_air", current)]
+    unplayed: list[tuple[Any, float]] = []
+    clock = (
+        getattr(player, "_pending_clock_cursor", None),
+        getattr(player, "_pending_clock_name", None),
+        getattr(player, "_pending_clock_boundary", None)
+        or getattr(player, "_clock_next_boundary", None),
+    )
+    following = state.next_track
+    if following is None:
+        return items, unplayed, [], current, ends, clock
+    seconds = _remaining(player, following, 0.0, average)
+    items.append(Item("song", ends, seconds, "picked", following))
+    unplayed.append((following, ends))
+    # After a queue edit the page's next song is the queue's head, which
+    # stays queued until it plays: it is listed once, as the next song.
+    waiting = _waiting(player)
+    queued = [following] if waiting and waiting[0].path == following.path else []
+    return items, unplayed, queued, following, ends + seconds, clock
+
+
+# ---------------------------------------------------------------------------
+# The prediction
+# ---------------------------------------------------------------------------
+
+
+def predict(
+    source: SimulationSource,
+    snapshot: PlayerSnapshot,
+    decided: Decided,
+    end: float,
+    *,
+    seed: int,
+    budget: float = BUDGET_SECONDS,
+    limit: int | None = None,
+) -> tuple[list[Item], float, str | None]:
+    """Pick on from where *decided* ends until *end*, with a copy of the station's player.
+
+    Returns the predicted items, when the song after the last of them
+    starts, and why the run stopped short of *end* (``None`` when it did
+    not): it picks at most *limit* songs (:data:`MAX_PREDICTED`) and stops
+    picking once it has worked *budget* seconds, a soft limit checked
+    before each pick.  The copy has its own clock, history,
+    clockwheel place and random generator (seeded with *seed*): nothing on
+    the air changes.
+    """
+    with _quiet_logs():
+        songs = MAX_PREDICTED if limit is None else limit
+        return _predict(source, snapshot, decided, end, seed, budget, songs)
+
+
+def _predict(
+    source: SimulationSource,
+    snapshot: PlayerSnapshot,
+    decided: Decided,
+    end: float,
+    seed: int,
+    budget: float,
+    limit: int,
+) -> tuple[list[Item], float, str | None]:
+    began = time.perf_counter()
+    current = decided.last
+    handoff = decided.handoff
+    if current is None or handoff >= end:
+        return [], handoff, None
+    player = _copy_player(source, snapshot, decided.now, random.Random(seed), _ignore)
+    entries = tuple(entry for entry in player.playable_entries() if not entry.is_silent)
+    if not entries:
+        return [], handoff, "the library has no songs to pick"
+    average = average_length(entries)
+    liners = {entry.path for entry in source.library.entries_snapshot("liner")}
+    state = player._state
+    ledger = player._ledger
+
+    def record(entry: Any, at: float) -> None:
+        player._sim_now = at
+        ledger.remember_play(entry.path, at)
+        if entry.path in liners:
+            return
+        state.record_played(entry)
+        state.track_number += 1
+        player._previous_track = state.current_track
+        state.current_track = entry
+
+    state.current_track = _on_air_song(decided)
+    for entry, at in decided.unplayed:
+        record(entry, at)
+    if decided.clock_name is not None and decided.clock_name == (player._clock or {}).get("name"):
+        player._pending_clock_cursor = decided.clock_cursor
+        player._pending_clock_name = decided.clock_name
+        player._pending_clock_boundary = decided.clock_boundary
+    from autodj._bridge import PlayerBridge
+
+    bridge = PlayerBridge(player=player, sim=player._sim, library=source.library, ledger=ledger)
+    schedule = _Schedule(source.events, source.timezone, decided.now)
+    found: list[Item] = []
+    stopped: str | None = None
+    songs = 0
+    while handoff < end:
+        if songs >= limit:
+            stopped = "it reached its limit of songs"
+            break
+        if time.perf_counter() - began > budget:
+            stopped = "it reached its time limit"
+            break
+        # As the station does: the pick reads the clock at the playing song's
+        # start, and dayparting the hours at the next song's.
+        player._sim_now = handoff - song_seconds(player, current, average)
+        for _at, event in schedule.due(handoff):
+            _apply_event(player, bridge, event)
+        context = player._pick_context(at=handoff)
+        added: tuple[tuple[Any, bool], ...] = ()
+        try:
+            if player._cfg.playback.transition_mode == "saved_points":
+                entry, _mode, added, cursor, _key = player._choose_station_next(current, context)
+                player._pending_clock_cursor = cursor
+            else:
+                entry, _mode = player._choose_next(current, context)
+        except Exception as exc:
+            stopped = f"no song could be picked after {current.display_name}: {exc}"
+            break
+        moment = handoff
+        for liner, _queued in added:
+            length = float(liner.length or 0.0)
+            found.append(Item("liner", moment, length, "predicted", liner))
+            record(liner, moment)
+            moment += length
+        record(entry, moment)
+        seconds = song_seconds(player, entry, average)
+        found.append(Item("song", moment, seconds, "predicted", entry))
+        current, handoff = entry, moment + seconds
+        songs += 1
+        time.sleep(_PICK_PAUSE_S)
+    return found, handoff, stopped
+
+
+def _ignore(_event: str, _detail: Any) -> None:
+    """The dry run's pick observer: the preview counts nothing."""
+
+
+def _on_air_song(decided: Decided) -> Any:
+    """The song on the air when *decided* was read, or ``None``."""
+    return next(
+        (item.entry for item in decided.items if item.kind == "song" and item.status == "on_air"),
+        None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fixed points and backtiming
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Point:
+    """A time the hour is timed to.
+
+    Attributes:
+        kind: ``"hour"`` (the top of the hour), ``"restart"`` (the
+            clockwheel restarts, at the top of the hour or not) or
+            ``"event"`` (a scheduled event).
+        at: When, in wall-clock seconds.
+        label: Its name, such as "Top of the hour" or an event's name.
+        timing: An event's ``"hard"`` or ``"soft"``; empty otherwise.
+        detail: What an event does, in words.
+    """
+
+    kind: str
+    at: float
+    label: str
+    timing: str = ""
+    detail: str = ""
+
+
+def fixed_points(
+    now: float,
+    end: float,
+    zone: ZoneInfo,
+    *,
+    resync_minutes: Sequence[int] = (),
+    events: Sequence[Any] = (),
+    describe: Callable[[Any], str] | None = None,
+) -> list[Point]:
+    """The tops of the hour, clockwheel restarts and scheduled events after *now*, up to *end*.
+
+    *resync_minutes* are the active clockwheel's restart minutes (none when
+    the station is not playing a clockwheel); a restart at the top of the
+    hour replaces the plain top of the hour.  Clockwheel restarts are read
+    in the computer's time zone, as the player reads them.  Each kind is
+    bounded by :data:`MAX_POINTS`; the preview times the first
+    :data:`MAX_POINTS` of them all and says when there were more.
+    """
+    found: dict[float, Point] = {}
+    top = datetime.fromtimestamp(now, zone).replace(minute=0, second=0, microsecond=0)
+    moment = top.timestamp()
+    while len(found) < MAX_POINTS:
+        moment = (
+            datetime.fromtimestamp(moment + 3600, zone)
+            .replace(minute=0, second=0, microsecond=0)
+            .timestamp()
+        )
+        if moment > end:
+            break
+        if moment > now:
+            found[moment] = Point("hour", moment, "Top of the hour")
+    if resync_minutes:
+        from autodj.clockwheel import next_boundary
+
+        cursor = now
+        for _ in range(MAX_POINTS):
+            try:
+                boundary = next_boundary(
+                    datetime.fromtimestamp(cursor).astimezone(), list(resync_minutes)
+                )
+            except ValueError:
+                break
+            if boundary is None or boundary.timestamp() > end:
+                break
+            cursor = boundary.timestamp()
+            label = (
+                "Top of the hour, clockwheel restart" if cursor in found else "Clockwheel restart"
+            )
+            found[cursor] = Point("restart", cursor, label)
+    points = sorted(found.values(), key=lambda point: point.at)
+    from autodj.scheduler import next_run
+
+    after = datetime.fromtimestamp(now, UTC)
+    for event in events:
+        if not getattr(event, "enabled", False):
+            continue
+        cursor_at = after
+        for _ in range(MAX_POINTS):
+            try:
+                when = next_run(event, cursor_at, zone)
+            except (ValueError, OverflowError, OSError):
+                break
+            if when is None or when.timestamp() > end:
+                break
+            detail = _described(event, describe)
+            points.append(Point("event", when.timestamp(), event.name, event.timing, detail))
+            cursor_at = when
+    points.sort(key=lambda point: (point.at, point.kind != "event"))
+    return points
+
+
+def _described(event: Any, describe: Callable[[Any], str] | None) -> str:
+    """What *event* does, in words; its action's name when that cannot be said."""
+    if describe is not None:
+        try:
+            return describe(event)
+        except Exception:  # a removed action or profile must not stop the preview
+            logger.debug("Could not describe scheduled event %s", event.name, exc_info=True)
+    return str(event.action)
+
+
+#: A liner or break this close before a song opens that song's change.
+_JOINED_S = 0.5
+
+
+def song_changes(timeline: Sequence[Item]) -> list[tuple[float, Item]]:
+    """Each song in *timeline* with the time its song change starts.
+
+    Liners and breaks that run straight into a song open its change, so
+    the change starts with the first of them; otherwise it starts with the
+    song.  A liner mixed over a song (as rendered liners are) does not.
+    """
+    changes: list[tuple[float, Item]] = []
+    run_start: float | None = None
+    run_end = 0.0
+    floor = float("-inf")
+    for item in sorted(timeline, key=lambda found: found.starts):
+        if item.kind != "song":
+            if run_start is None or abs(item.starts - run_end) > _JOINED_S:
+                run_start = item.starts
+            run_end = item.starts + item.seconds
+            continue
+        joined = (
+            run_start is not None and run_start >= floor and abs(item.starts - run_end) <= _JOINED_S
+        )
+        changes.append((run_start if joined and run_start is not None else item.starts, item))
+        floor = item.starts
+        run_start = None
+    return changes
+
+
+@dataclass(frozen=True)
+class Landing:
+    """How the song changes fall around a fixed point.
+
+    Attributes:
+        point: The fixed point.
+        playing: The song playing at it (the reason it lands early or late).
+        began: When the song change into *playing* started.
+        starts: When the next song change after it starts, or ``None`` when
+            the preview does not reach it.
+        offset: Seconds early (negative) or late (positive) the hour lands
+            there; 0 on time.
+        cut: Seconds a hard event cuts *playing* short.
+    """
+
+    point: Point
+    playing: Item | None
+    began: float | None
+    starts: float | None
+    offset: float
+    cut: float = 0.0
+
+
+def land(point: Point, changes: Sequence[tuple[float, Item]], ends: float) -> Landing:
+    """Backtime to *point* over *changes* (from :func:`song_changes`); the last song ends at *ends*.
+
+    A soft event waits for the song playing to end, so it runs late by
+    what is left of it.  A hard event runs on time and cuts that song
+    short.  At the top of the hour, and at a clockwheel restart (which
+    the station makes at the nearer song change), the nearer song change
+    counts: early when the change into the song playing started closer
+    before it.
+    """
+    at = point.at
+    playing: Item | None = None
+    began: float | None = None
+    following: float | None = None
+    for change, song in changes:
+        if change <= at:
+            playing, began = song, change
+        elif following is None:
+            following = change
+    if following is None and ends > at:
+        following = ends
+    if playing is None or began is None or following is None:
+        return Landing(point, playing, began, following, 0.0)
+    late = following - at
+    early = at - began
+    if point.kind == "event" and point.timing == "hard":
+        cut = late if late >= ON_TIME_SECONDS else 0.0
+        return Landing(point, playing, began, following, 0.0, cut)
+    offset = late if point.kind == "event" or late <= early else -early
+    if abs(offset) < ON_TIME_SECONDS:
+        offset = 0.0
+    return Landing(point, playing, began, following, offset)
+
+
+# ---------------------------------------------------------------------------
+# Words
+# ---------------------------------------------------------------------------
+
+
+def _wall(stamp: float, zone: ZoneInfo) -> datetime:
+    return datetime.fromtimestamp(round(stamp), zone)
+
+
+def clock_text(stamp: float, zone: ZoneInfo) -> str:
+    """ "2:04:30 PM": the time for the screen."""
+    moment = _wall(stamp, zone)
+    hour = moment.hour % 12 or 12
+    half = "AM" if moment.hour < 12 else "PM"
+    return f"{hour}:{moment.minute:02d}:{moment.second:02d} {half}"
+
+
+def clock_words(stamp: float, zone: ZoneInfo) -> str:
+    """ "2:04 PM and 30 seconds", or "2 PM": the time as a screen reader says it well."""
+    moment = _wall(stamp, zone)
+    hour = moment.hour % 12 or 12
+    half = "AM" if moment.hour < 12 else "PM"
+    if moment.minute == 0 and moment.second == 0:
+        return f"{hour} {half}"
+    base = f"{hour}:{moment.minute:02d} {half}"
+    if moment.second == 0:
+        return base
+    return f"{base} and {moment.second} second{'' if moment.second == 1 else 's'}"
+
+
+def length_text(seconds: float) -> str:
+    """ "3:45": a length for the screen."""
+    whole = max(0, round(seconds))
+    return f"{whole // 60}:{whole % 60:02d}"
+
+
+def length_words(seconds: float) -> str:
+    """ "3 minutes 45 seconds": a length in words, as the page's other lengths say it."""
+    whole = max(0, round(seconds))
+    minutes, rest = divmod(whole, 60)
+    second_words = f"{rest} second{'' if rest == 1 else 's'}"
+    if minutes == 0:
+        return second_words
+    minute_words = f"{minutes} minute{'' if minutes == 1 else 's'}"
+    return minute_words if rest == 0 else f"{minute_words} {second_words}"
+
+
+def item_title(item: Item) -> str:
+    """ "Artist, Title" for a song (a comma, which a screen reader pauses on)."""
+    if item.kind == "break":
+        return item.label or "Break"
+    if item.kind == "intro":
+        return item.label or "Matched intro"
+    entry = item.entry
+    artist = (getattr(entry, "artist", "") or "").strip()
+    title = (getattr(entry, "title", "") or "").strip()
+    if not title:
+        title = getattr(entry, "display_name", "") or "Unknown"
+    name = f"{artist}, {title}" if artist else title
+    return f"Liner: {name}" if item.kind == "liner" else name
+
+
+def _who(item: Item) -> str:
+    return f"{item_title(item)} ({STATUS_WORDS[item.status].lower()})"
+
+
+def landing_words(landing: Landing, zone: ZoneInfo) -> tuple[str, str]:
+    """``(short, sentence)``: how *landing* lands, such as "35 seconds early", and why."""
+    point = landing.point
+    when = clock_words(point.at, zone)
+    if point.kind == "event":
+        name = f"{point.label} ({point.detail}), {point.timing}" if point.detail else point.label
+        heading = f"{name}, at {when}"
+    else:
+        heading = f"{point.label}, {when}"
+    playing = landing.playing
+    if playing is None or landing.began is None or landing.starts is None:
+        return "not known", f"{heading}: the preview does not reach the song change after it."
+    after = clock_words(landing.starts, zone)
+    if point.kind == "event" and point.timing == "hard":
+        if landing.cut:
+            cut = length_words(landing.cut)
+            return (
+                f"on time, cuts {cut}",
+                f"{heading}: on time. It cuts {_who(playing)} short by about {cut}.",
+            )
+        return "on time", f"{heading}: on time, between songs."
+    if landing.offset == 0:
+        nearest = min((landing.began, landing.starts), key=lambda moment: abs(moment - point.at))
+        return (
+            "on time",
+            f"{heading}: lands on time, at the song change at {clock_words(nearest, zone)}.",
+        )
+    amount = length_words(abs(landing.offset))
+    if point.kind == "event":
+        return (
+            f"{amount} late",
+            f"{heading}: runs about {amount} late, after {_who(playing)} ends at {after}. "
+            "A soft event waits for the song playing to end.",
+        )
+    lands = "the clockwheel restarts" if point.kind == "restart" else "lands"
+    if landing.offset > 0:
+        return (
+            f"{amount} late",
+            f"{heading}: {lands} about {amount} late. {_who(playing)} is playing then; "
+            f"the next song change is at {after}.",
+        )
+    past = length_words(landing.starts - point.at)
+    return (
+        f"{amount} early",
+        f"{heading}: {lands} about {amount} early, at the song change into {_who(playing)} "
+        f"at {clock_words(landing.began, zone)}. That song runs {past} past {when}.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# The whole preview
+# ---------------------------------------------------------------------------
+
+
+def span_words(minutes: int) -> str:
+    """ "hour", "2 hours" or "90 minutes": the span a preview covers."""
+    if minutes == 60:
+        return "hour"
+    if minutes % 60 == 0:
+        return f"{minutes // 60} hours"
+    return f"{minutes} minutes"
+
+
+def check_minutes(minutes: int) -> int:
+    """*minutes*, or :class:`PreviewError` in words when it is out of range."""
+    if isinstance(minutes, bool) or not isinstance(minutes, int):
+        raise PreviewError("The span must be a whole number of minutes")
+    if not MIN_MINUTES <= minutes <= MAX_MINUTES:
+        raise PreviewError(f"The span must be from {MIN_MINUTES} to {MAX_MINUTES} minutes")
+    return minutes
+
+
+def seed_for(signature: str) -> int:
+    """The dry run's seed: the same while what is fixed stays the same, so a refresh is steady."""
+    return int.from_bytes(hashlib.sha256(signature.encode("utf-8")).digest()[:4], "big")
+
+
+def build_preview(
+    source: SimulationSource,
+    minutes: int = DEFAULT_MINUTES,
+    *,
+    desk: Any = None,
+    now: float | None = None,
+    decided: Decided | None = None,
+    describe: Callable[[Any], str] | None = None,
+    budget: float = BUDGET_SECONDS,
+) -> dict[str, Any]:
+    """The preview of *source*'s next *minutes*, as the page reads it (JSON shape).
+
+    Blocking: it reads the player under its locks and runs the dry run.
+    """
+    minutes = check_minutes(minutes)
+    zone = ZoneInfo(source.timezone)
+    if decided is None:
+        decided = read_station(source.player, desk, now=now)
+    now = decided.now
+    end = now + minutes * 60
+    view: dict[str, Any] = {
+        "station": source.station,
+        "minutes": minutes,
+        "timezone": source.timezone,
+        "generated_at": datetime.fromtimestamp(now, UTC).isoformat(),
+        "start": _wall(now, zone).isoformat(),
+        "end": _wall(end, zone).isoformat(),
+        "end_words": clock_words(end, zone),
+        "reason": decided.reason,
+        "summary": decided.reason or "",
+        "items": [],
+        "points": [],
+        "counts": {"fixed": 0, "predicted": 0},
+        "stopped": None,
+        "points_note": None,
+        "notes": list(NOTES),
+    }
+    if decided.reason is not None:
+        return view
+    snapshot = source.snapshot or snapshot_player(source.player)
+    predicted, ends, stopped = predict(
+        source, snapshot, decided, end, seed=seed_for(decided.signature()), budget=budget
+    )
+    timeline = [*decided.items, *predicted]
+    songs = [item for item in timeline if item.kind == "song"]
+    changes = song_changes(timeline)
+    if not predicted and songs:
+        last = songs[-1]
+        ends = max(ends, last.starts + last.seconds)
+    shown = [item for item in timeline if item.starts < end]
+    view["items"] = [_item_view(item, zone) for item in shown]
+    view["counts"] = {
+        "fixed": sum(1 for item in shown if item.fixed),
+        "predicted": sum(1 for item in shown if not item.fixed),
+    }
+    clock = snapshot.clock or {}
+    clock_on = (
+        bool(clock.get("name"))
+        and snapshot.cfg.playback.pick_mode == "clock"
+        and not snapshot.settings.get("_pure_shuffle", False)
+    )
+    points = fixed_points(
+        now,
+        end,
+        zone,
+        resync_minutes=clock.get("resync_minutes", ()) if clock_on else (),
+        events=source.events,
+        describe=describe,
+    )
+    view["points_note"] = (
+        f"Only the first {MAX_POINTS} of {len(points)} fixed points are timed."
+        if len(points) > MAX_POINTS
+        else None
+    )
+    points = points[:MAX_POINTS]
+    landings = [land(point, changes, ends) for point in points]
+    view["points"] = [_point_view(landing, zone) for landing in landings]
+    view["stopped"] = (
+        f"The prediction stopped early: {stopped}. The list ends at the last song it picked."
+        if stopped
+        else None
+    )
+    view["summary"] = _summary(view, landings, zone, minutes)
+    return view
+
+
+def _item_view(item: Item, zone: ZoneInfo) -> dict[str, Any]:
+    return {
+        "kind": item.kind,
+        "status": item.status,
+        "fixed": item.fixed,
+        "status_text": STATUS_WORDS[item.status],
+        "title": item_title(item),
+        "starts_at": _wall(item.starts, zone).isoformat(),
+        "starts_text": clock_text(item.starts, zone),
+        "starts_words": clock_words(item.starts, zone),
+        "seconds": round(item.seconds, 1),
+        "length_text": length_text(item.seconds),
+        "length_words": length_words(item.seconds),
+    }
+
+
+def _point_view(landing: Landing, zone: ZoneInfo) -> dict[str, Any]:
+    point = landing.point
+    short, sentence = landing_words(landing, zone)
+    return {
+        "kind": point.kind,
+        "label": point.label,
+        "timing": point.timing or None,
+        "detail": point.detail or None,
+        "at": _wall(point.at, zone).isoformat(),
+        "at_text": clock_text(point.at, zone),
+        "at_words": clock_words(point.at, zone),
+        "offset_s": round(landing.offset),
+        "cut_s": round(landing.cut),
+        "landing": short,
+        "reason_fixed": landing.playing.fixed if landing.playing is not None else None,
+        "text": sentence,
+    }
+
+
+def _summary(
+    view: dict[str, Any], landings: Sequence[Landing], zone: ZoneInfo, minutes: int
+) -> str:
+    counts = view["counts"]
+    span = span_words(minutes)
+    listed = (
+        f"Next {span}: {counts['fixed']} fixed and {counts['predicted']} predicted, "
+        f"until {view['end_words']}."
+    )
+    hours = [landing for landing in landings if landing.point.kind in {"hour", "restart"}]
+    first = hours[0] if hours else (landings[0] if landings else None)
+    if first is None:
+        return f"{listed} No top of the hour, clockwheel restart or scheduled event falls in it."
+    return f"{landing_words(first, zone)[1]} {listed}"
+
+
+# ---------------------------------------------------------------------------
+# The route
+# ---------------------------------------------------------------------------
+
+
+class PreviewBusy(RuntimeError):
+    """Too many previews are waiting for the worker; ask again shortly."""
+
+
+class PreviewsClosed(RuntimeError):
+    """The server is shutting down: no preview starts."""
+
+
+_Key = tuple[str, int]
+
+
+@dataclass
+class _Job:
+    key: _Key
+    future: concurrent.futures.Future[dict[str, Any]]
+    source: SimulationSource
+    minutes: int
+    desk: Any
+    describe: Callable[[Any], str] | None
+
+
+class HourPreviews:
+    """The server's previews: one worker thread, and each station's latest preview per span.
+
+    Asks for the same station and span share one answer: a preview being
+    made, or waiting to be, is shared by everyone who asks meanwhile, and a
+    finished one is reused for :data:`KEEP_SECONDS` while nothing new is
+    fixed.  At most :data:`MAX_WAITING` previews wait for the worker; one
+    more is refused with :class:`PreviewBusy`.
+    """
+
+    def __init__(self, *, keep: float = KEEP_SECONDS, waiting: int = MAX_WAITING) -> None:
+        self._keep = keep
+        self._limit = waiting
+        self._cond = threading.Condition()
+        self._kept: dict[_Key, tuple[float, str, dict[str, Any]]] = {}
+        self._asked: dict[_Key, concurrent.futures.Future[dict[str, Any]]] = {}
+        self._waiting: deque[_Job] = deque()
+        self._thread: threading.Thread | None = None
+        self._closing = False
+
+    def submit(
+        self,
+        source: SimulationSource,
+        minutes: int,
+        *,
+        desk: Any = None,
+        describe: Callable[[Any], str] | None = None,
+    ) -> concurrent.futures.Future[dict[str, Any]]:
+        """The preview of *source*'s next *minutes*, made on the worker thread.
+
+        Raises:
+            PreviewsClosed: The server is shutting down.
+            PreviewBusy: :data:`MAX_WAITING` previews are already waiting.
+        """
+        key = (source.station, minutes)
+        with self._cond:
+            if self._closing:
+                raise PreviewsClosed("The server is shutting down")
+            shared = self._asked.get(key)
+            if shared is not None:
+                return shared
+            if len(self._waiting) >= self._limit:
+                raise PreviewBusy("The hour preview is busy; try again in a few seconds")
+            future: concurrent.futures.Future[dict[str, Any]] = concurrent.futures.Future()
+            self._asked[key] = future
+            self._waiting.append(_Job(key, future, source, minutes, desk, describe))
+            if self._thread is None:
+                self._thread = threading.Thread(
+                    target=self._work, name="autodj-hour-preview", daemon=True
+                )
+                self._thread.start()
+            self._cond.notify_all()
+        return future
+
+    def _work(self) -> None:
+        """The worker: make the waiting previews one at a time until shutdown."""
+        lower_thread_priority()
+        while True:
+            with self._cond:
+                self._cond.wait_for(lambda: self._closing or bool(self._waiting))
+                if self._closing:
+                    return
+                job = self._waiting.popleft()
+            try:
+                if job.future.set_running_or_notify_cancel():
+                    try:
+                        view = self.get(
+                            job.source, job.minutes, desk=job.desk, describe=job.describe
+                        )
+                    except BaseException as exc:
+                        job.future.set_exception(exc)
+                    else:
+                        job.future.set_result(view)
+            finally:
+                with self._cond:
+                    if self._asked.get(job.key) is job.future:
+                        del self._asked[job.key]
+
+    def shutdown(self, timeout: float) -> bool:
+        """Take no more previews, cancel the waiting ones and join the worker.
+
+        Returns whether the worker stopped within *timeout* seconds.  A
+        preview reads the library, so the server keeps the library open
+        when it did not.
+        """
+        with self._cond:
+            self._closing = True
+            for job in self._waiting:
+                job.future.cancel()
+            self._waiting.clear()
+            self._asked.clear()
+            thread = self._thread
+            self._cond.notify_all()
+        if thread is None:
+            return True
+        thread.join(timeout)
+        return not thread.is_alive()
+
+    def get(
+        self,
+        source: SimulationSource,
+        minutes: int,
+        *,
+        desk: Any = None,
+        describe: Callable[[Any], str] | None = None,
+    ) -> dict[str, Any]:
+        """The preview of *source*, kept for :data:`KEEP_SECONDS` while nothing new is fixed.
+
+        Blocking: the worker thread calls it.
+        """
+        decided = read_station(source.player, desk)
+        key = (source.station, minutes)
+        signature = decided.signature()
+        with self._cond:
+            kept = self._kept.get(key)
+        if kept is not None and kept[1] == signature and time.monotonic() - kept[0] < self._keep:
+            return kept[2]
+        view = build_preview(source, minutes, desk=desk, decided=decided, describe=describe)
+        with self._cond:
+            self._kept[key] = (time.monotonic(), signature, view)
+        return view
+
+
+def _previews(request: Request) -> HourPreviews:
+    state = request.app.state
+    previews = getattr(state, "hour_previews", None)
+    if previews is None:
+        previews = state.hour_previews = HourPreviews()
+    return previews
+
+
+def _source(station: Any) -> SimulationSource:
+    """What a preview reads from a live *station*."""
+    library = station.bridge.library
+    if library is None:
+        raise HTTPException(status_code=409, detail="The hour preview needs the music library")
+    schedule = getattr(station, "schedule", None)
+    events = (
+        [event.model_copy(deep=True) for event in schedule.events.values()]
+        if schedule is not None
+        else []
+    )
+    return SimulationSource(
+        player=station.player,
+        library=library,
+        station=station.slug,
+        ledger=station.ledger,
+        events=events,
+        timezone=station.timezone,
+        liner_dates=station.paths.liner_dates,
+    )
+
+
+def install_hour_preview(router: StationRouter) -> None:
+    """Add the hour preview route; it acts on the station its URL names."""
+
+    @router.get("/hour-preview")
+    async def hour_preview(
+        station: StationDep,
+        request: Request,
+        minutes: int = Query(DEFAULT_MINUTES, ge=MIN_MINUTES, le=MAX_MINUTES),
+    ) -> dict[str, Any]:
+        """The station's next *minutes*: estimated start times, fixed or predicted, and backtiming."""
+        source = _source(station)
+        schedule = getattr(station, "schedule", None)
+        describe = schedule.summary if schedule is not None else None
+        previews = _previews(request)
+        try:
+            future = previews.submit(
+                source, minutes, desk=getattr(station, "breaks", None), describe=describe
+            )
+        except PreviewsClosed as exc:
+            raise HTTPException(status_code=503, detail="The server is shutting down") from exc
+        except PreviewBusy as exc:
+            raise HTTPException(
+                status_code=503, detail=str(exc), headers={"Retry-After": "5"}
+            ) from exc
+        try:
+            return await asyncio.wrap_future(future)
+        except asyncio.CancelledError:
+            if not future.cancelled():
+                raise  # the request itself went away
+        # Cancelled because the server began shutting down while it waited.
+        raise HTTPException(status_code=503, detail="The server is shutting down")
+
+
+__all__ = [
+    "DEFAULT_MINUTES",
+    "MAX_MINUTES",
+    "MIN_MINUTES",
+    "HourPreviews",
+    "PreviewBusy",
+    "PreviewsClosed",
+    "build_preview",
+    "install_hour_preview",
+    "read_station",
+]

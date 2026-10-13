@@ -467,6 +467,7 @@ def _clock_snapshot(station: StationRuntime, library: Any) -> dict:
         "categories": [{"id": key, "name": name} for key, name in _category_names(library).items()],
         "cursor": (getattr(player, "_clock", None) or {}).get("cursor", 0),
         "last_status": getattr(player, "_clock_status", None),
+        "pending_update": getattr(player, "_pending_clock_update", None) is not None,
         "notice": OLD_CLOCK_MESSAGE if "slots" in setting else None,
     }
 
@@ -496,9 +497,7 @@ async def select_clock(
     # the latest place, and the old clockwheel's must not flush over this choice.
     ledger = station.ledger or StationLedger(library.catalog, station.slug)
     await asyncio.to_thread(ledger.select_clock, name, cursor, renamed_from)
-    reload_clock = getattr(station.player, "configure_clock", None)
-    if callable(reload_clock):
-        await asyncio.to_thread(reload_clock)
+    await asyncio.to_thread(station.player.configure_clock_after_selection)
     return await asyncio.to_thread(_clock_snapshot, station, library)
 
 
@@ -805,6 +804,17 @@ def equip_station(
     station.breaks = BreakDesk(lambda: station.cfg.breaks, station.paths.announcements)
     bridge.player.break_desk = station.breaks
 
+    from autodj.categories import station_wall
+    from autodj.matched_intros import MatchedIntros
+
+    # Play dates are judged by the station's day when the intro airs.
+    station.intros = MatchedIntros(
+        station.paths.matched_intros,
+        station.paths.intros,
+        day_at=lambda at: station_wall(station.cfg, at).date(),
+    )
+    bridge.player.matched_intros = station.intros
+
 
 # ---------------------------------------------------------------------------
 # The router
@@ -865,6 +875,8 @@ def install_station_routes(router: StationRouter) -> None:
     """Register every station route, with paths relative to the API root (``/skip``, ...)."""
     from autodj.breaks_api import install_breaks
     from autodj.carts import install_carts
+    from autodj.hour_preview import install_hour_preview
+    from autodj.matched_intros_api import install_matched_intros
     from autodj.rotation_api import install_rotation_test
     from autodj.scheduler_api import install_scheduler
     from autodj.time_checks import install_time_checks
@@ -1656,7 +1668,12 @@ def install_station_routes(router: StationRouter) -> None:
         return _existing_clock(station, name)
 
     @router.put("/library/clock/{name}")
-    async def api_library_update_clock(station: StationDep, name: str, body: ClockBody) -> dict:
+    async def api_library_update_clock(
+        station: StationDep,
+        name: str,
+        body: ClockBody,
+        apply_timing: Literal["immediate", "continue", "next_restart"] = "immediate",
+    ) -> dict:
         library = _catalog_library(station)
         _existing_clock(station, name)
         if body.name != name:
@@ -1667,7 +1684,7 @@ def install_station_routes(router: StationRouter) -> None:
             )
             clock = _clock_store(station).save(checked)
             if _active_clock(station, library) == name:
-                await asyncio.to_thread(station.player.configure_clock)
+                await asyncio.to_thread(station.player.apply_clockwheel_update, name, apply_timing)
             return clock
         except (ValueError, OSError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1720,7 +1737,9 @@ def install_station_routes(router: StationRouter) -> None:
     install_scheduler(router)
     install_time_checks(router)
     install_breaks(router)
+    install_matched_intros(router)
     install_rotation_test(router)
+    install_hour_preview(router)
 
 
 __all__ = [

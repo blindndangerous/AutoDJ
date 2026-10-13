@@ -163,7 +163,7 @@ def _page(
 <link rel="stylesheet" href="/modules/status-page.css">
 <script type="module" src="/modules/status-page.js"></script>
 </head>
-<body data-feed="{feed}">
+<body data-page="status" data-feed="{feed}">
 <header>
 <h1 id="status-station">{name}</h1>
 <p>Station status</p>

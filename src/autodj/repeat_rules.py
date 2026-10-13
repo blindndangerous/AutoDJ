@@ -22,6 +22,12 @@ Two more rules use files in the index folder, each turned on in Settings:
 Each rule looks back a number of tracks, a number of minutes, or both;
 a candidate is held back when either one catches it.
 
+With **Count versions as one song** on, the files of one song (the same
+lead artist and :func:`title_key`, such as a radio edit and a remix) are one
+song when picking (see :class:`SongVersions`): the track rule holds back
+every version of a song that played, and the pickers give the song the same
+chance as a song with one file.
+
 Splitting artist credits
 ------------------------
 :class:`ArtistSplitter` turns one credit such as
@@ -57,7 +63,7 @@ import re
 import tomllib
 import unicodedata
 from collections import Counter
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -110,11 +116,15 @@ def album_key(album: str) -> str:
     return " ".join(_words(album))
 
 
-_VERSION_NOTE = re.compile(
-    r"\b(?:remix(?:es|ed)?|rmx|mix(?:ed)?|edit|live|re-?master(?:ed)?|version|demo|acoustic"
+_VERSION_WORD = (
+    r"(?:remix(?:es|ed)?|rmx|mix(?:ed)?|edit|live|re-?master(?:ed)?|version|demo|acoustic"
     r"|unplugged|mono|stereo|extended|instrumental|single|radio|club|dub|explicit|clean"
     r"|bonus|deluxe|anniversary|re-?recorded|reprise|karaoke|session|take|original|cut"
-    r"|(?:19|20)\d\d)\b",
+    r"|(?:19|20)\d\d)"
+)
+_VERSION_NOTE = re.compile(
+    rf"\s*(?:{_VERSION_WORD}(?:[\s-]+{_VERSION_WORD})*"
+    r"|live\s+(?:at|from|in)\s+.+|.+\s+(?:remix|mix|edit))\s*",
     re.IGNORECASE,
 )
 _CREDIT_NOTE = re.compile(r"^\s*(?:feat\b|ft\b|featuring\b|with\b|w/|from\b|prod\b)", re.IGNORECASE)
@@ -125,7 +135,7 @@ _INLINE_FEAT = re.compile(r"\s(?:feat\.?|featuring)\s.*$", re.IGNORECASE)
 
 def _is_note(text: str) -> bool:
     """True when bracketed or dash-suffixed *text* names a version or a credit."""
-    return bool(_CREDIT_NOTE.match(text) or _VERSION_NOTE.search(text))
+    return bool(_CREDIT_NOTE.match(text) or _VERSION_NOTE.fullmatch(text))
 
 
 @lru_cache(maxsize=65536)
@@ -533,6 +543,8 @@ class RepeatRules:
         related_track_window: Picks before a track related to a recent
             one may play.
         related_track_minutes: The same, in minutes.
+        versions_as_one_song: Count a song's versions as one song (see
+            :class:`SongVersions`).
     """
 
     track_window: int = 50
@@ -549,6 +561,7 @@ class RepeatRules:
     related_tracks: RelatedTracks = field(default_factory=RelatedTracks)
     related_track_window: int = 0
     related_track_minutes: float = 0.0
+    versions_as_one_song: bool = False
 
     @property
     def related_artist_limits(self) -> tuple[int, float]:
@@ -611,6 +624,7 @@ class RepeatRules:
             related_tracks=related_tracks if use_tracks and related_tracks else RelatedTracks(),
             related_track_window=related_track_window if use_tracks else 0,
             related_track_minutes=related_track_minutes if use_tracks else 0.0,
+            versions_as_one_song=settings.versions_as_one_song,
         )
 
     @property
@@ -754,11 +768,31 @@ class TrackKeys:
             :meth:`ArtistSplitter.credited`).
         album: :func:`album_key` of the album, or ``""``.
         title: :func:`title_key` of the title, or ``""``.
+        song: :func:`song_key` of the track, or ``None``.
     """
 
     artists: frozenset[str]
     album: str
     title: str
+    song: TrackKey | None = None
+
+
+def song_key(artist: str, title: str) -> TrackKey | None:
+    """The song a file is a version of: its lead artist's key and its :func:`title_key`.
+
+    The lead artist is the credit before any "feat." or "(with X)" note, so
+    "Mariah Carey feat. ODB - Fantasy (Remix)" and "Mariah Carey - Fantasy"
+    are one song, while two artists' songs with one title are two.
+    ``None`` when the artist or title is missing: such a file is a song of
+    its own.
+    """
+    return _song(artist, title_key(title) if _text(title) else "")
+
+
+def _song(artist: str, title: str) -> TrackKey | None:
+    """:func:`song_key` with the title already folded by :func:`title_key`."""
+    lead = artist_key(_STRONG_SPLIT.split(_FEAT_BRACKET.sub(" ", _text(artist)))[0])
+    return (lead, title) if lead and title else None
 
 
 class TrackKeyCache:
@@ -785,10 +819,12 @@ class TrackKeyCache:
         # Compared one by one: no tuple is built for the lookup a pick makes per track.
         if cached is not None and cached[0] == artist and cached[1] == album and cached[2] == title:
             return cached[3]
+        folded = title_key(title) if title else ""
         keys = TrackKeys(
             self.splitter.credited(artist, title),
             album_key(album) if album else "",
-            title_key(title) if title else "",
+            folded,
+            _song(artist, folded),
         )
         self._keys[track.path] = (artist, album, title, keys)
         return keys
@@ -797,6 +833,83 @@ class TrackKeyCache:
 def _key_cache(keys: TrackKeyCache | ArtistSplitter | None) -> TrackKeyCache:
     """*keys* as a :class:`TrackKeyCache` (a bare splitter gets a fresh cache)."""
     return keys if isinstance(keys, TrackKeyCache) else TrackKeyCache(keys)
+
+
+class SongVersions:
+    """The files of each song that has more than one, for Count versions as one song.
+
+    A song is the :func:`song_key` of its files; a file without one, or the
+    only file of its song, is a song of its own.  Paths are the library's
+    entry paths, compared as given.
+
+    Args:
+        entries: The library's tracks (``path``, ``artist``, ``album``, ``title``).
+        keys: Looks up each track's keys; a bare splitter gets a fresh cache.
+    """
+
+    def __init__(
+        self, entries: Iterable[Any], keys: TrackKeyCache | ArtistSplitter | None = None
+    ) -> None:
+        cache = _key_cache(keys)
+        songs: dict[TrackKey, list[str]] = {}
+        for entry in entries:
+            song = cache.keys(entry).song
+            if song is not None:
+                songs.setdefault(song, []).append(entry.path)
+        self._versions: dict[str, tuple[str, ...]] = {}
+        for paths in songs.values():
+            if len(paths) > 1:
+                versions = tuple(paths)
+                for path in versions:
+                    self._versions[path] = versions
+
+    def __bool__(self) -> bool:
+        """True when some song has more than one version."""
+        return bool(self._versions)
+
+    def versions(self, path: str) -> tuple[str, ...]:
+        """Every file of *path*'s song, *path* included."""
+        return self._versions.get(path, (path,))
+
+    def song(self, path: str) -> str:
+        """Names *path*'s song: the path of its first version."""
+        return self.versions(path)[0]
+
+    def with_versions(self, paths: Iterable[str]) -> list[str]:
+        """*paths*, each followed by the other versions of its song, without repeats."""
+        seen: set[str] = set()
+        result: list[str] = []
+        for path in paths:
+            for version in self.versions(path):
+                if version not in seen:
+                    seen.add(version)
+                    result.append(version)
+        return result
+
+    def choice(self, pool: Sequence[Any], rng: Any) -> Any:
+        """A random entry of *pool*, each song as likely as any other.
+
+        A song with three versions in *pool* is as likely as a song with
+        one; then one of its versions is picked.  *rng* is anything with
+        ``choice`` (``random`` or a :class:`random.Random`).
+        """
+        if not self._versions:
+            return rng.choice(pool)
+        songs: dict[str, list[Any]] = {}
+        for entry in pool:
+            songs.setdefault(self.song(entry.path), []).append(entry)
+        return rng.choice(rng.choice(list(songs.values())))
+
+    def last_played(self, played: Callable[[str], Any]) -> Callable[[str], Any]:
+        """*played* for songs: the latest play of any version of a path's song, or ``None``."""
+
+        def song_played(path: str) -> Any:
+            stamps = [
+                stamp for version in self.versions(path) if (stamp := played(version)) is not None
+            ]
+            return max(stamps) if stamps else None
+
+        return song_played
 
 
 #: Reasons a candidate is held back, in the order they are checked.
@@ -977,6 +1090,7 @@ __all__ = [
     "RelatedTracksFileTooLargeError",
     "RepeatFilter",
     "RepeatRules",
+    "SongVersions",
     "TrackKey",
     "TrackKeyCache",
     "TrackKeys",
@@ -992,5 +1106,6 @@ __all__ = [
     "prune_history",
     "records_from_plays",
     "related_track_key",
+    "song_key",
     "title_key",
 ]

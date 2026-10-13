@@ -654,6 +654,69 @@ stylesheet and feed requests. It uses the system's light or dark colours, or the
 theme chosen under Settings, Display and keys, Theme in a browser that opened the web page at the
 same address (`/modules/theme-init.js` reads that choice before the page is drawn).
 
+### Player page and embeddable player
+
+A station can also have a public page where listeners press Play to hear it in the browser, and
+a compact version of it to put on another website. Both are off until you turn them on, for each
+station on its own:
+
+```toml
+[player_page]
+enabled = true                 # the player page, /player
+embed = true                   # the embeddable player, /embed
+embed_origins = ["https://nightowlradio.example"]   # sites that may show /embed in a frame
+```
+
+For another station, write the same keys under `[stations.<slug>.player_page]`; its pages are at
+`/stations/<slug>/player` and `/stations/<slug>/embed` (the default station's also answer at
+`/stations/default/player` and `/stations/default/embed`). A page that is off answers 404. The
+settings are read when AutoDJ starts. `GET /api/stations` lists each station's `player_path` and
+`embed_path`, or `null` while that page is off.
+
+**The player page** (`/player`) has the station's name, a **Play** button, a **Volume** slider,
+the song playing, the next song when **Show the next song publicly** is on (never in DMCA mode),
+the songs played most recently (as many as `[nowplaying] history_limit`), and links to the stream,
+its playlist file and the status page. Nothing plays until Play is pressed; the button then reads
+**Stop**, and a line under it says "Connecting to the stream.", "Playing.", "Stopped." or why the
+stream could not be played. Stop closes the connection, so a stopped page does not hold a listener
+slot, and Play joins the live stream again. The volume is remembered in that browser. The song
+line is the only part a screen reader hears on its own, once per song, as on the status page;
+**Pause updates** stops the page following the station. Without JavaScript the browser's own audio
+controls play the stream instead. If the stream stalls while playing, the line says
+"Buffering." once and "Playing." when the sound is back; if nothing has started 15 seconds after
+Play, it stops and says the stream could not be played. Where the browser does not let a page set
+the volume (Safari on iPhone and iPad), the slider is replaced by a note that the device's own
+volume applies. The page uses the system's light or dark colours, or the Theme chosen in the web
+UI in that browser, and cannot be shown inside another site's frame. Like the rest of AutoDJ, both
+pages are in English (`lang="en"`); there is no language setting.
+
+**The embeddable player** (`/embed`) has the station's name, the song playing, Play, Volume,
+Pause updates and, when the player page is on, a link that opens it in a new tab. Put it on a web
+page with an `<iframe>`, giving the frame a title so screen readers can name it:
+
+```html
+<iframe src="https://radio.example.net/embed" title="Night Owl Radio player"
+        width="100%" height="240" style="border: 0"></iframe>
+```
+
+A frame 240 px high fits it on a wide page; give it about 330 px where the frame is as narrow as a
+phone, since the controls then wrap onto more lines. Add `?theme=light` or `?theme=dark` to the
+address to match the site; without it the player
+follows the visitor's system colours. A browser shows the embed only inside pages from the sites
+in `embed_origins` (and this server's own pages): list each site as `https://host`, with a port
+if it is not the usual one, or `"*"` to let any site show it. Leaving the list empty keeps it to
+this server's own pages. The list goes into the page's `Content-Security-Policy:
+frame-ancestors`, so browsers enforce it; it does not stop anyone from listening to the stream
+itself, which is public anyway.
+
+Both pages use the station's public feed and stream and nothing else: no pairing, no controls
+beyond listening, and no file paths, credentials or other private details. A station with a
+listener password still asks for it: AutoDJ never puts the password in the page, so the browser
+asks the listener, and a browser that will not ask inside another site's frame cannot play the
+embed. A station that does not stream (the default station outside stream mode) shows its song
+and says it cannot be played there. While a station is stopped, both pages answer 503, say it is
+off air, and notice when it is back.
+
 ### Settings
 
 In stream mode, **Settings, Stream** has a **Now-playing feed** group:
@@ -1046,8 +1109,8 @@ The rules:
   webhooks, listener password and recording folder. Set everything the station needs in its own
   tables, including machine settings such as `playback.stereotool_path`.
 - **A station's own sections** are `playback`, `djmix`, `transitions`, `replaygain`, `stream`,
-  `recording`, `nowplaying`, `time_checks`, `dmca` and `presets.<name>`, plus `webhooks` in
-  `config.local.toml`. They take the same keys as the root sections.
+  `recording`, `nowplaying`, `player_page`, `time_checks`, `dmca` and `presets.<name>`, plus
+  `webhooks` in `config.local.toml`. They take the same keys as the root sections.
 - **Shared sections:** `library`, `index`, `model`, `huggingface` and `server` belong to the whole
   server and are read only from the root. So are `stream.trusted_proxies` (from the root
   `[stream]`) and `server.station_timezone`.
@@ -1101,6 +1164,9 @@ other sites:
   to its stream and playlist. It polls the station's own feed, and only a feed on this server.
 - `/api/stations/<slug>/nowplaying`, the now-playing feed, in the same form as `/api/nowplaying`
   (see [Now-playing feed and webhooks](#now-playing-feed-and-webhooks)).
+- `/stations/<slug>/player` and `/stations/<slug>/embed`, the player page and embeddable player,
+  when the station's `[stations.<slug>.player_page]` turns them on (see
+  [Player page and embeddable player](#player-page-and-embeddable-player)).
 - Both are public without pairing, like the stream, but only for a configured station: any
   other name needs a paired browser and then answers 404. The station's listener password
   protects only its stream, not these.
@@ -1120,15 +1186,16 @@ need a paired browser, like the default station's.
 
 - `GET /api/stations` lists every configured station: its slug, name, state (`stopped`,
   `stopping`, `stuck stopping`, `idle`, `playing` or `paused`), listener count and current
-  song, and its public addresses: `status_path`, `nowplaying_path`, `stream_path` and
-  `m3u_path`. The stream and playlist are `null` for a default station that does not stream. For
-  example:
+  song, and its public addresses: `status_path`, `nowplaying_path`, `stream_path`, `m3u_path`,
+  `player_path` and `embed_path`. The stream and playlist are `null` for a default station that
+  does not stream, and the player page and embed are `null` while they are off. For example:
 
   ```json
   {"slug": "nightowl", "name": "Night Owl Radio", "state": "playing", "listeners": 3,
    "title": "Artist — Song", "status_path": "/stations/nightowl/status",
    "nowplaying_path": "/api/stations/nightowl/nowplaying",
-   "stream_path": "/stations/nightowl.mp3", "m3u_path": "/stations/nightowl.m3u"}
+   "stream_path": "/stations/nightowl.mp3", "m3u_path": "/stations/nightowl.m3u",
+   "player_path": "/stations/nightowl/player", "embed_path": null}
   ```
 - `POST /api/stations/<slug>/start` builds and starts a stopped station. Starting a running
   station changes nothing.
@@ -1838,8 +1905,9 @@ curl -s -H "Authorization: Bearer $TOKEN" \
   http://127.0.0.1:8080/api/announcer/breaks/0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a
 ```
 
-`GET breaks` lists the breaks still waiting, then the finished ones, newest first, as
-`{"breaks": [...]}`. A break's `state` is one of:
+`GET breaks` lists the announcer's breaks still waiting, then the finished ones, newest first, as
+`{"breaks": [...]}`. Voice tracks booked in the web UI are not listed, and an announcer token
+cannot look them up or cancel them (404). A break's `state` is one of:
 
 - `queued`: booked, waiting for its song change to be rendered.
 - `rendered`: mixed into the song change; it will air. `mixed_as` says `talk_up` or `standalone`
@@ -1887,6 +1955,147 @@ minutes after its expected air time expires.
 
 The log records each break by the first eight characters of its id: when it is booked, mixed in,
 aired, dropped or expired, and why.
+
+## Voice tracking from the browser
+
+The **Voice tracks** tab records a DJ break with your microphone and books it for the open song
+change, the same as an announcer program's break (see [Announcer breaks](#announcer-breaks-dj-breaks-news-and-weather)).
+It needs breaks turned on for the station (`[breaks] enabled = true`, with saved-point playback);
+otherwise the tab says why it cannot take a voice track. No token is needed: the tab uses your
+signed-in browser.
+
+The browser lets a page use the microphone only over a secure connection: open AutoDJ over HTTPS,
+or at `http://localhost:<port>` on the station's own computer. On a plain `http://` address from
+another computer the tab says so instead of recording.
+
+The tab shows the open song change: the ending song, the next song, how long the next song's
+intro is, the time left to book it and roughly when it airs. That change is the one after the next
+song, because the next one is already mixed. The time left counts down on the page; it is not
+read out on its own.
+
+1. Choose **Record**. The first time, the browser asks to use the microphone. Speak, then choose
+   **Record** again to stop. **Alt+R** starts and stops recording from anywhere in the tab without
+   moving focus, which suits a screen reader user who wants to stay on another control.
+2. Choose **Listen back** to hear the take, on the Preview output device when one is chosen in
+   Settings, Sound (headphones, say). **Record** again replaces it; **Discard recording**
+   throws it away.
+3. Choose the **Placement**: **Automatic** (follows `[breaks] dj_placement`; the description under
+   it says what it will do for this change), **Talk up the next song's intro** (your voice ends as
+   the vocal starts), or **Standalone, between the songs**. For a talk-up, **Start over the ending
+   song's outro** lets your voice begin while the ending song plays out.
+4. Choose **Book voice track**. The browser turns the take into a mono WAV at 44.1 kHz and
+   uploads it; AutoDJ trims the silence before and after your voice as it does for any break.
+
+The recording state is said once when recording starts and stops, then once a minute, and 30
+seconds before the length limit or before the song change closes. Recording stops by itself at
+three minutes, or sooner at the station's `max_seconds`, or when `max_upload_mb` could not hold
+that much WAV (about 5 MB per minute). Three minutes is the browser's own cap: booking decodes the
+whole take in the page, so the length is what keeps the page's memory down (about 80 MB at most).
+Recording also stops, keeping the take and letting the microphone go, when you leave the Voice
+tracks tab or the page is hidden (another browser tab, a minimised window); that is said once.
+
+If the song change moves on before you book, the tab says which change is open now. When the open
+change has the same two songs (it was planned again), **Book voice track** books the take there.
+When it has other songs, the take is not booked: record again for those songs, or, if what you
+said still fits, use **Listen back** and then choose **Book voice track** again. Errors, such as a
+blocked or missing microphone or a Cancel that failed, are shown under the Record heading and
+linked to the control they are about.
+
+**Booked voice tracks** lists what became of each voice track (waiting, mixed in, on the air,
+aired, dropped or expired, with the reason). **Cancel** drops one that is still waiting for its
+song change. Voice tracks share the station's break limits and quota with announcer breaks:
+`max_queued`, `max_per_slot` and `quota_mb`. Uploads and cancels count against
+`requests_per_minute` for the station.
+
+For scripts and other stations, the routes are `GET`, `POST` and `DELETE` under
+`/api/voice-tracks` and `/api/stations/<slug>/voice-tracks`. They take the browser session and the
+page's `Origin`, never an announcer token. `POST` takes the announcer upload's fields (`slot_id`,
+`ending_id`, `upcoming_id`, `placement`, `allow_outro` and `file`), with no `kind`: a voice track is
+always a DJ break.
+
+## Matched intros
+
+A matched intro is a short voice clip tied to one song, or to every song by one artist, such as
+"Here's the new one from Example Artist". When that song comes up, AutoDJ mixes the clip into the
+song change that leads into it. Matched intros need saved-point playback (Transition mode: Use
+saved segue points) with the server mixing the audio (server audio or a stream), as breaks do;
+otherwise Track info says why and they do not play.
+
+### Adding one
+
+Open **Track info** for the song (from Now Playing, History, or the lists in Queue & Search) and
+go to **Matched intros**, below the cue points. It lists the intros **For this song** and **For
+any song by** the song's artist, each with how often it plays, its play dates and how many seconds
+of speech it holds, and a **Listen** and a **Remove** button. Listen plays the clip on the Preview
+output device when one is chosen in Settings, Sound, and is pressed until the clip ends or you
+press it again. Remove asks first and deletes the clip.
+
+Under **Add an intro**:
+
+- **Audio file**: MP3, WAV, Ogg, M4A, FLAC or AAC, at most `[server] liner_upload_max_mib` (the
+  liner upload limit) and one minute long. AutoDJ trims the silence before and after the voice.
+- **Plays on**: **This song**, or **Any song by** the artist. The artist comes from the song's
+  artist tag; a song without one takes only an intro for itself. A credit such as "Someone feat.
+  Example Artist" counts as a song by Example Artist too.
+- **Label**: optional words to tell intros apart, shown in the list and the hour preview.
+- **Chance (percent)**: 1 to 100. At 50 the intro plays about every other time its song comes up.
+- **Wait between plays (minutes)**: 0 to 10080 (a week), 60 by default. After an intro plays, or
+  while a song change that holds it waits to air, it is passed over until this much time has gone.
+- **Not before** and **Do not play after**: optional days, both included, in the station time zone,
+  as for liners (see [Liner and cart play dates](#liner-and-cart-play-dates)).
+
+Choose **Upload intro**. A field the page or the server refuses is marked, its error is shown under
+it and it takes focus; any other result is said once.
+
+### How one is chosen and placed
+
+AutoDJ picks the intro as it prepares the song change, one song ahead. The song's own intros come
+first; when none of them can play, the artist's are tried. An intro is passed over outside its
+dates (by the day the song change airs) and within its wait; of the rest, the one heard longest ago
+is taken if its chance comes up. If a song intro misses its chance, the artist's intros are tried.
+The chance is rolled on a random source of its own, so the rotation tester and the hour preview
+keep predicting the same songs.
+
+A matched intro takes the place of the automatic liner at that song change, and the liner trigger
+stays due for the next one. Liners the queue or the clockwheel put in the change still play, before
+the intro, and so do news, weather and music news breaks. A DJ break booked for the change, from
+an announcer program or the Voice tracks tab, wins: the DJ already talks the song up, so no intro
+is added.
+
+When the song's intro (Start to Intro) is at least as long as the speech, the intro talks the song
+up: the voice starts with the song and ends before the singing, and the music ducks under it as it
+does under a break (`[breaks] duck_db`, or `[playback] liners_duck_db` when that is unset). When the
+intro is shorter, or the song has no Intro point, the clip plays just before the song, which starts
+as the speech ends. With Smooth or Stereo Tool processing the clip gets the voice liner processing.
+A clip that cannot be decoded is left out and the music plays on. The hour preview lists an intro
+once its song change is mixed, as "Matched intro" and its label.
+
+### Where they are kept
+
+Each station keeps its own: `matched_intros.json` in the station's state folder (the active index
+folder for the default station) and the audio in its `intros` folder, under names AutoDJ makes up.
+Backups include both for the default station. A song intro follows the song's library ID, so a tag
+edit or a move the scan recognises keeps it. A library scan that read every folder and found a
+song's file gone removes that song's intros and their audio; a share that is not mounted, or a scan
+that could not read a folder, removes nothing, and artist intros are never removed by a scan. When
+`matched_intros.json` cannot be read just now, the intros last read are used and saves are refused.
+An intro in the file that is not valid (edited by hand, say) is skipped and logged, and Track info
+says which, under the Matched intros heading; the other intros still play, and every save writes
+the skipped one back as it was, so correct it in the file and it plays again. Only a file that is
+not a file of intros at all is set aside, as `matched_intros.json.bad-<id>`. The time an intro last aired
+is written to the file by the station's once-a-second upkeep, off the audio thread.
+
+For scripts and other stations, the routes are under `/api/intros` and
+`/api/stations/<slug>/intros`, with the browser session and the page's `Origin`:
+
+- `GET /api/intros?track_id=<library ID>`: the song's intros (`song`), its artist's (`artist`),
+  the song, the limits, and whether the station plays them (`active`, with a `reason`). Without
+  `track_id`, every intro of the station (`intros`).
+- `POST /api/intros`: `multipart/form-data` with `file`, `track_id`, and optionally `applies_to`
+  (`song` or `artist`), `label`, `chance`, `cooldown_minutes`, `not_before` and `not_after`
+  (`YYYY-MM-DD`). `201` answers with the intro; a refused field answers with `detail` and `field`.
+- `GET /api/intros/<id>/audio`: the clip.
+- `DELETE /api/intros/<id>`: remove the intro and its audio.
 
 ## Play log export
 
@@ -2121,6 +2330,72 @@ What it approximates:
 How long a run takes grows with the library. On a synthetic 77,000-song library with four
 categories and a seven-step clockwheel, an older four-core PC (2018) simulated a week (about 2,500
 songs) in about two minutes, and in a little over three with the DMCA limits on.
+
+## Hour preview and backtiming
+
+Now Playing > **Hour preview** lists what the station plays next, with the time each item is
+expected to start, and says how the hour lands: how early or late the song changes fall against
+the top of the hour, each clockwheel restart and each scheduled event. Choose the next 30
+minutes, hour, 2 hours or 3 hours under **Show**.
+
+Each row says in its Status column whether it is fixed or predicted:
+
+- **Fixed: on the air**: the song playing now, with the liners, breaks and matched intros mixed
+  into it.
+- **Fixed: ready to play**: what the server has already rendered, with its liners, breaks and
+  matched intros (server audio and stream mode only).
+- **Fixed: picked**: the song chosen to follow, and with `[breaks] enabled = true` the song after
+  it (the open song change) and its liners.
+- **Fixed: booked break**: an announcer break booked on the open song change.
+- **Fixed: in the queue**: the request queue, which plays before any pick.
+- **Predicted**: the rest, from a dry run of the station's own picker that starts where the
+  fixed part ends, with the station's clockwheel place, play history, repeat rules, DMCA limits,
+  categories and schedule. It is the same dry run the rotation tester uses (see
+  [Testing the rotation](#testing-the-rotation)), so it never touches the air: the station's
+  random choices, clockwheel place, history and library are only read.
+
+Backtiming goes to each fixed point in the span:
+
+- **Top of the hour**: the nearer song change counts. "Lands about 35 seconds early" means the
+  song change nearest the hour comes 35 seconds before it; the sentence names the song that
+  causes it and whether that song is fixed or predicted. Liners and breaks that run straight into
+  a song start its song change.
+- **Clockwheel restart**: the station restarts the clockwheel at the nearer song change, as it
+  does on the air, so the preview says how early or late that is.
+- **Scheduled events**: a soft event waits for the song playing to end, so the preview says how
+  late it runs; a hard event runs on time and the preview says how much of the song it cuts.
+
+The first top of the hour (or clockwheel restart) is the card's summary. **Refresh preview** says
+it once; **Shift+H** says it from any tab. While the card is open and Now Playing is showing, the
+table refreshes every 30 seconds and shortly after the song changes, changing cells in place,
+saying nothing and leaving focus where it is; if those refreshes start failing, the failure is
+said once, and not again until one succeeds. Choosing another span under **Show** says the new
+summary once. If more than 24 fixed points fall in the span, the first 24 are timed and the card
+says so. Times show as "2:04:30 PM" and read as "2:04 PM and
+30 seconds"; lengths show as "3:45" and read as "3 minutes 45 seconds". Times are in the station
+time zone (`[server] station_timezone`); clockwheel restarts are worked out in the computer's own
+time zone, as the player does.
+
+The page asks the server only while the card is open. Each preview runs on one worker thread
+below normal priority, never on the web server's event loop and never on the audio threads. The
+dry run stops after 80 songs, or once it has worked about 4 seconds, and says so; the time limit
+is checked before each pick, so one slow pick can run a little past it. A preview is reused for
+45 seconds while nothing new is fixed, longer than the page's 30-second refresh, so an open card
+costs no dry run until a song changes. Several pages asking for the same station and span at once
+share one preview, at most 8 different previews wait for the worker, and one more is answered
+with 503 and "try again in a few seconds". At shutdown the server waits for the worker; if it has
+not stopped, the server logs an error and leaves the library open rather than close it under the
+preview. The same fixed part always gives the same prediction, so a refresh does not reshuffle
+the predicted songs. Every station has its own:
+`GET /api/hour-preview?minutes=60` for the default station and
+`GET /api/stations/<name>/hour-preview` for any station, each answering with JSON that holds the
+items, the fixed points with their sentences, and the summary.
+
+What it approximates, as the rotation tester does: a song runs from its saved start to its segue,
+or its length less the crossfade; liners and booked breaks add their full length; automatic
+liners, matched intros not yet mixed, time checks and carts are left out; and a scheduled change of song picking applies from
+the first song after its time. It shows where the last songs of the hour land; it does not yet
+choose them to fit.
 
 ## Backup
 
@@ -2514,6 +2789,17 @@ press **Save clockwheel** to keep the result.
 These list keys do not replace the playback or spoken-status shortcuts. Nothing is saved until you press **Save clockwheel**; opening
 another clockwheel with unsaved changes asks first. **Restart at these minutes past each hour**
 sends the clockwheel back to step 1 at the song change nearest each minute.
+
+When you save edits to the active clockwheel, **Apply saved changes** defaults to **At the next
+clock restart**. The current clock keeps playing until its next scheduled restart, and the saved
+edit becomes the new step 1 there. If the restart-minute list is empty, the next restart is the
+wheel's natural wrap to step 1. The editor announces when a saved edit begins waiting. If AutoDJ
+restarts while an edit is waiting, it loads the latest saved definition at step 1. Choose **Immediately, start at step 1**
+to use the new steps for the earliest selection that has not already been lined up; the current
+track and an already committed handoff stay in place. Choose **Immediately, continue at next step**
+to keep the next step number when it still exists in the edited wheel; otherwise playback starts at
+step 1. Reordering or deleting steps can shift which step that position refers to. A server restart
+loads the latest saved clockwheel definition. API clients that omit `apply_timing` keep the immediate behavior.
 
 For a voice liner step, **Only play if the following track fits before the next reset** is off
 by default. Turn it on to leave out the liner when the liner and the selected song would run

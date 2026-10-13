@@ -1,6 +1,6 @@
 # Threat model: AutoDJ
 
-Last reviewed: 2026-10-11. Re-review every major release.
+Last reviewed: 2026-10-13. Re-review every major release.
 
 ## Scope and trust boundaries
 
@@ -34,6 +34,14 @@ AutoDJ is a single-user local music player with these exposed surfaces:
   expressions are refused, so a query costs at most one pass over the library, and playlist
   files larger than 8 MB are not read. `categories.json` is written atomically and a damaged one
   is set aside, not used.
+- The hour preview (`/api/hour-preview`) requires a paired browser. It only reads the station:
+  the playing render, the render cursor, the open song change and the queue; its dry run picks
+  with a copy of the player that has its own random generator, so it cannot steer the station's
+  real random choices. Its cost is bounded: the span is 15 to 180 minutes, every preview runs on
+  one worker thread below normal priority, the same station and span share one preview, at most
+  8 previews wait (one more gets 503), the dry run stops at 80 songs or after about 4 seconds
+  (checked before each pick), and a preview is reused for 45 seconds while what is fixed stays
+  the same. Shutdown joins the worker and leaves the library open if it has not stopped.
 - Machine tokens let a program on another computer use one narrow API without a browser. The
   only scope so far is "analysis worker" (`autodj worker`); see "Machine tokens and analysis
   workers" below.
@@ -78,6 +86,12 @@ half-copied or mismatched pair is refused and the previous certificate keeps bei
   or `--name`, is refused. They run with `shell=False` and a UTF-8 child pipe.
 
 ## Web request policy
+
+No response can be framed by another page (clickjacking): `SecurityMiddleware` adds
+`frame-ancestors 'none'` to every response's Content-Security-Policy (a response without a policy
+gets one with only that directive) and `X-Frame-Options: DENY`, including its own rejections and
+404s. Only a response whose own policy names other frame ancestors keeps it unchanged: today that
+is the embeddable player alone (see "Radio stream listening").
 
 Default loopback mode is anonymous. For a non-loopback bind, startup validation requires a token or
 explicit insecure-LAN acknowledgement. Wildcard binds also require nonempty exact allowed-host and
@@ -385,7 +399,8 @@ What an announcer can do with a valid token:
   same checks run again when the break is mixed in. FFmpeg's demuxers still parse
   the upload, so a malformed file reaches them; the scope only lets a program the operator trusts
   do this.
-- Look up and cancel its station's breaks, by their random ids.
+- Look up and cancel its station's announcer breaks, by their random ids. Voice tracks that
+  operators booked in the web UI are not listed to it and answer 404 to it.
 
 It cannot change the queue, settings, clockwheels, liners or anything else. A booked break pins
 the song after it, so a token can keep one song in place for one song change; it cannot choose
@@ -402,6 +417,31 @@ half minute until it goes);
 files a previous run left are deleted when the station starts, except an upload still arriving
 (its name is held, and part files younger than ten minutes are left).
 
+### Voice tracks from the browser
+
+The voice tracker (#128) books the same breaks from the web UI. Its routes,
+`/api/voice-tracks` and `/api/stations/<slug>/voice-tracks`, are browser routes: they need the
+signed-in session cookie when `access_token` is set and, for an upload or a cancel, an allowed
+`Origin`, like every other change. They are outside the announcer prefix, so a machine token is
+never accepted there, and an announcer token never reaches them by another address. The upload
+takes the announcer path described above: the middleware's body cap (the same as an announcer
+upload), the declared length checked against the station's own limit before the body is read,
+the room held in the station's caps, the 60-second body deadline, the server's own file name, the
+one-at-a-time decode with the header checked first, and the quota, slot and per-slot limits,
+which announcer breaks and voice tracks share. A voice track is always a DJ break. Uploads and
+cancels count against the station's `requests_per_minute`, shared by every open page; reading
+the open slot does not. A cancel finds only voice tracks, so a page cannot drop an announcer's
+break, and the announcer routes list, look up and cancel only announcer breaks, so an announcer
+token cannot see or drop an operator's voice track. Anyone who can sign in to the web UI can already control the station, so a voice track
+gives them no new power over it.
+
+In the browser, the microphone is asked for only when Record is pressed, and every track of the
+stream is stopped when the recording stops, is discarded, or the page signs out, and recording
+stops by itself when the Voice tracks tab is left or the page is hidden, so the microphone is
+never left open in the background. The browser
+needs a secure context for the microphone: HTTPS, or `localhost` on the same computer. The take
+stays in the page until it is booked, and only the WAV made from it is sent.
+
 On-air safety: nothing an announcer does runs on the audio thread or waits for it. The breaks are
 mixed by the render-ahead worker one song ahead, as liners are; the mix bus only marks a break
 on the air through a short lock; the desk writes its log lines after releasing that lock. A break
@@ -414,8 +454,36 @@ processed decoding, the intro lift, the duration probe, liner and cart decoding 
 the ALAC transcoder for browser playback. A library file or a liner that probes as a playlist can
 therefore reach no network address. The encoders that read raw samples AutoDJ writes to their
 pipe (the stream encoder and the mastering chain, `-f f32le -i pipe:0`) probe nothing and need no
-whitelist. Only break uploads also force the demuxer, because liners, carts and library files may
+whitelist. Only break and matched intro uploads also force the demuxer, because liners, carts and library files may
 legitimately be any type FFmpeg reads.
+
+### Matched intros
+
+Matched intros (#127) are voice clips an operator attaches to a song, or to the song's artist, in
+Track info. Their routes, `/api/intros` and `/api/stations/<slug>/intros`, are browser routes:
+they need the signed-in session when `access_token` is set and an allowed `Origin` for an upload
+or a delete, like every other change, and never take a machine token. An upload has the liner
+upload's limits: the middleware caps the body at `[server] liner_upload_max_mib` plus 64 KiB
+before any route reads it, the declared length is checked again, the body must arrive within 60
+seconds plus one second per 256 KiB, the type must be a liner audio type (415 for any other), and
+the file streams to a hidden part file under a name the server makes up (`intro-<id><ext>`) in
+the station's `intros` folder, never a name from the request. It is then decoded the way an
+announcer break is, with the header checked first, the demuxer forced, at most 60 seconds, on the
+one decode thread; a file that does not decode or holds no speech is refused and deleted. The
+song is named by its library ID, which must be a song in the library; an artist intro takes the
+artist from that song's record, so no free text becomes a match rule. Each station keeps at most
+2000 intros. Listen serves only a file named by an intro the station keeps, never a path, and
+refuses anything but a regular file. An intro in the file that is not valid is skipped (it never
+plays), logged and said in Track info, and written back unchanged with every save; a file that is
+not a file of intros at all is set aside; one that cannot be read just now is never written over.
+
+On the air, an intro is chosen and decoded by the render-ahead worker one song ahead and mixed into
+the song change like a break; the mix bus only reports it heard by adding to a queue that never
+waits, and the station's tick writes when it aired. A matched intro takes the place of the
+automatic liner at that change, and a DJ break booked for the change wins over it. Its chance is
+rolled on its own random source, so the rotation tester and the hour preview keep predicting the
+songs the station picks. A library scan removes the intros of songs it found gone only when it
+read every folder, so a share that is away loses none.
 
 ## Radio stream listening
 
@@ -433,7 +501,7 @@ operator- or file-controlled text), sends `Content-Security-Policy: default-src 
 script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'`,
 `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`, and loads only
 `/modules/status-page.js` and `/modules/status-page.css`, which were already public with the
-rest of `/modules/`. It has no forms or controls, so framing it elsewhere gains nothing.
+rest of `/modules/`. Like every response, it cannot be framed by another site.
 
 Every station has the same two public surfaces under its own name:
 `GET|HEAD /api/stations/<slug>/nowplaying` and `GET|HEAD /stations/<slug>/status`. The default
@@ -451,6 +519,27 @@ can read it) and its page answers 503 with its name and "off air". Like the stre
 shows that the slug exists and gives the station's configured name; that is accepted, since a
 station's name is public whenever it is on air. Listener Basic credentials protect only a
 station's stream, never its feed or page, as for the default station.
+
+The player page and embeddable player (`GET|HEAD /player` and `/embed`, and
+`/stations/<slug>/player` and `/embed` for a configured slug) are public in the same way as the
+status page, but each answers 404 until the station's `[player_page] enabled` or `embed` turns it
+on, so a station exposes nothing new by default. They render the same public snapshot as the
+status page, HTML-escaped, plus the station's public stream path; never a file path, credential,
+token, internal host or pairing state. A station's listener password is never put in either page:
+the browser asks the listener, as any radio player would. The pages have no forms and no controls
+beyond listening; their script fetches only the feed named in `data-feed` and plays only the
+`.mp3` path named in `data-stream`, each refused unless it is a path that resolves to the page's
+own origin, and the policy (`default-src 'none'; script-src 'self'; style-src 'self';
+connect-src 'self'; media-src 'self'; base-uri 'none'; form-action 'none'`) refuses anything
+else. Nothing loads or plays until the listener presses Play, and Stop closes the connection, so
+an open page does not hold a listener slot; listener limits, bans and Basic credentials apply to
+the stream exactly as for any other player. The full page adds `frame-ancestors 'none'` and
+`X-Frame-Options: DENY`. The embeddable player is made to be framed: its `frame-ancestors` is
+`'self'` plus the origins in `embed_origins` (checked as canonical `http(s)://host[:port]`
+origins at startup, so a value cannot inject other directives), or `*` when the operator lists
+`"*"`. Clickjacking it can at most start or stop playback in the visitor's own browser, which
+changes nothing on the server. Its `?theme=` parameter is accepted only as `light` or `dark`,
+and anything else is ignored. The volume is kept in the visitor's own browser storage.
 
 Configured webhooks make outbound HTTP requests to operator-chosen URLs after track
 changes. Each station has its own (`[[stations.<slug>.webhooks]]`), which receive only that

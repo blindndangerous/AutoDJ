@@ -219,7 +219,8 @@ def snapshot_player(player: Any) -> PlayerSnapshot:
         cfg = copy.deepcopy(player._cfg)
         settings = {name: getattr(player, name) for name in _COPIED if hasattr(player, name)}
         clock = getattr(player, "_clock", None)
-        snapshot_clock = dict(clock) if clock else None
+        # Deep, so nothing the copy holds (the restart minutes) is shared.
+        snapshot_clock = copy.deepcopy(clock) if clock else None
         clock_status = getattr(player, "_clock_status", None)
         related = getattr(player, "_related_artists", None)
         related_tracks = getattr(player, "_related_tracks", None)
@@ -727,7 +728,7 @@ _ALL_MATCHING = re.compile(r"all \d[\d,]* matching entries")
 
 def _step_key(reason: str) -> str:
     """A skipped-step reason without the count that changes from pick to pick."""
-    return _ALL_MATCHING.sub("all matching entries", reason)
+    return _ALL_MATCHING.sub("all matching entries", re.sub(r"^Step \d+: ", "", reason))
 
 
 def _dmca_limit(text: str) -> str:
@@ -785,6 +786,30 @@ class Progress:
     fraction: float = 0.0
 
 
+def average_length(entries: Iterable[Any]) -> float:
+    """The average length of *entries* that have one: what a song without a length counts as."""
+    lengths = [entry.length for entry in entries if entry.length > 0]
+    return sum(lengths) / len(lengths) if lengths else _FALLBACK_LENGTH_S
+
+
+def song_seconds(player: Player, entry: Any, average: float) -> float:
+    """How long *entry* plays before the next song starts, as a dry run times it.
+
+    From its saved start to its segue or outro with saved-point
+    transitions, its length less the crossfade otherwise; *average* when
+    that comes to a second or less.  The hour preview times its songs the
+    same way (:mod:`autodj.hour_preview`).
+    """
+    playback = player._cfg.playback
+    if playback.transition_mode == "saved_points":
+        begin, segue = player._clock_music_span(entry)
+        seconds = segue - begin
+    else:
+        crossfade = float(getattr(playback, "crossfade_seconds", 0.0) or 0.0)
+        seconds = (entry.length or 0.0) - crossfade
+    return seconds if seconds > 1.0 else average
+
+
 def simulate(
     source: SimulationSource,
     request: SimulationRequest,
@@ -835,9 +860,7 @@ def _simulate(
         hours = DEFAULT_HOURS
     limit = request.picks if request.picks is not None else MAX_PICKS
     end = start + (hours if hours is not None else MAX_HOURS) * 3600.0
-    lengths = [entry.length for entry in entries if entry.length > 0]
-    average = sum(lengths) / len(lengths) if lengths else _FALLBACK_LENGTH_S
-    crossfade = float(getattr(player._cfg.playback, "crossfade_seconds", 0.0) or 0.0)
+    average = average_length(entries)
     from autodj._bridge import PlayerBridge
 
     bridge = PlayerBridge(player=player, sim=player._sim, library=library, ledger=player._ledger)
@@ -850,12 +873,7 @@ def _simulate(
         return player._cfg.playback.transition_mode == "saved_points"
 
     def duration(entry: Any) -> float:
-        if station_mode():
-            begin, segue = player._clock_music_span(entry)
-            seconds = segue - begin
-        else:
-            seconds = (entry.length or 0.0) - crossfade
-        return seconds if seconds > 1.0 else average
+        return song_seconds(player, entry, average)
 
     def when(stamp: float) -> str:
         return datetime.fromtimestamp(stamp, schedule.zone).isoformat(timespec="minutes")
@@ -1122,10 +1140,19 @@ def _report(
 ) -> dict[str, Any]:
     plays = tally.plays
     by_path = {entry.path: entry for entry in entries}
-    song_counts = [plays.get(entry.path, 0) for entry in entries]
-    never = [entry for entry in entries if not plays.get(entry.path)]
+    # With Count versions as one song, a song's versions share one row, named
+    # by its first version; otherwise each file is a song.
+    versions = player._song_versions()
+    songs: dict[str, tuple[Any, int]] = {}
+    for entry in entries:
+        song = versions.song(entry.path) if versions is not None else entry.path
+        first, count = songs.get(song, (entry, 0))
+        songs[song] = (first, count + plays.get(entry.path, 0))
+    song_counts = [count for _first, count in songs.values()]
+    never = [first for first, count in songs.values() if not count]
     most = sorted(
-        (path for path in plays if path in by_path), key=lambda path: (-plays[path], path)
+        ((first, count) for first, count in songs.values() if count),
+        key=lambda pair: (-pair[1], pair[0].path),
     )[:5]
 
     artists: dict[str, tuple[str, int]] = {}
@@ -1152,7 +1179,9 @@ def _report(
                 "never_played": len(unplayed),
                 "never_played_sample": sorted(entry.display_name for entry in unplayed)[:SAMPLE],
                 "skipped": sum(
-                    count for reason, count in tally.steps.items() if reason.startswith(label)
+                    count
+                    for reason, count in tally.steps.items()
+                    if re.sub(r"^Step \d+: ", "", reason).startswith(label)
                 ),
             }
         )
@@ -1177,19 +1206,18 @@ def _report(
             "final_mode": "random" if player._pure_shuffle else player._cfg.playback.pick_mode,
             "final_clockwheel": clock.get("name"),
             "dmca": bool(player._state.dmca_enabled),
+            "versions_as_one_song": bool(player._state.rules.versions_as_one_song),
         },
         "picks": sum(plays.values()),
         "liners": tally.liners,
         "modes": dict(tally.modes.most_common()),
         "songs": {
-            "library": len(entries),
-            "played": len(entries) - len(never),
+            "library": len(songs),
+            "played": len(songs) - len(never),
             **_spread(song_counts),
             "never_played": len(never),
             "never_played_sample": sorted(entry.display_name for entry in never)[:SAMPLE],
-            "most_played": [
-                {"song": by_path[path].display_name, "plays": plays[path]} for path in most
-            ],
+            "most_played": [{"song": first.display_name, "plays": count} for first, count in most],
         },
         "artists": {
             "library": len(artists),
@@ -1305,6 +1333,7 @@ def report_sections(report: Mapping[str, Any]) -> list[dict[str, Any]]:
             f"Picked {counted(report['picks'], 'song')} and {counted(report['liners'], 'liner')}.",
             f"Song picking at the start: {mode}.",
             f"DMCA limits: {'on' if picking['dmca'] else 'off'}.",
+            "Versions of a song count as one song." if picking.get("versions_as_one_song") else "",
             f"Seed {report['seed']}. Use the same seed to repeat this run exactly.",
             f"The run took {_average(report['elapsed_seconds'])} seconds. Nothing on air changed.",
         ],

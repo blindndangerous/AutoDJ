@@ -20,11 +20,19 @@
 // Lowercase n = skip, uppercase N (Shift+N) = speak next track.
 // Shift+L speaks the current lyric line; lowercase l is unused.
 // s/S and m/M are shuffle and mute in either case, so no status key may
-// use them.  Status keys: T N R B K L E V Q J.
+// use them.  Status keys: T N R B K L E V Q J H.
 //
 // Reserved for the cart wall (modules/cart-wall.js), which handles them
 // only while focus is on the wall: the digits, minus, equals, Page Up and
 // Page Down.  No shortcut here may use them.
+//
+// Reserved for the voice tracker (modules/voice-tracker.js): Alt+R, only
+// while the Voice tracks tab shows.  Every shortcut here ignores Alt, and
+// Alt with an arrow (clockwheel steps) is the page's other Alt shortcut.
+// Alt+R is free in Firefox, Chrome and Edge on Windows (no menu or
+// browser command uses it; Firefox's menu bar keys are F E V S B T H),
+// the page gives no element accesskey="r", and NVDA and JAWS pass it
+// through to the page in browse and focus mode alike.
 //
 // WCAG 2.1.4: single-key shortcuts can be switched off with the
 // Settings > Keyboard checkbox.  The choice is kept per browser in
@@ -137,6 +145,8 @@ export function installHotkeys({
   seekDelta, getBpm,
   getTrack, getNextTrack, getRemaining, getLyricLine,
   getPosition, getQueue, getJobStatus,
+  // Shift+H: says how the hour lands, from the hour preview (#126).
+  speakHour = null,
   isEnabled = () => true,
   shortcutToggle = null,
   // What Space / k do: Play / Pause, or in stream mode start or stop
@@ -283,6 +293,10 @@ export function installHotkeys({
         break;
       case "J":
         srSpeak(getJobStatus ? getJobStatus() : "No library job has run.");
+        break;
+      case "H":
+        if (speakHour) void speakHour();
+        else srSpeak("No hour preview yet.");
         break;
       case "?":
         if (!toggleShortcutsModal()) return;

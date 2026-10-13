@@ -77,7 +77,7 @@ from starlette.types import Receive, Scope, Send
 
 # PlayerBridge lives in autodj._bridge; it is re-exported here.
 from autodj._bridge import PlayerBridge
-from autodj.breaks_api import ANNOUNCER_SCOPES, UPLOAD_PATH
+from autodj.breaks_api import ANNOUNCER_SCOPES, UPLOAD_PATH, VOICE_UPLOAD_PATH
 from autodj.breaks_api import MULTIPART_OVERHEAD_BYTES as BREAK_MULTIPART_OVERHEAD
 from autodj.categories_api import install_categories
 from autodj.config import BreaksConfig
@@ -92,8 +92,10 @@ from autodj.listener_access import (
     normalize_address,
 )
 from autodj.machine_tokens import MachineTokenStore
+from autodj.matched_intros_api import UPLOAD_PATH as INTRO_UPLOAD_PATH
 from autodj.model_identity import CachedModelCommit
 from autodj.pairing import DeviceRegistry
+from autodj.player_page import install_player_pages
 from autodj.scheduler import system_timezone
 from autodj.secret_files import machine_tokens_path, paired_devices_path
 from autodj.security import (
@@ -843,7 +845,22 @@ def create_app(
                     "A rotation test was still running %.2f seconds after it was cancelled",
                     _SHUTDOWN_TIMEOUT_S,
                 )
-            writers_quiesced, cache_closed = await stations.shutdown(library, _SHUTDOWN_TIMEOUT_S)
+            # So does an hour preview (#126): it ends within its own time limit,
+            # and a worker that has not stopped keeps the library open.
+            hour_previews = getattr(app.state, "hour_previews", None)
+            readers_stopped = True
+            if hour_previews is not None and not await asyncio.to_thread(
+                hour_previews.shutdown, _SHUTDOWN_TIMEOUT_S
+            ):
+                readers_stopped = False
+                logger.error(
+                    "An hour preview was still reading the library %.2f seconds after "
+                    "shutdown began; the library is left open rather than closed under it",
+                    _SHUTDOWN_TIMEOUT_S,
+                )
+            writers_quiesced, cache_closed = await stations.shutdown(
+                library, _SHUTDOWN_TIMEOUT_S, readers_stopped=readers_stopped
+            )
             from autodj.mastering import kill_leftover_processes
 
             # A player that would not stop kept its mastering process; no
@@ -955,11 +972,14 @@ def create_app(
         "/api/pair": lambda: PAIRING_BODY_MAX_BYTES,
         "/api/liners/upload": lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
         "/api/carts/upload": lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
+        # Matched intros (#127) have the liner upload's cap.
+        INTRO_UPLOAD_PATH: lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
         "/api/stereo-tool-presets/upload": lambda: MAX_PRESET_BYTES + _MULTIPART_OVERHEAD_BYTES,
         "/api/schedule": lambda: _SCHEDULE_BODY_MAX_BYTES,
         "/api/machine-tokens": lambda: SMALL_BODY_MAX_BYTES,
         # The largest break any station takes; each station checks its own.
         UPLOAD_PATH: lambda: _break_upload_cap(stations),
+        VOICE_UPLOAD_PATH: lambda: _break_upload_cap(stations),
         "/api/rotation-test": lambda: SMALL_BODY_MAX_BYTES,
         "/api/library/tags": lambda: TAG_BODY_MAX_BYTES,
         WORKER_PREFIX + "result": lambda: RESULT_BODY_MAX_BYTES,
@@ -1320,6 +1340,10 @@ def create_app(
         except KeyError:
             raise HTTPException(status_code=404, detail="Not Found") from None
         return status_page(station, by_name=True)
+
+    # The player page and embeddable player (#52), off unless [player_page]
+    # turns them on for the station.
+    install_player_pages(app, stations)
 
     # ------------------------------------------------------------------
     # Radio stream (stream mode only; 404 otherwise)
@@ -2168,6 +2192,7 @@ def _extra_station(
         paths=StationPaths.for_station(spec.cfg, slug),
         preset=spec.cfg.playback.stereotool_preset,
         build=build,
+        player_page=spec.cfg.player_page,
     )
 
 

@@ -99,6 +99,7 @@ describe("page shortcut scope", () => {
   let muteClick;
   let volumeInput;
   let seekDelta;
+  let speakHour;
 
   beforeAll(() => {
     document.body.innerHTML = `
@@ -132,6 +133,7 @@ describe("page shortcut scope", () => {
     shuffleClick = vi.spyOn(shuffle, "click");
     muteClick = vi.spyOn(mute, "click");
     seekDelta = vi.fn();
+    speakHour = vi.fn(async () => {});
     volumeInput = vi.fn();
     volume.addEventListener("input", volumeInput);
     installHotkeys({
@@ -142,6 +144,7 @@ describe("page shortcut scope", () => {
       volSlider: volume,
       seekDelta,
       getBpm: () => 120,
+      speakHour,
     });
   });
 
@@ -297,12 +300,26 @@ describe("page shortcut scope", () => {
     expect(modal.open).toBe(false);
   });
 
+  it("speaks how the hour lands on Shift+H, from any tab", () => {
+    document.querySelector("#hotkey-help-modal").close();
+    document.querySelector("#panel-now").setAttribute("hidden", "");
+    speakHour.mockClear();
+    const event = keyEvent(document.querySelector("#plain"), "H", { shiftKey: true });
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "H" }));
+    expect(event.defaultPrevented).toBe(true);
+    expect(speakHour).toHaveBeenCalledOnce();
+    // Lowercase h is not a shortcut.
+    const lower = keyEvent(document.querySelector("#plain"), "h");
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "h" }));
+    expect(lower.defaultPrevented).toBe(false);
+  });
+
   it("works from any tab except Space and the volume arrows", () => {
     document.querySelector("#hotkey-help-modal").close();
     document.querySelector("#panel-now").setAttribute("hidden", "");
     const settingsTabLabel = document.querySelector("#native-tab-label");
 
-    for (const key of ["T", "N", "R", "B", "K", "L", "E", "V", "Q", "J"]) {
+    for (const key of ["T", "N", "R", "B", "K", "L", "E", "V", "Q", "J", "H"]) {
       const event = keyEvent(settingsTabLabel, key, { shiftKey: true });
       expect(event.defaultPrevented).toBe(true);
       window.dispatchEvent(new KeyboardEvent("keyup", { key }));

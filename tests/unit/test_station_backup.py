@@ -65,6 +65,7 @@ def _fill(cfg: AutoDJConfig) -> dict[Path, bytes]:
         put(base / "carts" / "jingle.wav", who + b" cart")
         put(base / "time_checks" / "03_05.wav", who + b" clip")
         put(base / "clockwheels" / "Night.json", who + b" wheel")
+        put(base / "intros" / "intro.wav", who + b" intro")
     put(cfg.index.index_dir / "profiles" / "Party.json", b"default profile")
     put(_station_dir(cfg, "nightowl") / "profiles" / "Party.json", b"owl profile")
     return written
@@ -90,6 +91,8 @@ def test_two_stations_round_trip(tmp_path: Path) -> None:
         "stations/nightowl/carts/jingle.wav",
         "stations/nightowl/time_checks/03_05.wav",
         "stations/nightowl/clockwheels/Night.json",
+        "stations/nightowl/intros/intro.wav",
+        "stations/nightowl/index/matched_intros.json",
         "stations/nightowl/profiles/Party.json",
     } <= names
     # A station never holds the shared categories, and nothing is stored twice.

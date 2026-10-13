@@ -34,6 +34,8 @@ def app_for(catalog, root):
     )
     player = SimpleNamespace(_cfg=cfg, _clock_status="Idle", _clock=None)
     player.configure_clock = Mock()
+    player.configure_clock_after_selection = Mock()
+    player.apply_clockwheel_update = Mock()
     library = SimpleNamespace(
         catalog=catalog,
         entry_for_path=lambda _path: None,
@@ -149,9 +151,48 @@ def test_select_keeps_the_place_of_the_active_clockwheel(tmp_path):
         cleared = call(routes, "POST", "/api/library/clock/active", ClockNameBody(name=None))
         assert cleared["active"] is None
         assert catalog.get_setting("clock") == {"name": None, "cursor": 0}
-        assert bridge.player.configure_clock.call_count == 3
+        assert bridge.player.configure_clock_after_selection.call_count == 3
         with pytest.raises(HTTPException, match="no clockwheel named 'Night'"):
             call(routes, "POST", "/api/library/clock/active", ClockNameBody(name="Night"))
+
+
+def test_active_clock_update_accepts_deferred_timing(tmp_path):
+    with LibraryCatalog(tmp_path / "library.sqlite") as catalog:
+        music, _liners = add_sources(catalog, tmp_path)
+        bridge, routes = app_for(catalog, tmp_path)
+        bridge.player.apply_clockwheel_update = Mock()
+        steps = [{"type": "music", "source": music["id"]}]
+        call(routes, "POST", "/api/library/clock", body(steps=steps))
+        call(routes, "POST", "/api/library/clock/active", ClockNameBody(name="Morning"))
+        result = call(
+            routes,
+            "PUT",
+            "/api/library/clock/{name}",
+            "Morning",
+            body(steps=steps),
+            "next_restart",
+        )
+        assert result["name"] == "Morning"
+        bridge.player.apply_clockwheel_update.assert_called_once_with("Morning", "next_restart")
+
+
+def test_active_clock_update_accepts_continue_timing(tmp_path):
+    with LibraryCatalog(tmp_path / "library.sqlite") as catalog:
+        music, _liners = add_sources(catalog, tmp_path)
+        bridge, routes = app_for(catalog, tmp_path)
+        bridge.player.apply_clockwheel_update = Mock()
+        steps = [{"type": "music", "source": music["id"]}]
+        call(routes, "POST", "/api/library/clock", body(steps=steps))
+        call(routes, "POST", "/api/library/clock/active", ClockNameBody(name="Morning"))
+        call(
+            routes,
+            "PUT",
+            "/api/library/clock/{name}",
+            "Morning",
+            body(steps=steps),
+            "continue",
+        )
+        bridge.player.apply_clockwheel_update.assert_called_once_with("Morning", "continue")
 
 
 def test_select_is_not_undone_by_a_buffered_cursor_update(tmp_path):
@@ -188,7 +229,9 @@ def test_select_is_not_undone_by_the_player_saving_before_it_reloads(tmp_path):
         call(routes, "POST", "/api/library/clock/active", ClockNameBody(name="Morning"))
         ledger = bridge.library.ledger
         old = {"name": "Morning", "cursor": 3, "resync_minutes": [0]}
-        bridge.player.configure_clock.side_effect = lambda: ledger.remember_setting("clock", old)
+        bridge.player.configure_clock_after_selection.side_effect = lambda: ledger.remember_setting(
+            "clock", old
+        )
         call(routes, "POST", "/api/library/clock/active", ClockNameBody(name="Night"))
         ledger.flush()
         assert catalog.get_setting("clock") == {"name": "Night", "cursor": 0}
@@ -254,7 +297,7 @@ def test_create_edit_duplicate_rename_delete(tmp_path):
             routes, "PUT", "/api/library/clock/{name}", "DAY", body("DAY", [liner, step], [15])
         )
         assert [s["type"] for s in updated["steps"]] == ["liner", "music"]
-        bridge.player.configure_clock.assert_called_once_with()
+        bridge.player.apply_clockwheel_update.assert_called_once_with("DAY", "immediate")
         with pytest.raises(HTTPException, match="Use Rename"):
             call(routes, "PUT", "/api/library/clock/{name}", "DAY", body("Other", [step]))
         listed = call(routes, "DELETE", "/api/library/clock/{name}", "DAY")
