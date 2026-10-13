@@ -32,9 +32,11 @@ import json
 import os
 import shutil
 import sqlite3
+import stat
 import tempfile
 import uuid
 import zipfile
+from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
@@ -83,6 +85,25 @@ STATION_FOLDERS = ("liners", "carts", "time_checks", "profiles", "clockwheels")
 
 class BackupError(RuntimeError):
     """Raised when a backup cannot be written or an archive cannot be restored."""
+
+
+def _within_root(path: Path, root: Path) -> None:
+    """Do not silently copy linked files from outside a configured backup root."""
+    if not path.resolve().is_relative_to(root.resolve()):
+        raise BackupError(f"{path} points outside backup folder {root}; remove the link first")
+
+
+def _folder_files(root: Path) -> Iterator[Path]:
+    for directory, folders, files in os.walk(root, followlinks=False):
+        for name in folders:
+            path = Path(directory) / name
+            if path.is_symlink() or path.is_junction():
+                raise BackupError(f"linked backup folder {path}; use a real folder instead")
+        for name in files:
+            path = Path(directory) / name
+            _within_root(path, root)
+            if path.is_file():
+                yield path
 
 
 def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
@@ -170,6 +191,8 @@ def _folder_roots(roots: dict[str, Path]) -> dict[str, Path]:
 def _snapshot_index(active: Path, snapshot: Path) -> None:
     """Copy the live index generation, its manifest and SQLite data into *snapshot*."""
     snapshot.mkdir(parents=True)
+    for name in INDEX_FILES:
+        _within_root(active / name, active)
     with im.publication_lock(active):
         try:
             manifest: im.IndexManifest | None = im.require_manifest(active)
@@ -184,6 +207,7 @@ def _snapshot_index(active: Path, snapshot: Path) -> None:
                 (manifest.tracks_file, manifest.tracks_sha256),
                 (manifest.vectors_file, manifest.vectors_sha256),
             ):
+                _within_root(active / name, active)
                 shutil.copyfile(active / name, snapshot / name)
                 if im.sha256_file(snapshot / name) != digest:
                     raise BackupError(f"{active / name} does not match its SHA-256 in the manifest")
@@ -251,10 +275,11 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
                 key = f"stations/{spec.slug}/index"
                 for name in STATION_FILES:
                     path = roots[key] / name
+                    _within_root(path, roots[key])
                     if path.is_file():
                         members[f"{key}/{name}"] = path
             for key, root in folders.items():
-                paths = root.glob("*.sts") if key == "stereo-tool-presets" else root.rglob("*")
+                paths = root.glob("*.sts") if key == "stereo-tool-presets" else _folder_files(root)
                 for path in sorted(paths):
                     if path.is_file() and (key != "stereo-tool-presets" or not path.is_symlink()):
                         members[f"{key}/{path.relative_to(root).as_posix()}"] = path
@@ -393,6 +418,10 @@ def _restore(archive: zipfile.ZipFile, roots: dict[str, Path], *, force: bool) -
     targets = {name: _target(roots, name) for name in files}
     if sorted(files) != sorted(name for name in archive.namelist() if name != "manifest.json"):
         raise BackupError("the archive's files do not match its manifest.json")
+    for name, target in targets.items():
+        _within_root(target, roots[_split(name)[0]])
+        if stat.S_ISLNK(archive.getinfo(name).external_attr >> 16):
+            raise BackupError(f"linked file in archive: {name}")
     keys = list(dict.fromkeys(_split(name)[0] for name in files))
     folders = [key for key in keys if not _is_files(key)]
     for at, key in enumerate(folders):

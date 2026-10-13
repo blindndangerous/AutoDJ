@@ -1171,6 +1171,13 @@ list and the clips a cart can use.
 
 ### Backups and doctor
 
+Backup refuses file links that point outside their configured backup folder and linked
+subfolders (including Windows junctions). This prevents unrelated files from entering an
+archive through a link. File links to another file inside the same folder are saved as
+ordinary files. Uploaded Stereo Tool preset links are still excluded. Configure a folder
+directly if it is an intended backup source. Restore refuses linked archive entries and
+destinations that point outside their configured folder.
+
 `autodj backup` includes every configured station. The default station's files keep their names
 in the archive; another station's are under `stations/<slug>/`, for example
 `stations/nightowl/index/web_state.json` and `stations/nightowl/liners/...`. A folder two

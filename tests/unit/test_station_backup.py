@@ -327,3 +327,128 @@ def test_restore_replaces_only_the_station_files_in_the_archive(tmp_path: Path) 
 
     assert (folder / "web_state.json").read_bytes() == b"saved"
     assert (folder / "carts.json").read_bytes() == b"current carts"
+
+
+def _link(link: Path, target: Path, *, directory: bool = False) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=directory)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+
+@pytest.mark.parametrize("station", ["default", "nightowl"])
+def test_backup_refuses_external_file_links(tmp_path: Path, station: str) -> None:
+    cfg = _config(tmp_path)
+    base = cfg.index.active_dir if station == "default" else _station_dir(cfg, station)
+    liners = base / "liners"
+    liners.mkdir(parents=True)
+    (liners / "ordinary.wav").write_bytes(b"liner")
+    secret = tmp_path / "private.txt"
+    secret.write_bytes(b"private")
+    link = liners / "linked.wav"
+    _link(link, secret)
+    archive = tmp_path / "backup.zip"
+    with pytest.raises(BackupError, match="outside backup folder"):
+        create_backup(cfg, archive, force=False)
+    assert not archive.exists()
+    link.unlink()
+    create_backup(cfg, archive, force=False)
+    with zipfile.ZipFile(archive) as opened:
+        assert any(name.endswith("liners/ordinary.wav") for name in opened.namelist())
+        assert all(opened.read(name) != b"private" for name in opened.namelist())
+
+
+def test_backup_keeps_in_root_file_links_as_audio(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    liners = cfg.index.active_dir / "liners"
+    liners.mkdir()
+    original = liners / "original.wav"
+    original.write_bytes(b"audio")
+    _link(liners / "alias.wav", original)
+    archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
+    with zipfile.ZipFile(archive) as opened:
+        assert opened.read("liners/alias.wav") == b"audio"
+
+
+@pytest.mark.parametrize("station", ["default", "nightowl"])
+def test_backup_refuses_linked_subfolders(tmp_path: Path, station: str) -> None:
+    cfg = _config(tmp_path)
+    base = cfg.index.active_dir if station == "default" else _station_dir(cfg, station)
+    liners = base / "liners"
+    liners.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "private.wav").write_bytes(b"private")
+    _link(liners / "linked", outside, directory=True)
+    with pytest.raises(BackupError, match="linked backup folder"):
+        create_backup(cfg, tmp_path / "backup.zip", force=False)
+
+
+@pytest.mark.parametrize("station", ["default", "nightowl"])
+def test_state_links_cannot_copy_or_restore_external_data(tmp_path: Path, station: str) -> None:
+    cfg = _config(tmp_path)
+    base = cfg.index.active_dir if station == "default" else _station_dir(cfg, station)
+    base.mkdir(parents=True, exist_ok=True)
+    state = base / "web_state.json"
+    state.write_text("{}")
+    archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
+    state.unlink()
+    external = tmp_path / "private.json"
+    external.write_text("private")
+    _link(state, external)
+    with pytest.raises(BackupError, match="outside backup folder"):
+        create_backup(cfg, tmp_path / "unsafe.zip", force=False)
+    with pytest.raises(BackupError, match="outside backup folder"):
+        restore_backup(cfg, archive, force=True)
+    assert external.read_text() == "private"
+
+
+def test_backup_refuses_windows_junction(tmp_path: Path) -> None:
+    import os
+    import subprocess
+
+    if os.name != "nt":
+        pytest.skip("Windows junction test")
+    cfg = _config(tmp_path)
+    liners = _station_dir(cfg, "nightowl") / "liners"
+    liners.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "private.wav").write_bytes(b"private")
+    junction = liners / "linked"
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    try:
+        with pytest.raises(BackupError, match="linked backup folder"):
+            create_backup(cfg, tmp_path / "backup.zip", force=False)
+        assert (outside / "private.wav").read_bytes() == b"private"
+    finally:
+        junction.rmdir()
+
+
+def test_restore_refuses_archive_symlink_entries(tmp_path: Path) -> None:
+    import stat
+
+    cfg = _config(tmp_path)
+    archive = tmp_path / "link.zip"
+    name = "liners/id.wav"
+    info = zipfile.ZipInfo(name)
+    info.create_system = 3
+    info.external_attr = (stat.S_IFLNK | 0o777) << 16
+    with zipfile.ZipFile(archive, "w") as opened:
+        opened.writestr(info, "../../private.txt")
+        opened.writestr(
+            "manifest.json",
+            json.dumps(
+                {
+                    "autodj_version": current_version(),
+                    "files": [name],
+                }
+            ),
+        )
+    with pytest.raises(BackupError, match="linked file in archive"):
+        restore_backup(cfg, archive, force=True)
+    assert not (cfg.index.active_dir / name).exists()

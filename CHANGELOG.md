@@ -426,6 +426,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Backups refuse links to files outside a configured backup folder and linked subfolders,
+  including Windows junctions, for both default and named stations. Restore also checks
+  linked destinations before replacing any files (#193).
+
 - Several stations on one server (#70, #141):
   - Restarting audio processing releases finished process objects and their Windows handles
     during playback instead of retaining them until the station stops.
