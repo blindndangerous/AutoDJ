@@ -35,6 +35,7 @@ function controls(els) {
     ...RULES.flatMap((rule) => [box(els, rule, "Tracks"), box(els, rule, "Minutes")]),
     els.useRelatedArtists,
     els.useRelatedTracks,
+    els.versionsAsOneSong,
   ];
 }
 
@@ -48,6 +49,7 @@ function values(els) {
   }
   result.use_related_artists = els.useRelatedArtists.checked;
   result.use_related_tracks = els.useRelatedTracks.checked;
+  result.versions_as_one_song = els.versionsAsOneSong.checked;
   return result;
 }
 
@@ -56,7 +58,8 @@ function sameRules(a, b) {
   return RULES.every((rule) => Number(a[rule]?.tracks) === Number(b[rule]?.tracks)
       && Number(a[rule]?.minutes) === Number(b[rule]?.minutes))
     && Boolean(a.use_related_artists) === Boolean(b.use_related_artists)
-    && Boolean(a.use_related_tracks) === Boolean(b.use_related_tracks);
+    && Boolean(a.use_related_tracks) === Boolean(b.use_related_tracks)
+    && Boolean(a.versions_as_one_song) === Boolean(b.versions_as_one_song);
 }
 
 // [control, message] for the first box holding a value the server would
@@ -90,6 +93,7 @@ function write(els, incoming) {
   }
   els.useRelatedArtists.checked = Boolean(incoming?.use_related_artists);
   els.useRelatedTracks.checked = Boolean(incoming?.use_related_tracks);
+  els.versionsAsOneSong.checked = Boolean(incoming?.versions_as_one_song);
 }
 
 // The status line under Use related artists or Use related tracks, part

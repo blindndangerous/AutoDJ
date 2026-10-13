@@ -68,6 +68,7 @@ from autodj.repeat_rules import (
     RelatedTracks,
     RepeatFilter,
     RepeatRules,
+    SongVersions,
     TrackKeyCache,
     artist_key,
     build_filter,
@@ -1498,6 +1499,7 @@ class Player:
                 condition_cache=cache,
                 closed_categories=context.closed_categories if hours else None,
                 normalized_history=normalized_history,
+                versions=self._song_versions(),
             )
 
         # Like the other pick modes, relax rather than stop the music: first
@@ -1821,7 +1823,7 @@ class Player:
         fresh = [other for other in audible if other.path not in recent]
         for pool in ([other for other in fresh if context.repeat(other)], fresh, audible):
             if pool:
-                chosen = self._chooser().choice(pool)  # nosec B311 -- music selection
+                chosen = self._choose(pool)
                 logger.info(
                     "Dayparting: %s is outside its category's %s; %s plays instead",
                     entry.display_name,
@@ -3284,6 +3286,10 @@ class Player:
         if minute_paths:
             held = set(paths)
             paths = deque([*paths, *(path for path in minute_paths if path not in held)])
+        versions = self._song_versions()
+        if versions is not None:
+            # The track rule holds back every version of a song that played.
+            paths = deque(versions.with_versions(paths))
         playing = self._state.current_track
         protected = {e.path for e in (pending, starting, playing) if e is not None}
         if latest is not None:
@@ -3384,6 +3390,30 @@ class Player:
                 self._key_cache = cached
             return cached[1]
 
+    def _song_versions(self) -> SongVersions | None:
+        """The library's songs with several versions, with Count versions as one song on.
+
+        ``None`` with the setting off or when no song has a second version.
+        Built once per library snapshot, from the cached track keys.
+        """
+        if not self._state.rules.versions_as_one_song:
+            return None
+        library = getattr(self, "_library", None)
+        collection = library if library is not None else getattr(self, "_sim", None)
+        entries = collection.entries_snapshot() if collection is not None else ()
+        cached = getattr(self, "_versions_cache", None)
+        if cached is None or cached[0] is not entries:
+            cached = (entries, SongVersions(entries, self._track_keys()))
+            self._versions_cache = cached
+        return cached[1] or None
+
+    def _choose(self, pool: Sequence[IndexEntry]) -> IndexEntry:
+        """A random entry of *pool*; with Count versions as one song, each song equally likely."""
+        versions = self._song_versions()
+        if versions is None:
+            return self._chooser().choice(pool)  # nosec B311 -- music selection
+        return versions.choice(pool, self._chooser())
+
     def restore_repeat_history(self, catalog: Any, *, refresh: bool = False) -> int:
         """Load the plays from before a restart into the repeat rules.
 
@@ -3437,6 +3467,7 @@ class Player:
 
         entries = self.playable_entries()
         repeat = context.repeat
+        versions = self._song_versions()
         ledger = self._ledger
         history = (
             ledger.last_played()
@@ -3457,9 +3488,11 @@ class Player:
             if history is not None and entries:
                 from autodj.clockwheel import least_recent
 
-                return least_recent(entries, history, self._random, allowed=allowed)
+                return least_recent(
+                    entries, history, self._random, allowed=allowed, versions=versions
+                )
             pool = [entry for entry in entries if allowed(entry)]
-            return self._chooser().choice(pool) if pool else None  # nosec B311 -- non-security
+            return self._choose(pool) if pool else None
 
         chosen = choose(excluded)
         if chosen is None:
@@ -3615,6 +3648,9 @@ class Player:
         }
         if self._random is not None:
             search["rng"] = self._random
+        versions = self._song_versions()
+        if versions is not None:
+            search["song_of"] = versions.song
 
         # --- Normal similarity search ---
         try:
@@ -3695,7 +3731,7 @@ class Player:
             for excluded in tiers:
                 pool = [entry for entry in candidates if entry.path not in excluded]
                 if pool:
-                    chosen = self._chooser().choice(pool)  # nosec B311 -- non-security
+                    chosen = self._choose(pool)
                     break
             if chosen is not None:
                 break

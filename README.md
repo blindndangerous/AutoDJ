@@ -530,7 +530,10 @@ own limits. The page shows its fixed location, `index/<name>/related-artists.tom
 **Use related tracks**, off by default, does the same for groups of tracks that sound alike,
 such as a song and one that samples it, written as "Artist - Title" in
 `index/<name>/related-tracks.toml`. AutoDJ copies a sample of each file there on first use and
-leaves your edits alone on upgrades. After editing a file, save the repeat settings to reload it. See [repeat rules](docs/track-selection.md#repeat-avoidance-and-discovery).
+leaves your edits alone on upgrades. After editing a file, save the repeat settings to reload it.
+**Count versions as one song**, also off by default, treats a radio edit, a remix and other
+versions by the same lead artist as one song: it comes up as often as a song with one file, and
+the track limit holds back all of its versions. See [repeat rules](docs/track-selection.md#repeat-avoidance-and-discovery).
 
 ### Multi-machine / NAS setups
 
