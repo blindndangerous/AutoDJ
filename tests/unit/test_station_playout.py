@@ -140,6 +140,59 @@ def test_speed_change_invalidates_prepared_incoming_music(station, transition_mo
     assert player._queue_pick_is_stale(rendered)
 
 
+@pytest.mark.parametrize("booked_break", [True, False])
+def test_speed_change_keeps_committed_break_and_pinned_render(station, booked_break):
+    player, (music, next_music, *_), _points = station
+    player._cfg.playback.music_speed_percent = 10.0
+    track = RenderedTrack(
+        music,
+        np.zeros((SR, 2), dtype=np.float32),
+        next_music,
+        0,
+        "none",
+        overlap_frames=SR,
+        break_events=((0, "booked-break", SR),) if booked_break else (),
+        playback_rate=1.1,
+        next_playback_rate=1.0,
+    )
+    if not booked_break:
+        player._slot_plan = SimpleNamespace(pinned=True, ending=next_music)
+
+    assert not player._queue_pick_is_stale(track)
+
+
+def test_speed_change_without_incoming_overlap_is_not_stale(station):
+    player, (music, next_music, *_), _points = station
+    player._cfg.playback.transition_mode = "regular"
+    player._cfg.playback.music_speed_percent = 10.0
+    track = RenderedTrack(
+        music,
+        np.zeros((SR, 2), dtype=np.float32),
+        next_music,
+        0,
+        "none",
+        playback_rate=1.1,
+        next_playback_rate=1.0,
+    )
+
+    assert not player._queue_pick_is_stale(track)
+
+
+def test_break_auto_placement_uses_rate_adjusted_song_intro(tmp_path):
+    from tests.unit._break_station import make_break, make_station
+
+    player, (music, next_music, *_), _points, desk = make_station(tmp_path)
+    player._cfg.playback.music_speed_percent = 10.0
+    item = make_break(desk, "speed-slot", seconds=1.0)
+    desk.add(item)
+    rendered_breaks = desk.take(item.slot_id, item.created_at)
+
+    rendered = player._render_track(music, next_music, 0, breaks=tuple(rendered_breaks))
+
+    assert rendered is not None
+    assert desk.get(item.break_id).mixed_as == "standalone"
+
+
 def test_seek_maps_source_position_to_rate_adjusted_output(station):
     player, (music, *_), _points = station
     player._cfg.playback.music_speed_percent = 10.0

@@ -3080,17 +3080,21 @@ class Player:
         has anything, because the queue takes priority.  A render with
         announcer breaks is never stale: the breaks name its next track.
         """
+        # A booked break is committed to this exact handoff. Keep its buffer
+        # intact; changing speed applies to the following render instead.
+        if track.break_events or self._pinned_before(track):
+            return False
         if track.playback_rate != self.music_playback_rate(track.entry):
             return True
-        if track.next_entry is not None and track.next_playback_rate != self.music_playback_rate(
-            track.next_entry
+        if (
+            track.overlap_frames > 0
+            and track.next_entry is not None
+            and track.next_playback_rate != self.music_playback_rate(track.next_entry)
         ):
             return True
         saved_points = (
             self._library is not None and self._cfg.playback.transition_mode == "saved_points"
         )
-        if track.break_events or self._pinned_before(track):
-            return False
         if saved_points:
             liners, head = self._station_queue(
                 track.entry if track.from_queue else None, track.reserved_liners
@@ -4148,7 +4152,7 @@ class Player:
         incoming_points_out = _music_output_points(incoming_points, rate_b)
         spoken: list[tuple[int, str, int]] = []
         if breaks:
-            spoken = self._add_breaks(breaks, incoming_points, add_clip)
+            spoken = self._add_breaks(breaks, incoming_points_out, add_clip)
         duck_db = self._break_duck_db() if spoken else 0.0
         incoming_intro = (
             max(
