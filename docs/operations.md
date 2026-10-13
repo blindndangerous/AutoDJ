@@ -593,7 +593,12 @@ working, since no field was removed or renamed.
   time zone (`[server] station_timezone`, the one the scheduler uses; the computer's time zone
   when it is not set). It is kept in memory only, so it starts again from the current count when
   AutoDJ restarts.
-- `uptime_seconds` counts whole seconds since this AutoDJ server started.
+- `uptime_seconds` counts whole seconds since this station started: for the default station,
+  since this AutoDJ server started; for another station, since it was last started.
+
+Each station has its own feed, with its own name, songs, listeners and stream path:
+`/api/nowplaying` for the default station, `/api/stations/<slug>/nowplaying` for any station
+(the default one is `default`). See [Several stations](#several-stations).
 
 `current_track` and `next_track` are `null` when unavailable. History is newest first.
 The feed never contains local file paths, internal IDs, credentials or pairing state.
@@ -631,10 +636,12 @@ separately if you need to restore secrets.
 
 `GET /status` is a public page for listeners, in the spirit of an Icecast status page: the
 station name, the song playing, the next song when **Show the next song publicly** is on, the
-number of listeners now, today's peak and how long AutoDJ has been running. It needs
+number of listeners now, today's peak and how long the station has been on air (**Uptime**, which
+says "Not on air" while the station is stopped). Every station
+has one at `/stations/<slug>/status`; `/status` is the default station's. It needs
 no pairing and does not load the paired app. The server writes every value into the page as
 plain text, so it works without JavaScript; with JavaScript, `/modules/status-page.js` polls
-`/api/nowplaying` every 15 seconds (skipping polls while the tab is hidden) and updates the
+the station's own feed every 15 seconds (skipping polls while the tab is hidden) and updates the
 text. Only the now-playing line is a live region: screen readers hear it, politely, when the
 song changes, and nothing else on a poll. A **Pause updates** toggle stops the polling until
 pressed again. In stream mode the page also links to the stream and
@@ -1058,6 +1065,9 @@ The rules:
   set it.
 - **Each relay target belongs to one station.** Two stations pushing to the same host, port and
   mount (or Shoutcast stream) are refused.
+- **A station without a `stream.station_name` is called by its slug**, for example `nightowl`, in
+  stream metadata and on its pages, so it never takes the default station's "AutoDJ". Two
+  stations given the same name are warned about at startup: listeners could not tell them apart.
 - **Unknown keys are warned about and ignored**, as in the root sections; the warning names the
   station's table. `autodj doctor` offers to remove an unknown key from a station section.
 - **Errors name the station**, for example
@@ -1079,27 +1089,80 @@ the addresses. These are public like `/stream.mp3`, and the station's own `liste
 `/status`, and also answers at `/stations/default.mp3`. A station's stream needs ffmpeg, even when
 the default station is browser-driven.
 
+Each station also has its own public status page and now-playing feed, for listeners and for
+other sites:
+
+- `/stations/<slug>/status`, the status page, with the station's name, song, listeners and links
+  to its stream and playlist. It polls the station's own feed, and only a feed on this server.
+- `/api/stations/<slug>/nowplaying`, the now-playing feed, in the same form as `/api/nowplaying`
+  (see [Now-playing feed and webhooks](#now-playing-feed-and-webhooks)).
+- Both are public without pairing, like the stream, but only for a configured station: any
+  other name needs a paired browser and then answers 404. The station's listener password
+  protects only its stream, not these.
+- The default station keeps `/status` and `/api/nowplaying`, and also answers as `default`
+  (`/stations/default/status`, `/api/stations/default/nowplaying`).
+- While a station is stopped, its stream, its feed and its status page all answer 503, "off air".
+  The page still shows the station's name and says it is off air right now; an open page notices
+  when the station is back on air and shows the song again. The feed answers
+  `{"detail": "That station is off air"}`.
+- Each station sends its own track-change webhooks, set in `config.local.toml` under
+  `[[stations.<slug>.webhooks]]`, with only that station's feed.
+
 Every control route of a station answers under `/api/stations/<slug>/`, for example
 `/api/stations/nightowl/status`, `/api/stations/nightowl/skip` or
 `/api/stations/nightowl/queue/add`; the default station keeps its `/api/...` addresses. These
 need a paired browser, like the default station's.
 
-- `GET /api/stations` lists every configured station: its slug, name, state (`stopped`, `idle`,
-  `playing` or `paused`), listener count, current song and stream address.
+- `GET /api/stations` lists every configured station: its slug, name, state (`stopped`,
+  `stopping`, `stuck stopping`, `idle`, `playing` or `paused`), listener count and current
+  song, and its public addresses: `status_path`, `nowplaying_path`, `stream_path` and
+  `m3u_path`. The stream and playlist are `null` for a default station that does not stream. For
+  example:
+
+  ```json
+  {"slug": "nightowl", "name": "Night Owl Radio", "state": "playing", "listeners": 3,
+   "title": "Artist — Song", "status_path": "/stations/nightowl/status",
+   "nowplaying_path": "/api/stations/nightowl/nowplaying",
+   "stream_path": "/stations/nightowl.mp3", "m3u_path": "/stations/nightowl.m3u"}
+  ```
 - `POST /api/stations/<slug>/start` builds and starts a stopped station. Starting a running
   station changes nothing.
 - `POST /api/stations/<slug>/stop` stops a station completely: its listeners are disconnected,
   its encoder, relays, recorder and mastering process are closed and its player ends, so it uses
   no memory or processor time. Its routes then answer 409 and its stream answers 503, "off air".
-  The default station cannot be stopped.
+  This starts as soon as the stop is asked for: while the player finishes its work, which can
+  take several seconds, the station is listed as `stopping`, its routes already answer 409, a
+  start request is refused at once with 409, and a second stop request returns at once. Its
+  open pages are told at once. Other stations can be started and stopped meanwhile. If the
+  stopping station used Stereo Tool, it keeps it until it has stopped, and another station asking
+  for it is told to try again in a few seconds. The default station cannot be stopped.
+- The stop reply is the station's entry, as in `GET /api/stations`, plus `warnings`: a list of
+  what went wrong, in plain words, such as "Closing its recorder failed; the server log has the
+  details.". It is empty when everything stopped cleanly. The station is stopped either way.
+- If a station's player has not finished 30 seconds after a stop, the station is listed as
+  `stuck stopping`, and the stop's `warnings` say so. Its player and mastering process keep
+  running, because closing the mastering process under a running player is unsafe, so it keeps
+  Stereo Tool, and it cannot be started again. The log says every minute that it is still stuck;
+  only a restart of AutoDJ frees a player that never ends. When the player ends, the mastering
+  process is closed, and closed again every few seconds until it has really ended; only then is
+  the station `stopped` and Stereo Tool free. The same holds for a station that failed to start.
+- On a normal shutdown, and when Python exits, AutoDJ kills any mastering process still running,
+  after making sure none can start again. On Windows each mastering process (Stereo Tool and its
+  FFmpeg limiter, or the FFmpeg master) is also tied to AutoDJ's own process with a job object,
+  so it ends even when AutoDJ is killed outright or crashes. On Linux and macOS, a hard kill of
+  AutoDJ (such as `kill -9`) can leave one running; stop it by hand.
 
 A station that cannot start, with the server or when asked, says why: in the log at startup, and
-in the reply to a start request. The default station and the other stations keep running.
+in the reply to a start request. Whatever it had already started (its player, mastering process,
+encoders and relays) is stopped again. The default station and the other stations keep running.
 
 Each station starts with its saved settings (its `web_state.json`), its active clockwheel and its
 own play history. The first time a station runs, its liner folder is added to Library folders as
 a liner source. A station plays only the liners in its own folder; the default station plays every
-other registered liner, as before.
+other registered liner, as before. When one station's liner folder sits inside another's (for
+example `liners/nightowl` inside the default station's `liners`), the inner folder's liners belong
+to the inner station only. This holds for automatic liners, clockwheel liner steps, the Liners
+list and the clips a cart can use.
 
 ### Stereo Tool: one station at a time
 
@@ -1136,12 +1199,47 @@ Each running station is a complete playout chain in the same process:
 - **An idle station still runs** its mix bus, mastering and encoder on silence. Stopping a
   station is the real saving.
 - **One process, one interpreter lock.** A heavy render on one station could make another
-  station's mix bus late. To measure it on your own machine, run the soak test with a duration in
-  seconds; it reports the blocks each station's bus emitted while both render at once:
+  station's mix bus late. The soak test below measures it.
 
-  ```bash
-  AUTODJ_SOAK_SECONDS=60 uv run pytest tests/integration/test_multi_station.py -k soak -s
-  ```
+### Soak test
+
+`tests/integration/test_multi_station.py` has a soak test with two stations, the default one and
+Night Owl Radio. Both mix buses run while two threads do song-sized time-stretches back to back,
+standing in for each station's render-ahead work, and Night Owl is stopped and started again
+every cycle. The test counts the 20 ms blocks each bus sends out. It fails if a stop leaves any
+of the station's threads, encoders or mastering process behind, and, in a long run, if either bus
+falls short (an underrun). ffmpeg and Stereo Tool are replaced by stand-ins, so it measures AutoDJ's own
+work.
+
+Every test run, including CI, runs it for 4 seconds with one restart. To run it for longer, on the
+machine that will host the stations, set `AUTODJ_SOAK_SECONDS`. This runs it for four hours,
+restarts Night Owl every 10 minutes, and samples memory and processor use every 30 seconds:
+
+```bash
+AUTODJ_SOAK_SECONDS=14400 AUTODJ_SOAK_REPORT=soak.jsonl \
+  uv run pytest tests/integration/test_multi_station.py -k soak -s -p no:cacheprovider
+```
+
+The settings, all optional:
+
+- `AUTODJ_SOAK_SECONDS`: how long to run. A long run uses four-minute songs for the render
+  stand-ins and fails if a bus sends fewer than 99% of the blocks it should. The short default
+  run uses 20-second songs and only reports the block counts: a few seconds on a shared CI
+  machine is too short to judge underruns, so there it checks the restart and leaks only.
+- `AUTODJ_SOAK_CYCLE_SECONDS`: how often Night Owl is stopped and started (default 600 in a long
+  run).
+- `AUTODJ_SOAK_SAMPLE_SECONDS`: how often memory and processor use are sampled (default 30 in a
+  long run).
+- `AUTODJ_SOAK_REPORT`: a file the samples are added to, one JSON object per line. Each has the
+  seconds since the start, `rss_mb` (resident memory, on Linux only), `cpu_percent` (processor
+  time as a percentage of one core since the last sample), `threads` and `restarts`. The last
+  line is the summary.
+
+At the end the test prints a summary line: the blocks each bus sent against the number expected,
+the longest gap between blocks in milliseconds, the number of restarts and renders, memory at the
+start and the end, and Night Owl's thread count before and after. Memory that keeps climbing from
+one restart to the next, or a thread count that grows, points to a leak; attach the report file to
+an issue.
 
 ## Windows PowerShell setup
 

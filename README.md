@@ -136,7 +136,7 @@ keyed addresses such as `/stream/<secret>.mp3` no longer work, so set any player
 to `/stream.mp3`.
 
 The public `/api/nowplaying` JSON feed lets pages show the station's current song, upcoming song,
-recent plays and listener count, and the public `/status` page shows the same to listeners as plain text. The upcoming song is hidden unless you turn on `[nowplaying] show_next`. Track-change
+recent plays and listener count, and the public `/status` page shows the same to listeners as plain text. With several stations, each has its own feed and page, at `/api/stations/<slug>/nowplaying` and `/stations/<slug>/status`. The upcoming song is hidden unless you turn on `[nowplaying] show_next`. Track-change
 webhooks can send the same metadata to other services or Discord; configure their URLs in
 `config.local.toml`. See [Operations](docs/operations.md#now-playing-feed-and-webhooks).
 

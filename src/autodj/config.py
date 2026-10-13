@@ -2029,6 +2029,10 @@ def _build_station(slug: str, table: Mapping[str, Any], root: AutoDJConfig) -> S
     # Every other station is a server-mixed stream; the proxies that may
     # name a listener's address are the server's.
     sections["stream"].enabled = True
+    if not isinstance(stream_raw, Mapping) or "station_name" not in stream_raw:
+        # Not the default "AutoDJ", which the default station has: two
+        # stations would share a name in metadata and on public pages.
+        sections["stream"].station_name = slug
     sections["stream"].trusted_proxies = list(root.stream.trusted_proxies)
     cfg = AutoDJConfig(
         **sections,
@@ -2062,14 +2066,26 @@ def _check_station_conflicts(root: AutoDJConfig, specs: Iterable[StationSpec]) -
 
     A recorder deletes old recordings from its folder, so a shared folder
     would let one station's retention delete the other's.  Two sources on
-    one relay mount fight over it.
+    one relay mount fight over it.  Two stations with the same name are
+    only warned about.
 
     Raises:
         ValueError: Naming both stations.
     """
     folders: dict[str, str] = {}
     targets: dict[tuple[object, ...], str] = {}
+    names: dict[str, str] = {}
     for slug, cfg in (("default", root), *((spec.slug, spec.cfg) for spec in specs)):
+        name = cfg.stream.station_name.strip().casefold()
+        if name in names:
+            logger.warning(
+                "Stations %s and %s are both called %r; listeners and the station "
+                "switcher cannot tell them apart. Give each its own stream.station_name.",
+                names[name],
+                slug,
+                cfg.stream.station_name,
+            )
+        names.setdefault(name, slug)
         folder = os.path.normcase(os.path.abspath(cfg.recording.folder))
         if folder in folders:
             raise ValueError(
