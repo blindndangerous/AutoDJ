@@ -2346,8 +2346,11 @@ break plays some spots between two songs: it never cuts a song, it joins the nex
 can, about a song after its time, as an announcer's standalone break does. Ad breaks need
 `[ads] enabled = true` for the station and saved-point playback (Transition mode: Use saved
 segue points) with the server mixing the audio (server audio or a stream); otherwise the tab says
-why at the top. Like `[breaks] enabled`, turning ads on makes the station plan each song change
-one song ahead, so a break can join it. Announcer breaks can stay off.
+why at the top. Announcer breaks can stay off. To have a song change open for a break, the
+station plans each change one song ahead from 20 minutes before a break is due (by its minutes or
+a Schedule event), while one waits or is booked, and after Run now. The rest of the time songs are
+picked exactly as with ads off; the rotation tester and the hour preview pick the same songs with
+ads on or off.
 
 ```toml
 [ads]
@@ -2428,16 +2431,28 @@ Nothing is ever dropped without a word in the report:
   daily limit".
 - A spot booked on a song change that was skipped, jumped over or not rendered is reported missed
   with what happened ("skipped before it aired").
-- A break whose time passed while the computer slept or AutoDJ stalled for more than two minutes
-  is reported missed, not aired late.
-- A spot booked when AutoDJ stopped is reported missed at the next start ("AutoDJ stopped before it
-  aired"). Breaks due while AutoDJ was not running are not run late.
+- A spot that had started when a skip or a stop cut it off is reported as **May have aired**,
+  with what happened ("AutoDJ stopped during the break"): neither aired nor missed.
+- One rule covers lost time: a break whose time passed while the computer slept, AutoDJ stalled or
+  AutoDJ was not running still joins the next song change, to air late, when it is within
+  **Missed after**; past that it is reported missed ("the computer slept or AutoDJ stalled", or
+  "AutoDJ was not running"). AutoDJ saves where the ad schedule is every minute and at a stop, so
+  the next start knows which breaks fell due while it was down (up to 35 days back). A start with
+  ads off clears that place: no break is owed for the time ads were off.
+- After a long sleep or stop, the first 200 missed breaks are logged one by one and the rest in
+  one line that says how many and from when to when, so the report counts every one.
+- A spot booked when AutoDJ stopped is reported missed ("AutoDJ stopped before it aired"), at the
+  stop, or at the next start after a crash.
+- Lines the log cannot take at a stop (a full disk, a share away) are tried once more, then kept
+  in `ad_plays-unwritten.jsonl` beside `ads.json` and added to the log at the next start; the
+  server log says how many.
 
 ### The ad report
 
 Under **Ad report**, choose **From** and **To** (both days included, in the station time zone)
 and **Show report**. The summary is said once; below it are two tables with column headers:
-**Totals by advertiser and campaign** (aired, aired late, missed, waiting and seconds aired) and
+**Totals by advertiser and campaign** (aired, aired late, missed, may have aired, waiting and
+seconds aired) and
 **Every spot** (the break's time, when it aired, the result, the spot, the break and the reason).
 Each table sits in a region that takes focus, so on a narrow window it scrolls sideways with the
 arrow keys. The page lists the first 1000 spots; **Export report** saves them all as CSV:

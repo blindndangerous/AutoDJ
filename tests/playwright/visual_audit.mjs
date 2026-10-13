@@ -489,7 +489,7 @@ const ADS_VIEW = {
 const ADS_REPORT = {
   station: "default", from: "2026-10-01", to: "2026-10-13", count: 2, truncated: false, damaged: 0, late_minutes: 10,
   totals: { aired: 1, late: 1, missed: 1, waiting: 0, missed_breaks: 0 },
-  summary: [{ advertiser: "Example Motors", campaign: "An_Exceptionally_Long_Campaign_Name_0001", aired: 1, late: 1, missed: 1, waiting: 0, seconds: 30 }],
+  summary: [{ advertiser: "Example Motors", campaign: "An_Exceptionally_Long_Campaign_Name_0001", aired: 1, late: 1, missed: 1, interrupted: 1, waiting: 0, seconds: 30 }],
   rows: [
     { id: "e".repeat(32), scheduled_text: "13 October 2026 at 12:15:00", aired_text: "13 October 2026 at 12:31:00",
       delay_minutes: 16, status: "late", status_text: "Aired late", break_name: "Quarter past", source_text: "Minutes past the hour",

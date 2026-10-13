@@ -851,6 +851,7 @@ def _equip_ads(station: StationRuntime, schedule: Any) -> None:
         station.timezone,
         player=station.bridge.player,
         breaks=station.breaks,
+        events=lambda: list(schedule.events.values()),
     )
 
     async def ad_break(params: dict[str, str]) -> None:

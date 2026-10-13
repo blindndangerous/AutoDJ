@@ -496,8 +496,10 @@ within 60 seconds plus one second per 256 KiB, the type must be a liner audio ty
 other), and the file streams to a hidden part file under a name the server makes up
 (`spot-<id><ext>`) in the station's `ads` folder, never a name from the request. It is then decoded
 like an announcer break, header first, demuxer forced, at most `[ads] max_spot_seconds`, on the one
-decode thread; a file that does not decode or holds no sound is refused and deleted. A station
-keeps at most `[ads] max_spots` spots and 50 breaks. JSON changes (spots, breaks, rules) are read
+decode gate, which breaks, voice tracks, matched intros and spots share across the server; a
+file that does not decode or holds no sound is refused and deleted. A station keeps at most
+`[ads] max_spots` spots and 50 breaks. A spot is deleted only while no break is being booked, and
+never while booked. A JSON body nested too deeply to parse is refused with 422. JSON changes (spots, breaks, rules) are read
 by the route itself at most 16 KiB, and the break route's POST is also capped by the middleware.
 Text fields are trimmed, control characters removed and lengths capped; the report and its CSV are
 built from the station's own log, and CSV cells starting with a formula character are written as

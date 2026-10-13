@@ -74,7 +74,7 @@ from pydantic import (
 )
 
 from autodj.clip_dates import ClipDates, day_words
-from autodj.fsutil import atomic_write, confirm_missing
+from autodj.fsutil import atomic_write, confirm_missing, fsync_directory
 from autodj.liners import LINER_EXTS
 
 if TYPE_CHECKING:
@@ -92,11 +92,20 @@ MAX_MARKS = 12
 #: The most spots one break may hold.
 MAX_SPOTS_PER_BREAK = 10
 NAME_MAX = 100
-#: A due time older than this when the desk sees it was missed (the
-#: computer slept, or the server stalled): it is logged, not booked late.
-MISSED_AFTER = timedelta(minutes=2)
-#: The most missed runs one tick logs after a long sleep.
+#: The most missed runs logged one by one after a long sleep or stop; the
+#: rest go into one line that says how many and when.
 MAX_MISSED_PER_TICK = 200
+#: The longest time AutoDJ was not running that the next start logs breaks for.
+MAX_DOWNTIME = timedelta(days=35)
+#: The station plans song changes this long before a break is due, so one is
+#: open to book it; with no break due sooner, songs are picked as with ads off.
+PLAN_AHEAD = timedelta(minutes=20)
+#: How often the ad schedule's place is saved, so a start knows what it missed.
+CURSOR_EVERY_SECONDS = 60.0
+#: The file of the ad schedule's place, in the ad play log's folder.
+CURSOR_FILE = "cursor.json"
+#: Lines the log would not take at a stop, beside ``ads.json``, for the next start.
+UNWRITTEN_FILE = "ad_plays-unwritten.jsonl"
 #: Outcomes the Ads tab lists.
 RECENT = 30
 #: How far back the desk remembers plays for limits and separation.
@@ -121,15 +130,18 @@ SOURCES: dict[str, str] = {
     "manual": "Run now",
 }
 #: A spot's state in the log, then the report's words for each.
-Status = Literal["booked", "aired", "missed"]
+Status = Literal["booked", "aired", "missed", "interrupted"]
 BOOKED: Final = "booked"
 AIRED: Final = "aired"
 MISSED: Final = "missed"
+#: Started on the air, then cut off by a skip or a stop: it may have aired.
+INTERRUPTED: Final = "interrupted"
 STATUS_WORDS = {
     BOOKED: "Waiting to air",
     AIRED: "Aired",
     "late": "Aired late",
     MISSED: "Missed",
+    INTERRUPTED: "May have aired",
 }
 DAY_NAMES = tuple(calendar.day_name)
 
@@ -750,10 +762,14 @@ class PlayRecord(BaseModel):
     seconds: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     status: Status
     reason: StrictStr = ""
+    #: How many breaks a missed line stands for (one, or a summary after a
+    #: long sleep or stop), the last of them at ``last_scheduled``.
+    count: int = Field(default=1, ge=1)
+    last_scheduled: datetime | None = None
     aired_at: datetime | None = None
     logged: datetime
 
-    @field_validator("scheduled", "aired_at", "logged")
+    @field_validator("scheduled", "aired_at", "logged", "last_scheduled")
     @classmethod
     def _aware(cls, value: datetime | None) -> datetime | None:
         if value is not None and value.tzinfo is None:
@@ -798,6 +814,7 @@ class AdLog:
             self.folder.mkdir(parents=True, exist_ok=True)
             for month, lines in by_month.items():
                 path = self.folder / f"{month}.jsonl"
+                new = not path.exists()
                 with open(path, "ab+") as handle:
                     # A line cut short by a crash is closed first, so the
                     # next record starts on its own line.
@@ -809,6 +826,42 @@ class AdLog:
                     handle.write(("\n".join(lines) + "\n").encode("utf-8"))
                     handle.flush()
                     os.fsync(handle.fileno())
+                if new:
+                    # The new file's name must survive a power cut too.
+                    fsync_directory(self.folder)
+
+    def cursor(self) -> float | None:
+        """When the ad schedule last looked, saved; ``None`` when unknown.
+
+        Raises:
+            OSError: The file is there but could not be read.
+        """
+        path = self.folder / CURSOR_FILE
+        try:
+            data = json.loads(path.read_bytes())
+            stamp = datetime.fromisoformat(data["cursor"])
+        except FileNotFoundError:
+            return None
+        except (ValueError, KeyError, TypeError, RecursionError):
+            logger.warning("The ad schedule's place in %s is not valid; starting from now", path)
+            return None
+        if stamp.tzinfo is None:
+            return None
+        return stamp.timestamp()
+
+    def save_cursor(self, now: float) -> None:
+        """Save when the ad schedule last looked, atomically.
+
+        Raises:
+            OSError: It could not be written.
+        """
+        self.folder.mkdir(parents=True, exist_ok=True)
+        document = {"cursor": datetime.fromtimestamp(now, UTC).isoformat()}
+        atomic_write(self.folder / CURSOR_FILE, json.dumps(document) + "\n")
+
+    def forget_cursor(self) -> None:
+        """Forget the saved place (ads are off: no break is owed)."""
+        (self.folder / CURSOR_FILE).unlink(missing_ok=True)
 
     def months(self) -> list[str]:
         """The months the log has files for, oldest first."""
@@ -1094,6 +1147,7 @@ class AdDesk:
         *,
         player: Any = None,
         breaks: BreakDesk | None = None,
+        events: Callable[[], Sequence[Any]] = tuple,
         clock: Callable[[], float] = time.time,
     ) -> None:
         """Run the breaks in *store*, logging to *log*, through *player*'s song changes.
@@ -1105,6 +1159,7 @@ class AdDesk:
             timezone: The station time zone, for minutes past the hour and days.
             player: The station's player: it books spots on its open song change.
             breaks: The station's break desk, which reports what aired.
+            events: The station's Schedule events, for the ones that run a break.
             clock: Wall-clock time, for tests.
         """
         self.config = config
@@ -1114,8 +1169,14 @@ class AdDesk:
         self.zone = ZoneInfo(timezone)
         self.player = player
         self.breaks = breaks
+        self.events = events
         self.clock = clock
+        #: Lines a stop could not write, appended to the log at the next start.
+        self.side_file = store.path.parent / UNWRITTEN_FILE
         self._lock = threading.Lock()
+        # Held while spots are picked and booked, and while one is deleted.
+        self._book_lock = threading.Lock()
+        self._cursor_saved = 0.0
         self._cursor: float | None = None
         self._started = False
         self._pending: list[Run] = []
@@ -1124,18 +1185,55 @@ class AdDesk:
         self._recent: deque[PlayRecord] = deque(maxlen=RECENT)
         self._unwritten: list[PlayRecord] = []
         self._requests = 0
-        # Whether a break is turned on, as last read: the render worker asks
-        # often, and must never wait for the disk.
-        self._any_on = False
+        # Whether a break is due within PLAN_AHEAD, as last worked out: the
+        # render worker asks often, and must never wait for the disk.
+        self._soon = False
         if breaks is not None:
             breaks.wants_slots = self.wants_slots
 
     def noticed(self, state: AdState | None = None) -> None:
         """Take in the store's breaks after a change (no disk access)."""
-        state = state or self.store.cached()
-        on = any(item.enabled for item in state.breaks.values())
+        self._noticed(state or self.store.cached(), self.clock())
+
+    def _noticed(self, state: AdState, now: float) -> None:
+        soon = self.enabled and self._due_within(state, now, now + PLAN_AHEAD.total_seconds())
         with self._lock:
-            self._any_on = on
+            started = soon and not self._soon
+            self._soon = soon
+        if started:
+            self._ask_for_plan()
+
+    def _ask_for_plan(self) -> None:
+        """Have the render-ahead worker plan the open song change now, not after the next song."""
+        ahead = getattr(self.player, "_render_ahead", None)
+        request_plan = getattr(ahead, "request_plan", None)
+        if request_plan is not None:
+            request_plan()
+
+    def _due_within(self, state: AdState, now: float, until: float) -> bool:
+        """Whether a break runs after *now* and by *until*: by its minutes or a Schedule event."""
+        if any(
+            item.enabled and marks_between(item, now, until, self.zone)
+            for item in state.breaks.values()
+        ):
+            return True
+        from autodj.scheduler import next_run
+
+        try:
+            events = list(self.events())
+        except Exception:  # a schedule that cannot be read must not stop the tick
+            logger.exception("Could not read the Schedule's ad break events")
+            return False
+        for event in events:
+            if not getattr(event, "enabled", False) or getattr(event, "action", "") != "ad_break":
+                continue
+            try:
+                when = next_run(event, _utc(now), self.zone)
+            except (ValueError, OverflowError, OSError):
+                continue
+            if when is not None and when.timestamp() <= until:
+                return True
+        return False
 
     # -- state ----------------------------------------------------------------
 
@@ -1145,11 +1243,16 @@ class AdDesk:
         return self.config().enabled is True
 
     def wants_slots(self) -> bool:
-        """Whether the station must plan song changes for ad breaks (cheap, any thread)."""
+        """Whether the station must plan song changes for ad breaks (cheap, any thread).
+
+        Only while a break waits, is booked, or is due within
+        :data:`PLAN_AHEAD`: the rest of the time songs are picked exactly
+        as with ads off.
+        """
         if not self.enabled:
             return False
         with self._lock:
-            return bool(self._pending or self._booked or self._any_on)
+            return bool(self._pending or self._booked or self._soon)
 
     @property
     def revision(self) -> tuple[int, int]:
@@ -1212,6 +1315,7 @@ class AdDesk:
         with self._lock:
             self._pending.append(run)
             self._requests += 1
+        self._ask_for_plan()
         logger.info("Ad break %r (%s) is due", item.name, SOURCES.get(source, source))
         return run
 
@@ -1233,44 +1337,161 @@ class AdDesk:
         with self._lock:
             if self._pending or self._booked or self._unwritten:
                 return True
-        if self.enabled:
-            return True
-        # Off: the clock moves on, so turning ads on later logs no missed runs.
-        with self._lock:
-            self._cursor = self.clock()
-        return False
+        return self.enabled
 
     def tick(self) -> None:
         """Book due breaks, log missed ones and record what aired (a worker thread)."""
         now = self.clock()
-        if not self._started:
-            self._start(now)
         state = self.store.state()
-        self.noticed(state)
+        if not self._started:
+            self._start(now, state)
         records: list[PlayRecord] = []
         enabled = self.enabled
         with self._lock:
             cursor = self._cursor if self._cursor is not None else now
             self._cursor = max(cursor, now)
         if enabled and now > cursor:
-            records.extend(self._due(state, cursor, now))
+            records.extend(self._due(state, cursor, now, "the computer slept or AutoDJ stalled"))
+        self._noticed(state, now)
         records.extend(self._book_pending(state, now))
         records.extend(self._outcomes(now))
         self._write(records)
+        if enabled and now - self._cursor_saved >= CURSOR_EVERY_SECONDS:
+            self._save_cursor(now)
 
-    def has_booked(self) -> bool:
-        """Whether spots wait for their outcome or lines for the log (cheap, any thread)."""
+    def needs_flush(self) -> bool:
+        """Whether a stop has anything to write (cheap, any thread)."""
         with self._lock:
-            return bool(self._booked or self._unwritten)
+            return self._started or bool(self._booked or self._unwritten)
 
     def flush(self) -> None:
-        """Write what became of the booked spots, booking nothing (the station is stopping)."""
+        """The station is stopping: write every booked spot's outcome, booking nothing.
+
+        A spot on the air now may have aired; one still waiting will not.
+        A line that cannot be written is tried once more, then kept in a
+        side file that the next start appends to the log.
+        """
         if not self._started:
             return
-        self._write(self._outcomes(self.clock()))
+        now = self.clock()
+        records = self._outcomes(now)
+        records.extend(self._stopped(now))
+        self._write(records)
+        with self._lock:
+            left = list(self._unwritten)
+        if left:
+            self._write([])
+            with self._lock:
+                left, self._unwritten = list(self._unwritten), []
+            if left:
+                self._keep_aside(left)
+        if self.enabled:
+            self._save_cursor(now)
 
-    def _start(self, now: float) -> None:
-        """Remember recent plays and log as missed any spot left booked by a stop."""
+    def station_started(self) -> None:
+        """The station started with ads off: no break is owed for the time they were off."""
+        if self.enabled:
+            return
+        try:
+            self.log.forget_cursor()
+        except OSError:
+            logger.warning("Could not clear the ad schedule's place", exc_info=True)
+
+    def _stopped(self, now: float) -> list[PlayRecord]:
+        """The booked spots a stop cuts off: the one on the air, and the ones waiting."""
+        from autodj.breaks import ON_AIR
+
+        with self._lock:
+            tracked = list(self._booked.items())
+            self._booked.clear()
+        records: list[PlayRecord] = []
+        for break_id, entry in tracked:
+            item = self.breaks.get(break_id) if self.breaks is not None else None
+            if item is not None and item.state == ON_AIR:
+                aired = item.aired_at if item.aired_at is not None else now
+                records.append(
+                    self._final(
+                        entry.record,
+                        INTERRUPTED,
+                        "it may have aired: AutoDJ stopped during the break",
+                        aired,
+                        now,
+                    )
+                )
+            else:
+                records.append(
+                    self._final(entry.record, MISSED, "AutoDJ stopped before it aired", None, now)
+                )
+                with self._lock, contextlib.suppress(ValueError):
+                    self._heard.remove(entry.heard)
+        return records
+
+    def _keep_aside(self, records: list[PlayRecord]) -> None:
+        """Keep lines the log would not take in the side file, for the next start."""
+        path = self.side_file
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "ab") as handle:
+                lines = [record.model_dump_json(exclude_none=True) for record in records]
+                handle.write(("\n".join(lines) + "\n").encode("utf-8"))
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError:
+            logger.error(
+                "Could not write %d ad play log line%s anywhere; they are lost",
+                len(records),
+                "" if len(records) == 1 else "s",
+                exc_info=True,
+            )
+            return
+        logger.error(
+            "Could not write %d ad play log line%s to %s; kept them in %s for the next start",
+            len(records),
+            "" if len(records) == 1 else "s",
+            self.log.folder,
+            path,
+        )
+
+    def _take_aside(self) -> list[PlayRecord]:
+        """The lines a stop kept aside, read back; damaged ones are counted and skipped."""
+        path = self.side_file
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError:
+            return []
+        except OSError:
+            logger.warning("Could not read the kept ad play log lines in %s", path, exc_info=True)
+            return []
+        found: list[PlayRecord] = []
+        damaged = 0
+        for raw in data.splitlines():
+            if not raw.strip():
+                continue
+            try:
+                found.append(PlayRecord.model_validate_json(raw))
+            except ValueError:
+                damaged += 1
+        if damaged:
+            logger.warning("%d kept ad play log lines in %s could not be read", damaged, path)
+        return found
+
+    def _save_cursor(self, now: float) -> None:
+        try:
+            self.log.save_cursor(now)
+        except OSError:
+            logger.warning("Could not save the ad schedule's place", exc_info=True)
+            return
+        self._cursor_saved = now
+
+    def _start(self, now: float, state: AdState) -> None:
+        """Remember recent plays; log what a stop left: spots booked, and breaks owed.
+
+        Lines a stop kept aside are appended to the log first.  A spot still
+        booked in the log did not air.  When ads are on, each break whose
+        time fell while AutoDJ was not running is logged as missed (or, when
+        still within the station's miss time, waits for a song change).
+        """
+        aside = self._take_aside()
         start = _utc(now) - HEARD_SPAN
         try:
             found, _damaged = self.log.read(_utc(now) - timedelta(days=35), _utc(now))
@@ -1279,13 +1500,17 @@ class AdDesk:
             found = []
         records: list[PlayRecord] = []
         heard: list[Heard] = []
-        for record in latest(found).values():
+        for record in latest([*found, *aside]).values():
             if record.status == BOOKED:
                 records.append(
                     self._final(record, MISSED, "AutoDJ stopped before it aired", None, now)
                 )
                 continue
-            if record.status == AIRED and record.scheduled >= start and record.spot_id:
+            if (
+                record.status in (AIRED, INTERRUPTED)
+                and record.scheduled >= start
+                and record.spot_id
+            ):
                 heard.append(
                     Heard(
                         record.spot_id,
@@ -1295,12 +1520,29 @@ class AdDesk:
                     )
                 )
         heard.sort(key=lambda play: play.at)
+        owed: list[PlayRecord] = []
+        if self.enabled:
+            try:
+                saved = self.log.cursor()
+            except OSError:
+                logger.warning("Could not read the ad schedule's place", exc_info=True)
+                saved = None
+            if saved is not None and saved < now:
+                since = max(saved, now - MAX_DOWNTIME.total_seconds())
+                owed = self._due(state, since, now, "AutoDJ was not running")
         with self._lock:
             self._heard.extend(heard)
-            self._unwritten.extend(records)
+            self._unwritten.extend([*aside, *records, *owed])
             self._started = True
             if self._cursor is None:
                 self._cursor = now
+        if aside:
+            try:
+                self._write([])
+                if not self._unwritten:
+                    self.side_file.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Could not remove %s", self.side_file, exc_info=True)
         if records:
             logger.warning(
                 "%d ad spot%s booked when AutoDJ stopped did not air; logged as missed",
@@ -1308,24 +1550,21 @@ class AdDesk:
                 "" if len(records) == 1 else "s",
             )
 
-    def _due(self, state: AdState, cursor: float, now: float) -> list[PlayRecord]:
-        """Queue each break that fell due since *cursor*; log the ones long past."""
-        records: list[PlayRecord] = []
+    def _due(self, state: AdState, cursor: float, now: float, why: str) -> list[PlayRecord]:
+        """Queue each break that fell due since *cursor*; log the ones past the miss time.
+
+        A break whose time is more than **Missed after** ago is missed for
+        *why*; the rest wait for a song change, as any due break does.
+        """
+        limit = state.settings.miss_after_minutes * 60
+        missed: list[Run] = []
         runs: list[Run] = []
         for key, item in state.breaks.items():
             if not item.enabled:
                 continue
             for moment in marks_between(item, cursor, now, self.zone):
                 run = Run(new_id(), key, item.name, moment, "clock")
-                if now - moment > MISSED_AFTER.total_seconds():
-                    if len(records) < MAX_MISSED_PER_TICK:
-                        records.append(
-                            self._run_missed(
-                                run, "the computer slept or AutoDJ stalled at its time", now
-                            )
-                        )
-                else:
-                    runs.append(run)
+                (missed if now - moment > limit else runs).append(run)
         runs.sort(key=lambda run: run.scheduled)
         if runs:
             with self._lock:
@@ -1333,6 +1572,39 @@ class AdDesk:
                 self._requests += 1
             for run in runs:
                 logger.info("Ad break %r is due", run.break_name)
+            self._ask_for_plan()
+        return self._missed_runs(missed, why, now)
+
+    def _missed_runs(self, runs: list[Run], why: str, now: float) -> list[PlayRecord]:
+        """A missed line for each run; past :data:`MAX_MISSED_PER_TICK`, one line for the rest.
+
+        The summary line says how many breaks it stands for (``count``) and
+        their time range, so nothing is left out of a report.
+        """
+        runs = sorted(runs, key=lambda run: run.scheduled)
+        records = [self._run_missed(run, why, now) for run in runs[:MAX_MISSED_PER_TICK]]
+        rest = runs[MAX_MISSED_PER_TICK:]
+        if rest:
+            names = sorted({run.break_name for run in rest})
+            first, last = rest[0].scheduled, rest[-1].scheduled
+            label = names[0] if len(names) == 1 else "Several ad breaks"
+            summary = PlayRecord(
+                id=new_id(),
+                run=new_id(),
+                break_name=label,
+                source="clock",
+                scheduled=_utc(first),
+                last_scheduled=_utc(last),
+                count=len(rest),
+                status=MISSED,
+                reason=(
+                    f"{why}: {len(rest)} more ad breaks ({', '.join(names)}) "
+                    f"due from {_utc(first):%Y-%m-%d %H:%M} to {_utc(last):%Y-%m-%d %H:%M} UTC"
+                ),
+                logged=_utc(now),
+            )
+            logger.warning("%s", summary.reason)
+            records.append(summary)
         return records
 
     def _book_pending(self, state: AdState, now: float) -> list[PlayRecord]:
@@ -1354,7 +1626,7 @@ class AdDesk:
                 continue
             if refusal is not None:
                 continue
-            outcome = self._try_book(state, run, now, expires)
+            outcome = self._try_book(run, now, expires)
             if outcome is None:
                 continue  # no song change open yet: try again next tick
             records.extend(outcome)
@@ -1368,18 +1640,28 @@ class AdDesk:
     def _usable(self, _key: str, spot: Spot) -> bool:
         return (self.store.folder / spot.file).is_file()
 
-    def _try_book(
-        self, state: AdState, run: Run, now: float, expires: float
-    ) -> list[PlayRecord] | None:
+    def remove_spot(self, spot_id: str) -> Spot | None:
+        """Forget a spot that is not booked; the one forgotten, or ``None``.
+
+        Checked and removed while no break is being booked, so a spot is
+        never deleted just as it is booked (blocking: it writes the store).
+
+        Raises:
+            AdsError: 409 when the spot is booked for a coming song change.
+            OSError: The store could not be written.
+        """
+        with self._book_lock:
+            if spot_id in self.booked_spots():
+                raise AdsError(
+                    "", "That spot is booked for a coming song change; delete it after it airs", 409
+                )
+            return self.store.remove_spot(spot_id)
+
+    def _try_book(self, run: Run, now: float, expires: float) -> list[PlayRecord] | None:
         """Book *run*'s spots on the open song change.  ``None`` to try again later."""
         from autodj.breaks import AD, AD_SCHEDULE, Break, BreakCues, BreakError
         from autodj.breaks import new_id as new_break_id
 
-        item = state.breaks.get(run.break_id)
-        if item is None:
-            return [self._run_missed(run, "its ad break was deleted", now)]
-        if not item.enabled and run.source == "schedule":
-            return [self._run_missed(run, "its ad break is turned off", now)]
         player = self.player
         plan, _closes_in, airs_in = player.slot_status()
         if plan is None:
@@ -1387,64 +1669,73 @@ class AdDesk:
         if now + airs_in > expires:
             # The open change airs too late; a later one is later still.
             return None
-        with self._lock:
-            heard = list(self._heard)
-        choice = choose(state, item, run.scheduled, self.zone, heard, usable=self._usable)
-        if not choice.spots:
-            logger.warning("Ad break %r has no spot to air: %s", item.name, choice.reason)
-            return [self._run_missed(run, choice.reason, now)]
-        limit = float(self.config().max_spot_seconds)
-        breaks = [
-            Break(
-                break_id=new_break_id(),
-                kind=AD,
-                slot_id=plan.slot_id,
-                ending="",
-                upcoming="",
-                placement="standalone",
-                allow_outro=False,
-                path=self.store.folder / spot.file,
-                size=0,
-                cues=BreakCues(spot.cue_start, spot.cue_segue, spot.cue_end, spot.length_s),
-                label=spot.label,
-                token_name=AD_SENDER,
-                created_at=now,
-                expires_at=expires,
-                source=AD_SCHEDULE,
-                keep_file=True,
-                limit_s=limit,
-            )
-            for _key, spot in choice.spots
-        ]
-        try:
-            player.book_breaks(breaks, plan.slot_id)
-        except BreakError:
-            return None  # the change closed as it was booked: the next one
-        records = [
-            PlayRecord(
-                id=booked.break_id,
-                run=run.run_id,
-                break_id=run.break_id,
-                break_name=item.name,
-                source=run.source,
-                scheduled=_utc(run.scheduled),
-                spot_id=key,
-                title=spot.title,
-                advertiser=spot.advertiser,
-                campaign=spot.campaign,
-                category=spot.category,
-                seconds=round(spot.seconds, 3),
-                status=BOOKED,
-                logged=_utc(now),
-            )
-            for booked, (key, spot) in zip(breaks, choice.spots, strict=True)
-        ]
-        with self._lock:
-            for record in records:
-                entry = Heard(record.spot_id, record.advertiser, record.category, run.scheduled)
-                self._booked[record.id] = _Tracked(record, entry)
-                self._heard.append(entry)
-            self._forget_old_locked(now)
+        with self._book_lock:
+            # What the store holds now: a spot deleted since the tick read
+            # it is not picked (its file is about to go).
+            state = self.store.cached()
+            item = state.breaks.get(run.break_id)
+            if item is None:
+                return [self._run_missed(run, "its ad break was deleted", now)]
+            if not item.enabled and run.source == "schedule":
+                return [self._run_missed(run, "its ad break is turned off", now)]
+            with self._lock:
+                heard = list(self._heard)
+            choice = choose(state, item, run.scheduled, self.zone, heard, usable=self._usable)
+            if not choice.spots:
+                logger.warning("Ad break %r has no spot to air: %s", item.name, choice.reason)
+                return [self._run_missed(run, choice.reason, now)]
+            limit = float(self.config().max_spot_seconds)
+            breaks = [
+                Break(
+                    break_id=new_break_id(),
+                    kind=AD,
+                    slot_id=plan.slot_id,
+                    ending="",
+                    upcoming="",
+                    placement="standalone",
+                    allow_outro=False,
+                    path=self.store.folder / spot.file,
+                    size=0,
+                    cues=BreakCues(spot.cue_start, spot.cue_segue, spot.cue_end, spot.length_s),
+                    label=spot.label,
+                    token_name=AD_SENDER,
+                    created_at=now,
+                    expires_at=expires,
+                    source=AD_SCHEDULE,
+                    keep_file=True,
+                    limit_s=limit,
+                )
+                for _key, spot in choice.spots
+            ]
+            try:
+                player.book_breaks(breaks, plan.slot_id)
+            except BreakError:
+                return None  # the change closed as it was booked: the next one
+            records = [
+                PlayRecord(
+                    id=booked.break_id,
+                    run=run.run_id,
+                    break_id=run.break_id,
+                    break_name=item.name,
+                    source=run.source,
+                    scheduled=_utc(run.scheduled),
+                    spot_id=key,
+                    title=spot.title,
+                    advertiser=spot.advertiser,
+                    campaign=spot.campaign,
+                    category=spot.category,
+                    seconds=round(spot.seconds, 3),
+                    status=BOOKED,
+                    logged=_utc(now),
+                )
+                for booked, (key, spot) in zip(breaks, choice.spots, strict=True)
+            ]
+            with self._lock:
+                for record in records:
+                    entry = Heard(record.spot_id, record.advertiser, record.category, run.scheduled)
+                    self._booked[record.id] = _Tracked(record, entry)
+                    self._heard.append(entry)
+                self._forget_old_locked(now)
         logger.info(
             "Ad break %r booked with %d spot%s for the song change in about %d s",
             item.name,
@@ -1455,7 +1746,7 @@ class AdDesk:
         return records
 
     def _outcomes(self, now: float) -> list[PlayRecord]:
-        """What became of the booked spots: aired, or missed and why."""
+        """What became of the booked spots: aired, cut off on the air, or missed and why."""
         from autodj.breaks import AIRED as BREAK_AIRED
         from autodj.breaks import TERMINAL
 
@@ -1472,11 +1763,16 @@ class AdDesk:
                 records.append(
                     self._final(entry.record, MISSED, "AutoDJ lost track of it", None, now)
                 )
+                not_aired.add(break_id)
             elif item.state not in TERMINAL:
                 continue
             elif item.state == BREAK_AIRED:
                 aired = item.aired_at if item.aired_at is not None else now
                 records.append(self._final(entry.record, AIRED, "", aired, now))
+            elif item.aired_at is not None:
+                # It started, then a skip or a stop cut it off.
+                reason = f"it may have aired in part: {item.reason or item.state}"
+                records.append(self._final(entry.record, INTERRUPTED, reason, item.aired_at, now))
             else:
                 records.append(
                     self._final(entry.record, MISSED, item.reason or item.state, None, now)
@@ -1486,7 +1782,7 @@ class AdDesk:
         with self._lock:
             for break_id in finished:
                 gone = self._booked.pop(break_id, None)
-                if gone is not None and (break_id in not_aired or self.breaks is None):
+                if gone is not None and break_id in not_aired:
                     # It did not air: it no longer counts toward limits.
                     with contextlib.suppress(ValueError):
                         self._heard.remove(gone.heard)
@@ -1508,9 +1804,13 @@ class AdDesk:
                 "logged": _utc(now),
             }
         )
-        if status == MISSED:
+        if status != AIRED:
             logger.warning(
-                "Ad spot %s (break %r) was missed: %s", record.title, record.break_name, reason
+                "Ad spot %s (break %r) %s: %s",
+                record.title,
+                record.break_name,
+                "was missed" if status == MISSED else "was cut off",
+                reason,
             )
         return final
 
@@ -1539,7 +1839,9 @@ class AdDesk:
             self.log.append(waiting)
         except OSError:
             logger.warning(
-                "Could not write the ad play log in %s; trying again",
+                "Could not write %d line%s to the ad play log in %s; trying again",
+                len(waiting),
+                "" if len(waiting) == 1 else "s",
                 self.log.folder,
                 exc_info=True,
             )
@@ -1661,12 +1963,15 @@ def summarise(rows: Sequence[PlayRecord], late_minutes: int) -> list[dict[str, A
                 "aired": 0,
                 "late": 0,
                 "missed": 0,
+                "interrupted": 0,
                 "waiting": 0,
                 "seconds": 0.0,
             },
         )
         status = report_status(record, late_minutes)
-        if status in (AIRED, "late"):
+        if status == INTERRUPTED:
+            group["interrupted"] += 1
+        elif status in (AIRED, "late"):
             group["aired"] += 1
             group["seconds"] += record.seconds
             if status == "late":
@@ -1705,6 +2010,7 @@ def row_view(record: PlayRecord, zone: ZoneInfo, late_minutes: int) -> dict[str,
         "campaign": record.campaign,
         "seconds": round(record.seconds, 1),
         "reason": record.reason,
+        "count": record.count,
     }
 
 
@@ -1728,10 +2034,11 @@ def build_report(
     totals = {
         "aired": sum(1 for status in spots if status in (AIRED, "late")),
         "late": spots.count("late"),
-        "missed": statuses.count(MISSED),
+        "missed": sum(record.count for record in rows if record.status == MISSED),
+        "interrupted": statuses.count(INTERRUPTED),
         "waiting": statuses.count(BOOKED),
         "missed_breaks": sum(
-            1 for record in rows if not record.spot_id and record.status == MISSED
+            record.count for record in rows if not record.spot_id and record.status == MISSED
         ),
     }
     return {
@@ -1772,6 +2079,7 @@ AFFIDAVIT_COLUMNS = (
     "break",
     "source",
     "reason",
+    "breaks",
 )
 SUMMARY_COLUMNS = (
     "advertiser",
@@ -1779,6 +2087,7 @@ SUMMARY_COLUMNS = (
     "aired",
     "aired_late",
     "missed",
+    "may_have_aired",
     "waiting",
     "seconds_aired",
 )
@@ -1802,6 +2111,7 @@ def affidavit_csv(rows: Sequence[PlayRecord], zone: ZoneInfo, late_minutes: int)
                 record.break_name,
                 view["source_text"],
                 record.reason,
+                record.count,
             )
         )
     return _csv(AFFIDAVIT_COLUMNS, lines)
@@ -1818,6 +2128,7 @@ def summary_csv(rows: Sequence[PlayRecord], late_minutes: int) -> str:
                 group["aired"],
                 group["late"],
                 group["missed"],
+                group["interrupted"],
                 group["waiting"],
                 group["seconds"],
             )

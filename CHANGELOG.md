@@ -22,7 +22,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   spot booked, aired or missed is appended to the station's ad play log, flushed line by line, so
   a crash loses at most the line being written. Late spots (past **Late after**) and missed ones
   (no song change in time, skipped, no spot could play, the computer slept, AutoDJ stopped) are
-  logged with the reason in words. **Ad report** shows, for chosen days, totals by advertiser and
+  logged with the reason in words, under one rule (**Missed after**) for late, slept, stalled and
+  stopped time; breaks due while AutoDJ was down are logged at the next start, a long gap's extra
+  breaks in one summary line, and a spot cut off on the air as "may have aired". Song changes are
+  planned only from 20 minutes before a break is due, so with no break due songs are picked
+  exactly as with ads off. **Ad report** shows, for chosen days, totals by advertiser and
   campaign and every spot, as tables with column and row headers, and exports either as CSV for
   an affidavit; the play log export lists aired spots as `kind` `ad`. The hour preview shows a
   booked ad break as fixed and a coming one as predicted, with its time as a fixed point to time

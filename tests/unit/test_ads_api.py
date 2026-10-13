@@ -217,12 +217,15 @@ def test_settings_are_checked_and_saved(station):
 
 def test_run_now_books_the_break_on_the_open_song_change(station):
     spot = station.upload().json()
-    item = station.add_break().json()
+    item = station.add_break(minutes=[]).json()
     renders = start_station(station.player, station.entries)
-    assert renders[2] is not None  # ads alone plan the song change
+    assert renders[2] is None  # no break is due: no song change is planned
     reply = station.client.post(f"/api/ads/breaks/{item['id']}/run", headers=ORIGIN)
     assert reply.status_code == 202, reply.text
     assert station.listing()["pending"][0]["source_text"] == "Run now"
+    # The desk asked the render worker for the open change; it plans it.
+    station.player._plan_slot(renders[1])
+    assert station.player._slot_plan is not None
     station.ads.tick()
     desk = station.station.breaks
     (booked,) = [entry for entry in desk.listing() if entry.source == AD_SCHEDULE]
@@ -268,6 +271,36 @@ def _record(**fields) -> PlayRecord:
     return PlayRecord.model_validate(values)
 
 
+def test_a_change_too_deeply_nested_is_refused_in_words(station):
+    deep = b"[" * 100000 + b"]" * 100000
+    reply = station.client.put(
+        "/api/ads/settings",
+        content=deep[:16000],
+        headers={**ORIGIN, "Content-Type": "application/json"},
+    )
+    assert reply.status_code == 422 and reply.json()["detail"] == "Send the change as JSON"
+    nested = b"[" * 8000 + b"]" * 8000
+    reply = station.client.put(
+        "/api/ads/settings", content=nested, headers={**ORIGIN, "Content-Type": "application/json"}
+    )
+    assert reply.status_code == 422
+
+
+def test_every_upload_shares_one_decode_gate():
+    import asyncio
+
+    from autodj import ads_api, breaks_api, matched_intros_api
+
+    assert ads_api.decode_gate is breaks_api.decode_gate
+    assert matched_intros_api.decode_gate is breaks_api.decode_gate
+
+    async def gates() -> tuple:
+        return breaks_api.decode_gate(), breaks_api.decode_gate()
+
+    first, second = asyncio.run(gates())
+    assert first is second
+
+
 def test_the_report_and_its_csv_exports(station):
     log = AdLog(station.station.paths.ad_plays)
     log.append(
@@ -294,7 +327,7 @@ def test_the_report_and_its_csv_exports(station):
     summary = station.client.get(
         "/api/ads/report/export?from=2026-09-01&to=2026-09-01&format=summary"
     )
-    assert summary.text.splitlines()[1] == "Example Motors,Autumn,1,0,1,0,30.0"
+    assert summary.text.splitlines()[1] == "Example Motors,Autumn,1,0,1,0,0,30.0"
     for query, status in (
         ("from=2026-09-02&to=2026-09-01", 422),
         ("from=soon&to=2026-09-01", 422),

@@ -237,13 +237,7 @@ def _context(station: StationRuntime) -> dict[str, Any]:
 def install_breaks(router: StationRouter) -> None:
     """Add the announcer routes; each acts on the station its URL names."""
     limiters: dict[int, RateLimiter] = {}
-    # One decode at a time across every station: decoding takes a CPU core.
-    decoding: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
-        weakref.WeakKeyDictionary()
-    )
-
-    def decoder() -> asyncio.Semaphore:
-        return decoding.setdefault(asyncio.get_running_loop(), asyncio.Semaphore(1))
+    decoder = decode_gate
 
     def announcer(request: Request, station: StationRuntime) -> tuple[MachineToken, BreakDesk]:
         """The request's token and the station's desk, or the HTTP error that refuses it."""
@@ -638,6 +632,18 @@ async def _gated_decode(
     return await asyncio.wrap_future(future)
 
 
+# One decode at a time across the server, for breaks, voice tracks, matched
+# intros and ad spots alike: decoding takes a CPU core.
+_DECODE_GATES: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def decode_gate() -> asyncio.Semaphore:
+    """The server's one upload-decode gate, for the running event loop."""
+    return _DECODE_GATES.setdefault(asyncio.get_running_loop(), asyncio.Semaphore(1))
+
+
 def _quiet_unlink(path: Path) -> None:
     """Delete *path* if nothing holds it open."""
     with contextlib.suppress(OSError):
@@ -735,5 +741,6 @@ __all__ = [
     "MULTIPART_OVERHEAD_BYTES",
     "UPLOAD_PATH",
     "VOICE_UPLOAD_PATH",
+    "decode_gate",
     "install_breaks",
 ]

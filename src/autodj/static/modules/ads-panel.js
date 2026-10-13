@@ -81,6 +81,7 @@ export function reportSummary(report) {
   if (totals.late) text += `, ${totals.late} of them late`;
   text += `, ${spots(totals.missed || 0)} missed`;
   if (totals.missed_breaks) text += ` (${spots(totals.missed_breaks, "break")} with no spot)`;
+  if (totals.interrupted) text += `, ${spots(totals.interrupted)} cut off on the air that may have aired`;
   if (totals.waiting) text += `, ${totals.waiting} waiting to air`;
   return `${text}.`;
 }
@@ -667,6 +668,7 @@ export function installAdsPanel({
         cell("td", String(group.aired), "ads-number"),
         cell("td", String(group.late), "ads-number"),
         cell("td", String(group.missed), "ads-number"),
+        cell("td", String(group.interrupted ?? 0), "ads-number"),
         cell("td", String(group.waiting), "ads-number"),
         cell("td", String(group.seconds), "ads-number"),
       );

@@ -930,6 +930,13 @@ class StationRuntime:
                 await asyncio.to_thread(desk.maintain)
             except Exception:
                 logger.exception("Break upkeep failed")
+        ads = getattr(self, "ads", None)
+        if ads is not None and not ads.enabled:
+            try:
+                # Ads off: no break is owed for this run when they come back on.
+                await asyncio.to_thread(ads.station_started)
+            except Exception:
+                logger.exception("Ad schedule upkeep failed")
         self.stopped = False
         bridge = self.bridge
         cfg = self.cfg
@@ -1016,7 +1023,7 @@ class StationRuntime:
         )
         # What the ad spots did up to now reaches the play log before the stop.
         ads = getattr(self, "ads", None)
-        if ads is not None and ads.has_booked():
+        if ads is not None and ads.needs_flush():
             await _step(
                 "writing its ad play log", functools.partial(asyncio.to_thread, ads.flush), problems
             )

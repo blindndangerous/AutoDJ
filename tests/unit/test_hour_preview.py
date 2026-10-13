@@ -1069,3 +1069,39 @@ def test_the_rotation_tester_picks_what_the_live_station_would(tmp_path: Path) -
         ),
     ]
     assert tested == live[: len(tested)]
+
+
+def _ads_on_with_no_break_due(tmp_path: Path, player: Any) -> Any:
+    """An ad desk with ads on and one break, not due for days, on *player*'s break desk."""
+    from types import SimpleNamespace
+
+    from autodj.ads import AdDesk, AdLog, AdStore, BreakFields
+    from autodj.breaks import BreakDesk
+    from autodj.config import AdsConfig, BreaksConfig
+
+    config = AdsConfig(enabled=True)
+    store = AdStore(tmp_path / "ads.json", tmp_path / "ads")
+    later = date(2099, 1, 1)  # never due in the span
+    store.add_break("a" * 32, BreakFields(name="Later", minutes=[0, 30], start_date=later))
+    desk = BreakDesk(lambda: BreaksConfig(enabled=False), tmp_path / "announcements")
+    stand_in = SimpleNamespace(
+        _cfg=SimpleNamespace(playback=SimpleNamespace(transition_mode="saved_points")), bus=object()
+    )
+    ads = AdDesk(
+        lambda: config, store, AdLog(tmp_path / "ad_plays"), "UTC", player=stand_in, breaks=desk
+    )
+    ads.noticed()
+    player.break_desk = desk
+    return ads
+
+
+def test_ads_on_with_no_break_due_leave_the_preview_as_with_ads_off(tmp_path: Path) -> None:
+    source, _power, gold = _station(tmp_path)
+    _playing(source, gold[0], NOW - 50)
+    source.player._state.next_track = gold[1]
+    plain = build_preview(source, 120, now=NOW)
+    source.ads = _ads_on_with_no_break_due(tmp_path, source.player)
+    assert not source.ads.wants_slots()
+    with_ads = build_preview(source, 120, now=NOW)
+    assert with_ads["items"] == plain["items"]
+    assert with_ads["points"] == plain["points"]

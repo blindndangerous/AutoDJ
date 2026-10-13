@@ -350,6 +350,7 @@ def test_reports_say_what_aired_late_or_missed_per_advertiser(tmp_path):
         "aired": 2,
         "late": 1,
         "missed": 2,
+        "interrupted": 0,
         "waiting": 1,
         "missed_breaks": 1,
     }
@@ -367,7 +368,7 @@ def test_reports_say_what_aired_late_or_missed_per_advertiser(tmp_path):
     assert "'=SUM(A1)" in text
     assert "Aired late" in text and "no spot could play" in text
     assert summary_csv(rows, 10).splitlines()[0] == (
-        "advertiser,campaign,aired,aired_late,missed,waiting,seconds_aired"
+        "advertiser,campaign,aired,aired_late,missed,may_have_aired,waiting,seconds_aired"
     )
     plays = aired_plays(log.folder, start, start + timedelta(days=1))
     assert [(play.kind, play.artist, play.album) for play in plays] == [
@@ -402,7 +403,11 @@ class Clock:
 
 @pytest.fixture
 def station(tmp_path):
-    """A saved-point station with breaks off and ads on, two spots and one break."""
+    """A saved-point station with breaks off and ads on, two spots and one break.
+
+    The break has no minutes past the hour, so none is due: the station
+    plans no song change until one is (:func:`run_now`).
+    """
     player, entries, _points, desk = make_station(tmp_path)
     cfg = player._cfg
     cfg.breaks = BreaksConfig(enabled=False)
@@ -441,6 +446,19 @@ def station(tmp_path):
     return player, entries, desk, ads, clock, break_id, renders
 
 
+def plan(station) -> None:
+    """What the render-ahead worker does when the desk asks for the open song change."""
+    player, *_rest, renders = station
+    player._plan_slot(renders[1])
+
+
+def run_now(station) -> None:
+    """Run now: the break is due, and the open song change is planned for it."""
+    _player, _entries, _desk, ads, _clock, break_id, _renders = station
+    ads.request(break_id, "manual")
+    plan(station)
+
+
 def log_lines(ads: AdDesk) -> list[PlayRecord]:
     found, _damaged = ads.log.read(
         datetime.fromtimestamp(ads.clock() - 86400, UTC),
@@ -449,19 +467,158 @@ def log_lines(ads: AdDesk) -> list[PlayRecord]:
     return found
 
 
-def test_ads_alone_make_the_station_plan_its_song_changes(station):
+def booked_spots(desk) -> list:
+    return [item for item in desk.listing() if item.source == AD_SCHEDULE]
+
+
+def test_with_no_break_due_the_station_plans_nothing(station):
     player, _entries, desk, _ads, _clock, _break_id, renders = station
-    assert not desk.enabled and desk.plans_slots
-    assert renders[2] is not None  # the open slot was planned for ads
+    assert not desk.enabled and not desk.plans_slots and not player._breaks_on()
+    assert renders[2] is None and player._slot_plan is None
+    run_now(station)  # a break waits: now the change is planned
+    assert desk.plans_slots and player._slot_plan is not None
     player._cfg.ads = AdsConfig(enabled=False)
     assert not desk.plans_slots and not player._breaks_on()
 
 
+def test_a_break_due_within_the_plan_ahead_time_plans_the_change(station):
+    _player, _entries, desk, ads, clock, break_id, _renders = station
+    soon = datetime.fromtimestamp(clock.now + 600, UTC).minute
+    ads.store.update_break(break_id, BreakFields(name="Top", minutes=[soon]))
+    ads.noticed()
+    assert ads.wants_slots() and desk.plans_slots
+    later = datetime.fromtimestamp(clock.now, UTC).date() + timedelta(days=2)
+    ads.store.update_break(break_id, BreakFields(name="Top", minutes=[soon], start_date=later))
+    ads.noticed()
+    assert not ads.wants_slots()
+
+
+def test_a_schedule_event_due_soon_plans_the_change(station, tmp_path):
+    _player, _entries, _desk, ads, clock, _break_id, _renders = station
+    from autodj.scheduler import ScheduledEvent
+
+    at = datetime.fromtimestamp(clock.now + 300, UTC)
+    event = ScheduledEvent(
+        id="e" * 32,
+        name="Sponsor",
+        action="ad_break",
+        params={"name": "Top"},
+        repeat="daily",
+        time=at.time().replace(second=0, microsecond=0),
+    )
+    ads.events = lambda: [event]
+    ads.noticed()
+    assert ads.wants_slots()
+
+
+def test_ads_on_with_no_break_due_picks_the_same_songs_as_ads_off(tmp_path):
+    import random
+
+    def picks(with_ads: bool, folder: Path) -> list[str]:
+        player, entries, _points, desk = make_station(folder)
+        player._cfg.breaks = BreaksConfig(enabled=False)
+        player._cfg.ads = AdsConfig(enabled=with_ads)
+        player.bus = object()
+        if with_ads:
+            store = AdStore(folder / "ads.json", folder / "ads")
+            store.add_break(new_id(), BreakFields(name="Later", minutes=[], enabled=True))
+            ads = AdDesk(
+                lambda: player._cfg.ads,
+                store,
+                AdLog(folder / "ad_plays"),
+                "UTC",
+                player=player,
+                breaks=desk,
+            )
+            ads.noticed()
+        player._rng = np.random.default_rng(5)
+        player._random = random.Random(5)
+        random.seed(5)
+        player._set_render_cursor(entries[0], 0, "seed")
+        render = player._next_rendered()
+        found = [render.entry.path]
+        for _ in range(12):
+            player._on_track_start(render)
+            render = player._next_rendered()
+            player._plan_slot(render)  # the render worker's plan hook
+            found.append(render.entry.path)
+        assert player._slot_plan is None
+        return found
+
+    assert picks(True, tmp_path / "on") == picks(False, tmp_path / "off")
+
+
+def test_the_mix_bus_never_plans_or_rechecks_a_song_change(station, monkeypatch):
+    import threading
+
+    from autodj.player import Player
+
+    player, _entries, _desk, _ads, _clock, _break_id, renders = station
+    seen: list[tuple[str, str]] = []
+    for name in ("_claim_slot_plan", "_recheck_slot_plan", "_plan_slot"):
+        real = getattr(Player, name)
+
+        def spy(self, *args, _real=real, _name=name, **kwargs):
+            seen.append((_name, threading.current_thread().name))
+            return _real(self, *args, **kwargs)
+
+        monkeypatch.setattr(Player, name, spy)
+    run_now(station)
+    _render_a, render_b, _plan = renders
+
+    def bus_thread(work) -> None:
+        thread = threading.Thread(target=work, name="mix-bus")
+        thread.start()
+        thread.join()
+
+    bus_thread(lambda: player._on_track_start(render_b))
+    render_c = player._next_rendered()  # the render worker
+    bus_thread(lambda: player._on_track_start(render_c))
+    for first, _id, end in render_c.break_events:
+        bus_thread(
+            lambda first=first, end=end: (player._on_position(first + 1), player._on_position(end))
+        )
+    player.refresh_render_ahead()  # a queue edit, from an API thread
+    assert {name for name, _thread in seen} >= {"_claim_slot_plan", "_recheck_slot_plan"}
+    assert not [entry for entry in seen if entry[1] == "mix-bus"]
+    # And by the source: no bus callback reaches them.
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(Player))
+    methods = {node.name: node for node in tree.body[0].body if isinstance(node, ast.FunctionDef)}
+
+    def calls(name: str) -> set[str]:
+        return {
+            node.attr
+            for node in ast.walk(methods[name])
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+            and node.attr in methods
+        }
+
+    reached: set[str] = set()
+    todo = ["_on_track_start", "_on_position", "_take_render"]
+    while todo:
+        name = todo.pop()
+        if name in reached:
+            continue
+        reached.add(name)
+        todo.extend(calls(name))
+    assert not reached & {
+        "_claim_slot_plan",
+        "_recheck_slot_plan",
+        "_plan_slot",
+        "refresh_render_ahead",
+    }
+
+
 def test_a_due_break_is_booked_rendered_aired_and_logged(station):
-    player, _entries, desk, ads, clock, break_id, renders = station
-    ads.request(break_id, "manual")
+    player, _entries, desk, ads, clock, _break_id, renders = station
+    run_now(station)
     ads.tick()
-    booked = [item for item in desk.listing() if item.source == AD_SCHEDULE]
+    booked = booked_spots(desk)
     assert len(booked) == 2
     assert {item.kind for item in booked} == {AD} and all(item.keep_file for item in booked)
     assert all(item.state == QUEUED for item in booked)
@@ -492,8 +649,8 @@ def test_a_due_break_is_booked_rendered_aired_and_logged(station):
 
 
 def test_a_skipped_spot_is_logged_as_missed_with_its_reason(station):
-    player, _entries, _desk, ads, _clock, break_id, renders = station
-    ads.request(break_id, "manual")
+    player, _entries, _desk, ads, _clock, _break_id, renders = station
+    run_now(station)
     ads.tick()
     _render_a, render_b, _plan = renders
     player._on_track_start(render_b)
@@ -507,12 +664,52 @@ def test_a_skipped_spot_is_logged_as_missed_with_its_reason(station):
     assert ads.plays_today() == {}  # missed spots do not count
 
 
-def test_a_break_that_cannot_join_a_change_in_time_is_missed(station):
-    player, _entries, desk, ads, clock, break_id, _renders = station
-    player._cfg.playback.transition_mode = "crossfade"
-    ads.request(break_id, "manual")
+def test_a_spot_skipped_on_the_air_may_have_aired(station):
+    player, _entries, _desk, ads, _clock, _break_id, renders = station
+    run_now(station)
     ads.tick()
-    assert ads.pending() and not [i for i in desk.listing() if i.source == AD_SCHEDULE]
+    _render_a, render_b, _plan = renders
+    player._on_track_start(render_b)
+    render_c = player._next_rendered()
+    player._on_track_start(render_c)
+    first, _id, _end = render_c.break_events[0]
+    player._on_position(first + 1)  # the first spot is on the air
+    render_d = player._next_rendered()
+    player._on_track_start(render_d)  # then the song is skipped
+    ads.tick()
+    final = sorted((line.status, line.reason) for line in latest(log_lines(ads)).values())
+    assert final == [
+        ("interrupted", "it may have aired in part: cut short: the song was skipped"),
+        ("missed", "skipped before it aired"),
+    ]
+
+
+def test_a_stop_records_the_spot_on_the_air_and_the_ones_waiting(station):
+    player, _entries, _desk, ads, _clock, _break_id, renders = station
+    run_now(station)
+    ads.tick()
+    _render_a, render_b, _plan = renders
+    player._on_track_start(render_b)
+    render_c = player._next_rendered()
+    player._on_track_start(render_c)
+    first, _id, _end = render_c.break_events[0]
+    player._on_position(first + 1)
+    assert ads.needs_flush()
+    ads.flush()
+    final = sorted((line.status, line.reason) for line in latest(log_lines(ads)).values())
+    assert final == [
+        ("interrupted", "it may have aired: AutoDJ stopped during the break"),
+        ("missed", "AutoDJ stopped before it aired"),
+    ]
+    assert not ads.booked_spots()
+
+
+def test_a_break_that_cannot_join_a_change_in_time_is_missed(station):
+    player, _entries, desk, ads, clock, _break_id, _renders = station
+    player._cfg.playback.transition_mode = "crossfade"
+    run_now(station)
+    ads.tick()
+    assert ads.pending() and not booked_spots(desk)
     clock.now += 31 * 60
     ads.tick()
     (line,) = log_lines(ads)
@@ -521,38 +718,93 @@ def test_a_break_that_cannot_join_a_change_in_time_is_missed(station):
     assert not ads.pending()
 
 
-def test_a_break_with_no_spot_to_play_is_missed_with_why(station, tmp_path):
-    _player, _entries, _desk, ads, _clock, break_id, _renders = station
-    state = ads.store.state()
-    for key in state.spots:
+def test_a_break_with_no_spot_to_play_is_missed_with_why(station):
+    _player, _entries, _desk, ads, _clock, _break_id, _renders = station
+    for key in ads.store.state().spots:
         ads.store.update_spot(key, SpotFields(title="Spot", advertiser="X", enabled=False))
-    ads.request(break_id, "manual")
+    run_now(station)
     ads.tick()
     (line,) = log_lines(ads)
     assert line.status == "missed"
     assert line.reason == "no spot could play: 2 spots are turned off"
 
 
-def test_minutes_past_the_hour_run_the_break_and_a_long_sleep_is_logged(station):
+def test_minutes_past_the_hour_run_the_break_and_the_miss_time_rules_a_sleep(station):
     _player, _entries, _desk, ads, clock, break_id, _renders = station
     ads.tick()  # starts: counts from now
     mark = (math.floor(clock.now / 60) + 2) * 60
     minute = datetime.fromtimestamp(mark, UTC).minute
     ads.store.update_break(break_id, BreakFields(name="Top", minutes=[minute]))
+    ads.tick()  # due within the plan-ahead time: the change is planned
+    plan(station)
     clock.now = mark + 5
     ads.tick()
     assert [line.status for line in log_lines(ads)] == ["booked", "booked"]
     assert {line.source for line in log_lines(ads)} == {"clock"}
-    # Asleep across the next hour's mark: it is logged as missed, not run late.
+    # Asleep 5 minutes past the next hour's mark, within Missed after (30):
+    # it still joins a song change, to air late.
     clock.now = mark + 3600 + 300
     ads.tick()
+    late = [line for line in log_lines(ads) if line.scheduled.timestamp() == mark + 3600]
+    assert [line.status for line in late] == ["booked", "booked"]
+    # Asleep past Missed after: it is logged as missed, not run late.
+    clock.now = mark + 2 * 3600 + 31 * 60
+    ads.tick()
     missed = [line for line in log_lines(ads) if line.status == "missed" and not line.spot_id]
-    assert len(missed) == 1 and "slept" in missed[0].reason
+    assert any("slept" in line.reason for line in missed)
 
 
-def test_spots_left_booked_by_a_stop_are_logged_as_missed_at_the_next_start(station, tmp_path):
+def test_a_long_sleep_logs_every_missed_break_with_a_summary_line(station):
+    _player, _entries, _desk, ads, clock, break_id, _renders = station
+    ads.tick()
+    ads.store.update_break(break_id, BreakFields(name="Top", minutes=list(range(0, 60, 5))))
+    start = clock.now
+    clock.now += 24 * 3600 + 3600  # 25 hours of marks, 12 an hour
+    ads.tick()
+    missed = [line for line in log_lines(ads) if line.status == "missed" and not line.spot_id]
+    marks = marks_between(
+        ads.store.state().breaks[break_id], start, clock.now - 30 * 60, ZoneInfo("UTC")
+    )
+    assert len(missed) == 201
+    summary = missed[-1]
+    assert summary.count == len(marks) - 200 and summary.last_scheduled is not None
+    assert f"{summary.count} more ad breaks (Top)" in summary.reason
+    begin = datetime.fromtimestamp(start, UTC)
+    view = build_report(ads.log, begin - timedelta(days=1), begin + timedelta(days=2), UTC_ZONE, 10)
+    assert view["totals"]["missed_breaks"] == len(marks)
+
+
+def test_breaks_due_while_autodj_was_not_running_are_logged_at_the_next_start(station):
     player, _entries, _desk, ads, clock, break_id, _renders = station
-    ads.request(break_id, "manual")
+    ads.store.update_break(break_id, BreakFields(name="Top", minutes=[0, 30]))
+    ads.tick()
+    ads.flush()  # a stop saves where the schedule was
+    assert ads.log.cursor() == pytest.approx(clock.now)
+    clock.now += 3 * 3600
+    restarted = AdDesk(lambda: player._cfg.ads, ads.store, ads.log, "UTC", clock=clock)
+    restarted.tick()
+    missed = [line for line in log_lines(ads) if line.status == "missed"]
+    assert len(missed) >= 5
+    assert {line.reason for line in missed} == {"AutoDJ was not running"}
+
+
+def test_a_start_with_ads_off_owes_no_breaks_for_that_time(station):
+    player, _entries, _desk, ads, clock, break_id, _renders = station
+    ads.tick()
+    ads.flush()
+    player._cfg.ads = AdsConfig(enabled=False)
+    ads.station_started()
+    assert ads.log.cursor() is None
+    player._cfg.ads = AdsConfig(enabled=True)
+    clock.now += 3 * 3600
+    ads.store.update_break(break_id, BreakFields(name="Top", minutes=[0, 30]))
+    AdDesk(lambda: player._cfg.ads, ads.store, ads.log, "UTC", clock=clock).tick()
+    assert [line for line in log_lines(ads) if line.status == "missed"] == []
+
+
+def test_spots_left_booked_by_a_crash_are_logged_as_missed_at_the_next_start(station):
+    player, _entries, _desk, ads, clock, _break_id, _renders = station
+    run_now(station)
     ads.tick()
     restarted = AdDesk(lambda: player._cfg.ads, ads.store, ads.log, "UTC", clock=clock)
     restarted.tick()
@@ -563,7 +815,7 @@ def test_spots_left_booked_by_a_stop_are_logged_as_missed_at_the_next_start(stat
 
 
 def test_a_failed_log_write_is_kept_and_written_later(station, monkeypatch):
-    _player, _entries, _desk, ads, _clock, break_id, _renders = station
+    _player, _entries, _desk, ads, _clock, _break_id, _renders = station
     real = AdLog.append
     calls = []
 
@@ -574,11 +826,57 @@ def test_a_failed_log_write_is_kept_and_written_later(station, monkeypatch):
         real(self, records)
 
     monkeypatch.setattr(AdLog, "append", fails_once)
-    ads.request(break_id, "manual")
+    run_now(station)
     ads.tick()
     assert log_lines(ads) == []
     ads.tick()
     assert [line.status for line in log_lines(ads)] == ["booked", "booked"]
+
+
+def test_lines_a_stop_cannot_write_are_kept_aside_for_the_next_start(station, monkeypatch, caplog):
+    player, _entries, _desk, ads, clock, _break_id, _renders = station
+    real = AdLog.append
+    monkeypatch.setattr(
+        AdLog, "append", lambda self, records: (_ for _ in ()).throw(OSError("away"))
+    )
+    run_now(station)
+    ads.tick()
+    with caplog.at_level("ERROR"):
+        ads.flush()
+    assert ads.side_file.exists()
+    assert "Could not write 4 ad play log lines" in caplog.text
+    monkeypatch.setattr(AdLog, "append", real)
+    AdDesk(lambda: player._cfg.ads, ads.store, ads.log, "UTC", clock=clock).tick()
+    assert not ads.side_file.exists()
+    final = sorted(line.status for line in latest(log_lines(ads)).values())
+    assert final == ["missed", "missed"]
+
+
+def test_a_spot_is_never_deleted_as_it_is_booked(station):
+    _player, _entries, desk, ads, _clock, _break_id, _renders = station
+    first = sorted(ads.store.state().spots)[0]
+    assert ads.remove_spot(first) is not None
+    run_now(station)
+    ads.tick()
+    assert [item.label for item in booked_spots(desk)] == ["Sample Bakery: Spot"] or [
+        item.label for item in booked_spots(desk)
+    ] == ["Example Motors: Spot"]
+    (left,) = ads.store.state().spots
+    with pytest.raises(AdsError) as caught:
+        ads.remove_spot(left)
+    assert caught.value.status == 409
+    assert left in ads.store.state().spots
+
+
+def test_a_new_month_file_flushes_its_folder(tmp_path, monkeypatch):
+    import autodj.ads as ads_module
+
+    flushed = []
+    monkeypatch.setattr(ads_module, "fsync_directory", lambda path: flushed.append(path))
+    log = AdLog(tmp_path / "ad_plays")
+    log.append([record("booked")])
+    log.append([record("aired", aired=NOON + 90)])
+    assert flushed == [log.folder]
 
 
 def test_the_forecast_guesses_each_run_without_booking(station):
@@ -589,16 +887,16 @@ def test_the_forecast_guesses_each_run_without_booking(station):
     assert len(found) == 2
     assert all(run.label == "Ad break: Top" and run.own_point for run in found)
     assert found[0].detail == "Ad break, 2 spots, about 4 seconds"
-    assert not [item for item in desk.listing() if item.source == AD_SCHEDULE]
+    assert not booked_spots(desk)
     player._cfg.ads = AdsConfig(enabled=False)
     assert ads.forecast(clock.now, clock.now + 3600) == []
 
 
 def test_dropping_a_booked_ad_keeps_its_file(station):
-    _player, _entries, desk, ads, _clock, break_id, _renders = station
-    ads.request(break_id, "manual")
+    _player, _entries, desk, ads, _clock, _break_id, _renders = station
+    run_now(station)
     ads.tick()
-    item = next(item for item in desk.listing() if item.source == AD_SCHEDULE)
+    item = booked_spots(desk)[0]
     desk.drop(item.break_id, "test")
     assert desk.get(item.break_id).state == DROPPED
     desk.maintain()
@@ -609,7 +907,7 @@ def test_a_stop_writes_what_aired_without_booking_more(station):
     player, _entries, _desk, ads, _clock, break_id, renders = station
     ads.flush()  # before the first tick: nothing to write, nothing read
     assert log_lines(ads) == []
-    ads.request(break_id, "manual")
+    run_now(station)
     ads.tick()
     _render_a, render_b, _plan = renders
     player._on_track_start(render_b)

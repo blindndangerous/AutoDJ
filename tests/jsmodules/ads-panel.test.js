@@ -57,7 +57,7 @@ const BREAK = {
 const REPORT = {
   from: "2026-10-01", to: "2026-10-13", count: 2, truncated: false, damaged: 1,
   totals: { aired: 1, late: 1, missed: 1, waiting: 0, missed_breaks: 0 },
-  summary: [{ advertiser: "Example Motors", campaign: "Autumn", aired: 1, late: 1, missed: 1, waiting: 0, seconds: 30 }],
+  summary: [{ advertiser: "Example Motors", campaign: "Autumn", aired: 1, late: 1, missed: 1, interrupted: 0, waiting: 0, seconds: 30 }],
   rows: [
     {
       id: "c".repeat(32), scheduled_text: "13 October 2026 at 12:15:00", aired_text: "13 October 2026 at 12:31:00",
@@ -160,6 +160,10 @@ describe("words", () => {
     );
     expect(reportSummary(REPORT)).toBe(
       "Ad report from 2026-10-01 to 2026-10-13: 1 spot aired, 1 of them late, 1 spot missed.",
+    );
+    expect(reportSummary({ ...REPORT, totals: { ...REPORT.totals, interrupted: 2 } })).toBe(
+      "Ad report from 2026-10-01 to 2026-10-13: 1 spot aired, 1 of them late, 1 spot missed, "
+      + "2 spots cut off on the air that may have aired.",
     );
     expect(parseMinutes("45, 15 15")).toEqual([15, 45]);
     expect(parseMinutes("")).toEqual([]);
@@ -290,7 +294,7 @@ describe("the Ads tab", () => {
     const totals = byId("ads-totals").querySelector("tr");
     expect(totals.firstElementChild.tagName).toBe("TH");
     expect(totals.firstElementChild.getAttribute("scope")).toBe("row");
-    expect([...totals.children].map((cell) => cell.textContent)).toEqual(["Example Motors", "Autumn", "1", "1", "1", "0", "30"]);
+    expect([...totals.children].map((cell) => cell.textContent)).toEqual(["Example Motors", "Autumn", "1", "1", "1", "0", "0", "30"]);
     const rows = [...byId("ads-rows").querySelectorAll("tr")];
     expect([...rows[0].children].map((cell) => cell.textContent)).toEqual([
       "13 October 2026 at 12:15:00", "13 October 2026 at 12:31:00", "Aired late, 16 minutes after its time",

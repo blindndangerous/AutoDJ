@@ -39,7 +39,6 @@ import json
 import logging
 import stat
 import time
-import weakref
 from datetime import date as Date
 from datetime import datetime, timedelta
 from datetime import time as Time
@@ -74,7 +73,13 @@ from autodj.ads import (
     valid_id,
 )
 from autodj.breaks import BreakCues, speech_cues
-from autodj.breaks_api import MULTIPART_OVERHEAD_BYTES, _gated_decode, _quiet_unlink, _within
+from autodj.breaks_api import (
+    MULTIPART_OVERHEAD_BYTES,
+    _gated_decode,
+    _quiet_unlink,
+    _within,
+    decode_gate,
+)
 from autodj.liner_files import LinerTooLargeError, store_liner_upload
 from autodj.liners import LINER_EXTS
 from autodj.station_routes import StationDep, StationRouter, audio_mime
@@ -149,7 +154,7 @@ async def _read_json(request: Request) -> Any:
             raise HTTPException(status_code=413, detail="The request is too large")
     try:
         return json.loads(bytes(body) or b"null")
-    except ValueError as exc:
+    except (ValueError, RecursionError) as exc:
         raise HTTPException(status_code=422, detail="Send the change as JSON") from exc
 
 
@@ -374,12 +379,8 @@ def _span(desk: AdDesk, from_text: str, to_text: str) -> tuple[datetime, datetim
 
 def install_ads(router: StationRouter) -> None:
     """Add the Ads routes; each acts on the station its URL names."""
-    decoding: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
-        weakref.WeakKeyDictionary()
-    )
-
-    def decoder() -> asyncio.Semaphore:
-        return decoding.setdefault(asyncio.get_running_loop(), asyncio.Semaphore(1))
+    # One decode at a time across the server, shared with breaks and intros.
+    decoder = decode_gate
 
     @router.get("/ads")
     async def ads(station: StationDep) -> JSONResponse:
@@ -529,12 +530,11 @@ def install_ads(router: StationRouter) -> None:
         desk = _desk(station)
         if not valid_id(spot_id):
             raise HTTPException(status_code=404, detail="No spot has that ID")
-        if spot_id in desk.booked_spots():
-            return _field_error(
-                409, "", "That spot is booked for a coming song change; delete it after it airs"
-            )
         try:
-            removed = await asyncio.to_thread(desk.store.remove_spot, spot_id)
+            # Checked and removed while no break is being booked.
+            removed = await asyncio.to_thread(desk.remove_spot, spot_id)
+        except AdsError as exc:
+            return _ads_error(exc)
         except OSError as exc:
             raise _unreadable(exc) from exc
         if removed is None:

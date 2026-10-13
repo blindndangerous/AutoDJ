@@ -2706,7 +2706,7 @@ describe("static accessibility contracts", () => {
     // The report: tables with captions and column headers, each in a named
     // region that takes focus, so a narrow window scrolls it by keyboard.
     for (const [wrapId, tableId, columns] of [
-      ["ads-totals-wrap", "ads-totals-table", ["Advertiser", "Campaign", "Aired", "Aired late", "Missed", "Waiting", "Seconds aired"]],
+      ["ads-totals-wrap", "ads-totals-table", ["Advertiser", "Campaign", "Aired", "Aired late", "Missed", "May have aired", "Waiting", "Seconds aired"]],
       ["ads-rows-wrap", "ads-rows-table", ["Break time", "Aired", "Result", "Spot", "Break", "Reason"]],
     ]) {
       const wrap = document.getElementById(wrapId);
