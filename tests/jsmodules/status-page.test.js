@@ -158,6 +158,24 @@ describe("status page polling", () => {
     expect(byId("status-station").textContent).toBe("AutoDJ");
   });
 
+  it("gives a player page its own title and each live feed", async () => {
+    const onFeed = vi.fn();
+    page = startStatusPage({
+      doc: document,
+      load,
+      setTimer: () => 1,
+      clearTimer: vi.fn(),
+      title: (station) => `${station}: listen live`,
+      onFeed,
+    });
+    await settle();
+    expect(document.title).toBe("Radio: listen live");
+    expect(onFeed).toHaveBeenCalledWith(FEED);
+    load.mockRejectedValue(Object.assign(new Error("off air"), { status: 503 }));
+    await page.poll();
+    expect(onFeed).toHaveBeenCalledTimes(1);
+  });
+
   it("says in plain text when the station cannot be reached, and keeps polling", async () => {
     load.mockRejectedValue(new Error("offline"));
     start();

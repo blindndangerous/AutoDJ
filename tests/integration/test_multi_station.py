@@ -76,6 +76,11 @@ import_external_cues = false
 
 [stations.nightowl.recording]
 folder = "{root}/recordings/nightowl"
+
+[stations.nightowl.player_page]
+enabled = true
+embed = true
+embed_origins = ["https://nightowl.example"]
 """
 
 
@@ -218,7 +223,11 @@ def test_two_stations_run_side_by_side(rig: Any) -> None:
         "nowplaying_path": "/api/stations/nightowl/nowplaying",
         "stream_path": "/stations/nightowl.mp3",
         "m3u_path": "/stations/nightowl.m3u",
+        "player_path": "/stations/nightowl/player",
+        "embed_path": "/stations/nightowl/embed",
     }
+    assert listing["default"]["player_path"] is None
+    assert listing["default"]["embed_path"] is None
     stream = client.get(f"{OWL}/stream").json()
     assert (stream["path"], stream["m3u_path"]) == (
         "/stations/nightowl.mp3",
@@ -780,6 +789,24 @@ def test_each_station_has_its_own_public_status_page_and_feed(rig: Any, tmp_path
         assert str(tmp_path) not in text and tmp_path.as_posix() not in text
         assert "testserver" not in text
 
+    # Its player pages, which only this station turns on.
+    player = client.get("/stations/nightowl/player")
+    assert player.status_code == 200
+    assert "<title>Night Owl Radio: listen live</title>" in player.text
+    assert 'data-stream="/stations/nightowl.mp3"' in player.text
+    assert "frame-ancestors 'none'" in player.headers["content-security-policy"]
+    embed = client.get("/stations/nightowl/embed")
+    assert embed.headers["content-security-policy"].endswith(
+        "frame-ancestors 'self' https://nightowl.example"
+    )
+    assert '<a href="/stations/nightowl/player" target="_blank"' in embed.text
+    for text in (player.text, embed.text):
+        assert TOKEN not in text
+        assert tmp_path.as_posix() not in text and "testserver" not in text
+    for path in ("/player", "/embed", "/stations/default/player"):
+        assert client.get(path).status_code == 404, path
+    assert client.get("/stations/daybreak/player").status_code == 401
+
     # Stopped: every public address says "off air" (503); only its name shows.
     client.portal.call(registry.stop, "nightowl")
     off = client.get("/stations/nightowl/status")
@@ -791,6 +818,11 @@ def test_each_station_has_its_own_public_status_page_and_feed(rig: Any, tmp_path
     assert stopped_feed.json() == {"detail": "That station is off air"}
     assert stopped_feed.headers["access-control-allow-origin"] == "*"
     assert client.get("/stations/nightowl.mp3").status_code == 503
+    off_player = client.get("/stations/nightowl/player")
+    assert off_player.status_code == 503
+    assert "Night Owl Radio is off air right now." in off_player.text
+    assert 'id="player-toggle"' in off_player.text
+    assert client.get("/stations/nightowl/embed").status_code == 503
     assert client.get("/stations/daybreak/status").status_code == 401
     # The default station is untouched.
     assert client.get("/status").status_code == 200
@@ -817,7 +849,7 @@ def test_the_station_list_reports_each_stations_public_addresses(rig: Any) -> No
     assert owl["status_path"] == "/stations/nightowl/status"
     assert owl["nowplaying_path"] == "/api/stations/nightowl/nowplaying"
     # Each listed address answers as the station's state says.
-    for key in ("status_path", "nowplaying_path", "stream_path"):
+    for key in ("status_path", "nowplaying_path", "stream_path", "player_path", "embed_path"):
         assert client.get(owl[key]).status_code == 503, key
     for key in ("status_path", "nowplaying_path", "m3u_path"):
         assert client.get(listing["default"][key]).status_code == 200, key

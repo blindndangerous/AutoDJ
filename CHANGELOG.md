@@ -23,6 +23,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   worker thread, stop after 80 songs or about 4 seconds, and are shared and reused for 45 seconds
   while nothing new is fixed.
 
+- A public player page and an embeddable player (#52), each off until `[player_page]` turns it
+  on, per station. `/player` (or `/stations/<slug>/player`) has a Play button that becomes Stop,
+  a labelled Volume slider remembered in the browser, the song playing, the next song when that is
+  shown publicly, and the recent songs. Nothing plays until Play is pressed, and Stop closes the
+  connection so no listener slot is held. A stall says "Buffering." once, a stream that has not
+  started 15 seconds after Play stops with a reason, and where the browser fixes the volume
+  (iPhone and iPad) a note replaces the slider. `/embed` (or `/stations/<slug>/embed`) is a compact
+  version for an `<iframe>` on another site: `embed_origins` lists the sites allowed to show it,
+  and `?theme=light` or `?theme=dark` matches the site's colours. The song line is the only live
+  region and speaks once per song; playback results are said once in a status line; both pages
+  work at 320 px, in light, dark and forced colours, and without JavaScript through the
+  browser's own audio controls. They carry nothing the public feed does not, send a strict
+  Content-Security-Policy, and the full page cannot be framed. `GET /api/stations` lists each
+  station's `player_path` and `embed_path`.
 - Queue & Search uses one paginated library table with Music or Voice liners, folder filtering
   and text search. Folder management is shown as a table in Library tools; liner file maintenance
   is back in Settings > Voice liners. Search, folders and History share arrow-key navigation.
@@ -743,6 +757,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- No page AutoDJ serves can be shown inside another site's frame any more, so a hostile page
+  cannot overlay the web UI or a public page to trick a click (clickjacking). Every response now
+  carries `Content-Security-Policy: frame-ancestors 'none'` (added to the page's own policy where
+  it has one) and `X-Frame-Options: DENY`. The one exception is the new embeddable player, which
+  may be framed only by the sites in `[player_page] embed_origins`.
 - FFmpeg may now open only local files and pipes whenever AutoDJ asks it to read a song, a liner,
   a cart clip or a break (`-protocol_whitelist file,pipe`). A file that FFmpeg took for a playlist
   could otherwise make it fetch addresses on the network.
