@@ -677,9 +677,10 @@ under the index's publication lock with the index, so they are one moment's. A l
 its folder (a file link pointing elsewhere, a state file linked elsewhere, or any linked
 subfolder, symbolic link or Windows junction) makes the backup fail with the link's name, so a
 link cannot pull another file on the machine into an archive; a file link within the same folder
-is read as that file. Restore refuses links stored in an archive and destinations that a link
-takes outside their folder, and it removes a link or junction it set aside as a link, never
-walking into its target.
+is read as that file. Hard-linked files are also refused because their other names may be outside
+the backup folder. Restore refuses links stored in an archive and destinations that a link takes
+outside their folder, and it removes a link or junction it set aside as a link, never walking into
+its target.
 
 Restore requires a backup from the same major and minor version. It refuses member names that
 are absolute, contain `..`, backslashes or drive letters, or fall outside the known index files,

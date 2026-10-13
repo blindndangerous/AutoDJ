@@ -279,7 +279,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   files under the index's lock, so they are one moment's. A link that leaves its folder,
   including a Windows junction, makes the backup fail with its name instead of copying outside
   files (#193); a link within the folder is saved as a file. Restore refuses links in an archive
-  and destinations that a link takes elsewhere.
+  and destinations that a link takes elsewhere. Hard-linked files are refused because their other
+  names may be outside the backup folder.
 - `autodj doctor` checks every station (#70). Each other station gets its own lines, starting
   "Station <slug>," (and a `station` field in `--json`): its folder, saved settings, stream,
   relays, time checks and voice packs, DMCA mode, recording folder and liner folder.
@@ -532,6 +533,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the old one, so the server and a remote worker can no longer look as if they run the same
   weights when they do not. A digest is only remembered once every weight file is more than two
   seconds old.
+- Backups refuse links to files outside a configured backup folder and linked subfolders,
+  including Windows junctions, for both default and named stations. Restore also checks
+  linked destinations before replacing any files (#193).
 
 - Several stations on one server (#70, #141):
   - Restarting audio processing releases finished process objects and their Windows handles
