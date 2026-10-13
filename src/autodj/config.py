@@ -450,6 +450,8 @@ class PlaybackConfig(_Section):
     liners_random_max_minutes: float | None = None
     liners_pick_mode: str = "random"
     liners_duck_db: float = -12.0
+    # Matched song intros may take the automatic liner slot unless this is enabled.
+    matched_intro_only_without_liner: bool = False
     # Server mix only: time a liner due at a track start to end just
     # before the incoming vocal ("hitting the post").
     liners_talk_up: bool = False
@@ -535,6 +537,7 @@ class PlaybackConfig(_Section):
             "beatmatch_on_skip",
             "liners_enabled",
             "liners_talk_up",
+            "matched_intro_only_without_liner",
         ):
             setattr(self, name, bool(getattr(self, name)))
         self.liners_folder = (
@@ -1400,6 +1403,73 @@ class NowPlayingConfig(_Section):
             raise ValueError("nowplaying.history_limit must be between 0 and 20")
 
 
+#: How listener requests are approved (``[requests] approval``).
+REQUEST_APPROVALS: tuple[str, ...] = ("manual", "auto")
+
+
+@dataclass
+class RequestsConfig(_Section):
+    """The public listener request page (``[requests]``).
+
+    Attributes:
+        enabled: Serve the request page (``/requests``, or
+            ``/stations/<slug>/requests``).  Off by default.
+        approval: ``"manual"``: each request waits for the operator;
+            ``"auto"``: a request that keeps the rules is queued at once.
+        per_listener: Requests one address may make per ``per_listener_minutes``.
+        per_listener_minutes: The window ``per_listener`` counts over.
+        daily_limit: Requests the station accepts per day, from everyone
+            (midnight in the station time zone).
+        max_pending: Requests that may wait for the operator at once.
+        window_minutes: How far ahead a request may be placed in the queue.
+        blocked_artists: Artists listeners cannot request.
+        blocked_folders: Folders whose songs listeners cannot request or
+            find, as full paths or paths inside ``[library] music_dir``.
+        ipv6_prefix: The IPv6 network one listener's limits count over,
+            in bits: 56 (the default) counts a whole home network that was
+            delegated a /56; 64 a single /64; 128 a single address.
+    """
+
+    SECTION: ClassVar[str] = "requests"
+    enabled: bool = False
+    approval: str = "manual"
+    per_listener: int = 3
+    per_listener_minutes: int = 60
+    daily_limit: int = 50
+    max_pending: int = 20
+    window_minutes: int = 30
+    blocked_artists: list[str] = field(default_factory=list)
+    blocked_folders: list[str] = field(default_factory=list)
+    ipv6_prefix: int = 56
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise TypeError("requests.enabled must be true or false")
+        if self.approval not in REQUEST_APPROVALS:
+            raise ValueError("requests.approval must be manual or auto")
+        for name, low, high in (
+            ("per_listener", 1, 100),
+            ("per_listener_minutes", 1, 1440),
+            ("daily_limit", 1, 10000),
+            ("max_pending", 1, 200),
+            ("window_minutes", 5, 240),
+            ("ipv6_prefix", 32, 128),
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"requests.{name} must be an integer")
+            if not low <= value <= high:
+                raise ValueError(f"requests.{name} must be between {low} and {high}")
+        for name in ("blocked_artists", "blocked_folders"):
+            value = getattr(self, name)
+            if not isinstance(value, list) or not all(
+                isinstance(item, str) and item.strip() for item in value
+            ):
+                raise TypeError(f"requests.{name} must be a list of non-empty strings")
+            if len(value) > 500:
+                raise ValueError(f"requests.{name} allows at most 500 entries")
+
+
 #: The most sites ``[player_page] embed_origins`` may name.
 MAX_EMBED_ORIGINS = 20
 
@@ -1690,6 +1760,7 @@ class AutoDJConfig:
     stream: StreamConfig = field(default_factory=StreamConfig)
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     nowplaying: NowPlayingConfig = field(default_factory=NowPlayingConfig)
+    requests: RequestsConfig = field(default_factory=RequestsConfig)
     player_page: PlayerPageConfig = field(default_factory=PlayerPageConfig)
     time_checks: TimeChecksConfig = field(default_factory=TimeChecksConfig)
     breaks: BreaksConfig = field(default_factory=BreaksConfig)
@@ -1881,6 +1952,7 @@ _SECTION_TYPES: tuple[type[_Section], ...] = (
     StreamConfig,
     RecordingConfig,
     NowPlayingConfig,
+    RequestsConfig,
     PlayerPageConfig,
     TimeChecksConfig,
     BreaksConfig,
@@ -1899,6 +1971,7 @@ STATION_SECTION_TYPES: tuple[type[_Section], ...] = (
     StreamConfig,
     RecordingConfig,
     NowPlayingConfig,
+    RequestsConfig,
     PlayerPageConfig,
     TimeChecksConfig,
     BreaksConfig,
@@ -1941,6 +2014,27 @@ def unknown_config_keys(raw: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
                 unknown[where] = keys
             unknown.update(_unknown_section_keys(table, STATION_SECTION_TYPES, where + "."))
     return unknown
+
+
+def unknown_config_sections(raw: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return the tables AutoDJ ignores, by dotted name, root and station.
+
+    A root table that is no section (``"radio"``) and a station's table that
+    is no station section (``"stations.nightowl.server"``) are listed;
+    loading warns about the same ones.
+    """
+    known = {t.SECTION for t in _SECTION_TYPES} | {"presets", "webhooks", "stations"}
+    unknown = [name for name in raw if name not in known]
+    stations = raw.get("stations")
+    if isinstance(stations, Mapping):
+        for slug, table in stations.items():
+            if isinstance(table, Mapping):
+                unknown += [
+                    f"stations.{slug}.{name}"
+                    for name, value in table.items()
+                    if name not in _STATION_KEYS and isinstance(value, Mapping)
+                ]
+    return tuple(sorted(unknown))
 
 
 def _unknown_section_keys(
@@ -2145,6 +2239,8 @@ def _check_station_conflicts(root: AutoDJConfig, specs: Iterable[StationSpec]) -
                 f"{cfg.recording.folder}; give each station its own recording.folder"
             )
         folders[folder] = slug
+        if slug != "default":
+            _check_own_folder(slug, cfg)
         for relay in cfg.stream.relays.values():
             target = _relay_target(relay)
             other = targets.get(target)
@@ -2154,6 +2250,30 @@ def _check_station_conflicts(root: AutoDJConfig, specs: Iterable[StationSpec]) -
                     f"{relay.mount or ''}; each station needs its own relay target"
                 )
             targets[target] = slug
+
+
+def _check_own_folder(slug: str, cfg: AutoDJConfig) -> None:
+    """Refuse a station folder setting that holds the station's own state folder.
+
+    Restoring that folder would replace the station's settings, schedule and
+    carts with it, and its files would be backed up twice.
+
+    Raises:
+        ValueError: Naming the setting and the folders.
+    """
+    state = os.path.normcase(os.path.abspath(Path(cfg.index.active_dir) / "stations" / slug))
+    for setting, value in (
+        ("playback.liners_folder", cfg.playback.liners_folder),
+        ("time_checks.clips_folder", cfg.time_checks.clips_folder),
+    ):
+        if not value:
+            continue
+        folder = os.path.normcase(os.path.abspath(value))
+        if state == folder or state.startswith(folder.rstrip(os.sep) + os.sep):
+            raise ValueError(
+                f"[stations.{slug}] {setting} {value} holds the station's own folder {state}; "
+                "choose a folder beside it"
+            )
 
 
 def _relay_target(relay: RelayConfig) -> tuple[object, ...]:

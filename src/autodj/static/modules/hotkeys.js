@@ -21,6 +21,10 @@
 // Shift+L speaks the current lyric line; lowercase l is unused.
 // s/S and m/M are shuffle and mute in either case, so no status key may
 // use them.  Status keys: T N R B K L E V Q J H.
+// Stations (#70): lowercase c moves focus to the station switcher while
+// the server has several stations; Shift+C says which station the page
+// controls.  With several stations the status keys about the station
+// (T N R B K L E Q) start with its name.
 //
 // Reserved for the cart wall (modules/cart-wall.js), which handles them
 // only while focus is on the wall: the digits, minus, equals, Page Up and
@@ -149,6 +153,12 @@ export function installHotkeys({
   speakHour = null,
   isEnabled = () => true,
   shortcutToggle = null,
+  // Stations (#70): focus the switcher (false when there is none), the
+  // sentence Shift+C says, and the "Night Owl Radio: " the status keys
+  // start with while there are several stations.
+  focusStationSwitcher = () => false,
+  getStationText = null,
+  getStationPrefix = () => "",
   // What Space / k do: Play / Pause, or in stream mode start or stop
   // listening on this page.
   togglePlay,
@@ -204,6 +214,7 @@ export function installHotkeys({
     if (!nowVisible && scrollsPage) return;
 
     let bumpVol = 0;
+    const speakForStation = (text) => srSpeak(`${getStationPrefix()}${text}`);
     switch (key) {
       case " ":
       case "k":
@@ -243,43 +254,43 @@ export function installHotkeys({
       // Status keys -- Shift+letter, speak via aria live region.
       case "T": {
         const t = getTrack && getTrack();
-        srSpeak(t ? `${t.artist || ""} - ${t.title || ""}`.trim() : "Nothing playing");
+        speakForStation(t ? `${t.artist || ""} - ${t.title || ""}`.trim() : "Nothing playing");
         break;
       }
       case "N": {
         const nx = getNextTrack && getNextTrack();
         if (nx) {
           const bpm = nx.bpm ? `, ${Math.round(nx.bpm)} BPM` : "";
-          srSpeak(`${nx.artist || ""}, ${nx.title || ""}${bpm}`.trim());
+          speakForStation(`${nx.artist || ""}, ${nx.title || ""}${bpm}`.trim());
         } else {
-          srSpeak("No next track");
+          speakForStation("No next track");
         }
         break;
       }
       case "R": {
         const rem = getRemaining && getRemaining();
-        srSpeak(rem != null ? fmtDurationWords(rem) : "Position unknown");
+        speakForStation(rem != null ? fmtDurationWords(rem) : "Position unknown");
         break;
       }
       case "B": {
         const bpm = getBpm && getBpm();
-        srSpeak(bpm > 0 ? `${Math.round(bpm)} BPM` : "BPM unknown");
+        speakForStation(bpm > 0 ? `${Math.round(bpm)} BPM` : "BPM unknown");
         break;
       }
       case "K": {
         const tk = getTrack && getTrack();
         // key_spoken is the key in words ("F sharp minor"); the display
         // label ("F#m") reads as "F number m" to a screen reader.
-        srSpeak(tk && tk.key_spoken ? tk.key_spoken : "Key unknown");
+        speakForStation(tk && tk.key_spoken ? tk.key_spoken : "Key unknown");
         break;
       }
       case "L":
-        srSpeak(getLyricLine ? getLyricLine() : "No lyrics for this track.");
+        speakForStation(getLyricLine ? getLyricLine() : "No lyrics for this track.");
         break;
       case "E": {
         const pos = getPosition && getPosition();
         // The seek slider's own wording, so the two never disagree.
-        srSpeak(pos ? `${fmtTime(pos.elapsed)} of ${fmtTime(pos.duration)}` : "Position unknown");
+        speakForStation(pos ? `${fmtTime(pos.elapsed)} of ${fmtTime(pos.duration)}` : "Position unknown");
         break;
       }
       case "V": {
@@ -289,14 +300,21 @@ export function installHotkeys({
         break;
       }
       case "Q":
-        srSpeak(_queueSummary(getQueue && getQueue()));
+        speakForStation(_queueSummary(getQueue && getQueue()));
         break;
       case "J":
         srSpeak(getJobStatus ? getJobStatus() : "No library job has run.");
         break;
+      case "c":
+        if (!focusStationSwitcher()) return;
+        break;
+      case "C":
+        if (!getStationText) return;
+        srSpeak(getStationText());
+        break;
       case "H":
         if (speakHour) void speakHour();
-        else srSpeak("No hour preview yet.");
+        else speakForStation("No hour preview yet.");
         break;
       case "?":
         if (!toggleShortcutsModal()) return;

@@ -112,6 +112,8 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     const button = doc.createElement("button");
     button.type = "button";
     button.dataset.role = role;
+    // Run now changes what is on air at the station the page controls (#70).
+    if (role === "run") button.setAttribute("aria-describedby", "station-context");
     button.addEventListener("click", () => {
       const id = button.closest("li")?.dataset.eventId;
       const event = id && eventById(id);
@@ -258,6 +260,7 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     const index = data.events.findIndex((item) => item.id === event.id);
     let result = null;
     const confirmed = await confirmAction(doc, {
+      station: true,
       title: `Delete event ${event.name}?`,
       message: "The event is removed from the schedule.  Its past runs stay in Recent runs.",
       confirmLabel: "Delete event",

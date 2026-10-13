@@ -139,6 +139,10 @@ The public `/api/nowplaying` JSON feed lets pages show the station's current son
 recent plays and listener count, and the public `/status` page shows the same to listeners as plain text. With several stations, each has its own feed and page, at `/api/stations/<slug>/nowplaying` and `/stations/<slug>/status`. The upcoming song is hidden unless you turn on `[nowplaying] show_next`. Track-change
 webhooks can send the same metadata to other services or Discord; configure their URLs in
 `config.local.toml`. See [Operations](docs/operations.md#now-playing-feed-and-webhooks).
+An optional public request page (`/requests`) lets listeners search the library and request
+songs, within per-listener and daily limits, the repeat rules and DMCA limits; you approve them
+by hand or automatically in Queue & Search. It is off until `[requests]` turns it on. See
+[Operations](docs/operations.md#listener-requests).
 An optional public player page (`/player`) lets listeners press Play to hear the station in the
 browser, and an embeddable version (`/embed`) puts the same player on another website; both are
 off until `[player_page]` turns them on. See
@@ -174,6 +178,17 @@ when nobody listens to AutoDJ directly. Settings, Stream shows each relay's stat
 `autodj doctor` checks that each server answers. See
 [Relaying to Icecast and Shoutcast](docs/operations.md#relaying-to-icecast-and-shoutcast) for
 every option.
+
+### Several stations
+
+One server can run more than one station from the same library. The root sections of
+`config.toml` stay the default station; each other station is a `[stations.<slug>]` table with
+its own playback, stream, relays, recording, schedule, carts, clockwheels, liners and saved
+settings, streaming at `/stations/<slug>.mp3`. The Station button in the web page's banner
+chooses which station the page controls, and `autodj backup` and `autodj doctor` cover every
+station. See [Several stations](docs/operations.md#several-stations), including
+[adding a station step by step](docs/operations.md#adding-a-station-step-by-step), and
+[ADR 5](docs/adr/0005-a-station-owns-its-playout-chain.md) for the design.
 
 `autodj serve` loads the current library from `library.db` and shows its song and analysis
 counts. Add music in Library tools; songs become available before advanced analysis finishes.
@@ -221,9 +236,11 @@ Every command takes `--help`, for example `uv run autodj serve --help`. The glob
   network; `autodj serve --stream` also serves the live mix as an MP3 radio station.
 - `autodj list-devices` lists the audio output devices available to `serve --server-audio`.
 - `autodj doctor` checks configuration, saved browser settings, paths, dependencies, the model,
-  and security settings. Use `--name` to check a specific index. If `serve` fails in a terminal,
-  it offers to run Doctor; repairs still require confirmation.
-- `autodj backup` and `autodj restore` archive and restore index and user data.
+  and security settings, and each station when there are several. Use `--name` to check a
+  specific index and `--station` to check one station. If `serve` fails in a terminal, it offers
+  to run Doctor; repairs still require confirmation.
+- `autodj backup` and `autodj restore` archive and restore index and user data, every station's
+  included.
 - `autodj devices list`, `rename`, `revoke`, `reset`, and `pairing-code` manage paired browsers.
 
 ### Starting without flags

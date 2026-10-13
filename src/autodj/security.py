@@ -47,6 +47,9 @@ _PUBLIC_FILES = frozenset(
         "/api/nowplaying",
         # The public station status page; see status_page.py.
         "/status",
+        # The listener request page, GET and POST; 404 unless [requests]
+        # turns it on.  See request_page.py.
+        "/requests",
         # The player page and embeddable player; each answers 404 unless
         # [player_page] turns it on.  See player_page.py.
         "/player",
@@ -490,8 +493,8 @@ def _is_public_path(path: str, slugs: AbstractSet[str] = frozenset()) -> bool:
     ``/stations/<slug>.mp3`` and ``.m3u`` for a configured station) does
     not require pairing; control APIs require a session.  A configured
     station's public now-playing feed is public under its station path too,
-    and so are its pages, ``/stations/<slug>/status``, ``/player`` and
-    ``/embed``.
+    and so are its pages, ``/stations/<slug>/status``, ``/player``,
+    ``/embed`` and ``/requests``.
     """
     relative = station_relative(path, slugs)
     if relative is not None:
@@ -506,7 +509,7 @@ def _is_public_path(path: str, slugs: AbstractSet[str] = frozenset()) -> bool:
 
 
 #: The public pages each station has under ``/stations/<slug>/``.
-_STATION_PAGES = frozenset({"status", "player", "embed"})
+_STATION_PAGES = frozenset({"status", "player", "embed", "requests"})
 
 
 def _is_station_page(path: str, slugs: AbstractSet[str]) -> bool:

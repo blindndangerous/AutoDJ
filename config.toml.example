@@ -614,6 +614,29 @@ show_next = false
 # Recent completed songs in the feed, from 0 to 20.
 history_limit = 5
 
+# Public listener request page at /requests: listeners search the library and
+# request songs. Off by default; it answers 404 while it is off. See "Listener
+# requests" in docs/operations.md.
+[requests]
+enabled = false
+# "manual": each request waits for you in Queue & Search; "auto": a request
+# that keeps the repeat rules (and DMCA limits) is queued at once.
+approval = "manual"
+# Requests one listener address may make per per_listener_minutes.
+per_listener = 3
+per_listener_minutes = 60
+# Requests the station takes per day, from everyone (station time zone).
+daily_limit = 50
+# Requests that may wait for you at once.
+max_pending = 20
+# How far ahead in the queue a request may be placed, in minutes.
+window_minutes = 30
+# Artists, and folders (full paths or inside music_dir), listeners cannot request.
+blocked_artists = []
+blocked_folders = []
+# An IPv6 listener's limits count over this network: 56 (a whole home network),
+# 64, or 128 for single addresses.
+ipv6_prefix = 56
 # Public player page at /player, where listeners press Play to hear the stream
 # in the browser, and a compact version at /embed for other websites. Both off
 # by default; each answers 404 while it is off. See "Player page and embeddable
@@ -644,7 +667,8 @@ embed_origins = []
 #
 # A station starts from the defaults, not from the sections above: set
 # everything it needs here.  Its sections are playback, djmix, transitions,
-# replaygain, stream, recording, nowplaying, player_page, time_checks, breaks, dmca
+# replaygain, stream, recording, nowplaying, player_page, requests, time_checks,
+# breaks, dmca
 # and presets.*;
 # library, index, model, huggingface and server are shared and read only from
 # the root.  Another station always streams (stream.enabled is ignored), and

@@ -30,7 +30,11 @@ class TestVersion:
 
     def test_version_payload_shape(self, client) -> None:
         data = client.get("/api/version").json()
-        assert set(data.keys()) == {"version", "commit", "built_at"}
+        # commit_url is there only when the commit is known: a git checkout
+        # (as in CI) or an AUTODJ_COMMIT build, not a tree without .git.
+        keys = {"version", "commit", "built_at"}
+        assert set(data.keys()) in (keys, keys | {"commit_url"})
+        assert ("commit_url" in data) == (data["commit"] != "unknown")
         assert data["version"]
         assert data["commit"]
         assert data["built_at"]

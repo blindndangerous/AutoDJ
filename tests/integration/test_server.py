@@ -24,7 +24,7 @@ from urllib.parse import urlencode
 
 import pytest
 
-from autodj.config import PlayerPageConfig, ServerConfig, TimeChecksConfig
+from autodj.config import PlayerPageConfig, RequestsConfig, ServerConfig, TimeChecksConfig
 from autodj.repeat_settings import RepeatRule, RepeatSettings
 from autodj.server import PlayerBridge, create_app
 from autodj.settings_bodies import PlaybackSettingsBody
@@ -1989,6 +1989,7 @@ class TestServeFunction:
             cfg=SimpleNamespace(
                 index=SimpleNamespace(active_dir=tmp_path / "main"),
                 playback=SimpleNamespace(stereotool_preset="included", liners_folder=None),
+                requests=RequestsConfig(enabled=True),
                 player_page=PlayerPageConfig(enabled=True),
             ),
         )
@@ -1996,6 +1997,8 @@ class TestServeFunction:
         (extra,) = captured["create_app_kwargs"]["extra_stations"]
         assert (extra.slug, extra.name, extra.autostart) == ("nightowl", "Night Owl Radio", False)
         assert extra.paths.state_dir == tmp_path / "main" / "stations" / "nightowl"
+        # Its request page answers while it is stopped, so the stand-in knows it is on.
+        assert extra.requests_enabled is True
         # Its pages answer while it is stopped, so the stand-in keeps its settings.
         assert extra.player_page == PlayerPageConfig(enabled=True)
         # The default station is browser-driven, but radio players still need h11.
@@ -2010,6 +2013,10 @@ class TestServeFunction:
         assert captured["create_app_kwargs"]["stream_mode"] is False
         assert captured["create_app_kwargs"]["extra_stations"] == []
         assert "timeout_graceful_shutdown" not in captured["uvicorn_kwargs"]
+        # Trusted proxies apply in every mode (the request limits key on the
+        # client address); empty means a proxy on this machine only.
+        assert captured["uvicorn_kwargs"]["proxy_headers"] is True
+        assert "127.0.0.1/32" in captured["uvicorn_kwargs"]["forwarded_allow_ips"]
         assert not (tmp_path / ".stream-secret").exists()
 
     def test_serve_stream_leaves_an_old_secret_file_alone(self, tmp_path) -> None:

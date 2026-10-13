@@ -11,6 +11,7 @@ import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, reques
 import { confirmAction } from "./confirm-dialog.js";
 import { nextRowControl, rowButton } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
+import { stationApi } from "./stations.js";
 
 const FIELDS = ["file", "applies", "label", "chance", "cooldown", "not-before", "not-after"];
 // The server's field names, mapped to the page's.
@@ -125,7 +126,8 @@ export function installMatchedIntros({ document: doc = document, request = reque
     if (!playback) return;
     playing = button;
     button.setAttribute("aria-pressed", "true");
-    playback.src = `/api/intros/${encodeURIComponent(item.id)}/audio`;
+    // An element's own request, so it is sent to the page's station here.
+    playback.src = stationApi(`/api/intros/${encodeURIComponent(item.id)}/audio`);
     try {
       await playback.play();
     } catch (_) {
@@ -323,6 +325,8 @@ export function installMatchedIntros({ document: doc = document, request = reque
   return {
     load,
     clear,
+    // Another station's intros for the track shown (#70).
+    refresh: () => refresh(),
     destroy() {
       form.removeEventListener("submit", submit);
       form.removeEventListener("input", onInput);

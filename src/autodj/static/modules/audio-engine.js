@@ -18,6 +18,7 @@ import {
   captureAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
   isServerUnreachable,
+  isStaleStationReply,
   makeSingleFlight,
   postJsonBestEffort,
   probeResource,
@@ -25,6 +26,7 @@ import {
   requestJson,
   requestJsonBestEffort,
 } from "./api-client.js";
+import { currentStation } from "./stations.js";
 
 // DOM refs are looked up here so app.js doesn't have to inject them.
 const eqLow      = document.getElementById("eq-low");
@@ -114,13 +116,21 @@ function announceEngineError(message, { force = false } = {}) {
 }
 
 function announceRequestError(errorValue) {
+  if (isStaleStationReply(errorValue)) return;
   announceEngineError(errorValue.message || String(errorValue));
 }
 
 export function postEq() {
   const save = _eqSave = { sent: null, answeredAt: 0 };
+  // The sliders show one station's EQ; a switch inside the debounce
+  // (#70) must not send it to the next station.
+  const station = currentStation();
   clearTimeout(eqDebounceTimer);
   eqDebounceTimer = setTimeout(() => {
+    if (station !== currentStation()) {
+      if (_eqSave === save) _eqSave = null;
+      return;
+    }
     const sent = [eqLow, eqMid, eqHigh].map((slider) => parseInt(slider.value, 10));
     void postJsonBestEffort("/api/eq", {
         low:  sent[0] / 100,
