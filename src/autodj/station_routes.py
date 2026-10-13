@@ -297,6 +297,24 @@ class QueueReorderBody(BaseModel):
     """
 
     paths: list[str]
+    # The queue as the page showed it, and each new slot's place in it: with
+    # both, the entries themselves move (a show's copy and a listener's
+    # request of the same file keep who they are, #106).
+    from_paths: list[str] | None = None
+    order: list[int] | None = None
+
+
+class QueueRemoveBody(BaseModel):
+    """Request body for POST /api/queue/remove.
+
+    Attributes:
+        path: The track to remove.
+        position: Its place in the queue as the page showed it; that entry
+            goes when the queue still has *path* there.
+    """
+
+    path: str
+    position: int | None = None
 
 
 class LinerTestBody(BaseModel):
@@ -965,6 +983,29 @@ def equip_station(
     station.time_checks = TimeChecks(station.cfg, station.timezone, station.paths)
     schedule.register(time_check_action(station.time_checks, bridge))
 
+    from autodj.shows import ShowRunner, ShowStore, show_action
+
+    # Shows (#106): a list of songs prepared ahead that a schedule event airs.
+    station.shows = ShowStore(station.paths.shows)
+    station.show_runner = ShowRunner(
+        bridge, station.shows, publish, state_path=station.paths.show_on_air
+    )
+    schedule.register(show_action(station.show_runner, station.shows))
+
+    def show_starts_within(within_s: float) -> str | None:
+        # Called from the request desk's threads: only show events, copied
+        # under the scheduler's lock.
+        from datetime import timedelta
+
+        for _when, event in schedule.runs_within("show", timedelta(seconds=within_s)):
+            show = station.shows.get(str(event.params.get("show", "")))
+            return show.name if show is not None else event.name
+        return None
+
+    station.show_runner.starts_within = show_starts_within
+    # A remove or reorder by path never takes the show's own copy by mistake.
+    bridge.show_entry = station.show_runner.is_show_entry
+
     from autodj.breaks import BreakDesk
 
     station.breaks = BreakDesk(lambda: station.cfg.breaks, station.paths.announcements)
@@ -989,7 +1030,10 @@ def equip_station(
             tokens=FORM_TOKENS,
             track_ids=TrackIds(TRACK_SECRET),
             on_queued=station.nowplaying.refresh,
+            shows=station.show_runner,
         )
+        # A show that starts ahead of queued requests updates their notes.
+        station.show_runner.on_started = station.requests.show_started
 
     from autodj.categories import station_wall
     from autodj.matched_intros import MatchedIntros
@@ -1067,6 +1111,7 @@ def install_station_routes(router: StationRouter) -> None:
     from autodj.requests_api import install_requests
     from autodj.rotation_api import install_rotation_test
     from autodj.scheduler_api import install_scheduler
+    from autodj.shows_api import install_shows
     from autodj.time_checks import install_time_checks
 
     @router.get("/status")
@@ -1698,9 +1743,9 @@ def install_station_routes(router: StationRouter) -> None:
         return {"ok": True}
 
     @router.post("/queue/remove")
-    async def api_queue_remove(station: StationDep, body: PlayNextBody) -> dict[str, bool]:
+    async def api_queue_remove(station: StationDep, body: QueueRemoveBody) -> dict[str, bool]:
         """Remove a track from the user-ordered queue."""
-        removed = station.bridge.queue_remove(body.path)
+        removed = station.bridge.queue_remove(body.path, body.position)
         if removed:
             station.nowplaying.refresh()
         return {"ok": removed}
@@ -1708,7 +1753,9 @@ def install_station_routes(router: StationRouter) -> None:
     @router.post("/queue/reorder")
     async def api_queue_reorder(station: StationDep, body: QueueReorderBody) -> dict[str, bool]:
         """Reorder the user-ordered queue."""
-        changed = station.bridge.queue_reorder(body.paths)
+        changed = station.bridge.queue_reorder(
+            body.paths, from_paths=body.from_paths, order=body.order
+        )
         if changed:
             station.nowplaying.refresh()
         return {"ok": changed}
@@ -2026,6 +2073,7 @@ def install_station_routes(router: StationRouter) -> None:
     install_breaks(router)
     install_requests(router)
     install_matched_intros(router)
+    install_shows(router)
     install_rotation_test(router)
     install_hour_preview(router)
 

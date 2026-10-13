@@ -791,6 +791,9 @@ happened, so a screen reader hears it as the page loads. It is one of:
 
 The page needs no JavaScript and works without pairing. A listener is only ever told roughly when
 a song may play ("within the next half hour", "within the next hour or so"), never a set time.
+While a show is on the air, or due to start within `window_minutes`, a request is placed after
+the show's waiting songs and the listener is told only that it plays "after the station's show"
+(see [Shows](#shows)).
 
 **What the station checks**, in this order:
 
@@ -2630,7 +2633,7 @@ What it approximates:
   with saved-point transitions, less the crossfade otherwise. A song with no length counts as the
   library's average.
 - A clockwheel liner adds its full length. Automatic liners, time checks, carts and the queue are
-  left out.
+  left out, and so are shows, which play through the queue (the hour preview lists them).
 - A scheduled change applies from the first song after its time; hard events do not cut a song
   short. Profile switches are not simulated; the report names them.
 
@@ -2655,6 +2658,10 @@ Each row says in its Status column whether it is fixed or predicted:
   it (the open song change) and its liners.
 - **Fixed: booked break**: an announcer break booked on the open song change.
 - **Fixed: in the queue**: the request queue, which plays before any pick.
+- **Fixed: show** and its name: the songs of a show, the rest of the one on the air after the
+  queue and a scheduled one's from the first song change after its time (see [Shows](#shows)).
+- **Skipped from show** and its name: a show's song that would break a DMCA limit there, as it
+  is skipped on the air; it takes no time.
 - **Predicted**: the rest, from a dry run of the station's own picker that starts where the
   fixed part ends, with the station's clockwheel place, play history, repeat rules, DMCA limits,
   categories and schedule. It is the same dry run the rotation tester uses (see
@@ -2724,6 +2731,7 @@ choose them to fit.
 - `categories.json`, the rotation categories. Their playlist files are not included; the script
   that writes them can write them again.
 - `liner_dates.json`, the voice liners' play dates.
+- `shows.json`, the shows and their lists of songs.
 - Every other station's state files and folders, under `stations/<slug>/` (see
   [Backups and doctor](#backups-and-doctor)).
 - `manifest.json`, which records the AutoDJ version that made the archive, lists its files and
@@ -2872,6 +2880,12 @@ one reads differently:
   `liner_dates.json`, which an older AutoDJ does not read.
 - Voice pack play dates are kept beside the time check switches in `time_checks.json`; an older
   AutoDJ ignores them and lets every ticked pack speak.
+- Shows (#106): an AutoDJ without shows does not have the **Play a show** action. It sets
+  `schedule.json` aside as `schedule.json.bad-<id>`, starts without those events, and drops them
+  for good the next time it saves the schedule. Delete or disable the show events, or keep a copy
+  of `schedule.json`, before going back. `shows.json` and `show_on_air.json` are not read by an
+  older AutoDJ. From this release on, AutoDJ keeps an event whose action it does not have exactly
+  as it was, with every save, so going back after a later release adds actions loses nothing.
 
 ## Cart wall
 
@@ -3013,20 +3027,26 @@ Actions:
   stop keeps it off the air even with listeners, and automatic hands control back to the
   listener count. The choice lasts until the next stream event or a restart.
 - Turn discovery on or off. Discovery needs a rate set in Song picking before it can be on.
+- Play a show: its prepared list of songs goes to the queue (see [Shows](#shows)).
 
 Timing is soft or hard. A soft event waits for the current song to end; with nothing playing it
 runs at once. A hard event runs at its time and fades out the current song through the normal
 skip: after the change for profile, preset, song picking and discovery events, so the next song
-follows it, and before the liner for liner events. Stream and Stereo Tool preset events never
+follows it, and before the liner for liner events. A show event is the exception: hard plays the
+show's first song at once, and soft queues it at its time without waiting (see [Shows](#shows)). Stream and Stereo Tool preset events never
 skip.
 
 **Run now** runs an event's action at once, to test it. Each run, failure and missed event goes
 to the server log and to **Recent runs**, which keeps the last 200.
 
 Schedules live in `schedule.json` in the active index folder, next to `web_state.json`. AutoDJ
-writes the file atomically and includes it in `autodj backup`. A damaged schedule file, or an
-event whose action this version does not have, is copied to `schedule.json.bad-<id>` and left
-out, so the server still starts. Events are not replayed after downtime: a one-time event whose
+writes the file atomically and includes it in `autodj backup`. A damaged schedule file is copied
+to `schedule.json.bad-<id>` and left out, so the server still starts. An event whose action this
+version does not have (one a newer AutoDJ added) never runs and is not listed, but it is logged
+and written back exactly as it was with every save, so going back and forth between versions
+loses no event; it counts toward the 100 events. An event for an action this version has, but
+with settings it does not accept, is copied to `schedule.json.bad-<id>` and left out, as
+before. Events are not replayed after downtime: a one-time event whose
 time passed while AutoDJ was stopped is disabled and recorded as missed, and an event more than
 two minutes late (the computer slept) is recorded as missed instead of running. The schedule
 holds at most 100 events.
@@ -3366,6 +3386,141 @@ The playlists are optional when beets is on the same machine: a category from th
    **Throwback**, and one at 21:00 that changes it back to your usual clockwheel.
 
 For a narrower hour, add terms: `original_year:2000..2009 genre:rock ^genre:christmas`.
+
+The clockwheel picks the songs as the hour plays. To choose them ahead of time instead, and
+edit the list, make a show (see [Shows](#shows)).
+
+## Shows
+
+A show is a list of songs prepared ahead of time, such as "Remembering the 2000s", that airs at
+a scheduled time. Clockwheels pick songs as they play; a show fixes them in advance, so you can
+read the list, change it, and know what will air. Shows are in **Library tools**, **Shows**,
+below Clockwheels. Each station has its own.
+
+### Planning a show
+
+1. Press **Add show** and fill in:
+   - **Name**, such as Remembering the 2000s. Names are unique within the station.
+   - **Songs come from**: **A category** (see [Rotation categories](#rotation-categories); a
+     category can hold any genre, year or beets field, such as `original_year:2000..2009`), or
+     **A clockwheel** (see [Clockwheels](#clockwheels)), whose steps may use conditions such as
+     Genre is Rock and categories.
+   - **Target length (minutes)**: 5 to 360.
+
+   Press **Save show**, then **Open list** on the show.
+2. Press **Generate list**. AutoDJ runs the rotation tester's dry run of the station's own picker
+   (see [Testing the rotation](#testing-the-rotation)): a category is played as a one-step
+   clockwheel that picks its songs at random, a clockwheel in its own order. The repeat rules,
+   related artists and tracks, dayparting and the DMCA limits apply as they do on the air, from
+   the station's real play history. Voice liners are left out of the list, and for a category so
+   is any song outside it. Generating stops once the songs reach the target length; if the songs
+   the rules allow run out first, the list is shorter and the page says why. Nothing on the air
+   changes, and each generation gives a new list. **Pick as if at** (optional) generates as the
+   station would at that date and time in the station time zone, so a category's season, days
+   and hours and a step's hours count then: use it to plan a Christmas show in November.
+   Generating runs off the web server's event loop, below normal priority, for at most 20
+   seconds, one show at a time for the whole server.
+3. Edit the list. Every song has **Move up**, **Move down** and **Remove** buttons; Move up on
+   the first song and Move down on the last stay in the tab order and say why they do nothing.
+   Focus stays on the moved song's button, and Remove moves it to the next song's Remove, or the
+   previous song's when it was the last (the search box when none is left). Under **Add
+   songs**, search the library by title, artist or album and press **Add** to put a song at the
+   end. Each change is saved at once and said once, with the new total against the target. A
+   song whose file has gone from the library stays in the list, marked, and is skipped on the
+   air. A song may be in the list more than once; each copy plays, and the list and its total
+   warn about it. While the list is being generated, Move up, Move down, Remove and Add stay in
+   the tab order but are marked unavailable and say why, and the server refuses a change to the
+   list (409) until the new list is saved. A list holds at most 500 songs, and a station at most
+   200 shows.
+
+**Edit** changes the name, source or target and keeps the list; generate again to apply a new
+source. **Delete** asks first and names the schedule events that play the show; those events
+fail, in the run log, until you change them.
+
+### Airing a show
+
+Add an event under **Settings**, **Schedule** with the action **Play a show** and the show (see
+[Scheduler](#scheduler)): once on a date, or repeating, with an optional date range. **Start
+after this song**, in the open list, airs it now, to test it.
+
+- Timing: a **hard** event plays the show's first song at its time, fading out the song
+  playing, as Play now does. A **soft** event queues the show's first songs at its time without
+  cutting the song playing, so the show follows that song. With server audio or a stream, the
+  song after it may already be mixed into its ending; the show then follows that one.
+- The show feeds the queue: its first two songs go to the front of the queue, and as each one
+  starts the next joins after the show's last waiting song. Liners, time checks, breaks, matched
+  intros and the clockwheel's place behave as they do with any queued song. The scheduled show
+  wins: its songs go ahead of everything already in the queue, listener requests included, and
+  songs you queue while it plays wait after its songs; use **Play next** to put one before them.
+  A listener request accepted while a show is on the air, or due to start within the request
+  window, is placed after the show's waiting songs and the listener is told only that it plays
+  "after the station's show", never a time; the operator's card says "After the show" and its
+  name. A request queued earlier waits until the show ends, and when a show starts the
+  operator's card adds "After the show" and its name to every request still in the queue, so it
+  promises no place it cannot keep. (A listener is told only once, when sending the request.)
+- A hard start is the same in every playback mode: the show's first song plays at once, and a
+  song the operator chose with **Play next** plays right after it, then the rest of the show.
+- The show's songs in the queue are its own entries. Removing or moving a song in Queue & Search
+  acts on the very entry you pressed, so a listener's request for the same song never takes a
+  show song's place, and a show song is never removed by mistake.
+- Show songs are pre-approved: the repeat rules do not hold them back, as with any song you
+  queue. The DMCA limits are never broken: in DMCA mode each song is checked where it would play
+  just before it joins the queue, and the waiting songs again at every song change. A song that
+  would break a limit is taken out, skipped and logged, and the next one is tried.
+- When the list ends, the show is over and the station's own picking resumes. A new show
+  replaces the one on the air, whose waiting songs leave the queue.
+- The card says which show is on the air, how many songs have played, are waiting and are to
+  come, and what was skipped and why. **Stop show** takes its waiting songs out of the queue,
+  and only those; a song already mixed into the one playing still plays. If the queue keeps
+  changing and a song cannot be taken out at once, the card says the show is stopping, nothing
+  more is queued, and AutoDJ tries again at each song change until they are out.
+- The show plays its list as it was when it started; changes made meanwhile count the next time.
+- A restart resumes the show on the air: AutoDJ saves the show and its place in
+  `show_on_air.json` in the station's state folder as it goes. Until a song plays again, the
+  card says the show will resume at the next song, and from which song; **Stop show** cancels
+  that. Then it goes on from the earliest song that had not started, songs it had queued
+  included (the queue itself is not kept over a restart). It is not resumed when its list would
+  have ended by then: the time it started plus the length of its songs plus 15 minutes. **Stop
+  show** and the end of the list remove the file; if it cannot be removed (held open), AutoDJ
+  writes a stopped marker into it, which is never resumed, and removes it at a later song
+  change.
+- `show_on_air.json` is runtime state and is left out of backups on purpose. A restore removes
+  every station's `show_on_air.json`, so no show from before the restore resumes; restore warns
+  if one cannot be removed.
+
+The hour preview lists the rest of a show on the air as "Fixed: show" and its name, and a
+scheduled show's songs the same way from the first song change after the event's time. A song the
+DMCA limits would skip on the air is listed where it would have played as "Skipped from show" and
+the show's name, taking no time, as on the air.
+
+### Where they are kept
+
+`shows.json` in the station's state folder (the active index folder for the default station),
+written atomically and included in `autodj backup` for every station (another station's under
+`stations/<slug>/index/shows.json`). A show in the file
+that is not valid (edited by hand, say) is skipped and logged, and the card says which; every
+save writes it back as it was, so correct it in the file and it returns. Only a file that is
+not a file of shows at all is set aside, as `shows.json.bad-<id>`; if it cannot be set aside,
+saves are refused so nothing is written over it. When the file cannot be read just now, the
+shows last read are used and saves are refused. Request bodies are capped before they are read:
+8 KiB for a show's settings, generating and starting, and 1 MiB for its list of songs.
+
+For scripts and other stations, the routes are under `/api/shows` and
+`/api/stations/<slug>/shows`, with the browser session and the page's `Origin`:
+
+- `GET /api/shows`: every show without its songs, the categories and clockwheels a show can
+  use, the show on the air (`on_air`) and any shows the file skips (`problem`).
+- `GET /api/shows/<id>`: one show with its `songs` (path, title, length, `missing`) and total.
+- `POST /api/shows`: `name`, `source` (`category` or `clockwheel`), `category` (its ID) or
+  `clockwheel` (its name), and `target_minutes`. `201` answers with the show.
+- `PUT /api/shows/<id>`: the same fields; the list stays.
+- `PUT /api/shows/<id>/songs`: `songs`, the file paths in order. A song added must be in the
+  library.
+- `POST /api/shows/<id>/generate`: optional `start` (a station wall time such as
+  `2026-12-24T20:00`) and `seed`. `409` while another generation runs.
+- `POST /api/shows/<id>/start`, `DELETE /api/shows/on-air` and `DELETE /api/shows/<id>`.
+
+A refused field answers `400` with `detail` and `field`.
 
 ## Spoken time checks
 
