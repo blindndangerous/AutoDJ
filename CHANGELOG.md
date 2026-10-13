@@ -577,6 +577,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A matched intro reserved for a handoff is available again if playback skips that handoff before the intro starts. Intros already heard keep their cooldown.
+
+
 - The web page footer said "build unknown" in Docker, because the image has no git. Build it
   with `AUTODJ_COMMIT=$(git rev-parse --short HEAD) docker compose build` (or `up -d --build`)
   and the footer names that commit. Once paired, the commit in the footer, from git or from
