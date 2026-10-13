@@ -122,8 +122,10 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   saying the count once and landing on the category's Edit button; Cancel returning to the
   button that opened the form; Delete naming the clockwheels that use the category and landing
   on the next Edit button or Add category; and the list never spoken on its 15-second refresh.
-  In Clockwheels, "Music from a category" showing the Category choice and the step read as
-  "music from category A".
+  In Clockwheels, a Music condition with Field Category showing the named Category choice;
+  multiple categories read with the chosen Match all/any; a legacy category step opening as
+  Music with its category selected; a missing category named as unavailable; Category absent
+  from voice liner conditions.
 - Library tools, Clockwheels: the conditions read as a group named Conditions, each with its
   numbered legend; Value and Upper value reading the wildcard and MM:SS help; Add condition
   focusing the new condition and saying "Condition 2 added"; Remove condition 2 focusing the
@@ -135,7 +137,9 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   the first step name (a grid cell, not a button); Up and Down moving between names and Left,
   Right, Home and End along a row without leaving focus mode; Enter and Space pressing the focused
   cell's button; Alt+Up and Alt+Down moving the step and saying its new position once; and the
-  Delete key asking with Cancel focused first, with focus back in the list after either answer.
+  Delete key behaving like the Delete button; Delete and Undo disabled while a step is being
+  edited, with its unsaved fields preserved; Undo step change and Ctrl+Z restoring the step and
+  its focus, including after deleting the last step; and Ctrl+Z still undoing text in inputs.
 - EQ: each band's slider, its spoken value, and resetting the bands.
 - History: the History tab's table read with table navigation, its pagination, the empty state,
   and a new song added to the top of page 1 without the reading position moving or anything said.

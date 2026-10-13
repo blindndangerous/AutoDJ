@@ -534,6 +534,7 @@ def test_run_doctor_check_order(tmp_path: Path) -> None:
         "network-safety",
         "stream",
         "related-artists",
+        "related-tracks",
         "time-checks",
         "categories",
     ]
@@ -1063,6 +1064,25 @@ def test_related_artists_check(tmp_path: Path) -> None:
     check = doctor._related_artists_check(cfg)
     assert check.status is doctor.CheckStatus.PASS
     assert str(path) in check.summary
+
+
+def test_related_tracks_check(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    check = doctor._related_tracks_check(cfg)
+    assert check.status is doctor.CheckStatus.PASS
+    assert "Sample will be copied" in check.summary
+
+    path = cfg.index.active_dir / "related-tracks.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b'[related]\n"Snow - Informer" = ["Daddy Yankee - Con Calma"]\n')
+    check = doctor._related_tracks_check(cfg)
+    assert check.status is doctor.CheckStatus.PASS
+    assert check.summary.startswith("2 tracks with related tracks")
+
+    path.write_bytes(b'[related]\n"Informer" = ["Con Calma"]\n')
+    check = doctor._related_tracks_check(cfg)
+    assert check.status is doctor.CheckStatus.WARN
+    assert str(path) in check.detail
 
 
 @pytest.mark.parametrize("content", [b"[related\n", b"related = 3\n", None])

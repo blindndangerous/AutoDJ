@@ -33,7 +33,7 @@ def ignore_unknown_repeat_keys(data: object, section: str = "playback.repeat_rul
     if unknown:
         logger.warning("Ignoring unknown config keys in [%s]: %s", section, sorted(unknown))
     cleaned = {key: value for key, value in data.items() if key in known}
-    for name in ("artist", "album", "track", "title"):
+    for name in RULE_NAMES:
         rule = cleaned.get(name)
         if isinstance(rule, Mapping):
             rule_keys = set(RepeatRule.model_fields)
@@ -64,6 +64,10 @@ def removed_saved_repeat_keys(data: object) -> dict[str, tuple[str, ...]]:
     return removed
 
 
+#: The rules that each have a track count and a minute limit.
+RULE_NAMES = ("artist", "related_artist", "album", "track", "title", "related_track")
+
+
 class RepeatRule(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -75,14 +79,25 @@ class RepeatSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     artist: RepeatRule = RepeatRule(tracks=8)
+    related_artist: RepeatRule = RepeatRule(tracks=8)
     album: RepeatRule = RepeatRule(tracks=0)
     track: RepeatRule = RepeatRule(tracks=50)
     title: RepeatRule = RepeatRule(tracks=0)
+    related_track: RepeatRule = RepeatRule(tracks=20)
     use_related_artists: StrictBool = False
+    use_related_tracks: StrictBool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def related_artist_follows_artist(cls, data: object) -> object:
+        """Settings saved before related artists had their own limits used the artist rule's."""
+        if isinstance(data, Mapping) and "related_artist" not in data and "artist" in data:
+            return {**data, "related_artist": data["artist"]}
+        return data
 
     @model_validator(mode="after")
     def limit_group_windows(self) -> RepeatSettings:
-        for name in ("artist", "album", "title"):
+        for name in ("artist", "related_artist", "album", "title", "related_track"):
             if getattr(self, name).tracks > 5000:
                 raise ValueError(f"{name} tracks must be between 0 and 5000")
         return self

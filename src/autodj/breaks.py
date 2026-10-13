@@ -278,6 +278,7 @@ class SlotPlan:
             renders hold them.
         ending_offset_s: Seconds of *ending* already played when it starts.
         clock_name: The clockwheel *next_cursor* is a place in (#133).
+        clock_step: The selected step snapshot for the Why display.
         pinned: A break is booked: keep the pair whatever the queue does.
         stale: A queue edit changed what the pick would be (unpinned only).
     """
@@ -299,6 +300,7 @@ class SlotPlan:
     clock_name: str | None = None
     pinned: bool = False
     stale: bool = False
+    clock_step: dict | None = None
 
 
 class BreakError(Exception):

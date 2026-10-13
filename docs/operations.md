@@ -1941,7 +1941,9 @@ Repeat limits are edited in Settings > Picking > Repeats and stored in
 `web_state.json`. Old repeat keys in `config.toml` or `web_state.json` are
 ignored with a warning; re-enter any limits that still use those keys in that panel. The related
 artists file is `index/<name>/related-artists.toml` and is read only when
-**Use related artists** is enabled. It must be at most 1 MiB.
+**Use related artists** is enabled. The related tracks file is
+`index/<name>/related-tracks.toml` and is read only when **Use related tracks** is enabled.
+Each must be at most 1 MiB.
 
 ## Testing the rotation
 
@@ -1952,7 +1954,7 @@ before the rules go live.
 
 It uses everything the station picks with: the pick mode or the active clockwheel and its place,
 the rotation categories and their days and hours, the schedule's song-picking changes (with their
-date ranges), the repeat rules including related artists, and the DMCA limits. It starts from the
+date ranges), the repeat rules including related artists and related tracks, and the DMCA limits. It starts from the
 station's real play history and last-played times. The run picks with a private copy of the
 player, with its own clock and its own random choices, so the on-air player, its history, the
 clockwheel place and the library are never touched.
@@ -2001,7 +2003,7 @@ The report, in words or JSON, gives:
   played;
 - songs never played, with a count and the first ten, overall and per category;
 - how often each rule had to be relaxed, and which: same artist, related artist, same album, same
-  title, the track repeat window, dayparting and back-to-back repeats, plus fallbacks to a random
+  title, related track, the track repeat window, dayparting and back-to-back repeats, plus fallbacks to a random
   song. A clockwheel step set not to enforce the rules is counted apart;
 - clockwheel steps that were skipped or came up empty, with the reason, such as "all matching
   entries blocked by rules" or "outside its hours";
@@ -2033,7 +2035,7 @@ songs) in about two minutes, and in a little over three with the DMCA limits on.
   `vectors.g<number>.index` files it names.
 - `dj_meta.db`, the intro, outro, beat grid and cue cache.
 - `web_state.json`, the settings chosen in the web page.
-- `related-artists.toml` in the active index folder.
+- `related-artists.toml` and `related-tracks.toml` in the active index folder.
 - `recording.json`, the broadcast recording settings and whether it was running. The recorded
   MP3 files are not included; archive the recordings folder yourself.
 - `library.db`, the station's registered folders, track data and cues, last-played times and
@@ -2327,9 +2329,6 @@ Step types:
 - **Music** or **Voice liner** matching the conditions in the step. Choose least recently played
   or random, and whether to follow the repeat rules. A liner uses its saved overlap points with
   the next music step; two liner steps cannot be next to each other.
-- **Music from a category**: a rotation category such as A, B or "Remembering the 2000s" (see
-  [Rotation categories](#rotation-categories)). It chooses the least recently played or a random
-  song of the category and follows or ignores the repeat rules, like a folder step.
 - **A specific track**, by its path inside a registered music folder. It follows the repeat rules;
   when they hold it back, the clockwheel moves on to the next step.
 - **Switch preset**: the next song is picked and mixed with that preset.
@@ -2343,6 +2342,14 @@ B) and year before 2000` are not supported yet.
 
 Available conditions:
 
+- **Category** (Music steps): choose a saved [rotation category](#rotation-categories). With
+  Match all, a song must belong to every selected category and meet the other conditions. With
+  Match any, belonging to any selected category or matching another condition is enough. For
+  example, Category Gold and BPM above 100 narrows Gold to faster songs; Category Gold or
+  Category Current hits combines those groups. A song matching several conditions is included
+  once, so it gets no extra chance of being picked. Category hours still apply even when another
+  condition also matches the song. Categories are music groups, so this condition is not offered
+  for voice liners.
 - **Folder**: a registered music or liner folder, or a subfolder such as `Rock/Live`. Include
   subfolders applies to that condition. The registered folder must include subfolders before a
   condition can use one of them.
@@ -2365,15 +2372,29 @@ a step that needs it. If it becomes unavailable during playback, that step is sk
 status message. Other valid steps can still play.
 
 Repeat rules apply after the conditions have selected their pool. Relaxing repeats never removes
-those conditions. If no step can supply a song, a clock containing conditions does not fall back
-to unfiltered music. Existing folder steps still work and open as one folder condition; editing
-one saves it in the new form. Category steps keep their saved category and selection rules.
+those conditions. When explicit conditions have no matches, including category conditions, the
+step is skipped and does not use unfiltered music. The existing dayparting-only fallback remains
+when matched songs are held back only by their allowed days or hours. Unedited legacy category
+steps keep their old empty-pool fallback; editing and saving one converts it to an explicit
+category condition. Existing folder steps also open in the Music or Voice liner form and keep
+their selection and repeat-rule settings.
+
+A deleted category skips the affected step, even with Match any, and the status says why. An
+existing category with no songs contributes no matches; other Match any conditions can still
+supply a song. Saving or activating a step with a missing category asks you to choose a saved one.
 
 The editor lists numbered steps with their names as Edit buttons. With focus in the step list,
-Up and Down move to the previous or next step name, Enter on a name edits it, and Delete asks
-before it removes that step (Cancel has focus first, and focus returns to the list either way). Left and Right move between the actions in a row; Home and End go to its first or
-last available action, and Enter or Space presses it. Tab leaves the step list. Alt+Up and Alt+Down still reorder the focused
-step, and focus moves with it. Move up, Move down, Duplicate and Delete buttons remain available; the Delete button removes the step without asking.
+Up and Down move to the previous or next step name. Left and Right move between the actions in a
+row; Home and End go to its first or last available action. Enter or Space presses that action.
+Delete removes the step immediately, just like its Delete button. Tab leaves the step list.
+Alt+Up and Alt+Down reorder the focused step, and focus moves with it.
+
+**Undo step change** or **Ctrl+Z** restores the last step you added, edited, moved, duplicated or
+deleted. Delete and Undo are unavailable while a step is being edited; update or cancel the edit
+first. You can undo several changes in order, until you save or open another clockwheel.
+Ctrl+Z in a text field keeps the browser's usual text undo. Undo changes the working copy;
+press **Save clockwheel** to keep the result.
+
 These list keys do not replace the playback or spoken-status shortcuts. Nothing is saved until you press **Save clockwheel**; opening
 another clockwheel with unsaved changes asks first. **Restart at these minutes past each hour**
 sends the clockwheel back to step 1 at the song change nearest each minute.
@@ -2400,8 +2421,8 @@ leaves the clock off while the station keeps playing:
     {"type": "liner", "source": "<library folder ID>", "folder": "",
      "recursive": false, "selection": "random", "enforce_rules": false},
     {"type": "track", "source": "<library folder ID>", "path": "Album/Song.flac"},
-    {"type": "category", "category": "<category ID>",
-     "selection": "least_recent", "enforce_rules": true},
+    {"type": "music", "conditions": [{"field": "category", "category": "<category ID>"}],
+     "match": "all", "selection": "least_recent", "enforce_rules": true},
     {"type": "settings", "preset": "winddown"}
   ],
   "resync_minutes": [0]
@@ -2450,7 +2471,9 @@ press **Activate**.
 A rotation category is a named set of songs that clockwheel steps pick from, the way professional
 stations schedule music: rotation A for current hits, B and C for recurrents, D for gold, or a
 themed set such as "Remembering the 2000s". There is no separate weighted pick mode; how often a
-category plays is set by how many steps of the clockwheel use it.
+category plays is set by how many steps of the clockwheel use it. Choose **Music**, add a
+**Category** condition, and select its name. You can use several categories or combine a category
+with folder and metadata conditions in the same step; the category itself stays unchanged.
 
 Keep them in the **Library tools** tab, **Categories**, next to the clockwheels that use them. The
 list says how many songs each category holds, how many playlist lines match no library track,
@@ -2476,7 +2499,8 @@ A category's songs come from one of two sources:
   - A bare word matches artist, title, album, album artist, genre or comments.
   - Every term must match. Regular expressions (`field::re`), exact matches (`field:=x`),
     alternatives with commas, sorting, date ranges, path queries and plugin queries are refused
-    with a message that names the term; make a category per alternative instead.
+    with a message that names the term; make a category per alternative and combine them with
+    Match any in the clockwheel step.
 - **An M3U or M3U8 file** in the playlists folder (`[library] playlists_folder`, by default
   `playlists/` in the active index folder). Each line that is not a comment is matched to a
   library song by its full path, or by a path from the playlist's own folder or from
@@ -2497,13 +2521,13 @@ few file-time checks before each clockwheel pick tell it; the songs are never re
 every pick. When a playlist is being rewritten or beets is busy importing, a category keeps the
 songs it held last time and the server log says why.
 
-**At play time.** A category step picks like a folder step: it follows the repeat rules when the
-step says so, relaxing them rather than going silent, and in DMCA mode it keeps the DMCA limits;
-when no song of the category keeps them, a song from the whole library that does plays instead,
-as for folder steps. When a step's category has no songs or was deleted, the server log
-says so once and the clockwheel moves on to its next step. When no step of a clockwheel with
-category steps has a song to play, the station plays a song from the whole library, as the other
-pick modes do when they cannot pick, rather than going silent; the clockwheel keeps its place.
+**At play time.** An explicit category condition picks from its category members and follows the
+step's repeat rules, relaxing them rather than going silent; in DMCA mode it keeps the DMCA
+limits. If no song matches its conditions, the step is skipped, including when a Match any step's
+category is missing or empty. An unedited legacy category step keeps its old whole-library
+fallback when all steps fail; saving it from the editor converts it to an explicit condition.
+The dayparting-only fallback also remains when matched songs are held back only by their allowed
+days or hours. The clockwheel keeps its place in each case.
 
 **Dayparting.** Under **When the songs may play**, a category can allow its songs only on chosen
 days, only between two times (**Allowed from** and **Allowed until**), or both, such as Friday and

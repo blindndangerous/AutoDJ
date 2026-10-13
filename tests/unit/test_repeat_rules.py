@@ -1,4 +1,4 @@
-"""Repeat rules: title and artist keys, credit splitting, related artists, windows."""
+"""Repeat rules: title and artist keys, credit splitting, related artists and tracks, windows."""
 
 from __future__ import annotations
 
@@ -27,10 +27,13 @@ from autodj.repeat_rules import (
     build_filter,
     featured_in_title,
     load_related_artists,
+    load_related_tracks,
     parse_related_artists,
+    parse_related_tracks,
     plays_to_load,
     prune_history,
     records_from_plays,
+    related_track_key,
     title_key,
 )
 
@@ -62,6 +65,7 @@ class TestTitleKey:
             "Jingle Bells {Demo}",
             "Jingle Bells – Single Version",
             "Jingle Bells (with Somebody)",
+            "Jingle Bells (w/ Somebody)",
             "Jingle Bells (From “A Movie”)",
         ],
     )
@@ -231,10 +235,14 @@ class TestArtistSplitter:
         keys = ArtistSplitter().credited("Mark Ronson", "Uptown Funk (feat. Bruno Mars)")
         assert keys == {"mark ronson", "bruno mars"}
         assert ArtistSplitter().credited("", "") == frozenset()
+        keys = ArtistSplitter().credited("Lady Gaga", "Rain On Me (w/ Ariana Grande)")
+        assert keys == {"lady gaga", "ariana grande"}
 
     def test_featured_in_title(self) -> None:
         assert featured_in_title("Song (feat. A B) feat. C D") == ["A B", "C D"]
         assert featured_in_title("Song") == []
+        assert featured_in_title("Song (w/ A B & C D)") == ["A B & C D"]
+        assert featured_in_title("Song (W/A B)") == ["A B"]
 
     @given(st.text(max_size=50))
     def test_the_full_credit_always_counts(self, credit: str) -> None:
@@ -362,7 +370,18 @@ class TestRepeatRules:
             }
         )
         rules = RepeatRules.from_playback(pb, track_window=7)
-        assert rules == RepeatRules(7, 120.0, 3, 30.0, 10, 240.0, album_window=3)
+        # Settings without related_artist limits keep the artist rule's.
+        assert rules == RepeatRules(
+            7,
+            120.0,
+            3,
+            30.0,
+            10,
+            240.0,
+            album_window=3,
+            related_artist_window=3,
+            related_artist_minutes=30.0,
+        )
         assert rules.keep_tracks == 10
         assert rules.keep_seconds == 240 * 60
 
@@ -475,10 +494,188 @@ class TestBuildFilter:
         assert repeat(_entry(artist="Anyone", title="Anything"))
         assert repeat.summary() == ""
 
+    def test_related_artists_have_their_own_limits(self) -> None:
+        related = parse_related_artists({"related": {"Bruno Mars": ["Silk Sonic"]}}, "test")
+        history = [_record(1, "Bruno Mars"), _record(2, "Other"), _record(3, "Another")]
+        rules = RepeatRules(artist_window=1, related=related, related_artist_window=3)
+        repeat, _ = build_filter(history, rules, 0.0, ArtistSplitter())
+        assert repeat.reason(_entry(artist="Silk Sonic")) == "related artist"
+        assert repeat.reason(_entry(artist="Bruno Mars")) is None
+
+        shorter = replace(rules, related_artist_window=2)
+        repeat, _ = build_filter(history, shorter, 0.0, ArtistSplitter())
+        assert repeat.reason(_entry(artist="Silk Sonic")) is None
+
+        by_minutes = replace(rules, related_artist_window=0, related_artist_minutes=30)
+        timed = [_record(1, "Bruno Mars", started=0.0), _record(2, "Other", started=1000.0)]
+        repeat, _ = build_filter(timed, by_minutes, 1200.0, ArtistSplitter())
+        assert repeat.reason(_entry(artist="Silk Sonic")) == "related artist"
+        repeat, _ = build_filter(timed, by_minutes, 1801.0, ArtistSplitter())
+        assert repeat.reason(_entry(artist="Silk Sonic")) is None
+
+
+SUPER_FREAK = {
+    "related": {
+        "Rick James - Super Freak": [
+            "MC Hammer - U Can't Touch This",
+            "Nicki Minaj - Super Freaky Girl",
+        ],
+        "Snow - Informer": ["Daddy Yankee - Con Calma"],
+    }
+}
+
+
+class TestRelatedTracks:
+    def test_a_group_links_every_track_both_ways(self) -> None:
+        related = parse_related_tracks(SUPER_FREAK, "test")
+        freak = ("rick james", "super freak")
+        hammer = ("mc hammer", "u cant touch this")
+        nicki = ("nicki minaj", "super freaky girl")
+        assert related.related_to(freak) == {hammer, nicki}
+        assert related.related_to(hammer) == {freak, nicki}
+        assert related.related_to(nicki) == {freak, hammer}
+        assert related.related_to(("snow", "informer")) == {("daddy yankee", "con calma")}
+        assert related.name(hammer) == "MC Hammer - U Can't Touch This"
+
+    def test_groups_are_not_joined(self) -> None:
+        related = parse_related_tracks(
+            {"related": {"A Act - One": ["B Act - Two"], "B Act - Two": ["C Act - Three"]}}, "test"
+        )
+        assert related.related_to(("a act", "one")) == {("b act", "two")}
+        assert related.related_to(("b act", "two")) == {("a act", "one"), ("c act", "three")}
+        assert related.related_to(("c act", "three")) == {("b act", "two")}
+
+    def test_keys_fold_like_the_artist_and_title_rules(self) -> None:
+        assert related_track_key("The Sugarhill Gang - Rapper's Delight (Radio Edit)") == (
+            "sugarhill gang",
+            "rappers delight",
+        )
+        # Only the first " - " splits, so a title may hold one.
+        assert related_track_key("Artist - Song - Live at Wembley") == ("artist", "song")
+        assert related_track_key("No separator") is None
+        assert related_track_key(" - Title only") is None
+
+    @pytest.mark.parametrize(
+        ("data", "message"),
+        [
+            ({"groups": []}, "unknown keys"),
+            ({"related": []}, "must be a table"),
+            ({"related": {"A - B": "C - D"}}, "must be a list of tracks"),
+            ({"related": {"A - B": [3]}}, "must be a list of tracks"),
+            ({"related": {"Just a title": ["C - D"]}}, "'Just a title' is not written"),
+            ({"related": {"A - B": ["C"]}}, "'C' is not written"),
+        ],
+    )
+    def test_bad_files_are_refused(self, data, message) -> None:
+        with pytest.raises(ValueError, match="source") as error:
+            parse_related_tracks(data, "source")
+        assert message in str(error.value)
+
+    def test_load_reads_the_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "related-tracks.toml"
+        path.write_text('[related]\n"A Act - One" = ["B Act - Two"]\n', encoding="utf-8")
+        assert load_related_tracks(path).related_to(("a act", "one")) == {("b act", "two")}
+        assert not load_related_tracks(None).links
+        with pytest.raises(FileNotFoundError):
+            load_related_tracks(tmp_path / "missing.toml")
+        path.write_text("[related\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="not valid TOML"):
+            load_related_tracks(path)
+
+    def test_a_recent_track_holds_back_its_group(self) -> None:
+        rules = RepeatRules(
+            related_tracks=parse_related_tracks(SUPER_FREAK, "test"), related_track_window=2
+        )
+        history = [_record(1, "Rick James", "Super Freak (Single Version)")]
+        repeat, _ = build_filter(history, rules, 0.0, ArtistSplitter())
+        assert repeat.reason(_entry(artist="MC Hammer", title="U Can't Touch This")) == (
+            "related track"
+        )
+        # A featured credit matches too, and version notes do not matter.
+        assert repeat.reason(
+            _entry(artist="Lil Wayne feat. Nicki Minaj", title="Super Freaky Girl (Clean)")
+        ) == ("related track")
+        assert repeat.reason(_entry(artist="MC Hammer", title="Pray")) is None
+        assert repeat.reason(_entry(artist="Daddy Yankee", title="Con Calma")) is None
+        assert repeat(_entry("x", artist="MC Hammer", title="U Can't Touch This")) is False
+        assert repeat.summary() == "1 related track"
+
+    def test_the_window_counts_tracks_or_minutes(self) -> None:
+        related = parse_related_tracks(SUPER_FREAK, "test")
+        hammer = _entry(artist="MC Hammer", title="U Can't Touch This")
+        history = [
+            _record(1, "Rick James", "Super Freak", started=0.0),
+            _record(2, "Other", "Song", started=600.0),
+        ]
+        by_tracks = RepeatRules(related_tracks=related, related_track_window=1)
+        repeat, _ = build_filter(history, by_tracks, 700.0, ArtistSplitter())
+        assert repeat.reason(hammer) is None
+        by_minutes = RepeatRules(related_tracks=related, related_track_minutes=15)
+        repeat, _ = build_filter(history, by_minutes, 700.0, ArtistSplitter())
+        assert repeat.reason(hammer) == "related track"
+        repeat, _ = build_filter(history, by_minutes, 901.0, ArtistSplitter())
+        assert repeat.reason(hammer) is None
+
+    def test_history_keeps_what_the_related_rules_look_at(self) -> None:
+        related = parse_related_tracks(SUPER_FREAK, "test")
+        rules = RepeatRules(
+            artist_window=2,
+            related_tracks=related,
+            related_track_window=30,
+            related_track_minutes=90,
+        )
+        assert rules.keep_tracks == 30
+        assert rules.keep_seconds == 90 * 60
+        # Limits only count while the rule has links.
+        assert RepeatRules(artist_window=2, related_track_window=30).keep_tracks == 2
+        artists = parse_related_artists({"related": {"A": ["B"]}}, "test")
+        assert RepeatRules(artist_window=2, related_artist_window=40).keep_tracks == 2
+        assert (
+            RepeatRules(artist_window=2, related=artists, related_artist_window=40).keep_tracks
+            == 40
+        )
+
+    def test_empty_related_tracks_do_not_load_or_retain_extra_history(self) -> None:
+        playback = PlaybackConfig.from_dict(
+            {
+                "repeat_rules": {
+                    "artist": {"tracks": 0},
+                    "track": {"tracks": 0},
+                    "related_track": {"tracks": 5000, "minutes": 10080},
+                    "use_related_tracks": True,
+                }
+            }
+        )
+        rules = RepeatRules.from_playback(playback, related_tracks=parse_related_tracks({}, "test"))
+        assert rules.keep_tracks == 0
+        assert rules.keep_seconds == 0
+        assert plays_to_load(rules) == 0
+        history = deque([_record(1, started=0.0)])
+        prune_history(history, rules, now=1.0)
+        assert not history
+
+    def test_from_playback_uses_the_switch(self) -> None:
+        related = parse_related_tracks(SUPER_FREAK, "test")
+        settings = {"related_track": {"tracks": 6, "minutes": 45}}
+        off = RepeatRules.from_playback(
+            PlaybackConfig.from_dict({"repeat_rules": settings}), related_tracks=related
+        )
+        assert (off.related_track_window, off.related_track_minutes) == (0, 0.0)
+        assert not off.related_tracks.links
+        on = RepeatRules.from_playback(
+            PlaybackConfig.from_dict({"repeat_rules": {**settings, "use_related_tracks": True}}),
+            related_tracks=related,
+        )
+        assert (on.related_track_window, on.related_track_minutes) == (6, 45.0)
+        assert on.related_tracks is related
+
 
 class TestPlaybackConfigRepeatKeys:
     def test_new_keys_reject_invalid_values(self) -> None:
         for repeat_rules in (
+            {"related_track": {"tracks": 5001}},
+            {"related_artist": {"minutes": -1}},
+            {"use_related_tracks": "yes"},
             {"artist": {"tracks": -1}},
             {"track": {"minutes": 10081}},
             {"title": {"tracks": 2.5}},
@@ -571,11 +768,20 @@ class TestHistoryBounds:
         assert len(history) == HISTORY_LIMIT
         assert history[0].path == "10.flac"
 
+    def test_week_of_two_minute_songs_keeps_plays_beyond_old_cap(self) -> None:
+        rules = RepeatRules(track_window=0, artist_window=0, artist_minutes=10080)
+        history = deque(_record(i, started=float(i * 120)) for i in range(5040))
+        oldest = history[0]
+        prune_history(history, rules, now=5039 * 120 + 1)
+        assert len(history) == 5040
+        assert history[0] is oldest
+        assert plays_to_load(rules) == 50000
+
     def test_plays_to_load(self) -> None:
         assert plays_to_load(RepeatRules(track_window=500, artist_window=3)) == 500
         assert plays_to_load(RepeatRules(track_window=0, artist_window=0, title_window=7)) == 7
         assert plays_to_load(RepeatRules(track_window=10, title_minutes=60)) == HISTORY_LIMIT
-        assert plays_to_load(RepeatRules(track_window=9000, title_minutes=60)) == 9000
+        assert plays_to_load(RepeatRules(track_window=9000, title_minutes=60)) == HISTORY_LIMIT
         assert plays_to_load(RepeatRules(0, 0, 0, 0, 0, 0, album_window=0)) == 0
 
     def test_a_start_in_the_future_never_counts_for_a_rule_without_minutes(self) -> None:

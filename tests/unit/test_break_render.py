@@ -13,7 +13,17 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from autodj.breaks import AIRED, DROPPED, EXPIRED, ON_AIR, QUEUED, RENDERED, BreakError, new_id
+from autodj.breaks import (
+    AIRED,
+    DROPPED,
+    EXPIRED,
+    ON_AIR,
+    QUEUED,
+    RENDERED,
+    VOICE_TRACK,
+    BreakError,
+    new_id,
+)
 from autodj.stereo import SAMPLE_RATE as SR
 from tests.unit._break_station import make_break, make_station, start_station
 
@@ -73,6 +83,42 @@ def test_standalone_lets_the_next_song_in_when_the_speech_ends(station):
     assert at(render, 12.0)[0] == 0.0  # a has faded, b has not started
     assert at(render, 12.0)[1] == pytest.approx(0.5)
     assert desk.get(item.break_id).mixed_as == "standalone"
+
+
+@pytest.mark.parametrize("kind", ["dj", "news"])
+def test_announcer_after_negative_liner_keeps_its_voice_before_vocals(station, kind):
+    player, (a, b, liner, _d), points, desk = station
+    points[b.path]["intro"] = 5.25
+    points[liner.path].update(start=0, segue=1, end=1, overlap_start=-3)
+    item = make_break(desk, new_id(), kind=kind, seconds=6.0)
+    desk.add(item)
+    render = player._render_track(
+        a, b, 0, liners=((liner, False),), breaks=tuple(desk.take(item.slot_id, 0.0))
+    )
+    start, end = voice_span(render)
+    assert render.liner_events == ((10 * SR, liner, False),)
+    assert start == pytest.approx(11.0, abs=1e-3)
+    assert end == pytest.approx(17.0, abs=1e-3)
+    assert incoming_entry(render) == pytest.approx(12.0 if kind == "dj" else 17.0, abs=1e-3)
+
+
+@pytest.mark.parametrize("placement", ["auto", "talk_up"])
+def test_a_voice_track_after_a_negative_liner_talks_up_like_any_break(station, placement):
+    # A voice track (#128) is a DJ break from the browser: after a liner
+    # that starts inside the intro (#159) its speech still ends on b's vocal.
+    player, (a, b, liner, _d), points, desk = station
+    points[b.path]["intro"] = 5.25
+    points[liner.path].update(start=0, segue=1, end=1, overlap_start=-3)
+    item = replace(make_break(desk, new_id(), seconds=4.0, placement=placement), source=VOICE_TRACK)
+    desk.add(item)
+    render = player._render_track(
+        a, b, 0, liners=((liner, False),), breaks=tuple(desk.take(item.slot_id, 0.0))
+    )
+    start, end = voice_span(render)
+    vocal = incoming_entry(render) + 5.0  # b's intro: 0.25 s to 5.25 s
+    assert end == pytest.approx(vocal, abs=1e-3)
+    assert start == pytest.approx(end - 4.0, abs=1e-3)
+    assert desk.get(item.break_id).mixed_as == "talk_up"
 
 
 def test_auto_plays_standalone_when_the_intro_is_too_short(tmp_path):
@@ -185,6 +231,26 @@ def test_the_open_slot_is_the_change_after_the_next_song(station):
     # a plays from the start of its render; c's change follows b and c.
     assert closes_in == pytest.approx(player._playing_remaining_s())
     assert airs_in > closes_in + plan.before_s
+
+
+def test_the_planned_clock_step_survives_until_its_song_is_rendered(station, monkeypatch):
+    player, entries, _points, _desk = station
+    snapshot = {"number": 3, "step": {"type": "track", "path": entries[3].path}}
+    choose = player._choose_station_next
+
+    def choose_with_snapshot(*args, **kwargs):
+        result = choose(*args, **kwargs)
+        player._chosen_clock_step = snapshot
+        return result
+
+    monkeypatch.setattr(player, "_choose_station_next", choose_with_snapshot)
+    _render_a, render_b, plan = start_station(player, entries)
+    assert plan.clock_step == snapshot
+    player._chosen_clock_step = {"number": 1, "step": {"type": "track", "path": entries[0].path}}
+    player._on_track_start(render_b)
+    render_c = player._next_rendered()
+    assert render_c.next_clock_step == snapshot
+    assert player._pending_clock_step == snapshot
 
 
 def test_a_booked_break_airs_in_the_planned_change(station):
