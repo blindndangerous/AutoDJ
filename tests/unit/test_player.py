@@ -2059,6 +2059,7 @@ def test_next_rendered_carries_offset_between_tracks(monkeypatch):
 
     p = player_mod.Player.__new__(player_mod.Player)
     p._clock_lock = threading.RLock()
+    p._clock_selection_lock = threading.RLock()
     p._clock_revision = 0
     p._pending_clock_cursor_revision = None
     p._state = player_mod.PlayerState()
@@ -2091,6 +2092,7 @@ def test_next_rendered_skips_unrenderable_tracks_and_stops_without_a_cursor() ->
 
     p = Player.__new__(Player)
     p._clock_lock = threading.RLock()
+    p._clock_selection_lock = threading.RLock()
     p._clock_revision = 0
     p._pending_clock_cursor_revision = None
     p._state = PlayerState()
@@ -2124,6 +2126,7 @@ def test_next_rendered_gives_up_after_five_failed_renders() -> None:
 
     p = Player.__new__(Player)
     p._clock_lock = threading.RLock()
+    p._clock_selection_lock = threading.RLock()
     p._clock_revision = 0
     p._pending_clock_cursor_revision = None
     p._state = PlayerState()

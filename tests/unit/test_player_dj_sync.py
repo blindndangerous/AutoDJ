@@ -204,6 +204,7 @@ def _bare_player() -> Player:
     player._state = PlayerState()
     player._set_generation = 0
     player._clock_lock = threading.RLock()
+    player._clock_selection_lock = threading.RLock()
     player._clock_revision = 0
     player._cfg = MagicMock()
     player._set_render_cursor(None, 0, "seed")
