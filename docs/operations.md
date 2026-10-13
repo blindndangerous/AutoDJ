@@ -749,6 +749,7 @@ max_pending = 20             # requests that may wait for you at once (manual ap
 window_minutes = 30          # how far ahead in the queue a request may be placed
 blocked_artists = ["Night Owl Jingles"]
 blocked_folders = ["Christmas"]   # full paths, or folders inside [library] music_dir
+ipv6_prefix = 56             # an IPv6 listener's limits count over this network
 ```
 
 For another station, write the same keys under `[stations.<slug>.requests]`.
@@ -779,8 +780,11 @@ a song may play ("within the next half hour", "within the next hour or so"), nev
 2. The address's limits. Each address may run 30 searches a minute and send 10 forms in ten
    minutes, whatever becomes of them. Only accepted requests count toward `per_listener` per
    `per_listener_minutes`; a request turned away, for example by the repeat rules, does not. An
-   IPv6 address counts together with its whole /64, since one home is usually given a /64 and could
-   otherwise step through its addresses. An IPv4 address written as IPv6 counts as itself.
+   IPv6 address counts together with its whole network of `ipv6_prefix` bits, a /56 by default:
+   a home is usually delegated a /56 or a /64 and could otherwise step through its addresses. Set
+   `ipv6_prefix = 64` to count each /64 apart (a home delegated more than one /64 then gets more
+   than one allowance), or `128` for single addresses. An IPv4 address written as IPv6 counts as
+   itself.
 3. The daily cap.
 4. That the song is in the library, is not blocked, and is not playing, coming up or waiting
    already.
@@ -821,9 +825,12 @@ requests.
 Requests are kept in `listener_requests.json` in the station's state folder: waiting requests and
 the last 50 decisions, with titles, names and times. A listener's name is removed 30 days after
 the decision, however many decisions there are. The file never holds an address, and it is not
-part of backups. At most four searches or request checks run at once, across all stations, and
-the same search within 30 seconds is answered from memory, so a flood of requests cannot take the
-server's time from the music. Listener addresses are kept in memory only, for the limits, and are forgotten when
+part of backups. The file is tidied when AutoDJ starts and every hour, so expiries and names
+past their 30 days are applied even when nobody uses the page or the card. At most four searches
+or request checks run at once, across all stations. Others wait their turn without holding a
+worker thread, and get "busy" after two seconds. The same search within 30 seconds is answered
+from memory. A song can be requested only after a search has shown it, which needs no map of the
+whole library. So a flood of requests cannot take the server's time from the music. Listener addresses are kept in memory only, for the limits, and are forgotten when
 AutoDJ restarts. Requests do not yet get bridge songs to lead into them, and are not yet matched to
 clockwheel categories.
 
@@ -900,7 +907,12 @@ playlist URLs on HTTPS. The trusted proxy setting changes client addresses on al
 mode, not only in stream mode, including pairing, the listener request limits and audit logs.
 Only trust a proxy that appends the address it saw to `X-Forwarded-For`, or overwrites the header
 with it; never one that passes a client's own `X-Forwarded-For` through, which would let any
-client choose its address. Restart after changing trusted proxies.
+client choose its address. Without `trusted_proxies`, an existing `FORWARDED_ALLOW_IPS` environment
+variable (Uvicorn's own setting) is honoured in every mode; with both, `trusted_proxies` wins and
+the startup log says the variable is ignored. For each trusted proxy that is not on this machine,
+the startup log warns that it must append or overwrite `X-Forwarded-For`, and that it must
+terminate TLS and send `X-Forwarded-Proto: https` before machine tokens are accepted through it.
+Restart after changing trusted proxies.
 
 Settings, Stream lists each direct listener's address, player name and connection time. Use
 **Disconnect** to end one connection, or **Ban** to block an address or CIDR for one hour, one day,

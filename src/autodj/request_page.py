@@ -17,6 +17,8 @@ the page.
 from __future__ import annotations
 
 import asyncio
+import weakref
+from collections.abc import Callable
 from html import escape
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, quote
@@ -30,12 +32,10 @@ from autodj.listener_requests import (
     MAX_QUERY,
     MIN_QUERY,
     TRACK_ID,
-    Busy,
     Outcome,
     RequestDesk,
     _minutes,
     _songs,
-    bounded,
     clean_name,
 )
 from autodj.station_log import CURRENT_STATION
@@ -55,6 +55,43 @@ REQUEST_PAGE_CSP = (
 )
 #: The most a request form may send; it has three short fields.
 FORM_MAX_BYTES = 2048
+#: Searches and request checks running at once, across every station.  More
+#: wait on the event loop up to WORK_WAIT_SECONDS, holding no thread, then
+#: get "busy": a flood can never park the worker threads that carts,
+#: breaks, approvals and the player's helpers need.
+WORK_SLOTS = 4
+WORK_WAIT_SECONDS = 2.0
+# One semaphore per event loop (an asyncio semaphore belongs to one loop).
+_SLOTS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+class Busy(RuntimeError):
+    """Too many searches or requests are being worked on at once."""
+
+
+async def bounded[T, *Ts](work: Callable[[*Ts], T], *args: *Ts) -> T:
+    """Run *work* in a worker thread, once one of :data:`WORK_SLOTS` is free.
+
+    The wait for a slot happens on the event loop, so waiting requests hold
+    no thread.
+
+    Raises:
+        Busy: No slot came free within :data:`WORK_WAIT_SECONDS`.
+    """
+    loop = asyncio.get_running_loop()
+    slots = _SLOTS.get(loop)
+    if slots is None:
+        slots = _SLOTS[loop] = asyncio.Semaphore(WORK_SLOTS)
+    try:
+        await asyncio.wait_for(slots.acquire(), WORK_WAIT_SECONDS)
+    except TimeoutError:
+        raise Busy from None
+    try:
+        return await asyncio.to_thread(work, *args)
+    finally:
+        slots.release()
 
 
 def _page_path(slug: str, *, by_name: bool) -> str:
@@ -338,7 +375,7 @@ def install_request_pages(app: FastAPI, stations: StationRegistry) -> None:
         if track is not None:
             entry = None
             if TRACK_ID.fullmatch(track):
-                entry = await asyncio.to_thread(bounded, lambda: desk.song(track))
+                entry = await bounded(desk.song, track)
             if entry is None:
                 outcome = Outcome(
                     404, "Song not found", "That song cannot be requested. Please search again."
@@ -362,7 +399,7 @@ def install_request_pages(app: FastAPI, stations: StationRegistry) -> None:
         if (wait := desk.searches.hit(_address(request))) is not None:
             outcome = Outcome(429, "Too many searches", "Please wait a minute, then search again.")
             return respond(station, by_name, 429, wait, desk=desk, query=query, outcome=outcome)
-        results = await asyncio.to_thread(bounded, lambda: desk.search(query))
+        results = await bounded(desk.search, query)
         return respond(station, by_name, desk=desk, query=query, results=results)
 
     async def _send(
@@ -396,7 +433,7 @@ def install_request_pages(app: FastAPI, stations: StationRegistry) -> None:
             )
             return respond(station, by_name, 400, desk=desk, outcome=outcome)
         # Off the event loop: it reads the library and projects the queue.
-        outcome = await asyncio.to_thread(bounded, lambda: desk.submit(track, name, address))
+        outcome = await bounded(desk.submit, track, name, address)
         return respond(
             station, by_name, outcome.status, outcome.retry_after, desk=desk, outcome=outcome
         )

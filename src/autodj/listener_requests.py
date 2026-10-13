@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
+from autodj._bridge import QueueChanged
 from autodj.dj_meta import harmonic_compatible
 from autodj.fsutil import atomic_write
 from autodj.repeat_rules import ArtistSplitter, artist_key
@@ -83,11 +84,11 @@ KEEP_DECIDED = 50
 TOKEN_SECONDS = 2 * 3600
 #: Listener names are dropped from decided requests after this many days.
 NAME_DAYS = 30
-#: Searches and request checks running at once, across every station; more
-#: wait up to WORK_WAIT_SECONDS, then get "busy", so a flood cannot take
-#: every worker thread from the player.
-WORK_SLOTS = threading.BoundedSemaphore(4)
-WORK_WAIT_SECONDS = 2.0
+#: How often a station's requests are tidied (expiries, old names) when
+#: nothing else touches them.
+TIDY_SECONDS = 3600.0
+#: Song ids a station remembers from its searches, newest kept.
+REMEMBERED_SONGS = 10000
 #: How long, and how many, recent searches are answered from memory.
 SEARCH_CACHE_SECONDS = 30.0
 SEARCH_CACHE_SIZE = 256
@@ -104,13 +105,14 @@ PENDING, QUEUED, REJECTED, EXPIRED = "pending", "queued", "rejected", "expired"
 # ---------------------------------------------------------------------------
 
 
-def limit_key(address: str) -> str:
+def limit_key(address: str, ipv6_prefix: int = 56) -> str:
     """The key an address's limits count under.
 
     An IPv4 address counts alone, and so does an IPv4-mapped IPv6 address,
-    as its IPv4 address.  An IPv6 address counts with its whole /64: one
-    host is usually given a /64 and can use any address in it, so counting
-    single addresses would let it rotate past every limit.
+    as its IPv4 address.  An IPv6 address counts with its whole network of
+    *ipv6_prefix* bits (``[requests] ipv6_prefix``, /56 by default): a home
+    is usually delegated a /56 or a /64 and can use any address in it, so
+    counting single addresses would let it rotate past every limit.
     """
     try:
         ip = ipaddress.ip_address(address)
@@ -119,32 +121,15 @@ def limit_key(address: str) -> str:
     if isinstance(ip, ipaddress.IPv6Address):
         if ip.ipv4_mapped is not None:
             return str(ip.ipv4_mapped)
-        return str(ipaddress.IPv6Network((ip, 64), strict=False))
+        return str(ipaddress.IPv6Network((ip, ipv6_prefix), strict=False))
     return str(ip)
-
-
-class Busy(RuntimeError):
-    """Too many searches or requests are being worked on at once."""
-
-
-def bounded[T](work: Callable[[], T]) -> T:
-    """Run *work* in one of :data:`WORK_SLOTS`.
-
-    Raises:
-        Busy: No slot came free within :data:`WORK_WAIT_SECONDS`.
-    """
-    if not WORK_SLOTS.acquire(timeout=WORK_WAIT_SECONDS):
-        raise Busy
-    try:
-        return work()
-    finally:
-        WORK_SLOTS.release()
 
 
 class AddressLimiter:
     """At most *limit* events per *window_s* seconds for each address.
 
-    Addresses are counted by :func:`limit_key`: an IPv6 address with its /64.
+    Addresses are counted by :func:`limit_key`: an IPv6 address with its
+    network of *ipv6_prefix* bits.
 
     Each address keeps the times of its events in the window.  Addresses
     with nothing left in the window are forgotten, and at most *max_keys*
@@ -158,8 +143,10 @@ class AddressLimiter:
         *,
         clock: Callable[[], float] = time.monotonic,
         max_keys: int = 4096,
+        ipv6_prefix: int = 56,
     ) -> None:
         self.limit = limit
+        self.ipv6_prefix = ipv6_prefix
         self.window_s = window_s
         self._clock = clock
         self._max_keys = max_keys
@@ -178,7 +165,7 @@ class AddressLimiter:
 
     def retry_after(self, address: str) -> int | None:
         """Seconds until *address* may go again, or ``None`` if it may now (not counted)."""
-        address = limit_key(address)
+        address = limit_key(address, self.ipv6_prefix)
         with self._lock:
             now = self._clock()
             events = self._live(address, now)
@@ -188,7 +175,7 @@ class AddressLimiter:
 
     def hit(self, address: str) -> int | None:
         """Count one event for *address*; seconds to wait instead when it is over the limit."""
-        address = limit_key(address)
+        address = limit_key(address, self.ipv6_prefix)
         with self._lock:
             now = self._clock()
             events = self._live(address, now)
@@ -250,28 +237,40 @@ class TrackIds:
     An id is a keyed BLAKE2b hash of the path, under a key made when the
     server starts: it reveals nothing about the path and cannot be worked
     out from one.  Ids change when the server restarts.
+
+    Ids are worked out on demand, one per song shown, and the songs a
+    search showed are remembered by id (at most *remember* of them, newest
+    kept), so a request needs no map of the whole library: only a song a
+    search showed can be requested.
     """
 
-    def __init__(self, secret: bytes | None = None) -> None:
+    def __init__(self, secret: bytes | None = None, *, remember: int = REMEMBERED_SONGS) -> None:
         self._secret = secret or secrets.token_bytes(32)
         self._lock = threading.Lock()
-        self._cache: tuple[object, dict[str, IndexEntry]] | None = None
+        self._remember = remember
+        self._shown: OrderedDict[str, str] = OrderedDict()
 
     def id_for(self, path: str) -> str:
         """The id of the song at *path*."""
         digest = hashlib.blake2b(path.encode("utf-8"), key=self._secret, digest_size=12)
         return digest.hexdigest()
 
-    def lookup(self, indexed: Sequence[tuple[IndexEntry, str]], track_id: str) -> IndexEntry | None:
-        """The song with *track_id* among *indexed*; the map is kept until *indexed* changes."""
+    def shown(self, path: str) -> str:
+        """The id of the song at *path*, remembered so it can be requested."""
+        track_id = self.id_for(path)
+        with self._lock:
+            self._shown[track_id] = path
+            self._shown.move_to_end(track_id)
+            while len(self._shown) > self._remember:
+                self._shown.popitem(last=False)
+        return track_id
+
+    def path_for(self, track_id: str) -> str | None:
+        """The path of a song a search showed under *track_id*, or ``None``."""
         if not TRACK_ID.fullmatch(track_id):
             return None
         with self._lock:
-            cached = self._cache
-            if cached is None or cached[0] is not indexed:
-                cached = (indexed, {self.id_for(entry.path): entry for entry, _ in indexed})
-                self._cache = cached
-            return cached[1].get(track_id)
+            return self._shown.get(track_id)
 
 
 # ---------------------------------------------------------------------------
@@ -479,6 +478,14 @@ class RequestBook:
         self.lock = threading.RLock()
         self._zone = ZoneInfo(self.timezone)
         self._load()
+        # Expiries and old names are applied at once, not at the next use.
+        self.tidy_and_save()
+
+    def tidy_and_save(self) -> None:
+        """:meth:`tidy`, and save when it changed anything."""
+        with self.lock:
+            if self.tidy():
+                self.save()
 
     def _load(self) -> None:
         try:
@@ -657,11 +664,23 @@ class RequestDesk:
         self.tokens = tokens
         self.track_ids = track_ids
         self.blocklist = Blocklist(cfg.blocked_artists, cfg.blocked_folders, music_dir)
-        self.searches = AddressLimiter(SEARCHES_PER_MINUTE, 60.0, clock=monotonic)
-        self.posts = AddressLimiter(POSTS_PER_TEN_MINUTES, 600.0, clock=monotonic)
-        self.accepted = AddressLimiter(
-            cfg.per_listener, cfg.per_listener_minutes * 60.0, clock=monotonic
+        prefix = cfg.ipv6_prefix
+        self.searches = AddressLimiter(
+            SEARCHES_PER_MINUTE, 60.0, clock=monotonic, ipv6_prefix=prefix
         )
+        self.posts = AddressLimiter(
+            POSTS_PER_TEN_MINUTES, 600.0, clock=monotonic, ipv6_prefix=prefix
+        )
+        self.accepted = AddressLimiter(
+            cfg.per_listener, cfg.per_listener_minutes * 60.0, clock=monotonic, ipv6_prefix=prefix
+        )
+        # Tidies the book every TIDY_SECONDS (expiries, names past their
+        # 30 days) even when no listener or operator touches it.
+        self._closed = threading.Event()
+        self._tidier = threading.Thread(
+            target=self._tidy_now_and_then, name=f"autodj-requests-{slug}", daemon=True
+        )
+        self._tidier.start()
         self._lock = threading.Lock()
         self._monotonic = monotonic
         # Recent searches by their words, with the library snapshot they
@@ -670,6 +689,18 @@ class RequestDesk:
             OrderedDict()
         )
         self._search_lock = threading.Lock()
+
+    def _tidy_now_and_then(self) -> None:
+        while not self._closed.wait(TIDY_SECONDS):
+            try:
+                self.book.tidy_and_save()
+            except OSError:
+                logger.warning("Could not save the listener requests", exc_info=True)
+
+    def close(self) -> None:
+        """Stop tidying (the station is stopping)."""
+        self._closed.set()
+        self._tidier.join(timeout=5)
 
     # -- what listeners see -------------------------------------------------
 
@@ -695,7 +726,7 @@ class RequestDesk:
         found: list[tuple[str, IndexEntry]] = []
         for entry, text in indexed:
             if all(token in text for token in tokens) and not self.blocklist.blocks(entry):
-                found.append((self.track_ids.id_for(entry.path), entry))
+                found.append((self.track_ids.shown(entry.path), entry))
                 if len(found) >= SEARCH_RESULTS:
                     break
         with self._search_lock:
@@ -706,8 +737,9 @@ class RequestDesk:
         return found
 
     def song(self, track_id: str) -> IndexEntry | None:
-        """The requestable song with *track_id*, or ``None``."""
-        entry = self.track_ids.lookup(self.bridge.search_index(), track_id)
+        """The requestable song a search showed under *track_id*, or ``None``."""
+        path = self.track_ids.path_for(track_id)
+        entry = self.bridge.entry_for_path(path) if path is not None else None
         if entry is None or self.blocklist.blocks(entry):
             return None
         return entry
@@ -722,19 +754,22 @@ class RequestDesk:
         return place(entry, self.bridge.request_slots(entry, self._horizon()), self._similarity)
 
     def _queue_where_it_fits(self, entry: IndexEntry) -> Placement:
-        """Place *entry* and queue it there, as one step under the queue's lock.
+        """Place *entry* and queue it there (:meth:`PlayerBridge.insert_request`).
 
-        Nothing else can change the queue between working out the place and
-        inserting there, so the place is never stale.
+        The place is checked against the queue as it is when the song is
+        inserted, so it is never stale.
+
+        Raises:
+            QueueChanged: The queue kept changing meanwhile.
         """
         chosen: list[Placement] = []
 
         def choose(slots: list[RequestSlot]) -> RequestSlot | None:
             chosen.append(place(entry, slots, self._similarity))
-            return chosen[0].slot
+            return chosen[-1].slot
 
         self.bridge.insert_request(entry, self._horizon(), choose)
-        return chosen[0]
+        return chosen[-1]
 
     def _coming_up(self, entry: IndexEntry) -> bool:
         return any(e.path == entry.path for e in self.bridge.coming_up())
@@ -781,7 +816,15 @@ class RequestDesk:
                 "The station has many requests waiting already. Please try again later.",
                 retry_after=600,
             )
-        placement = self._queue_where_it_fits(entry) if auto else self._placement(entry)
+        try:
+            placement = self._queue_where_it_fits(entry) if auto else self._placement(entry)
+        except QueueChanged:
+            return Outcome(
+                503,
+                "The station is busy",
+                "The station's queue was changing. Please send the request again.",
+                retry_after=5,
+            )
         if placement.slot is None:
             return Outcome(
                 409,
@@ -871,7 +914,10 @@ class RequestDesk:
         """
         with self._lock:
             request, entry = self._waiting(request_id)
-            placement = self._queue_where_it_fits(entry)
+            try:
+                placement = self._queue_where_it_fits(entry)
+            except QueueChanged as exc:
+                raise ValueError(f"{exc} Try again.") from exc
             if placement.slot is None:
                 raise ValueError(
                     f"{entry.display_name} cannot be queued within the next "
@@ -899,10 +945,13 @@ class RequestDesk:
                 first.append(slots[0])
                 return None if slots[0].dmca else slots[0]
 
-            self.bridge.insert_request(entry, 0.0, choose)
-            if first[0].dmca:
+            try:
+                self.bridge.insert_request(entry, 0.0, choose)
+            except QueueChanged as exc:
+                raise ValueError(f"{exc} Try again.") from exc
+            if first[-1].dmca:
                 raise ValueError(
-                    f"DMCA mode: playing this song next would mean {_join(first[0].dmca)}."
+                    f"DMCA mode: playing this song next would mean {_join(first[-1].dmca)}."
                 )
             self._on_queued()
             self.book.decide(request, QUEUED, "Play next, chosen by the operator.")
@@ -955,7 +1004,6 @@ __all__ = [
     "TRACK_SECRET",
     "AddressLimiter",
     "Blocklist",
-    "Busy",
     "FormTokens",
     "ListenerRequest",
     "Outcome",
@@ -963,7 +1011,6 @@ __all__ = [
     "RequestBook",
     "RequestDesk",
     "TrackIds",
-    "bounded",
     "clean_name",
     "fit",
     "limit_key",

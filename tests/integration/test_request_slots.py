@@ -7,7 +7,9 @@ import time
 from dataclasses import replace
 
 import numpy as np
+import pytest
 
+from autodj._bridge import QueueChanged
 from autodj.config import DmcaConfig
 from autodj.indexer import IndexEntry
 from autodj.repeat_rules import PlayRecord, RepeatRules, TrackKeyCache
@@ -103,21 +105,31 @@ def test_similarity_is_the_cosine_of_two_embeddings() -> None:
     assert index.similarity(entries[0].path, "missing") is None
 
 
-def test_insert_request_places_and_queues_in_one_step(bridge) -> None:
+def _lock_is_free(lock) -> bool:
+    """Whether another thread could take *lock* now."""
+    got: list[bool] = []
+
+    def take() -> None:
+        taken = lock.acquire(blocking=False)
+        got.append(taken)
+        if taken:
+            lock.release()
+
+    other = threading.Thread(target=take)
+    other.start()
+    other.join()
+    return got == [True]
+
+
+def test_insert_request_places_outside_the_queue_lock_and_inserts_checked(bridge) -> None:
     _ready(bridge)
     state = bridge.player._state
     seen = []
 
     def choose(slots):
-        # The queue's lock is held while choosing: another thread cannot
-        # take it, so nothing can change the queue in between.
-        got: list[bool] = []
-        other = threading.Thread(
-            target=lambda: got.append(state.queue_lock.acquire(blocking=False))
-        )
-        other.start()
-        other.join()
-        assert got == [False]
+        # The projection and the choice run with the queue's lock free, so
+        # the mix bus never waits on them.
+        assert _lock_is_free(state.queue_lock)
         seen.append([slot.position for slot in slots])
         return slots[1]
 
@@ -127,6 +139,39 @@ def test_insert_request_places_and_queues_in_one_step(bridge) -> None:
     assert seen == [[0, 1, 2]]
     assert bridge.insert_request(_song(6), 3600, lambda slots: None) is None
     assert len(state.queue) == 3
+
+
+def test_a_queue_that_changed_meanwhile_is_placed_again(bridge) -> None:
+    _ready(bridge)
+    state = bridge.player._state
+    calls = []
+
+    def choose(slots):
+        calls.append([slot.after.title if slot.after else None for slot in slots])
+        if len(calls) == 1:
+            # A track started meanwhile: Song 1 left the queue.
+            with state.queue_lock:
+                state.queue.pop(0)
+        return slots[0]
+
+    bridge.insert_request(_song(5), 3600, choose)
+    # Placed again against the queue as it now is, then inserted there.
+    assert calls == [["Song 1", "Song 2", None], ["Song 2", None]]
+    assert [e.title for e in state.queue] == ["Song 5", "Song 2"]
+
+
+def test_a_queue_that_keeps_changing_is_reported(bridge) -> None:
+    _ready(bridge)
+    state = bridge.player._state
+
+    def choose(slots):
+        with state.queue_lock:
+            state.queue.append(_song(7))
+        return slots[0]
+
+    with pytest.raises(QueueChanged):
+        bridge.insert_request(_song(5), 3600, choose)
+    assert _song(5).path not in [e.path for e in state.queue]
 
 
 def test_dmca_problems_are_kept_apart(bridge) -> None:

@@ -634,6 +634,9 @@ window_minutes = 30
 # Artists, and folders (full paths or inside music_dir), listeners cannot request.
 blocked_artists = []
 blocked_folders = []
+# An IPv6 listener's limits count over this network: 56 (a whole home network),
+# 64, or 128 for single addresses.
+ipv6_prefix = 56
 # Public player page at /player, where listeners press Play to hear the stream
 # in the browser, and a compact version at /embed for other websites. Both off
 # by default; each answers 404 while it is off. See "Player page and embeddable

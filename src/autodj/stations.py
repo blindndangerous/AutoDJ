@@ -955,6 +955,9 @@ class StationRuntime:
         if carts is not None:
             await _step("closing its carts", carts.close, problems)
         await _step("closing its webhooks", self.webhooks.close, problems)
+        requests = getattr(self, "requests", None)
+        if requests is not None:
+            await _step("closing its listener requests", requests.close, problems)
         if self.stream_out is not None:
             await _step(
                 "stopping its stream",

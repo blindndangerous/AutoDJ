@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,15 +20,12 @@ from autodj.listener_requests import (
     NAME_DAYS,
     PENDING,
     QUEUED,
-    WORK_SLOTS,
     AddressLimiter,
     Blocklist,
-    Busy,
     FormTokens,
     RequestBook,
     RequestDesk,
     TrackIds,
-    bounded,
     clean_name,
     fit,
     limit_key,
@@ -85,6 +83,7 @@ def test_requests_are_off_by_default_with_safe_limits() -> None:
         ({"blocked_artists": ["ok", ""]}, TypeError, "blocked_artists"),
         ({"blocked_folders": "Xmas"}, TypeError, "blocked_folders"),
         ({"blocked_artists": ["a"] * 501}, ValueError, "at most 500"),
+        ({"ipv6_prefix": 16}, ValueError, "ipv6_prefix must be between 32 and 128"),
     ],
 )
 def test_bad_request_settings_are_refused(values: dict, error: type, match: str) -> None:
@@ -142,19 +141,25 @@ def test_the_address_limiter_counts_per_address_and_forgets_old_events() -> None
     assert limiter.hit("192.0.2.1") is None
 
 
-def test_ipv6_counts_by_its_64_and_mapped_ipv4_as_ipv4() -> None:
-    assert limit_key("2001:db8:1:2:aaaa::1") == "2001:db8:1:2::/64"
-    assert limit_key("2001:db8:1:2:ffff:ffff:ffff:ffff") == "2001:db8:1:2::/64"
-    assert limit_key("2001:db8:1:3::1") == "2001:db8:1:3::/64"
+def test_ipv6_counts_by_its_delegated_network_and_mapped_ipv4_as_ipv4() -> None:
+    # A /56 by default: one home network, whichever of its /64s it uses.
+    assert limit_key("2001:db8:1:2:aaaa::1") == "2001:db8:1::/56"
+    assert limit_key("2001:db8:1:ff:ffff:ffff:ffff:ffff") == "2001:db8:1::/56"
+    assert limit_key("2001:db8:1:100::1") == "2001:db8:1:100::/56"
+    assert limit_key("2001:db8:1:2:aaaa::1", 64) == "2001:db8:1:2::/64"
+    assert limit_key("2001:db8::1", 128) == "2001:db8::1/128"
     assert limit_key("::ffff:192.0.2.7") == "192.0.2.7"
     assert limit_key("192.0.2.7") == "192.0.2.7"
     assert limit_key("not an address") == "not an address"
     limiter = AddressLimiter(2, 60.0, clock=Clock(0.0))
-    # A host rotating through its /64 is still one listener.
+    # A host rotating through its /64s is still one listener.
     assert limiter.hit("2001:db8:1:2::1") is None
-    assert limiter.hit("2001:db8:1:2::2") is None
-    assert limiter.hit("2001:db8:1:2:dead:beef::9") == 60
-    assert limiter.hit("2001:db8:1:3::1") is None
+    assert limiter.hit("2001:db8:1:3::2") is None
+    assert limiter.hit("2001:db8:1:ff:dead:beef::9") == 60
+    assert limiter.hit("2001:db8:2::1") is None
+    narrow = AddressLimiter(1, 60.0, clock=Clock(0.0), ipv6_prefix=64)
+    assert narrow.hit("2001:db8:1:2::1") is None
+    assert narrow.hit("2001:db8:1:3::1") is None
     assert limiter.hit("::ffff:192.0.2.7") is None
     assert limiter.hit("192.0.2.7") is None
     assert limiter.hit("192.0.2.7") == 60
@@ -185,33 +190,22 @@ def test_form_tokens_are_signed_per_station_and_song_and_expire() -> None:
     assert not tokens.valid(token, "default", song)
 
 
-def test_work_is_bounded_and_says_busy_when_every_slot_is_taken(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    assert bounded(lambda: 7) == 7
-    monkeypatch.setattr("autodj.listener_requests.WORK_WAIT_SECONDS", 0.01)
-    taken = 0
-    while WORK_SLOTS.acquire(blocking=False):
-        taken += 1
-    try:
-        with pytest.raises(Busy):
-            bounded(lambda: 7)
-    finally:
-        for _ in range(taken):
-            WORK_SLOTS.release()
-    assert bounded(lambda: 8) == 8
-
-
-def test_track_ids_reveal_nothing_and_find_only_known_songs() -> None:
-    ids = TrackIds(b"s" * 32)
-    entries = [_entry(1), _entry(2)]
-    indexed = [(entry, entry.title.lower()) for entry in entries]
-    one = ids.id_for(entries[0].path)
+def test_track_ids_reveal_nothing_and_find_only_songs_shown() -> None:
+    ids = TrackIds(b"s" * 32, remember=2)
+    paths = [_entry(n).path for n in range(3)]
+    one = ids.id_for(paths[0])
     assert len(one) == 24 and "song" not in one
-    assert ids.lookup(indexed, one) is entries[0]
-    assert ids.lookup(indexed, "0" * 24) is None
-    assert ids.lookup(indexed, "../../etc/passwd") is None
-    assert TrackIds(b"t" * 32).id_for(entries[0].path) != one
+    # Worked out on demand; nothing is known until a search shows it.
+    assert ids.path_for(one) is None
+    assert ids.shown(paths[0]) == one
+    assert ids.path_for(one) == paths[0]
+    assert ids.path_for("0" * 24) is None
+    assert ids.path_for("../../etc/passwd") is None
+    # Only the newest are remembered.
+    ids.shown(paths[1])
+    ids.shown(paths[2])
+    assert ids.path_for(one) is None
+    assert TrackIds(b"t" * 32).id_for(paths[0]) != one
 
 
 def test_a_listener_name_is_trimmed_and_checked() -> None:
@@ -327,8 +321,7 @@ def test_names_are_dropped_a_month_after_the_decision(tmp_path: Path) -> None:
     recent = book.add(_entry(2), "Ali", QUEUED, "")
     assert not book.tidy()
     clock.now += 20
-    assert book.tidy()
-    book.save()
+    # Opening the book tidies and saves it at once.
     again = RequestBook(tmp_path / "r.json", clock=clock)
     assert again.get(old.id).name == ""
     assert again.get(recent.id).name == "Ali"
@@ -424,13 +417,15 @@ def test_search_finds_requestable_songs_by_every_word(tmp_path: Path) -> None:
     assert again is found
     bridge.indexed = list(bridge.indexed)
     assert desk.search("song") is not found
-    assert desk.song(ids.id_for(bridge.entries[2].path)) is None  # blocked
-    assert desk.song(ids.id_for(bridge.entries[3].path)) is bridge.entries[3]
+    assert desk.song(ids.shown(bridge.entries[2].path)) is None  # blocked
+    assert desk.song(ids.id_for(bridge.entries[3].path)) is bridge.entries[3]  # shown above
+    # Only a song a search showed can be requested.
+    assert desk.song(ids.id_for(bridge.entries[5].path + ".other")) is None
 
 
 def test_a_manual_request_waits_and_the_operator_decides(tmp_path: Path) -> None:
     desk, bridge, ids, _ = _desk(tmp_path)
-    song = ids.id_for(bridge.entries[3].path)
+    song = ids.shown(bridge.entries[3].path)
     outcome = desk.submit(song, "Sam", "192.0.2.1")
     assert (outcome.status, outcome.headline) == (200, "Request received")
     assert "Thanks, Sam" in outcome.detail and "within the next hour or so" in outcome.detail
@@ -453,7 +448,7 @@ def test_a_manual_request_waits_and_the_operator_decides(tmp_path: Path) -> None
 def test_auto_approval_queues_at_the_best_place_at_once(tmp_path: Path) -> None:
     desk, bridge, ids, _ = _desk(tmp_path, approval="auto")
     bridge.slots = [_slot(0, bridge.playing, None, "same artist"), _slot(1, bridge.entries[1])]
-    outcome = desk.submit(ids.id_for(bridge.entries[4].path), "", "192.0.2.1")
+    outcome = desk.submit(ids.shown(bridge.entries[4].path), "", "192.0.2.1")
     assert outcome.headline == "Request accepted"
     assert outcome.detail == "Thanks. Song 4 by Artist 4 should play within the next half hour."
     assert bridge.queue == [bridge.entries[4].path]
@@ -462,7 +457,7 @@ def test_auto_approval_queues_at_the_best_place_at_once(tmp_path: Path) -> None:
 
 def test_rules_limits_and_caps_turn_requests_away(tmp_path: Path) -> None:
     desk, bridge, ids, clock = _desk(tmp_path, per_listener=1, daily_limit=2, max_pending=5)
-    song = lambda n: ids.id_for(bridge.entries[n].path)  # noqa: E731
+    song = lambda n: ids.shown(bridge.entries[n].path)  # noqa: E731
     assert desk.submit("f" * 24, "", "192.0.2.1").status == 404
     bridge.slots = [_slot(0, bridge.playing, None, "same song")]
     refused = desk.submit(song(1), "", "192.0.2.1")
@@ -483,15 +478,15 @@ def test_rules_limits_and_caps_turn_requests_away(tmp_path: Path) -> None:
 
 def test_waiting_requests_are_capped(tmp_path: Path) -> None:
     desk, bridge, ids, _ = _desk(tmp_path, max_pending=1)
-    assert desk.submit(ids.id_for(bridge.entries[1].path), "", "192.0.2.1").status == 200
-    full = desk.submit(ids.id_for(bridge.entries[2].path), "", "192.0.2.2")
+    assert desk.submit(ids.shown(bridge.entries[1].path), "", "192.0.2.1").status == 200
+    full = desk.submit(ids.shown(bridge.entries[2].path), "", "192.0.2.2")
     assert full.headline == "Too many requests waiting"
 
 
 def test_the_operator_can_play_next_or_turn_down(tmp_path: Path) -> None:
     desk, bridge, ids, _ = _desk(tmp_path)
     for n, address in ((1, "a"), (2, "b"), (3, "c")):
-        desk.submit(ids.id_for(bridge.entries[n].path), "", address)
+        desk.submit(ids.shown(bridge.entries[n].path), "", address)
     first, second, third = (r.id for r in desk.book.pending())
     bridge.queue = [bridge.entries[5].path]
     desk.play_next(first)
@@ -515,7 +510,7 @@ def test_the_operator_can_play_next_or_turn_down(tmp_path: Path) -> None:
 
 def test_a_request_past_three_hours_cannot_be_approved(tmp_path: Path) -> None:
     desk, bridge, ids, clock = _desk(tmp_path)
-    desk.submit(ids.id_for(bridge.entries[1].path), "", "192.0.2.1")
+    desk.submit(ids.shown(bridge.entries[1].path), "", "192.0.2.1")
     (waiting,) = desk.book.pending()
     clock.now += 3 * 3600 + 1
     for decide in (desk.approve, desk.play_next, desk.reject):
@@ -527,8 +522,35 @@ def test_a_request_past_three_hours_cannot_be_approved(tmp_path: Path) -> None:
 
 def test_play_next_ignores_repeat_rules_but_not_dmca(tmp_path: Path) -> None:
     desk, bridge, ids, _ = _desk(tmp_path)
-    desk.submit(ids.id_for(bridge.entries[2].path), "", "192.0.2.1")
+    desk.submit(ids.shown(bridge.entries[2].path), "", "192.0.2.1")
     (waiting,) = desk.book.pending()
     bridge.slots = [_slot(0, bridge.playing, None, "same artist")]
     desk.play_next(waiting.id)
     assert bridge.queue == [bridge.entries[2].path]
+
+
+def test_the_desk_tidies_now_and_then_until_closed(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("autodj.listener_requests.TIDY_SECONDS", 0.01)
+    desk, _bridge, _ids, clock = _desk(tmp_path)
+    desk.book.add(_entry(1), "Sam", QUEUED, "")
+    clock.now += NAME_DAYS * 86400 + 1
+    deadline = time.monotonic() + 5
+    while desk.book.recent()[0].name and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert desk.book.recent()[0].name == ""
+    desk.close()
+    assert not desk._tidier.is_alive()
+
+
+def test_a_queue_that_keeps_changing_turns_a_request_away(tmp_path: Path) -> None:
+    from autodj._bridge import QueueChanged
+
+    desk, bridge, ids, _ = _desk(tmp_path, approval="auto")
+
+    def changing(*_args):
+        raise QueueChanged("The queue kept changing while the request was being placed.")
+
+    bridge.insert_request = changing
+    outcome = desk.submit(ids.shown(bridge.entries[3].path), "", "192.0.2.1")
+    assert (outcome.status, outcome.headline) == (503, "The station is busy")
+    assert desk.book.recent() == []

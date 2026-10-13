@@ -605,8 +605,10 @@ What a visitor can do, and the limits on it:
   artists out.
 - **Name a song.** Songs are named by an opaque id: a keyed BLAKE2b hash of the file path, under
   a key made when the server starts. The id reveals nothing about the path and cannot be computed
-  from one. The page never contains a path. An id that matches nothing, or matches a blocked song,
-  gets the same "Song not found" answer, so ids cannot be used to probe for hidden files.
+  from one. The page never contains a path. Ids are worked out on demand for the songs a search
+  shows, and only those (the latest 10,000 per station) can be requested, so no map of the whole
+  library is built. An id that matches nothing, a song no search showed, or a blocked song gets the
+  same "Song not found" answer, so ids cannot be used to probe for hidden files.
 - **Send a request.** The form is `application/x-www-form-urlencoded` and holds only `token`,
   `track` and an optional `name`, each given once; anything else gets 400. The body is capped at
   2048 bytes, and a longer body gets 413 before it is parsed. The name is trimmed, at most 40
@@ -619,13 +621,16 @@ What a visitor can do, and the limits on it:
   `Cache-Control: no-store`.
 - **Abuse limits, with no CAPTCHA.** Each address may make 10 form posts per ten minutes, and
   `per_listener` accepted requests per `per_listener_minutes`. Every limit counts an IPv6 address
-  with its whole /64, so a host cannot rotate through the addresses of its own /64 to get past
-  them, and counts an IPv4-mapped IPv6 address as its IPv4 address. The station has a daily cap,
+  with its whole network of `[requests] ipv6_prefix` bits, a /56 by default, so a host cannot
+  rotate through the addresses (or the /64s) of its delegated network to get past them. It counts
+  an IPv4-mapped IPv6 address as its IPv4 address. With `ipv6_prefix = 64`, a home delegated a
+  /56 has 256 allowances; with a /56, several homes sharing one /56 share one allowance. The station has a daily cap,
   `daily_limit`, and a cap on requests waiting, `max_pending`. Over a limit the answer is 429 with
   `Retry-After`. The per-address tables keep at most 4096 addresses and forget idle ones. At most
-  four searches or request checks run at once across every station (a bounded semaphore); one
-  that cannot start within two seconds gets 503 "busy", so a flood cannot hold every worker thread
-  while the player needs one.
+  four searches or request checks run at once across every station. The rest wait on the event
+  loop (an asyncio semaphore), holding no worker thread, and one that cannot start within two
+  seconds gets 503 "busy". So a flood cannot park the worker threads that carts, breaks, approvals
+  and the player's helpers need.
 - **What cannot be bypassed.** Each accepted request still has to keep the repeat rules and, in
   DMCA mode, the DMCA limits at the place it would play. It is never played at once or at a set
   time, and with `approval = "manual"` (the default) nothing reaches the queue until the operator
@@ -637,8 +642,21 @@ allowance for everyone behind it. Many addresses (a botnet) can still fill the d
 denies requests for the day but nothing else, since the operator decides in manual mode.
 Listener addresses are held in memory only, never written to `listener_requests.json` or logs.
 The file keeps titles, names, times and the decision. A listener's name is removed 30 days after
-its request was decided, whatever the number of decisions kept; pending requests expire after
-three hours and cannot be approved after that. The page's policy is `default-src 'none';
+its request was decided, whatever the number of decisions kept. Pending requests expire after
+three hours and cannot be approved after that. The file is tidied when it is opened and every
+hour, whether or not anyone uses the page or the card.
+
+Placing a request never holds the queue's lock during the projection. The places are worked out
+from a copy of the queue, with no lock held. Then, under `queue_lock` alone, the queue is compared
+with that copy and the song is inserted, or the places are worked out again, at most three times,
+when it changed. The mix bus, which takes `queue_lock`, therefore never waits on the projection,
+the key cache or the library. The projection takes `history_lock` and `queue_lock` one after the
+other, never one inside the other.
+
+`[stream] trusted_proxies` now applies in every mode, not only in stream mode. Without it, an
+existing `FORWARDED_ALLOW_IPS` is honoured. Every trusted peer that is not loopback is named in a
+startup warning: it must append or overwrite `X-Forwarded-For`, and it must terminate TLS before
+machine tokens are accepted through it. The page's policy is `default-src 'none';
 script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors
 'none'`, with `X-Frame-Options: DENY`, `nosniff` and `no-referrer`.
 

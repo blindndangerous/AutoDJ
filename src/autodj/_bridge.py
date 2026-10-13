@@ -107,6 +107,39 @@ def _search_index(library: Any, sim: Any) -> list[tuple[IndexEntry, str]]:
     return built
 
 
+#: How many times a request is placed again when the queue changes meanwhile.
+REQUEST_PLACE_TRIES = 3
+
+
+class QueueChanged(RuntimeError):
+    """The queue changed under every try to place a request."""
+
+
+@dataclass(frozen=True, eq=False)
+class QueueView:
+    """The playing track, any "play next" track and the user queue at one moment.
+
+    Two views are equal when they hold the very same track objects in the
+    same order: a track replaced by an equal copy still counts as a change.
+    """
+
+    current: IndexEntry | None
+    queued_next: IndexEntry | None
+    queue: tuple[IndexEntry, ...]
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, QueueView):
+            return NotImplemented
+        return (
+            self.current is other.current
+            and self.queued_next is other.queued_next
+            and len(self.queue) == len(other.queue)
+            and all(a is b for a, b in zip(self.queue, other.queue, strict=True))
+        )
+
+    __hash__ = None  # type: ignore[assignment]
+
+
 @dataclass(frozen=True)
 class RequestSlot:
     """One place a listener request could join the queue (:meth:`PlayerBridge.request_slots`).
@@ -1427,7 +1460,22 @@ class PlayerBridge:
             self._sync_next_for_prefetch()
         return True
 
-    def request_slots(self, entry: IndexEntry, horizon_s: float) -> list[RequestSlot]:
+    def _queue_view(self) -> QueueView:
+        """The playing track, any "play next" track and the user queue, copied together.
+
+        Takes only ``queue_lock``, for a list copy.
+        """
+        state = self.player._state
+        with state.queue_lock:
+            return QueueView(
+                state.current_track,
+                state.queued_next,
+                tuple(state.queue),
+            )
+
+    def request_slots(
+        self, entry: IndexEntry, horizon_s: float, view: QueueView | None = None
+    ) -> list[RequestSlot]:
         """Where *entry* could join the user queue, and what each place would break.
 
         One slot per queue position whose projected start is within
@@ -1435,6 +1483,12 @@ class PlayerBridge:
         "play next" track, always counts).  Each start is projected from
         track lengths, and the repeat rules, the same-song window and, in
         DMCA mode, the DMCA limits are checked as of that start.
+
+        Lock order: this holds no lock while it works.  It copies the
+        history under ``history_lock`` and the queue (*view*) under
+        ``queue_lock``, one after the other, never one inside the other, so
+        it never makes the mix bus (which takes ``queue_lock``) wait on the
+        projection, the key cache or the library.
         """
         from autodj.dmca import complement, projected_history
         from autodj.repeat_rules import build_filter
@@ -1445,10 +1499,10 @@ class PlayerBridge:
             history = list(state.play_history)
             recent = list(state.recently_played)
             track_window = state.recently_played.maxlen
-        with state.queue_lock:
-            fixed = [state.queued_next] if state.queued_next is not None else []
-            queue = list(state.queue)
-        current = state.current_track
+        view = view if view is not None else self._queue_view()
+        fixed = [view.queued_next] if view.queued_next is not None else []
+        queue = list(view.queue)
+        current = view.current
         now = state.clock()
         rules = state.rules
         keys = player._track_keys()
@@ -1498,19 +1552,41 @@ class PlayerBridge:
     ) -> RequestSlot | None:
         """Work out *entry*'s places, let *choose* pick one, and queue it there.
 
-        All under the queue's lock, so the queue cannot change between the
-        projection and the insert.  ``None`` (and nothing queued) when
-        *choose* picks no place.
+        The places are worked out from a copy of the queue, outside every
+        lock (see :meth:`request_slots`).  Then, under ``queue_lock`` only,
+        the queue is compared with that copy: unchanged, the request is
+        inserted at once; changed (a track started, or the operator moved
+        something), the places are worked out again, up to
+        :data:`REQUEST_PLACE_TRIES` times.  So the mix bus never waits on a
+        projection, and a request is never put at a place that has moved.
+
+        Returns:
+            The slot used, or ``None`` (nothing queued) when *choose* picks
+            no place.
+
+        Raises:
+            QueueChanged: The queue changed under every try.
         """
         state = self.player._state
-        with state.queue_lock:
-            slot = choose(self.request_slots(entry, horizon_s))
-            if slot is not None:
+        for _try in range(REQUEST_PLACE_TRIES):
+            view = self._queue_view()
+            slot = choose(self.request_slots(entry, horizon_s, view))
+            if slot is None:
+                return None
+            with state.queue_lock:
+                if self._queue_view_unlocked() != view:
+                    continue
                 self._capture_pre_queue_seed()
                 state.queue.insert(min(slot.position, len(state.queue)), entry)
                 self._refresh_bus_queue()
                 self._sync_next_for_prefetch()
-            return slot
+                return slot
+        raise QueueChanged("The queue kept changing while the request was being placed.")
+
+    def _queue_view_unlocked(self) -> QueueView:
+        """:meth:`_queue_view` for a caller that holds ``queue_lock`` already."""
+        state = self.player._state
+        return QueueView(state.current_track, state.queued_next, tuple(state.queue))
 
     def queue_insert(self, path: str, position: int) -> bool:
         """Put a track by path at *position* of the user queue (0 plays first)."""

@@ -7,6 +7,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from autodj.config import RequestsConfig
 from autodj.indexer import IndexEntry
 from autodj.listener_requests import Outcome
@@ -152,3 +154,31 @@ def test_an_off_air_page_offers_no_form() -> None:
     )
     assert "<title>Off air: Night Owl Radio</title>" in html
     assert "<form" not in html
+
+
+def test_work_waits_on_the_loop_and_says_busy_when_every_slot_is_taken(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import threading
+
+    from autodj import request_page
+
+    monkeypatch.setattr(request_page, "WORK_SLOTS", 2)
+    monkeypatch.setattr(request_page, "WORK_WAIT_SECONDS", 0.05)
+
+    async def scenario() -> None:
+        release = threading.Event()
+        threads_before = threading.active_count()
+        # Two slow jobs take both slots; the third waits on the loop, not in
+        # a thread, and gives up as busy.
+        slow = [asyncio.ensure_future(request_page.bounded(release.wait, 5)) for _ in range(2)]
+        await asyncio.sleep(0.01)
+        with pytest.raises(request_page.Busy):
+            await request_page.bounded(lambda: 1)
+        assert threading.active_count() <= threads_before + 2
+        release.set()
+        await asyncio.gather(*slow)
+        assert await request_page.bounded(lambda x: x + 1, 1) == 2
+
+    asyncio.run(scenario())

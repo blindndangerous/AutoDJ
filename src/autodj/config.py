@@ -1422,6 +1422,9 @@ class RequestsConfig(_Section):
         blocked_artists: Artists listeners cannot request.
         blocked_folders: Folders whose songs listeners cannot request or
             find, as full paths or paths inside ``[library] music_dir``.
+        ipv6_prefix: The IPv6 network one listener's limits count over,
+            in bits: 56 (the default) counts a whole home network that was
+            delegated a /56; 64 a single /64; 128 a single address.
     """
 
     SECTION: ClassVar[str] = "requests"
@@ -1434,6 +1437,7 @@ class RequestsConfig(_Section):
     window_minutes: int = 30
     blocked_artists: list[str] = field(default_factory=list)
     blocked_folders: list[str] = field(default_factory=list)
+    ipv6_prefix: int = 56
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
@@ -1446,6 +1450,7 @@ class RequestsConfig(_Section):
             ("daily_limit", 1, 10000),
             ("max_pending", 1, 200),
             ("window_minutes", 5, 240),
+            ("ipv6_prefix", 32, 128),
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int):

@@ -88,8 +88,8 @@ from autodj.listener_access import (
     AddressLimitError,
     BannedAddressError,
     ListenerAuthLimiter,
-    forwarded_allow_ips,
     normalize_address,
+    trusted_proxy_setting,
 )
 from autodj.machine_tokens import MachineTokenStore
 from autodj.model_identity import CachedModelCommit
@@ -2469,9 +2469,13 @@ def serve(
     # Uvicorn rewrites request.client and scheme only for configured proxy
     # peers, in every mode: the listener limits, the pairing lockout and the
     # request page's per-address limits all key on the client address.
-    # Empty means a proxy on this machine, as Uvicorn trusts by default.
+    # Without [stream] trusted_proxies, an existing FORWARDED_ALLOW_IPS is
+    # honoured; without either, only a proxy on this machine.
     uvicorn_kwargs["proxy_headers"] = True
-    uvicorn_kwargs["forwarded_allow_ips"] = forwarded_allow_ips(cfg.stream.trusted_proxies)
+    allow, proxy_warnings = trusted_proxy_setting(cfg.stream.trusted_proxies, os.environ)
+    uvicorn_kwargs["forwarded_allow_ips"] = allow
+    for warning in proxy_warnings:
+        logger.warning("%s", warning)
     if stream or extra_stations:
         # HTTP/1.0 radio players need close-delimited audio, not chunked framing.
         uvicorn_kwargs["http"] = "h11"

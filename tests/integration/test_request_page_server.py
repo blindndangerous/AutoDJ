@@ -12,7 +12,6 @@ from fastapi.testclient import TestClient
 
 from autodj.config import DmcaConfig, RequestsConfig, ServerConfig
 from autodj.indexer import IndexEntry
-from autodj.listener_requests import TRACK_IDS
 from autodj.repeat_rules import PlayRecord, TrackKeyCache
 from autodj.server import create_app
 
@@ -49,8 +48,16 @@ def _token(html: str) -> str:
     return match.group(1)
 
 
+def _shown(client: TestClient, n: int, page: str = "/requests") -> str:
+    """Song n's id, as a search on the page shows it."""
+    found = client.get(page, params={"q": f"song {n}"})
+    match = re.search(rf'\?track=([0-9a-f]{{24}})">Song {n} by', found.text)
+    assert match, found.text
+    return match.group(1)
+
+
 def _confirm(client: TestClient, n: int, page: str = "/requests") -> tuple[str, str]:
-    track = TRACK_IDS.id_for(_make_entry(n).path)
+    track = _shown(client, n, page)
     response = client.get(page, params={"track": track})
     assert response.status_code == 200, response.text
     return track, _token(response.text)
@@ -88,7 +95,7 @@ def test_a_listener_searches_confirms_and_sends(bridge, tmp_path: Path) -> None:
     found = client.get("/requests", params={"q": "song 3"})
     assert "<title>Search results: AutoDJ: request a song</title>" in found.text
     assert "1 song found." in found.text
-    track = TRACK_IDS.id_for(_make_entry(3).path)
+    track = _shown(client, 3)
     assert f'<a href="/requests?track={track}">Song 3 by Artist 3, from the album Album.</a>' in (
         found.text
     )
@@ -274,7 +281,7 @@ def test_play_next_counts_the_play_next_song_toward_dmca_limits(bridge, tmp_path
 def test_a_token_for_one_song_cannot_send_another(bridge, tmp_path: Path) -> None:
     client = _client(bridge, tmp_path, enabled=True)
     _track, token = _confirm(client, 2)
-    other = TRACK_IDS.id_for(_song(3).path)
+    other = _shown(client, 3)
     refused = _send(client, other, token)
     assert refused.status_code == 403
     assert "This form has expired" in refused.text
