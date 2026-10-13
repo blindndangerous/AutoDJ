@@ -10,6 +10,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Play dates for time check voice packs (#140): in Settings, Time checks, **Voice pack play
+  dates** gives a pack a **Not before** date, a **Do not play after** date, or both, such as a
+  holiday voice in December. Outside them a ticked pack is passed over and the other ticked packs
+  speak; a test of that pack still plays it. Each pack's description says its dates and when it
+  is skipped now. The dates are kept in `time_checks.json` under `pack_dates`, only when a pack
+  has some, so an older AutoDJ still reads the file. Keys this version does not know and dates
+  it cannot read are kept as written, each save reads the file again first, a file that cannot
+  be read refuses saves rather than lose what it holds, and a switch saved while dates are saved
+  keeps both.
 - Announcer breaks (#88): an announcer program on the station's machine, such as radiodj, can
   send a station DJ breaks, news, weather and music news through a new breaks API, with no
   AzuraCast in between. AutoDJ prepares each song change one song ahead, so it now also picks the
@@ -338,6 +347,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Dayparting checks a category's hours for when the song is expected to start rather than when
+  it is picked (#140), so a song no longer starts a few minutes after its window has closed. The
+  rotation tester checks them the same way, and so does the song change planned a song early for
+  announcer breaks (#88), for the song after the next one.
+- Picks with dayparting are cheaper (#140): which songs are outside their hours is worked out once
+  a minute rather than on every pick, and the closed songs are no longer sorted for the
+  similarity search on every pick. The answers are the same.
+- Without `[server] station_timezone`, the system time zone is looked up once rather than on
+  every pick, and a host with no known zone logs its warning once (#140).
+- When every song is outside its hours, the warning is logged once, not twice per pick, and again
+  only after the hours change (#140).
+- A category with all seven days ticked and no hours says "Plays every day, at any hour" rather
+  than "Plays only every day" (#140).
+- Sequential liner rotation keeps its place when a registered liner is outside its play dates
+  (#140): the liner after it still comes next, rather than the order shifting by one. A
+  discarded pick gives back every liner it passed over, and talk-up liners planned ahead pass over
+  liners outside their dates as well.
+- "expired" on cart buttons and "Skipped now" in the liner list follow the station's day on a page
+  left open past midnight, in place, without moving focus or announcing anything (#140).
+- A library scan forgets the play dates of liners deleted outside AutoDJ, and a liner uploaded
+  under a free name starts without dates, so a new file no longer inherits an old one's (#140).
+  A scan that could not read a folder marks no track gone and forgets nothing, a liner folder
+  that cannot be listed keeps its dates, and so does a library ID no longer in the library. A
+  `liner_dates.json` that cannot be read just now, or whose folder is away, is no longer set aside
+  or written over; saves are refused until it can be read, a new upload waits rather than take
+  an old liner's dates, and a delete says when the dates could not be forgotten. An empty liner
+  folder forgets dates only after two scans in a row, names compare without case on Windows, and
+  a file listed but not reachable is not marked gone.
+- Liner play dates are judged by the day the liner airs: a talk-up planned before midnight for a
+  song after it, and a clockwheel liner step for the next song. **Test** on the server refuses a
+  liner outside its dates and says why (#140).
+- In browser playback, dayparting times a pick from what is left of the song playing, and a pick
+  that replaces a song ending now is timed now (#140).
+- A cart editor date refused by the server is shown under the editor and linked to its field, as
+  the page's own checks are (#140). Only that 422 answer names the field; every other endpoint's
+  422 is unchanged.
+- A liner list redrawn at the station's midnight puts focus back on the same liner's button (#140).
+- The schedule form hides **Date range** for one-time events, unless the event was saved with one
+  (#140).
 - In Safari and other WebKit browsers, Settings, Time checks no longer scrolls sideways at 320 px
   wide: a drop-down list whose choice is too long for its width now wraps the text onto a second
   line instead of widening the page. Clicking Dismiss on the status message also leaves keyboard

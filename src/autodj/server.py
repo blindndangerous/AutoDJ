@@ -868,7 +868,18 @@ def create_app(
         client.  A rejected ``NaN``/``Infinity`` cannot be re-encoded, so the
         echo itself would raise and turn a validation error into a 500.  Only
         the type, location and message are returned.
+
+        Only an error marked ``reports_field`` (a cart's backwards play
+        dates, :class:`autodj.carts.CartDatesError`) answers with its message
+        and ``field``, so the cart editor can link the error to the field;
+        every other endpoint keeps this list format.
         """
+        for error in exc.errors():
+            cause = (error.get("ctx") or {}).get("error")
+            named = getattr(cause, "field", None)
+            if getattr(cause, "reports_field", False) is True and isinstance(named, str) and named:
+                message = str(getattr(cause, "message", "") or cause)
+                return JSONResponse(status_code=422, content={"detail": message, "field": named})
         detail = [
             {
                 "type": str(error.get("type", "")),

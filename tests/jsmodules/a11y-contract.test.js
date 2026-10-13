@@ -2239,6 +2239,36 @@ describe("static accessibility contracts", () => {
     expect(rule).toContain('input[type="time"]');
   });
 
+  it("gives voice pack play dates a fieldset, labelled native date inputs and an error to link", () => {
+    installDocument({ html: htmlSource });
+    const group = document.querySelector("#tc-dates");
+    expect(group.tagName).toBe("FIELDSET");
+    expect(group.closest("#spanel-time-checks")).not.toBeNull();
+    expect(group.querySelector(":scope > legend").textContent.trim()).toBe("Voice pack play dates");
+    expect(document.getElementById(group.getAttribute("aria-describedby")).textContent)
+      .toMatch(/^\s*Optional\./);
+    expect(document.querySelector('label[for="tc-dates-pack"]').textContent.trim()).toBe("Voice pack");
+    for (const [id, label] of [["tc-not-before", "Not before"], ["tc-not-after", "Do not play after"]]) {
+      const input = document.getElementById(id);
+      expect(input.getAttribute("type")).toBe("date");
+      expect(input.hasAttribute("required")).toBe(false);
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+    }
+    // The error is text on the page with an ID, not a live region of its own:
+    // the status region says it once and the field links to it.
+    const error = document.querySelector("#tc-dates-error");
+    expect(error.classList.contains("field-error")).toBe(true);
+    expect(error.hasAttribute("aria-live")).toBe(false);
+    expect(document.querySelector("#tc-dates-save").getAttribute("type")).toBe("button");
+  });
+
+  it("hides the schedule date range for one-time events in the script, not the markup", () => {
+    installDocument({ html: htmlSource });
+    // Shown in the markup, so it never hides a range a saved event has.
+    expect(document.querySelector("#schedule-range").hidden).toBe(false);
+    expect(document.querySelector("#schedule-range").hasAttribute("data-repeat")).toBe(false);
+  });
+
   it("gives the rotation test labelled native controls, one polite status and list results", () => {
     installDocument({ html: htmlSource });
     const group = document.querySelector("#rotation-test");

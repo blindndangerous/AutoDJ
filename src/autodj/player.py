@@ -602,6 +602,9 @@ class _PickContext:
             when nothing else at all can play does one play, with a warning.
         closed_categories: The ID of each such category and the reason, in
             words, for the clockwheel to skip its steps.
+        at: When the picked song is expected to start, in wall-clock
+            seconds, or ``None`` for now; the clockwheel's liner steps judge
+            the liners' play dates by that day.
     """
 
     recent: deque
@@ -614,6 +617,7 @@ class _PickContext:
     follows: str | None = None
     closed: frozenset[str] = frozenset()
     closed_categories: Mapping[str, str] = field(default_factory=dict)
+    at: float | None = None
 
     def allows(self, entry: IndexEntry) -> bool:
         """True when *entry* keeps the DMCA complement (always, with the mode off)."""
@@ -1330,7 +1334,8 @@ class Player:
         # Liner steps pass over liners outside their play dates; the step
         # conditions are still worked out from every liner, so they stay cached.
         liner_filter = getattr(self, "liner_filter", None)
-        playable_liners = liner_filter(liners) if liner_filter is not None else liners
+        # Judged by the day the liner airs, before the song being picked.
+        playable_liners = liner_filter(liners, context.at) if liner_filter is not None else liners
         categories = self._category_members()
         beets_items: Mapping[str, Mapping[str, Any]] | None = None
         condition_errors = {}
@@ -1482,7 +1487,11 @@ class Player:
         protected ones out of them.
         """
         cached = getattr(self, "_eligible_cache", None)
-        if cached is None or cached[0] is not entries or cached[1] != closed:
+        if (
+            cached is None
+            or cached[0] is not entries
+            or (cached[1] is not closed and cached[1] != closed)
+        ):
             base = tuple(
                 entry for entry in entries if entry.path not in closed and not entry.is_silent
             )
@@ -1655,11 +1664,26 @@ class Player:
                     chosen.display_name,
                 )
                 return chosen
-        logger.warning(
-            "Dayparting: %s plays outside its category's hours: no other song can play",
-            entry.display_name,
+        self._warn_all_closed(
+            context.closed,
+            f"Dayparting: {entry.display_name} plays outside its category's hours: "
+            "no other song can play",
         )
         return entry
+
+    def _warn_all_closed(self, closed: frozenset[str], message: str) -> None:
+        """Warn that a song plays outside its hours, once while the closed songs stay the same.
+
+        A pick can meet this twice (the fallback, then the final check), and
+        every pick meets it again until a category's hours open, so only the
+        first is a warning; the rest go to the debug log.
+        """
+        warned = getattr(self, "_all_closed_warned", None)
+        if warned is not None and (warned is closed or warned == closed):
+            logger.debug(message)
+            return
+        self._all_closed_warned: frozenset[str] | None = closed
+        logger.warning(message)
 
     def _station_queue(
         self,
@@ -1693,6 +1717,56 @@ class Player:
             (points[key] for key in ("segue", "outro") if points.get(key) is not None), end
         )
         return start, max(start, min(segue, end))
+
+    def _browser_handoff(self, current: IndexEntry) -> float:
+        """When the track after *current* starts in browser playback, in wall-clock seconds.
+
+        Now when *current* is no longer the track playing.  Otherwise its
+        handoff less what of it has already played (the page reports a
+        start through :meth:`note_browser_start`), so a pick made half way
+        through a song, after a skip of the next track say, is not timed
+        from the song's start.
+        """
+        now = self._now()
+        if self._state.current_track is not current:
+            return now
+        started = getattr(self, "_browser_started", None)
+        elapsed = now - started[1] if started is not None and started[0] is current else 0.0
+        return max(now, self._handoff_time(current) - max(0.0, elapsed))
+
+    def note_browser_start(self, entry: IndexEntry) -> None:
+        """Remember that *entry* started playing in the browser now."""
+        self._browser_started = (entry, self._now())
+
+    def _handoff_time(self, current: IndexEntry, *, lead_s: float | None = None) -> float:
+        """When the song after *current* is expected to start, in wall-clock seconds.
+
+        The next song is picked while *current* is still ahead (rendering
+        ahead) or has just started, so this is when *current*, from the
+        offset its render starts at, reaches its handoff, plus whatever of
+        the song before it is still to play.  *lead_s*, when given, is how
+        long until *current* starts (a song change planned a song early,
+        #88); otherwise the playing render tells.  Dayparting checks the
+        hours at this time, not at the pick, so a song does not start after
+        its window has closed.
+        """
+        try:
+            start, segue = self._clock_music_span(current)
+        except Exception:
+            # A cue that cannot be read must not stop the pick: the whole song plays.
+            logger.debug("No saved cues for %s; timing its whole length", current.path)
+            start, segue = 0.0, float(current.length or 0.0)
+        offset = getattr(self, "_pending_offset", 0)
+        when = self._now() + max(0.0, segue - max(start, offset / SAMPLE_RATE))
+        playing = getattr(self, "_playing_render", None)
+        if lead_s is not None:
+            when += max(0.0, lead_s)
+        elif playing is not None and playing.next_entry is current:
+            when += max(
+                0.0,
+                (len(playing.audio) + playing.start_offset - self._playback_pos[0]) / SAMPLE_RATE,
+            )
+        return when
 
     def _clock_liner_fits(
         self,
@@ -1786,19 +1860,7 @@ class Player:
 
                     from autodj.clockwheel import next_boundary, resync_due
 
-                    start, segue = self._clock_music_span(current)
-                    when = self._now() + max(
-                        0.0, segue - max(start, self._pending_offset / SAMPLE_RATE)
-                    )
-                    playing = self._playing_render
-                    if lead_s is not None:
-                        when += lead_s
-                    elif playing is not None and playing.next_entry is current:
-                        when += max(
-                            0.0,
-                            (len(playing.audio) + playing.start_offset - self._playback_pos[0])
-                            / SAMPLE_RATE,
-                        )
+                    when = self._handoff_time(current, lead_s=lead_s)
                     track_start, track_segue = self._clock_music_span(picked.entry)
                     duration_s = track_segue - track_start
                     if resync_due(when, duration_s, boundary):
@@ -2068,6 +2130,7 @@ class Player:
                 starting=previous,
                 peek_queue=True,
                 queue_reserved=current if current_from_queue else None,
+                at=self._handoff_time(current),
             )
             next_entry: IndexEntry | None
             # The open song change planned a song ago, with its breaks (#88).
@@ -2355,8 +2418,15 @@ class Player:
             self._discard_plan(old, "the song before it changed")
         also_reserved = (*((ready.entry,) if ready.from_queue else ()), *ready.reserved_liners)
         queue_reserved = current if self._pending_from_queue else None
+        # The song after *current* starts once what plays now, *ready* and
+        # *current* have played: its hours and play dates are judged then.
+        lead_s = self._playing_remaining_s() + len(ready.audio) / SAMPLE_RATE
         context = self._pick_context(
-            pending=current, starting=ready.entry, peek_queue=True, queue_reserved=queue_reserved
+            pending=current,
+            starting=ready.entry,
+            peek_queue=True,
+            queue_reserved=queue_reserved,
+            at=self._handoff_time(current, lead_s=lead_s),
         )
         boundary_before = self._pending_clock_boundary
         reserved = (*self._pending_reserved_liners, *also_reserved)
@@ -2365,7 +2435,7 @@ class Player:
                 current,
                 context,
                 also_reserved=also_reserved,
-                lead_s=self._playing_remaining_s() + len(ready.audio) / SAMPLE_RATE,
+                lead_s=lead_s,
                 auto_liner=False,
             )
         except Exception as exc:
@@ -2910,12 +2980,15 @@ class Player:
         picked: tuple[IndexEntry, str] | None = None
         if state.next_track is None:
             try:
-                picked = self._choose_next(current, self._pick_context())
+                picked = self._choose_next(
+                    current, self._pick_context(at=self._handoff_time(current))
+                )
             except Exception:
                 logger.warning("No track can follow the seed yet", exc_info=True)
         with self._advance_lock:
             if state.current_track is None:
                 state.current_track = current
+                self.note_browser_start(current)
             seed_playing = state.current_track is current
             if seed_playing:
                 if picked is not None and state.next_track is None:
@@ -2977,6 +3050,7 @@ class Player:
         starting: IndexEntry | None = None,
         peek_queue: bool = False,
         queue_reserved: IndexEntry | None = None,
+        at: float | None = None,
     ) -> _PickContext:
         """Copy the history a pick reads, under ``_pick_lock``.
 
@@ -2997,6 +3071,9 @@ class Player:
                 and two close tracks played back and forth.
             peek_queue: See :class:`_PickContext`.
             queue_reserved: See :class:`_PickContext`.
+            at: When the picked song is expected to start (see
+                :meth:`_handoff_time`), in wall-clock seconds; dayparting
+                reads the station's hours then.  Now when not given.
         """
         with self._pick_lock:
             paths, history = self._recent_exclusions(pending, starting)
@@ -3013,7 +3090,10 @@ class Player:
         protected = {e.path for e in (pending, starting, playing) if e is not None}
         if latest is not None:
             protected.add(latest)
-        closed, closed_categories = self._dayparts()
+        closed, closed_categories = self._dayparts(at)
+        warned = getattr(self, "_all_closed_warned", None)
+        if warned is not None and warned is not closed and warned != closed:
+            self._all_closed_warned = None  # The hours changed: warn again if it recurs.
         return _PickContext(
             paths,
             repeat,
@@ -3025,24 +3105,26 @@ class Player:
             follows.path if (follows := pending or playing) is not None else None,
             closed,
             closed_categories,
+            at,
         )
 
-    def _station_now(self) -> datetime:
-        """The station's local wall time, naive (``[server] station_timezone``)."""
+    def _station_now(self, at: float | None = None) -> datetime:
+        """The station's local wall time, naive (``[server] station_timezone``), now or *at*."""
         from autodj.categories import station_wall
 
-        return station_wall(self._cfg, self._now())
+        return station_wall(self._cfg, self._now() if at is None else at)
 
-    def _dayparts(self) -> tuple[frozenset[str], dict[str, str]]:
-        """The songs whose categories are outside their days and hours now, and why.
+    def _dayparts(self, at: float | None = None) -> tuple[frozenset[str], dict[str, str]]:
+        """The songs whose categories are outside their days and hours, and why.
 
+        Read now, or at *at* (the expected start of the song being picked).
         Categories that cannot be read limit nothing; the failure is logged.
         """
         index = getattr(self._library, "categories", None)
         if index is None:
             return frozenset(), {}
         try:
-            closed: tuple[frozenset[str], dict[str, str]] = index.closed_now(self._station_now())
+            closed: tuple[frozenset[str], dict[str, str]] = index.closed_now(self._station_now(at))
         except Exception:
             logger.exception("Dayparting: the rotation categories could not be read")
             return frozenset(), {}
@@ -3211,8 +3293,12 @@ class Player:
         ):
             return None
         try:
-            protected = context.protected | {current.path} | context.closed
-            recent = deque([*context.recent, *sorted(protected - set(context.recent))])
+            protected = context.protected | {current.path}
+            # The search takes these as a set, so the closed songs (often most
+            # of a library at night) go in unsorted; only the few others are sorted.
+            recent = deque(
+                [*context.recent, *sorted(protected - set(context.recent)), *context.closed]
+            )
             extra = {"rng": self._random} if self._random is not None else {}
             entry = self._sim.find_distant(
                 current.path, recent, allowed=self._candidate_filter(context), **extra
@@ -3230,7 +3316,7 @@ class Player:
             return self._seed_path, "anchored"
         return current_path, "similarity"
 
-    def _pick_next(self, current: IndexEntry) -> IndexEntry:
+    def _pick_next(self, current: IndexEntry, *, at: float | None = None) -> IndexEntry:
         """Select the next track now and show how it was picked.
 
         The browser-driven path's pick: it pops the user queue and sets
@@ -3239,11 +3325,15 @@ class Player:
 
         Args:
             current: The track currently playing.
+            at: When the picked track will start, in wall-clock seconds;
+                by default when *current* reaches its handoff (see
+                :meth:`_browser_handoff`).  Dayparting reads the hours then.
 
         Returns:
             The recommended next :class:`~autodj.indexer.IndexEntry`.
         """
-        entry, mode = self._choose_next(current, self._pick_context())
+        when = self._browser_handoff(current) if at is None else at
+        entry, mode = self._choose_next(current, self._pick_context(at=when))
         self._last_pick_mode = mode
         self._next_pick = (entry.path, mode)
         return entry
@@ -3330,8 +3420,12 @@ class Player:
 
         # --- Normal similarity search ---
         try:
-            protected = context.protected | {current.path} | context.closed
-            recent = deque([*context.recent, *sorted(protected - set(context.recent))])
+            protected = context.protected | {current.path}
+            # The search takes these as a set, so the closed songs (often most
+            # of a library at night) go in unsorted; only the few others are sorted.
+            recent = deque(
+                [*context.recent, *sorted(protected - set(context.recent)), *context.closed]
+            )
             picked = self._sim.find_next_for_path(recently_played=recent, **search)
             _log_repeat_blocks(context.repeat, picked)
             return picked, mode
@@ -3347,7 +3441,7 @@ class Player:
                 len(protected),
             )
             relaxed = self._sim.find_next_for_path(
-                recently_played=deque(sorted(protected | context.closed)), **search
+                recently_played=deque([*sorted(protected), *context.closed]), **search
             )
             return relaxed, mode
 
@@ -3379,9 +3473,10 @@ class Player:
         # Songs outside their category's hours only when nothing else can play.
         audible = [entry for entry in everything if entry.path not in context.closed] or everything
         if audible is everything and context.closed:
-            logger.warning(
+            self._warn_all_closed(
+                context.closed,
                 "Dayparting: every song is outside its category's hours; "
-                "playing one anyway rather than stopping the music"
+                "playing one anyway rather than stopping the music",
             )
         bpm_range = self._bpm_range
         in_range = audible

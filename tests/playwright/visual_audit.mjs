@@ -192,6 +192,44 @@ async function openTrackTags(page, visit) {
   await page.locator("#track-info-dialog").waitFor({ state: "hidden" });
 }
 
+// Settings > Time checks with two voice packs, one with play dates and
+// outside them, so the pack list and the Voice pack play dates form are
+// shown (the audit server has no packs).  Only reading is stood in for.
+const TIME_CHECKS = {
+  enabled: true, hour_format: "12", rule: "after_hour_song", enabled_packs: ["Studio", "Christmas"],
+  pack_order: "rotate", missing_minutes: 1440, missing_examples: [], tts_available: false,
+  timezone: "UTC", duck_db: -12,
+  packs: [
+    { name: "Studio", enabled: true, minutes_covered: 1440, summary: "1440 of 1440 minutes covered.",
+      not_before: null, not_after: null, dates_text: "", playable: true, unplayable_text: "" },
+    { name: "Christmas", enabled: true, minutes_covered: 1440, summary: "1440 of 1440 minutes covered.",
+      not_before: "2026-12-01", not_after: "2026-12-26",
+      dates_text: "Plays from 1 December 2026 until 26 December 2026", playable: false,
+      unplayable_text: "not playable before 1 December 2026" },
+  ],
+};
+const timeCheckPages = new WeakSet();
+
+async function standInForTimeChecks(page) {
+  if (timeCheckPages.has(page)) return;
+  timeCheckPages.add(page);
+  await page.route("**/api/time-checks", (route) => (route.request().method() === "GET"
+    ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(TIME_CHECKS) })
+    : route.continue()));
+}
+
+// A backwards date range: the error shown on the page, linked to Do not
+// play after and focused, as a refused save shows it.
+async function openPackDatesError(page, visit) {
+  await page.locator("#tc-dates").waitFor({ state: "visible" });
+  await page.locator("#tc-not-before").fill("2026-12-26");
+  await page.locator("#tc-not-after").fill("2026-12-01");
+  await page.locator("#tc-dates-save").click();
+  await page.locator("#tc-dates-error").waitFor({ state: "visible" });
+  await visit("settings/time-checks/dates-error");
+  await page.locator("#tc-not-after").fill("2026-12-31");
+}
+
 async function openEveryCard(page) {
   await page.evaluate(() => {
     for (const details of document.querySelectorAll("details")) details.open = true;
@@ -227,6 +265,7 @@ async function newPage(context) {
 async function eachTarget(page, visit) {
   await standInForRotationTest(page);
   await standInForTrackInfo(page);
+  await standInForTimeChecks(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   for (const view of VIEWS) {
     await page.locator(`#tab-${view}`).click();
@@ -250,6 +289,7 @@ async function eachTarget(page, visit) {
       await settle(page);
       await visit(`settings/${id.replace(/^stab-/, "")}`);
       if (id === "stab-picking") await openRotationTest(page, visit);
+      if (id === "stab-time-checks") await openPackDatesError(page, visit);
     }
   }
 }

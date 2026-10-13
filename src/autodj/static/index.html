@@ -1399,6 +1399,30 @@
       Which ticked pack says each time check. When that pack has no files for the minute, the other ticked packs are tried before recorded clips.
     </span>
 
+    <!-- Play dates for one pack at a time; the result is said through
+         #tc-status, and a refused date is shown in #tc-dates-error and
+         linked to its field. -->
+    <fieldset id="tc-dates" aria-describedby="tc-dates-desc" hidden>
+      <legend>Voice pack play dates</legend>
+      <span class="setting-desc" id="tc-dates-desc">
+        Optional. A ticked pack speaks only from its Not before date to its Do not play after date, both days included, in the station time zone, such as a holiday voice in December. Outside them the other ticked packs speak instead. Choosing the pack in Voice to test still plays it.
+      </span>
+      <div class="settings-row">
+        <label for="tc-dates-pack">Voice pack</label>
+        <select id="tc-dates-pack"></select>
+      </div>
+      <div class="settings-row">
+        <label for="tc-not-before">Not before</label>
+        <input type="date" id="tc-not-before">
+      </div>
+      <div class="settings-row">
+        <label for="tc-not-after">Do not play after</label>
+        <input type="date" id="tc-not-after">
+      </div>
+      <p id="tc-dates-error" class="field-error" hidden></p>
+      <button type="button" id="tc-dates-save">Save play dates</button>
+    </fieldset>
+
     <h4>Recordings</h4>
     <p id="tc-clips-status"></p>
     <div class="settings-row">

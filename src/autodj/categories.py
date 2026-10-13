@@ -263,7 +263,8 @@ def describe_daypart(spec: CategorySpec) -> str:
     else:
         days = "every day"
     if spec.hours_from is None or spec.hours_until is None:
-        return f"Plays only {days}"
+        # All seven days ticked and no hours: nothing is held back.
+        return "Plays every day, at any hour" if days == "every day" else f"Plays only {days}"
     start, end = spec.hours_from.strftime("%H:%M"), spec.hours_until.strftime("%H:%M")
     return f"Plays only {days} from {start} until {end}"
 
@@ -709,6 +710,11 @@ class _Resolved:
     results: dict[str, Resolution]
 
 
+#: What :meth:`CategoryIndex.closed_now` last worked out: the results it read,
+#: the minute, the closed songs and why.
+_Closed = tuple[dict[str, Resolution], datetime, frozenset[str], dict[str, str]]
+
+
 class CategoryIndex:
     """The saved categories and their songs, worked out again only when a source changes.
 
@@ -731,6 +737,8 @@ class CategoryIndex:
         self._lock = threading.Lock()
         self._resolved: _Resolved | None = None
         self._loaded: tuple[tuple[int, int] | None, tuple[Category, ...]] | None = None
+        # closed_now's answer, with the results and the minute it was worked out for.
+        self._closed: _Closed | None = None
 
     @property
     def folder(self) -> Path:
@@ -823,8 +831,18 @@ class CategoryIndex:
         Returns the paths of every song in a category whose days and hours
         leave *wall* out, and each such category's ID mapped to the reason
         in words.
+
+        Hours and days are whole minutes, so the answer holds for the whole
+        minute of *wall*: it is kept until the minute or a category's songs
+        change, and a pick only checks the cache.  While the closed songs
+        stay the same, the same set is returned, so the player's own caches
+        keyed on it hold too.
         """
         categories, results = self.resolutions()
+        minute = wall.replace(second=0, microsecond=0)
+        cached = self._closed
+        if cached is not None and cached[0] is results and cached[1] == minute:
+            return cached[2], dict(cached[3])
         paths: set[str] = set()
         reasons: dict[str, str] = {}
         for category in categories:
@@ -832,7 +850,11 @@ class CategoryIndex:
                 paths |= results[category.id].paths
                 text = describe_daypart(category)
                 reasons[category.id] = f"outside its hours: {text[0].lower()}{text[1:]}"
-        return frozenset(paths), reasons
+        closed = frozenset(paths)
+        if cached is not None and cached[2] == closed:
+            closed = cached[2]
+        self._closed = (results, minute, closed, reasons)
+        return closed, dict(reasons)
 
     def check(self, spec: CategorySpec) -> Resolution:
         """Work out an unsaved category, for the Check button."""

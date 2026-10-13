@@ -433,3 +433,29 @@ def test_a_discarded_plan_gives_back_its_clock_move(station):
     plan.stale = True
     assert player._claim_slot_plan(plan.ending) is None
     assert player._pending_clock_boundary == 99.0
+
+
+def test_the_planned_change_judges_hours_when_its_song_starts(station):
+    """The pick for song d, made two songs early, reads the hours when d is expected to start."""
+    player, entries, points, _desk = station
+    _a, _b, c, _d = entries
+    _render_a, render_b, _plan = start_station(player, entries)
+    player._slot_plan = None
+    player._rewind_render_cursor(render_b)
+    again = player._next_rendered()
+    assert again.next_entry is c
+    player._now = lambda: 5000.0  # type: ignore[method-assign]
+    asked: list[float | None] = []
+    real = player._pick_context
+
+    def recording(*args, **kwargs):
+        asked.append(kwargs.get("at"))
+        return real(*args, **kwargs)
+
+    player._pick_context = recording  # type: ignore[method-assign]
+    player._plan_slot(again)
+    lead = player._playing_remaining_s() + len(again.audio) / SR
+    start, segue = points[c.path]["start"], points[c.path]["segue"]
+    expected = 5000.0 + max(0.0, segue - max(start, player._pending_offset / SR)) + lead
+    assert asked == [pytest.approx(expected)]
+    assert asked[0] > 5000.0 + lead  # after c has played, not when c starts
