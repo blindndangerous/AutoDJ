@@ -1180,8 +1180,11 @@ stereotool_path = "C:/Radio/Stereo Tool Night Owl.exe"
 Thimeo requires a separate licence for each radio-processing instance; one key does not license
 multiple simultaneous stations. Check [Thimeo's installation guidance](https://www.thimeo.com/stereo-tool/installed/)
 and [licensing terms](https://www.thimeo.com/stereo-tool/licenses/) for current details. AutoDJ does
-not manage licences or claim that unrestricted broadcast use is free. Each station keeps its
-selected preset in its own station data folder.
+not manage licences or claim that unrestricted broadcast use is free.
+
+Stereo Tool preset files are shared by all stations, and each station selects its own preset. A
+preset selected by any station, running or stopped, cannot be deleted; the message names the
+station using it.
 
 ### Logs
 
