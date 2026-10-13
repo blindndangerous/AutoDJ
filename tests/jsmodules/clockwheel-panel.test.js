@@ -172,6 +172,17 @@ describe("clockwheel editor", () => {
     expect(rows()).toHaveLength(3);
   });
 
+  it("says a step's days and hours in words", async () => {
+    const { stepHoursText } = await import("../../src/autodj/static/modules/step-hours.js");
+    expect(stepHoursText({})).toBe("");
+    expect(stepHoursText({ days: [0, 1, 2, 3, 4] })).toBe("only on weekdays");
+    expect(stepHoursText({ days: [6, 5] })).toBe("only at weekends");
+    expect(stepHoursText({ days: [0, 1, 2, 3, 4, 5, 6] })).toBe("");
+    expect(stepHoursText({ hours_from: "06:00", hours_until: "10:00" })).toBe("only every day from 06:00 until 10:00");
+    expect(stepHoursText({ days: [0, 2], hours_from: "06:00:00", hours_until: "10:00:00" }))
+      .toBe("only on Monday and Wednesday from 06:00 until 10:00");
+  });
+
   it("validates restart minutes and describes steps in words", () => {
     expect(parseResyncMinutes("30, 0, 30")).toEqual([0, 30]);
     expect(parseResyncMinutes(" ")).toEqual([]);
@@ -183,6 +194,15 @@ describe("clockwheel editor", () => {
     expect(describeStep({ ...MUSIC, recursive: true, source: "gone" }, SOURCES)).toBe("music from a folder that is no longer registered, with subfolders, least recently played");
     expect(describeStep({ type: "settings", preset: "night" })).toBe("switch to preset night");
     expect(describeStep({ type: "time_check" })).toBe("time check step");
+  });
+
+  it("shares step hours in descriptions used by the list and Why this track", async () => {
+    const { describeStep: sharedDescribeStep } = await import("../../src/autodj/static/modules/clockwheel-step.js");
+    expect(describeStep).toBe(sharedDescribeStep);
+    expect(sharedDescribeStep({ ...MUSIC, days: [0, 1, 2, 3, 4], hours_from: "06:00", hours_until: "10:00" }, SOURCES))
+      .toBe("music from Rock, least recently played, only on weekdays from 06:00 until 10:00");
+    expect(sharedDescribeStep({ type: "settings", preset: "night", days: [5, 6] }))
+      .toBe("switch to preset night, only at weekends");
   });
 
   it("says how every clockwheel music step chooses among its matches", () => {
@@ -543,6 +563,58 @@ describe("clockwheel editor", () => {
     byId("clock-cancel-edit").click();
     expect(document.activeElement).toBe(rowCell(2, "edit"));
     expect(byId("clock-add-step").textContent).toBe("Add step");
+  });
+
+  it("gives a step days and hours, says them in its name and fills them in on Edit", async () => {
+    const server = await open(fakeServer());
+    rowButton(2, "edit").click();
+    expect(byId("clock-step-day-4").checked).toBe(false);
+    byId("clock-step-day-4").checked = true;
+    byId("clock-step-day-5").checked = true;
+    byId("clock-step-hours-from").value = "22:00";
+    byId("clock-step-hours-until").value = "02:00";
+    byId("clock-add-step").click();
+    expect(rowText(2)).toBe("track Album/Song.flac, only on Friday and Saturday from 22:00 until 02:00");
+    expect(byId("clock-step-day-4").checked).toBe(false); // the form is cleared for the next step
+    expect(byId("clock-step-hours-from").value).toBe("");
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 3 steps."));
+    const put = server.calls.find((call) => call.method === "PUT");
+    expect(put.body.steps[2]).toEqual({
+      type: "track", source: "jazz", path: "Album/Song.flac",
+      days: [4, 5], hours_from: "22:00", hours_until: "02:00",
+    });
+    expect(put.body.steps[0]).not.toHaveProperty("days");
+    rowButton(2, "edit").click();
+    expect(byId("clock-step-day-5").checked).toBe(true);
+    expect(byId("clock-step-hours-until").value).toBe("02:00");
+    rowButton(0, "edit").click();
+    expect(byId("clock-step-day-5").checked).toBe(false);
+  });
+
+  it("names a half-filled time window, links the error and keeps the step out", async () => {
+    await open(fakeServer());
+    const from = byId("clock-step-hours-from");
+    from.value = "22:00";
+    byId("clock-add-step").click();
+    const until = byId("clock-step-hours-until");
+    const message = "Enter both Allowed from and Allowed until, or leave both empty.";
+    expect(document.activeElement).toBe(until);
+    expect(until.getAttribute("aria-invalid")).toBe("true");
+    expect(until.getAttribute("aria-describedby")).toBe("clock-step-hours-error");
+    expect(byId("clock-step-hours-error").textContent).toBe(message);
+    expect(byId("clock-step-hours-error").hidden).toBe(false);
+    await vi.waitFor(() => expect(status()).toBe(message));
+    expect(rows()).toHaveLength(3);
+    until.value = "22:00";
+    until.dispatchEvent(new Event("input"));
+    expect(until.hasAttribute("aria-invalid")).toBe(false);
+    byId("clock-add-step").click();
+    expect(byId("clock-step-hours-error").textContent).toBe("Allowed until must differ from Allowed from.");
+    until.value = "02:00";
+    byId("clock-add-step").click();
+    expect(byId("clock-step-hours-error").hidden).toBe(true);
+    expect(rows()).toHaveLength(4);
   });
 
   it("shows only the fields of the chosen step type and refuses paths that leave the folder", async () => {

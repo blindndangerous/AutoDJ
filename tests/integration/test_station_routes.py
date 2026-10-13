@@ -149,6 +149,11 @@ STATION = frozenset(
         "/time-checks",
         "/time-checks/test",
         "/time-checks/preview",
+        "/time-checks/packs/{name}/dates",
+        # The announcer's breaks (#88): machine routes, by station.
+        "/announcer/context",
+        "/announcer/breaks",
+        "/announcer/breaks/{break_id}",
         "/ws",
     }
 )

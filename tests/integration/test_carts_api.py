@@ -364,6 +364,30 @@ def app_client(tmp_path: Path) -> Iterator[TestClient]:
         yield client
 
 
+def test_backwards_cart_dates_name_their_field(app_client: TestClient) -> None:
+    body = {"name": "Promo", "source": "upload", "clip": "promo.wav"}
+    backwards = app_client.put(
+        "/api/carts/pages/1/slots/3",
+        json={**body, "not_before": "2026-12-26", "not_after": "2026-11-27"},
+    )
+    # The words and the field, so the page links the error to Do not play after.
+    assert backwards.status_code == 422
+    assert backwards.json() == {
+        "detail": "Do not play after must be on or after the Not before date",
+        "field": "not_after",
+    }
+    # Other refusals keep their list of problems, without the input echoed.
+    other = app_client.put("/api/carts/pages/1/slots/3", json={**body, "mode": "loud"})
+    assert other.status_code == 422
+    assert isinstance(other.json()["detail"], list)
+    assert "field" not in other.json()
+    # Another endpoint's 422 is the list it always was.
+    elsewhere = app_client.put("/api/time-checks", json={"enabled": "yes please"})
+    assert elsewhere.status_code == 422
+    assert isinstance(elsewhere.json()["detail"], list)
+    assert "field" not in elsewhere.json()
+
+
 def test_a_profile_shows_its_cart_page(app_client: TestClient) -> None:
     assert app_client.put("/api/carts/pages/2/name", json={"name": "Breakfast"}).status_code == 200
     assert app_client.put("/api/carts/active-page/2").status_code == 200
@@ -417,6 +441,7 @@ def test_a_cart_outside_its_play_dates_is_skipped_in_words(tmp_path: Path) -> No
         assert assigned.json()["slot"]["not_after"] == "2000-01-01"
         listed = rig.client.get("/api/carts").json()
         assert listed["today"] > "2000-01-01"
+        assert listed["timezone"]  # the page works out the station day from it
         assert listed["wall"]["pages"][0]["slots"][2]["not_after"] == "2000-01-01"
         refused = rig.play()
         assert refused.status_code == 409

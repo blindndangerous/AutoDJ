@@ -1,3 +1,5 @@
+import { stepHoursText } from "./step-hours.js";
+
 const FOLDER_TYPES = new Set(["music", "liner"]);
 export const NUMERIC_OPERATORS = [["eq", "is"], ["lt", "less than"], ["lte", "at most"], ["gt", "greater than"], ["gte", "at least"], ["between", "between"]];
 export const TEXT_OPERATORS = [["is", "is"], ["contains", "contains"], ["matches", "matches"]];
@@ -20,6 +22,10 @@ function beetsFieldName(name) {
 
 // Shared by the saved-step list and the Why this track explanation.
 export function describeStep(step, sources = [], categories = []) {
+  return [describeSelection(step, sources, categories), stepHoursText(step)].filter(Boolean).join(", ");
+}
+
+function describeSelection(step, sources, categories) {
   if (step.type === "category") {
     const category = categories.find((item) => item.id === step.category);
     const where = category ? `category ${category.name}` : "a category that no longer exists";
