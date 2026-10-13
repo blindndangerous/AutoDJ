@@ -24,6 +24,11 @@ const MAX_TRACKS = {
 
 const box = (els, rule, part) => els[`${PREFIX[rule]}${part}`];
 const MAX_MINUTES = 10080;
+// The daypart and quarter-hour rules (#129); the server caps them the same.
+const MAX_DAYPART_DAYS = 7;
+const MAX_HOURPART_PLAYS = 3;
+const HOURS_MESSAGE = "Daypart start hours must be whole numbers from 0 to 23, "
+  + "separated by commas, with no hour given twice.";
 // As in settings-panel.js: after a save, a push that left the server
 // before it still holds the old rules, and writing them back would undo
 // the save on screen.  Pushes wait for one that agrees with the save;
@@ -36,7 +41,30 @@ function controls(els) {
     els.useRelatedArtists,
     els.useRelatedTracks,
     els.versionsAsOneSong,
+    els.daypartDays,
+    els.daypartHours,
+    els.hourpartPlays,
   ];
+}
+
+// The daypart start hours typed as "0, 6, 10", in order.  A part that is
+// not a number reads as NaN, which hoursValid refuses.
+function parseHours(text) {
+  const parts = String(text).split(",").map((part) => part.trim());
+  if (parts.length === 1 && parts[0] === "") return [];
+  return parts.map((part) => (/^\d+$/.test(part) ? Number(part) : Number.NaN))
+    .sort((a, b) => a - b);
+}
+
+function hoursValid(hours) {
+  return hours.length >= 1 && hours.length <= 24
+    && hours.every((hour) => Number.isInteger(hour) && hour >= 0 && hour <= 23)
+    && new Set(hours).size === hours.length;
+}
+
+function wholeIn(control, max) {
+  const value = Number(control.value);
+  return control.value.trim() !== "" && Number.isInteger(value) && value >= 0 && value <= max;
 }
 
 function values(els) {
@@ -50,8 +78,16 @@ function values(els) {
   result.use_related_artists = els.useRelatedArtists.checked;
   result.use_related_tracks = els.useRelatedTracks.checked;
   result.versions_as_one_song = els.versionsAsOneSong.checked;
+  result.daypart = {
+    days: Number(els.daypartDays.value),
+    start_hours: parseHours(els.daypartHours.value),
+  };
+  result.hourpart = { plays: Number(els.hourpartPlays.value) };
   return result;
 }
+
+const sameHours = (a, b) => Array.isArray(a) && Array.isArray(b)
+  && a.length === b.length && a.every((hour, index) => Number(hour) === Number(b[index]));
 
 function sameRules(a, b) {
   if (!a || !b) return false;
@@ -59,7 +95,10 @@ function sameRules(a, b) {
       && Number(a[rule]?.minutes) === Number(b[rule]?.minutes))
     && Boolean(a.use_related_artists) === Boolean(b.use_related_artists)
     && Boolean(a.use_related_tracks) === Boolean(b.use_related_tracks)
-    && Boolean(a.versions_as_one_song) === Boolean(b.versions_as_one_song);
+    && Boolean(a.versions_as_one_song) === Boolean(b.versions_as_one_song)
+    && Number(a.daypart?.days) === Number(b.daypart?.days)
+    && sameHours(a.daypart?.start_hours, b.daypart?.start_hours)
+    && Number(a.hourpart?.plays) === Number(b.hourpart?.plays);
 }
 
 // [control, message] for the first box holding a value the server would
@@ -81,6 +120,18 @@ function invalidField(els, target = null) {
       return [minutes, `${RULE_NAMES[rule]} minutes must be a number from 0 to ${MAX_MINUTES}.`];
     }
   }
+  if ((!target || target === els.daypartDays) && !wholeIn(els.daypartDays, MAX_DAYPART_DAYS)) {
+    return [els.daypartDays,
+      `Same daypart days must be a whole number from 0 to ${MAX_DAYPART_DAYS}.`];
+  }
+  if ((!target || target === els.daypartHours) && !hoursValid(parseHours(els.daypartHours.value))) {
+    return [els.daypartHours, HOURS_MESSAGE];
+  }
+  if ((!target || target === els.hourpartPlays)
+      && !wholeIn(els.hourpartPlays, MAX_HOURPART_PLAYS)) {
+    return [els.hourpartPlays,
+      `Same quarter hour plays must be a whole number from 0 to ${MAX_HOURPART_PLAYS}.`];
+  }
   return null;
 }
 
@@ -94,6 +145,13 @@ function write(els, incoming) {
   els.useRelatedArtists.checked = Boolean(incoming?.use_related_artists);
   els.useRelatedTracks.checked = Boolean(incoming?.use_related_tracks);
   els.versionsAsOneSong.checked = Boolean(incoming?.versions_as_one_song);
+  if (incoming?.daypart) {
+    els.daypartDays.value = incoming.daypart.days;
+    if (Array.isArray(incoming.daypart.start_hours)) {
+      els.daypartHours.value = incoming.daypart.start_hours.join(", ");
+    }
+  }
+  if (incoming?.hourpart) els.hourpartPlays.value = incoming.hourpart.plays;
 }
 
 // The status line under Use related artists or Use related tracks, part
@@ -106,6 +164,35 @@ function showStatus(status, problem) {
 
 function showDefaultFile(element, path) {
   if (element && typeof path === "string" && path) element.textContent = path;
+}
+
+const describedIds = (control) => (control.getAttribute("aria-describedby") || "")
+  .split(/\s+/).filter(Boolean);
+
+// Hide the field error and unlink it from the field it named, if that is
+// *control* (any field when not given).
+function clearFieldError(els, control = els.errorFor) {
+  const error = els.error;
+  if (!error || !control || els.errorFor !== control) return;
+  const ids = describedIds(control).filter((id) => id !== error.id);
+  if (ids.length) control.setAttribute("aria-describedby", ids.join(" "));
+  else control.removeAttribute("aria-describedby");
+  error.textContent = "";
+  error.hidden = true;
+  els.errorFor = null;
+}
+
+// The refused value's message in words under its field, linked to it by
+// aria-describedby so it is read with the field after focus moves there.
+function showFieldError(els, control, message) {
+  const error = els.error;
+  if (!error) return;
+  clearFieldError(els);
+  error.textContent = message;
+  error.hidden = false;
+  (control.closest(".settings-row") || control).after(error);
+  control.setAttribute("aria-describedby", [...describedIds(control), error.id].join(" "));
+  els.errorFor = control;
 }
 
 function reportInvalid(control, message, settingsStatus) {
@@ -145,6 +232,7 @@ export function resetRepeatSettings(els) {
     else control.value = control.defaultValue;
     control.removeAttribute("aria-invalid");
   }
+  clearFieldError(els);
   els.confirmed = null;
   els.dirty = false;
   els.echo = null;
@@ -163,13 +251,17 @@ export function installRepeatSettings(els, { postSettings, settingsStatus }) {
     for (const event of ["input", "change"]) {
       control.addEventListener(event, () => {
         els.dirty = true;
-        if (!invalidField(els, control)) control.removeAttribute("aria-invalid");
+        if (!invalidField(els, control)) {
+          control.removeAttribute("aria-invalid");
+          clearFieldError(els, control);
+        }
       });
     }
   }
   els.save.addEventListener("click", async () => {
     const invalid = invalidField(els);
     if (invalid) {
+      showFieldError(els, invalid[0], invalid[1]);
       reportInvalid(invalid[0], invalid[1], settingsStatus);
       return;
     }
@@ -189,6 +281,7 @@ export function installRepeatSettings(els, { postSettings, settingsStatus }) {
       els.confirmed = body;
       els.dirty = !sameRules(values(els), body);
       for (const control of controls(els)) control.removeAttribute("aria-invalid");
+      clearFieldError(els);
       showStatus(els.fileStatus, "");
       showStatus(els.tracksFileStatus, "");
       announceStatus(settingsStatus, "Repeat settings saved.", { dwellMs: 4000, force: true });

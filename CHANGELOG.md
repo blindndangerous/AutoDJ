@@ -10,6 +10,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Daypart and hourpart song separation (#129): two new repeat rules in Settings > Song picking >
+  Repeats keep a song from playing at the same time every day. **Prevent a song from playing in
+  the same daypart** holds back a song that played in the daypart the next song starts in (such
+  as morning drive, 6 to 10) earlier today or on up to 7 days before; the **Daypart start hours**
+  are yours to set, 0, 6, 10, 15, 19 to start with. **Prevent a song from playing in the same
+  quarter of the hour** holds back a song from the quarter of the hour its last 1 to 3 plays in
+  the past week started in. Both are off until set, read the station's clock, count every version
+  of a song with **Count versions as one song** on, and give way with the artist, album and title
+  rules when nothing else fits, never the DMCA limits. The rotation tester and the hour preview
+  pick with them as the station does, and the tester reports how often each was relaxed. In
+  `config.toml` they are the `daypart` and `hourpart` tables of `[playback.repeat_rules]`; unknown
+  keys there are ignored with a warning. See
+  [Time of day](docs/track-selection.md#time-of-day).
+
 - Saving edits to the active clockwheel can now apply at its next restart, immediately from
   step 1, or immediately continuing at the next step number. A song already playing and its
   committed handoff finish normally. With no restart minutes, deferred edits apply when the
