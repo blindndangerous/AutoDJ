@@ -1284,7 +1284,7 @@ class TestRenderTrackFeatures:
         current, following = player._sim.entries[:2]
         player._is_liner = lambda entry: entry is current
         current_audio = np.zeros((4 * 44100, 2), dtype=np.float32)
-        short_audio = np.zeros((4410, 2), dtype=np.float32)
+        short_audio = np.full((4410, 2), 0.1, dtype=np.float32)
         with patch.object(
             player,
             "_load_playout_audio",
@@ -1295,6 +1295,24 @@ class TestRenderTrackFeatures:
         assert rendered.transition_fx == "none"
         assert rendered.audio is not None
         assert 0 < len(rendered.audio) < len(current_audio)
+        assert rendered.next_start_offset == len(short_audio)
+
+    def test_slow_short_music_after_liner_uses_wall_time_overlap(self) -> None:
+        player = self._make_player_with_audio(transition_effect="echo_out")
+        player._cfg.playback.music_speed_percent = -10
+        current, following = player._sim.entries[:2]
+        player._is_liner = lambda entry: entry is current
+        current_audio = np.zeros((4 * 44100, 2), dtype=np.float32)
+        short_audio = np.full((int(1.8 * 44100), 2), 0.1, dtype=np.float32)
+        with patch.object(
+            player,
+            "_load_playout_audio",
+            side_effect=[current_audio, short_audio],
+        ):
+            rendered = player._render_track(current, following, 0)
+        assert rendered is not None
+        assert rendered.transition_fx == "none"
+        assert rendered.overlap_frames == 2 * 44100
         assert rendered.next_start_offset == len(short_audio)
 
 

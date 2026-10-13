@@ -6212,14 +6212,13 @@ class Player:
             # through tempo matching or transition effects: rate-adjust only
             # each music stem and use a plain fade across the shared overlap.
             a_start = max(0, a_start_full - start_offset)
-            available_a = len(audio_a) - a_start
-            if not liner_a:
-                available_a = round(available_a / rate_a)
             available_b = len(audio_b_loaded) - intro
             if not liner_b:
                 available_b = round(available_b / rate_b)
-            crossfade = min(crossfade, max(0, available_a), max(0, available_b))
-            if crossfade > 0 and len(audio_b_loaded) >= intro + crossfade:
+            if liner_a:
+                crossfade = min(crossfade, max(0, len(audio_a) - a_start))
+            crossfade = min(crossfade, max(0, available_b))
+            if crossfade > 0:
                 if liner_a:
                     a_prefix = audio_a[:a_start]
                     a_tail = audio_a[a_start : a_start + crossfade]
