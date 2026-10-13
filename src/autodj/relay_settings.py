@@ -14,7 +14,12 @@ from autodj.secret_files import write_private_file
 logger = logging.getLogger(__name__)
 
 _FIELDS = ("type", "host", "port", "mount", "stream_id", "user", "bitrate", "public", "enabled")
-_MISSING_PASSWORD = "autodj-relay-password-unconfigured"
+_MISSING_CREDENTIAL = "autodj-relay-credential-unconfigured"
+
+
+def credential_is_missing(value: str) -> bool:
+    """Whether *value* marks a disabled relay that has no source credential."""
+    return value == _MISSING_CREDENTIAL
 
 
 def password_variable(slug: str, name: str) -> str:
@@ -56,11 +61,11 @@ def load_relays(path: Path, baseline: dict[str, RelayConfig], slug: str) -> dict
             elif password is None and name in baseline:
                 password = baseline[name].password
             if password is None:
-                password = _MISSING_PASSWORD
+                password = _MISSING_CREDENTIAL
             if not isinstance(password, str):
                 raise ValueError("relay password is missing")
             values = {key: item[key] for key in _FIELDS if key in item}
-            if password == _MISSING_PASSWORD:
+            if credential_is_missing(password):
                 values["enabled"] = False
             loaded[name] = RelayConfig.from_table(name, {**values, "password": password})
     except (KeyError, TypeError, ValueError) as exc:
@@ -105,7 +110,7 @@ def public_relay(cfg: RelayConfig, status: dict[str, Any], slug: str) -> dict[st
         **{key: getattr(cfg, key) for key in _FIELDS},
         "password_configured": bool(
             os.environ.get(password_variable(slug, cfg.name))
-            or (cfg.password and cfg.password != _MISSING_PASSWORD)
+            or (cfg.password and not credential_is_missing(cfg.password))
         ),
         "password_managed": password_variable(slug, cfg.name) in os.environ,
         **{key: status.get(key) for key in ("state", "error", "title_error", "target")},

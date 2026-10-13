@@ -411,6 +411,8 @@ class Relay:
         self._clock = clock
         self._cond = threading.Condition()
         self._closed = threading.Event()
+        self._start_gate = threading.Event()
+        self._start_gate.set()
         self._title_event = threading.Event()
         self._queue: collections.deque[bytes] = collections.deque()
         self._size = 0
@@ -485,6 +487,19 @@ class Relay:
         for thread in self._threads:
             thread.start()
 
+    def start_paused(self) -> None:
+        """Start workers but hold source connections until :meth:`resume`.
+
+        The relay manager uses this while staging replacements so thread
+        startup failures leave the currently configured relays untouched.
+        """
+        self._start_gate.clear()
+        self.start()
+
+    def resume(self) -> None:
+        """Allow a successfully staged relay to connect to its source."""
+        self._start_gate.set()
+
     def close(self) -> None:
         """Disconnect and stop both threads, waiting at most ``CLOSE_TIMEOUT``."""
         self.begin_close()
@@ -496,6 +511,7 @@ class Relay:
             self._closed.set()
             connection, login = self._connection, self._login_socket
             self._cond.notify_all()
+        self._start_gate.set()
         self._title_event.set()
         if connection is not None:
             connection.close()
@@ -569,6 +585,7 @@ class Relay:
 
     def _send_loop(self) -> None:
         """Log in, send audio until something fails, wait, and repeat until closed."""
+        self._start_gate.wait()
         while not self._closed.is_set():
             if self._state != "retrying":
                 self._set_state("connecting", None)
@@ -844,6 +861,32 @@ class RelayManager:
                     self._remove_output(output)
                     output.close()
                 raise
+            attached: list[tuple[Relay, Any]] = []
+            staged: list[Relay] = []
+            try:
+                for relay, output in prepared.values():
+                    output.add_sink(relay)
+                    attached.append((relay, output))
+                if self._started:
+                    for relay, _ in prepared.values():
+                        # Include it before starting: start_paused may fail
+                        # after starting its first worker thread.
+                        staged.append(relay)
+                        relay.start_paused()
+            except Exception:
+                for relay in staged:
+                    relay.begin_close()
+                deadline = time.monotonic() + CLOSE_TIMEOUT
+                for relay in staged:
+                    relay.finish_close(deadline)
+                for relay, output in attached:
+                    remove_sink = getattr(output, "remove_sink", None)
+                    if remove_sink is not None:
+                        remove_sink(relay)
+                for output in created:
+                    self._remove_output(output)
+                    output.close()
+                raise
             old = {name: self._by_name.pop(name) for name in changed if name in self._by_name}
             for relay, output in old.values():
                 remove_sink = getattr(output, "remove_sink", None)
@@ -859,12 +902,11 @@ class RelayManager:
                 relay, output = prepared[name]
                 if output is not self._main and output not in self.outputs:
                     self.outputs.append(output)
-                output.add_sink(relay)
                 self._by_name[name] = (relay, output)
-                if self._started:
-                    relay.start()
             self._configs = configs
             self._relays = [relay for relay, _ in self._by_name.values()]
+            for relay in staged:
+                relay.resume()
             used = {id(output) for _, output in self._by_name.values()}
             for output in list(self.outputs):
                 if id(output) not in used:

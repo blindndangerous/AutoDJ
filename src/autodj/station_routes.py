@@ -53,7 +53,12 @@ from autodj.playlog import (
     soundexchange_report,
 )
 from autodj.recorder import Recorder
-from autodj.relay_settings import password_variable, public_relay, save_relays
+from autodj.relay_settings import (
+    credential_is_missing,
+    password_variable,
+    public_relay,
+    save_relays,
+)
 from autodj.scheduler import Action
 from autodj.settings_bodies import (
     BpmRangeBody,
@@ -415,7 +420,7 @@ def _save_stream_relay_locked(
     )
     if not password:
         raise HTTPException(status_code=422, detail="Enter a source password.")
-    if password == "autodj-relay-password-unconfigured" and body.enabled:
+    if credential_is_missing(password) and body.enabled:
         raise HTTPException(
             status_code=422, detail="Enter a source password before enabling this relay."
         )

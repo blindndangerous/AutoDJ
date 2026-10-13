@@ -596,13 +596,23 @@ class FakeOutput:
 
 
 class FakeRelay:
-    def __init__(self, cfg, *, bitrate, station_name, on_change) -> None:
+    def __init__(self, cfg, *, bitrate, station_name, on_change, fail_start_paused=False) -> None:
         self.cfg = cfg
         self.bitrate = bitrate
         self.on_change = on_change
         self.started = self.closed = False
+        self.staged = False
+        self.fail_start_paused = fail_start_paused
 
     def start(self) -> None:
+        self.started = True
+
+    def start_paused(self) -> None:
+        self.staged = True
+        if self.fail_start_paused:
+            raise RuntimeError("thread start failed")
+
+    def resume(self) -> None:
         self.started = True
 
     def begin_close(self) -> None:
@@ -709,6 +719,46 @@ def test_manager_reconfigures_only_changed_relays_and_releases_unused_outputs() 
     assert manager._by_name["add"][0].started
     assert bus == [made[1]] and manager.outputs == [made[1]]
     assert made[0].closed
+    manager.close()
+
+
+def test_manager_keeps_old_relays_when_staged_replacement_start_fails() -> None:
+    main = FakeOutput(320)
+    old_configs = [
+        RelayConfig.from_table("first", _table()),
+        RelayConfig.from_table("second", _table()),
+    ]
+    made: list[FakeRelay] = []
+
+    def factory(cfg, **kwargs):
+        relay = FakeRelay(cfg, **kwargs, fail_start_paused=len(made) == 3)
+        made.append(relay)
+        return relay
+
+    manager = RelayManager(
+        old_configs,
+        main,
+        make_output=FakeOutput,
+        station_name=lambda: "Radio",
+        relay_factory=factory,
+    )
+    manager.start()
+    old_relays = {name: manager._by_name[name][0] for name in ("first", "second")}
+    new_configs = [
+        RelayConfig.from_table("first", {**_table(), "host": "new-one.example"}),
+        RelayConfig.from_table("second", {**_table(), "host": "new-two.example"}),
+    ]
+
+    with pytest.raises(RuntimeError, match="thread start failed"):
+        manager.reconfigure(new_configs)
+
+    assert {name: manager._by_name[name][0] for name in old_relays} == old_relays
+    assert all(not relay.closed for relay in old_relays.values())
+    staged = made[2:]
+    assert len(staged) == 2
+    assert all(relay.closed for relay in staged)
+    assert all(relay not in main.sinks for relay in staged)
+    assert [cfg.host for cfg in manager._configs] == [cfg.host for cfg in old_configs]
     manager.close()
 
 
