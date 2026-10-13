@@ -2737,6 +2737,9 @@ describe("stream mode", () => {
       "modules/audio-engine.js: await deck.audio.play();",
       "modules/library-folders.js: await preview.play();",
       "modules/stream-mode.js: await audio.play();",
+      // Listen back: a preview in the page, which follows the page level
+      // or plays on the Preview output device.
+      "modules/voice-tracker.js: await playback.play();",
     ]);
     expect(found.plays.find((line) => line.startsWith("modules/stream-mode.js")))
       .toBe("modules/stream-mode.js: beforePlay(); | await audio.play();");

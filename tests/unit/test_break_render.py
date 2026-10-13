@@ -13,7 +13,17 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from autodj.breaks import AIRED, DROPPED, EXPIRED, ON_AIR, QUEUED, RENDERED, BreakError, new_id
+from autodj.breaks import (
+    AIRED,
+    DROPPED,
+    EXPIRED,
+    ON_AIR,
+    QUEUED,
+    RENDERED,
+    VOICE_TRACK,
+    BreakError,
+    new_id,
+)
 from autodj.stereo import SAMPLE_RATE as SR
 from tests.unit._break_station import make_break, make_station, start_station
 
@@ -90,6 +100,25 @@ def test_announcer_after_negative_liner_keeps_its_voice_before_vocals(station, k
     assert start == pytest.approx(11.0, abs=1e-3)
     assert end == pytest.approx(17.0, abs=1e-3)
     assert incoming_entry(render) == pytest.approx(12.0 if kind == "dj" else 17.0, abs=1e-3)
+
+
+@pytest.mark.parametrize("placement", ["auto", "talk_up"])
+def test_a_voice_track_after_a_negative_liner_talks_up_like_any_break(station, placement):
+    # A voice track (#128) is a DJ break from the browser: after a liner
+    # that starts inside the intro (#159) its speech still ends on b's vocal.
+    player, (a, b, liner, _d), points, desk = station
+    points[b.path]["intro"] = 5.25
+    points[liner.path].update(start=0, segue=1, end=1, overlap_start=-3)
+    item = replace(make_break(desk, new_id(), seconds=4.0, placement=placement), source=VOICE_TRACK)
+    desk.add(item)
+    render = player._render_track(
+        a, b, 0, liners=((liner, False),), breaks=tuple(desk.take(item.slot_id, 0.0))
+    )
+    start, end = voice_span(render)
+    vocal = incoming_entry(render) + 5.0  # b's intro: 0.25 s to 5.25 s
+    assert end == pytest.approx(vocal, abs=1e-3)
+    assert start == pytest.approx(end - 4.0, abs=1e-3)
+    assert desk.get(item.break_id).mixed_as == "talk_up"
 
 
 def test_auto_plays_standalone_when_the_intro_is_too_short(tmp_path):
