@@ -51,12 +51,14 @@ interface repeating itself.
   region that speaks. It goes in a sibling marked `aria-live="off"`, or on an attribute that is
   refreshed only while the control is not focused. `#lib-job-elapsed` next to `#lib-job-status` is
   the reference example.
-- One message has exactly one announcement path. Where a message also needs to be visible, the
-  visible copy carries `aria-hidden="true"` and no role, so it shows without speaking. The
-  page-level `#status-toast` is that mirror; `#cue-legend` and the stale-playback note follow the
-  same rule. The mirror's Dismiss button sits beside it in `#status-toast-box`, outside the
-  mirror and every live region, so it adds nothing to the one announcement, and showing the
-  message never moves focus to it.
+- One message has exactly one automatic announcement path. A visible mirror of a transient status
+  carries `aria-hidden="true"` and no role, so it shows without speaking. The page-level
+  `#status-toast` is that mirror; `#cue-legend` and the stale-playback note follow the same rule.
+  Static result text that users may browse stays exposed with `aria-live="off"`; announce its
+  completed result through `announceStatus()` so updates stay quiet while the value remains
+  available in the reading order. The mirror's Dismiss button sits beside it in
+  `#status-toast-box`, outside the mirror and every live region, so it adds nothing to the one
+  announcement, and showing the message never moves focus to it.
 
 When adding a status message, write it through `announceStatus()` rather than assigning
 `textContent`, and check the region it lands in is not also inside another live region.

@@ -80,6 +80,8 @@ def install_categories(
     uses it; without it, the default station's folder is the only one.
     """
     write_lock = threading.Lock()
+    genre_entries: Any = None
+    genre_names: list[str] = []
 
     def index() -> CategoryIndex:
         library = bridge.library
@@ -113,9 +115,21 @@ def install_categories(
         }
 
     def listing(categories: CategoryIndex) -> dict[str, Any]:
+        nonlocal genre_entries, genre_names
         saved, results = categories.resolutions()
         uses = all_uses()
         folder = categories.folder
+        library = bridge.library
+        from autodj.clock_conditions import genres
+
+        source = getattr(library, "clock_beets", None)
+        known, _, beets_error = source.snapshot() if source else ((), None, None)
+        entries = library.entries_snapshot()
+        if entries is not genre_entries:
+            genre_names = sorted(
+                {value for entry in entries for value in genres(entry.genre)}, key=str.casefold
+            )
+            genre_entries = entries
         return {
             "categories": [
                 {
@@ -128,6 +142,10 @@ def install_categories(
             ],
             "playlists_folder": str(folder),
             "playlists": list_playlists(folder),
+            "folders": categories.folders(),
+            "genres": genre_names,
+            "beets_fields": sorted(known),
+            "beets_error": beets_error,
             "beets": bridge.player._cfg.library.beets_db is not None,
         }
 
@@ -135,7 +153,14 @@ def install_categories(
         """Work out *spec*, refusing what can never match (an unknown field, no file)."""
         result = categories.check(spec)
         if result.error:
-            raise CategoryError("query" if spec.source == "query" else "playlist", result.error)
+            field = (
+                "conditions"
+                if spec.source == "filters"
+                else "query"
+                if spec.source == "query"
+                else "playlist"
+            )
+            raise CategoryError(field, result.error)
         return result
 
     def write(category_id: str | None, spec: CategorySpec) -> dict[str, Any]:

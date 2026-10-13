@@ -90,6 +90,7 @@ async function setupApp({
     isStaleAdvanceState: vi.fn(() => false),
     eqValueLabel: vi.fn(),
     loadCoverArt,
+    musicSpeedRate: vi.fn(() => 1),
     playbackEnabled: false,
     playOnDeck: vi.fn(),
     postEq: vi.fn(),
@@ -3287,8 +3288,12 @@ describe("browser robustness", () => {
   describe("beatmatch on Skip", () => {
     const skipWith = async ({ outBpm, inBpm }) => {
       let finish;
-      const startCrossfade = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
-      const standby = { playbackRate: 1, preservesPitch: false };
+      const startCrossfade = vi.fn((path) => {
+        standbyDeck.path = path;
+        return new Promise((resolve) => { finish = resolve; });
+      });
+      const standby = { defaultPlaybackRate: 1, playbackRate: 1, preservesPitch: false };
+      const standbyDeck = { audio: standby, kind: "music", path: "previous-standby.mp3" };
       await setupApp({
         audio: {
           _beatmatchOnSkip: true,
@@ -3298,7 +3303,7 @@ describe("browser robustness", () => {
           _nextTrackPathCache: "next.mp3",
           _outBpmCache: outBpm,
           crossfading: false,
-          decks: [{ audio: { duration: Number.NaN } }, { audio: standby }],
+          decks: [{ audio: { duration: Number.NaN } }, standbyDeck],
           playbackEnabled: true,
           startCrossfade,
         },
@@ -3318,17 +3323,21 @@ describe("browser robustness", () => {
     it("holds the stretch for the whole transition, then eases back", async () => {
       const { finish, standby } = await skipWith({ outBpm: 120, inBpm: 125 });
       expect(standby.playbackRate).toBeCloseTo(0.96, 6);
+      expect(standby.defaultPlaybackRate).toBeCloseTo(0.96, 6);
       expect(standby.preservesPitch).toBe(true);
       // An effect can run up to 12 s, well past crossfade seconds.
       await vi.advanceTimersByTimeAsync(11000);
       expect(standby.playbackRate).toBeCloseTo(0.96, 6);
+      expect(standby.defaultPlaybackRate).toBeCloseTo(0.96, 6);
 
       finish(true);
       await vi.advanceTimersByTimeAsync(2000);
       expect(standby.playbackRate).toBeGreaterThan(0.96);
       expect(standby.playbackRate).toBeLessThan(1);
+      expect(standby.defaultPlaybackRate).toBeCloseTo(standby.playbackRate, 6);
       await vi.advanceTimersByTimeAsync(2000);
       expect(standby.playbackRate).toBe(1);
+      expect(standby.defaultPlaybackRate).toBe(1);
       expect(standby.preservesPitch).toBe(false);
     });
 

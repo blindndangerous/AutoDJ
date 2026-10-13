@@ -46,6 +46,16 @@ def test_category_membership_intersects_other_conditions_and_categories():
     assert condition_paths(_slot([_cat("one"), folder]), entries, None, categories) == {a.path}
 
 
+def test_negative_category_excludes_members_but_missing_reference_fails_closed():
+    a, b = (_entry(name) for name in "ab")
+    entries = [a, b]
+    categories = {"one": ("One", frozenset({a.path}))}
+    negative = {"field": "category", "category": "one", "operator": "is_not"}
+    assert condition_paths(_slot([negative]), entries, None, categories) == {b.path}
+    missing = {"field": "category", "category": "gone", "operator": "is_not"}
+    assert condition_paths(_slot([missing]), entries, None, categories) == set()
+
+
 def test_match_any_is_union_without_duplicate_rng_candidates():
     a, b, c = (_entry(name) for name in "abc")
     entries = [a, b, c]

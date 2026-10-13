@@ -76,6 +76,17 @@ def _without_timing(report: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in report.items() if key != "elapsed_seconds"}
 
 
+def test_rotation_simulation_uses_faster_wall_time_for_music(tmp_path: Path) -> None:
+    source = _rotation(tmp_path)
+    request = SimulationRequest(hours=1, start=NOON, seed=17)
+
+    regular = simulate(source, request)
+    source.player._cfg.playback.music_speed_percent = 10
+    faster = simulate(source, request)
+
+    assert faster["picks"] > regular["picks"]
+
+
 # -- requests ------------------------------------------------------------------
 
 

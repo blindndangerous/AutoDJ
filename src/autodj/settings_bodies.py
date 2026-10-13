@@ -9,6 +9,7 @@ field rules, so a value the page cannot set is never restored either.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
@@ -64,6 +65,7 @@ unparseable payload until the process restarts.  Reject them at the edge.
 NonNegativeFloat = Annotated[float, Field(ge=0.0, allow_inf_nan=False)]
 FadeSeconds = Annotated[float, Field(ge=0.0, le=MAX_FADE_SECONDS, allow_inf_nan=False)]
 """Crossfade or fade-in length: the range the Settings page and config.toml use."""
+MusicSpeedPercent = Annotated[float, Field(ge=-10.0, le=10.0, allow_inf_nan=False)]
 
 
 class VolumeBody(BaseModel):
@@ -194,6 +196,7 @@ class PlaybackSettingsBody(BaseModel):
 
     crossfade_seconds: FadeSeconds | None = None
     fade_in_seconds: FadeSeconds | None = None
+    music_speed_percent: MusicSpeedPercent | None = None
     crossfade_eq_duck: bool | None = None
     pick_mode: Literal["similarity", "random", "least_recent", "clock"] | None = None
     loudness_processing: Literal["off", "replaygain", "smooth", "stereotool"] | None = None
@@ -243,6 +246,23 @@ class PlaybackSettingsBody(BaseModel):
         Annotated[float, Field(ge=0.0, le=12.0, allow_inf_nan=False)] | None
     ) = None
     stereotool_preset: str | None = None
+
+    @field_validator("music_speed_percent", mode="before")
+    @classmethod
+    def _speed_precision(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            raise ValueError("music_speed_percent must be a number")
+        try:
+            precise = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return value  # the float field supplies the normal type error
+        if not precise.is_finite() or abs(precise) > 10:
+            return value  # range and finite checks are handled by the field
+        if precise != Decimal(str(round(float(precise), 2))):
+            raise ValueError("music_speed_percent may have at most 2 decimal places")
+        return value
 
     @field_validator("stereotool_preset")
     @classmethod

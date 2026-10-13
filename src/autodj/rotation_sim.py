@@ -91,9 +91,9 @@ RULES = (
 )
 
 APPROXIMATIONS = (
-    "Time moves by each song's length from the catalog: its saved start to its segue or outro "
-    "with saved-point transitions, less the crossfade otherwise; songs with no length count as "
-    "the library's average.",
+    "Wall time for music uses its catalog or saved-cue duration at the configured music speed; "
+    "saved starts and segues remain source-time, and songs with no length count as the library's "
+    "average.",
     "A clockwheel liner adds its full length; automatic liners, time checks, carts and the "
     "queue are left out.",
     "A scheduled change applies from the first pick after its time; hard events do not cut a "
@@ -284,7 +284,7 @@ class LibrarySnapshot:
         self._by_path = {
             normalize_path(entry.path): entry for entry in (*self._music, *self._liners)
         }
-        self.categories = CategoryIndex(cfg, self.entries_snapshot)
+        self.categories = CategoryIndex(cfg, self.entries_snapshot, lambda: self.catalog.sources())
         self.categories.store = _ReadOnlyCategoryStore(self.categories.store.path)
         self.clock_beets = BeetsConditions(cfg)
         self.ledger = StationLedger(catalog, station, self.entry_for_path)
@@ -812,6 +812,23 @@ def song_seconds(player: Player, entry: Any, average: float) -> float:
     return seconds if seconds > 1.0 else average
 
 
+def music_rate(player: Any, entry: Any) -> float:
+    """The wall-clock playback rate for music, with older snapshots at unity."""
+    rate_for = getattr(player, "music_playback_rate", None)
+    if callable(rate_for):
+        try:
+            rate = float(rate_for(entry))
+            if math.isfinite(rate) and rate > 0:
+                return rate
+        except (TypeError, ValueError):
+            pass
+    try:
+        rate = 1.0 + float(getattr(player._cfg.playback, "music_speed_percent", 0.0)) / 100.0
+    except (TypeError, ValueError):
+        return 1.0
+    return rate if math.isfinite(rate) and rate > 0 else 1.0
+
+
 def simulate(
     source: SimulationSource,
     request: SimulationRequest,
@@ -875,7 +892,9 @@ def _simulate(
         return player._cfg.playback.transition_mode == "saved_points"
 
     def duration(entry: Any) -> float:
-        return song_seconds(player, entry, average)
+        if entry.path in liner_paths:
+            return max(float(entry.length or 0.0), 0.0)
+        return song_seconds(player, entry, average) / music_rate(player, entry)
 
     def when(stamp: float) -> str:
         return datetime.fromtimestamp(stamp, schedule.zone).isoformat(timespec="minutes")

@@ -12,7 +12,6 @@ server stack.
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import secrets
 import threading
@@ -208,11 +207,6 @@ class PlayerBridge:
     paths: Any = None
     # The station's public stream address; the m3u playlist is beside it.
     stream_path: str = "/stream.mp3"
-    # Names another running station whose mix Stereo Tool processes, or
-    # returns None.  AutoDJ runs one Stereo Tool at a time (one licence).
-    stereo_tool_elsewhere: Callable[[], str | None] | None = None
-    # Held across that check and the change it allows (the registry's).
-    stereo_tool_lock: Any = None
     # The viewer keeps 500 rows; the catalog retains the full play log.
     _play_history: deque = field(
         default_factory=lambda: deque(maxlen=500),
@@ -1045,6 +1039,7 @@ class PlayerBridge:
                 "artist": entry.artist,
                 "album": entry.album,
                 "path": entry.path,
+                "kind": record.get("kind", "music") if record else "music",
                 "bpm": entry.bpm,
                 "length": entry.length,
                 "display_name": entry.display_name,
@@ -1791,6 +1786,7 @@ class PlayerBridge:
             "playback": {
                 "crossfade_seconds": pb.crossfade_seconds,
                 "fade_in_seconds": pb.fade_in_seconds,
+                "music_speed_percent": float(pb.music_speed_percent),
                 "crossfade_eq_duck": pb.crossfade_eq_duck,
                 "pure_shuffle": p._pure_shuffle,
                 "pick_mode": "random" if p._pure_shuffle else pb.pick_mode,
@@ -1932,32 +1928,12 @@ class PlayerBridge:
     def set_playback_settings(self, body: PlaybackSettingsBody, *, restoring: bool = False) -> None:
         """Apply the fields set in *body*, which pydantic has already validated.
 
-        Choosing Stereo Tool while another station uses it is refused
-        before any setting changes.  The check and the change hold
-        :attr:`stereo_tool_lock`, so two stations switching to it at once
-        cannot both find it free.  A restored setting is checked when the
-        station starts instead.
-
         Files are checked and read first; then the new values are swapped in
         under the player's settings lock (see :func:`~autodj.player.settings_lock`),
         which a rotation test's copy also holds; the saved plays are read
         again for new repeat rules only after it is released.  Callers on
         the event loop run this in a worker thread.
         """
-        if (
-            body.loudness_processing == "stereotool"
-            and not restoring
-            and self.stereo_tool_elsewhere is not None
-        ):
-            with self.stereo_tool_lock or contextlib.nullcontext():
-                if (other := self.stereo_tool_elsewhere()) is not None:
-                    raise ValueError(
-                        f"Stereo Tool is already processing {other}, and AutoDJ runs one "
-                        "Stereo Tool at a time. Choose Smooth for this station, or move the "
-                        "other station off Stereo Tool first."
-                    )
-                self._set_playback_settings(body, restoring=restoring)
-            return
         self._set_playback_settings(body, restoring=restoring)
 
     def _set_playback_settings(self, body: PlaybackSettingsBody, *, restoring: bool) -> None:
@@ -1976,6 +1952,10 @@ class PlayerBridge:
             values["repeat_rules"] = body.repeat_rules
         with settings_lock(player):
             self._apply_playback_settings(values, related_artists, related_tracks)
+        if "music_speed_percent" in values and self._bus_mode():
+            # The playing render is immutable. Refresh only the unrendered
+            # lookahead so the new speed starts at the next buffer boundary.
+            player.refresh_render_ahead()
         if "repeat_rules" in values and (ledger := self._ledger()) is not None:
             player.restore_repeat_history(ledger, refresh=True)
 

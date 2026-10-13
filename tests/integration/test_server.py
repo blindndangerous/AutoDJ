@@ -224,6 +224,7 @@ class TestSeek:
         p._current_sr = 1000
         p._playback_len = 60_000  # 60 s
         p._playback_pos = [0]
+        p._playback_output_pos = [0]
         # Overshoot clamps to 59.9 s (length - 0.1 s).
         result = p.seek_to(120.0)
         assert result == pytest.approx(59.9, abs=0.05)
@@ -237,6 +238,7 @@ class TestSeek:
         p._current_sr = 1000
         p._playback_len = 60_000
         p._playback_pos = [5_000]
+        p._playback_output_pos = [5_000]
         result = p.seek_to(-10.0)
         assert result == 0.0
         assert p._playback_pos[0] == 0
@@ -249,6 +251,7 @@ class TestSeek:
         p._current_sr = 1000
         p._playback_len = 60_000
         p._playback_pos = [10_000]  # 10 s
+        p._playback_output_pos = [10_000]
         result = p.seek_relative(5.0)
         assert result == pytest.approx(15.0, abs=0.01)
         assert p._playback_pos[0] == 15_000

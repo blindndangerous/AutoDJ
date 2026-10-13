@@ -1335,10 +1335,8 @@ class StationRegistry:
         # instead of waiting while the player finishes (up to
         # stop_timeout_s).
         self._stopping: set[str] = set()
-        # The one Stereo Tool licence.  Held while a station checks that
-        # Stereo Tool is free and takes it (a station being built, or one
-        # switching to it in its settings, both in worker threads), and
-        # around every change to the four collections a check reads:
+        # Mastering lifecycle bookkeeping, inspected by lifecycle tests and
+        # held around changes to the four collections:
         # _running, _starting, _stopping_runtimes and _stuck.  So a check
         # sees each station in exactly one of them, never in none.
         self.stereo_tool_lock = threading.RLock()
@@ -1474,24 +1472,10 @@ class StationRegistry:
                     )
             return None
 
-    def claim_stereo_tool(self, slug: str, cfg: AutoDJConfig) -> str | None:
-        """Mark station *slug*, about to start with *cfg*, as starting.
-
-        Checking and marking happen under :attr:`stereo_tool_lock`, so a
-        station switching to Stereo Tool at the same moment sees this one.
-
-        Returns:
-            ``None``, or the name of another station that already uses
-            Stereo Tool when *cfg* chooses it too; the station is then not
-            marked and must not start.
-        """
+    def mark_starting(self, slug: str, cfg: AutoDJConfig) -> None:
+        """Record station *slug* while its runtime is being built."""
         with self.stereo_tool_lock:
-            if cfg.playback.loudness_processing == "stereotool":
-                other = self.stereo_tool_user(exclude=slug)
-                if other is not None:
-                    return other
             self._starting[slug] = cfg
-            return None
 
     def stereo_tool_presets(self) -> list[tuple[str, str]]:
         """(station name, Stereo Tool preset) for every configured station.

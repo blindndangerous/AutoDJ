@@ -84,6 +84,228 @@ def test_cold_intro_waits_for_complete_voice(station):
     assert result.audio[11 * SR, 1] == 0.5
 
 
+@pytest.mark.parametrize("speed_percent", [-10.0, 10.0])
+def test_regular_music_to_liner_keeps_voice_native_and_music_rate(station, speed_percent):
+    player, (music, _next, voice, _), _points = station
+    player._cfg.playback.transition_mode = "regular"
+    player._cfg.playback.music_speed_percent = speed_percent
+    rate = 1.0 + speed_percent / 100.0
+    result = player._render_track(music, voice, 0)
+
+    assert result is not None
+    assert result.playback_rate == pytest.approx(rate)
+    assert result.next_playback_rate == 1.0
+    assert result.overlap_frames == round(1.5 * SR)
+    assert result.next_start_offset == round(1.5 * SR)
+    # The voice is still exactly the native-duration, native-pitch source.
+    assert result.audio[-1, 1] == pytest.approx(0.5)
+    # The source cursor represented by the rendered tail must remain within
+    # the outgoing track even when its fade needs an earlier source window.
+    assert result.start_offset + round(len(result.audio) * rate) <= round(music.length * SR)
+
+
+def test_regular_speed_transition_does_not_shift_incoming_voice_pitch(station, monkeypatch):
+    player, (music, _next, voice, _), _points = station
+    player._cfg.playback.transition_mode = "regular"
+    player._cfg.playback.music_speed_percent = 10.0
+    load_audio = player._load_playout_audio
+    voice_audio = np.zeros((round(voice.length * SR), 2), dtype=np.float32)
+    times = np.arange(len(voice_audio), dtype=np.float64) / SR
+    voice_audio[:, 1] = 0.5 * np.sin(2 * np.pi * 440 * times)
+    monkeypatch.setattr(
+        player,
+        "_load_playout_audio",
+        lambda entry: voice_audio.copy() if entry.path == voice.path else load_audio(entry),
+    )
+
+    result = player._render_track(music, voice, 0)
+    assert result is not None
+    vocal_tail = result.audio[-round(1.2 * SR) : -round(0.2 * SR), 1]
+    spectrum = np.abs(np.fft.rfft(vocal_tail * np.hanning(len(vocal_tail))))
+    peak_hz = np.fft.rfftfreq(len(vocal_tail), 1 / SR)[int(np.argmax(spectrum))]
+    assert peak_hz == pytest.approx(440.0, abs=1.0)
+
+
+@pytest.mark.parametrize("transition_mode", ["regular", "saved_points"])
+def test_speed_change_invalidates_prepared_incoming_music(station, transition_mode):
+    player, (_music, next_music, voice, _), _points = station
+    player._cfg.playback.transition_mode = transition_mode
+    player._cfg.playback.music_speed_percent = 5.0
+    rendered = player._render_track(voice, next_music, 0)
+    assert rendered is not None
+    assert rendered.next_playback_rate == pytest.approx(1.05)
+    assert not player._queue_pick_is_stale(rendered)
+
+    player._cfg.playback.music_speed_percent = -5.0
+    assert player._queue_pick_is_stale(rendered)
+
+
+@pytest.mark.parametrize("booked_break", [True, False])
+def test_speed_change_keeps_committed_break_and_pinned_render(station, booked_break):
+    player, (music, next_music, *_), _points = station
+    player._cfg.playback.music_speed_percent = 10.0
+    track = RenderedTrack(
+        music,
+        np.zeros((SR, 2), dtype=np.float32),
+        next_music,
+        0,
+        "none",
+        overlap_frames=SR,
+        break_events=((0, "booked-break", SR),) if booked_break else (),
+        playback_rate=1.1,
+        next_playback_rate=1.0,
+    )
+    if not booked_break:
+        player._slot_plan = SimpleNamespace(pinned=True, ending=next_music)
+
+    assert not player._queue_pick_is_stale(track)
+
+
+def test_speed_change_without_incoming_overlap_is_not_stale(station):
+    player, (music, next_music, *_), _points = station
+    player._cfg.playback.transition_mode = "regular"
+    player._cfg.playback.music_speed_percent = 10.0
+    track = RenderedTrack(
+        music,
+        np.zeros((SR, 2), dtype=np.float32),
+        next_music,
+        0,
+        "none",
+        playback_rate=1.1,
+        next_playback_rate=1.0,
+    )
+
+    assert not player._queue_pick_is_stale(track)
+
+
+def test_break_auto_placement_uses_rate_adjusted_song_intro(tmp_path):
+    from tests.unit._break_station import make_break, make_station
+
+    player, (music, next_music, *_), _points, desk = make_station(tmp_path)
+    player._cfg.playback.music_speed_percent = 10.0
+    item = make_break(desk, "speed-slot", seconds=1.0)
+    desk.add(item)
+    rendered_breaks = desk.take(item.slot_id, item.created_at)
+
+    rendered = player._render_track(music, next_music, 0, breaks=tuple(rendered_breaks))
+
+    assert rendered is not None
+    assert desk.get(item.break_id).mixed_as == "standalone"
+
+
+def test_seek_maps_source_position_to_rate_adjusted_output(station):
+    player, (music, *_), _points = station
+    player._cfg.playback.music_speed_percent = 10.0
+    rendered = player._render_track(music, None, 0)
+    assert rendered is not None
+    player._playing_render = rendered
+    player._playback_len = round(len(rendered.audio) * rendered.playback_rate)
+    player.bus = MagicMock()
+
+    assert player.seek_to(5.0) == pytest.approx(5.0)
+    output_frame = round(5 * SR / rendered.playback_rate)
+    player.bus.seek.assert_called_once_with(output_frame)
+    player._on_position(output_frame)
+    assert abs(player._playback_pos[0] - round(5 * SR)) <= 1
+
+
+def test_saved_points_speed_keeps_liner_voice_pitch_native(station, monkeypatch):
+    player, (music, next_music, voice, _), _points = station
+    player._cfg.playback.music_speed_percent = 10.0
+    load_audio = player._load_playout_audio
+    voice_audio = np.zeros((round(voice.length * SR), 2), dtype=np.float32)
+    times = np.arange(len(voice_audio), dtype=np.float64) / SR
+    voice_audio[:, 1] = 0.5 * np.sin(2 * np.pi * 440 * times)
+    monkeypatch.setattr(
+        player,
+        "_load_playout_audio",
+        lambda entry: voice_audio.copy() if entry.path == voice.path else load_audio(entry),
+    )
+
+    result = player._render_track(music, next_music, 0, liners=((voice, True),))
+    assert result is not None
+    event_at = round(8 * SR / 1.1)
+    assert result.liner_events[0][0] == event_at
+    vocal = result.audio[event_at + round(0.1 * SR) : event_at + round(1.1 * SR), 1]
+    spectrum = np.abs(np.fft.rfft(vocal * np.hanning(len(vocal))))
+    peak_hz = np.fft.rfftfreq(len(vocal), 1 / SR)[int(np.argmax(spectrum))]
+    assert peak_hz == pytest.approx(440.0, abs=1.0)
+
+
+def test_matched_intro_keeps_native_voice_rate_and_wall_vocal_protection(station, tmp_path):
+    import soundfile as sf
+
+    from autodj.matched_intros import Chosen
+
+    player, (music, next_music, *_), _points = station
+    player._cfg.playback.music_speed_percent = 10.0
+    intro_audio = np.zeros((round(2.0 * SR), 2), dtype=np.float32)
+    times = np.arange(round(1.5 * SR), dtype=np.float64) / SR
+    intro_audio[: len(times), 1] = 0.5 * np.sin(2 * np.pi * 440 * times)
+    intro_path = tmp_path / "matched-intro.wav"
+    sf.write(intro_path, intro_audio, SR, subtype="FLOAT")
+
+    rendered = player._render_track(
+        music, next_music, 0, intro=Chosen("intro-id", intro_path, "New single")
+    )
+
+    assert rendered is not None and rendered.intro_events
+    at, _intro_id, end, _label = rendered.intro_events[0]
+    assert (end - at) / SR == pytest.approx(1.5, abs=0.06)
+    incoming = (len(rendered.audio) - rendered.overlap_frames) / SR
+    assert end / SR <= incoming + 2.0 / 1.1 + 1e-3
+    vocal = rendered.audio[at + round(0.1 * SR) : at + round(1.1 * SR), 1]
+    spectrum = np.abs(np.fft.rfft(vocal * np.hanning(len(vocal))))
+    peak_hz = np.fft.rfftfreq(len(vocal), 1 / SR)[int(np.argmax(spectrum))]
+    assert peak_hz == pytest.approx(440.0, abs=1.0)
+
+
+def test_matched_intro_events_restore_at_output_frame_after_early_skip(
+    station, tmp_path, monkeypatch
+):
+    import soundfile as sf
+
+    from autodj.matched_intros import Chosen
+
+    player, (music, next_music, *_), points = station
+    player._cfg.playback.music_speed_percent = 10.0
+    points[music.path]["start"] = 1.0
+    intro_audio = np.zeros((round(2.0 * SR), 2), dtype=np.float32)
+    intro_audio[: round(1.5 * SR), 1] = 0.5
+    intro_path = tmp_path / "matched-intro.wav"
+    sf.write(intro_path, intro_audio, SR, subtype="FLOAT")
+    intro = Chosen("intro-id", intro_path, "New single")
+    rendered = player._render_track(music, next_music, 2 * SR, intro=intro)
+    assert rendered is not None and rendered.intro_events
+    expected_prefix = round((rendered.start_offset - rendered.source_start_offset) / 1.1)
+    monkeypatch.setattr(player._render_ahead, "pop", lambda: rendered)
+    player._skip_next_intro = True
+
+    restored = player._take_render()
+
+    assert restored is not None and restored.audio is rendered.full_audio
+    assert restored.intro_events[0][0] == rendered.intro_events[0][0] + expected_prefix
+    assert restored.start_offset == rendered.source_start_offset
+
+
+@pytest.mark.parametrize("speed_percent", [-10.0, 10.0])
+def test_regular_liner_to_music_maps_incoming_cursor_to_source_frames(station, speed_percent):
+    player, (music, next_music, voice, _), _points = station
+    player._cfg.playback.transition_mode = "regular"
+    player._cfg.playback.music_speed_percent = speed_percent
+    rate = 1.0 + speed_percent / 100.0
+    result = player._render_track(voice, music, 0)
+
+    assert result is not None
+    assert result.playback_rate == 1.0
+    assert result.next_playback_rate == pytest.approx(rate)
+    assert result.next_entry_offset == 0
+    assert result.next_start_offset == round(1.5 * SR * rate)
+    assert result.overlap_frames == round(1.5 * SR)
+    assert len(result.audio) == round((voice.length - 1.5) * SR) + round(1.5 * SR)
+    assert result.next_start_offset <= round(next_music.length * SR)
+
+
 @pytest.mark.parametrize("standalone", [False, True])
 def test_liner_segue_starts_cold_music_while_tail_keeps_playing(station, standalone):
     player, (a, b, voice, _), points = station

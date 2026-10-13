@@ -2,8 +2,7 @@
 
 Stereo Tool and FFmpeg run as child processes.  On a normal shutdown
 AutoDJ stops them itself, but if AutoDJ is killed outright (Task Manager,
-a crash) Windows would leave them running, and a Stereo Tool left running
-holds the one licence.  So every mastering child is put in one Job Object
+a crash) Windows would leave them running. So every mastering child is put in one Job Object
 created with ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE``: when AutoDJ's process
 ends for any reason, Windows closes the job's last handle and kills every
 process in it.

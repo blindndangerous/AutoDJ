@@ -441,6 +441,57 @@ def test_the_station_mixes_a_matched_intro_instead_of_an_automatic_liner(
     assert list(store._heard) and store._heard[0][0] == intro_id
 
 
+def test_an_intro_skipped_before_its_event_is_released(tmp_path: Path) -> None:
+    player, (a, b, c, _d), _points, _desk = make_station(tmp_path)
+    store = _store(tmp_path)
+    player.matched_intros = store
+    store.release = MagicMock(side_effect=AssertionError("callback must not take the store lock"))
+    intro_id = _add(store, track_id=f"song-{Path(b.path).stem}", cooldown_minutes=60)
+    chosen = player._matched_intro(b, (), NOW)
+    assert chosen is not None
+    first = player._render_track(a, b, 0, intro=chosen)
+    player._start_playing(first)
+    player._start_playing(player._render_track(b, c, 0))
+
+    assert store.needs_upkeep()
+    assert store.choose(f"song-{Path(b.path).stem}", "", NOW + 1) is not None
+    store.upkeep()
+    assert intro_id in store._reserved
+
+
+def test_an_intro_heard_before_a_skip_keeps_its_cooldown(tmp_path: Path) -> None:
+    player, (a, b, c, _d), _points, _desk = make_station(tmp_path)
+    store = _store(tmp_path)
+    player.matched_intros = store
+    intro_id = _add(store, track_id=f"song-{Path(b.path).stem}", cooldown_minutes=60)
+    chosen = player._matched_intro(b, (), NOW)
+    assert chosen is not None
+    first = player._render_track(a, b, 0, intro=chosen)
+    player._start_playing(first)
+    player._on_position(first.intro_events[0][0] + 1)
+    player._start_playing(player._render_track(b, c, 0))
+
+    store.upkeep()
+    assert intro_id not in store._reserved
+    assert store.all()[intro_id].last_aired is not None
+    assert store.choose(f"song-{Path(b.path).stem}", "", store._aired[intro_id] + 1) is None
+
+
+def test_stopping_before_an_intro_event_releases_its_reservation(tmp_path: Path) -> None:
+    player, (a, b, _c, _d), _points, _desk = make_station(tmp_path)
+    store = _store(tmp_path)
+    player.matched_intros = store
+    intro_id = _add(store, track_id=f"song-{Path(b.path).stem}", cooldown_minutes=60)
+    chosen = player._matched_intro(b, (), NOW)
+    assert chosen is not None
+    player._start_playing(player._render_track(a, b, 0, intro=chosen))
+
+    player.end_set()
+    assert store.choose(f"song-{Path(b.path).stem}", "", NOW + 1) is not None
+    store.upkeep()
+    assert intro_id in store._reserved
+
+
 def test_matched_intro_only_without_liner_uses_scheduled_auto_liner_first(
     tmp_path: Path,
 ) -> None:

@@ -283,6 +283,7 @@ class MatchedIntros:
         self._unwritten = False
         # Reports from the mix bus, taken in under the lock by the next call.
         self._heard: deque[tuple[str, float]] = deque()
+        self._released: deque[str] = deque()
         # Audio files a delete could not remove yet (one open for a decode).
         self._doomed: set[Path] = set()
         self._splitter = ArtistSplitter()
@@ -486,6 +487,8 @@ class MatchedIntros:
             if intro_id in self._intros:
                 self._aired[intro_id] = max(at, self._aired.get(intro_id, at))
                 self._unwritten = True
+        while self._released:
+            self._reserved.pop(self._released.popleft(), None)
 
     def _last_locked(self, intro_id: str, intro: Intro) -> float | None:
         """When *intro* last aired, or is planned to.  Caller holds ``_lock``."""
@@ -579,9 +582,13 @@ class MatchedIntros:
         """The mix bus reports *intro_id* on the air.  Never waits."""
         self._heard.append((intro_id, time.time()))
 
+    def release_later(self, intro_ids: Iterable[str]) -> None:
+        """Queue reservations the mix bus left without waiting for the store lock."""
+        self._released.extend(intro_ids)
+
     def needs_upkeep(self) -> bool:
         """Whether :meth:`upkeep` has anything to do."""
-        return bool(self._heard or self._unwritten or self._doomed)
+        return bool(self._heard or self._released or self._unwritten or self._doomed)
 
     def upkeep(self) -> None:
         """Write when intros aired and delete audio a delete had to leave (the station's tick).

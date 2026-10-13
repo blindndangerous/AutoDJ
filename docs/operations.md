@@ -977,6 +977,16 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
 - **Seek** is not available while streaming. The seek slider is hidden on the page, and the comma
   and full-stop keyboard shortcuts announce "Seeking is not available while streaming."
 - **EQ** is applied once, on the server, so every listener hears the same shaped sound.
+- **Music speed** (Settings, Sound) runs music from 10% slower to 10% faster, with 0 as the
+  default. Type up to two decimal places; the slider's arrow keys move one percentage point.
+  Pitch changes with speed. Liners, voice tracks, matched intros and cue previews keep their
+  normal speed. Saved cues and seek positions still refer to the original file; clock fitting
+  and forecasts account for the changed playing time.
+  Stream and server audio apply changes at the next safe rendered-buffer handoff, keeping the
+  current audio and booked speech intact. Browser playback applies a change immediately when
+  no transition is running. At nonzero speed, ordinary music/liner crossfades use a plain fade
+  so effects cannot change the voice; browser beatmatching also changes pitch. The setting is
+  saved per station as `[playback] music_speed_percent` and creates no audio files.
 - **Sound processing** is chosen in Settings, Sound. Stereo Tool loads the selected `.sts` preset
   when its processor starts; changing the preset restarts it. The bundled Included preset is
   read-only. Uploads (up to 2 MB) live in `index/stereo-tool-presets` beside the active index
@@ -1442,17 +1452,31 @@ station name, two stations sharing a recording folder or relay target, or a stat
 `config.toml` does not load at all, so doctor reports it as a configuration failure and names the
 problem.
 
-### Stereo Tool: one station at a time
+### Stereo Tool instances and licences
 
-One Stereo Tool licence covers one running copy, so AutoDJ lets only one station use Stereo Tool
-at a time. A second station set to `loudness_processing = "stereotool"` does not start while
-another station uses it, and choosing Stereo Tool in a station's settings, or applying a profile
-that does, is refused with a message naming the station that has it. A station that has just
-left Stereo Tool still counts until its current song ends. Use `"smooth"` for the other
-stations; with a second licence, a later version can lift this limit.
+Each station owns its own mastering process and may run Stereo Tool at the same time as other
+stations. For independent instances, Thimeo instructs users to make separately named executable
+copies. Set each station's existing `playback.stereotool_path` to its own executable
+in that station's configuration. A shared default executable path is not a guarantee that a
+particular Stereo Tool build supports independent instances. For example:
 
-Stereo Tool presets are shared by every station, and each station chooses its own. A preset that
-any station uses, running or stopped, cannot be deleted; the message names the station.
+```toml
+[stations.nightowl.playback]
+loudness_processing = "stereotool"
+stereotool_path = "C:/Radio/Stereo Tool Night Owl.exe"
+```
+
+Thimeo requires a separate licence for each radio-processing instance; one key does not license
+multiple simultaneous stations. Check [Thimeo's installation guidance](https://www.thimeo.com/stereo-tool/installed/)
+and [licensing terms](https://www.thimeo.com/stereo-tool/licenses/) for current details. AutoDJ does
+not manage licences or claim that unrestricted broadcast use is free.
+
+Each running station adds a real-time processor and encoder. Test CPU load and underruns while
+all intended stations run; AutoDJ does not impose a machine-independent station limit.
+
+Stereo Tool preset files are shared by all stations, and each station selects its own preset. A
+preset selected by any station, running or stopped, cannot be deleted; the message names the
+station using it.
 
 ### The station switcher
 
@@ -3036,24 +3060,26 @@ Available conditions:
   Category Current hits combines those groups. A song matching several conditions is included
   once, so it gets no extra chance of being picked. Category hours still apply even when another
   condition also matches the song. Categories are music groups, so this condition is not offered
-  for voice liners.
+  for voice liners. Choose **is not** to leave out that category's songs.
 - **Folder**: a registered music or liner folder, or a subfolder such as `Rock/Live`. Include
-  subfolders applies to that condition. The registered folder must include subfolders before a
+  subfolders applies to that condition; **is not** excludes it. The registered folder must include subfolders before a
   condition can use one of them.
-- **Genre**: choose a genre held in the library. Matching ignores case. Multiple labels stored
+- **Genre**: choose a genre held in the library and choose **is** or **is not**. Matching ignores case. Multiple labels stored
   with semicolons, or as a list, are matched separately; slashes and commas remain part of a label.
-- **Year**, **BPM** and **Duration**: equal to, less than, at most, greater than, at least, or between
-  two values. Between includes both ends. Year is the release year in AutoDJ's library. Duration
+- **Year**, **BPM** and **Duration**: equal to, not equal, less than, at most, greater than, at least,
+  between two values or outside a range. Between includes both ends; outside excludes both. Year is
+  the release year in AutoDJ's library. Duration
   is the full file length; enter seconds or `minutes:seconds`.
 - **Artist**, **Title** and **Album**: exact text, contains text, or a wildcard pattern. Matching
-  ignores case. In a pattern, `*` means any text and `?` means one character. Other punctuation is
+  also support does not contain and does not match. Matching ignores case. In a pattern, `*` means any text and `?` means one character. Other punctuation is
   literal; these are not regular expressions.
 - **Beets field**: a field from the configured Beets database, including custom fields. Choose a
-  text or numeric comparison. `original_year` uses the first-release year, falling back to
+  text or numeric comparison, including the matching exclusions. `original_year` uses the first-release year, falling back to
   `year` when it is missing. Ordinary conditions work without Beets.
 
-A missing value does not match a condition. Unknown year, BPM or duration values are not treated
-as zero. The player reads Beets without changing it and caches the requested fields until the
+A missing value does not match a condition, including a negative condition. Unknown year, BPM or
+duration values are not treated as zero. Genre exclusions reject a track if any genre label matches.
+The player reads Beets without changing it and caches the requested fields until the
 database changes. An unavailable database or field produces an error when saving or activating
 a step that needs it. If it becomes unavailable during playback, that step is skipped with a
 status message. Other valid steps can still play.
@@ -3174,13 +3200,25 @@ category plays is set by how many steps of the clockwheel use it. Choose **Music
 with folder and metadata conditions in the same step; the category itself stays unchanged.
 
 Keep them in the **Library tools** tab, **Categories**, next to the clockwheels that use them. The
-list says how many songs each category holds, how many playlist lines match no library track,
+list says how many unique songs each category holds, how many playlist lines match no library track,
 how many songs were placed by their release year (see below), and which clockwheels use it. **Add
-category** and **Edit** open one form; **Check** counts the songs without saving, and **Save**
-refuses a query that cannot run or names a field no song has. **Delete** asks first and names the
+category** and **Edit** open one form; the count refreshes after a short pause, and **Check** gives
+immediate feedback. Counts describe the matching selection before playback limits and hours.
+Settled category and clock-step counts are also announced to screen readers after each completed
+check; edits and stale count responses do not produce announcements. Categories saved with matching
+conditions require a newer AutoDJ release: older versions refuse a categories file containing
+`source = "filters"`, so upgrade again before downgrading or restore a backup made before saving
+such a category.
+**Save** refuses a query that cannot run or names a field no song has. **Delete** asks first and names the
 clockwheels with a step for the category.
 
-A category's songs come from one of two sources:
+A category's songs come from one of three sources:
+
+- **Matching conditions** use the same Match all / Match any filters as a music clockwheel step:
+  registered folders, genre, year, BPM, duration, artist, title, album and available Beets fields.
+  A condition can exclude a folder, genre or text value, or use a numeric not-equal/outside-range
+  comparison. Unknown metadata never passes an exclusion; a genre exclusion leaves out a track if
+  any of its genre labels matches. Categories cannot refer to other categories.
 
 - **A beets query**, such as `original_year:2000..2009` or `genre:rock ^artist:"bon jovi"`. It is
   read against AutoDJ's library, with the values of the live beets database (`[library] beets_db`,
@@ -3226,6 +3264,11 @@ category is missing or empty. An unedited legacy category step keeps its old who
 fallback when all steps fail; saving it from the editor converts it to an explicit condition.
 The dayparting-only fallback also remains when matched songs are held back only by their allowed
 days or hours. The clockwheel keeps its place in each case.
+
+While editing, the step form counts unique tracks that match its current conditions. It uses the
+music or liner library selected by the step, before repeat protection, DMCA limits, step or category
+hours, and other playback restrictions. A preset change has no track count. Count errors and
+incomplete conditions are shown in the form; automatic updates are not announced by screen readers.
 
 **Dayparting.** Under **When the songs may play**, a category can allow its songs only on chosen
 days, only between two times (**Allowed from** and **Allowed until**), or both, such as Friday and
