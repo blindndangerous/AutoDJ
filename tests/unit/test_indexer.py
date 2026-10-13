@@ -473,6 +473,21 @@ class TestEnrichFromBeets:
                 "Enriched 1",
             ]
 
+    def test_skips_catalog_entries_absent_from_beets(self, tmp_path: Path) -> None:
+        from autodj.catalog import LibraryCatalog
+        from autodj.indexer import enrich_from_beets
+
+        entries, _vectors = self._make_distinctive_index(tmp_path)
+        idx = tmp_path / "idx"
+        self._make_catalog(idx, entries, tmp_path)
+        beets = tmp_path / "beets.db"
+        self._make_beets(beets, [{"path": str(tmp_path / "other.flac"), "title": "Other"}])
+        assert enrich_from_beets(idx, music_dir=tmp_path, beets_db=beets) == (0, 2)
+        with LibraryCatalog(idx / "library.db") as catalog:
+            assert [entry.title for entry in catalog.entries_snapshot()] == [
+                entry.title for entry in entries
+            ]
+
     def test_updates_initial_key(self, tmp_path: Path) -> None:
         from autodj.indexer import enrich_from_beets
 
