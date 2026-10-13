@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import random
+import re
 import sqlite3
 import threading
 import time
@@ -370,6 +371,30 @@ def apply_repeat_windows(player: Any) -> None:
     )
 
 
+#: "outside its hours", "outside its days" or "outside its dates" in a reason.
+_OUTSIDE_ITS = re.compile(r"outside its (hours|days|dates)\b")
+
+
+def _closure_words(context: _PickContext) -> str:
+    """What holds the closed categories back, in words, such as "hours" or "days or dates".
+
+    Read from the reasons the category index gives (``"outside its dates: ..."``),
+    in the order days, hours, dates, joined with commas and a final "or";
+    "hours" when no reason says.
+    """
+    found = sorted(
+        {
+            match.group(1)
+            for reason in context.closed_categories.values()
+            if (match := _OUTSIDE_ITS.search(reason))
+        },
+        key=("days", "hours", "dates").index,
+    )
+    if not found:
+        return "hours"
+    return found[0] if len(found) == 1 else f"{', '.join(found[:-1])} or {found[-1]}"
+
+
 def _log_repeat_blocks(repeat: RepeatFilter, picked: IndexEntry) -> None:
     """Log which repeat rules held candidates back before *picked* was chosen."""
     for path, reason in repeat.held_back.items():
@@ -603,8 +628,9 @@ class _PickContext:
         closed_categories: The ID of each such category and the reason, in
             words, for the clockwheel to skip its steps.
         at: When the picked song is expected to start, in wall-clock
-            seconds, or ``None`` for now; the clockwheel's liner steps judge
-            the liners' play dates by that day.
+            seconds, or ``None`` for now; clockwheel steps with days and
+            hours are checked then, and the liner steps judge the liners'
+            play dates by that day.
     """
 
     recent: deque
@@ -1230,6 +1256,10 @@ class Player:
         boundary = next_boundary(
             datetime.fromtimestamp(self._now()).astimezone(), clock["resync_minutes"]
         )
+        from autodj.categories import parse_step_hours
+
+        # Each step's days and hours, by step index (None for a step without).
+        step_hours = tuple(parse_step_hours(step) for step in clock["steps"])
         with settings_lock(self):
             self._clock = {
                 "name": name,
@@ -1237,6 +1267,7 @@ class Player:
                 "resync_minutes": clock["resync_minutes"],
             }
             self._clock_slots = slots
+            self._clock_step_hours = step_hours
             self._clock_status = "Ready"
             self._seed_clock_following = None
             self._clock_next_boundary = boundary.timestamp() if boundary else None
@@ -1370,6 +1401,8 @@ class Player:
             cache = ConditionPaths(self._clock_slots, entries, liners, beets_items)
             self._clock_condition_cache = cache
 
+        closed_steps = self._closed_clock_steps(context)
+
         def pick(
             use_rules: bool,
             use_recent: bool,
@@ -1402,7 +1435,11 @@ class Player:
                 liners=playable_liners,
                 categories=categories,
                 beets=beets_items,
-                condition_errors=condition_errors,
+                # A step outside its days and hours is skipped like a step
+                # whose conditions cannot be read.
+                condition_errors={**condition_errors, **closed_steps}
+                if closed_steps
+                else condition_errors,
                 condition_cache=cache,
                 closed_categories=context.closed_categories if hours else None,
             )
@@ -1460,7 +1497,9 @@ class Player:
         )
         self._clock_status = "; ".join(picked.skipped) or "Ready"
         if self._clock_closed_only:
-            self._clock_status += "; every song this clockwheel can play is outside its hours"
+            self._clock_status += (
+                f"; every song this clockwheel can play is outside its {_closure_words(context)}"
+            )
         self._log_category_skips(picked.skipped)
         if picked.entry is not None and picked.preset:
             from autodj.presets import get_preset
@@ -1472,6 +1511,23 @@ class Player:
         if picked.entry is not None:
             _log_repeat_blocks(context.repeat, picked.entry)
         return picked
+
+    def _closed_clock_steps(self, context: _PickContext) -> dict[int, str]:
+        """The clockwheel steps outside their days and hours, by index, and why.
+
+        Checked at the expected start of the song being picked, as the
+        categories' hours are.
+        """
+        step_hours = getattr(self, "_clock_step_hours", ())
+        if not any(step_hours):
+            return {}
+        wall = self._station_now(context.at)
+        closed = {}
+        for index, hours in enumerate(step_hours):
+            reason = hours.refusal(wall) if hours is not None else None
+            if reason:
+                closed[index] = reason
+        return closed
 
     def _eligible_entries(
         self,
@@ -1560,7 +1616,11 @@ class Player:
 
     def _log_category_skips(self, skipped: list[str]) -> None:
         """Log the category steps a pick passed over, once until the reasons change."""
-        reasons = tuple(reason for reason in skipped if reason.startswith("category"))
+        reasons = tuple(
+            reason
+            for reason in skipped
+            if reason.startswith("category") or _OUTSIDE_ITS.search(reason)
+        )
         if reasons and reasons != getattr(self, "_category_skips_logged", ()):
             logger.warning(
                 "Clock: %s; the clockwheel moved on to its next step", "; ".join(reasons)
@@ -1659,14 +1719,16 @@ class Player:
             if pool:
                 chosen = self._chooser().choice(pool)  # nosec B311 -- music selection
                 logger.info(
-                    "Dayparting: %s is outside its category's hours; %s plays instead",
+                    "Dayparting: %s is outside its category's %s; %s plays instead",
                     entry.display_name,
+                    _closure_words(context),
                     chosen.display_name,
                 )
                 return chosen
         self._warn_all_closed(
             context.closed,
-            f"Dayparting: {entry.display_name} plays outside its category's hours: "
+            f"Dayparting: {entry.display_name} plays outside its category's "
+            f"{_closure_words(context)}: "
             "no other song can play",
         )
         return entry
@@ -3475,7 +3537,7 @@ class Player:
         if audible is everything and context.closed:
             self._warn_all_closed(
                 context.closed,
-                "Dayparting: every song is outside its category's hours; "
+                f"Dayparting: every song is outside its category's {_closure_words(context)}; "
                 "playing one anyway rather than stopping the music",
             )
         bpm_range = self._bpm_range

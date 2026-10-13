@@ -191,3 +191,35 @@ def test_categories_save_and_report_their_days_and_hours(tmp_path, monkeypatch):
             "/api/categories", json={"name": "Rock", "source": "query", "query": "genre:rock"}
         ).json()["category"]
         assert (plain["daypart_text"], plain["allowed_now"]) == ("", True)
+        assert listed["outside_now"] == "hours"
+
+        # A season: dates saved, said in words, and named as what holds it back.
+        season = client.post(
+            "/api/categories",
+            json={
+                "name": "Christmas",
+                "source": "query",
+                "query": "genre:rock",
+                "not_before": "2026-12-01",
+                "not_after": "2026-12-26",
+            },
+        )
+        assert season.status_code == 201, season.text
+        christmas = season.json()["category"]
+        assert (christmas["not_before"], christmas["not_after"]) == ("2026-12-01", "2026-12-26")
+        assert christmas["daypart_text"] == (
+            "Plays only between 1 December 2026 and 26 December 2026"
+        )
+        assert (christmas["allowed_now"], christmas["outside_now"]) == (False, "dates")
+        backwards = client.post(
+            "/api/categories",
+            json={
+                "name": "Backwards",
+                "source": "query",
+                "query": "genre:rock",
+                "not_before": "2026-12-26",
+                "not_after": "2026-12-01",
+            },
+        )
+        assert backwards.status_code == 400
+        assert backwards.json()["field"] == "not_after"

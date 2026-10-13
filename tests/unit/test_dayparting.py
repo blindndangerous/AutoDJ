@@ -419,11 +419,14 @@ def _reference_closed(
     """closed_now without its cache, as it was worked out before the cache."""
     paths: set[str] = set()
     reasons: dict[str, str] = {}
+    from autodj.categories import daypart_refusal
+
     for item in categories:
         if item.dayparted and not item.allows(when):
             paths |= results[item.id].paths
             text = describe_daypart(item)
-            reasons[item.id] = f"outside its hours: {text[0].lower()}{text[1:]}"
+            word = daypart_refusal(item, when)
+            reasons[item.id] = f"outside its {word}: {text[0].lower()}{text[1:]}"
     return frozenset(paths), reasons
 
 

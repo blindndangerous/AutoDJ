@@ -10,6 +10,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Seasons for rotation categories (#140): under **When the songs may play**, a category can have a
+  **Not before** date, a **Do not play after** date, or both, such as 1 to 26 December for
+  Christmas songs. Outside them its songs are left out of every pick mode and a clockwheel step
+  for it is skipped, as outside its hours; the list says the season in words and "Outside its
+  dates now". Categories without dates are saved as before.
+- Days and hours for clockwheel steps (#140): any step can keep to chosen days and hours in the
+  new **When this step plays** fields of the step form. Outside them the step is skipped as an
+  empty step is, with "outside its hours" in the clockwheel status and the server log; the hours
+  are checked for when the song is expected to start. The step list says them after the step. A
+  clockwheel whose every song step is outside its hours does what it does when no step has a
+  song; it gets no new whole-library fallback. Steps without hours are written as before, so an
+  older AutoDJ still reads the file.
+- Dayparting messages name what holds the songs back: "outside its hours", "outside its days" or
+  "outside its dates", in the clockwheel status, the server log and the category list (#140). The
+  category list changes its words in place when a poll finds a category now inside or outside
+  them, without moving focus.
+
 - Play dates for time check voice packs (#140): in Settings, Time checks, **Voice pack play
   dates** gives a pack a **Not before** date, a **Do not play after** date, or both, such as a
   holiday voice in December. Outside them a ticked pack is passed over and the other ticked packs

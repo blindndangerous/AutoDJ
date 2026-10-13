@@ -2089,9 +2089,11 @@ one reads differently:
 
 - An every-N-minutes schedule event that keeps to chosen days: AutoDJ 0.20.0 and older ignore its
   days and run it every day. Edit the event, or delete it, before going back.
-- A schedule event with a date range, a category with days and hours, or a cart with play dates:
-  an older AutoDJ that does not know these fields sets the whole file (`schedule.json`,
-  `categories.json` or `carts.json`) aside as damaged and starts without it. Files saved without
+- A schedule event with a date range, a category with days, hours or dates, a clockwheel step with
+  days or hours, or a cart with play dates:
+  an older AutoDJ that does not know these fields refuses the whole file. It sets
+  `schedule.json`, `categories.json` (a category with dates included) or `carts.json` aside as
+  damaged and starts without it, and leaves such a clockwheel off. Files saved without
   these settings load in either version. Liner play dates are in a file of their own,
   `liner_dates.json`, which an older AutoDJ does not read.
 - Voice pack play dates are kept beside the time check switches in `time_checks.json`; an older
@@ -2352,6 +2354,28 @@ leaves the clock off while the station keeps playing:
 that folder from the library stops the clockwheel until you edit its steps. Later features (carts,
 time checks, ad breaks) add their own step types through `autodj.clockwheel_store.register_step_type`.
 
+**When this step plays.** Any step can keep to chosen days, to hours (**Allowed from** and
+**Allowed until**), or both, in the step form's **When this step plays** fields, with the rule
+categories use: wall-clock times in the station time zone, the start included and the end not,
+and a window that crosses midnight belongs to the day it starts. Outside them the step is skipped
+as an empty step is, and the clockwheel moves on to its next step; a voice liner step outside
+its hours leaves the following song without its liner, and a Switch preset step outside its hours
+switches nothing. The hours are checked for when the song is expected to start, as the
+categories' are. The step list says them after the step, such as "music from Rock, only on
+Friday and Saturday from 22:00 until 02:00", the clockwheel status and the server log say why a
+step was skipped ("Step 3: outside its hours: plays only ...", or "outside its days" on a day it
+does not keep), and the rotation tester counts those skips. A clockwheel whose every song step is
+outside its hours does what it does when no step has a song: one with category steps plays a song
+from the whole library, and one of folder, condition or track steps plays nothing until a step
+opens, as before. The whole-library song that a category's own hours allow is only for songs held
+back by their categories, not by a step's hours. A voice liner step and the song step after it
+are both judged at the song change; a liner that started after the song (#159) would still be
+judged then. In the
+file a step has `"days": [4, 5], "hours_from": "22:00", "hours_until": "02:00"`; a step without
+them is written as before, so an older AutoDJ still reads the clockwheel. Use this for a step or
+two that differ at night; for a different clockwheel at night, a schedule event that switches
+clockwheels is simpler.
+
 **Import .PAL** turns a SAM Broadcaster `.PAL` file into a new clockwheel, once; the `.PAL` file
 is not used after that. Only `Dir[...]` and `SubDir[...]` lines with `QueueBottom` are read, and
 nothing in the file runs. Each folder must be a registered music or voice liner folder, or a folder
@@ -2454,6 +2478,16 @@ one plays anyway is logged once, and again only after the hours change.
 For dayparting single songs, make a category from a beets query on a field you set, such as
 `beet modify daypart=night` and the query `daypart:night`, and give it the hours. Categories that
 have no days or hours are saved as before, so an older AutoDJ still reads the file.
+
+**Seasons.** The same fields take a **Not before** and a **Do not play after** date, both
+included, in the station time zone, such as 1 December until 26 December for Christmas songs.
+Outside them the category's songs are left out exactly as outside its hours, and a clockwheel
+step for it is skipped with "outside its dates" (or "outside its days" on a day it does not keep).
+The server log names what holds the songs back, such as "every song is outside its category's
+dates". Dates combine with days and hours: a Friday
+22:00 until 02:00 window whose last date is that Friday still plays until 02:00 on Saturday. The
+list says the season in words, such as "Plays only between 1 December 2026 and 26 December
+2026", and "Outside its dates now." A category without dates is saved without the two fields.
 
 The categories are kept in `categories.json` in the active index folder, written atomically and
 included in `autodj backup`; a damaged file is set aside as `categories.json.bad-<id>` and the
