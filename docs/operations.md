@@ -1195,8 +1195,10 @@ listeners" or "Oldies Hour, off air"; the station the page controls has a tick a
   and recording) and "Shared by all stations" after the Library tools tab and song points.
   Confirmations, such as Clear queue, end with the station's name.
 - **The address keeps the station:** the page adds `?station=nightowl` to its address, so a
-  reload or a bookmark opens the same station. An address naming a station that is not
-  configured opens the default station and says so.
+  reload or a bookmark opens the same station. Each browser also remembers the last station
+  chosen and opens it when the address names none; the address wins. An address naming a
+  station that is not configured opens the default station and says so; if the station list
+  cannot be loaded, the page keeps the station the address names and loads the list again.
 - **Listen here** keeps playing the station it was started on. While the page controls another
   station, a line under the controls says which, for example "Playing AutoDJ"; pressing Listen
   here stops it, and pressing it again plays the station the page now controls.

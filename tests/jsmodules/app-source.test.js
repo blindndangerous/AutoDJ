@@ -143,7 +143,12 @@ async function setupApp({
       return Promise.resolve(onAuthStatus());
     }
     if (url === "/api/status") return Promise.resolve(jsonResponse(state));
-    if (url === "/api/stations") return Promise.resolve(jsonResponse({ stations }));
+    if (url === "/api/stations") {
+      // null: the list cannot be loaded.
+      return Promise.resolve(stations
+        ? jsonResponse({ stations })
+        : jsonResponse({ detail: "Station list unavailable" }, 503));
+    }
     if (url === "/api/version") {
       return Promise.resolve(jsonResponse({
         version: "test", commit: "test", built_at: "2026-01-01T00:00:00Z",
@@ -189,6 +194,12 @@ async function setupApp({
 
 afterEach(() => {
   for (const listener of hashListeners.splice(0)) window.removeEventListener("hashchange", listener);
+  // A switch remembers its station per browser (#70); every test starts fresh.
+  try {
+    globalThis.localStorage?.removeItem("autodj.station");
+  } catch {
+    // No storage here: nothing was remembered.
+  }
   vi.useRealTimers();
   vi.unstubAllGlobals();
   for (const modulePath of moduleMocks) vi.doUnmock(modulePath);
@@ -3484,5 +3495,70 @@ describe("several stations (#70)", () => {
       .toContain("/api/stations/default/stream"));
     await vi.waitFor(() => expect(audio.play).toHaveBeenCalledTimes(2));
     expect(audio.src).toMatch(/\/stream\.mp3\?connection=/);
+  });
+});
+
+describe("several stations: the first station (#70 review)", () => {
+  const OWL = { slug: "nightowl", name: "Night Owl Radio", state: "playing", listeners: 0, title: null };
+  const AUTODJ = { slug: "default", name: "AutoDJ", state: "playing", listeners: 0, title: null };
+  const owlStatus = (url) => (url === "/api/stations/nightowl/status"
+    ? jsonResponse({ stream_mode: true, stream_state: "idle" })
+    : jsonResponse({ detail: "not in this test" }, 404));
+
+  function memoryStorage(initial = {}) {
+    const values = new Map(Object.entries(initial));
+    return {
+      getItem: vi.fn((key) => (values.has(key) ? values.get(key) : null)),
+      setItem: vi.fn((key, value) => values.set(key, String(value))),
+      removeItem: vi.fn((key) => values.delete(key)),
+      values,
+    };
+  }
+
+  afterEach(() => {
+    window.history.replaceState(null, "", "/");
+  });
+
+  it("keeps ?station= when the station list cannot be loaded, and says nothing about it", async () => {
+    window.history.replaceState(null, "", "/?station=nightowl");
+    const app = await setupApp({ stations: null, onRequest: owlStatus });
+    expect(app.WebSocketImpl.mock.calls[0][0]).toMatch(/\/api\/stations\/nightowl\/ws$/);
+    expect(location.search).toBe("?station=nightowl");
+    expect(document.getElementById("sr-status").textContent).not.toMatch(/No station is called/);
+  });
+
+  it("opens the last station chosen in this browser when the address names none", async () => {
+    vi.stubGlobal("localStorage", memoryStorage({ "autodj.station": "nightowl" }));
+    const app = await setupApp({ stations: [AUTODJ, OWL], onRequest: owlStatus });
+    expect(app.WebSocketImpl.mock.calls[0][0]).toMatch(/\/api\/stations\/nightowl\/ws$/);
+    expect(location.search).toBe("?station=nightowl");
+  });
+
+  it("lets the address win over the remembered station", async () => {
+    vi.stubGlobal("localStorage", memoryStorage({ "autodj.station": "nightowl" }));
+    window.history.replaceState(null, "", "/?station=default");
+    const app = await setupApp({ stations: [AUTODJ, OWL], onRequest: owlStatus });
+    expect(app.WebSocketImpl.mock.calls[0][0]).not.toMatch(/stations/);
+  });
+
+  it("forgets a remembered station that is no longer configured, without a word", async () => {
+    const storage = memoryStorage({ "autodj.station": "oldies" });
+    vi.stubGlobal("localStorage", storage);
+    const app = await setupApp({ stations: [AUTODJ, OWL], onRequest: owlStatus });
+    expect(app.WebSocketImpl.mock.calls[0][0]).not.toMatch(/stations/);
+    expect(storage.values.has("autodj.station")).toBe(false);
+    expect(document.getElementById("sr-status").textContent).not.toMatch(/No station is called/);
+  });
+
+  it("remembers the station a switch chooses", async () => {
+    const storage = memoryStorage();
+    vi.stubGlobal("localStorage", storage);
+    await setupApp({ stations: [AUTODJ, OWL], onRequest: owlStatus });
+    const button = document.getElementById("station-button");
+    button.focus();
+    button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await vi.waitFor(() => expect(storage.values.get("autodj.station")).toBe("nightowl"));
   });
 });

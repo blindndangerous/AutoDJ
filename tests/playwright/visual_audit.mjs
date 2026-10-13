@@ -1193,6 +1193,10 @@ async function stationSwitcherProblems(page) {
       offAir: !document.getElementById("station-off-air").hidden,
     };
   });
+  const size = await button.boundingBox();
+  if (!size || size.height < 44 || size.width < 44) {
+    problems.push(`station button ${Math.round(size?.width || 0)}x${Math.round(size?.height || 0)} px, under 44 px`);
+  }
   await button.focus();
   await page.keyboard.press("Enter");
   await settle(page);

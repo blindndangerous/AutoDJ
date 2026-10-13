@@ -191,7 +191,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   library, search, presets and pairing stay shared. The heading, the browser tab's title, the main
   landmark and the station tabs name it, the switch is announced, and screen readers hear "On
   Night Owl Radio" after each control that changes what is on air and "Shared by all stations"
-  after shared ones. `?station=<slug>` in the address opens a station. `c` moves to the switcher
+  after shared ones. `?station=<slug>` in the address opens a station, and each browser
+  remembers the last one chosen. `c` moves to the switcher
   and Shift+C says which station the page controls. Listen here keeps playing the station it was
   started on. A stopped station shows an off-air note with Start, and Settings, Stream can stop a
   station other than the default one. Hidden with one station, so a single-station page is

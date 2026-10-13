@@ -1543,14 +1543,38 @@ function setOffAir(offAir) {
   }
 }
 
+// Whether the list loaded; a failure keeps the list the page had.
 async function refreshStationList() {
+  let loaded = false;
   try {
     const body = await requestJson("/api/stations");
     setKnownStations(body.stations);
+    loaded = true;
   } catch (errorValue) {
     if (errorValue?.status !== 404) reportBackgroundRequestError(errorValue);
   }
   renderStationContext();
+  return loaded;
+}
+
+// The last station chosen in this browser, used when the address names
+// none; the address wins.  Storage that is blocked just forgets.
+const LAST_STATION_KEY = "autodj.station";
+function rememberLastStation(slug) {
+  try {
+    if (slug === DEFAULT_STATION) globalThis.localStorage?.removeItem(LAST_STATION_KEY);
+    else globalThis.localStorage?.setItem(LAST_STATION_KEY, slug);
+  } catch (_) {
+    // Not remembered; the address still keeps it for this tab.
+  }
+}
+function lastStation() {
+  try {
+    return stationFromAddress(`?station=${encodeURIComponent(
+      globalThis.localStorage?.getItem(LAST_STATION_KEY) || "")}`);
+  } catch (_) {
+    return null;
+  }
 }
 
 // The station this page controls has stopped: the connection pill, the
@@ -1661,6 +1685,7 @@ async function switchStation(slug) {
   if (slug === currentStation()) return;
   selectStation(slug);
   rememberStationInAddress(slug);
+  rememberLastStation(slug);
   const socket = _ws;
   _ws = null;
   if (socket) {
@@ -2929,21 +2954,40 @@ function startAuthenticatedApp(initialState) {
 // The first state: the station list, then the station named by
 // ?station= in the address (the default station without one).  A name
 // that is not configured falls back to the default station and says so.
+// The first state: the station list, then the station named by
+// ?station= in the address, or else the last one chosen in this browser
+// (the default station without either).  A name is called unknown only
+// when the list loaded and lacks it; without the list the choice is kept
+// and the list is asked for again.
 async function initialStationState() {
-  await refreshStationList();
-  const asked = stationFromAddress(location.search);
+  let loaded = await refreshStationList();
+  const fromAddress = stationFromAddress(location.search);
+  const asked = fromAddress || lastStation();
   if (asked && asked !== DEFAULT_STATION) {
-    if (stationEntry(asked)) {
+    if (!loaded) loaded = await refreshStationList();
+    if (stationEntry(asked) || !loaded) {
       selectStation(asked);
+      if (!fromAddress) rememberStationInAddress(asked);
+      if (!loaded) retryStationList();
     } else {
-      rememberStationInAddress(DEFAULT_STATION);
-      announceStatus(document.getElementById("sr-status"),
-        `No station is called ${asked}. Showing ${stationName(DEFAULT_STATION)}.`,
-        { dwellMs: 8000, force: true, tone: "error" });
+      rememberLastStation(DEFAULT_STATION);
+      if (fromAddress) {
+        rememberStationInAddress(DEFAULT_STATION);
+        announceStatus(document.getElementById("sr-status"),
+          `No station is called ${asked}. Showing ${stationName(DEFAULT_STATION)}.`,
+          { dwellMs: 8000, force: true, tone: "error" });
+      }
     }
   }
   renderStationContext();
   return requestStationState();
+}
+
+// Asks for the station list every 10 seconds until it loads.
+function retryStationList() {
+  setTimeout(async () => {
+    if (!await refreshStationList()) retryStationList();
+  }, 10000);
 }
 
 void bootstrapAuthenticatedApp({
