@@ -22,7 +22,7 @@ name.
 
 ``GET  /``                  → index.html
 ``GET  /api/status``        → JSON state snapshot (station)
-``GET  /api/version``       → {version, commit, built_at} for footer build stamp
+``GET  /api/version``       → {version, commit, built_at, commit_url?} for footer build stamp
                               (commit and built_at only with a session when pairing is on)
 ``POST /api/skip``          → skip to next track (station)
 ``GET  /api/search?q=``     → fuzzy search of indexed tracks
@@ -45,6 +45,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import shutil
 import ssl
 import stat
@@ -88,12 +89,15 @@ from autodj.listener_access import (
     AddressLimitError,
     BannedAddressError,
     ListenerAuthLimiter,
-    forwarded_allow_ips,
     normalize_address,
+    trusted_proxy_setting,
 )
 from autodj.machine_tokens import MachineTokenStore
+from autodj.matched_intros_api import UPLOAD_PATH as INTRO_UPLOAD_PATH
 from autodj.model_identity import CachedModelCommit
 from autodj.pairing import DeviceRegistry
+from autodj.player_page import install_player_pages
+from autodj.request_page import install_request_pages
 from autodj.scheduler import system_timezone
 from autodj.secret_files import machine_tokens_path, paired_devices_path
 from autodj.security import (
@@ -361,8 +365,12 @@ async def _broadcast_state_once(
     failures: _BroadcastFailureLog,
     listener_revision: int | None = None,
     recording_status: Callable[[], dict[str, object]] | None = None,
+    station_list: Callable[[], list[dict[str, Any]]] | None = None,
 ) -> None:
     """Push the player state to every WebSocket client, if any are connected.
+
+    With several stations, *station_list* gives every station's entry, as
+    ``GET /api/stations`` does, so the page's station switcher stays current.
 
     A failure (building the state, encoding it, or sending it) is logged
     through *failures* and never raised, so the next push still runs:
@@ -378,6 +386,8 @@ async def _broadcast_state_once(
             state["stream_listener_revision"] = listener_revision
         if recording_status is not None:
             state["recording"] = recording_status()
+        if station_list is not None:
+            state["stations"] = station_list()
         payload = json.dumps(state)
         await _broadcast_and_prune(clients, clients_lock, payload)
     except Exception as exc:
@@ -470,36 +480,53 @@ def _is_stream_path(path: str) -> bool:
     return name != path and "/" not in name and name.endswith((".mp3", ".m3u"))
 
 
-@functools.cache
-def _version_info() -> dict[str, str]:
-    """Return {version, commit, built_at} for the running build.
+# Where the footer's build stamp links a commit.  A constant, so neither the
+# environment nor a request can point the link anywhere else.
+_REPOSITORY_URL = "https://github.com/blindndangerous/AutoDJ"
+# A short or full git object name.  Anything else is not shown or linked.
+_COMMIT_RE = re.compile(r"[0-9a-f]{7,40}")
 
-    Cached on first call.  ``built_at`` is the modification time of the
-    served ``app.js``, or the time of the first call when it is missing.
-    Commit is the short SHA from `git rev-parse` when the source tree
-    is a git checkout, else "unknown".
-    """
-    import datetime
+
+def _valid_commit(value: str | None) -> str | None:
+    """Return *value* lowercased when it is 7 to 40 hex digits, else None."""
+    candidate = (value or "").strip().lower()
+    return candidate if _COMMIT_RE.fullmatch(candidate) else None
+
+
+def _git_commit() -> str | None:
+    """Return the checkout's short HEAD commit, or None without git or a checkout."""
     import subprocess  # nosec B404 - trusted invocation (git, fixed argv)
 
-    version = current_version()
-
-    commit = "unknown"
     try:
-        # Static argv, no shell, no untrusted input.  git on PATH is a
-        # build-environment expectation; absence falls through to the
-        # "unknown" placeholder.
+        # Static argv, no shell, no untrusted input.  A container image has
+        # neither git nor .git, so this falls through to AUTODJ_COMMIT.
         out = subprocess.check_output(  # nosec B603 B607
             ["git", "rev-parse", "--short", "HEAD"],
             cwd=_STATIC_DIR.parent,
             stderr=subprocess.DEVNULL,
             text=True,
             timeout=2,
-        ).strip()
-        if out:
-            commit = out
+        )
     except (OSError, subprocess.SubprocessError):
-        pass
+        return None
+    return _valid_commit(out)
+
+
+@functools.cache
+def _version_info() -> dict[str, str]:
+    """Return {version, commit, built_at} and, for a known commit, commit_url.
+
+    Cached on first call.  ``built_at`` is the modification time of the
+    served ``app.js``, or the time of the first call when it is missing.
+    Commit is the short SHA from `git rev-parse` when the source tree is a
+    git checkout, else the AUTODJ_COMMIT the container image was built
+    with, else "unknown".  Either must be 7 to 40 hex digits to be used;
+    ``commit_url`` links that commit in the project's repository.
+    """
+    import datetime
+
+    version = current_version()
+    commit = _git_commit() or _valid_commit(os.environ.get("AUTODJ_COMMIT"))
 
     candidate = _STATIC_DIR / "app.js"
     built_at: str | None = None
@@ -510,7 +537,10 @@ def _version_info() -> dict[str, str]:
     if built_at is None:
         built_at = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
 
-    return {"version": version, "commit": commit, "built_at": built_at}
+    info = {"version": version, "commit": commit or "unknown", "built_at": built_at}
+    if commit:
+        info["commit_url"] = f"{_REPOSITORY_URL}/commit/{commit}"
+    return info
 
 
 __all__ = ["PlayerBridge", "create_app", "serve"]
@@ -970,6 +1000,8 @@ def create_app(
         "/api/pair": lambda: PAIRING_BODY_MAX_BYTES,
         "/api/liners/upload": lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
         "/api/carts/upload": lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
+        # Matched intros (#127) have the liner upload's cap.
+        INTRO_UPLOAD_PATH: lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
         "/api/stereo-tool-presets/upload": lambda: MAX_PRESET_BYTES + _MULTIPART_OVERHEAD_BYTES,
         "/api/schedule": lambda: _SCHEDULE_BODY_MAX_BYTES,
         "/api/machine-tokens": lambda: SMALL_BODY_MAX_BYTES,
@@ -1336,6 +1368,12 @@ def create_app(
         except KeyError:
             raise HTTPException(status_code=404, detail="Not Found") from None
         return status_page(station, by_name=True)
+
+    # The listener request page (#49), off unless [requests] turns it on.
+    install_request_pages(app, stations)
+    # The player page and embeddable player (#52), off unless [player_page]
+    # turns them on for the station.
+    install_player_pages(app, stations)
 
     # ------------------------------------------------------------------
     # Radio stream (stream mode only; 404 otherwise)
@@ -2030,6 +2068,8 @@ def _share_station(stations: StationRegistry, station: StationRuntime) -> None:
     station.bridge.stereo_tool_elsewhere = lambda: stations.stereo_tool_user(exclude=slug)
     station.bridge.stereo_tool_lock = stations.stereo_tool_lock
     station.owns_liner = functools.partial(stations.owns_liner, slug)
+    if len(stations.slugs()) > 1:
+        station.station_list = stations.summaries
 
 
 def _station_broadcast(station: StationRuntime) -> Callable[[], Coroutine[Any, Any, None]]:
@@ -2053,6 +2093,7 @@ def _station_broadcast(station: StationRuntime) -> Callable[[], Coroutine[Any, A
                 failures,
                 listener_access.revision if listener_access is not None else None,
                 recorder.status if recorder is not None else None,
+                station.station_list,
             )
 
     return broadcast
@@ -2184,6 +2225,8 @@ def _extra_station(
         paths=StationPaths.for_station(spec.cfg, slug),
         preset=spec.cfg.playback.stereotool_preset,
         build=build,
+        requests_enabled=spec.cfg.requests.enabled,
+        player_page=spec.cfg.player_page,
     )
 
 
@@ -2456,13 +2499,19 @@ def serve(
         "port": port,
         "log_level": "warning",
     }
+    # Uvicorn rewrites request.client and scheme only for configured proxy
+    # peers, in every mode: the listener limits, the pairing lockout and the
+    # request page's per-address limits all key on the client address.
+    # Without [stream] trusted_proxies, an existing FORWARDED_ALLOW_IPS is
+    # honoured; without either, only a proxy on this machine.
+    uvicorn_kwargs["proxy_headers"] = True
+    allow, proxy_warnings = trusted_proxy_setting(cfg.stream.trusted_proxies, os.environ)
+    uvicorn_kwargs["forwarded_allow_ips"] = allow
+    for warning in proxy_warnings:
+        logger.warning("%s", warning)
     if stream or extra_stations:
         # HTTP/1.0 radio players need close-delimited audio, not chunked framing.
         uvicorn_kwargs["http"] = "h11"
-        # Uvicorn rewrites request.client and scheme only for configured proxy peers.
-        uvicorn_kwargs["proxy_headers"] = True
-        # Empty means a proxy on this machine, as Uvicorn trusts by default.
-        uvicorn_kwargs["forwarded_allow_ips"] = forwarded_allow_ips(cfg.stream.trusted_proxies)
         uvicorn_kwargs["timeout_graceful_shutdown"] = _STREAM_SHUTDOWN_GRACE_SECONDS
     reloaders: list[CertificateReloader] = []
     if ssl_certfile is not None and ssl_keyfile is not None:

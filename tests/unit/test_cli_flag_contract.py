@@ -48,7 +48,8 @@ def _workflow_invocations() -> list[list[str]]:
     found = []
     for workflow in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
         for line in workflow.read_text(encoding="utf-8").splitlines():
-            match = re.search(r"\bautodj\s+([a-z][a-z-]*)(.*)$", line)
+            # The root group's --config may come before the subcommand.
+            match = re.search(r"\bautodj\s+(?:--config\s+\S+\s+)?([a-z][a-z-]*)(.*)$", line)
             if match is None:
                 continue
             found.append([match.group(1), *_FLAG.findall(match.group(2))])

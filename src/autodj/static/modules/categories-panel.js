@@ -2,9 +2,8 @@
 //
 // The server keeps them in categories.json and works out their songs.  This
 // module lists them with their counts (plain text), and adds, edits and
-// deletes them through one form.  Each result of a button (Check, Save,
-// Delete) is said once through #categories-status; the list and the
-// match count are never live regions, so polling never speaks.
+// deletes them through one form. Button results and each settled background
+// count are announced once through #categories-status.
 //
 // Focus: Add and Edit move it to Name; Save moves it to the saved
 // category's Edit button, Cancel back to the button that opened the form,
@@ -438,8 +437,12 @@ export function installCategoriesPanel({ document: doc = document, request = req
           match.textContent = result.error
             ? `Count unavailable: ${result.error}`
             : `${countsText(result)} match the selection before playback restrictions.`;
+          announceStatus(status, match.textContent, { tone: result.error ? "error" : "info" });
         } catch (error) {
-          if (countCurrent(item.epoch, item.mine)) match.textContent = `Count unavailable: ${error.message}`;
+          if (countCurrent(item.epoch, item.mine)) {
+            match.textContent = `Count unavailable: ${error.message}`;
+            announceStatus(status, match.textContent, { tone: "error" });
+          }
         }
       }
     } finally { countRunning = false; }

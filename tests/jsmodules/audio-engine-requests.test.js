@@ -500,6 +500,31 @@ describe("audio engine request recovery", () => {
     expect(low.value).toBe("100");
   });
 
+  it("never sends an EQ change to a station the page switched to (#70)", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { engine } = await importEngine();
+    const stations = await import("../../src/autodj/static/modules/stations.js");
+    stations.setKnownStations([
+      { slug: "default", name: "AutoDJ", state: "playing" },
+      { slug: "nightowl", name: "Night Owl Radio", state: "playing" },
+    ]);
+
+    engine.postEq();
+    stations.selectStation("nightowl");
+    await vi.advanceTimersByTimeAsync(121);
+    await flushPromises();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // A change made on the new station goes to it.
+    engine.postEq();
+    await vi.advanceTimersByTimeAsync(121);
+    await flushPromises();
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["/api/stations/nightowl/eq"]);
+    stations.selectStation("default");
+  });
+
   it("reports rejected EQ updates", async () => {
     vi.useFakeTimers();
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(

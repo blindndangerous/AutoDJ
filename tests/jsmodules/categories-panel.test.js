@@ -106,7 +106,7 @@ describe("categories markup", () => {
     expect([...section.querySelectorAll('input[type="radio"]')].every((radio) => radio.name === "categories-source")).toBe(true);
     expect(byId("categories-query").getAttribute("aria-describedby")).toBe("categories-query-help");
     expect(byId("categories-playlist").getAttribute("aria-describedby")).toBe("categories-playlist-help");
-    expect(byId("categories-check").getAttribute("aria-describedby")).toBe("categories-match");
+    expect(byId("categories-match").getAttribute("aria-hidden")).toBe("true");
     expect(byId("categories-list").getAttribute("aria-labelledby")).toBe("categories-list-heading");
     expect(byId("categories-match").getAttribute("aria-live")).toBeNull();
     expect(section.querySelector("[aria-controls]")).toBeNull();
@@ -207,6 +207,18 @@ describe("categories form", () => {
     expect(items()).toHaveLength(3);
     expect(document.activeElement).toBe(rowButton(2, "edit"));
     expect(changed).toHaveBeenCalledTimes(1);
+  });
+
+  it("announces a settled background count once without announcing edits", async () => {
+    const server = await open();
+    byId("categories-add").click();
+    byId("categories-name").value = "Rock gold";
+    byId("categories-name").dispatchEvent(new Event("input", { bubbles: true }));
+    byId("categories-query").value = "genre:rock";
+    byId("categories-query").dispatchEvent(new Event("input", { bubbles: true }));
+    expect(status()).toBe("");
+    await vi.waitFor(() => expect(status()).toContain("match the selection before playback restrictions."), { timeout: 1500 });
+    expect(server.calls.filter((call) => call.url === "/api/categories/check")).toHaveLength(1);
   });
 
   it("edits a playlist category with the playlist choice, and Cancel goes back to its Edit button", async () => {

@@ -108,6 +108,9 @@ function clearStaleStatus(target) {
 }
 
 function applyView(name, userInitiated) {
+  if (_currentView === "track-info" && name !== "track-info") {
+    document.getElementById("points-preview")?.pause();
+  }
   _currentView = name;
   for (const [k, sec] of _viewSections) {
     if (k === name) sec.removeAttribute("hidden");

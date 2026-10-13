@@ -21,10 +21,10 @@ its render cursor, the open song change and the queue, under the locks
 their writers hold or checked for a consistent read.  The dry run picks
 with a copy of the player that has its own clock, play history, clockwheel
 place and random generator, so a preview never draws the station's random
-choices or moves its clockwheel.  Previews run on one worker thread below
+choices or moves its clockwheel. Previews run on one worker thread below
 normal priority, never on the event loop; each is kept for a few seconds
-while what is fixed stays the same, and stops at a song limit and a time
-limit.
+while its timeline and picking inputs stay current, and stops at a song
+limit and a time limit.
 """
 
 from __future__ import annotations
@@ -109,9 +109,11 @@ BREAK_KINDS = {"dj": "DJ", "news": "News", "weather": "Weather", "music_news": "
 NOTES = (
     "Predicted songs come from a dry run of the station's own picker, starting where the fixed "
     "part ends. They change as the real picks are made.",
-    "Times are estimates: each song runs from its saved start to its segue, or its length less "
-    "the crossfade, and liners and booked breaks add their full length.",
-    "Automatic liners, time checks and carts are left out; a scheduled change of song picking "
+    "Song times use saved start and segue cues, or the configured crossfade. Liner placement "
+    "uses saved start, end, segue and overlap cues; trimmed audio tails can still vary from "
+    "the catalog length.",
+    "Automatic liners, matched intros not yet mixed, time checks and carts are left out; a "
+    "scheduled change of song picking "
     "applies from the first song after its time.",
 )
 
@@ -132,13 +134,14 @@ class Item:
     """One thing the station plays.
 
     Attributes:
-        kind: ``"song"``, ``"liner"`` or ``"break"``.
+        kind: ``"song"``, ``"liner"``, ``"break"`` or ``"intro"`` (an intro
+            matched to the next song, #127).
         starts: When it starts, in wall-clock seconds.
         seconds: For a song, how long until the next song starts; for a
-            liner or break, its own length.
+            liner or break, its cue-trimmed duration.
         status: A key of :data:`STATUS_WORDS`.
-        entry: The song or liner; ``None`` for a break.
-        label: A break's kind and description.
+        entry: The song or liner; ``None`` for a break or an intro.
+        label: A break's kind and description, or an intro's label.
     """
 
     kind: str
@@ -205,6 +208,109 @@ def _remaining(player: Any, entry: Any, offset_s: float, average: float) -> floa
     return max(0.0, seconds)
 
 
+def _preview_liner_group(
+    player: Any,
+    outgoing: Any,
+    incoming: Any,
+    liners: Sequence[Any],
+    moment: float,
+) -> tuple[list[tuple[Any, float, float]], float]:
+    """Place cue-trimmed liner rows and return the incoming song's extra delay."""
+    from autodj.playout import liner_chain_placement, liner_release_frames
+
+    sr = SAMPLE_RATE
+    chain: list[tuple[Any, int, int, bool]] = []
+    negative: list[tuple[int, float, int]] = []
+    zero: list[tuple[int, int]] = []
+    first_negative = False
+    frames = main_frames = fit_main_frames = 0
+    release = 0.0
+    ordinary = False
+    for entry in liners:
+        cues = player.saved_points(entry)
+        start = max(0.0, float(cues.get("start") or 0.0))
+        end = min(float(entry.length or 0.0), float(cues.get("end") or entry.length or 0.0))
+        first, last = round(start * sr), round(end * sr)
+        clip_frames = max(0, last - first)
+        segue = cues.get("segue")
+        speech = (
+            clip_frames
+            if segue is None
+            else min(clip_frames, max(0, round(float(segue) * sr) - first))
+        )
+        offset = frames
+        main_frames = frames + speech
+        cue = cues.get("overlap_start")
+        overlap = speech / sr if cue is None else min(float(cue), speech / sr)
+        if cue is not None and cue < 0:
+            negative.append((offset, cue, speech))
+        elif cue == 0:
+            zero.append((offset, speech))
+        else:
+            ordinary = True
+        if not chain:
+            first_negative = cue is not None and cue < 0
+        if overlap > 0 or cue is None:
+            release = max(release, offset / sr + overlap)
+        if cue == 0:
+            fit_main_frames = max(fit_main_frames, main_frames)
+        record = player._library.catalog.record_for_path(entry.path) if player._library else None
+        allow_outro = bool(record and record.get("allow_outro", False))
+        chain.append((entry, offset, clip_frames, allow_outro))
+        frames += clip_frames
+
+    incoming_points = player.saved_points(incoming)
+    incoming_start = float(incoming_points.get("start") or 0.0)
+    intro = max(0.0, float(incoming_points.get("intro") or incoming_start) - incoming_start)
+    intro_frames = round(intro * sr)
+    if negative:
+        constraints = [
+            offset + liner_release_frames(speech, intro_frames, cue)
+            for offset, cue, speech in negative
+        ]
+        constraints.extend(offset + speech - intro_frames for offset, speech in zero)
+        if ordinary:
+            constraints.append(round(release * sr))
+        if not first_negative:
+            constraints.append(0)
+        release_frames = max(constraints)
+    elif fit_main_frames:
+        release_frames = max(round(release * sr), fit_main_frames - intro_frames)
+    else:
+        release_frames = round(release * sr)
+    release_frames = max(release_frames, main_frames - intro_frames)
+
+    if outgoing is None:
+        return [
+            (entry, moment + offset / sr, clip_frames / sr)
+            for entry, offset, clip_frames, _ in chain
+        ], release_frames / sr
+    outgoing_start, segue = player._clock_music_span(outgoing)
+    points = player.saved_points(outgoing)
+    start_frame, segue_frame = round(outgoing_start * sr), round(segue * sr)
+    outro = points.get("outro")
+    safe_outro = max(
+        start_frame,
+        min(segue_frame, round(float(outro) * sr) if outro is not None else segue_frame),
+    )
+    limit = None
+    for _entry, offset, _length, allow_outro in chain:
+        if not allow_outro:
+            limit = offset / sr if limit is None else min(limit, offset / sr)
+    liner_start, incoming_frame = liner_chain_placement(
+        start_frame,
+        segue_frame,
+        safe_outro,
+        main_frames,
+        intro_frames,
+        release_frames / sr,
+        limit,
+    )
+    base = moment + (liner_start - segue_frame) / sr
+    rows = [(entry, base + offset / sr, length / sr) for entry, offset, length, _ in chain]
+    return rows, max(0, incoming_frame - segue_frame) / sr
+
+
 def _break_label(desk: Any, break_id: str) -> str:
     item = desk.get(break_id) if desk is not None else None
     if item is None:
@@ -221,7 +327,7 @@ def _mixed_in(
     status: str,
     queued: list[Any],
 ) -> list[Item]:
-    """The liners and breaks mixed into *track*, whose audio starts at *base*.
+    """The liners, breaks and matched intros mixed into *track*, whose audio starts at *base*.
 
     Ones already over are left out; one under way is on the air.  Liners
     taken from the queue are added to *queued*.
@@ -242,6 +348,13 @@ def _mixed_in(
             continue
         label = _break_label(desk, break_id)
         found.append(Item("break", at, length, "on_air" if at <= now else status, label=label))
+    for frame, _intro_id, end, intro_label in getattr(track, "intro_events", ()):
+        at = base + frame / SAMPLE_RATE
+        length = max(0.0, (end - frame) / SAMPLE_RATE)
+        if at + length <= now:
+            continue
+        label = f"Matched intro: {intro_label}" if intro_label else "Matched intro"
+        found.append(Item("intro", at, length, "on_air" if at <= now else status, label=label))
     return found
 
 
@@ -378,18 +491,40 @@ def read_station(player: Any, desk: Any = None, *, now: float | None = None) -> 
                 break
     liners = _liner_paths(player)
     moment = handoff
-    for entry in waiting[:MAX_QUEUED]:
+    queued = waiting[:MAX_QUEUED]
+    index = 0
+    while index < len(queued):
+        entry = queued[index]
         if entry.path in liners:
-            length = float(entry.length or 0.0)
-            items.append(Item("liner", moment, length, "queued", entry))
-            unplayed.append((entry, moment))
-            moment += length
+            end = index + 1
+            while end < len(queued) and queued[end].path in liners:
+                end += 1
+            group = queued[index:end]
+            incoming = queued[end] if end < len(queued) else None
+            if (
+                incoming is not None
+                and incoming.path not in liners
+                and player._cfg.playback.transition_mode == "saved_points"
+            ):
+                rows, delay = _preview_liner_group(player, last, incoming, group, moment)
+            else:
+                rows, delay = [], 0.0
+                for item in group:
+                    length = float(item.length or 0.0)
+                    rows.append((item, moment + delay, length))
+                    delay += length
+            for liner, starts, seconds in rows:
+                items.append(Item("liner", starts, seconds, "queued", liner))
+                unplayed.append((liner, starts))
+            moment += delay
+            index = end
             continue
         seconds = _remaining(player, entry, 0.0, average)
         items.append(Item("song", moment, seconds, "queued", entry))
         unplayed.append((entry, moment))
         last = entry
         moment += seconds
+        index += 1
     cursor, clock_name, boundary = clock
     return Decided(
         now=now,
@@ -638,11 +773,20 @@ def _predict(
             stopped = f"no song could be picked after {current.display_name}: {exc}"
             break
         moment = handoff
-        for liner, _queued in added:
-            length = float(liner.length or 0.0)
-            found.append(Item("liner", moment, length, "predicted", liner))
-            record(liner, moment)
-            moment += length
+        if added and player._cfg.playback.transition_mode == "saved_points":
+            rows, delay = _preview_liner_group(
+                player, current, entry, [liner for liner, _ in added], moment
+            )
+            for liner, starts, length in rows:
+                found.append(Item("liner", starts, length, "predicted", liner))
+                record(liner, starts)
+            moment += delay
+        else:
+            for liner, _queued in added:
+                length = float(liner.length or 0.0)
+                found.append(Item("liner", moment, length, "predicted", liner))
+                record(liner, moment)
+                moment += length
         record(entry, moment)
         seconds = song_seconds(player, entry, average)
         found.append(Item("song", moment, seconds, "predicted", entry))
@@ -909,6 +1053,8 @@ def item_title(item: Item) -> str:
     """ "Artist, Title" for a song (a comma, which a screen reader pauses on)."""
     if item.kind == "break":
         return item.label or "Break"
+    if item.kind == "intro":
+        return item.label or "Matched intro"
     entry = item.entry
     artist = (getattr(entry, "artist", "") or "").strip()
     title = (getattr(entry, "title", "") or "").strip()
@@ -1160,6 +1306,7 @@ class _Job:
     minutes: int
     desk: Any
     describe: Callable[[Any], str] | None
+    force: bool = False
 
 
 class HourPreviews:
@@ -1167,8 +1314,8 @@ class HourPreviews:
 
     Asks for the same station and span share one answer: a preview being
     made, or waiting to be, is shared by everyone who asks meanwhile, and a
-    finished one is reused for :data:`KEEP_SECONDS` while nothing new is
-    fixed.  At most :data:`MAX_WAITING` previews wait for the worker; one
+    finished one is reused for :data:`KEEP_SECONDS` while its timeline and
+    picking inputs stay current. At most :data:`MAX_WAITING` previews wait for the worker; one
     more is refused with :class:`PreviewBusy`.
     """
 
@@ -1178,6 +1325,7 @@ class HourPreviews:
         self._cond = threading.Condition()
         self._kept: dict[_Key, tuple[float, str, dict[str, Any]]] = {}
         self._asked: dict[_Key, concurrent.futures.Future[dict[str, Any]]] = {}
+        self._forced: dict[_Key, concurrent.futures.Future[dict[str, Any]]] = {}
         self._waiting: deque[_Job] = deque()
         self._thread: threading.Thread | None = None
         self._closing = False
@@ -1189,6 +1337,7 @@ class HourPreviews:
         *,
         desk: Any = None,
         describe: Callable[[Any], str] | None = None,
+        force: bool = False,
     ) -> concurrent.futures.Future[dict[str, Any]]:
         """The preview of *source*'s next *minutes*, made on the worker thread.
 
@@ -1200,14 +1349,16 @@ class HourPreviews:
         with self._cond:
             if self._closing:
                 raise PreviewsClosed("The server is shutting down")
-            shared = self._asked.get(key)
+            shared = self._forced.get(key) if force else self._asked.get(key)
             if shared is not None:
                 return shared
             if len(self._waiting) >= self._limit:
                 raise PreviewBusy("The hour preview is busy; try again in a few seconds")
             future: concurrent.futures.Future[dict[str, Any]] = concurrent.futures.Future()
             self._asked[key] = future
-            self._waiting.append(_Job(key, future, source, minutes, desk, describe))
+            if force:
+                self._forced[key] = future
+            self._waiting.append(_Job(key, future, source, minutes, desk, describe, force))
             if self._thread is None:
                 self._thread = threading.Thread(
                     target=self._work, name="autodj-hour-preview", daemon=True
@@ -1229,7 +1380,11 @@ class HourPreviews:
                 if job.future.set_running_or_notify_cancel():
                     try:
                         view = self.get(
-                            job.source, job.minutes, desk=job.desk, describe=job.describe
+                            job.source,
+                            job.minutes,
+                            desk=job.desk,
+                            describe=job.describe,
+                            force=job.force,
                         )
                     except BaseException as exc:
                         job.future.set_exception(exc)
@@ -1239,6 +1394,8 @@ class HourPreviews:
                 with self._cond:
                     if self._asked.get(job.key) is job.future:
                         del self._asked[job.key]
+                    if self._forced.get(job.key) is job.future:
+                        del self._forced[job.key]
 
     def shutdown(self, timeout: float) -> bool:
         """Take no more previews, cancel the waiting ones and join the worker.
@@ -1253,6 +1410,7 @@ class HourPreviews:
                 job.future.cancel()
             self._waiting.clear()
             self._asked.clear()
+            self._forced.clear()
             thread = self._thread
             self._cond.notify_all()
         if thread is None:
@@ -1267,6 +1425,7 @@ class HourPreviews:
         *,
         desk: Any = None,
         describe: Callable[[Any], str] | None = None,
+        force: bool = False,
     ) -> dict[str, Any]:
         """The preview of *source*, kept for :data:`KEEP_SECONDS` while nothing new is fixed.
 
@@ -1274,10 +1433,50 @@ class HourPreviews:
         """
         decided = read_station(source.player, desk)
         key = (source.station, minutes)
-        signature = decided.signature()
+        player = source.player
+        settings = tuple(
+            (name, repr(getattr(player, name, None)))
+            for name in (
+                "_pure_shuffle",
+                "_anchor_to_seed",
+                "_seed_path",
+                "_discovery_every",
+                "_clock",
+                "_clock_steps",
+                "_pending_clock_update",
+            )
+        )
+        catalog = getattr(getattr(player, "_library", None), "catalog", None)
+        version_reader = getattr(catalog, "change_versions", None)
+        versions = version_reader() if version_reader else None
+        categories = getattr(getattr(player, "_library", None), "categories", None)
+        category_signature = categories.cache_signature() if categories else None
+        # The wall-clock handoff stays steady during playback but moves after a seek.
+        signature = hashlib.sha256(
+            repr(
+                (
+                    decided.signature(),
+                    round(decided.handoff),
+                    decided.clock_boundary,
+                    repr(getattr(player, "_cfg", None)),
+                    settings,
+                    getattr(player._state, "discovery_enabled", None),
+                    source.timezone,
+                    repr(getattr(desk, "config", None)),
+                    source.events,
+                    versions,
+                    category_signature,
+                )
+            ).encode("utf-8")
+        ).hexdigest()
         with self._cond:
             kept = self._kept.get(key)
-        if kept is not None and kept[1] == signature and time.monotonic() - kept[0] < self._keep:
+        if (
+            not force
+            and kept is not None
+            and kept[1] == signature
+            and time.monotonic() - kept[0] < self._keep
+        ):
             return kept[2]
         view = build_preview(source, minutes, desk=desk, decided=decided, describe=describe)
         with self._cond:
@@ -1323,6 +1522,7 @@ def install_hour_preview(router: StationRouter) -> None:
         station: StationDep,
         request: Request,
         minutes: int = Query(DEFAULT_MINUTES, ge=MIN_MINUTES, le=MAX_MINUTES),
+        refresh: bool = False,
     ) -> dict[str, Any]:
         """The station's next *minutes*: estimated start times, fixed or predicted, and backtiming."""
         source = _source(station)
@@ -1331,7 +1531,11 @@ def install_hour_preview(router: StationRouter) -> None:
         previews = _previews(request)
         try:
             future = previews.submit(
-                source, minutes, desk=getattr(station, "breaks", None), describe=describe
+                source,
+                minutes,
+                desk=getattr(station, "breaks", None),
+                describe=describe,
+                force=refresh,
             )
         except PreviewsClosed as exc:
             raise HTTPException(status_code=503, detail="The server is shutting down") from exc

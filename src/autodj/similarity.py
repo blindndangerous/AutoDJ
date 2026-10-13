@@ -45,6 +45,26 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def _one_per_song(
+    scored: list[tuple[float, IndexEntry]], song_of: Callable[[str], str] | None
+) -> list[tuple[float, IndexEntry]]:
+    """The best-scoring version of each song in *scored* (score-descending), in order.
+
+    *song_of* names a path's song (see
+    :meth:`~autodj.repeat_rules.SongVersions.song`); ``None`` keeps *scored*.
+    """
+    if song_of is None:
+        return scored
+    seen: set[str] = set()
+    kept = []
+    for score, entry in scored:
+        song = song_of(entry.path)
+        if song not in seen:
+            seen.add(song)
+            kept.append((score, entry))
+    return kept
+
+
 def _softmax_pick(
     scored: list[tuple[float, IndexEntry]],
     top_k: int,
@@ -231,6 +251,21 @@ class SimilarityIndex:
         with self._reload_lock:
             idx = self._path_to_idx.get(path)
             return self._public_entries[idx] if idx is not None else None
+
+    def similarity(self, path_a: str, path_b: str) -> float | None:
+        """How alike two tracks sound: the cosine of their embeddings, or ``None``.
+
+        ``None`` when either track has no embedding in this index.
+        """
+        with self._reload_lock:
+            a = self._path_to_idx.get(path_a)
+            b = self._path_to_idx.get(path_b)
+            if a is None or b is None:
+                return None
+            # The index holds normalized vectors, so the inner product is the cosine.
+            va = cast(npt.NDArray[np.float32], self.faiss_index.reconstruct(a))
+            vb = cast(npt.NDArray[np.float32], self.faiss_index.reconstruct(b))
+        return float(np.dot(va, vb))
 
     def _public_entry(self, entry: IndexEntry) -> IndexEntry:
         """Return immutable public view for one internal candidate."""
@@ -429,6 +464,7 @@ class SimilarityIndex:
         pick_temperature: float = 0.0,
         repeat_filter: Callable[[IndexEntry], bool] | None = None,
         rng: random.Random | None = None,
+        song_of: Callable[[str], str] | None = None,
     ) -> IndexEntry:
         """Find the best next track after *current_path* that isn't in *recently_played*.
 
@@ -453,6 +489,8 @@ class SimilarityIndex:
                 dropped when nothing passes it.
             rng: The generator a dry run of the picker draws from (see
                 :func:`_softmax_pick`).
+            song_of: Names a path's song when versions count as one song;
+                only the best-scoring version of each song is a candidate.
 
         Returns:
             The :class:`IndexEntry` for the recommended next track.
@@ -549,11 +587,12 @@ class SimilarityIndex:
 
             if target_bpm is None:
                 candidates.sort(key=lambda x: x[0], reverse=True)
+                candidates = _one_per_song(candidates, song_of)
                 best = _softmax_pick(candidates, pick_top_k, pick_temperature, rng)
                 logger.debug("Next track: %s", best.display_name)
                 return self._public_entry(best)
 
-            reranked = self._rerank(candidates, target_bpm, bpm_weight)
+            reranked = _one_per_song(self._rerank(candidates, target_bpm, bpm_weight), song_of)
             best = _softmax_pick(reranked, pick_top_k, pick_temperature, rng)
             logger.debug(
                 "Next track (BPM re-ranked): %s (bpm=%.0f, target=%.0f)",

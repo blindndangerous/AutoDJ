@@ -197,11 +197,12 @@ describe("hour preview card", () => {
   it("says the summary once when Refresh preview is pressed", async () => {
     vi.useFakeTimers();
     try {
-      harness([view(), view()]);
+      const { request } = harness([view(), view()]);
       await open();
       byId("hour-preview-refresh").click();
       await settle();
       await vi.advanceTimersByTimeAsync(1);
+      expect(request).toHaveBeenLastCalledWith("/api/hour-preview?minutes=60&refresh=true");
       expect(byId("hour-preview-status").textContent).toBe(
         `Hour preview updated. ${view().summary}`,
       );
@@ -307,6 +308,46 @@ describe("hour preview card", () => {
     await settle();
     expect(request).toHaveBeenCalledTimes(2);
     expect(byId("hour-preview-status").textContent).toBe("");
+  });
+
+  it("forces a quiet refresh after a seek", async () => {
+    const { controls, request, timers } = harness([view(), view()]);
+    await open();
+    controls.noteSeek();
+    const seekTimer = timers.filter((timer) => timer.ms === 2000).at(-1);
+    seekTimer.fn();
+    await settle();
+    expect(request).toHaveBeenLastCalledWith("/api/hour-preview?minutes=60&refresh=true");
+    expect(byId("hour-preview-status").textContent).toBe("");
+  });
+
+  it("keeps the newest seek result visible and confirms the explicit refresh", async () => {
+    vi.useFakeTimers();
+    try {
+      let finishManual;
+      let finishQuiet;
+      const manual = new Promise((resolve) => { finishManual = resolve; });
+      const quiet = new Promise((resolve) => { finishQuiet = resolve; });
+      const { controls, request, timers } = harness([view(), manual, quiet]);
+      await open();
+      byId("hour-preview-refresh").click();
+      await settle();
+      controls.noteSeek();
+      timers.filter((timer) => timer.ms === 2000).at(-1).fn();
+      await settle();
+      expect(request).toHaveBeenCalledTimes(3);
+      finishQuiet(view({ summary: "Quiet seek result." }));
+      await settle();
+      finishManual(view({ summary: "Manual refresh result." }));
+      await settle();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(byId("hour-preview-summary").textContent).toBe("Quiet seek result.");
+      expect(byId("hour-preview-status").textContent).toContain(
+        "Hour preview updated. Quiet seek result.",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("speaks a recent preview on Shift+H, or asks for a new one", async () => {

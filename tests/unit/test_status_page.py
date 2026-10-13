@@ -135,7 +135,7 @@ def test_missing_fields_fall_back_to_plain_words() -> None:
 
 def test_the_default_station_keeps_its_addresses() -> None:
     html = render_status_page(FEED, stream_mode=True)
-    assert '<body data-feed="/api/nowplaying">' in html
+    assert '<body data-page="status" data-feed="/api/nowplaying">' in html
     assert '<a href="/stream.m3u" download="autodj.m3u">' in html
     assert '<a href="/api/nowplaying">The same details as JSON</a>' in html
 
@@ -150,7 +150,7 @@ def test_another_station_page_names_its_own_feed_and_stream() -> None:
         playlist_name="nightowl.m3u",
     )
     assert "<title>Night Owl Radio: station status</title>" in html
-    assert '<body data-feed="/api/stations/nightowl/nowplaying">' in html
+    assert '<body data-page="status" data-feed="/api/stations/nightowl/nowplaying">' in html
     assert '<a href="/stations/nightowl.mp3">Listen to the stream</a>' in html
     assert '<a href="/stations/nightowl.m3u" download="nightowl.m3u">' in html
     assert '<a href="/api/stations/nightowl/nowplaying">The same details as JSON</a>' in html
@@ -177,7 +177,7 @@ def test_a_stopped_station_page_says_it_is_off_air_with_the_same_parts() -> None
     assert '<section id="status-next-section" hidden>' in html
     assert f'<dd id="status-uptime">{OFF_AIR}</dd>' in html
     assert '<dd id="status-listeners">0 listeners</dd>' in html
-    assert '<body data-feed="/api/stations/nightowl/nowplaying">' in html
+    assert '<body data-page="status" data-feed="/api/stations/nightowl/nowplaying">' in html
     escaped = render_off_air_page(
         "<b>", feed_url='/x"y', stream_path="/s.mp3", m3u_path="/s.m3u", playlist_name="s.m3u"
     )

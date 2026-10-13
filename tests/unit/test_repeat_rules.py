@@ -703,7 +703,10 @@ class TestTrackKeyCache:
         entry = _entry("a", artist="Calvin Harris & Dua Lipa", title="One Kiss (Live)", album="X")
         keys = cache.keys(entry)
         assert keys == TrackKeys(
-            frozenset({"calvin harris and dua lipa", "calvin harris", "dua lipa"}), "x", "one kiss"
+            frozenset({"calvin harris and dua lipa", "calvin harris", "dua lipa"}),
+            "x",
+            "one kiss",
+            ("calvin harris and dua lipa", "one kiss"),
         )
         assert cache.keys(entry) is keys
         assert len(calls) == 1

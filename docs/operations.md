@@ -66,7 +66,11 @@ FFmpeg is not on the PATH: advanced analysis cannot process `.mp3`, `.m4a`, `.mp
 files, and stream mode cannot start. The `categories` check warns about rotation categories with no
 songs, playlist lines that match no library track (naming the first few), and a query or playlist
 that cannot be read; its detail counts each category's songs and the songs placed by their release
-year (see [Rotation categories](#rotation-categories)).
+year (see [Rotation categories](#rotation-categories)). The `config-keys` check lists the keys and
+tables in `config.toml` and `config.local.toml` that AutoDJ ignores. The `recording` check warns
+when the recording folder cannot be written or made, and the `liners` check when a configured
+liner folder is missing. With several stations, each station is checked on its own lines (see
+[Backups and doctor](#backups-and-doctor)).
 
 ## Indexing and DJ analysis
 
@@ -319,6 +323,20 @@ is not supported: the `Secure` cookie flag and the origin checks follow AutoDJ's
 For remote access, see [HTTPS with your own domain](#https-with-your-own-domain). The image's
 health check tries HTTP and then HTTPS, so it works either way.
 
+### Build stamp
+
+The footer of the web page names the commit the server runs, linked to that commit on GitHub,
+once the browser is paired. A bare-metal checkout reads it from git. The image has no git and
+its build leaves out `.git`, so pass the commit when you build it:
+
+```bash
+AUTODJ_COMMIT=$(git rev-parse --short HEAD) docker compose build
+AUTODJ_COMMIT=$(git rev-parse --short HEAD) docker compose up -d --build
+```
+
+Without it the footer says "build unknown". The value must be 7 to 40 hexadecimal digits;
+anything else is ignored.
+
 ### Advanced overrides
 
 `--lan` covers names this machine knows about. For a DNS name it cannot detect, such as a name
@@ -478,9 +496,11 @@ tunnel, port forwarding or any other proxy: AutoDJ's pairing is built for a home
 strangers on the internet. After the Access login, pair each remote browser as usual. Every
 request through the tunnel reaches AutoDJ from the `cloudflared` machine's address, so the
 per-address limit on wrong pairing codes counts all remote browsers together unless
-`[stream] trusted_proxies` includes that direct peer in stream mode. This setting affects client
-addresses on all routes in stream mode, including pairing and audit logs. Set it only when the proxy appends or replaces
-`X-Forwarded-For` correctly.
+`[stream] trusted_proxies` includes that direct peer. This setting affects client addresses on all
+routes in every mode, including pairing, the listener request limits and audit logs. Set it only
+when the proxy appends the address it saw to `X-Forwarded-For`, or overwrites the header with it.
+A proxy that passes a client's own `X-Forwarded-For` through unchanged lets any client choose its
+address.
 
 The radio stream link (`/stream.mp3`) works at home. Through the tunnel it is behind
 Access too, so players that cannot log in, such as Sonos, cannot use it from outside.
@@ -650,6 +670,69 @@ stylesheet and feed requests. It uses the system's light or dark colours, or the
 theme chosen under Settings, Display and keys, Theme in a browser that opened the web page at the
 same address (`/modules/theme-init.js` reads that choice before the page is drawn).
 
+### Player page and embeddable player
+
+A station can also have a public page where listeners press Play to hear it in the browser, and
+a compact version of it to put on another website. Both are off until you turn them on, for each
+station on its own:
+
+```toml
+[player_page]
+enabled = true                 # the player page, /player
+embed = true                   # the embeddable player, /embed
+embed_origins = ["https://nightowlradio.example"]   # sites that may show /embed in a frame
+```
+
+For another station, write the same keys under `[stations.<slug>.player_page]`; its pages are at
+`/stations/<slug>/player` and `/stations/<slug>/embed` (the default station's also answer at
+`/stations/default/player` and `/stations/default/embed`). A page that is off answers 404. The
+settings are read when AutoDJ starts. `GET /api/stations` lists each station's `player_path` and
+`embed_path`, or `null` while that page is off.
+
+**The player page** (`/player`) has the station's name, a **Play** button, a **Volume** slider,
+the song playing, the next song when **Show the next song publicly** is on (never in DMCA mode),
+the songs played most recently (as many as `[nowplaying] history_limit`), and links to the stream,
+its playlist file and the status page. Nothing plays until Play is pressed; the button then reads
+**Stop**, and a line under it says "Connecting to the stream.", "Playing.", "Stopped." or why the
+stream could not be played. Stop closes the connection, so a stopped page does not hold a listener
+slot, and Play joins the live stream again. The volume is remembered in that browser. The song
+line is the only part a screen reader hears on its own, once per song, as on the status page;
+**Pause updates** stops the page following the station. Without JavaScript the browser's own audio
+controls play the stream instead. If the stream stalls while playing, the line says
+"Buffering." once and "Playing." when the sound is back; if nothing has started 15 seconds after
+Play, it stops and says the stream could not be played. Where the browser does not let a page set
+the volume (Safari on iPhone and iPad), the slider is replaced by a note that the device's own
+volume applies. The page uses the system's light or dark colours, or the Theme chosen in the web
+UI in that browser, and cannot be shown inside another site's frame. Like the rest of AutoDJ, both
+pages are in English (`lang="en"`); there is no language setting.
+
+**The embeddable player** (`/embed`) has the station's name, the song playing, Play, Volume,
+Pause updates and, when the player page is on, a link that opens it in a new tab. Put it on a web
+page with an `<iframe>`, giving the frame a title so screen readers can name it:
+
+```html
+<iframe src="https://radio.example.net/embed" title="Night Owl Radio player"
+        width="100%" height="240" style="border: 0"></iframe>
+```
+
+A frame 240 px high fits it on a wide page; give it about 330 px where the frame is as narrow as a
+phone, since the controls then wrap onto more lines. Add `?theme=light` or `?theme=dark` to the
+address to match the site; without it the player
+follows the visitor's system colours. A browser shows the embed only inside pages from the sites
+in `embed_origins` (and this server's own pages): list each site as `https://host`, with a port
+if it is not the usual one, or `"*"` to let any site show it. Leaving the list empty keeps it to
+this server's own pages. The list goes into the page's `Content-Security-Policy:
+frame-ancestors`, so browsers enforce it; it does not stop anyone from listening to the stream
+itself, which is public anyway.
+
+Both pages use the station's public feed and stream and nothing else: no pairing, no controls
+beyond listening, and no file paths, credentials or other private details. A station with a
+listener password still asks for it: AutoDJ never puts the password in the page, so the browser
+asks the listener, and a browser that will not ask inside another site's frame cannot play the
+embed. A station that does not stream (the default station outside stream mode) shows its song
+and says it cannot be played there. While a station is stopped, both pages answer 503, say it is
+off air, and notice when it is back.
+
 ### Settings
 
 In stream mode, **Settings, Stream** has a **Now-playing feed** group:
@@ -666,6 +749,113 @@ In stream mode, **Settings, Stream** has a **Now-playing feed** group:
   snapshot once and says whether it was delivered. With no webhooks configured, the group says so
   and points to `config.local.toml`; webhooks are added or changed there and take effect on
   restart.
+
+## Listener requests
+
+A station can take song requests from its listeners on a public page, `/requests` (and
+`/stations/<slug>/requests` for every station). It is off until you turn it on, for each station
+on its own; while it is off the page answers 404. The settings are read when AutoDJ starts:
+
+```toml
+[requests]
+enabled = true
+approval = "manual"          # or "auto": a request that keeps the rules is queued at once
+per_listener = 3             # requests one address may make ...
+per_listener_minutes = 60    # ... in this many minutes
+daily_limit = 50             # requests the station takes per day, from everyone
+max_pending = 20             # requests that may wait for you at once (manual approval)
+window_minutes = 30          # how far ahead in the queue a request may be placed
+blocked_artists = ["Night Owl Jingles"]
+blocked_folders = ["Christmas"]   # full paths, or folders inside [library] music_dir
+ipv6_prefix = 56             # an IPv6 listener's limits count over this network
+```
+
+For another station, write the same keys under `[stations.<slug>.requests]`.
+
+**What a listener does.** The page has a search box for title, artist or album. The songs it
+finds are links: at most 20, and never from a blocked folder or by a blocked artist. Choosing one
+opens a confirmation page with an optional "Your name" field (up to 40 characters, which you might
+say on air) and **Send request**. The answer is a page whose title and first heading say what
+happened, so a screen reader hears it as the page loads. It is one of:
+
+- **Request received**: waiting for you.
+- **Request accepted**: queued.
+- **Not right now**: it would break a repeat rule or a DMCA limit. The page does not say which
+  play caused it.
+- **Already on the way**.
+- **Too many requests**: that address's limit, with how many it may make.
+- **No more requests today**.
+- **This form has expired**: the form is good for two hours, for the song it was opened for.
+- **The station is busy**: too many searches or requests at once, across all stations. Try again
+  in a few seconds.
+
+The page needs no JavaScript and works without pairing. A listener is only ever told roughly when
+a song may play ("within the next half hour", "within the next hour or so"), never a set time.
+
+**What the station checks**, in this order:
+
+1. The form's token.
+2. The address's limits. Each address may run 30 searches a minute and send 10 forms in ten
+   minutes, whatever becomes of them. Only accepted requests count toward `per_listener` per
+   `per_listener_minutes`; a request turned away, for example by the repeat rules, does not. An
+   IPv6 address counts together with its whole network of `ipv6_prefix` bits, a /56 by default:
+   a home is usually delegated a /56 or a /64 and could otherwise step through its addresses. Set
+   `ipv6_prefix = 64` to count each /64 apart (a home delegated more than one /64 then gets more
+   than one allowance), or `128` for single addresses. An IPv4 address written as IPv6 counts as
+   itself.
+3. The daily cap.
+4. That the song is in the library, is not blocked, and is not playing, coming up or waiting
+   already.
+5. How many requests are waiting.
+6. Where it could play.
+
+For the last check, AutoDJ looks at each place in the queue that would start within
+`window_minutes`. The first place, after the song playing and any "play next" song, always counts.
+For each place, AutoDJ projects when the song would start. It then checks the repeat rules (track,
+artist, album, title, and related tracks and artists) as of then, and in
+[DMCA mode](#dmca-mode) the DMCA limits too. Of the places that break nothing, it picks the one
+where the song joins its neighbours most smoothly. It weighs sound (the embeddings), tempo (half
+and double time count as a match), Camelot key and the step in energy, and the sooner place wins a
+tie. Working out the place and adding the song there happen as one step, so the queue cannot
+change in between. A request is a song in the queue like any other. It never takes the place of a station ID, a
+liner, a break or a time check, which play between songs.
+
+**What you do.** While requests are on, Queue & Search has a **Listener requests** card. It says
+how many requests are waiting and how many the station took today. Each waiting request shows who
+sent it (if they gave a name), when, and either where it would fit and why ("Fits after Song by
+Artist: same key, 2 BPM apart.") or what stops it. Each request has three buttons:
+
+- **Approve** queues it at that place, checked again at that moment. It is left out while no place
+  keeps the rules.
+- **Play next** queues it first, after the song playing and any "play next" song, whatever fits.
+  DMCA limits still hold, counting that "play next" song.
+- **Turn down**.
+
+Focus moves to the next request's Approve button (its first button when Approve is not offered),
+or to the card's title when none is left, and the result is said once just after that. Recent
+decisions are listed below. The card refreshes every 15 seconds while it is open, without
+speaking: rows are updated in place, and a row that has focus stays until focus leaves it. A
+request still waiting after three hours expires, and can no longer be approved. The same actions are available as paired routes: `GET /api/requests`,
+and `POST /api/requests/<id>/approve`, `/play-next` and `/reject` (each also under
+`/api/stations/<slug>/` for a station by name). The web UI's card shows the default station's
+requests.
+
+Requests are kept in `listener_requests.json` in the station's state folder: waiting requests and
+the last 50 decisions, with titles, names and times. A listener's name is removed 30 days after
+the decision, however many decisions there are. The file never holds an address, and it is not
+part of backups. The file is tidied when AutoDJ starts and every hour, so expiries and names
+past their 30 days are applied even when nobody uses the page or the card. At most four searches
+or request checks run at once, across all stations. Others wait their turn without holding a
+worker thread, and get "busy" after two seconds. The same search within 30 seconds is answered
+from memory. A song can be requested only after a search has shown it, which needs no map of the
+whole library. So a flood of requests cannot take the server's time from the music. Listener addresses are kept in memory only, for the limits, and are forgotten when
+AutoDJ restarts. Requests do not yet get bridge songs to lead into them, and are not yet matched to
+clockwheel categories.
+
+Letting listeners choose when songs play can make a station an "interactive" service, which the
+US statutory webcasting licence does not cover. Requests therefore never play at once or at a
+promised time, each listener is limited, and in DMCA mode requests obey the album and artist
+limits. General information, not legal advice.
 
 ## Radio stream (Sonos, VLC and other players)
 
@@ -731,9 +921,16 @@ and uses the first untrusted address. It does not use the RFC 7239 `Forwarded` h
 this setting, AutoDJ uses the socket peer and ignores forwarded headers. Set trusted proxies
 before enabling a per-address limit or bans behind a proxy or Cloudflare Tunnel; otherwise every
 listener shares the proxy's address. A trusted proxy's `X-Forwarded-Proto: https` also keeps
-playlist URLs on HTTPS. In stream mode, the trusted proxy setting changes client addresses on all routes,
-including pairing and audit logs. Only trust proxies that append or replace these headers
-correctly. Restart after changing trusted proxies.
+playlist URLs on HTTPS. The trusted proxy setting changes client addresses on all routes in every
+mode, not only in stream mode, including pairing, the listener request limits and audit logs.
+Only trust a proxy that appends the address it saw to `X-Forwarded-For`, or overwrites the header
+with it; never one that passes a client's own `X-Forwarded-For` through, which would let any
+client choose its address. Without `trusted_proxies`, an existing `FORWARDED_ALLOW_IPS` environment
+variable (Uvicorn's own setting) is honoured in every mode; with both, `trusted_proxies` wins and
+the startup log says the variable is ignored. For each trusted proxy that is not on this machine,
+the startup log warns that it must append or overwrite `X-Forwarded-For`, and that it must
+terminate TLS and send `X-Forwarded-Proto: https` before machine tokens are accepted through it.
+Restart after changing trusted proxies.
 
 Settings, Stream lists each direct listener's address, player name and connection time. Use
 **Disconnect** to end one connection, or **Ban** to block an address or CIDR for one hour, one day,
@@ -993,8 +1190,8 @@ table. Each station has its own player, mix bus, mastering process, encoder, rel
 schedule, carts, time checks, clockwheels, liners, profiles and saved settings; the library, the
 similarity index, pairing and the web server are shared.
 
-The station switcher in the web page is still to come. Until then, a station other than the
-default one is controlled through its API addresses, described below.
+The web page controls one station at a time; the station switcher in its banner picks which.
+See [The station switcher](#the-station-switcher).
 
 ### Configuration
 
@@ -1042,8 +1239,8 @@ The rules:
   webhooks, listener password and recording folder. Set everything the station needs in its own
   tables, including machine settings such as `playback.stereotool_path`.
 - **A station's own sections** are `playback`, `djmix`, `transitions`, `replaygain`, `stream`,
-  `recording`, `nowplaying`, `time_checks`, `dmca` and `presets.<name>`, plus `webhooks` in
-  `config.local.toml`. They take the same keys as the root sections.
+  `recording`, `nowplaying`, `player_page`, `requests`, `time_checks`, `dmca` and `presets.<name>`, plus
+  `webhooks` in `config.local.toml`. They take the same keys as the root sections.
 - **Shared sections:** `library`, `index`, `model`, `huggingface` and `server` belong to the whole
   server and are read only from the root. So are `stream.trusted_proxies` (from the root
   `[stream]`) and `server.station_timezone`.
@@ -1069,7 +1266,8 @@ The rules:
   stream metadata and on its pages, so it never takes the default station's "AutoDJ". Two
   stations given the same name are warned about at startup: listeners could not tell them apart.
 - **Unknown keys are warned about and ignored**, as in the root sections; the warning names the
-  station's table. `autodj doctor` offers to remove an unknown key from a station section.
+  station's table. `autodj doctor` lists them in its `config-keys` check and offers to remove an
+  unknown key from a station section, with a backup of the file.
 - **Errors name the station**, for example
   `[stations.nightowl] playback.crossfade_seconds must be between 0 and 20, got 99.0`.
 
@@ -1096,6 +1294,11 @@ other sites:
   to its stream and playlist. It polls the station's own feed, and only a feed on this server.
 - `/api/stations/<slug>/nowplaying`, the now-playing feed, in the same form as `/api/nowplaying`
   (see [Now-playing feed and webhooks](#now-playing-feed-and-webhooks)).
+- `/stations/<slug>/requests`, the listener request page, when the station's
+  `[stations.<slug>.requests]` turns it on (see [Listener requests](#listener-requests)).
+- `/stations/<slug>/player` and `/stations/<slug>/embed`, the player page and embeddable player,
+  when the station's `[stations.<slug>.player_page]` turns them on (see
+  [Player page and embeddable player](#player-page-and-embeddable-player)).
 - Both are public without pairing, like the stream, but only for a configured station: any
   other name needs a paired browser and then answers 404. The station's listener password
   protects only its stream, not these.
@@ -1115,15 +1318,16 @@ need a paired browser, like the default station's.
 
 - `GET /api/stations` lists every configured station: its slug, name, state (`stopped`,
   `stopping`, `stuck stopping`, `idle`, `playing` or `paused`), listener count and current
-  song, and its public addresses: `status_path`, `nowplaying_path`, `stream_path` and
-  `m3u_path`. The stream and playlist are `null` for a default station that does not stream. For
-  example:
+  song, and its public addresses: `status_path`, `nowplaying_path`, `stream_path`, `m3u_path`,
+  `player_path` and `embed_path`. The stream and playlist are `null` for a default station that
+  does not stream, and the player page and embed are `null` while they are off. For example:
 
   ```json
   {"slug": "nightowl", "name": "Night Owl Radio", "state": "playing", "listeners": 3,
    "title": "Artist — Song", "status_path": "/stations/nightowl/status",
    "nowplaying_path": "/api/stations/nightowl/nowplaying",
-   "stream_path": "/stations/nightowl.mp3", "m3u_path": "/stations/nightowl.m3u"}
+   "stream_path": "/stations/nightowl.mp3", "m3u_path": "/stations/nightowl.m3u",
+   "player_path": "/stations/nightowl/player", "embed_path": null}
   ```
 - `POST /api/stations/<slug>/start` builds and starts a stopped station. Starting a running
   station changes nothing.
@@ -1164,6 +1368,63 @@ example `liners/nightowl` inside the default station's `liners`), the inner fold
 to the inner station only. This holds for automatic liners, clockwheel liner steps, the Liners
 list and the clips a cart can use.
 
+### Backups and doctor
+
+Backup refuses file links that point outside their configured backup folder and linked
+subfolders (including Windows junctions). This prevents unrelated files from entering an
+archive through a link. File links to another file inside the same folder are saved as
+ordinary files. Hard-linked files are refused because their other names may be outside the
+backup folder; use an independent copy instead. Uploaded Stereo Tool preset links are still excluded. Configure a folder
+directly if it is an intended backup source. Restore refuses linked archive entries and
+destinations that point outside their configured folder.
+
+`autodj backup` includes every configured station. The default station's files keep their names
+in the archive; another station's are under `stations/<slug>/`, for example
+`stations/nightowl/index/web_state.json` and `stations/nightowl/liners/...`. A folder two
+stations share, such as one liner folder for both, is stored once, under the default station's
+name, and the archive notes that it was shared. If you restore it with a configuration that gives
+that station a folder of its own, the folder is restored to the default station's place only, and
+restore prints a warning naming both folders: copy the files across yourself if the station
+should have them. Folders that hold one another (one station's liner folder inside another's, or
+a folder that holds a station's own folder) are refused, because restoring one would replace the
+other; give each station folders side by side. Take a new backup after adding a station, and
+check that its `stations/<slug>/` files are in it:
+
+```bash
+uv run autodj backup backups/after-nightowl.zip
+unzip -l backups/after-nightowl.zip | grep stations/nightowl
+```
+
+Restore puts each station's files back in that station's folder. A backup that holds a station
+your configuration does not define is refused before anything changes: add its
+`[stations.<slug>]` tables to `config.toml` first (copy them from the old machine's
+configuration), then restore again. Removing a station from the configuration does not delete
+its folder; doctor names such a folder, and backups leave it out.
+
+`autodj doctor` checks the server once and every station separately. The default station's
+lines look as before; another station's start with its slug:
+
+```text
+[PASS] Station nightowl, station-folder: /srv/autodj/index/default/stations/nightowl
+[PASS] Station nightowl, saved-settings: saved settings valid
+[PASS] Station nightowl, stream: stream mode on at 192 kbps
+[WARN] Station nightowl, relay-main: Icecast at radio.example.net:8000/owl: cannot reach the server
+```
+
+Each station is checked for its folder (can it be written), its saved settings, its stream
+(ffmpeg), its relays (from its own `relay-status.json`), its time checks and voice packs, DMCA
+mode, its recording folder and its liner folder. `autodj doctor --station nightowl` checks only
+that station beside the server; `--station default` checks only the default station. In
+`--json`, a station's checks carry `"station": "nightowl"`.
+
+Doctor changes nothing unless you agree. In a terminal it offers to make a missing station
+folder (a station also makes it when it first starts) and to clean up a station's saved settings
+the same way as the default station's, saving a backup beside the file first. `--fix` agrees to
+each; `--no-fix` and `--json` only report. A configuration with a reserved or badly formed
+station name, two stations sharing a recording folder or relay target, or a station's webhooks in
+`config.toml` does not load at all, so doctor reports it as a configuration failure and names the
+problem.
+
 ### Stereo Tool: one station at a time
 
 One Stereo Tool licence covers one running copy, so AutoDJ lets only one station use Stereo Tool
@@ -1175,6 +1436,55 @@ stations; with a second licence, a later version can lift this limit.
 
 Stereo Tool presets are shared by every station, and each station chooses its own. A preset that
 any station uses, running or stopped, cannot be deleted; the message names the station.
+
+### The station switcher
+
+With more than one station configured, the banner of the web page has a **Station** button after
+the AutoDJ heading, for example "Station: AutoDJ". It is hidden while the server has one station.
+It opens a menu that lists every station with its state, such as "Night Owl Radio, on air, 3
+listeners" or "Oldies Hour, off air"; the station the page controls has a tick and is checked.
+
+- **Keyboard:** Enter, Space or Down Arrow opens the menu on the checked station, and Up Arrow on
+  the last one. Up and Down Arrow move through the stations, Home and End go to the first and
+  last, and typing a letter moves to the next station whose name starts with it. Enter or Space
+  switches to the station under focus; Escape closes the menu without switching. Both put focus
+  back on the Station button. Tab closes the menu and moves on. Moving through the menu never
+  switches; only Enter, Space or a click does.
+- **Shortcuts:** `c` moves focus to the Station button, and Shift+C says which station the page
+  controls, whether it is on air, its listeners and its song. While there are several stations,
+  the status keys that speak about the station (Shift+T, N, R, B, K, L, E and Q) start with its
+  name.
+- **What switches:** every control on the Now Playing, Queue & Search, Carts, Voice tracks, Track
+  info, History and Settings tabs then acts on the chosen station, and they show its state: its
+  song, queue, history, settings, carts, schedule, clockwheels, hour preview, liners, profiles,
+  time checks, matched intros, stream, listeners, recording and webhooks. Library tools, search
+  results, library folders,
+  song points, Stereo Tool presets and paired devices are shared by all stations.
+- **How it says so:** the heading becomes "AutoDJ: Night Owl Radio", the browser tab's title
+  ends with "Night Owl Radio - AutoDJ", the page's main landmark is named after the station, and
+  each station tab's name ends with it. The switch is announced once, for example "Now
+  controlling Night Owl Radio. On air, 3 listeners. Playing Artist – Title." A screen reader says
+  "On Night Owl Radio" after each control that changes what is on air (Play or Pause, Skip,
+  queue changes, carts, Run now, profile Apply, listener Disconnect and Ban, the stream settings
+  and recording) and "Shared by all stations" after the Library tools tab and song points.
+  Confirmations, such as Clear queue, end with the station's name.
+- **The address keeps the station:** the page adds `?station=nightowl` to its address, so a
+  reload or a bookmark opens the same station. Each browser also remembers the last station
+  chosen and opens it when the address names none; the address wins. An address naming a
+  station that is not configured opens the default station and says so; if the station list
+  cannot be loaded, the page keeps the station the address names and loads the list again.
+- **Listen here** keeps playing the station it was started on. While the page controls another
+  station, a line under the controls says which, for example "Playing AutoDJ"; pressing Listen
+  here stops it, and pressing it again plays the station the page now controls.
+- **Browser playback:** when the default station plays in the browser (no `--stream`), only that
+  page's own decks play it. Switching away asks first, because the page then stops playing it;
+  the station itself goes on for everyone else.
+- **A stopped station:** choosing one, or having the station stopped while the page controls it,
+  shows "Night Owl Radio is off air." with a **Start Night Owl Radio** button on Now Playing. The
+  page looks every 10 seconds whether the station is back. **Settings, Stream** of a station other
+  than the default one has **Stop Night Owl Radio**, which asks first.
+
+Every page has its own choice, so two browsers can control two stations at once.
 
 ### Logs
 
@@ -1240,6 +1550,73 @@ the longest gap between blocks in milliseconds, the number of restarts and rende
 start and the end, and Night Owl's thread count before and after. Memory that keeps climbing from
 one restart to the next, or a thread count that grows, points to a leak; attach the report file to
 an issue.
+
+### Adding a station, step by step
+
+This adds Night Owl Radio (`nightowl`) to a server that runs one station today. Nothing on disk
+moves: the default station keeps its files, and Night Owl starts with empty ones of its own.
+
+1. **Check the server can carry it.** Each running station costs threads, two to four
+   subprocesses and a few hundred megabytes of memory (see
+   [Cost of each running station](#cost-of-each-running-station)). To measure it on the
+   machine itself, run the long soak test in [Soak test](#soak-test) while the server is idle.
+   One Stereo Tool licence runs one copy, so give the new station
+   `playback.loudness_processing = "smooth"` unless you have a second licence.
+2. **Stop AutoDJ and take a backup:** `uv run autodj backup backups/before-nightowl.zip`.
+3. **Describe the station** in `config.toml`, with its own recording folder:
+
+   ```toml
+   [stations.nightowl]
+   autostart = true
+
+   [stations.nightowl.stream]
+   station_name = "Night Owl Radio"
+   bitrate = 192
+   continuous = true
+
+   [stations.nightowl.playback]
+   loudness_processing = "smooth"
+
+   [stations.nightowl.recording]
+   folder = "recordings/nightowl"
+   ```
+
+   Put its secrets in `config.local.toml`: `listener_user` and `listener_password` under
+   `[stations.nightowl.stream]`, relay passwords under
+   `[stations.nightowl.stream.relays.<name>]` and webhooks as `[[stations.nightowl.webhooks]]`.
+   If a relay under the root `[stream.relays.*]` really belongs to the new station, move its
+   tables in both files under `stations.nightowl.stream.relays`. The full list of keys and rules
+   is in [Configuration](#configuration).
+4. **Liners and time checks.** Night Owl's liners go in
+   `<index_dir>/<name>/stations/nightowl/liners/` unless you set
+   `[stations.nightowl.playback] liners_folder`. Set `[stations.nightowl.time_checks]
+   clips_folder` or `voice_packs` if it should speak the time.
+5. **Containers only:** make sure the new recording folder, and any liner folder outside the
+   index, is mounted and writable. The station's own folder is inside the `/index` volume.
+6. **Check it:** `uv run autodj doctor --station nightowl`. A configuration error (a misspelt
+   station name, a recording folder or relay target another station uses, webhooks in
+   `config.toml`) stops the configuration from loading, and doctor says which. Doctor offers to
+   make the station's folder; AutoDJ also makes it when the station first starts.
+7. **Start AutoDJ.** The startup log names each station's stream and status page, such as
+   `/stations/nightowl.mp3`. Run `uv run autodj doctor` again: each station now has its own
+   lines.
+8. **Set it up in the web page.** Choose Night Owl Radio with the Station button in the banner
+   (see [The station switcher](#the-station-switcher)), then choose its clockwheel, DMCA mode
+   and processing, and build its schedule, carts and liners. To start from the default
+   station's clockwheels or profiles, copy files from `<index_dir>/<name>/clockwheels/` or
+   `<index_dir>/profiles/` into `stations/nightowl/clockwheels/` or `stations/nightowl/profiles/`
+   while AutoDJ is stopped.
+9. **Move the listeners.** Publish `https://<your host>/stations/nightowl.mp3`. If listeners
+   already use an address on a hosted Icecast or Shoutcast server, add a relay from Night Owl to
+   that server (see [Relaying to Icecast and Shoutcast](#relaying-to-icecast-and-shoutcast)) and
+   stop whatever fed it before, so the address listeners use does not change.
+10. **Take a new backup** and check that its `stations/nightowl/` files are in it (see
+    [Backups and doctor](#backups-and-doctor)).
+
+To retire a station, stop it (Settings, Stream, Stop, or `POST /api/stations/<slug>/stop`),
+then remove its tables from both configuration files and restart. Its folder stays: doctor names
+it as no longer configured, and backups leave it out. Move or delete it by hand once a backup
+that holds it is safe.
 
 ## Windows PowerShell setup
 
@@ -1892,6 +2269,91 @@ page's `Origin`, never an announcer token. `POST` takes the announcer upload's f
 `ending_id`, `upcoming_id`, `placement`, `allow_outro` and `file`), with no `kind`: a voice track is
 always a DJ break.
 
+## Matched intros
+
+A matched intro is a short voice clip tied to one song, or to every song by one artist, such as
+"Here's the new one from Example Artist". When that song comes up, AutoDJ mixes the clip into the
+song change that leads into it. Matched intros need saved-point playback (Transition mode: Use
+saved segue points) with the server mixing the audio (server audio or a stream), as breaks do;
+otherwise Track info says why and they do not play.
+
+### Adding one
+
+Open **Track info** for the song (from Now Playing, History, or the lists in Queue & Search) and
+go to **Matched intros**, below the cue points. It lists the intros **For this song** and **For
+any song by** the song's artist, each with how often it plays, its play dates and how many seconds
+of speech it holds, and a **Listen** and a **Remove** button. Listen plays the clip on the Preview
+output device when one is chosen in Settings, Sound, and is pressed until the clip ends or you
+press it again. Remove asks first and deletes the clip.
+
+Under **Add an intro**:
+
+- **Audio file**: MP3, WAV, Ogg, M4A, FLAC or AAC, at most `[server] liner_upload_max_mib` (the
+  liner upload limit) and one minute long. AutoDJ trims the silence before and after the voice.
+- **Plays on**: **This song**, or **Any song by** the artist. The artist comes from the song's
+  artist tag; a song without one takes only an intro for itself. A credit such as "Someone feat.
+  Example Artist" counts as a song by Example Artist too.
+- **Label**: optional words to tell intros apart, shown in the list and the hour preview.
+- **Chance (percent)**: 1 to 100. At 50 the intro plays about every other time its song comes up.
+- **Wait between plays (minutes)**: 0 to 10080 (a week), 60 by default. After an intro plays, or
+  while a song change that holds it waits to air, it is passed over until this much time has gone.
+- **Not before** and **Do not play after**: optional days, both included, in the station time zone,
+  as for liners (see [Liner and cart play dates](#liner-and-cart-play-dates)).
+
+Choose **Upload intro**. A field the page or the server refuses is marked, its error is shown under
+it and it takes focus; any other result is said once.
+
+### How one is chosen and placed
+
+AutoDJ picks the intro as it prepares the song change, one song ahead. The song's own intros come
+first; when none of them can play, the artist's are tried. An intro is passed over outside its
+dates (by the day the song change airs) and within its wait; of the rest, the one heard longest ago
+is taken if its chance comes up. If a song intro misses its chance, the artist's intros are tried.
+The chance is rolled on a random source of its own, so the rotation tester and the hour preview
+keep predicting the same songs.
+
+A matched intro takes the place of the automatic liner at that song change by default, and when it
+does the liner trigger stays due for the next one. In Voice liners settings, turn on **Only when no liner is
+scheduled** to use a matched intro only when no queued, clockwheel or automatic liner is planned
+for the change. With the option off, queued and clockwheel liners still play before the intro, as
+do news, weather and music news breaks. A DJ break booked for the change, from an announcer program
+or the Voice tracks tab, wins: the DJ already talks the song up, so no intro is added.
+
+When the song's intro (Start to Intro) is at least as long as the speech, the intro talks the song
+up: the voice starts with the song and ends before the singing, and the music ducks under it as it
+does under a break (`[breaks] duck_db`, or `[playback] liners_duck_db` when that is unset). When the
+intro is shorter, or the song has no Intro point, the clip plays just before the song, which starts
+as the speech ends. With Smooth or Stereo Tool processing the clip gets the voice liner processing.
+A clip that cannot be decoded is left out and the music plays on. The hour preview lists an intro
+once its song change is mixed, as "Matched intro" and its label.
+
+### Where they are kept
+
+Each station keeps its own: `matched_intros.json` in the station's state folder (the active index
+folder for the default station) and the audio in its `intros` folder, under names AutoDJ makes up.
+Backups include both for the default station. A song intro follows the song's library ID, so a tag
+edit or a move the scan recognises keeps it. A library scan that read every folder and found a
+song's file gone removes that song's intros and their audio; a share that is not mounted, or a scan
+that could not read a folder, removes nothing, and artist intros are never removed by a scan. When
+`matched_intros.json` cannot be read just now, the intros last read are used and saves are refused.
+An intro in the file that is not valid (edited by hand, say) is skipped and logged, and Track info
+says which, under the Matched intros heading; the other intros still play, and every save writes
+the skipped one back as it was, so correct it in the file and it plays again. Only a file that is
+not a file of intros at all is set aside, as `matched_intros.json.bad-<id>`. The time an intro last aired
+is written to the file by the station's once-a-second upkeep, off the audio thread.
+
+For scripts and other stations, the routes are under `/api/intros` and
+`/api/stations/<slug>/intros`, with the browser session and the page's `Origin`:
+
+- `GET /api/intros?track_id=<library ID>`: the song's intros (`song`), its artist's (`artist`),
+  the song, the limits, and whether the station plays them (`active`, with a `reason`). Without
+  `track_id`, every intro of the station (`intros`).
+- `POST /api/intros`: `multipart/form-data` with `file`, `track_id`, and optionally `applies_to`
+  (`song` or `artist`), `label`, `chance`, `cooldown_minutes`, `not_before` and `not_after`
+  (`YYYY-MM-DD`). `201` answers with the intro; a refused field answers with `detail` and `field`.
+- `GET /api/intros/<id>/audio`: the clip.
+- `DELETE /api/intros/<id>`: remove the intro and its audio.
+
 ## Play log export
 
 AutoDJ keeps every completed play in `library.db`, with no expiry. Export the plays between two
@@ -2135,9 +2597,10 @@ minutes, hour, 2 hours or 3 hours under **Show**.
 
 Each row says in its Status column whether it is fixed or predicted:
 
-- **Fixed: on the air**: the song playing now, with the liners and breaks mixed into it.
-- **Fixed: ready to play**: what the server has already rendered, with its liners and breaks
-  (server audio and stream mode only).
+- **Fixed: on the air**: the song playing now, with the liners, breaks and matched intros mixed
+  into it.
+- **Fixed: ready to play**: what the server has already rendered, with its liners, breaks and
+  matched intros (server audio and stream mode only).
 - **Fixed: picked**: the song chosen to follow, and with `[breaks] enabled = true` the song after
   it (the open song change) and its liners.
 - **Fixed: booked break**: an announcer break booked on the open song change.
@@ -2187,7 +2650,7 @@ items, the fixed points with their sentences, and the summary.
 
 What it approximates, as the rotation tester does: a song runs from its saved start to its segue,
 or its length less the crossfade; liners and booked breaks add their full length; automatic
-liners, time checks and carts are left out; and a scheduled change of song picking applies from
+liners, matched intros not yet mixed, time checks and carts are left out; and a scheduled change of song picking applies from
 the first song after its time. It shows where the last songs of the hour land; it does not yet
 choose them to fit.
 
@@ -2211,7 +2674,10 @@ choose them to fit.
 - `categories.json`, the rotation categories. Their playlist files are not included; the script
   that writes them can write them again.
 - `liner_dates.json`, the voice liners' play dates.
-- `manifest.json`, which records the AutoDJ version that made the archive and lists its files.
+- Every other station's state files and folders, under `stations/<slug>/` (see
+  [Backups and doctor](#backups-and-doctor)).
+- `manifest.json`, which records the AutoDJ version that made the archive, lists its files and
+  names the stations it holds.
 
 Backups do not include `config.toml` or `config.local.toml`. Copy those yourself
 and keep them with the archive. Backups also leave out the pairing secret and the paired browsers, so
@@ -2242,8 +2708,12 @@ For an archive made by 0.19, restore it with 0.19 first, then upgrade and conver
 needed. Version 0.20 can open an existing schema-4 index directly; the application version bump
 does not change that index format. Make a new backup after upgrading to include the station catalog.
 
-Stop AutoDJ, and any `autodj index` or `autodj analyse` run, before you restore. Restore cannot
-tell whether AutoDJ is running, and a running AutoDJ would keep using the files it replaces.
+Stop AutoDJ, and any `autodj index` or `autodj analyse` run, before you restore: a running AutoDJ
+would keep using the files a restore replaces. `autodj serve` holds a lock file,
+`.autodj-serve.lock`, in the index folder it serves for as long as it runs, and restore refuses
+while it is held ("AutoDJ is serving ...; stop it before restoring"). The operating system drops
+the lock when the server ends, however it ends. Restore cannot see an `autodj index` or
+`autodj analyse` run, so stop those yourself.
 
 ```bash
 # Linux/WSL2 Bash
@@ -2264,7 +2734,18 @@ Restore only accepts an archive made by the same major and minor version of Auto
 backup restores on any 0.19.x release and on no other. To roll back to an earlier release, check
 out that release's tag as in the [upgrade checklist](#upgrade-checklist), then restore a backup made
 by that release. Restore also refuses an archive whose file names are absolute or contain `..`,
-files the manifest does not list, and an index made by an older AutoDJ.
+files the manifest does not list, and an index made by an older AutoDJ. It also refuses file
+names Windows cannot hold, such as `CON`, `nul.mp3` or `COM1`, or a name ending in a dot or a
+space.
+
+Backup refuses a link that leaves its folder: a file link pointing outside the liner, cart or
+other folder it sits in, a state file that is a link to somewhere else, and any linked subfolder
+(a symbolic link or a Windows junction). This keeps unrelated files out of an archive. A file
+link to another file in the same folder is saved as an ordinary file. Uploaded Stereo Tool
+preset links are still left out. Configure a folder directly if it is meant to be backed up.
+Hard-linked files are refused because another name may be outside the backup folder.
+Restore refuses links stored in an archive and destinations that a link takes outside their
+folder.
 
 Without `--force`, restore refuses when anything it would replace already exists. With it:
 
@@ -2272,10 +2753,29 @@ Without `--force`, restore refuses when anything it would replace already exists
 - `dj_meta.db` and `web_state.json` are replaced when the archive has them.
 - The liners folder and `index/profiles` are replaced whole: files that are not in the backup are
   deleted. Parts the archive does not hold are left alone.
+- Each station's files and folders go back to that station's folder; a station the archive does
+  not hold is left alone. A station the configuration does not define is refused, and nothing is
+  restored.
 
-Restore unpacks every file into a temporary folder beside its destination and checks the index
-before it replaces anything, so a damaged archive changes nothing. If the replacement itself is
-interrupted, run the same restore again. Restore then runs `autodj doctor` and says so if doctor
+Restore first checks that the archive fits: it refuses one that unpacks to more than 256 GiB,
+or to more than the free space beside its destinations. It unpacks every file into a temporary
+folder beside its destination and checks the index before it replaces anything, so a damaged
+archive changes nothing. It then sets every file and folder it replaces aside under a hidden name
+(`.<name>.old-<id>`), together with any SQLite journal or WAL files beside a database, puts the
+new ones in, and deletes what it set aside only once all are in. If any replacement fails,
+everything is put back as it was and restore says nothing was changed. If an old copy cannot be
+deleted at the end, the restore still succeeds and names the copy; `autodj doctor` can move it out
+of the way.
+
+Each step is written first to a journal, `.autodj-restore.json` in the index folder, which is
+deleted when the restore finishes. If AutoDJ, the machine or the power stops part way, the
+journal is left behind: `autodj serve` refuses to start while a restore is half done, restore
+refuses to start another, and `autodj doctor` reports it and, in a terminal, offers to roll it
+back, putting every old file back where it was. A restore that stopped after every new file was
+in place only has old copies left, and doctor offers to move them away. Doctor also reports
+hidden `.old-` and `.restore-` copies no journal names. It always asks first, even with `--fix`,
+and it deletes nothing: whatever it moves goes into `restore-leftovers-<time>` in the index
+folder, for you to delete when AutoDJ looks right. Restore then runs `autodj doctor` and says so if doctor
 finds a required failure; do not serve until doctor passes. Use the same configuration for backup,
 restore, and doctor that the previous `serve` process used. Keep the archive until playback,
 profiles and liners look right.
@@ -2565,6 +3065,17 @@ These list keys do not replace the playback or spoken-status shortcuts. Nothing 
 another clockwheel with unsaved changes asks first. **Restart at these minutes past each hour**
 sends the clockwheel back to step 1 at the song change nearest each minute.
 
+When you save edits to the active clockwheel, **Apply saved changes** defaults to **At the next
+clock restart**. The current clock keeps playing until its next scheduled restart, and the saved
+edit becomes the new step 1 there. If the restart-minute list is empty, the next restart is the
+wheel's natural wrap to step 1. The editor announces when a saved edit begins waiting. If AutoDJ
+restarts while an edit is waiting, it loads the latest saved definition at step 1. Choose **Immediately, start at step 1**
+to use the new steps for the earliest selection that has not already been lined up; the current
+track and an already committed handoff stay in place. Choose **Immediately, continue at next step**
+to keep the next step number when it still exists in the edited wheel; otherwise playback starts at
+step 1. Reordering or deleting steps can shift which step that position refers to. A server restart
+loads the latest saved clockwheel definition. API clients that omit `apply_timing` keep the immediate behavior.
+
 For a voice liner step, **Only play if the following track fits before the next reset** is off
 by default. Turn it on to leave out the liner when the liner and the selected song would run
 past the next reset. The check uses their saved cue points and overlap, through the song's
@@ -2646,6 +3157,11 @@ list says how many unique songs each category holds, how many playlist lines mat
 how many songs were placed by their release year (see below), and which clockwheels use it. **Add
 category** and **Edit** open one form; the count refreshes after a short pause, and **Check** gives
 immediate feedback. Counts describe the matching selection before playback limits and hours.
+Settled category and clock-step counts are also announced to screen readers after each completed
+check; edits and stale count responses do not produce announcements. Categories saved with matching
+conditions require a newer AutoDJ release: older versions refuse a categories file containing
+`source = "filters"`, so upgrade again before downgrading or restore a backup made before saving
+such a category.
 **Save** refuses a query that cannot run or names a field no song has. **Delete** asks first and names the
 clockwheels with a step for the category.
 

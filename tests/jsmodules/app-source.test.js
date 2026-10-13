@@ -46,6 +46,10 @@ async function setupApp({
   onRequest = (url) => {
     throw new Error(`Unexpected request: ${url}`);
   },
+  // GET /api/stations: one station unless a test gives several (#70).
+  stations = [{ slug: "default", name: "AutoDJ", state: "playing", listeners: 0, title: null }],
+  // GET /api/version: the footer build stamp.
+  version = { version: "test", commit: "test", built_at: "2026-01-01T00:00:00Z" },
 } = {}) {
   vi.resetModules();
   const addListener = window.addEventListener;
@@ -141,11 +145,13 @@ async function setupApp({
       return Promise.resolve(onAuthStatus());
     }
     if (url === "/api/status") return Promise.resolve(jsonResponse(state));
-    if (url === "/api/version") {
-      return Promise.resolve(jsonResponse({
-        version: "test", commit: "test", built_at: "2026-01-01T00:00:00Z",
-      }));
+    if (url === "/api/stations") {
+      // null: the list cannot be loaded.
+      return Promise.resolve(stations
+        ? jsonResponse({ stations })
+        : jsonResponse({ detail: "Station list unavailable" }, 503));
     }
+    if (url === "/api/version") return Promise.resolve(jsonResponse(version));
     return Promise.resolve(onRequest(url, options));
   });
   const webSocket = { close: vi.fn(), readyState: 1, send: vi.fn() };
@@ -186,6 +192,12 @@ async function setupApp({
 
 afterEach(() => {
   for (const listener of hashListeners.splice(0)) window.removeEventListener("hashchange", listener);
+  // A switch remembers its station per browser (#70); every test starts fresh.
+  try {
+    globalThis.localStorage?.removeItem("autodj.station");
+  } catch {
+    // No storage here: nothing was remembered.
+  }
   vi.useRealTimers();
   vi.unstubAllGlobals();
   for (const modulePath of moduleMocks) vi.doUnmock(modulePath);
@@ -341,6 +353,58 @@ describe("durable playback semantics", () => {
     expect(cueSummary.textContent).toBe("No cue points");
     expect(cueDetails.textContent).toBe("No cue points");
     expect(metadata.textContent).toBe("");
+  });
+});
+
+describe("footer build stamp", () => {
+  const built = "2026-01-01T00:00:00Z";
+
+  it("links a known commit, its name starting with the words shown", async () => {
+    const url = "https://github.com/blindndangerous/AutoDJ/commit/1a2b3c4";
+    await setupApp({
+      version: { version: "0.20.0", commit: "1a2b3c4", built_at: built, commit_url: url },
+    });
+    const link = await vi.waitFor(() => {
+      const found = document.querySelector("#ver-build > a#ver-commit-link");
+      expect(found).not.toBeNull();
+      return found;
+    });
+    expect(link.getAttribute("href")).toBe(url);
+    expect(link.target).toBe("_blank");
+    expect(link.rel.split(" ")).toEqual(expect.arrayContaining(["noopener", "noreferrer"]));
+    expect(link.querySelector("#ver-commit").textContent).toBe("1a2b3c4");
+    // Visible text first (2.5.3), then where it goes, for a screen reader.
+    expect(link.textContent.replace(/\s+/g, " ").trim())
+      .toBe("build 1a2b3c4 on GitHub (opens in a new tab)");
+    expect(link.querySelector(".visually-hidden").textContent)
+      .toBe(" on GitHub (opens in a new tab)");
+    expect(link.hasAttribute("aria-label")).toBe(false);
+    // Reference data, not a status update: still no live region.
+    expect(document.querySelector("#version-stamp [aria-live]")).toBeNull();
+    expect(document.querySelector("#version-stamp").hasAttribute("aria-live")).toBe(false);
+  });
+
+  it("keeps an unknown commit as plain text", async () => {
+    await setupApp({ version: { version: "0.20.0", commit: "unknown", built_at: built } });
+    await vi.waitFor(() => expect(document.querySelector("#ver-commit").textContent)
+      .toBe("unknown"));
+    expect(document.querySelector("#page-footer a")).toBeNull();
+    expect(document.querySelector("#ver-build").textContent.replace(/\s+/g, " ").trim())
+      .toBe("build unknown");
+  });
+
+  it.each([
+    "javascript:alert(1)",
+    "https://evil.example/blindndangerous/AutoDJ/commit/1a2b3c4",
+    "https://github.com/blindndangerous/AutoDJ/commit/1a2b3c4?x=1",
+    "https://github.com/blindndangerous/AutoDJ/commit/not-a-sha",
+  ])("does not link a commit address it does not expect: %s", async (url) => {
+    await setupApp({
+      version: { version: "0.20.0", commit: "1a2b3c4", built_at: built, commit_url: url },
+    });
+    await vi.waitFor(() => expect(document.querySelector("#ver-commit").textContent)
+      .toBe("1a2b3c4"));
+    expect(document.querySelector("#page-footer a")).toBeNull();
   });
 });
 
@@ -2731,11 +2795,15 @@ describe("stream mode", () => {
       "modules/audio-engine.js: _master.connect(_ctx.destination);",
     ]);
     // The decks play through the master; the stream sets the page level
-    // on its element first.  A new play() must be added here on purpose.
+    // on its element first.  The public player page (not the web UI) has
+    // its own Volume slider.  A new play() must be added here on purpose.
     expect(found.plays.map((line) => line.replace(/^([^:]+):.*\| /, "$1: "))).toEqual([
       "modules/audio-engine.js: return deck.audio.play().catch((err) => {",
       "modules/audio-engine.js: await deck.audio.play();",
       "modules/library-folders.js: await preview.play();",
+      // Track info, Matched intros, Listen: a preview in the page, like Listen back.
+      "modules/matched-intros.js: await playback.play();",
+      "modules/player-page.js: playing = audio.play();",
       "modules/stream-mode.js: await audio.play();",
       // Listen back: a preview in the page, which follows the page level
       // or plays on the Preview output device.
@@ -3269,5 +3337,282 @@ describe("browser robustness", () => {
       expect(standby.playbackRate).toBe(1);
       expect(standby.preservesPitch).toBe(false);
     });
+  });
+});
+
+describe("several stations (#70)", () => {
+  const AUTODJ = { slug: "default", name: "AutoDJ", state: "playing", listeners: 2, title: "A - B" };
+  const OWL = { slug: "nightowl", name: "Night Owl Radio", state: "playing", listeners: 3, title: "Owl - Hoot" };
+  const owlState = {
+    stream_mode: true,
+    stream_state: "playing",
+    current_track: { path: "owl.mp3", artist: "Owl", title: "Hoot" },
+    duration: 100,
+    elapsed: 10,
+  };
+
+  // Every socket the page opens after this, newest last.
+  function trackSockets(WebSocketImpl) {
+    const sockets = [];
+    WebSocketImpl.mockImplementation(function WebSocketMock(url) {
+      const socket = { url, close: vi.fn(), readyState: 1, send: vi.fn() };
+      sockets.push(socket);
+      return socket;
+    });
+    return sockets;
+  }
+
+  function spoken() {
+    const said = [];
+    const region = document.getElementById("sr-status");
+    new window.MutationObserver(() => {
+      if (region.textContent) said.push(region.textContent);
+    }).observe(region, { childList: true, characterData: true, subtree: true });
+    return said;
+  }
+
+  function owlRequests(url) {
+    if (url === "/api/stations/nightowl/status") return jsonResponse(owlState);
+    if (url === "/api/stations/nightowl/start") return jsonResponse(OWL);
+    return jsonResponse({ detail: "not in this test" }, 404);
+  }
+
+  afterEach(() => {
+    window.history.replaceState(null, "", "/");
+  });
+
+  function chooseOwl() {
+    const button = document.getElementById("station-button");
+    button.focus();
+    button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    // Keys go where focus is: from the checked AutoDJ down to Night Owl.
+    const press = (key) => document.activeElement.dispatchEvent(
+      new KeyboardEvent("keydown", { key, bubbles: true }));
+    press("ArrowDown");
+    expect(document.activeElement.dataset.station).toBe("nightowl");
+    press("Enter");
+  }
+
+  it("shows no switcher and changes nothing with one station", async () => {
+    await setupApp();
+    expect(document.getElementById("station-switcher").hidden).toBe(true);
+    expect(document.getElementById("page-heading").textContent).toBe("AutoDJ");
+    expect(document.getElementById("station-context").textContent).toBe("");
+    expect(document.getElementById("main-content").hasAttribute("aria-label")).toBe(false);
+    expect(document.getElementById("panel-queue").getAttribute("aria-labelledby")).toBe("tab-queue");
+  });
+
+  it("switches inside the page: socket, requests, names and the announcement", async () => {
+    const app = await setupApp({
+      initialState: { current_track: { path: "a.mp3", artist: "A", title: "B" } },
+      stations: [AUTODJ, OWL],
+      onRequest: owlRequests,
+    });
+    const sockets = trackSockets(app.WebSocketImpl);
+    const said = spoken();
+    const first = app.webSocket;
+    expect(document.getElementById("station-switcher").hidden).toBe(false);
+    expect(document.getElementById("station-button").textContent.replace(/\s+/g, " ").trim())
+      .toBe("Station: AutoDJ▾");
+
+    chooseOwl();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+
+    // The old socket is closed on purpose and never reconnects.
+    expect(first.close).toHaveBeenCalledWith(1000, "Station switched");
+    expect(sockets[0].url).toMatch(/\/api\/stations\/nightowl\/ws$/);
+    expect(app.fetchImpl.mock.calls.map(([url]) => url)).toContain("/api/stations/nightowl/status");
+    first.onclose({ code: 1000, wasClean: true });
+    expect(document.getElementById("conn-status").textContent).not.toMatch(/Disconnected/);
+
+    // Named everywhere a reader looks; focus stays on the switcher.
+    expect(document.activeElement.id).toBe("station-button");
+    expect(document.getElementById("page-heading").textContent).toBe("AutoDJ: Night Owl Radio");
+    expect(document.title).toBe("Owl - Hoot - Night Owl Radio - AutoDJ");
+    expect(document.getElementById("main-content").getAttribute("aria-label")).toBe("Night Owl Radio");
+    expect(document.getElementById("station-context").textContent).toBe("On Night Owl Radio");
+    expect(document.getElementById("shared-context").textContent).toBe("Shared by all stations");
+    expect(document.getElementById("panel-queue").getAttribute("aria-labelledby"))
+      .toBe("tab-queue station-name-label");
+    expect(document.getElementById("panel-library").getAttribute("aria-labelledby")).toBe("tab-library");
+    expect(document.getElementById("station-stop").textContent).toBe("Stop Night Owl Radio");
+    expect(document.getElementById("station-stop-row").hidden).toBe(false);
+    expect(document.querySelector('[data-station="nightowl"]').getAttribute("aria-checked")).toBe("true");
+    expect(location.search).toBe("?station=nightowl");
+    // Its own public feed and status page, not the default station's.
+    expect(document.getElementById("np-url").value).toMatch(/\/api\/stations\/nightowl\/nowplaying$/);
+    expect(document.getElementById("np-status-open").getAttribute("href")).toBe("/stations/nightowl/status");
+    await vi.waitFor(() => expect(said.join(" | ")).toContain(
+      "Now controlling Night Owl Radio. On air, 3 listeners. Playing Owl"));
+  });
+
+  it("opens the station named in the address", async () => {
+    window.history.replaceState(null, "", "/?station=nightowl");
+    const app = await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
+    expect(app.WebSocketImpl.mock.calls[0][0]).toMatch(/\/api\/stations\/nightowl\/ws$/);
+    expect(document.getElementById("page-heading").textContent).toBe("AutoDJ: Night Owl Radio");
+  });
+
+  it("falls back to the default station for an unknown name, and says so", async () => {
+    window.history.replaceState(null, "", "/?station=oldies");
+    const app = await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
+    expect(app.WebSocketImpl.mock.calls[0][0]).toMatch(/\/ws$/);
+    expect(app.WebSocketImpl.mock.calls[0][0]).not.toMatch(/stations/);
+    expect(location.search).toBe("");
+    expect(document.getElementById("page-heading").textContent).toBe("AutoDJ");
+    expect(document.getElementById("sr-status").textContent)
+      .toMatch(/No station is called oldies\. Showing AutoDJ\./);
+  });
+
+  it("says a stopped station is off air and offers to start it", async () => {
+    const app = await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
+    const sockets = trackSockets(app.WebSocketImpl);
+    chooseOwl();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    vi.useFakeTimers();
+    sockets[0].onclose({ code: 4409, wasClean: true });
+    expect(document.getElementById("station-off-air").hidden).toBe(false);
+    expect(document.getElementById("station-off-air-text").textContent).toBe("Night Owl Radio is off air.");
+    expect(document.getElementById("station-start").textContent).toBe("Start Night Owl Radio");
+    expect(document.getElementById("conn-status").textContent).toBe("Off air");
+    // Not a dropped link: no reconnect storm.
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(sockets).toHaveLength(1);
+    vi.useRealTimers();
+
+    document.getElementById("station-start").click();
+    await vi.waitFor(() => expect(sockets).toHaveLength(2));
+    expect(app.fetchImpl.mock.calls.map(([url, init]) => [url, init?.method]))
+      .toContainEqual(["/api/stations/nightowl/start", "POST"]);
+    expect(document.getElementById("station-off-air").hidden).toBe(true);
+  });
+
+  it("asks before leaving browser decks that play, and stops them only on yes", async () => {
+    const stopAllDecks = vi.fn();
+    const app = await setupApp({
+      audio: { _lastBrowserPlayback: true, playbackEnabled: true, stopAllDecks },
+      stations: [AUTODJ, OWL],
+      onRequest: owlRequests,
+    });
+    const sockets = trackSockets(app.WebSocketImpl);
+    const confirm = document.getElementById("confirm-dialog");
+    confirm.showModal = vi.fn(() => { confirm.open = true; });
+    confirm.close = vi.fn((value) => {
+      confirm.open = false;
+      confirm.returnValue = value;
+      confirm.dispatchEvent(new Event("close"));
+    });
+
+    chooseOwl();
+    await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalled());
+    expect(document.getElementById("confirm-title").textContent).toBe("Switch to Night Owl Radio?");
+    document.getElementById("confirm-cancel").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(stopAllDecks).not.toHaveBeenCalled();
+    expect(sockets).toHaveLength(0);
+    expect(document.getElementById("page-heading").textContent).toBe("AutoDJ");
+
+    chooseOwl();
+    await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledTimes(2));
+    document.getElementById("confirm-accept").click();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    expect(stopAllDecks).toHaveBeenCalled();
+  });
+
+  it("keeps Listen here on the station it started on, and says so", async () => {
+    const app = await setupApp({
+      initialState: { stream_mode: true, stream_state: "playing" },
+      stations: [AUTODJ, OWL],
+      onRequest: (url) => (url === "/api/stream" || url === "/api/stations/default/stream"
+        ? jsonResponse({ path: "/stream.mp3" })
+        : owlRequests(url)),
+    });
+    const sockets = trackSockets(app.WebSocketImpl);
+    const audio = document.getElementById("stream-audio");
+    audio.play = vi.fn().mockResolvedValue();
+    document.getElementById("btn-listen").click();
+    await vi.waitFor(() => expect(audio.play).toHaveBeenCalled());
+    expect(audio.src).toMatch(/\/stream\.mp3\?connection=/);
+
+    chooseOwl();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    expect(audio.src).toMatch(/\/stream\.mp3\?connection=/);
+    expect(document.getElementById("btn-listen").getAttribute("aria-pressed")).toBe("true");
+    const note = document.getElementById("listen-station");
+    expect(note.hidden).toBe(false);
+    expect(note.textContent).toBe("Playing AutoDJ");
+
+    // A dropped stream reconnects to its own station, not the one shown.
+    audio.dispatchEvent(new Event("playing"));
+    audio.dispatchEvent(new Event("error"));
+    await vi.waitFor(() => expect(app.fetchImpl.mock.calls.map(([url]) => url))
+      .toContain("/api/stations/default/stream"));
+    await vi.waitFor(() => expect(audio.play).toHaveBeenCalledTimes(2));
+    expect(audio.src).toMatch(/\/stream\.mp3\?connection=/);
+  });
+});
+
+describe("several stations: the first station (#70 review)", () => {
+  const OWL = { slug: "nightowl", name: "Night Owl Radio", state: "playing", listeners: 0, title: null };
+  const AUTODJ = { slug: "default", name: "AutoDJ", state: "playing", listeners: 0, title: null };
+  const owlStatus = (url) => (url === "/api/stations/nightowl/status"
+    ? jsonResponse({ stream_mode: true, stream_state: "idle" })
+    : jsonResponse({ detail: "not in this test" }, 404));
+
+  function memoryStorage(initial = {}) {
+    const values = new Map(Object.entries(initial));
+    return {
+      getItem: vi.fn((key) => (values.has(key) ? values.get(key) : null)),
+      setItem: vi.fn((key, value) => values.set(key, String(value))),
+      removeItem: vi.fn((key) => values.delete(key)),
+      values,
+    };
+  }
+
+  afterEach(() => {
+    window.history.replaceState(null, "", "/");
+  });
+
+  it("keeps ?station= when the station list cannot be loaded, and says nothing about it", async () => {
+    window.history.replaceState(null, "", "/?station=nightowl");
+    const app = await setupApp({ stations: null, onRequest: owlStatus });
+    expect(app.WebSocketImpl.mock.calls[0][0]).toMatch(/\/api\/stations\/nightowl\/ws$/);
+    expect(location.search).toBe("?station=nightowl");
+    expect(document.getElementById("sr-status").textContent).not.toMatch(/No station is called/);
+  });
+
+  it("opens the last station chosen in this browser when the address names none", async () => {
+    vi.stubGlobal("localStorage", memoryStorage({ "autodj.station": "nightowl" }));
+    const app = await setupApp({ stations: [AUTODJ, OWL], onRequest: owlStatus });
+    expect(app.WebSocketImpl.mock.calls[0][0]).toMatch(/\/api\/stations\/nightowl\/ws$/);
+    expect(location.search).toBe("?station=nightowl");
+  });
+
+  it("lets the address win over the remembered station", async () => {
+    vi.stubGlobal("localStorage", memoryStorage({ "autodj.station": "nightowl" }));
+    window.history.replaceState(null, "", "/?station=default");
+    const app = await setupApp({ stations: [AUTODJ, OWL], onRequest: owlStatus });
+    expect(app.WebSocketImpl.mock.calls[0][0]).not.toMatch(/stations/);
+  });
+
+  it("forgets a remembered station that is no longer configured, without a word", async () => {
+    const storage = memoryStorage({ "autodj.station": "oldies" });
+    vi.stubGlobal("localStorage", storage);
+    const app = await setupApp({ stations: [AUTODJ, OWL], onRequest: owlStatus });
+    expect(app.WebSocketImpl.mock.calls[0][0]).not.toMatch(/stations/);
+    expect(storage.values.has("autodj.station")).toBe(false);
+    expect(document.getElementById("sr-status").textContent).not.toMatch(/No station is called/);
+  });
+
+  it("remembers the station a switch chooses", async () => {
+    const storage = memoryStorage();
+    vi.stubGlobal("localStorage", storage);
+    await setupApp({ stations: [AUTODJ, OWL], onRequest: owlStatus });
+    const button = document.getElementById("station-button");
+    button.focus();
+    button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await vi.waitFor(() => expect(storage.values.get("autodj.station")).toBe("nightowl"));
   });
 });
