@@ -218,6 +218,10 @@ stereotool_preset = "included"
 # track to the next, in the server mix and in the browser.
 crossfade_seconds = 3.0
 
+# Music speed change in percent (-10 to 10, up to two decimal places).
+# Also saved per station from Settings > Sound > Music speed. Voice stays native.
+music_speed_percent = 0.0
+
 # Repeat rules are edited in Settings > Picking > Repeats and saved in
 # index/<name>/web_state.json. Each artist, related artist, album, track, title and
 # related track rule has a track count and a minute limit; 0 disables that limit.
