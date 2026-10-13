@@ -76,6 +76,7 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     player._library = None
     player._active_processing_mode = None
     player._playing_render = None
+    player._last_clock_step = None
     # Fields exposed via get_state / get_settings on the bridge API.
     player._eq_low = 1.0
     player._eq_mid = 1.0

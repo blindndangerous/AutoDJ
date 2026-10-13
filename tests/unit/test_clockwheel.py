@@ -167,6 +167,8 @@ def test_runtime_picker_applies_rules_and_returns_liner_with_music_cursor():
     assert pick.liner == liner
     assert not pick.liner_requires_following
     assert pick.next_cursor == 2
+    assert pick.step_index == 1
+    assert pick.liner_step_index == 0
     assert not pick.skipped
 
 
@@ -187,6 +189,8 @@ def test_runtime_picker_preserves_liner_flag_through_skips_settings_and_fixed_tr
         True,
     )
     assert pick.skipped == [r"music slot C:\missing: no matching entries"]
+    assert pick.step_index == 3
+    assert pick.liner_step_index == 0
 
     no_liner = pick_slot(slots, 0, [entry], {}, lambda _: True, liners=[])
     assert no_liner.liner is None and no_liner.liner_requires_following is False
@@ -211,6 +215,33 @@ def test_runtime_picker_preserves_liner_flag_through_category_step():
     assert pick.entry is entry
     assert pick.liner is liner
     assert pick.liner_requires_following is True
+    assert pick.step_index == 1
+    assert pick.liner_step_index == 0
+
+
+def test_clock_step_snapshot_keeps_the_selected_step_and_display_labels():
+    from types import SimpleNamespace
+
+    from autodj.player import Player
+
+    native_step = {"type": "category", "category": "favorites", "selection": "random"}
+    player = object.__new__(Player)
+    player._clock_steps = [native_step]
+    player._library = SimpleNamespace(
+        catalog=SimpleNamespace(sources=lambda: []),
+        categories=SimpleNamespace(
+            categories=lambda: [SimpleNamespace(id="favorites", name="Favorites")]
+        ),
+    )
+    snapshot = player._clock_step_snapshot(0, player._clock_steps)
+
+    native_step["category"] = "renamed"
+    assert snapshot == {
+        "number": 1,
+        "step": {"type": "category", "category": "favorites", "selection": "random"},
+        "sources": [],
+        "categories": [{"id": "favorites", "name": "Favorites"}],
+    }
 
 
 def test_runtime_picker_checks_rules_in_least_recent_order():

@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Why this track?** names the clockwheel step that selected the song, with its number and
+  the same description shown in the clockwheel list. Music and category steps say whether they
+  choose the least recently played song or choose at random. The description stays with the
+  selected song when the clock changes, including the opening song.
 - Library Rescan can override saved fields with populated embedded tags; missing tags keep the
   saved values, cue points and analysis remain intact for unchanged files.
 
@@ -71,7 +75,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the run works in the background with a progress bar and a Cancel button, announces its end
   once, and shows the results as headings and lists. See
   [Operations](docs/operations.md#testing-the-rotation).
-
 - Editing tags from Track info (#53). A Tags section has fields for title, artist, album, genre,
   year, BPM, key and ISRC. Save tags writes only the changed fields into the file with mutagen
   (MP3, FLAC, M4A, Ogg Vorbis, Opus, WAV and AIFF) and updates the library at once, keeping the

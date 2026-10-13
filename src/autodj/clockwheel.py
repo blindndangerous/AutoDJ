@@ -204,6 +204,8 @@ class ClockPick:
     """A selected music entry, its optional preceding liner, and resume slot.
 
     ``preset`` is the last settings step passed on the way to the entry.
+    ``step_index`` and ``liner_step_index`` identify the steps that selected them.
+    The player attaches display snapshots from the same clock used for selection.
     """
 
     entry: Any | None
@@ -212,6 +214,10 @@ class ClockPick:
     skipped: list[str]
     preset: str | None = None
     liner_requires_following: bool = False
+    step_index: int | None = None
+    liner_step_index: int | None = None
+    step_snapshot: dict[str, Any] | None = None
+    liner_step_snapshot: dict[str, Any] | None = None
 
 
 #: Slot kinds that pick the music itself (a liner only rides on one).
@@ -372,6 +378,7 @@ def pick_slot(
     skipped: list[str] = []
     pending_liner = None
     pending_liner_requires_following = False
+    pending_liner_index = None
     preset = None
     # Build the normalized lookup lazily for direct callers without a shared one.
     played = normalized_history
@@ -431,6 +438,8 @@ def pick_slot(
                     skipped,
                     preset,
                     pending_liner_requires_following if pending_liner is not None else False,
+                    index,
+                    pending_liner_index,
                 )
             skipped.append(f"track step {slot.path}: recording missing or blocked by rules")
             continue
@@ -460,6 +469,8 @@ def pick_slot(
                     skipped,
                     preset,
                     pending_liner_requires_following if pending_liner is not None else False,
+                    index,
+                    pending_liner_index,
                 )
             continue
         pool = liners if slot.kind == "liner" else entries
@@ -479,6 +490,7 @@ def pick_slot(
             skipped.append(reason)
         if slot.kind == "liner":
             pending_liner = selected
+            pending_liner_index = index if selected is not None else None
             pending_liner_requires_following = (
                 slot.require_following if selected is not None else False
             )
@@ -491,6 +503,8 @@ def pick_slot(
                 skipped,
                 preset,
                 pending_liner_requires_following if pending_liner is not None else False,
+                index,
+                pending_liner_index,
             )
 
     return ClockPick(None, None, start, skipped, preset)
