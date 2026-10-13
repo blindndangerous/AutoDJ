@@ -74,7 +74,7 @@ describe("tab arrow keys", () => {
           new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
       } else {
         window.location.hash = "#history";
-        window.dispatchEvent(new HashChangeEvent("hashchange"));
+        window.dispatchEvent(new window.HashChangeEvent("hashchange"));
       }
       expect(pause).toHaveBeenCalledOnce();
       expect(preview.currentTime).toBe(42);
