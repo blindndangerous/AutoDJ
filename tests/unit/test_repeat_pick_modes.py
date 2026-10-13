@@ -782,7 +782,10 @@ def test_a_clock_slot_relaxes_the_rules_when_every_track_is_held_back(caplog) ->
         picked = player._clock_pick(player._pick_context(), 0)
     assert picked.entry is not None
     assert picked.entry.path != current.path
-    assert "relaxing the artist, album and title rules" in caplog.text
+    assert (
+        "relaxing the artist, related artist, album, title, related track, daypart and quarter-hour rules"
+        in caplog.text
+    )
     assert "3 same artist" in caplog.text
 
 

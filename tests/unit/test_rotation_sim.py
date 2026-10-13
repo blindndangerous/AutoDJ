@@ -829,7 +829,14 @@ def test_runs_do_not_depend_on_the_hash_seed(tmp_path: Path) -> None:
     assert len(runs[0]) == 60
 
 
-def test_a_run_matches_the_live_player_pick_for_pick(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "rules",
+    [{}, {"daypart": {"days": 1, "start_hours": [0, 12]}, "hourpart": {"plays": 2}}],
+    ids=["repeat rules", "with time of day rules"],
+)
+def test_a_run_matches_the_live_player_pick_for_pick(
+    tmp_path: Path, monkeypatch, rules: dict
+) -> None:
     """The dry run's player is the live one plus a clock: same seed, same picks."""
     import random as module
 
@@ -846,7 +853,7 @@ def test_a_run_matches_the_live_player_pick_for_pick(tmp_path: Path, monkeypatch
         ],
         clockwheels=[{"name": "Main", "steps": [category_step("a"), category_step("b")]}],
         active_clock="Main",
-        playback={"pick_mode": "clock"},
+        playback={"pick_mode": "clock", "repeat_rules": rules},
     )
     simulated = [path for _, path in _sequence(source, 9, picks=25)]
 
