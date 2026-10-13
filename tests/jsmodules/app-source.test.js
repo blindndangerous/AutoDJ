@@ -86,6 +86,7 @@ async function setupApp({
     isStaleAdvanceState: vi.fn(() => false),
     eqValueLabel: vi.fn(),
     loadCoverArt,
+    musicSpeedRate: vi.fn(() => 1),
     playbackEnabled: false,
     playOnDeck: vi.fn(),
     postEq: vi.fn(),

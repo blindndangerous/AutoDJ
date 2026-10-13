@@ -328,6 +328,9 @@ class PlaybackConfig(_Section):
 
     crossfade_seconds: float = 3.0
     fade_in_seconds: float = 3.0
+    # Music playback rate as a percentage change. Server rendering consumes
+    # this at the next unrendered audio-buffer boundary.
+    music_speed_percent: float = 0.0
     repeat_rules: RepeatSettings = field(default_factory=RepeatSettings)
     discovery_every: int | None = None
     crossfade_eq_duck: bool = False
@@ -478,6 +481,15 @@ class PlaybackConfig(_Section):
                     f"playback.{name} must be between 0 and {MAX_FADE_SECONDS:g}, got {seconds}"
                 )
             setattr(self, name, seconds)
+        speed = self.music_speed_percent
+        if isinstance(speed, bool) or not isinstance(speed, int | float):
+            raise TypeError("playback.music_speed_percent must be a number")
+        speed = float(speed)
+        if not math.isfinite(speed) or not -10 <= speed <= 10:
+            raise ValueError("playback.music_speed_percent must be between -10 and 10")
+        if speed != round(speed, 2):
+            raise ValueError("playback.music_speed_percent may have at most 2 decimal places")
+        self.music_speed_percent = speed
         self.repeat_rules = RepeatSettings.model_validate(
             ignore_unknown_repeat_keys(self.repeat_rules)
         )

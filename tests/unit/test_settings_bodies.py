@@ -34,6 +34,17 @@ def test_playback_body_accepts_saved_points_and_legacy_fields() -> None:
     assert body.replaygain_enabled is True
 
 
+@pytest.mark.parametrize("value", (-10, -1.23, 0, 1.23, 10))
+def test_music_speed_percent_accepts_two_decimal_values(value: float) -> None:
+    assert PlaybackSettingsBody.model_validate({"music_speed_percent": value}).music_speed_percent == value
+
+
+@pytest.mark.parametrize("value", (-10.01, 10.01, 1.234, float("inf"), float("nan"), True, 1e100))
+def test_music_speed_percent_rejects_invalid_values(value: float) -> None:
+    with pytest.raises(ValidationError):
+        PlaybackSettingsBody.model_validate({"music_speed_percent": value})
+
+
 @pytest.mark.parametrize("value", (0, 7, 12))
 def test_playback_body_accepts_agc_drive_range(value: float) -> None:
     assert (

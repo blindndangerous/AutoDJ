@@ -347,12 +347,22 @@ class TestPlaybackConfig:
     def test_defaults(self) -> None:
         pb = PlaybackConfig.from_dict({})
         assert pb.crossfade_seconds == 3.0
+        assert pb.music_speed_percent == 0.0
         for name, tracks in (("track", 50), ("artist", 8), ("album", 0), ("title", 0)):
             rule = getattr(pb.repeat_rules, name)
             assert (rule.tracks, rule.minutes) == (tracks, 0)
         assert pb.show_lyrics is True
         assert pb.prefetch_next_track is True
         assert pb.silence_trigger_crossfade is True
+
+    @pytest.mark.parametrize("value", [-10, -1.23, 0, 1.23, 10])
+    def test_music_speed_percent_accepts_range_and_hundredths(self, value: float) -> None:
+        assert PlaybackConfig.from_dict({"music_speed_percent": value}).music_speed_percent == value
+
+    @pytest.mark.parametrize("value", [-10.01, 10.01, 1.234, float("inf"), float("nan"), True])
+    def test_music_speed_percent_rejects_invalid_values(self, value: float) -> None:
+        with pytest.raises((TypeError, ValueError)):
+            PlaybackConfig.from_dict({"music_speed_percent": value})
 
     def test_show_lyrics_false_round_trip(self) -> None:
         pb = PlaybackConfig.from_dict({"show_lyrics": False})

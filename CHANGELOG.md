@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Music speed (#162): Settings > Sound > Music speed has a slider and exact numeric field for
+  10% slower to 10% faster. Speed and pitch change together. Browser music changes speed when
+  safe; voice liners and previews stay at their normal speed. In stream and server-audio modes,
+  the new speed takes effect at the next unrendered audio-buffer boundary. Cue points, lyrics,
+  catalog durations and playback progress remain on the source-file timeline.
 - An hour preview with backtiming (#126): Now Playing > **Hour preview** lists what plays over
   the next 30 minutes to 3 hours with each item's estimated start time, and says in words on
   every row whether it is fixed (on the air, ready to play, picked, a booked break, in the queue)
