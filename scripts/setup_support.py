@@ -190,21 +190,13 @@ def install_python(
     write_json(stamp, {"dependencies": signature})
 
 
-def create_configuration(root: Path, music: Path | None, port: int) -> None:
+def create_configuration(root: Path, port: int) -> None:
     """Create a minimal local configuration; never replace an existing file."""
-    if music is not None and not music.is_dir():
-        raise ValueError(f"Music folder does not exist: {music}")
     if not 1 <= port <= 65535:
         raise ValueError("Port must be between 1 and 65535.")
-    # JSON string escapes are valid TOML basic-string escapes for these values.
-    library = (
-        f"music_dir = {json.dumps(music.as_posix(), ensure_ascii=False)}\n"
-        if music is not None
-        else ""
-    )
     content = (
         "# Created by AutoDJ setup. Edit this file to change your settings.\n"
-        f'[library]\n{library}beets_db = ""\n\n'
+        '[library]\nbeets_db = ""\n\n'
         '[server]\nhost = "127.0.0.1"\n'
         f'port = {port}\nallowed_hosts = ["127.0.0.1", "localhost"]\n'
         f'allowed_origins = ["http://127.0.0.1:{port}", "http://localhost:{port}"]\n'

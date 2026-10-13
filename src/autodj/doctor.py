@@ -121,7 +121,7 @@ def _configuration_check(cfg: AutoDJConfig) -> DoctorCheck:
         "host": cfg.server.host,
         "port": cfg.server.port,
         "lan": cfg.server.lan,
-        "music_dir": str(cfg.library.music_dir),
+        "music_dir": str(cfg.library.music_dir) if cfg.library.music_dir is not None else None,
         "index_dir": str(cfg.index.index_dir),
         "model_dir": str(cfg.index.model_dir),
         "access_token": "<redacted>" if cfg.server.access_token else None,
@@ -201,10 +201,10 @@ def _beets_db_check(cfg: AutoDJConfig) -> DoctorCheck:
 
 
 def _music_paths_check(cfg: AutoDJConfig) -> DoctorCheck:
-    """Check registered music roots, falling back to config before catalog setup."""
+    """Check registered music folders; an empty library needs no configured root."""
     catalog_path = cfg.index.active_dir / "library.db"
     if not catalog_path.is_file():
-        return _path_check("music-path", cfg.library.music_dir, writable=False)
+        return DoctorCheck("music-path", CheckStatus.PASS, "no music folders registered")
     try:
         conn = _connect(readonly_uri(catalog_path), uri=True)
         with closing(conn):
@@ -213,7 +213,7 @@ def _music_paths_check(cfg: AutoDJConfig) -> DoctorCheck:
                 for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
             }
             if "catalog_sources" not in tables:
-                return _path_check("music-path", cfg.library.music_dir, writable=False)
+                return DoctorCheck("music-path", CheckStatus.PASS, "no music folders registered")
             roots = [
                 Path(str(row[0]))
                 for row in conn.execute(

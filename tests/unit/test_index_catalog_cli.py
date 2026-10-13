@@ -99,6 +99,7 @@ def test_index_uses_registered_folder_and_forwards_limit_force_workers(tmp_path:
 
 def test_index_saves_basic_song_before_missing_dependencies(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
+    _source(cfg, cfg.library.music_dir)
     song = cfg.library.music_dir / "song.flac"
     song.write_bytes(b"song")
     with patch("autodj.model.download_model_if_needed") as download:
@@ -115,6 +116,7 @@ def test_index_saves_basic_song_before_missing_dependencies(tmp_path: Path) -> N
 
 def test_index_model_failure_leaves_basic_song_available(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
+    _source(cfg, cfg.library.music_dir)
     song = cfg.library.music_dir / "song.flac"
     song.write_bytes(b"song")
     with patch(
@@ -356,6 +358,7 @@ def test_force_preserves_catalog_vector_after_failed_reanalysis(tmp_path: Path) 
 
 def test_index_reports_unreadable_file_without_crashing(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
+    _source(cfg, cfg.library.music_dir)
     (cfg.library.music_dir / "broken.flac").write_bytes(b"broken")
     with (
         patch("autodj.cli._load_cfg_or_exit", return_value=cfg),

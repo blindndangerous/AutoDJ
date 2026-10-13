@@ -180,7 +180,7 @@ class LibraryManager:
             raise
         try:
             if not existing_catalog:
-                self.catalog.seed_sources(cfg.library.music_dir, liner_root)
+                self.catalog.seed_sources(None, liner_root)
             self.refresh()
         except BaseException:
             self.analysis_queue.close()

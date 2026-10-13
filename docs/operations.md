@@ -75,8 +75,8 @@ liner folder is missing. With several stations, each station is checked on its o
 
 `autodj index` scans the registered folders and saves basic song records in `library.db` before
 loading the model. It then embeds eligible songs that do not yet have vectors. By default it also
-refreshes metadata from beets and runs the DJ-meta backfill (`autodj analyse`) for tracks under
-the configured music root whose folders have advanced analysis enabled. This backfill adds intro,
+refreshes metadata from beets and runs the DJ-meta backfill (`autodj analyse`) for tracks in
+registered music folders with advanced analysis enabled. This backfill adds intro,
 outro, beat-grid and cue data; `--no-analyse` skips it, while advanced embedding still runs.
 In a terminal, analysis commands show completed-track progress. Redirected output and web job
 logs keep plain progress messages.
@@ -107,7 +107,8 @@ directory that lists each file and its messages: `decode-indexing.log` for embed
 report removes it. FFmpeg's routine note that an MP3's duration is estimated from its bitrate is
 left out, because the decode itself is complete.
 
-`autodj index` uses the same registered folders as Library tools. `--limit` caps the advanced
+A new library starts empty. Add folders in Library tools; setup and startup do not choose a
+music folder for you. `autodj index` uses those same registered folders. `--limit` caps the advanced
 embedding pass, not the basic import. Folders with advanced analysis disabled stay playable
 without embedding. Each completed vector is saved in `library.db`, so an interrupted run resumes
 with remaining songs. `--force` replaces vectors for eligible songs without deleting cues,
@@ -121,9 +122,14 @@ not bypass migration. A leftover manifest is ignored when the current catalog al
 
 `analyse`, `enrich`, and `stats` use the
 current catalog: Analyse backfills CPU intro/outro and beat data without MuQ, Enrich refreshes
-beets metadata without re-embedding, and Stats prints the detailed catalog report. Analyse covers all registered folders. New DJ-meta cache entries use full track paths; existing
+beets metadata without re-embedding, and Stats prints the detailed catalog report. Analyse covers
+all registered folders. New DJ-meta cache entries use full track paths; existing
 relative cache entries remain readable with the old `music_dir` setting. That setting does not
-limit which registered folders can be analysed. The Library panel's **Remove missing tracks** action is
+limit which registered folders can be analysed. It is optional and kept only to resolve older
+relative cache or beets paths; leave it out of new setups. For a legacy index import, pass
+`migrate-index --music-dir PATH` instead. Current-library settings/history upgrades need no root.
+
+The Library panel's **Remove missing tracks** action is
 available after a successful rescan; it previews catalog records missing from mounted sources,
 requires confirmation, asks again above the 20% safety threshold, deletes saved catalog cues and
 analysis data for those records, and preserves audio files and play history. Disconnected sources
@@ -303,8 +309,9 @@ AUTODJ_GID=1000
 #AUTODJ_BEETS_PATH=/home/you/.config/beets
 ```
 
-Without `.env`, music comes from `./music` and the index and model live in the named volumes
-`autodj-index` and `autodj-models`.
+Without `.env`, `./music` is mounted at `/music` and the index and model live in the named
+volumes `autodj-index` and `autodj-models`. Add `/music` in Library after starting the container;
+mounting a folder does not register it automatically.
 
 ```bash
 docker compose up -d --build
@@ -774,7 +781,7 @@ daily_limit = 50             # requests the station takes per day, from everyone
 max_pending = 20             # requests that may wait for you at once (manual approval)
 window_minutes = 30          # how far ahead in the queue a request may be placed
 blocked_artists = ["Night Owl Jingles"]
-blocked_folders = ["Christmas"]   # full paths, or folders inside [library] music_dir
+blocked_folders = ["Christmas"]   # full paths, or folders relative to registered music folders
 ipv6_prefix = 56             # an IPv6 listener's limits count over this network
 ```
 
@@ -1783,15 +1790,19 @@ not make a copied catalog portable to paths on another machine.
 Use `autodj migrate-index` to move a published index and supported old state into the current
 `library.db`. It accepts schema-3 and schema-4 indexes, imports their vectors unchanged, and does not
 reanalyze audio. It also upgrades version-1 `web_state.json`, imports legacy play-history JSON, and
-registers the configured music and liner roots when the catalog has not recorded its initial roots.
+preserves existing folder registrations. When upgrading older folder state, it registers the
+configured liner folder and an explicitly supplied legacy music folder, if any.
 You can run it when the index itself is current but only saved settings, history, or folder
 registration still needs upgrading. The preview lists the work and writes nothing.
 
 Run it with the same configuration and named index as your server:
 
 ```bash
+# Current catalog: upgrade old settings/history without a music root
 uv run autodj migrate-index
 uv run autodj migrate-index --apply
+# Old published index: supply the base for its relative paths
+uv run autodj migrate-index --music-dir /path/to/music --apply
 # With another configuration or named index:
 uv run autodj --config station.toml migrate-index --name gold --apply
 ```
@@ -1807,8 +1818,9 @@ schemas still require rebuilding.
 
 The command validates the published files before importing them. Missing music files keep their
 existing vectors and metadata, but cannot be recognized as moved until their files can be
-fingerprinted. Initial music and liner roots use the configured paths. Existing folder
-registrations and saved catalog settings are preserved.
+fingerprinted. Old index imports use `--music-dir` (or an existing legacy `[library] music_dir`).
+Settings/history-only upgrades need no music root. Existing folder registrations and saved
+catalog settings are preserved.
 
 For files that moved, `--map moves.json` accepts old to new paths relative to `music_dir`, such as
 `{"Old/a.flac": "New/a.flac"}`. Paths must use forward slashes, and destinations must be unique
@@ -1841,8 +1853,9 @@ that machine; do not copy a populated `library.db` expecting it to adapt to a di
 ### Importing a legacy index on another machine
 
 Older published indexes store paths relative to `music_dir` and can be imported on the destination
-without re-embedding. Set `music_dir` to that machine's library root, then place the legacy index
-files in its named index directory and run `autodj migrate-index --apply`. The catalog stores the
+without re-embedding. Place the legacy index files in its named index directory, then run
+`autodj migrate-index --music-dir /path/to/old/music --apply` using the destination
+folder that contains the old relative paths. The catalog stores the
 destination's absolute paths and the command keeps a recovery copy.
 
 For this one-time legacy import, stop AutoDJ and any `index` or `analyse` run on both machines.

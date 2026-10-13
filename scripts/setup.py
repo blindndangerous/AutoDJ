@@ -264,7 +264,7 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
             "The selected GPU could not run a calculation. Check the driver and package compatibility, or rerun with --backend cpu."
         )
     if not (root / "config.toml").exists():
-        create_configuration(root, None, port)
+        create_configuration(root, port)
     initialize_paths(root, python, env)
     doctor = subprocess.run(
         [str(python), "-m", "autodj", "doctor", "--no-fix", "--json"],

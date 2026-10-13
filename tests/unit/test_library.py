@@ -99,6 +99,7 @@ def manager_factory(tmp_path):
     def create(**kwargs):
         cfg = make_config(tmp_path, **kwargs)
         manager = LibraryManager(cfg, Similarity())
+        manager.catalog.add_source(cfg.library.music_dir)
         managers.append(manager)
         return manager
 
@@ -133,7 +134,7 @@ def fake_loudness(path: Path, kind: str = "music") -> dict:
     }
 
 
-def test_new_library_seeds_configured_folders_without_a_manifest(tmp_path: Path) -> None:
+def test_new_library_does_not_register_legacy_music_root(tmp_path: Path) -> None:
     cfg = make_config(
         tmp_path, music=tmp_path / "missing-music", liners=tmp_path / "missing-liners"
     )
@@ -141,13 +142,43 @@ def test_new_library_seeds_configured_folders_without_a_manifest(tmp_path: Path)
     manager = LibraryManager(cfg, sim)
     try:
         assert {row["path"] for row in manager.catalog.sources()} == {
-            os.path.normcase(str(tmp_path / "missing-music")),
             os.path.normcase(str(tmp_path / "missing-liners")),
         }
         assert sim.replaced[1].shape == (0, FEATURE_DIM)
         assert not (cfg.index.active_dir / "index-manifest.json").exists()
     finally:
         manager.close()
+
+
+@pytest.mark.parametrize("legacy_root", [False, True])
+def test_empty_library_requires_explicit_folder_and_keeps_it_after_restart(tmp_path, legacy_root):
+    cfg = make_config(tmp_path)
+    music = cfg.library.music_dir
+    song = music / "song.flac"
+    song.write_bytes(b"audio")
+    if not legacy_root:
+        cfg.library.music_dir = None
+    manager = LibraryManager(cfg, Similarity())
+    try:
+        with (
+            patch("autodj.library.analyze_basic", side_effect=fake_basic),
+            patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+            patch("autodj.intro_lift.measure_source_intro", return_value=0.0),
+        ):
+            manager.scan()
+            assert manager.catalog.sources("music") == []
+            assert manager.entry_for_path(song) is None
+            manager.catalog.add_source(music, advanced=False)
+            manager.scan()
+            assert manager.entry_for_path(song) is not None
+    finally:
+        manager.close()
+    reopened = LibraryManager(cfg, Similarity())
+    try:
+        assert len(reopened.catalog.sources("music")) == 1
+        assert reopened.entry_for_path(song) is not None
+    finally:
+        reopened.close()
 
 
 def test_constructor_closes_catalog_when_refresh_fails(tmp_path):
@@ -1026,6 +1057,7 @@ def test_advanced_worker_adds_vector_without_publishing_legacy_index(tmp_path: P
     song.write_bytes(b"music")
     cfg = make_config(tmp_path, music=music)
     initial = LibraryManager(cfg, Similarity())
+    initial.catalog.add_source(music)
     try:
         initial.catalog.put_entry(make_entry(song), points={"start": 0.0, "end": 170.0})
     finally:
@@ -1161,6 +1193,7 @@ def test_metadata_change_keeps_the_faiss_index_and_updates_its_entries(tmp_path)
     song.write_bytes(b"music")
     sim = SimilarityIndex.empty()
     manager = LibraryManager(make_config(tmp_path, music=music), sim)
+    manager.catalog.add_source(music)
     try:
         manager.catalog.put_entry(make_entry(song, title="Old"))
         manager.catalog.set_vector(song, np.ones(FEATURE_DIM, dtype=np.float32))

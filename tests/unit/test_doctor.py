@@ -1138,3 +1138,11 @@ def test_doctor_names_empty_categories_and_missing_playlist_tracks(tmp_path: Pat
     check = {c.name: c for c in run_doctor(cfg).checks}["categories"]
     assert check.status is CheckStatus.WARN and "cannot be read" in check.summary
     assert (active / "categories.json").exists()  # doctor never sets the file aside
+
+
+def test_new_library_needs_no_music_root(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    cfg.library.music_dir = None
+    check = doctor._music_paths_check(cfg)
+    assert check.status is CheckStatus.PASS
+    assert check.summary == "no music folders registered"

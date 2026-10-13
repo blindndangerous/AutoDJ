@@ -622,7 +622,7 @@ daily_limit = 50
 max_pending = 20
 # How far ahead in the queue a request may be placed, in minutes.
 window_minutes = 30
-# Artists, and folders (full paths or inside music_dir), listeners cannot request.
+# Artists, and folders (full paths or relative to registered music folders), listeners cannot request.
 blocked_artists = []
 blocked_folders = []
 # An IPv6 listener's limits count over this network: 56 (a whole home network),

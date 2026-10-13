@@ -90,8 +90,8 @@ class LibraryConfig(_Section):
     """Settings for the music library location and format filtering.
 
     Attributes:
-        music_dir: Initial folder for a new library and base for legacy relative
-            paths; registered folders determine the current library.
+        music_dir: Optional base for legacy relative paths only. New libraries
+            start empty; registered folders determine the music available.
             For beets users, this should match the local mount point of the
             beets ``directory`` setting — relative paths stored in the beets
             database are resolved against ``music_dir``.
@@ -103,14 +103,14 @@ class LibraryConfig(_Section):
 
     SECTION: ClassVar[str] = "library"
 
-    music_dir: Path
+    music_dir: Path | None = None
     beets_db: Path | None = None
     supported_formats: list[str] = field(default_factory=lambda: ["mp3", "flac", "m4a"])
     playlists_folder: Path | None = None
 
     def __post_init__(self) -> None:
         """Expand ``~`` in the paths; an empty ``beets_db`` or ``playlists_folder`` means none."""
-        self.music_dir = Path(self.music_dir).expanduser()
+        self.music_dir = Path(self.music_dir).expanduser() if self.music_dir else None
         self.beets_db = Path(self.beets_db).expanduser() if self.beets_db else None
         self.playlists_folder = (
             Path(self.playlists_folder).expanduser() if self.playlists_folder else None
@@ -1453,7 +1453,8 @@ class RequestsConfig(_Section):
         window_minutes: How far ahead a request may be placed in the queue.
         blocked_artists: Artists listeners cannot request.
         blocked_folders: Folders whose songs listeners cannot request or
-            find, as full paths or paths inside ``[library] music_dir``.
+            find, as full paths or paths relative to registered music folders.
+            A configured legacy ``music_dir`` retains the older relative-path behavior.
         ipv6_prefix: The IPv6 network one listener's limits count over,
             in bits: 56 (the default) counts a whole home network that was
             delegated a /56; 64 a single /64; 128 a single address.
@@ -1866,7 +1867,7 @@ ENVIRONMENT_OVERLAY: dict[str, tuple[str, str, Callable[[str], object]]] = {
 def _default_raw() -> dict[str, Any]:
     """Return the minimal raw configuration defaults."""
     return {
-        "library": {"music_dir": "music"},
+        "library": {},
         "index": {"index_dir": "index", "model_dir": "models"},
         "server": {"host": "127.0.0.1", "port": 8080},
     }

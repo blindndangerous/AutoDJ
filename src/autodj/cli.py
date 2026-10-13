@@ -1047,7 +1047,7 @@ def cmd_restore(ctx: click.Context, archive: Path, force: bool) -> None:
     "--no-analyse",
     "skip_analyse",
     is_flag=True,
-    help="Skip the extra beat/cue backfill for the configured music root; basic cues are still read.",
+    help="Skip the extra beat/cue backfill for registered music folders; basic cues are still read.",
 )
 @click.option(
     "--no-enrich",
@@ -1070,7 +1070,7 @@ def cmd_index(
 ) -> None:
     """Add registered folders to the library, then analyse pending songs.
 
-    On first use, registers [library] music_dir. Older indexes need migrate-index first.
+    Add music folders in Library before indexing. Older indexes need migrate-index first.
     Later runs rescan the folders saved in Library tools. Songs become available
     before advanced analysis; folders with advanced analysis disabled are skipped
     by that pass. --limit caps advanced analysis, not the basic import.
@@ -1082,7 +1082,6 @@ def cmd_index(
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
     _apply_index_name(cfg, index_name)
-    cfg.library.music_dir = cfg.library.music_dir.resolve()
     console.print(Panel("[bold green]AutoDJ library import[/]", expand=False))
     console.print(f"  Library : {cfg.index.active_dir}")
     if limit:
@@ -1093,6 +1092,10 @@ def cmd_index(
         sim = _load_index_for_serve(cfg)
         library = LibraryManager(cfg, sim)
         ctx.call_on_close(library.close)
+        if not library.catalog.sources("music"):
+            console.print(
+                "No music folders registered. Start `autodj serve` and add folders in Library."
+            )
         library.scan()
         state = library.snapshot()
         console.print(f"[green]{state['tracks_ready']} songs available.[/]")
@@ -1583,9 +1586,18 @@ def cmd_analyse(
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     help="JSON mapping of old to new paths relative to music_dir.",
 )
+@click.option(
+    "--music-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Base folder for paths in a legacy index; not needed for current-library state upgrades.",
+)
 @click.pass_context
 def cmd_migrate_index(
-    ctx: click.Context, index_name: str | None, apply: bool, move_map: Path | None
+    ctx: click.Context,
+    index_name: str | None,
+    apply: bool,
+    move_map: Path | None,
+    music_dir: Path | None,
 ) -> None:
     """Import published index data and legacy state into the current catalog.
 
@@ -1610,7 +1622,7 @@ def cmd_migrate_index(
     try:
         migrate_catalog(
             cfg.index.active_dir,
-            cfg.library.music_dir,
+            music_dir or cfg.library.music_dir,
             Path(liner_dir),
             moves,
             apply=apply,

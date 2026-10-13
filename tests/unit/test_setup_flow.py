@@ -309,7 +309,7 @@ def test_explicit_existing_environment_skips_package_install(
     assert setup_modules.setup.execute(args, root) == 0
 
     mocks.install_python.assert_not_called()
-    mocks.create_configuration.assert_called_once_with(root, None, 8181)
+    mocks.create_configuration.assert_called_once_with(root, 8181)
     generated = tomllib.loads((root / "config.toml").read_text(encoding="utf-8"))
     assert "music_dir" not in generated["library"]
     assert "Your library is empty" in capsys.readouterr().out
@@ -538,21 +538,12 @@ def test_install_stamp_skips_matching_inputs_and_reruns_after_lock_change(
     assert [call.args[0] for call in run.call_args_list] == expected
 
 
-def test_configuration_escapes_path_and_validates_port(setup_modules, tmp_path: Path) -> None:
+def test_configuration_validates_port(setup_modules, tmp_path: Path) -> None:
     root, _ = _project(tmp_path)
-
-    class SerializedDirectory:
-        def is_dir(self) -> bool:
-            return True
-
-        def as_posix(self) -> str:
-            return 'C:/Music/Artist "Night"\\Set\n# Café'
-
-    music_value = SerializedDirectory().as_posix()
-    setup_modules.support.create_configuration(root, SerializedDirectory(), 8188)
+    setup_modules.support.create_configuration(root, 8188)
     text = (root / "config.toml").read_text(encoding="utf-8")
     parsed = tomllib.loads(text)
-    assert parsed["library"]["music_dir"] == music_value
+    assert "music_dir" not in parsed["library"]
     assert parsed["server"]["port"] == 8188
     assert parsed["server"]["allowed_origins"] == [
         "http://127.0.0.1:8188",
@@ -570,7 +561,7 @@ def test_default_configuration_does_not_require_a_music_folder(
     setup_modules, tmp_path: Path
 ) -> None:
     root, _ = _project(tmp_path)
-    setup_modules.support.create_configuration(root, None, 8080)
+    setup_modules.support.create_configuration(root, 8080)
 
     parsed = tomllib.loads((root / "config.toml").read_text(encoding="utf-8"))
     assert parsed["library"] == {"beets_db": ""}
@@ -582,5 +573,5 @@ def test_create_configuration_rejects_invalid_port_without_a_file(
 ) -> None:
     root, _ = _project(tmp_path)
     with pytest.raises(ValueError, match="Port must be between"):
-        setup_modules.support.create_configuration(root, Path("."), 0)
+        setup_modules.support.create_configuration(root, 0)
     assert not (root / "config.toml").exists()

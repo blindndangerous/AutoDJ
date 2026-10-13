@@ -745,7 +745,7 @@ class LibraryCatalog:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    def seed_sources(self, music_root: Path | str, liner_root: Path | str) -> bool:
+    def seed_sources(self, music_root: Path | str | None, liner_root: Path | str) -> bool:
         """Import legacy config roots once; an intentional empty list stays empty."""
         with self._lock:
             self._db()
