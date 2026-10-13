@@ -522,9 +522,24 @@ def cmd_setup(arguments: tuple[str, ...]) -> None:
     help="Apply supported repairs without prompting, or disable repairs. "
     "By default, ask before each repair in an interactive terminal.",
 )
+@click.option(
+    "--station",
+    default=None,
+    metavar="SLUG",
+    help="Check only this station besides the server: default, or a [stations.<slug>] name.",
+)
 @click.pass_context
-def cmd_doctor(ctx: click.Context, as_json: bool, fix: bool | None, index_name: str | None) -> None:
-    """Check configuration, storage, dependencies, model, network, and stream health."""
+def cmd_doctor(
+    ctx: click.Context,
+    as_json: bool,
+    fix: bool | None,
+    index_name: str | None,
+    station: str | None,
+) -> None:
+    """Check configuration, storage, dependencies, model, network, and stream health.
+
+    With several stations, each station's own checks run once per station.
+    """
     from autodj.doctor import (
         CheckStatus,
         DoctorCheck,
@@ -554,21 +569,25 @@ def cmd_doctor(ctx: click.Context, as_json: bool, fix: bool | None, index_name: 
         click.echo(report.to_json())
         raise click.exceptions.Exit(1) from None
     _apply_index_name(cfg, index_name)
-    report = run_doctor(cfg)
+    if station is not None and station not in {"default", *(s.slug for s in cfg.stations)}:
+        raise click.BadParameter(f"no station is named {station!r}", param_hint="--station")
+    report = run_doctor(cfg, station=station)
     click.echo(report.to_json() if as_json else render_text(report))
     if offer_repairs and _doctor_repair_saved_settings(cfg, report, fix is True):
         click.echo("Rechecking after repairs...")
-        report = run_doctor(cfg)
+        report = run_doctor(cfg, station=station)
         click.echo(render_text(report))
     if offer_repairs and _doctor_create_directories(cfg, report, fix is True):
         click.echo("Rechecking after repairs...")
-        report = run_doctor(cfg)
+        report = run_doctor(cfg, station=station)
         click.echo(render_text(report))
     recovery_failed = False
     if offer_repairs:
         from autodj.doctor_commands import run_recovery_commands
 
-        report, recovery_failed = run_recovery_commands(cfg, report, auto_fix=fix is True)
+        report, recovery_failed = run_recovery_commands(
+            cfg, report, auto_fix=fix is True, station=station
+        )
     if report.exit_code or recovery_failed:
         raise click.exceptions.Exit(1)
 
@@ -603,41 +622,68 @@ def _doctor_load_config(
     return _load_cfg_or_exit(config_path, show_error=not as_json)
 
 
+def _station_state_dir(cfg: AutoDJConfig, slug: str | None) -> Path:
+    """The folder holding station *slug*'s state files; the default station's for ``None``."""
+    from autodj.config import station_config
+    from autodj.stations import StationPaths
+
+    if slug is None:
+        return StationPaths.default(cfg).state_dir
+    spec = next(spec for spec in cfg.stations if spec.slug == slug)
+    return StationPaths.for_station(station_config(spec.cfg, cfg), slug).state_dir
+
+
 def _doctor_repair_saved_settings(cfg: AutoDJConfig, report: DoctorReport, auto_fix: bool) -> bool:
+    """Offer each station's saved-settings cleanup, one at a time, each with a backup."""
     from autodj.doctor_repair import plan_saved_state_repair
 
-    if not any(check.repair == "repair-saved-settings" for check in report.checks):
-        return False
-    repair = plan_saved_state_repair(cfg.index.active_dir)
-    if repair is None:
-        click.echo(
-            "No safe automatic edit is available for saved settings; review the details above."
-        )
-        return False
-    click.echo(f"Remove obsolete repeat keys from {repair.path}:")
-    for section, keys in repair.keys_by_section.items():
-        click.echo(f"  [{section}]: {list(keys)}")
-    if not auto_fix and not click.confirm("Apply this repair (with a backup)?", default=False):
-        return False
-    try:
-        backup = repair.apply()
-    except (OSError, ValueError, RuntimeError) as exc:
-        raise click.ClickException(f"Could not repair saved settings: {exc}") from exc
-    click.echo(f"Repaired {repair.path}. Backup: {backup}")
-    return True
+    changed = False
+    for check in report.checks:
+        if check.repair != "repair-saved-settings":
+            continue
+        repair = plan_saved_state_repair(_station_state_dir(cfg, check.station))
+        where = f" for station {check.station}" if check.station else ""
+        if repair is None:
+            click.echo(
+                f"No safe automatic edit is available for saved settings{where}; "
+                "review the details above."
+            )
+            continue
+        click.echo(f"Remove obsolete repeat keys from {repair.path}:")
+        for section, keys in repair.keys_by_section.items():
+            click.echo(f"  [{section}]: {list(keys)}")
+        if not auto_fix and not click.confirm("Apply this repair (with a backup)?", default=False):
+            continue
+        try:
+            backup = repair.apply()
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise click.ClickException(f"Could not repair saved settings: {exc}") from exc
+        click.echo(f"Repaired {repair.path}. Backup: {backup}")
+        changed = True
+    return changed
 
 
 def _doctor_create_directories(cfg: AutoDJConfig, report: DoctorReport, auto_fix: bool) -> bool:
-    """Offer only missing writable storage directories identified by the checks."""
+    """Offer only missing writable storage directories identified by the checks.
+
+    These are the index and model folders and each other station's own
+    folder.  A new, empty folder replaces nothing, so no backup is made.
+    """
     from autodj.doctor import CheckStatus
 
     paths = {"index-path": cfg.index.index_dir, "model-path": cfg.index.model_dir}
     changed = False
     for check in report.checks:
-        path = paths.get(check.name)
+        path: Path | None
+        if check.repair == "create-station-folder" and check.station is not None:
+            path = _station_state_dir(cfg, check.station)
+            label = f"folder for station {check.station}"
+        else:
+            path = paths.get(check.name) if check.station is None else None
+            label = f"{check.name} directory"
         if path is None or check.status is not CheckStatus.WARN or path.exists():
             continue
-        click.echo(f"Create missing {check.name} directory: {path}")
+        click.echo(f"Create missing {label}: {path}")
         if auto_fix or click.confirm("Create this directory?", default=False):
             try:
                 path.mkdir(parents=True, exist_ok=True)

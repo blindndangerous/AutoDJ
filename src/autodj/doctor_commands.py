@@ -33,7 +33,7 @@ _EFFECTS = {
 
 
 def run_recovery_commands(
-    cfg: AutoDJConfig, report: DoctorReport, *, auto_fix: bool
+    cfg: AutoDJConfig, report: DoctorReport, *, auto_fix: bool, station: str | None = None
 ) -> tuple[DoctorReport, bool]:
     """Offer each recovery once, retaining config and interpreter; recheck after execution."""
     from autodj.doctor import CheckStatus, render_text, run_doctor
@@ -85,5 +85,5 @@ def run_recovery_commands(
             click.echo(f"Could not run recovery: {exc}", err=True)
             failed = True
         click.echo("Rechecking after recovery...")
-        report = run_doctor(cfg)
+        report = run_doctor(cfg, station=station)
         click.echo(render_text(report))

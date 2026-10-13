@@ -580,10 +580,18 @@ its publication lock and `dj_meta.db` through SQLite's backup API. The archive i
 temporary file and renamed into place, and it may not be written inside the liners, profiles or
 uploaded preset folder.
 
+With several stations, the archive also holds each other station's state files and folders
+under `stations/<slug>/`, including its `listener_bans.json` and `recording.json`, and the
+manifest lists the stations. A folder shared with another station is stored once. The backup
+may not be written inside any station's folders either.
+
 Restore requires a backup from the same major and minor version. It refuses member names that
 are absolute, contain `..`, backslashes or drive letters, or fall outside the known index files,
 liners, profiles and uploaded Stereo Tool presets, and it refuses an archive whose files differ
-from its manifest.
+from its manifest. A `stations/<slug>/` member is accepted only for a slug that matches the
+station-name pattern (so it can never name a folder outside `stations/`), is not `default`, and
+is configured with a `[stations.<slug>]` table; a backup holding any other station is refused
+before anything is unpacked, as is one whose folders would land in the same place.
 Every file is unpacked beside its destination and the index is checked before anything is
 replaced. Restored liners, profiles and uploaded preset folders replace the current ones whole.
 The index files

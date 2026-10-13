@@ -1891,6 +1891,27 @@ def unknown_config_keys(raw: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
     return unknown
 
 
+def unknown_config_sections(raw: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return the tables AutoDJ ignores, by dotted name, root and station.
+
+    A root table that is no section (``"radio"``) and a station's table that
+    is no station section (``"stations.nightowl.server"``) are listed;
+    loading warns about the same ones.
+    """
+    known = {t.SECTION for t in _SECTION_TYPES} | {"presets", "webhooks", "stations"}
+    unknown = [name for name in raw if name not in known]
+    stations = raw.get("stations")
+    if isinstance(stations, Mapping):
+        for slug, table in stations.items():
+            if isinstance(table, Mapping):
+                unknown += [
+                    f"stations.{slug}.{name}"
+                    for name, value in table.items()
+                    if name not in _STATION_KEYS and isinstance(value, Mapping)
+                ]
+    return tuple(sorted(unknown))
+
+
 def _unknown_section_keys(
     raw: Mapping[str, Any], section_types: Iterable[type[_Section]], prefix: str
 ) -> dict[str, tuple[str, ...]]:

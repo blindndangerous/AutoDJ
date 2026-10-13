@@ -178,6 +178,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   running for", since each station counts its own, and a stopped station's says "Not on air".
   In Safari and other WebKit browsers, the status page's Pause updates button is now readable in
   the dark theme; its text had too little contrast.
+- `autodj backup` and `autodj restore` cover every station (#70). Each other station's settings,
+  schedule, carts, time checks, listener bans, recording state, liner dates, liners, cart clips,
+  time check clips, clockwheels and profiles are stored under `stations/<slug>/` in the archive,
+  and the default station's keep their names. A folder two stations share is stored once.
+  Restore puts each station's files back in its own folder, and refuses a backup holding a
+  station the configuration does not define ("add [stations.<slug>] to config.toml first")
+  before it changes anything.
+- `autodj doctor` checks every station (#70). Each other station gets its own lines, starting
+  "Station <slug>," (and a `station` field in `--json`): its folder, saved settings, stream,
+  relays, time checks and voice packs, DMCA mode, recording folder and liner folder.
+  `--station <slug>` checks one station (`default` for the default one) beside the server
+  checks. New for every station: `recording` (can its folder be written) and `liners` (is a
+  configured liner folder there). New server checks: `config-keys` lists the keys and tables in
+  the config files that AutoDJ ignores, including those under `[stations.<slug>]`, and
+  `station-folders` names station folders no `[stations.<slug>]` table uses any more, which are
+  never deleted and not backed up. Doctor offers to clean up a station's saved settings (with a
+  backup) and to make a station's folder, each only after asking, or with `--fix`.
 
 - Schedule events can have a date range: an optional start date and end date, both included, in
   the station time zone. Outside the range an event does not run, and Next events skips it. An
