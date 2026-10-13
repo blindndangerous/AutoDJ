@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
+from contextlib import closing
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -403,7 +406,7 @@ class TestDjMetaCache:
             assert cache2.get("keep.flac").analysed is True
             assert cache2.get("stale.flac").analysed is False
 
-    def test_absolute_paths_are_stored_as_relative_keys(self, tmp_path) -> None:
+    def test_absolute_paths_are_stored_canonically(self, tmp_path) -> None:
         import sqlite3 as _sql
 
         path = tmp_path / "cache.db"
@@ -417,28 +420,152 @@ class TestDjMetaCache:
             rows = conn.execute("SELECT path FROM dj_meta").fetchall()
         finally:
             conn.close()
-        assert rows == [("Artist/song.flac",)]
+        assert rows == [(os.path.normcase(str(music_dir / "Artist" / "song.flac")),)]
 
-    def test_path_outside_music_dir_is_rejected(self, tmp_path) -> None:
+    def test_paths_outside_music_dir_are_supported(self, tmp_path) -> None:
         music_dir = tmp_path / "Music"
-        with (
-            DjMetaCache(tmp_path / "cache.db", music_dir=music_dir) as cache,
-            pytest.raises(ValueError, match="not under music_dir"),
-        ):
-            cache.set(str(tmp_path / "Other" / "song.flac"), DjMeta(analysed=True))
+        song = tmp_path / "Other" / "song.flac"
+        with DjMetaCache(tmp_path / "cache.db", music_dir=music_dir) as cache:
+            cache.set(str(song), DjMeta(analysed=True))
+            assert cache.get(str(song)).analysed is True
 
-    def test_cache_with_absolute_key_is_refused(self, tmp_path) -> None:
+    def test_cache_with_absolute_key_is_read_and_reopened(self, tmp_path) -> None:
         import sqlite3 as _sql
 
         path = tmp_path / "cache.db"
+        song = tmp_path / "Music" / "Artist" / "song.flac"
         conn = _sql.connect(path)
         conn.execute(DjMetaCache._SCHEMA)
-        conn.execute("INSERT INTO dj_meta (path) VALUES (?)", ("/volume1/Music/Artist/song.flac",))
+        conn.execute(
+            "INSERT INTO dj_meta (path, analysed, intro_end_s) VALUES (?, 1, 9.0)",
+            (str(song),),
+        )
         conn.commit()
         conn.close()
 
-        with pytest.raises(ValueError, match=r"Delete it and run `autodj analyse`"):
-            DjMetaCache(path, music_dir=tmp_path / "Music")
+        with DjMetaCache(path, music_dir=tmp_path / "Music") as cache:
+            assert cache.get(str(song)).analysed is True
+            assert cache.get(str(song)).intro_end_s == 9.0
+        with DjMetaCache(path, music_dir=tmp_path / "Music") as reopened:
+            assert reopened.get(str(song)).intro_end_s == 9.0
+
+    def test_multiple_music_roots_with_same_relative_path_do_not_collide(self, tmp_path) -> None:
+        root_a, root_b = tmp_path / "A", tmp_path / "B"
+        song_a, song_b = root_a / "Artist" / "song.flac", root_b / "Artist" / "song.flac"
+        with DjMetaCache(tmp_path / "cache.db", music_dir=root_a) as cache:
+            cache.set(str(song_a), DjMeta(intro_end_s=3.0, analysed=True))
+            cache.set(str(song_b), DjMeta(intro_end_s=8.0, analysed=True))
+            cache.flush(force=True)
+            assert cache.get(str(song_a)).intro_end_s == 3.0
+            assert cache.get(str(song_b)).intro_end_s == 8.0
+
+    def test_reads_legacy_relative_key_and_set_writes_canonical_key(self, tmp_path) -> None:
+        path = tmp_path / "cache.db"
+        root = tmp_path / "Music"
+        song = root / "Artist" / "song.flac"
+        with closing(sqlite3.connect(path)) as conn, conn:
+            conn.execute(DjMetaCache._SCHEMA)
+            conn.execute(
+                "INSERT INTO dj_meta (path, analysed, intro_end_s) VALUES (?, 1, 2.0)",
+                ("Artist/song.flac",),
+            )
+        with DjMetaCache(path, music_dir=root) as cache:
+            assert cache.get(str(song)).intro_end_s == 2.0
+            cache.set(str(song), DjMeta(intro_end_s=7.0, analysed=True))
+            assert cache.get(str(song)).intro_end_s == 7.0
+        with DjMetaCache(path, music_dir=root) as reopened:
+            assert reopened.get(str(song)).intro_end_s == 7.0
+        with closing(sqlite3.connect(path)) as conn:
+            paths = {row[0] for row in conn.execute("SELECT path FROM dj_meta")}
+        assert paths == {"Artist/song.flac", os.path.normcase(str(song))}
+
+    def test_rekey_legacy_row_moves_across_roots_without_overwrite(self, tmp_path) -> None:
+        path = tmp_path / "cache.db"
+        root_a, root_b = tmp_path / "A", tmp_path / "B"
+        old, new = root_a / "Artist" / "song.flac", root_b / "Artist" / "song.flac"
+        with closing(sqlite3.connect(path)) as conn, conn:
+            conn.execute(DjMetaCache._SCHEMA)
+            conn.execute(
+                "INSERT INTO dj_meta (path, analysed, intro_end_s) VALUES (?, 1, 4.0)",
+                ("Artist/song.flac",),
+            )
+        with DjMetaCache(path, music_dir=root_a) as cache:
+            assert cache.rekey(str(old), str(new))
+            assert cache.get(str(new)).intro_end_s == 4.0
+            cache.set(str(old), DjMeta(intro_end_s=9.0, analysed=True))
+            cache.flush(force=True)
+            assert cache.rekey(str(old), str(new)) is False
+            assert cache.get(str(new)).intro_end_s == 4.0
+
+    def test_rekey_removes_legacy_alias_after_canonical_move(self, tmp_path) -> None:
+        path = tmp_path / "cache.db"
+        root = tmp_path / "Music"
+        old, new = root / "Artist" / "old.flac", root / "Artist" / "new.flac"
+        with closing(sqlite3.connect(path)) as conn, conn:
+            conn.execute(DjMetaCache._SCHEMA)
+            conn.executemany(
+                "INSERT INTO dj_meta (path, analysed, intro_end_s) VALUES (?, 1, ?)",
+                [("Artist/old.flac", 4.0), (str(old), 9.0)],
+            )
+        with DjMetaCache(path, music_dir=root) as cache:
+            assert cache.rekey(str(old), str(new))
+            assert cache.get(str(new)).intro_end_s == 9.0
+            assert cache.get(str(old)).analysed is False
+
+    def test_relative_music_root_resolves_legacy_caller_for_rekey(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        path = tmp_path / "cache.db"
+        with closing(sqlite3.connect(path)) as conn, conn:
+            conn.execute(DjMetaCache._SCHEMA)
+            conn.execute(
+                "INSERT INTO dj_meta (path, analysed, intro_end_s) VALUES (?, 1, 6.0)",
+                ("old.flac",),
+            )
+        with DjMetaCache(path, music_dir=Path("Music")) as cache:
+            assert cache.get("old.flac").intro_end_s == 6.0
+            assert cache.rekey("old.flac", "moved/new.flac")
+            assert cache.get(str(tmp_path / "Music" / "moved" / "new.flac")).intro_end_s == 6.0
+
+    def test_prune_keeps_canonical_and_legacy_rows_for_valid_paths(self, tmp_path) -> None:
+        path = tmp_path / "cache.db"
+        root = tmp_path / "Music"
+        song_a, song_b = root / "A" / "one.flac", root / "B" / "two.flac"
+        with closing(sqlite3.connect(path)) as conn, conn:
+            conn.execute(DjMetaCache._SCHEMA)
+            conn.executemany(
+                "INSERT INTO dj_meta (path, analysed) VALUES (?, 1)",
+                [
+                    (str(song_a),),
+                    ("B/two.flac",),
+                    ("stale.flac",),
+                ],
+            )
+        with DjMetaCache(path, music_dir=root) as cache:
+            assert cache.prune_to_paths({str(song_a), str(song_b)}) == 1
+        with closing(sqlite3.connect(path)) as conn, conn:
+            keys = {row[0] for row in conn.execute("SELECT path FROM dj_meta")}
+        assert keys == {str(song_a), "B/two.flac"}
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows paths are case-insensitive")
+    def test_windows_legacy_case_survives_lookup_prune_and_rekey(self, tmp_path) -> None:
+        root = tmp_path / "Music"
+        path = tmp_path / "cache.db"
+        stored = "Artíst/Été.flac"
+        supplied = str(root / "artíst" / "été.flac")
+        moved = str(tmp_path / "Other" / "renamed.flac")
+        with closing(sqlite3.connect(path)) as conn, conn:
+            conn.execute(DjMetaCache._SCHEMA)
+            conn.execute(
+                "INSERT INTO dj_meta (path, analysed, intro_end_s) VALUES (?, 1, 5.0)",
+                (stored,),
+            )
+        with DjMetaCache(path, music_dir=root) as cache:
+            assert cache.get(supplied).intro_end_s == 5.0
+            assert cache.prune_to_paths({supplied}) == 0
+            assert cache.rekey(supplied, moved)
+            assert cache.get(moved).intro_end_s == 5.0
 
     def test_prune_to_paths_returns_zero_when_nothing_stale(self, tmp_path) -> None:
         path = tmp_path / "cache.db"
