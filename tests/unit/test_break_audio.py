@@ -22,6 +22,8 @@ from autodj.break_audio import (
 from autodj.stereo import SAFE_FFMPEG_INPUT, SAMPLE_RATE, TrackTooLongError
 
 HAVE_FFMPEG = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
+#: The first bytes of an MP4 audio file.
+MP4_HEAD = b"\0\0\0\x18ftypM4A "
 
 
 def write(path: Path, seconds: float = 1.0, rate: int = SAMPLE_RATE, channels: int = 2, **kw):
@@ -91,7 +93,7 @@ def _ffprobe_reply(rate: int, channels: int, seconds: float | None = 1.0) -> Mag
 
 def test_ffprobe_runs_with_the_demuxer_and_the_protocol_whitelist(tmp_path):
     path = tmp_path / "b.m4a"
-    path.write_bytes(b"not read by soundfile")
+    path.write_bytes(MP4_HEAD + b"not read by soundfile")
     runner = MagicMock(return_value=_ffprobe_reply(48000, 2))
     with patch.object(break_audio.shutil, "which", return_value="ffprobe"):
         assert check_break_audio(path, 5.0, runner=runner) == "ffmpeg"
@@ -182,14 +184,56 @@ def test_ffmpeg_output_becomes_stereo_float32(tmp_path):
         decode_break(path, 2.0)
 
 
-@pytest.mark.skipif(not HAVE_FFMPEG, reason="FFmpeg is not installed")
 def test_a_playlist_named_mp3_is_never_followed(tmp_path):
     target = tmp_path / "secret.wav"
     write(target)
     path = tmp_path / "b.mp3"
     path.write_text(f"#EXTM3U\n#EXTINF:1,\n{target.as_posix()}\nhttp://127.0.0.1:9/x.mp3\n")
-    with pytest.raises(BreakAudioError):
-        decode_break(path, 5.0)
+    never = MagicMock(side_effect=AssertionError("a tool was run"))
+    with pytest.raises(BreakAudioError, match="not audio AutoDJ can play"):
+        decode_break(path, 5.0, runner=never, popen=never)
+
+
+@pytest.mark.parametrize(
+    ("name", "body"),
+    [
+        ("b.wav", b"RIFF not really audio"),
+        ("b.flac", b"fLaC but nothing else"),
+        ("b.ogg", b"#EXTM3U\nhttp://127.0.0.1:9/x\n"),
+        ("b.m4a", b"#EXTM3U\nhttp://127.0.0.1:9/x\n"),
+        ("b.aac", b"plain text, no frames"),
+    ],
+)
+def test_garbage_is_not_audio_whatever_tools_the_machine_has(tmp_path, name, body):
+    path = tmp_path / name
+    path.write_bytes(body)
+    never = MagicMock(side_effect=AssertionError("a tool was run"))
+    for found in (None, "/usr/bin/ffprobe"):
+        with (
+            patch.object(break_audio.shutil, "which", return_value=found),
+            pytest.raises(BreakAudioError, match="not audio AutoDJ can play"),
+        ):
+            decode_break(path, 5.0, runner=never, popen=never)
+
+
+@pytest.mark.parametrize(
+    ("name", "head"),
+    [
+        ("b.m4a", MP4_HEAD),
+        ("b.aac", bytes([0xFF, 0xF1, 0x50, 0x80])),
+        ("b.aac", b"ADIF"),
+        ("b.aac", b"ID3\x04"),
+    ],
+    ids=["mp4", "adts", "adif", "id3"],
+)
+def test_real_looking_mp4_or_aac_needs_ffprobe_to_be_read(tmp_path, name, head):
+    path = tmp_path / name
+    path.write_bytes(head + b"\0" * 64)
+    with (
+        patch.object(break_audio.shutil, "which", return_value=None),
+        pytest.raises(BreakAudioError, match="needs FFmpeg's ffprobe"),
+    ):
+        check_break_audio(path, 5.0)
 
 
 @pytest.mark.skipif(not HAVE_FFMPEG, reason="FFmpeg is not installed")

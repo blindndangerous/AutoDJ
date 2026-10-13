@@ -150,9 +150,30 @@ def check_break_audio(
         seconds = info.frames / info.samplerate if info.samplerate else None
         _check(int(info.samplerate), int(info.channels), seconds, max_seconds, path)
         return "soundfile" if int(info.samplerate) == SAMPLE_RATE else "ffmpeg"
+    if suffix in _SOUNDFILE_FORMATS or not _looks_like(path, suffix):
+        # libsndfile reads every one of its own types; for MP4 and AAC the
+        # first bytes must say so.  Either way no other tool is needed to
+        # say this is not audio.
+        raise BreakAudioError("it is not audio AutoDJ can play")
     rate, channels, seconds = _ffprobe(path, demuxer, runner)
     _check(rate, channels, seconds, max_seconds, path)
     return "ffmpeg"
+
+
+def _looks_like(path: Path, suffix: str) -> bool:
+    """Whether *path* starts as an MP4 (``.m4a``) or an AAC (``.aac``) file does."""
+    try:
+        with open(path, "rb") as file:
+            head = file.read(12)
+    except OSError:
+        return False
+    if suffix == ".m4a":
+        return len(head) >= 8 and head[4:8] == b"ftyp"
+    if suffix == ".aac":
+        # ADTS frame sync, an ADIF header, or an ID3 tag before the frames.
+        adts = len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xF6) == 0xF0
+        return adts or head.startswith((b"ADIF", b"ID3"))
+    return False
 
 
 #: Frames libsndfile reads at a time.
