@@ -41,6 +41,9 @@ def test_every_three_station_tracks_commits_liner_after_tracks_three_and_six(
     player._pending_reserved_liners = ()
     player._pending_clock_cursor = None
     player._pending_clock_boundary = None
+    player._liner_entries_snapshot = None
+    player._liner_paths_lock = threading.Lock()
+    player._liner_paths = frozenset()
     player.liner_scheduler = scheduler
     player.saved_points = lambda _entry: {}
     player._choose_by_mode = lambda _current, _context: (upcoming, "similarity")
