@@ -593,7 +593,12 @@ working, since no field was removed or renamed.
   time zone (`[server] station_timezone`, the one the scheduler uses; the computer's time zone
   when it is not set). It is kept in memory only, so it starts again from the current count when
   AutoDJ restarts.
-- `uptime_seconds` counts whole seconds since this AutoDJ server started.
+- `uptime_seconds` counts whole seconds since this station started: for the default station,
+  since this AutoDJ server started; for another station, since it was last started.
+
+Each station has its own feed, with its own name, songs, listeners and stream path:
+`/api/nowplaying` for the default station, `/api/stations/<slug>/nowplaying` for any station
+(the default one is `default`). See [Several stations](#several-stations).
 
 `current_track` and `next_track` are `null` when unavailable. History is newest first.
 The feed never contains local file paths, internal IDs, credentials or pairing state.
@@ -631,10 +636,12 @@ separately if you need to restore secrets.
 
 `GET /status` is a public page for listeners, in the spirit of an Icecast status page: the
 station name, the song playing, the next song when **Show the next song publicly** is on, the
-number of listeners now, today's peak and how long AutoDJ has been running. It needs
+number of listeners now, today's peak and how long the station has been on air (**Uptime**, which
+says "Not on air" while the station is stopped). Every station
+has one at `/stations/<slug>/status`; `/status` is the default station's. It needs
 no pairing and does not load the paired app. The server writes every value into the page as
 plain text, so it works without JavaScript; with JavaScript, `/modules/status-page.js` polls
-`/api/nowplaying` every 15 seconds (skipping polls while the tab is hidden) and updates the
+the station's own feed every 15 seconds (skipping polls while the tab is hidden) and updates the
 text. Only the now-playing line is a live region: screen readers hear it, politely, when the
 song changes, and nothing else on a poll. A **Pause updates** toggle stops the polling until
 pressed again. In stream mode the page also links to the stream and
@@ -1082,13 +1089,42 @@ the addresses. These are public like `/stream.mp3`, and the station's own `liste
 `/status`, and also answers at `/stations/default.mp3`. A station's stream needs ffmpeg, even when
 the default station is browser-driven.
 
+Each station also has its own public status page and now-playing feed, for listeners and for
+other sites:
+
+- `/stations/<slug>/status`, the status page, with the station's name, song, listeners and links
+  to its stream and playlist. It polls the station's own feed, and only a feed on this server.
+- `/api/stations/<slug>/nowplaying`, the now-playing feed, in the same form as `/api/nowplaying`
+  (see [Now-playing feed and webhooks](#now-playing-feed-and-webhooks)).
+- Both are public without pairing, like the stream, but only for a configured station: any
+  other name needs a paired browser and then answers 404. The station's listener password
+  protects only its stream, not these.
+- The default station keeps `/status` and `/api/nowplaying`, and also answers as `default`
+  (`/stations/default/status`, `/api/stations/default/nowplaying`).
+- While a station is stopped, its stream, its feed and its status page all answer 503, "off air".
+  The page still shows the station's name and says it is off air right now; an open page notices
+  when the station is back on air and shows the song again. The feed answers
+  `{"detail": "That station is off air"}`.
+- Each station sends its own track-change webhooks, set in `config.local.toml` under
+  `[[stations.<slug>.webhooks]]`, with only that station's feed.
+
 Every control route of a station answers under `/api/stations/<slug>/`, for example
 `/api/stations/nightowl/status`, `/api/stations/nightowl/skip` or
 `/api/stations/nightowl/queue/add`; the default station keeps its `/api/...` addresses. These
 need a paired browser, like the default station's.
 
 - `GET /api/stations` lists every configured station: its slug, name, state (`stopped`,
-  `stopping`, `stuck stopping`, `idle`, `playing` or `paused`), listener count, current song and stream address.
+  `stopping`, `stuck stopping`, `idle`, `playing` or `paused`), listener count and current
+  song, and its public addresses: `status_path`, `nowplaying_path`, `stream_path` and
+  `m3u_path`. The stream and playlist are `null` for a default station that does not stream. For
+  example:
+
+  ```json
+  {"slug": "nightowl", "name": "Night Owl Radio", "state": "playing", "listeners": 3,
+   "title": "Artist — Song", "status_path": "/stations/nightowl/status",
+   "nowplaying_path": "/api/stations/nightowl/nowplaying",
+   "stream_path": "/stations/nightowl.mp3", "m3u_path": "/stations/nightowl.m3u"}
+  ```
 - `POST /api/stations/<slug>/start` builds and starts a stopped station. Starting a running
   station changes nothing.
 - `POST /api/stations/<slug>/stop` stops a station completely: its listeners are disconnected,
