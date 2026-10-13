@@ -207,21 +207,54 @@ jobs:
         env:
           AUTODJ_BROWSERS: chromium,firefox
           AUTODJ_URL: http://127.0.0.1:8080
-      - name: Stop empty-library server
+      # Settings > Stream (listener link, relays) shows only in stream mode,
+      # so a second empty-library server runs with --stream and the visual
+      # audit goes over it once more, in Chromium only to keep the job short.
+      - name: Start stream-mode server
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/stream/music" "$RUNNER_TEMP/stream/index" "$RUNNER_TEMP/stream/models"
+          printf '[server]\nport = 8081\n' >"$RUNNER_TEMP/stream/config.toml"
+          AUTODJ_LIBRARY_MUSIC_DIR="$RUNNER_TEMP/stream/music" \
+          AUTODJ_INDEX_DIR="$RUNNER_TEMP/stream/index" \
+          AUTODJ_MODEL_DIR="$RUNNER_TEMP/stream/models" \
+          uv run autodj --config "$RUNNER_TEMP/stream/config.toml" serve --stream \
+            >"$RUNNER_TEMP/autodj-stream.log" 2>&1 &
+          server_pid=$!
+          printf '%s\n' "$server_pid" >"$RUNNER_TEMP/autodj-stream.pid"
+          for _attempt in $(seq 1 30); do
+            if curl --silent --show-error --fail --max-time 2 \
+              http://127.0.0.1:8081/healthz; then
+              exit 0
+            fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              cat "$RUNNER_TEMP/autodj-stream.log"
+              exit 1
+            fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/autodj-stream.log"
+          exit 1
+      - name: Run Chromium visual audit in stream mode
+        run: npm run audit:visual
+        env:
+          AUTODJ_BROWSERS: chromium
+          AUTODJ_URL: http://127.0.0.1:8081
+      - name: Stop empty-library servers
         if: always()
         shell: bash
         run: |
-          if test -f "$RUNNER_TEMP/autodj.pid"; then
-            server_pid=$(cat "$RUNNER_TEMP/autodj.pid")
+          for pid_file in "$RUNNER_TEMP/autodj.pid" "$RUNNER_TEMP/autodj-stream.pid"; do
+            test -f "$pid_file" || continue
+            server_pid=$(cat "$pid_file")
             kill "$server_pid" 2>/dev/null || true
             for _attempt in $(seq 1 10); do
-              if ! kill -0 "$server_pid" 2>/dev/null; then
-                exit 0
-              fi
+              kill -0 "$server_pid" 2>/dev/null || break
               sleep 1
             done
             kill -KILL "$server_pid" 2>/dev/null || true
-          fi
+          done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
@@ -229,3 +262,4 @@ jobs:
           path: |
             *_audit*.json
             ${{ runner.temp }}/autodj.log
+            ${{ runner.temp }}/autodj-stream.log

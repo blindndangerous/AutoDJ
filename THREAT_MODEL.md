@@ -53,8 +53,8 @@ AutoDJ is a single-user local music player with these exposed surfaces:
 - Paired Stream settings can manage relay destinations and source passwords. Relay definitions
   live in a station-local `relays.json`; the file is atomically written readable by its owner
   only: mode 0600 on POSIX, and on Windows a protected access list that grants only the user
-  AutoDJ runs as (no inherited entries). Backups include it, so a backup ZIP holds relay
-  passwords in plain text. Relay APIs and status files expose connection details and safe errors,
+  AutoDJ runs as (no inherited entries). It is excluded from backups, and a restore skips one
+  found in an archive, leaving the station's own file in place. Relay APIs and status files expose connection details and safe errors,
   never passwords. Environment passwords override saved passwords and are read-only in the UI.
   Relay source connections do not support TLS, so passwords sent to those servers are not encrypted
   by AutoDJ; use a trusted network or a server that protects its source connection separately.
@@ -749,8 +749,7 @@ This is the only place AutoDJ holds a credential for another system:
 ## Backup and restore boundary
 
 A backup is a plain ZIP file: the published index generation, `dj_meta.db`, `web_state.json`,
-each station's `relays.json` (with its relay source passwords), the liners, profiles and
-uploaded Stereo Tool preset folders, and a `manifest.json` naming the
+the liners, profiles and uploaded Stereo Tool preset folders, and a `manifest.json` naming the
 AutoDJ version and the files. It is safe to make while AutoDJ serves: the index is copied under
 its publication lock and `dj_meta.db` through SQLite's backup API. The archive is written to a
 temporary file and renamed into place, and it may not be written inside the liners, profiles or

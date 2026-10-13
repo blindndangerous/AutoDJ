@@ -1058,8 +1058,8 @@ list is stored in the station's `relays.json`, including an empty list if every 
 removed; saved definitions and passwords then take precedence over TOML. A blank password
 keeps the saved one only when editing the same relay destination (host, port and type).
 Environment passwords take precedence over both files and cannot be edited in the web form.
-`relays.json` contains credentials and is included in AutoDJ backups, which are not
-encrypted. Unreadable saved relay settings leave relays off and block web saves until the
+`relays.json` contains credentials and is deliberately excluded from AutoDJ backups; keep a
+separate private copy if needed. Unreadable saved relay settings leave relays off and block web saves until the
 file is repaired. Only the account AutoDJ runs as can read the file: it has mode 0600 on
 Linux and macOS, and on Windows an access list granting that user alone, with nothing
 inherited from the folder.
@@ -1407,9 +1407,10 @@ destinations that point outside their configured folder.
 
 `autodj backup` includes every configured station. The default station's files keep their names
 in the archive; another station's are under `stations/<slug>/`, for example
-`stations/nightowl/index/web_state.json`, `stations/nightowl/index/relays.json` and
-`stations/nightowl/liners/...`. Relay settings include source passwords. Backups are plain ZIP
-files without encryption, so store them with the same care as those credentials. A folder two
+`stations/nightowl/index/web_state.json` and `stations/nightowl/liners/...`. A backup holds no
+secrets: each station's `relays.json`, which holds relay source passwords, stays out of it, and a
+restore leaves the station's own `relays.json` in place (it skips one found in an archive made by
+an older build). Keep a separate private copy of `relays.json` if you need one. A folder two
 stations share, such as one liner folder for both, is stored once, under the default station's
 name, and the archive notes that it was shared. If you restore it with a configuration that gives
 that station a folder of its own, the folder is restored to the default station's place only, and
