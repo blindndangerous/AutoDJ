@@ -470,7 +470,11 @@ export function installLibraryFolders({ document: doc = document, request = requ
         if (keep) keep.disabled = false;
         if (saved) dialog.close("save");
       }
-      function reject() { if (!saving) dialog.close("discard"); }
+      function reject() {
+        if (saving) return;
+        doc.getElementById("points-preview")?.pause();
+        dialog.close("discard");
+      }
       function stay() { if (!saving) dialog.close("keep"); }
       function cancel(event) { if (saving) event.preventDefault(); }
       function closed() {

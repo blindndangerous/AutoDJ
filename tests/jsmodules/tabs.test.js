@@ -56,7 +56,7 @@ describe("card headings", () => {
 });
 
 describe("tab arrow keys", () => {
-  it("pauses the cue preview when leaving Track info and keeps its position", async () => {
+  it.each(["arrow", "hash"])("pauses the cue preview on %s navigation and keeps its position", async (navigation) => {
     installIndex();
     window.location.hash = "#track-info";
     vi.resetModules();
@@ -69,8 +69,13 @@ describe("tab arrow keys", () => {
       Object.defineProperty(preview, "currentTime", { configurable: true, writable: true, value: 42 });
       freshRouter();
       document.querySelector("#tab-track-info").focus();
-      document.querySelector("#tab-track-info").dispatchEvent(
-        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+      if (navigation === "arrow") {
+        document.querySelector("#tab-track-info").dispatchEvent(
+          new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+      } else {
+        window.location.hash = "#history";
+        window.dispatchEvent(new HashChangeEvent("hashchange"));
+      }
       expect(pause).toHaveBeenCalledOnce();
       expect(preview.currentTime).toBe(42);
       expect(document.querySelector("#panel-history").hidden).toBe(false);

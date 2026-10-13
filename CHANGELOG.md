@@ -453,6 +453,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Track info preview audio stops when leaving the tab or saving cue points, while keeping
   its position available for further editing (#186).
 
+- A `[model] manual_path` folder whose weights are rewritten at the same size within one tick of
+  the filesystem clock (two seconds on FAT and exFAT drives) gets a new digest instead of keeping
+  the old one, so the server and a remote worker can no longer look as if they run the same
+  weights when they do not. A digest is only remembered once every weight file is more than two
+  seconds old.
+
 - Several stations on one server (#70, #141):
   - Restarting audio processing releases finished process objects and their Windows handles
     during playback instead of retaining them until the station stops.

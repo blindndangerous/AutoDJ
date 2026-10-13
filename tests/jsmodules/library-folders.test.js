@@ -596,10 +596,13 @@ describe("clock folder and points controls", () => {
     const request = vi.fn(async (url) => ({ path: decodeURIComponent(url.split("path=")[1]), title: "Test jingle", kind: "liner", points: { start: 0, segue: 5.3, end: 8.8, overlap_start: 5.3 } }));
     const controls = installLibraryFolders({ document, request });
     await controls.openEditor("N:/jingle.wav", "liner");
+    const preview = document.getElementById("points-preview");
+    preview.pause = vi.fn();
     document.querySelector('[data-point="overlap_start"]').value = "0:05.6";
     const switching = controls.openEditor("N:/stinger.wav", "liner");
     expect(document.getElementById("track-info-dialog-title").textContent).toContain("Test jingle");
     document.getElementById("track-info-discard").click();
+    expect(preview.pause).toHaveBeenCalledOnce();
     await switching;
     expect(request.mock.calls.every(([, options]) => !options)).toBe(true);
     expect(document.getElementById("points-path").value).toBe("N:/stinger.wav");
