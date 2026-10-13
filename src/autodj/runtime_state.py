@@ -2,7 +2,7 @@
 
 Settings the user changes in the **browser** — preset, transition
 effect, DJ-mix options, playback settings, volume and mute, stream
-bitrate and station name, BPM range, discovery rate, EQ and whether discovery
+bitrate, station name, genre, description and website, BPM range, discovery rate, EQ and whether discovery
 is on — are written to
 ``<index_dir>/<name>/web_state.json`` so the next `autodj serve` boot
 restores them.
@@ -60,6 +60,9 @@ _OWN_ROUTE_PLAYBACK_FIELDS = frozenset(
         "stream_bitrate",
         "stream_continuous",
         "stream_station_name",
+        "stream_station_genre",
+        "stream_station_description",
+        "stream_station_url",
         "nowplaying_show_next",
         "stream_max_listeners_per_address",
     }
@@ -230,6 +233,15 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
         )
         if name is not _INVALID and name is not None:
             player._cfg.stream.station_name = name
+    for saved_as, field in (
+        ("stream_station_genre", "station_genre"),
+        ("stream_station_description", "station_description"),
+        ("stream_station_url", "station_url"),
+    ):
+        if saved_as in playback:
+            detail = _checked(StreamSettingsBody, field, playback[saved_as], saved_as)
+            if detail is not _INVALID and detail is not None:
+                setattr(player._cfg.stream, field, detail)
     if "nowplaying_show_next" in playback:
         show_next = _checked(
             StreamSettingsBody,

@@ -309,6 +309,11 @@ export function createStreamMode({
 //     tone, like every other settings failure.
 //   - The quality select is never rewritten while it has focus or while
 //     a change of it is still being saved.
+//   - The station details save together with Save station details.  A
+//     detail is never rewritten while it has focus or holds an edit not
+//     saved yet.  A refused field is marked aria-invalid, its error is
+//     linked to it and it takes focus, which reads the error; the save
+//     itself is said once in the settings region.
 // ----------------------------------------------------------------
 
 const COPIED_TEXT = "Stream address copied.";
@@ -332,26 +337,24 @@ function listenerText(count) {
   return `${count} listener${count === 1 ? "" : "s"}`;
 }
 
-const RELAY_TYPE_LABELS = {
-  icecast: "Icecast",
-  shoutcast1: "Shoutcast 1",
-  shoutcast2: "Shoutcast 2",
-};
+// The station details: the server's field, the push's playback field and
+// the page's input.
+const STATION_DETAILS = [
+  { field: "station_name", pushed: "stream_station_name", id: "stream-station-name" },
+  { field: "station_genre", pushed: "stream_station_genre", id: "stream-station-genre" },
+  { field: "station_description", pushed: "stream_station_description", id: "stream-station-description" },
+  { field: "station_url", pushed: "stream_station_url", id: "stream-station-url" },
+];
 
-// One sentence per relay, read in order by a screen reader: who, where,
-// then the state, with the last error while it is not connected.
-export function relayText(relay) {
-  const type = RELAY_TYPE_LABELS[relay.type] || relay.type;
-  let state;
-  if (relay.state === "live") state = "live";
-  else if (relay.state === "connecting") state = "connecting";
-  else if (relay.state === "retrying") {
-    state = `not connected, trying again. Last error: ${relay.error || "unknown"}`;
-  } else if (relay.state === "off") state = "off in the configuration";
-  else state = "stopped";
-  let text = `${relay.name}, ${type} at ${relay.target}: ${state}.`;
-  if (relay.title_error) text += ` Song titles are not updating: ${relay.title_error}.`;
-  return text;
+// The first problem with the station details, as [field, message], or
+// null.  The server checks the same rules again and names the field.
+export function stationDetailsError(values) {
+  if (!values.station_name.trim()) return ["station_name", "Enter the station name."];
+  const url = values.station_url.trim();
+  if (url && (!/^https?:\/\/[^\s/?#]+/i.test(url) || /\s/.test(url))) {
+    return ["station_url", "Enter the website as a web address starting with https:// or http://."];
+  }
+  return null;
 }
 
 // A 401 already opened the sign-in dialog; saying more would only talk
@@ -365,7 +368,9 @@ export function createStreamSettings({
   fetchInfo,
   saveBitrate,
   saveContinuous = async () => false,
-  saveStationName = async () => false,
+  // Sends the station details; resolves with the stream details the
+  // server then has, or rejects with its refusal.
+  saveStationDetails = null,
   // Told when the Stream settings appear and go, so the Settings subtab
   // for them can follow.
   setAvailable = () => {},
@@ -396,10 +401,12 @@ export function createStreamSettings({
   const m3u = doc.getElementById("stream-m3u");
   const bitrate = doc.getElementById("stream-bitrate");
   const continuous = doc.getElementById("stream-continuous");
-  const stationName = doc.getElementById("stream-station-name");
+  const details = STATION_DETAILS
+    .map((detail) => ({ ...detail, input: doc.getElementById(detail.id),
+      error: doc.getElementById(`${detail.id}-error`) }))
+    .filter((detail) => detail.input);
+  const detailsSave = doc.getElementById("stream-details-save");
   const listeners = doc.getElementById("stream-listeners");
-  const relayBox = doc.getElementById("stream-relays");
-  const relayList = doc.getElementById("stream-relays-list");
   let active = false;
   // Bumped by every source of stream details, so a slow lookup cannot
   // overwrite a newer link.
@@ -412,8 +419,9 @@ export function createStreamSettings({
   // Quality saves: the value the server last confirmed, the newest
   // choice not yet sent, the settle timer and whether a save is out.
   let savedBitrate = bitrate.value;
-  // The station name the server last confirmed.
-  let savedStationName = stationName?.value ?? "";
+  // The station details the server last confirmed, by field.
+  const savedDetails = Object.fromEntries(details.map((detail) => [detail.field, detail.input.value]));
+  let savingDetails = false;
   let pendingBitrate = null;
   let settleTimer = null;
   let saving = false;
@@ -438,13 +446,85 @@ export function createStreamSettings({
     savedBitrate = String(info.bitrate);
     if (doc.activeElement !== bitrate) bitrate.value = savedBitrate;
     if (doc.activeElement !== continuous) continuous.checked = Boolean(info.continuous);
-    showStationName(info.station_name);
+    showDetails((field) => info[field]);
   }
 
-  function showStationName(name) {
-    if (!stationName || typeof name !== "string") return;
-    savedStationName = name;
-    if (doc.activeElement !== stationName && stationName.value !== name) stationName.value = name;
+  // A detail the user is editing (focused, or changed and not saved) keeps
+  // what they typed.
+  function showDetails(valueOf, { force = false } = {}) {
+    for (const detail of details) {
+      const value = valueOf(detail.field, detail.pushed);
+      if (typeof value !== "string") continue;
+      const untouched = detail.input.value === savedDetails[detail.field];
+      savedDetails[detail.field] = value;
+      if (force || (untouched && doc.activeElement !== detail.input)) {
+        if (detail.input.value !== value) detail.input.value = value;
+      }
+    }
+  }
+
+  function linkDetailError(detail, linked) {
+    const ids = (detail.input.getAttribute("aria-describedby") || "").split(/\s+/)
+      .filter((id) => id && id !== detail.error?.id);
+    if (linked && detail.error) ids.push(detail.error.id);
+    if (ids.length) detail.input.setAttribute("aria-describedby", ids.join(" "));
+    else detail.input.removeAttribute("aria-describedby");
+  }
+
+  function clearDetailError(detail) {
+    detail.input.removeAttribute("aria-invalid");
+    if (detail.error) {
+      detail.error.textContent = "";
+      detail.error.hidden = true;
+    }
+    linkDetailError(detail, false);
+  }
+
+  function showDetailError(field, message) {
+    const detail = details.find((item) => item.field === field);
+    if (!detail?.error) return false;
+    detail.input.setAttribute("aria-invalid", "true");
+    detail.error.textContent = message;
+    detail.error.hidden = false;
+    linkDetailError(detail, true);
+    detail.input.focus();
+    return true;
+  }
+
+  async function saveDetails() {
+    if (savingDetails || !saveStationDetails) return;
+    for (const detail of details) clearDetailError(detail);
+    const values = Object.fromEntries(details.map((detail) => [detail.field, detail.input.value]));
+    const problem = stationDetailsError(values);
+    if (problem) {
+      showDetailError(...problem);
+      return;
+    }
+    const changed = Object.fromEntries(Object.entries(values)
+      .map(([field, value]) => [field, value.trim()])
+      .filter(([field, value]) => value !== savedDetails[field]));
+    if (!Object.keys(changed).length) {
+      announceStatus(settingsStatus, "The station details are already saved.", { dwellMs: 4000, force: true });
+      return;
+    }
+    savingDetails = true;
+    detailsSave?.setAttribute("aria-disabled", "true");
+    try {
+      const info = await saveStationDetails(changed);
+      if (!active) return;
+      showDetails((field) => info?.[field], { force: true });
+      announceStatus(settingsStatus, "Station details saved. The relays log in again with them.",
+        { dwellMs: 6000, force: true });
+    } catch (err) {
+      if (!active || isAuthFailure(err)) return;
+      if (!(err?.field && showDetailError(err.field, err.message))) {
+        announceStatus(settingsStatus, `Could not save the station details: ${err.message}`,
+          { dwellMs: 6000, force: true, tone: "error" });
+      }
+    } finally {
+      savingDetails = false;
+      detailsSave?.removeAttribute("aria-disabled");
+    }
   }
 
   async function refresh() {
@@ -497,26 +577,8 @@ export function createStreamSettings({
     url.value = "";
     m3u.removeAttribute("href");
     listeners.textContent = "";
-    showRelays([]);
     failureSpoken = false;
     lastAttempt = -Infinity;
-  }
-
-  // Plain text, not a live region: a relay retrying every minute would
-  // otherwise interrupt whatever the user is doing.  Items are rebuilt
-  // only when some text changed, so reading the list is not disturbed.
-  function showRelays(relays) {
-    if (!relayBox || !relayList) return;
-    const lines = Array.isArray(relays) ? relays.map(relayText) : [];
-    const current = [...relayList.children].map((item) => item.textContent);
-    if (lines.join("\n") !== current.join("\n")) {
-      relayList.replaceChildren(...lines.map((line) => {
-        const item = doc.createElement("li");
-        item.textContent = line;
-        return item;
-      }));
-    }
-    if (relayBox.hidden !== (lines.length === 0)) relayBox.hidden = lines.length === 0;
   }
 
   function applyPushedBitrate(state) {
@@ -547,9 +609,9 @@ export function createStreamSettings({
     }
     const text = listenerText(Number(state.stream_listeners) || 0);
     if (listeners.textContent !== text) listeners.textContent = text;
-    showRelays(state.stream_relays);
     applyPushedBitrate(state);
-    showStationName(state.settings?.playback?.stream_station_name);
+    const playback = state.settings?.playback;
+    if (playback && !savingDetails) showDetails((_field, pushed) => playback[pushed]);
     if (!active) {
       active = true;
       showNote(!url.value);
@@ -635,16 +697,12 @@ export function createStreamSettings({
       continuous.disabled = false;
     }
   });
-  stationName?.addEventListener("change", async () => {
-    const chosen = stationName.value.trim();
-    if (chosen === savedStationName) {
-      stationName.value = savedStationName;
-      return;
-    }
-    // The server refuses a blank name and says so; the field goes back.
-    if (await saveStationName(chosen, stationName)) savedStationName = chosen;
-    else stationName.value = savedStationName;
-  });
+  detailsSave?.addEventListener("click", () => void saveDetails());
+  for (const detail of details) {
+    detail.input.addEventListener("input", () => {
+      if (detail.input.getAttribute("aria-invalid") === "true") clearDetailError(detail);
+    });
+  }
 
   return {
     apply,

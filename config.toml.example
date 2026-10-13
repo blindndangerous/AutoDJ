@@ -157,6 +157,14 @@ trusted_proxies = []
 # Station name announced to players via the icy-name header.
   station_name = "AutoDJ"
 
+# Optional station details, sent to players (icy-genre, icy-description,
+# icy-url) and to relays: Icecast gets all three, Shoutcast the genre and
+# website (it has no description).  Settings, Stream, Station details sets
+# them too; a value saved there wins over these at the next start.
+# station_genre = "Jazz"                              # up to 100 characters
+# station_description = "Late-night jazz and soul"    # one line, up to 255
+# station_url = "https://radio.example.org/"          # http:// or https:// only
+
 # Relays: push the station to hosted Icecast or Shoutcast servers, so their
 # listeners, directory listings and capacity carry it too.  One named table
 # per server; the name is shown in Settings, Stream, in the log and in
@@ -170,6 +178,13 @@ trusted_proxies = []
 # same table name (see config.local.toml.example), or in the environment as
 # AUTODJ_STREAM_RELAY_<NAME>_PASSWORD (the name upper-cased, "-" as "_").
 # It is never saved to web_state.json, logged, or sent to the browser.
+#
+# Settings, Stream can also add, change, turn off and remove relays while the
+# station plays, without editing this file; it saves them in relays.json and
+# their passwords in relay-passwords.json in the index folder.  A relay
+# changed there replaces the table of the same name here until you choose
+# Revert.  An environment variable password always wins.  See "Relays in
+# Settings, Stream" in docs/operations.md.
 #
 # [stream.relays.main]
 # type = "icecast"            # "icecast" (2.4 or later), "shoutcast1" or "shoutcast2"

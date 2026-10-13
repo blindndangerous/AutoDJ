@@ -34,7 +34,7 @@ import os
 import re
 import threading
 import time
-from collections.abc import Awaitable, Callable, Coroutine, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from autodj.listener_access import ListenerAccess
     from autodj.matched_intros import MatchedIntros
     from autodj.recorder import Recorder
+    from autodj.relay_settings import OtherRelay, RelayControl
     from autodj.scheduler import Scheduler
     from autodj.stream import StreamOutput
     from autodj.time_checks import TimeChecks
@@ -227,6 +228,16 @@ class StationPaths:
         return self.state_dir / "relay-status.json"
 
     @property
+    def relays(self) -> Path:
+        """Relays added or changed in Settings, Stream (no passwords)."""
+        return self.state_dir / "relays.json"
+
+    @property
+    def relay_passwords(self) -> Path:
+        """Passwords typed in Settings, Stream: readable by the owner only, never backed up."""
+        return self.state_dir / "relay-passwords.json"
+
+    @property
     def clockwheels(self) -> Path:
         """Saved clockwheels."""
         return self.state_dir / "clockwheels"
@@ -261,15 +272,18 @@ def start_stream_station(
     recorder: Recorder | None = None,
     paths: StationPaths | None = None,
     owns_liner: Callable[[str], bool] | None = None,
+    relay_control: RelayControl | None = None,
 ) -> StreamOutput:
     """Build the stream output, liner scheduler and station; attach them.
 
     Starts the MP3 encoder, registers the stream as an output of the
     player's mix bus, and hands the stream to the station, which reads its
     listener count and starts a set on the first listener.  Configured
-    relays (``[stream.relays.<name>]``) start connecting too; while any is
-    enabled the station plays as if it always had a listener, because the
-    relay's own listeners are invisible to AutoDJ.
+    relays (``[stream.relays.<name>]`` and those saved in Settings, Stream)
+    start connecting too; while any is enabled the station plays as if it
+    always had a listener, because the relay's own listeners are invisible
+    to AutoDJ.  The relay manager is made even without relays, so one can
+    be added while the station plays.
 
     If any step fails, what was already made (encoders, relays, the liner
     worker) is closed before the error is raised, so a failed start leaves
@@ -284,6 +298,8 @@ def start_stream_station(
         paths: The station's state files; the default station's when omitted.
         owns_liner: Whether a registered liner belongs to this station;
             every one does when omitted.
+        relay_control: Changes the relays from the web page; it is handed
+            the relay manager once the relays start.
 
     Returns:
         The stream output (closed by :func:`stop_stream_station`).
@@ -307,18 +323,24 @@ def start_stream_station(
 
     relays = None
     try:
-        stream_out = make_output(cfg.stream.bitrate, cfg.stream.max_listeners)
-        if cfg.stream.relays:
-            from autodj.relay import RelayManager, relay_status_path
+        from autodj.relay import RelayManager, StationDetails, relay_status_path
 
-            relays = RelayManager(
-                cfg.stream.relays.values(),
-                stream_out,
-                make_output=make_output,
-                station_name=lambda: cfg.stream.station_name,
-                status_path=relay_status_path(cfg, paths),
-            )
-        relays_active = relays is not None and relays.active
+        stream_out = make_output(cfg.stream.bitrate, cfg.stream.max_listeners)
+        relays = RelayManager(
+            cfg.stream.relays.values(),
+            stream_out,
+            make_output=make_output,
+            station_name=lambda: cfg.stream.station_name,
+            station_details=lambda: StationDetails(
+                genre=cfg.stream.station_genre,
+                url=cfg.stream.station_url,
+                description=cfg.stream.station_description,
+            ),
+            status_path=relay_status_path(cfg, paths),
+            attach_output=bus.add_output,
+            detach_output=bus.remove_output,
+        )
+        manager = relays
         station = Station(
             bus,
             stream_out,
@@ -326,8 +348,10 @@ def start_stream_station(
             cfg.stream.idle_grace_seconds,
             on_event=bridge.announce_station_event,
             forget_track=bridge.forget_track,
+            # Read at every tick: turning a relay on or off in Settings
+            # changes it at once.
             continuous=lambda: (
-                cfg.stream.continuous or relays_active or bool(recorder and recorder.wanted)
+                cfg.stream.continuous or manager.active or bool(recorder and recorder.wanted)
             ),
         )
         scheduler = LinerScheduler(
@@ -350,10 +374,10 @@ def start_stream_station(
         if recorder is not None:
             stream_out.add_sink(recorder)
         bus.add_output(stream_out)
-        if relays is not None:
-            for output in relays.outputs:
-                bus.add_output(output)
-            relays.start()
+        # Puts the relays' extra encoders on the mix bus too.
+        relays.start()
+        if relay_control is not None:
+            relay_control.attach(relays)
     except BaseException:
         _undo_stream_start(bridge, made, relays)
         raise
@@ -803,6 +827,11 @@ class StationRuntime:
         self.owns_liner: Callable[[str], bool] = _every_liner
         # Scans in a row that found the liner folder empty (see prune_liner_dates).
         self.liner_folder_empty_scans = 0
+        # The relays as Settings, Stream changes them; set while streaming.
+        self.relay_control: RelayControl | None = None
+        # Every other station's relays, for the duplicate checks (set by the
+        # app once the registry exists).
+        self.relays_elsewhere: Callable[[], Iterable[OtherRelay]] = tuple
 
     def _playable_liners(self, entries: Sequence[Any], at: float | None = None) -> Sequence[Any]:
         """This station's liners among *entries* that may play at the expected air time.
@@ -918,6 +947,18 @@ class StationRuntime:
         self._schedule_ticker = asyncio.create_task(self._tick_schedule())
         if self.stream_mode:
             from autodj.recorder import Recorder
+            from autodj.relay_settings import RelayControl
+
+            control = RelayControl(
+                slug=self.slug,
+                stream=cfg.stream,
+                paths=self.paths,
+                elsewhere=lambda: self.relays_elsewhere(),
+            )
+            await asyncio.to_thread(control.load)
+            # Set once loaded: until then the other stations' duplicate
+            # checks read this station's files instead.
+            self.relay_control = control
 
             self.recorder = await asyncio.to_thread(
                 Recorder,
@@ -935,6 +976,7 @@ class StationRuntime:
                 self.recorder,
                 self.paths,
                 self.owns_liner,
+                self.relay_control,
             )
             self._stream_ticker = asyncio.create_task(tick_stream_workers(bridge))
         elif self.server_audio:
@@ -991,6 +1033,11 @@ class StationRuntime:
         if carts is not None:
             await _step("closing its carts", carts.close, problems)
         await _step("closing its webhooks", self.webhooks.close, problems)
+        control = getattr(self, "relay_control", None)
+        if control is not None:
+            # Relay changes are refused from now on, before anything is written.
+            control.attach(None)
+            self.relay_control = None
         if self.stream_out is not None:
             await _step(
                 "stopping its stream",
@@ -1364,6 +1411,34 @@ class StationRegistry:
     def paths(self) -> tuple[StationPaths, ...]:
         """Every configured station's paths, the default first."""
         return (self._default.paths, *(extra.paths for extra in self._extras.values()))
+
+    def relays_elsewhere(self, exclude: str) -> list[OtherRelay]:
+        """Every relay of every station but *exclude*, running or not.
+
+        A running station answers from its relays as they are now; a
+        stopped one from its TOML tables and saved files.  Settings, Stream
+        checks a new relay against these, so two stations never push to
+        the same target or read the same password variable.
+        """
+        from autodj.relay_settings import entry_targets, station_relays
+
+        root = self._default.cfg
+        specs = {spec.slug: spec for spec in getattr(root, "stations", ())}
+        found: list[OtherRelay] = []
+        for slug in sorted(self.slugs() - {exclude}):
+            runtime = self._running.get(slug)
+            control = getattr(runtime, "relay_control", None)
+            if control is not None:
+                found += control.targets()
+                continue
+            if slug == self._default.slug:
+                toml, paths = root.stream.relays, self._default.paths
+            elif slug in specs:
+                toml, paths = specs[slug].cfg.stream.relays, self._extras[slug].paths
+            else:
+                continue
+            found += entry_targets(slug, station_relays(toml, paths, slug).values())
+        return found
 
     def summaries(self) -> list[dict[str, Any]]:
         """Every configured station's name, state, listeners, song and stream address."""

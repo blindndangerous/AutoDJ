@@ -1792,6 +1792,7 @@
 #hotkey-help-modal,
 #confirm-dialog,
 #device-rename-dialog,
+#relay-dialog,
 #track-info-dialog {
   /* `*, *::before, *::after { margin: 0 }` overrides the UA
      `dialog:modal { margin: auto }`, which pinned this dialog to the
@@ -1808,6 +1809,7 @@
 #hotkey-help-modal::backdrop,
 #confirm-dialog::backdrop,
 #device-rename-dialog::backdrop,
+#relay-dialog::backdrop,
 #track-info-dialog::backdrop {
   background: rgba(0, 0, 0, 0.55);
 }
@@ -1880,6 +1882,7 @@
 #device-rename-error { margin: 0.5rem 0 1rem; color: var(--error-text); }
 #confirm-dialog .dialog-actions,
 #device-rename-dialog .dialog-actions,
+#relay-dialog .dialog-actions,
 #track-info-dialog .dialog-actions {
   display: flex;
   justify-content: flex-end;
@@ -1892,3 +1895,79 @@
 #track-info-dialog { max-width: min(32rem, calc(100vw - 2rem)); }
 #track-info-dialog .dialog-actions { flex-wrap: wrap; }
 #track-info-error { margin: 0.5rem 0 1rem; color: var(--error-text); }
+
+/* Settings > Stream > Relays (#185) ---------------------------------- */
+
+/* A data table may scroll sideways inside its own box (WCAG 1.4.10 lets a
+   table keep its two-dimensional layout); the page itself never does.
+   Every cell holds a focusable control or takes focus itself, so the box
+   is reached by keyboard. */
+.relay-table-wrap {
+  overflow-x: auto;
+  margin: 0.5rem 0;
+  /* The containing block of the cells' visually hidden words, so the box
+     clips them too instead of letting them widen the page. */
+  position: relative;
+}
+#stream-relays-table {
+  width: 100%;
+  min-width: 40rem;
+  /* Fixed columns: the actions keep their width, and a long unbroken
+     name or address wraps inside its own column. */
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+#stream-relays-table th,
+#stream-relays-table td {
+  padding: 0.45rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: middle;
+  overflow-wrap: anywhere;
+}
+#stream-relays-table th:nth-child(1) { width: 15%; }
+#stream-relays-table th:nth-child(4) { width: 5rem; }
+#stream-relays-table th:nth-child(5) { width: 5.5rem; }
+#stream-relays-table th:nth-child(6) { width: 7rem; }
+#stream-relays-table th,
+#stream-relays-table button { white-space: nowrap; overflow-wrap: normal; }
+#stream-relays-table button { min-height: 44px; }
+#stream-relays-table label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
+}
+#stream-relays-table .relay-error { color: var(--error-text); }
+/* The form wraps onto the window at 320 px and 200 % text. */
+#relay-dialog { max-width: min(32rem, calc(100vw - 2rem)); }
+#relay-dialog h2 { margin-top: 0; }
+#relay-dialog .relay-field { margin: 0.75rem 0; }
+#relay-dialog .relay-field > label { display: block; margin-bottom: 0.25rem; }
+#relay-dialog .relay-field > :is(input, select) {
+  width: 100%;
+  min-height: 44px;
+}
+#relay-dialog .settings-check { margin: 0.75rem 0 0.25rem; }
+#relay-dialog .dialog-actions { flex-wrap: wrap; margin-top: 1rem; }
+/* Always rendered, so screen readers keep it as a live region; while
+   empty it takes no room and shows nothing. */
+#relay-form-error:empty {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+#relay-form-error {
+  margin: 0.75rem 0;
+  padding: 0.35rem 0.6rem;
+  border-left: 3px solid var(--danger-edge);
+  background: var(--notice-bg);
+  color: var(--text);
+}
+#stream-station-details .field-error,
+#relay-dialog .field-error { overflow-wrap: anywhere; }

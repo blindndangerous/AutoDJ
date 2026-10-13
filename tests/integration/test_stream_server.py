@@ -396,6 +396,9 @@ def test_stream_info(stream_app) -> None:
         "bitrate": 320,
         "continuous": False,
         "station_name": "AutoDJ",
+        "station_genre": "",
+        "station_description": "",
+        "station_url": "",
         "show_next": False,
         "listeners": 2,
         "state": "idle",
@@ -1319,8 +1322,11 @@ def test_relays_start_with_the_stream_and_keep_the_station_playing(tmp_path: Pat
         assert password not in client.get("/api/status").text
         bridge.on_track_started(bridge.player._state.current_track)
         assert (tmp_path / "relay-status.json").exists()
-    assert bus.remove_output.call_count == 2
-    assert all(relay.status()["state"] == "stopped" for relay in relays._relays)
+    # Every encoder put on the mix bus came off it (the relay manager takes
+    # its own off again as it closes, which the bus ignores).
+    added = {id(call.args[0]) for call in bus.add_output.call_args_list}
+    assert {id(call.args[0]) for call in bus.remove_output.call_args_list} == added
+    assert all(relay.status()["state"] == "stopped" for relay in relays._relays.values())
     assert all(output._closed for output in relays.outputs)
     assert password not in (tmp_path / "relay-status.json").read_text(encoding="utf-8")
 

@@ -54,6 +54,17 @@
 //         and lets the microphone go, a refused booking is shown,
 //         linked to Book voice track, focus staying there, and leaving
 //         the tab stops a recording and says so once;
+//       - Settings > Stream, when the server streams, with its relays
+//         stood in for (one live, one retrying with a long error, one with
+//         a long unbroken name whose password the environment sets, one
+//         only config.toml defines): the relay table, the Add relay form,
+//         the form with a refused host (its error linked and focused), and
+//         the station details with a refused website.  Once per engine:
+//         Add relay by keyboard puts focus on Name, a refused save puts it
+//         on the field it names with the error linked, Escape closes the
+//         form onto Add relay, the password field is never filled in,
+//         nothing in the relay table is a live region, and each row's On box
+//         is at least 24 px and Edit and Remove 44 px tall;
 //       - the status message stays while the pointer is over it, goes
 //         after the pointer leaves, lets a click on its frame (outside the
 //         message and the button) through to the page underneath, and its
@@ -440,6 +451,130 @@ async function openEveryCard(page) {
   });
 }
 
+// Settings > Stream > Relays (#185), stood in for: the audit server has
+// none, and an audit must never reach a real relay server.  Adding one is
+// refused, naming the host, as the server refuses a target in use.
+const RELAYS = {
+  max_relays: 8,
+  problem: null,
+  relays: [
+    { name: "main", type: "icecast", host: "relay.example.org", port: 8000, mount: "/live",
+      stream_id: null, user: "source", bitrate: null, public: true, enabled: true,
+      target: "relay.example.org:8000/live", source: "saved", password_set: true,
+      password_source: "saved", password_variable: "AUTODJ_STREAM_RELAY_MAIN_PASSWORD",
+      removable: true, revertable: false, state: "live", error: null, title_error: null },
+    { name: "An_Unbroken_Relay_Name_000000001", type: "shoutcast2",
+      host: "a-very-long-unbroken-relay-host-name-for-the-reflow-checks.example.org", port: 8010,
+      mount: null, stream_id: 2, user: null, bitrate: 128, public: false, enabled: true,
+      target: "a-very-long-unbroken-relay-host-name-for-the-reflow-checks.example.org:8010 stream 2",
+      source: "saved", password_set: true, password_source: "environment",
+      password_variable: "AUTODJ_STREAM_RELAY_AN_UNBROKEN_RELAY_NAME_000000001_PASSWORD",
+      removable: true, revertable: false, state: "retrying",
+      error: "the server refused the source connection because another source is already using that stream ID",
+      title_error: null },
+    { name: "backup", type: "shoutcast1", host: "sc.example.org", port: 8000, mount: null,
+      stream_id: null, user: null, bitrate: null, public: false, enabled: false,
+      target: "sc.example.org:8000", source: "config", password_set: true,
+      password_source: "config", password_variable: "AUTODJ_STREAM_RELAY_BACKUP_PASSWORD",
+      removable: false, revertable: false, state: "off", error: null, title_error: null },
+  ],
+};
+const RELAY_REFUSAL = "This station's relay main already sends to relay.example.org:8000/live. "
+  + "Each relay needs its own server and mount point or stream ID.";
+const relayPages = new WeakSet();
+
+async function standInForRelays(page) {
+  if (relayPages.has(page)) return;
+  relayPages.add(page);
+  await page.route("**/api/stream/relays", (route) => (route.request().method() === "GET"
+    ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(RELAYS) })
+    : route.fulfill({ status: 409, contentType: "application/json",
+      body: JSON.stringify({ detail: RELAY_REFUSAL, field: "host" }) })));
+}
+
+// The relay form open, then refused with its error on the page, then the
+// station details with a website that is not one; each error linked to its
+// field and focused, as a refused save shows it.
+async function openRelayForms(page, visit) {
+  await page.locator("#stream-relays-list tr[data-name]").first().waitFor({ state: "visible" });
+  await page.locator("#stream-relay-add").click();
+  await page.locator("#relay-dialog").waitFor({ state: "visible" });
+  await visit("settings/stream/relay-form");
+  await page.locator("#relay-name").fill("copy");
+  await page.locator("#relay-host").fill("relay.example.org");
+  await page.locator("#relay-password").fill("not-a-real-password");
+  await page.locator("#relay-save").click();
+  await page.locator("#relay-host-error").waitFor({ state: "visible" });
+  await visit("settings/stream/relay-form-error");
+  await page.locator("#relay-cancel").click();
+  await page.locator("#relay-dialog").waitFor({ state: "hidden" });
+  const website = page.locator("#stream-station-url");
+  const saved = await website.inputValue();
+  await website.fill("radio.example.org");
+  await page.locator("#stream-details-save").click();
+  await page.locator("#stream-station-url-error").waitFor({ state: "visible" });
+  await visit("settings/stream/details-error");
+  await website.fill(saved);
+}
+
+// By keyboard: Add relay opens the form on Name; a refused save moves
+// focus to the field it names, with the error linked; Escape closes the
+// form onto Add relay.  The password field is never filled in, and the
+// relay table holds no live region.
+async function relayFormProblems(page) {
+  await standInForRelays(page);
+  await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
+  await page.locator("#tab-settings").click();
+  if (await page.locator("#stab-stream").isHidden()) return [];
+  await page.locator("#stab-stream").click();
+  await page.locator("#stream-relays-list tr[data-name]").first().waitFor({ state: "visible" });
+  const problems = [];
+  const active = () => page.evaluate(() => document.activeElement?.id || document.activeElement?.tagName);
+  if (await page.locator("#stream-relays [aria-live], #stream-relays [role=status]").count()) {
+    problems.push("the relay table has a live region");
+  }
+  // Every row's On box is a 24 px target, and Edit and Remove are 44 px
+  // tall like the page's other buttons (2.5.8).
+  const small = await page.evaluate(() => [...document.querySelectorAll(
+    "#stream-relays-list input[data-action], #stream-relays-list button[data-action], #stream-relay-add",
+  )].map((control) => {
+    const box = control.getBoundingClientRect();
+    const least = control.tagName === "INPUT" ? 24 : 44;
+    const name = `${control.dataset.action || control.id} ${control.closest("tr")?.dataset.name || ""}`.trim();
+    return box.width < Math.min(least, 24) - 0.5 || box.height < least - 0.5
+      ? `${name} ${Math.round(box.width)}x${Math.round(box.height)}` : null;
+  }).filter(Boolean));
+  if (small.length) problems.push(`small relay targets: ${small.join(", ")}`);
+  await page.locator("#stream-relay-add").focus();
+  await page.keyboard.press("Enter");
+  await page.locator("#relay-dialog").waitFor({ state: "visible" });
+  if (await active() !== "relay-name") problems.push(`opening the form put focus on ${await active()}`);
+  if (await page.locator("#relay-password").inputValue() !== "") problems.push("the password field was filled in");
+  await page.keyboard.type("copy");
+  await page.locator("#relay-host").fill("relay.example.org");
+  await page.locator("#relay-password").fill("not-a-real-password");
+  await page.locator("#relay-password").press("Enter");
+  await page.locator("#relay-host-error").waitFor({ state: "visible" });
+  const refused = await page.evaluate(() => {
+    const host = document.getElementById("relay-host");
+    return {
+      focus: document.activeElement?.id,
+      invalid: host.getAttribute("aria-invalid"),
+      linked: (host.getAttribute("aria-describedby") || "").split(" ").includes("relay-host-error"),
+      error: document.getElementById("relay-host-error").textContent,
+    };
+  });
+  if (refused.focus !== "relay-host") problems.push(`a refused host left focus on ${refused.focus}`);
+  if (refused.invalid !== "true") problems.push("a refused host is not marked invalid");
+  if (!refused.linked) problems.push("a refused host's error is not linked");
+  if (!refused.error.includes("already sends")) problems.push(`the host's error says ${JSON.stringify(refused.error)}`);
+  await page.keyboard.press("Escape");
+  await page.locator("#relay-dialog").waitFor({ state: "hidden" });
+  if (await active() !== "stream-relay-add") problems.push(`closing the form put focus on ${await active()}`);
+  if (await page.locator("#relay-password").inputValue() !== "") problems.push("the typed password stayed in the closed form");
+  return problems;
+}
+
 // Under reduced motion app.css gives every property a 0.01 ms transition,
 // so a change of focus, view or class shows its old colour, outline and
 // width until the next frame.  On a loaded CI runner that frame can come
@@ -472,6 +607,7 @@ async function eachTarget(page, visit) {
   await standInForTimeChecks(page);
   await standInForHourPreview(page);
   await standInForVoiceTracker(page);
+  await standInForRelays(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   for (const view of VIEWS) {
     await page.locator(`#tab-${view}`).click();
@@ -501,6 +637,7 @@ async function eachTarget(page, visit) {
       await visit(`settings/${id.replace(/^stab-/, "")}`);
       if (id === "stab-picking") await openRotationTest(page, visit);
       if (id === "stab-time-checks") await openPackDatesError(page, visit);
+      if (id === "stab-stream") await openRelayForms(page, visit);
     }
   }
 }
@@ -1418,6 +1555,8 @@ export async function audit(name, launcher) {
     if (tokenScope.length) out.behaviour.tokenScope = tokenScope;
     const voiceTracker = await voiceTrackerProblems(page);
     if (voiceTracker.length) out.behaviour.voiceTracker = voiceTracker;
+    const relayForm = await relayFormProblems(page);
+    if (relayForm.length) out.behaviour.relayForm = relayForm;
     // 200 % text at the same window width.
     await wide.addInitScript(() => {
       document.addEventListener("DOMContentLoaded", () => {

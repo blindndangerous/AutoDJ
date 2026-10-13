@@ -1257,6 +1257,68 @@ class RelayConfig:
             raise ValueError(f"{where}.stream_id is for Shoutcast 2 only")
 
 
+#: The longest station genre, description and website address.  Servers
+#: and players show them in directories, so each stays one short line.
+STATION_GENRE_MAX = 100
+STATION_DESCRIPTION_MAX = 255
+STATION_URL_MAX = 255
+
+
+def check_station_text(what: str, value: Any, limit: int) -> str:
+    """Return *value* without surrounding spaces, checked as a station detail.
+
+    The station details go out as HTTP and ICY header values, so control
+    characters (a line break would start another header) are refused.
+    Text outside ASCII is kept and sent as UTF-8, as the station name is.
+
+    Args:
+        what: The setting's name, for the message.
+        value: The raw value.
+        limit: The most characters allowed.
+
+    Returns:
+        The trimmed text, which may be empty.
+
+    Raises:
+        TypeError: *value* is not a string.
+        ValueError: It is too long or has control characters.
+    """
+    if not isinstance(value, str):
+        raise TypeError(f"{what} must be a string")
+    text = value.strip()
+    if len(text) > limit:
+        raise ValueError(f"{what} must be at most {limit} characters")
+    if not text.isprintable():
+        raise ValueError(f"{what} must not contain control characters")
+    return text
+
+
+def check_station_url(what: str, value: Any) -> str:
+    """Return *value* checked as the station's website: empty, or an http or https address.
+
+    Raises:
+        TypeError: *value* is not a string.
+        ValueError: It is not a web address, or it carries a user name or password.
+    """
+    text = check_station_text(what, value, STATION_URL_MAX)
+    if not text:
+        return ""
+    message = f"{what} must be a web address starting with http:// or https://"
+    if any(character.isspace() for character in text):
+        raise ValueError(message)
+    try:
+        parts = urlsplit(text)
+        host = parts.hostname
+        parts.port  # noqa: B018 - raises ValueError for a port that is not a number
+    except ValueError:
+        raise ValueError(message) from None
+    if parts.scheme.lower() not in {"http", "https"} or not host:
+        raise ValueError(message)
+    if parts.username is not None or parts.password is not None:
+        raise ValueError(f"{what} must not include a user name or password")
+    return text
+
+
 def relay_password_variable(name: str) -> str:
     """Return the environment variable that overrides relay *name*'s password.
 
@@ -1280,6 +1342,10 @@ class StreamConfig(_Section):
         idle_grace_seconds: Seconds without listeners before the set stops.
         max_listeners: Concurrent listener limit.
         station_name: Name sent to players as ``icy-name``.
+        station_genre: Genre sent to relay servers and players; empty sends none.
+        station_description: One line about the station, sent where the
+            protocol has a place for it (Icecast and players, not Shoutcast).
+        station_url: The station's website, an http or https address.
         relays: External servers to push the stream to, by name.
     """
 
@@ -1295,6 +1361,9 @@ class StreamConfig(_Section):
     listener_user: str = ""
     listener_password: str = field(default="", repr=False)
     station_name: str = "AutoDJ"
+    station_genre: str = ""
+    station_description: str = ""
+    station_url: str = ""
     relays: dict[str, RelayConfig] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -1357,6 +1426,13 @@ class StreamConfig(_Section):
         if not self.station_name.isprintable():
             # It is sent as an HTTP header (icy-name): no control characters.
             raise ValueError("stream.station_name must not contain control characters")
+        self.station_genre = check_station_text(
+            "stream.station_genre", self.station_genre, STATION_GENRE_MAX
+        )
+        self.station_description = check_station_text(
+            "stream.station_description", self.station_description, STATION_DESCRIPTION_MAX
+        )
+        self.station_url = check_station_url("stream.station_url", self.station_url)
         self.idle_grace_seconds = float(self.idle_grace_seconds)
 
 
@@ -2146,7 +2222,7 @@ def _check_station_conflicts(root: AutoDJConfig, specs: Iterable[StationSpec]) -
             )
         folders[folder] = slug
         for relay in cfg.stream.relays.values():
-            target = _relay_target(relay)
+            target = relay_target(relay)
             other = targets.get(target)
             if other is not None and other != slug:
                 raise ValueError(
@@ -2156,7 +2232,7 @@ def _check_station_conflicts(root: AutoDJConfig, specs: Iterable[StationSpec]) -
             targets[target] = slug
 
 
-def _relay_target(relay: RelayConfig) -> tuple[object, ...]:
+def relay_target(relay: RelayConfig) -> tuple[object, ...]:
     """What makes two relays push to the same place: host, port and mount or stream."""
     return (relay.host.lower().rstrip("."), relay.port, relay.mount, relay.stream_id)
 

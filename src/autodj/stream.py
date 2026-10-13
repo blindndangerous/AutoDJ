@@ -513,6 +513,15 @@ class StreamOutput:
         with self._lock:
             self._sinks.append(sink)
 
+    def remove_sink(self, sink: StreamSink) -> None:
+        """Stop handing *sink* audio; a sink not added is ignored.
+
+        The encoder, the listeners and the other sinks carry on.
+        """
+        with self._lock:
+            if sink in self._sinks:
+                self._sinks.remove(sink)
+
     @property
     def listener_count(self) -> int:
         """Current number of listeners."""

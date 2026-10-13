@@ -1158,3 +1158,38 @@ def test_doctor_names_empty_categories_and_missing_playlist_tracks(tmp_path: Pat
     check = {c.name: c for c in run_doctor(cfg).checks}["categories"]
     assert check.status is CheckStatus.WARN and "cannot be read" in check.summary
     assert (active / "categories.json").exists()  # doctor never sets the file aside
+
+
+def test_relays_saved_in_settings_are_checked_too(tmp_path: Path) -> None:
+    import json
+
+    cfg = _relay_cfg(tmp_path)
+    folder = cfg.index.active_dir
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "relays.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "relays": {
+                    "web": {"type": "icecast", "host": "h.example", "mount": "/w"},
+                    "nopass": {"type": "shoutcast1", "host": "s.example"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (folder / "relay-passwords.json").write_text(
+        json.dumps({"version": 1, "passwords": {"web": "secret-value"}}), encoding="utf-8"
+    )
+    probed: list = []
+
+    def connect(address, timeout):
+        probed.append(address)
+        raise ConnectionRefusedError(111, "refused")
+
+    web, nopass = doctor._relay_checks(cfg, connect=connect)
+    assert probed == [("h.example", 8000)]
+    assert web.name == "relay-web" and web.status is CheckStatus.WARN
+    assert nopass.status is CheckStatus.WARN
+    assert "Shoutcast 1 saved in Settings, Stream cannot run: No password" in nopass.summary
+    assert "secret-value" not in web.summary + web.detail + nopass.summary

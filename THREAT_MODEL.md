@@ -631,34 +631,75 @@ single-user incident review but do not provide per-user attribution.
 
 ## Relay credentials (outbound)
 
-Relays (`[stream.relays.<name>]`) push the stream to external Icecast or Shoutcast servers.
-This is the only place AutoDJ holds a credential for another system:
+Relays push the stream to external Icecast or Shoutcast servers. They are defined in
+`[stream.relays.<name>]` tables or added in Settings, Stream (#185). This is the only place
+AutoDJ holds a credential for another system:
 
-- Each relay's source password comes from `config.toml`, `config.local.toml` (recommended, so the
-  shared file can be committed or copied without it) or `AUTODJ_STREAM_RELAY_<NAME>_PASSWORD`.
-  An environment variable only sets the password of a relay a TOML file already names; it
-  cannot add a relay.
-- The password is never written to `web_state.json`, the relay status file, logs, `autodj
-  doctor` output, any `/api` response or the WebSocket state. The browser sees only each relay's
-  name, server type, host, port, mount or stream ID, state and last error. Error texts are built
-  from fixed wording, HTTP status numbers and operating-system error descriptions, never from
-  request URLs, so they cannot carry the password. The configuration object hides it from its
+- Each relay's source password comes, in this order, from its environment variable
+  (`AUTODJ_STREAM_RELAY_<NAME>_PASSWORD`, or `AUTODJ_STATION_<SLUG>_RELAY_<NAME>_PASSWORD` for
+  another station), a password typed in Settings, Stream, or `config.toml` and
+  `config.local.toml` (recommended over `config.toml`, so the shared file can be committed or
+  copied without it). An environment variable only sets the password of a relay a TOML file or
+  the page already defines; it cannot add a relay. While it is set the page refuses a password
+  for that relay, which would not be used.
+- A password typed on the page is kept in `relay-passwords.json` in the station's folder, written
+  atomically and readable by the user AutoDJ runs as only: `0600` on POSIX, and on Windows a
+  protected access list with one entry, that user's, set on the new file before the password is
+  written (if it cannot be set, nothing is saved). It is written before `relays.json` and put back if `relays.json`
+  cannot be written, so a failed save never leaves a password that does not match its relay. A
+  file that cannot be read stops saves from the page instead of being overwritten.
+- The password is never written to `web_state.json`, `relays.json`, the relay status file,
+  logs, `autodj doctor` output, backups, any `/api` response or the WebSocket state. The page's
+  password field is never filled in: the API says only whether a password is set and whether it
+  comes from the page, the TOML files or the environment (naming the variable). An empty field
+  keeps the password the relay has. Error texts are built from fixed wording, HTTP status
+  numbers and operating-system error descriptions, never from request URLs or submitted
+  values, so they cannot carry the password. The configuration object hides it from its
   printed form.
 - On the wire the password goes only to the configured host, as each protocol requires: in an
   HTTP Basic `Authorization` header for Icecast (the source login and `/admin/metadata`), and as
   plain text for Shoutcast (the source login line and the `pass` query parameter of
   `/admin.cgi`, the only way Shoutcast accepts title updates). Relays do not use TLS, so anyone
-  who can watch the path to the server can read the password. Use a source password that is not
-  used anywhere else, and prefer hosts reached over networks you trust.
+  who can watch the path to the server can read the password; the page's password field says
+  so and does not make the relay connection encrypted. Use a source password that is not used
+  anywhere else, and prefer hosts reached over networks you trust.
+- Adding, changing and removing relays, and the station details, are settings routes: they need
+  a signed-in session (or no pairing, as on a server bound to this machine), an allowed `Origin`
+  like every other unsafe request, and their bodies are capped at 8 KiB. Unknown fields are
+  refused. A change is checked in full, saved, and only then put on the air, restarting that
+  relay alone; the encoder, direct listeners and other relays keep running. A change sent while
+  the station's stream is stopped is refused before anything is written.
+- A relay can point at any host and port, as `config.toml` already allowed, so whoever may
+  change settings can make AutoDJ open TCP connections from the server to hosts it can reach,
+  including ones on its own network, and send them an HTTP `PUT` or a password line. This is not
+  a new reach for someone who can edit the TOML files, and the page is behind the same session
+  as every other setting. What comes back is never shown: the page sees only fixed wording such
+  as "the server refused the connection", read from at most 8 KiB of reply, and reconnects back
+  off to once a minute. A host typed or changed on the page is checked when it is saved: a host
+  made only of numeric labels must be a plain dotted-decimal or IPv6 address (so `2852039166`
+  or `0xA9.0xFE.0xA9.0xFE` cannot stand for `169.254.169.254`), and the address, and every
+  address the name resolves to then, may not be unspecified, multicast or link-local (IPv4 mapped
+  into IPv6 and 6to4 included), nor the IPv6 metadata address `fd00:ec2::254`. A name that does
+  not resolve is refused. The relay resolves the name again at each login, so a name whose
+  answers change afterwards (DNS rebinding) can still reach such an address; hosts from
+  `config.toml` are not checked at all. Where that matters, restrict outbound traffic from the
+  AutoDJ host at the firewall.
+- Station details (genre, description, website) are sent as header values to relay servers
+  and to players. Control characters are refused when saved and dropped again when sent, so a
+  value cannot add a header; the website must be an `http` or `https` address without a user
+  name or password.
+- Two stations may not push to the same host, port and mount or stream ID, and two relays may
+  not read the same password variable; the page refuses both, across running and stopped
+  stations.
 - `autodj doctor` only opens and closes a TCP connection to each relay's source port; it sends
   no password and does not log in.
 - The running server writes `relay-status.json` in the index folder (names, states and errors,
   no passwords) so `autodj doctor` can show the last reported state.
-- Relays are outbound connections only. They add no listening port and no route, and the
-  server's replies are read only up to a fixed size during login and title updates.
+- Relays are outbound connections only. They add no listening port, and the server's replies
+  are read only up to a fixed size during login and title updates.
 - While any relay is enabled the station keeps playing with no local listeners, so the operator's
-  library is being sent to the external server whenever AutoDJ runs in stream mode. Set
-  `enabled = false` to stop a relay without deleting it.
+  library is being sent to the external server whenever AutoDJ runs in stream mode. Turn a
+  relay off on the page, or set `enabled = false`, to stop it without deleting it.
 
 ## Backup and restore boundary
 
@@ -667,7 +708,9 @@ the liners, profiles and uploaded Stereo Tool preset folders, and a `manifest.js
 AutoDJ version and the files. It is safe to make while AutoDJ serves: the index is copied under
 its publication lock and `dj_meta.db` through SQLite's backup API. The archive is written to a
 temporary file and renamed into place, and it may not be written inside the liners, profiles or
-uploaded preset folder.
+uploaded preset folder. It holds no secrets: `relays.json` (relays saved in Settings, Stream) is
+included without passwords, and `relay-passwords.json`, `config.local.toml`, the saved access
+token and the pairing databases stay out.
 
 Restore requires a backup from the same major and minor version. It refuses member names that
 are absolute, contain `..`, backslashes or drive letters, or fall outside the known index files,

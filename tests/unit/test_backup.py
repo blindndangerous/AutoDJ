@@ -440,3 +440,18 @@ def test_matched_intros_and_their_audio_are_backed_up_and_restored(tmp_path: Pat
     restore_backup(cfg, archive, force=True)
     assert json.loads(state.read_text(encoding="utf-8"))["schema_version"] == 1
     assert audio.read_bytes() == b"RIFF"
+
+
+def test_saved_relays_are_backed_up_without_their_passwords(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    relays = cfg.index.active_dir / "relays.json"
+    relays.write_text('{"version": 1, "relays": {}}', encoding="utf-8")
+    secrets = cfg.index.active_dir / "relay-passwords.json"
+    secrets.write_text('{"version": 1, "passwords": {"main": "x"}}', encoding="utf-8")
+    archive = create_backup(cfg, tmp_path / "relays.zip", force=False)
+    with zipfile.ZipFile(archive) as backup:
+        assert backup.read("index/relays.json") == relays.read_bytes()
+        assert not any("relay-passwords" in name for name in backup.namelist())
+    relays.unlink()
+    restore_backup(cfg, archive, force=True)
+    assert relays.exists() and secrets.exists()

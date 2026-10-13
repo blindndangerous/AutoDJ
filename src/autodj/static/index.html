@@ -1750,20 +1750,45 @@
            text, not live. -->
       <p class="stream-detail" id="stream-loopback-note" hidden>This address only works on this computer. Open AutoDJ using its network address (see the start-up message) to copy a link for speakers.</p>
       <p class="stream-detail"><a id="stream-m3u" download="autodj.m3u">Download playlist file (.m3u)</a></p>
-      <!-- Relays to other servers ([stream.relays.<name>] in config.toml),
-           filled by stream-mode.js.  Plain text, not live. -->
-      <div id="stream-relays" hidden>
-        <p class="stream-detail" id="stream-relays-intro">Relays to other servers. While a relay is on, the station keeps playing even when nobody listens here.</p>
-        <ul class="stream-detail" id="stream-relays-list" aria-labelledby="stream-relays-intro"></ul>
-      </div>
-      <div class="settings-row">
+      <!-- The station details (#185), saved together by Save station
+           details (stream-mode.js).  A refused field is marked
+           aria-invalid, its error is linked to it and it takes focus, which
+           reads the error; a save is said once in #settings-status. -->
+      <fieldset id="stream-station-details" class="flow-form">
+        <legend>Station details</legend>
         <label for="stream-station-name">Station name</label>
         <input type="text" id="stream-station-name" maxlength="100" autocomplete="off"
                aria-describedby="stream-station-name-desc">
-      </div>
-      <span class="setting-desc" id="stream-station-name-desc">
-        The name players such as Sonos and VLC show for this station, up to 100 characters.  A player shows a new name the next time it connects.
-      </span>
+        <span class="setting-desc" id="stream-station-name-desc">
+          The name players such as Sonos and VLC, and relay servers, show for this station, up to 100 characters.
+        </span>
+        <p class="field-error" id="stream-station-name-error" hidden></p>
+        <label for="stream-station-genre">Genre</label>
+        <input type="text" id="stream-station-genre" maxlength="100" autocomplete="off"
+               aria-describedby="stream-station-genre-desc">
+        <span class="setting-desc" id="stream-station-genre-desc">
+          Optional, up to 100 characters, for example Jazz or Jazz, Soul.  Directory listings show it.
+        </span>
+        <p class="field-error" id="stream-station-genre-error" hidden></p>
+        <label for="stream-station-description">Description</label>
+        <input type="text" id="stream-station-description" maxlength="255" autocomplete="off"
+               aria-describedby="stream-station-description-desc">
+        <span class="setting-desc" id="stream-station-description-desc">
+          Optional, one line of up to 255 characters.  Icecast servers and players get it; Shoutcast has no place for it.
+        </span>
+        <p class="field-error" id="stream-station-description-error" hidden></p>
+        <label for="stream-station-url">Website</label>
+        <input type="text" id="stream-station-url" maxlength="255" autocomplete="url"
+               inputmode="url" spellcheck="false" aria-describedby="stream-station-url-desc">
+        <span class="setting-desc" id="stream-station-url-desc">
+          Optional: the station's web page, starting with https:// or http://.
+        </span>
+        <p class="field-error" id="stream-station-url-error" hidden></p>
+        <button type="button" id="stream-details-save" aria-describedby="stream-details-note">Save station details</button>
+        <p class="setting-desc" id="stream-details-note">
+          Every relay of this station gets these details: a change makes the relays log in again, so their listeners may hear a short gap.  Players connected here show them the next time they connect.
+        </p>
+      </fieldset>
       <div class="settings-row">
         <label for="stream-bitrate">Quality</label>
         <select id="stream-bitrate" aria-describedby="stream-bitrate-desc">
@@ -1874,6 +1899,27 @@
         </span>
         <button type="button" id="recording-save">Save recording settings</button>
       </fieldset>
+      <!-- Relays to Icecast and Shoutcast servers (#185), filled by
+           relay-settings.js: one row per relay in a grid with the shared
+           keyboard navigation.  The status cells are plain text, never live,
+           so a relay retrying in the background says nothing; the result of
+           Save, On and Remove is said once in #settings-status, and so is
+           the state a relay first reaches after the user saved it. -->
+      <section id="stream-relays" aria-labelledby="stream-relays-title">
+        <h4 id="stream-relays-title" tabindex="-1">Relays</h4>
+        <p class="setting-desc" id="stream-relays-intro">
+          Push this station to Icecast or Shoutcast servers as well.  While a relay is on, the station keeps playing even when nobody listens here.  A change restarts only that relay; the stream and the other relays keep playing.
+        </p>
+        <p class="stream-detail" id="stream-relays-problem" hidden></p>
+        <div class="relay-table-wrap">
+          <table id="stream-relays-table" role="grid" aria-describedby="stream-relays-intro">
+            <caption class="visually-hidden">Relays of this station</caption>
+            <thead><tr><th scope="col">Relay</th><th scope="col">Server</th><th scope="col">Status</th><th scope="col">On</th><th scope="col">Edit</th><th scope="col">Remove</th></tr></thead>
+            <tbody id="stream-relays-list"><tr><td colspan="6">Relays not loaded.</td></tr></tbody>
+          </table>
+        </div>
+        <button type="button" id="stream-relay-add">Add relay</button>
+      </section>
       <section aria-labelledby="listener-control-title">
         <h4 id="listener-control-title" tabindex="-1">Listeners</h4>
         <p class="stream-detail" id="stream-listeners"></p>
@@ -2624,6 +2670,99 @@
     <div class="dialog-actions">
       <button type="button" id="device-rename-cancel">Cancel</button>
       <button type="submit" id="device-rename-save">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Add or edit one relay (#185), opened from Add relay or a row's Edit in
+     Settings, Stream; modules/relay-settings.js fills it in.  Save keeps
+     the dialog open until the server answers: a refused field is marked
+     aria-invalid, its error is linked to it and it takes focus; any other
+     refusal is said in #relay-form-error, inside the dialog, because the
+     page behind a modal dialog is inert.  The password field is never
+     filled in: #relay-password-state says whether one is set. -->
+<dialog id="relay-dialog" aria-labelledby="relay-dialog-title" aria-describedby="relay-dialog-desc">
+  <form id="relay-form" method="dialog" novalidate>
+    <h2 id="relay-dialog-title">Add relay</h2>
+    <p class="setting-desc" id="relay-dialog-desc">Saving connects the relay at once.  The stream and the other relays keep playing.</p>
+    <div class="relay-field">
+      <label for="relay-name">Name</label>
+      <input type="text" id="relay-name" maxlength="32" autocomplete="off" spellcheck="false" aria-describedby="relay-name-help">
+      <span class="setting-desc" id="relay-name-help">Letters, digits, hyphens and underscores, up to 32.  The log and autodj doctor use it; it cannot be changed later.</span>
+      <p class="field-error" id="relay-name-error" hidden></p>
+    </div>
+    <div class="settings-check">
+      <input type="checkbox" id="relay-enabled" checked>
+      <label for="relay-enabled">On</label>
+    </div>
+    <div class="relay-field">
+      <label for="relay-type">Server type</label>
+      <select id="relay-type">
+        <option value="icecast">Icecast</option>
+        <option value="shoutcast1">Shoutcast 1</option>
+        <option value="shoutcast2">Shoutcast 2</option>
+      </select>
+      <p class="field-error" id="relay-type-error" hidden></p>
+    </div>
+    <div class="relay-field">
+      <label for="relay-host">Server host name or address</label>
+      <input type="text" id="relay-host" maxlength="253" autocomplete="off" spellcheck="false" inputmode="url" aria-describedby="relay-host-help">
+      <span class="setting-desc" id="relay-host-help">For example relay.example.org, without http://, a port or a path.</span>
+      <p class="field-error" id="relay-host-error" hidden></p>
+    </div>
+    <div class="relay-field">
+      <label for="relay-port">Listener port</label>
+      <input type="text" id="relay-port" value="8000" inputmode="numeric" autocomplete="off" spellcheck="false" aria-describedby="relay-port-help">
+      <span class="setting-desc" id="relay-port-help">The port listeners use, often 8000.  A Shoutcast source connects on the port above it, as Shoutcast expects.</span>
+      <p class="field-error" id="relay-port-error" hidden></p>
+    </div>
+    <div class="relay-field" id="relay-mount-field">
+      <label for="relay-mount">Mount point</label>
+      <input type="text" id="relay-mount" value="/live" maxlength="201" autocomplete="off" spellcheck="false" aria-describedby="relay-mount-help">
+      <span class="setting-desc" id="relay-mount-help">Icecast only: a / then the mount's name, for example /live.</span>
+      <p class="field-error" id="relay-mount-error" hidden></p>
+    </div>
+    <div class="relay-field" id="relay-user-field">
+      <label for="relay-user">Source user name</label>
+      <input type="text" id="relay-user" maxlength="255" autocomplete="off" spellcheck="false" aria-describedby="relay-user-help">
+      <span class="setting-desc" id="relay-user-help">Icecast only.  Leave it empty for source, the usual name.</span>
+      <p class="field-error" id="relay-user-error" hidden></p>
+    </div>
+    <div class="relay-field" id="relay-stream-id-field" hidden>
+      <label for="relay-stream-id">Stream ID</label>
+      <input type="text" id="relay-stream-id" value="1" inputmode="numeric" autocomplete="off" spellcheck="false" aria-describedby="relay-stream-id-help">
+      <span class="setting-desc" id="relay-stream-id-help">Shoutcast 2 only: the stream number on the server, often 1.</span>
+      <p class="field-error" id="relay-stream-id-error" hidden></p>
+    </div>
+    <div class="relay-field" id="relay-password-field">
+      <label for="relay-password">Source password</label>
+      <input type="password" id="relay-password" maxlength="255" autocomplete="new-password" spellcheck="false" aria-describedby="relay-password-state relay-password-help">
+      <span class="setting-desc" id="relay-password-state">Not set.</span>
+      <span class="setting-desc" id="relay-password-help">AutoDJ never shows a saved password.  The relay connection is not encrypted: the server's protocol sends the password as it is, whatever this field looks like.</span>
+      <p class="field-error" id="relay-password-error" hidden></p>
+    </div>
+    <p class="setting-desc" id="relay-password-env" hidden></p>
+    <div class="relay-field">
+      <label for="relay-bitrate">Bitrate</label>
+      <select id="relay-bitrate" aria-describedby="relay-bitrate-help">
+        <option value="">Use the station's quality</option>
+        <option value="128">128 kbps</option>
+        <option value="192">192 kbps</option>
+        <option value="256">256 kbps</option>
+        <option value="320">320 kbps</option>
+      </select>
+      <span class="setting-desc" id="relay-bitrate-help">The station's quality sends exactly what listeners here hear.  Another bitrate starts an extra encoder, shared by every relay at that bitrate.</span>
+      <p class="field-error" id="relay-bitrate-error" hidden></p>
+    </div>
+    <div class="settings-check">
+      <input type="checkbox" id="relay-public" aria-describedby="relay-public-help">
+      <label for="relay-public">List in public directories</label>
+    </div>
+    <span class="setting-desc" id="relay-public-help">Asks the server to list the station in directories such as its own and Shoutcast's.</span>
+    <p id="relay-form-error" role="status" aria-live="polite" aria-atomic="true"></p>
+    <div class="dialog-actions">
+      <button type="button" id="relay-cancel">Cancel</button>
+      <button type="submit" id="relay-save">Save relay</button>
     </div>
   </form>
 </dialog>

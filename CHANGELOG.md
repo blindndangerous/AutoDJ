@@ -10,6 +10,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Relays and station details in Settings, Stream (#185). A **Relays** table lists each relay
+  to an Icecast or Shoutcast server with its server, where its password comes from and its
+  state, and lets you **Add relay**, **Edit**, turn it **On** or off and **Remove** it without
+  editing TOML or restarting the station. A change is checked, saved, and then restarts only
+  that relay: playback, the stream's encoder, direct listeners, the other relays and the other
+  stations carry on, an extra encoder starts only for a bitrate no relay used yet and stops
+  when no relay uses it any more, and turning relays on or off updates "keep playing without
+  listeners" at once. Relays saved here go in `relays.json` beside `web_state.json` (and into
+  backups); their passwords go in `relay-passwords.json`, readable by the owner only and never
+  backed up, sent to a browser or logged. The password field is never filled in: the page says
+  whether one is set and whether it comes from this page, the config files or an environment
+  variable, which still wins and makes the page refuse a password it would override. Relays in
+  `config.toml` keep working as before; changing one here saves its new settings over the TOML
+  table, and **Revert** goes back to the TOML table. The same target on two stations, and two
+  relays reading the same password variable, are refused. The station's new **Genre**,
+  **Description** and **Website**, saved with its name under **Station details** (and as
+  `stream.station_genre`, `stream.station_description` and `stream.station_url`), go to every
+  relay: Icecast gets `Ice-Genre`, `Ice-Url` and `Ice-Description`, Shoutcast `icy-genre` and
+  `icy-url` (it has no description), and players connected here get `icy-genre`, `icy-url`
+  and `icy-description`. Saving changed details makes the station's relays log in again.
+  `autodj doctor` checks relays saved here too. Relays still connect without TLS. Routes:
+  `/api/stream/relays` and `/api/stations/<name>/stream/relays`. See
+  [Relaying to Icecast and Shoutcast](docs/operations.md#relaying-to-icecast-and-shoutcast).
+
 - Matched intros (#127): Track info has a **Matched intros** section where you upload a short
   voice clip for that song, or for any song by its artist, such as "Here's the new one from
   Example Artist", and Listen to it or Remove it. When the song comes up, saved-point playback on
@@ -674,6 +698,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Settings, Stream saves the station name with **Save station details**, together with the new
+  genre, description and website, instead of as soon as the name field is left (#185). The
+  relay list there is now the Relays table, below Broadcast recording.
+
 - Analysis worker status counts waiting songs without sorting or building a list of their
   paths (#166).
 
@@ -782,6 +810,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The librosa file-loading fallback. Librosa still detects beats, tempo and audio features.
 
 ### Security
+
+- Relay passwords typed in Settings, Stream (#185) are kept in `relay-passwords.json`, readable
+  by the owner only, and never returned by the API, written to `web_state.json`, the relay
+  status file, logs or backups. Relay and station-details requests need a signed-in session and
+  an allowed Origin like every other setting, and their bodies are capped at 8 KiB. A relay host
+  entered on the page, and every address it resolves to when saved, may not be unspecified,
+  multicast or link-local (such as a cloud metadata address, however it is written); otherwise
+  relays reach the hosts and ports `config.toml` could already name, and a server's replies are
+  never shown. On Windows `relay-passwords.json` gets an access list for the current user only.
+  Unknown keys in `relays.json`, such as a password typed into it, are removed with a warning so
+  backups never hold them. See the threat model.
 
 - No page AutoDJ serves can be shown inside another site's frame any more, so a hostile page
   cannot overlay the web UI or a public page to trick a click (clickjacking). Every response now

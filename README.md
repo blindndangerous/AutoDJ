@@ -153,8 +153,10 @@ information, not legal advice.
 ### Relay to Icecast or Shoutcast
 
 Stream mode can also push the station to hosted Icecast 2.4, Shoutcast 1 or Shoutcast 2 servers,
-so a host's listener capacity and directory listings carry it too. Describe each server in
-`config.toml` and keep its password in `config.local.toml`:
+so a host's listener capacity and directory listings carry it too. Add, edit, turn off and remove
+relays in Settings, Stream while the station plays, with the station's genre, description and
+website sent to each server, or describe each server in `config.toml` and keep its password in
+`config.local.toml`:
 
 ```toml
 # config.toml

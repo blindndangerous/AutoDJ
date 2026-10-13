@@ -38,6 +38,7 @@ import { installSchedulerPanel } from "./modules/scheduler-panel.js";
 import { installCartWall } from "./modules/cart-wall.js";
 import { installVoiceTracker } from "./modules/voice-tracker.js";
 import { createStreamMode, createStreamSettings } from "./modules/stream-mode.js";
+import { installRelaySettings } from "./modules/relay-settings.js";
 import { createRecordingControls } from "./modules/recording-controls.js";
 import { installNowPlayingSettings } from "./modules/nowplaying-settings.js";
 import { createListenerControls } from "./modules/listener-controls.js";
@@ -181,8 +182,11 @@ const streamSettings = createStreamSettings({
     postSettings("/api/stream/settings", { bitrate: value }, control),
   saveContinuous: (value, control) =>
     postSettings("/api/stream/settings", { continuous: value }, control),
-  saveStationName: (value, control) =>
-    postSettings("/api/stream/settings", { station_name: value }, control),
+  saveStationDetails: (values) => requestJson("/api/stream/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(values),
+  }),
   setAvailable: (available) => settingsTabs.setTabHidden("stream", !available),
   focusAway: () => settingsTabs.focusSelected(),
   srStatus: document.getElementById("sr-status"),
@@ -204,6 +208,8 @@ const listenerControls = createListenerControls(
   ),
 );
 const recordingControls = createRecordingControls(document, document.getElementById("sr-status"));
+// Settings > Stream > Relays: add, edit, turn on or off and remove (#185).
+const relaySettings = installRelaySettings({ document, request: requestJson, settingsStatus });
 // A lookup that failed while another tab showed was never heard; opening
 // Settings tries again.
 window.addEventListener("hashchange", () => {
@@ -253,6 +259,7 @@ function clearProtectedSessionData() {
   _seekController?.cancel();
   streamMode.stop();
   streamSettings.reset();
+  relaySettings.reset();
   recordingControls.reset();
   nowPlayingSettings?.reset();
   listenerControls.reset();
@@ -498,6 +505,7 @@ function applyState(s) {
   _lastStreamServerAudio = inStream && Boolean(s.stream_server_audio);
   streamMode.apply(s);
   streamSettings.apply(s);
+  relaySettings.apply(s);
   if (s.stream_mode) recordingControls.apply(s.recording);
   else recordingControls.reset();
   nowPlayingSettings?.apply(s);

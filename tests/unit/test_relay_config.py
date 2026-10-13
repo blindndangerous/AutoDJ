@@ -141,3 +141,32 @@ def test_unknown_relay_keys_warn_and_preserve_valid_settings(key, caplog):
     assert "Ignoring unknown config keys in [stream.relays.main]" in caplog.text
     assert key in caplog.text
     assert "private-value" not in caplog.text
+
+
+def test_station_details_are_checked_like_header_values() -> None:
+    stream = StreamConfig(
+        station_genre="  Jazz ",
+        station_description="Café jazz, all night",
+        station_url="https://radio.example.org/listen",
+    )
+    assert stream.station_genre == "Jazz"
+    assert stream.station_description == "Café jazz, all night"
+    for bad in (
+        {"station_genre": "a\nb"},
+        {"station_genre": "x" * 101},
+        {"station_description": "x" * 256},
+        {"station_url": "ftp://radio.example.org/"},
+        {"station_url": "https://"},
+        {"station_url": "https://radio.example.org:port/"},
+        {"station_url": "https://radio.example.org/a b"},
+        {"station_url": "https://user:secret@radio.example.org/"},
+    ):
+        with pytest.raises(ValueError, match=r"stream.station_"):
+            StreamConfig(**bad)
+    with pytest.raises(TypeError, match=r"stream.station_genre"):
+        StreamConfig(station_genre=5)  # type: ignore[arg-type]
+
+
+def test_station_details_default_to_empty() -> None:
+    stream = StreamConfig()
+    assert (stream.station_genre, stream.station_description, stream.station_url) == ("", "", "")

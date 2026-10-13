@@ -7,7 +7,7 @@ import {
   BITRATE_SETTLE_MS,
   NOT_LOADED_NOTE,
   STREAM_DELAY_ESTIMATE_S,
-  relayText,
+  stationDetailsError,
 } from "../../src/autodj/static/modules/stream-mode.js";
 
 // happy-dom has no MediaError; the codes are fixed by the HTML standard.
@@ -582,10 +582,22 @@ function settingsDom() {
       <select id="stream-bitrate"><option value="128">128 kbps</option><option value="192">192 kbps</option><option value="256">256 kbps</option><option value="320">320 kbps</option></select>
       <input id="stream-continuous" type="checkbox">
       <p id="stream-listeners"></p>
-      <div id="stream-relays" hidden>
-        <p id="stream-relays-intro">Relays to other servers.</p>
-        <ul id="stream-relays-list" aria-labelledby="stream-relays-intro"></ul>
-      </div>
+      <fieldset id="stream-station-details">
+        <label for="stream-station-name">Station name</label>
+        <input id="stream-station-name" aria-describedby="stream-station-name-desc">
+        <span id="stream-station-name-desc">The name.</span>
+        <p id="stream-station-name-error" hidden></p>
+        <label for="stream-station-genre">Genre</label>
+        <input id="stream-station-genre">
+        <p id="stream-station-genre-error" hidden></p>
+        <label for="stream-station-description">Description</label>
+        <input id="stream-station-description">
+        <p id="stream-station-description-error" hidden></p>
+        <label for="stream-station-url">Website</label>
+        <input id="stream-station-url">
+        <p id="stream-station-url-error" hidden></p>
+        <button type="button" id="stream-details-save">Save station details</button>
+      </fieldset>
     </fieldset>
     </details>
     <div id="sr-status" role="status" aria-live="polite" aria-atomic="true"></div>`;
@@ -1116,47 +1128,82 @@ describe("stream settings", () => {
   });
 });
 
-describe("relay status", () => {
-  const LIVE = { name: "main", type: "icecast", target: "radio.example.com:8000/live", state: "live" };
+describe("station details", () => {
+  const DETAILS = {
+    ...INFO, station_name: "Night Owl", station_genre: "Jazz",
+    station_description: "", station_url: "",
+  };
+  const apiError = (message, field = null) => Object.assign(new Error(message), { status: 422, field });
 
-  it.each([
-    [LIVE, "main, Icecast at radio.example.com:8000/live: live."],
-    [{ ...LIVE, state: "connecting" }, "main, Icecast at radio.example.com:8000/live: connecting."],
-    [
-      { ...LIVE, type: "shoutcast2", state: "retrying", error: "the server rejected the password" },
-      "main, Shoutcast 2 at radio.example.com:8000/live: not connected, trying again. "
-        + "Last error: the server rejected the password.",
-    ],
-    [{ ...LIVE, type: "shoutcast1", state: "off" }, "main, Shoutcast 1 at radio.example.com:8000/live: off in the configuration."],
-    [{ ...LIVE, state: "stopped" }, "main, Icecast at radio.example.com:8000/live: stopped."],
-    [
-      { ...LIVE, title_error: "the title update got HTTP status 404" },
-      "main, Icecast at radio.example.com:8000/live: live. "
-        + "Song titles are not updating: the title update got HTTP status 404.",
-    ],
-  ])("describes %o in one sentence", (relay, text) => {
-    expect(relayText(relay)).toBe(text);
+  it("checks the name and website on the page first", () => {
+    const good = { station_name: "A", station_genre: "", station_description: "", station_url: "" };
+    expect(stationDetailsError(good)).toBeNull();
+    expect(stationDetailsError({ ...good, station_name: "  " })[0]).toBe("station_name");
+    expect(stationDetailsError({ ...good, station_url: "radio.example.org" })[0]).toBe("station_url");
+    expect(stationDetailsError({ ...good, station_url: "https://radio.example.org/a b" })[0]).toBe("station_url");
+    expect(stationDetailsError({ ...good, station_url: "https://radio.example.org/" })).toBeNull();
   });
 
-  it("lists relays as plain text, rebuilt only when the text changes", () => {
+  it("fills the details, keeps an edit not saved, and saves only what changed", async () => {
     settingsDom();
-    const { ui } = makeSettings();
-    const box = byId("stream-relays");
-    const list = byId("stream-relays-list");
-    ui.apply({ stream_mode: true, stream_listeners: 0 });
-    expect(box.hidden).toBe(true);
-    ui.apply({ stream_mode: true, stream_listeners: 0, stream_relays: [LIVE] });
-    expect(box.hidden).toBe(false);
-    expect([...list.children].map((li) => li.textContent))
-      .toEqual(["main, Icecast at radio.example.com:8000/live: live."]);
-    const item = list.firstChild;
-    ui.apply({ stream_mode: true, stream_listeners: 0, stream_relays: [LIVE] });
-    expect(list.firstChild).toBe(item);
-    ui.apply({ stream_mode: true, stream_listeners: 0, stream_relays: [{ ...LIVE, state: "connecting" }] });
-    expect(list.firstChild.textContent).toContain("connecting");
-    expect(box.querySelector("[aria-live]")).toBeNull();
-    ui.reset();
-    expect(list.children.length).toBe(0);
-    expect(box.hidden).toBe(true);
+    const saveStationDetails = vi.fn(async (body) => ({ ...DETAILS, ...body }));
+    const { ui } = makeSettings({ fetchInfo: vi.fn(async () => DETAILS), saveStationDetails });
+    ui.apply({ stream_mode: true });
+    await vi.waitFor(() => expect(byId("stream-station-name").value).toBe("Night Owl"));
+    expect(byId("stream-station-genre").value).toBe("Jazz");
+    byId("stream-station-genre").value = "Soul";
+    // A push with the old value does not undo the edit.
+    ui.apply({ stream_mode: true, settings: { playback: { stream_station_genre: "Jazz" } } });
+    expect(byId("stream-station-genre").value).toBe("Soul");
+    byId("stream-station-url").value = "https://radio.example.org/";
+    byId("stream-details-save").click();
+    await vi.waitFor(() => expect(saveStationDetails).toHaveBeenCalledTimes(1));
+    expect(saveStationDetails).toHaveBeenCalledWith({
+      station_genre: "Soul", station_url: "https://radio.example.org/",
+    });
+    await vi.waitFor(() => expect(byId("settings-status").textContent)
+      .toBe("Station details saved. The relays log in again with them."));
+    // Saved: a later push may change it again.
+    ui.apply({ stream_mode: true, settings: { playback: { stream_station_genre: "Blues" } } });
+    expect(byId("stream-station-genre").value).toBe("Blues");
+  });
+
+  it("links a refused detail to its error and focuses it", async () => {
+    settingsDom();
+    const saveStationDetails = vi.fn(async () => {
+      throw apiError("The website must not include a user name or password.", "station_url");
+    });
+    const { ui } = makeSettings({ fetchInfo: vi.fn(async () => DETAILS), saveStationDetails });
+    ui.apply({ stream_mode: true });
+    await vi.waitFor(() => expect(byId("stream-station-name").value).toBe("Night Owl"));
+    const url = byId("stream-station-url");
+    url.value = "https://user:pw@radio.example.org/";
+    byId("stream-details-save").click();
+    await vi.waitFor(() => expect(url.getAttribute("aria-invalid")).toBe("true"));
+    expect(document.activeElement).toBe(url);
+    expect(byId("stream-station-url-error").hidden).toBe(false);
+    expect(url.getAttribute("aria-describedby")).toBe("stream-station-url-error");
+    url.dispatchEvent(new Event("input"));
+    expect(url.hasAttribute("aria-invalid")).toBe(false);
+    expect(url.hasAttribute("aria-describedby")).toBe(false);
+    // A blank name is refused before anything is sent.
+    byId("stream-station-name").value = " ";
+    byId("stream-details-save").click();
+    expect(document.activeElement).toBe(byId("stream-station-name"));
+    expect(byId("stream-station-name").getAttribute("aria-describedby"))
+      .toBe("stream-station-name-desc stream-station-name-error");
+    expect(saveStationDetails).toHaveBeenCalledTimes(1);
+  });
+
+  it("says so when nothing changed", async () => {
+    settingsDom();
+    const saveStationDetails = vi.fn();
+    const { ui } = makeSettings({ fetchInfo: vi.fn(async () => DETAILS), saveStationDetails });
+    ui.apply({ stream_mode: true });
+    await vi.waitFor(() => expect(byId("stream-station-name").value).toBe("Night Owl"));
+    byId("stream-details-save").click();
+    await vi.waitFor(() => expect(byId("settings-status").textContent)
+      .toBe("The station details are already saved."));
+    expect(saveStationDetails).not.toHaveBeenCalled();
   });
 });

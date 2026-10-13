@@ -28,6 +28,7 @@ import socket
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -70,6 +71,37 @@ TYPE_LABELS = {"icecast": "Icecast", "shoutcast1": "Shoutcast 1", "shoutcast2": 
 
 class RelayError(Exception):
     """A relay failure whose message is safe to show and log."""
+
+
+@dataclass(frozen=True)
+class StationDetails:
+    """The station details a relay announces besides its name (``[stream]``).
+
+    Each is empty when not set, and an empty one is not sent (Shoutcast
+    always gets its genre and website lines, empty or not, as before).
+    Shoutcast's source login has no place for the description.
+
+    Attributes:
+        genre: ``stream.station_genre``.
+        url: ``stream.station_url``, the station's website.
+        description: ``stream.station_description``.
+    """
+
+    genre: str = ""
+    url: str = ""
+    description: str = ""
+
+
+NO_DETAILS = StationDetails()
+
+
+def _header_value(text: str) -> str:
+    """*text* with any control character dropped, so it cannot end a header line.
+
+    The configuration and the web page already refuse control characters;
+    this keeps a header intact whatever reaches it.
+    """
+    return "".join(character for character in text if character.isprintable())
 
 
 class Connection(Protocol):
@@ -196,8 +228,17 @@ def _host_header(host: str, port: int) -> str:
     return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
 
 
-def _icecast_login(sock: socket.socket, cfg: RelayConfig, bitrate: int, station_name: str) -> None:
+def _icecast_login(
+    sock: socket.socket,
+    cfg: RelayConfig,
+    bitrate: int,
+    station_name: str,
+    details: StationDetails = NO_DETAILS,
+) -> None:
     """Start an Icecast 2.4 source with HTTP PUT.
+
+    The station's genre, website and description go in Icecast's
+    ``Ice-Genre``, ``Ice-Url`` and ``Ice-Description`` headers when set.
 
     Raises:
         RelayError: The server refused the source.
@@ -209,12 +250,19 @@ def _icecast_login(sock: socket.socket, cfg: RelayConfig, bitrate: int, station_
         f"Authorization: {_basic_auth(cfg.user, cfg.password)}",
         f"User-Agent: {_USER_AGENT}",
         "Content-Type: audio/mpeg",
-        f"Ice-Name: {station_name}",
+        f"Ice-Name: {_header_value(station_name)}",
         f"Ice-Public: {int(cfg.public)}",
         f"Ice-Bitrate: {bitrate}",
         f"Ice-Audio-Info: bitrate={bitrate};samplerate={_SAMPLE_RATE};channels=2",
-        "Expect: 100-continue",
     ]
+    for header, value in (
+        ("Ice-Genre", details.genre),
+        ("Ice-Url", details.url),
+        ("Ice-Description", details.description),
+    ):
+        if value:
+            lines.append(f"{header}: {_header_value(value)}")
+    lines.append("Expect: 100-continue")
     sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("utf-8"))
     reply = _read_until(sock, b"\r\n\r\n")
     parts = reply.split(b"\r\n", 1)[0].split()
@@ -237,11 +285,17 @@ def _icecast_login(sock: socket.socket, cfg: RelayConfig, bitrate: int, station_
 
 
 def _shoutcast_login(
-    sock: socket.socket, cfg: RelayConfig, bitrate: int, station_name: str
+    sock: socket.socket,
+    cfg: RelayConfig,
+    bitrate: int,
+    station_name: str,
+    details: StationDetails = NO_DETAILS,
 ) -> None:
     """Log in with the Shoutcast 1 source protocol, which Shoutcast 2 also accepts.
 
     Shoutcast 2 picks the stream from a ``:#<id>`` suffix on the password.
+    The station's genre and website go in ``icy-genre`` and ``icy-url``;
+    the protocol has no description line.
 
     Raises:
         RelayError: The server refused the password or the connection.
@@ -258,9 +312,9 @@ def _shoutcast_login(
             raise RelayError("the server closed the connection during login")
         raise RelayError("the server did not accept the source connection")
     headers = (
-        f"icy-name:{station_name}\r\n"
-        "icy-genre:\r\n"
-        "icy-url:\r\n"
+        f"icy-name:{_header_value(station_name)}\r\n"
+        f"icy-genre:{_header_value(details.genre)}\r\n"
+        f"icy-url:{_header_value(details.url)}\r\n"
         f"icy-pub:{int(cfg.public)}\r\n"
         f"icy-br:{bitrate}\r\n"
         "content-type:audio/mpeg\r\n"
@@ -274,6 +328,7 @@ def open_source(
     *,
     bitrate: int,
     station_name: str,
+    details: StationDetails = NO_DETAILS,
     connect: Callable[..., socket.socket] = socket.create_connection,
     on_socket: Callable[[socket.socket], None] | None = None,
 ) -> Connection:
@@ -283,6 +338,7 @@ def open_source(
         cfg: The relay.
         bitrate: The MP3 bitrate that will be sent, in kbps.
         station_name: The station name to announce.
+        details: The station's genre, website and description to announce.
         connect: ``socket.create_connection`` replacement for tests.
         on_socket: Called with the socket as soon as it is connected, so
             another thread can shut it down to end a login stuck waiting.
@@ -300,9 +356,9 @@ def open_source(
             on_socket(sock)
         sock.settimeout(SEND_TIMEOUT)
         if cfg.type == "icecast":
-            _icecast_login(sock, cfg, bitrate, station_name)
+            _icecast_login(sock, cfg, bitrate, station_name, details)
         else:
-            _shoutcast_login(sock, cfg, bitrate, station_name)
+            _shoutcast_login(sock, cfg, bitrate, station_name, details)
         sock.settimeout(SEND_TIMEOUT)
     except BaseException:
         with contextlib.suppress(OSError):
@@ -375,6 +431,7 @@ class Relay:
         *,
         bitrate: Callable[[], int],
         station_name: Callable[[], str],
+        station_details: Callable[[], StationDetails] = lambda: NO_DETAILS,
         connect: Callable[..., Connection] = open_source,
         update_metadata: Callable[[RelayConfig, str], None] = send_metadata,
         on_change: Callable[[], None] = lambda: None,
@@ -387,6 +444,8 @@ class Relay:
             bitrate: The current bitrate of the output it is a sink of.
             station_name: Returns the station name to announce; it can
                 change while AutoDJ runs and is read at each login.
+            station_details: Returns the station's genre, website and
+                description, read at each login like the name.
             connect: Logs in and returns a connection (:func:`open_source`).
             update_metadata: Sends a title (:func:`send_metadata`).
             on_change: Called after every state change, on a relay thread.
@@ -395,6 +454,7 @@ class Relay:
         self.cfg = cfg
         self._bitrate = bitrate
         self._station_name = station_name
+        self._station_details = station_details
         self._connect = connect
         self._update_metadata = update_metadata
         self._on_change = on_change
@@ -416,6 +476,9 @@ class Relay:
         self._live_since = 0.0
         self._synced = False
         self._restart = False
+        # Set by relogin(): the restart is a fresh login, without the wait
+        # an encoder restart gets.
+        self._relogin = False
         self._overflow = False
         self._title = ""
         self._sent_title: str | None = None
@@ -466,6 +529,18 @@ class Relay:
         with self._cond:
             if self._live:
                 self._restart = True
+                self._cond.notify()
+
+    def relogin(self) -> None:
+        """Log in again at once, so the server gets the station's new details.
+
+        Only a live relay logs in again; one still connecting reads the
+        details at its next login anyway.
+        """
+        with self._cond:
+            if self._live:
+                self._restart = True
+                self._relogin = True
                 self._cond.notify()
 
     # -- lifecycle -------------------------------------------------------------
@@ -567,6 +642,7 @@ class Relay:
                     self.cfg,
                     bitrate=self._bitrate(),
                     station_name=self._station_name(),
+                    details=self._station_details(),
                     on_socket=self._login_started,
                 )
             except Exception as exc:
@@ -585,8 +661,14 @@ class Relay:
                 return
             if self._clock() - started >= STABLE_SECONDS:
                 self._failures = 0
+            with self._cond:
+                relogin, self._relogin = self._relogin, False
             if error is not None:
                 self._fail(error)
+            elif relogin:
+                logger.info(
+                    "Relay %s: logging in again with the new station details", self.cfg.name
+                )
             elif self._bitrate() == self._live_bitrate:
                 # The encoder restarted at the same bitrate, as after a
                 # crash: wait like after a failure, so an encoder that keeps
@@ -708,6 +790,12 @@ class RelayManager:
     and sends exactly the audio listeners get.  Relays with a fixed
     bitrate share one extra output per bitrate, which the server adds to
     the mix bus beside the stream's.
+
+    Relays can be added, replaced and removed while the station plays
+    (:meth:`apply`, :meth:`remove`).  Each change touches only the relay
+    it names: the stream's own encoder, its listeners and the other relays
+    carry on, an extra encoder is made only for a bitrate no relay used
+    yet, and one no relay uses any more is detached and closed.
     """
 
     def __init__(
@@ -717,8 +805,11 @@ class RelayManager:
         *,
         make_output: Callable[[int], Any],
         station_name: Callable[[], str],
+        station_details: Callable[[], StationDetails] = lambda: NO_DETAILS,
         status_path: Path | None = None,
         relay_factory: Callable[..., Relay] = Relay,
+        attach_output: Callable[[Any], None] | None = None,
+        detach_output: Callable[[Any], None] | None = None,
     ) -> None:
         """Build a relay for every enabled entry; :meth:`start` connects them.
 
@@ -728,33 +819,45 @@ class RelayManager:
             make_output: Builds an extra output for a fixed bitrate.
             station_name: Returns the station name to announce; it can
                 change while AutoDJ runs and is read at each login.
+            station_details: Returns the station's genre, website and
+                description, read at each login.
             status_path: Where to write the status file, or ``None``.
             relay_factory: Builds each :class:`Relay`, for tests.
+            attach_output: Adds an extra output to the mix bus; called by
+                :meth:`start` and for each one made after it.
+            detach_output: Takes an extra output off the mix bus before it
+                is closed.
         """
-        self._configs = list(relays)
+        self._main = main
+        self._make_output = make_output
+        self._station_name = station_name
+        self._station_details = station_details
         self._status_path = status_path
+        self._relay_factory = relay_factory
+        self._attach_output = attach_output
+        self._detach_output = detach_output
         self._status_lock = threading.Lock()
+        # Held for a whole change (apply, remove, close), which may wait up
+        # to CLOSE_TIMEOUT for the relay it replaces, so changes run one at
+        # a time.
+        self._change_lock = threading.Lock()
+        # Held only briefly, around reading or changing the collections
+        # below: a relay thread reporting its state reads them, and must
+        # never wait for a change that is waiting for that thread.
+        self._lock = threading.Lock()
+        self._started = False
+        self._closed = False
+        self._title: tuple[str, str] | None = None
+        self._configs: dict[str, RelayConfig] = {}
+        self._relays: dict[str, Relay] = {}
+        # The output each relay is a sink of.
+        self._sources: dict[str, Any] = {}
+        self._by_bitrate: dict[int, Any] = {}
         self.outputs: list[Any] = []
-        self._relays: list[Relay] = []
-        by_bitrate: dict[int, Any] = {}
-        for cfg in self._configs:
-            if not cfg.enabled:
-                continue
-            if cfg.bitrate is None:
-                output = main
-            elif cfg.bitrate in by_bitrate:
-                output = by_bitrate[cfg.bitrate]
-            else:
-                output = by_bitrate[cfg.bitrate] = make_output(cfg.bitrate)
-                self.outputs.append(output)
-            relay = relay_factory(
-                cfg,
-                bitrate=lambda output=output: int(output.bitrate),
-                station_name=station_name,
-                on_change=self._write_status,
-            )
-            output.add_sink(relay)
-            self._relays.append(relay)
+        for cfg in relays:
+            self._configs[cfg.name] = cfg
+            if cfg.enabled:
+                self._add_relay(cfg, self._output_for(cfg.bitrate))
 
     @property
     def active(self) -> bool:
@@ -762,19 +865,32 @@ class RelayManager:
         return bool(self._relays)
 
     def start(self) -> None:
-        """Start every relay connecting."""
-        self._write_status()
-        for relay in self._relays:
-            relay.start()
+        """Put the extra outputs on the mix bus and start every relay connecting."""
+        with self._change_lock:
+            with self._lock:
+                self._started = True
+                outputs = list(self.outputs)
+                relays = list(self._relays.values())
+            if self._attach_output is not None:
+                for output in outputs:
+                    self._attach_output(output)
+            self._write_status()
+            for relay in relays:
+                relay.start()
 
     def set_title(self, artist: str, title: str) -> None:
         """Retitle the extra outputs (the stream's own is retitled by the bridge)."""
-        for output in self.outputs:
+        with self._lock:
+            self._title = (artist, title)
+            outputs = list(self.outputs)
+        for output in outputs:
             output.set_title(artist, title)
 
     def status(self) -> list[dict[str, Any]]:
         """Return every configured relay's state, disabled ones as ``"off"``."""
-        live = {relay.cfg.name: relay.status() for relay in self._relays}
+        with self._lock:
+            configs = list(self._configs.values())
+            live = {name: relay.status() for name, relay in self._relays.items()}
         return [
             live.get(cfg.name)
             or {
@@ -785,40 +901,179 @@ class RelayManager:
                 "error": None,
                 "title_error": None,
             }
-            for cfg in self._configs
+            for cfg in configs
         ]
+
+    # -- changes while running ------------------------------------------------
+
+    def apply(self, cfg: RelayConfig) -> None:
+        """Add relay *cfg*, or replace the relay of that name with it.
+
+        The new relay's encoder is found or made first, so when that fails
+        the relay that was running keeps running.  Then the old relay is
+        stopped (waiting at most ``CLOSE_TIMEOUT``) and the new one, when
+        enabled, starts connecting.  Nothing else is touched.
+
+        Raises:
+            RelayError: The relays are stopping.
+            Exception: Making the extra encoder failed; nothing changed.
+        """
+        with self._change_lock:
+            self._refuse_once_closed()
+            output = self._output_for(cfg.bitrate) if cfg.enabled else None
+            self._stop_relay(cfg.name)
+            with self._lock:
+                self._configs[cfg.name] = cfg
+            if output is not None:
+                self._add_relay(cfg, output)
+            self._release_unused()
+        self._write_status()
+
+    def remove(self, name: str) -> None:
+        """Stop and forget relay *name*; an unknown name does nothing.
+
+        Raises:
+            RelayError: The relays are stopping.
+        """
+        with self._change_lock:
+            self._refuse_once_closed()
+            self._stop_relay(name)
+            with self._lock:
+                self._configs.pop(name, None)
+            self._release_unused()
+        self._write_status()
+
+    def reconnect(self) -> None:
+        """Make every live relay log in again, to send the station's new details."""
+        with self._lock:
+            relays = list(self._relays.values())
+        for relay in relays:
+            relay.relogin()
+
+    def _refuse_once_closed(self) -> None:
+        with self._lock:
+            if self._closed:
+                raise RelayError("the stream is stopping")
+
+    def _output_for(self, bitrate: int | None) -> Any:
+        """The output a relay at *bitrate* is a sink of; a new one is made and attached."""
+        if bitrate is None:
+            return self._main
+        with self._lock:
+            output = self._by_bitrate.get(bitrate)
+            title, started = self._title, self._started
+        if output is not None:
+            return output
+        output = self._make_output(bitrate)
+        if title is not None:
+            output.set_title(*title)
+        with self._lock:
+            self._by_bitrate[bitrate] = output
+            self.outputs.append(output)
+        if started and self._attach_output is not None:
+            self._attach_output(output)
+        return output
+
+    def _add_relay(self, cfg: RelayConfig, output: Any) -> None:
+        relay = self._relay_factory(
+            cfg,
+            bitrate=lambda output=output: int(output.bitrate),
+            station_name=self._station_name,
+            station_details=self._station_details,
+            on_change=self._write_status,
+        )
+        output.add_sink(relay)
+        with self._lock:
+            self._relays[cfg.name] = relay
+            self._sources[cfg.name] = output
+            started = self._started
+        if started:
+            relay.start()
+
+    def _stop_relay(self, name: str) -> None:
+        """Take relay *name* off its output and stop it, if it runs."""
+        with self._lock:
+            relay = self._relays.pop(name, None)
+            output = self._sources.pop(name, None)
+        if relay is None:
+            return
+        if output is not None:
+            output.remove_sink(relay)
+        try:
+            relay.close()
+        except Exception:
+            logger.exception("Stopping relay %s failed", name)
+
+    def _release_unused(self) -> None:
+        """Detach and close each extra output no relay is a sink of any more."""
+        with self._lock:
+            used = {id(output) for output in self._sources.values()}
+            unused = [
+                (bitrate, output)
+                for bitrate, output in self._by_bitrate.items()
+                if id(output) not in used
+            ]
+            for bitrate, output in unused:
+                del self._by_bitrate[bitrate]
+                self.outputs.remove(output)
+        for _bitrate, output in unused:
+            try:
+                if self._detach_output is not None:
+                    self._detach_output(output)
+                output.close()
+            except Exception:
+                logger.exception("Closing a relay encoder failed")
+
+    # -- shutdown ----------------------------------------------------------------
 
     def close(self) -> None:
         """Stop every relay, then the extra outputs.
 
         Every relay is told to stop first, then all are waited for against
         one shared deadline, so shutdown takes at most ``CLOSE_TIMEOUT``
-        however many relays are stuck.
+        however many relays are stuck.  Changes asked for after this are
+        refused.
         """
-        for relay in self._relays:
+        with self._change_lock:
+            with self._lock:
+                self._closed = True
+                relays = list(self._relays.values())
+                outputs = list(self.outputs)
+            self._close_all(relays, outputs)
+
+    def _close_all(self, relays: list[Relay], outputs: list[Any]) -> None:
+        for relay in relays:
             try:
                 relay.begin_close()
             except Exception:
                 logger.exception("Stopping relay %s failed", relay.cfg.name)
         deadline = time.monotonic() + CLOSE_TIMEOUT
-        for relay in self._relays:
+        for relay in relays:
             try:
                 relay.finish_close(deadline)
             except Exception:
                 logger.exception("Stopping relay %s failed", relay.cfg.name)
-        for output in self.outputs:
+        for output in outputs:
             try:
+                if self._detach_output is not None:
+                    self._detach_output(output)
                 output.close()
             except Exception:
                 logger.exception("Closing a relay encoder failed")
 
     def _write_status(self) -> None:
-        """Rewrite the status file for ``autodj doctor``; failures are only logged."""
+        """Rewrite the status file for ``autodj doctor``; failures are only logged.
+
+        A station that never had a relay writes none.
+        """
         if self._status_path is None:
             return
         with self._status_lock:
+            relays = self.status()
+            if not relays and not self._status_path.exists():
+                return
             payload = {"updated": datetime.now(UTC).isoformat(timespec="seconds")}
-            text = json.dumps({**payload, "relays": self.status()}, indent=2) + "\n"
+            text = json.dumps({**payload, "relays": relays}, indent=2) + "\n"
             try:
                 atomic_write(self._status_path, text)
             except OSError:

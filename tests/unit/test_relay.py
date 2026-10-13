@@ -298,7 +298,7 @@ class Script:
         self.calls: list[dict] = []
         self.connections: list[FakeConnection] = []
 
-    def __call__(self, cfg, *, bitrate, station_name, on_socket=None):
+    def __call__(self, cfg, *, bitrate, station_name, details=None, on_socket=None):
         self.calls.append({"bitrate": bitrate, "station_name": station_name})
         step = self.steps.pop(0) if self.steps else FakeConnection()
         if isinstance(step, BaseException):
@@ -550,7 +550,7 @@ class FakeOutput:
 
 
 class FakeRelay:
-    def __init__(self, cfg, *, bitrate, station_name, on_change) -> None:
+    def __init__(self, cfg, *, bitrate, station_name, on_change, station_details=None) -> None:
         self.cfg = cfg
         self.bitrate = bitrate
         self.on_change = on_change
@@ -724,7 +724,7 @@ def test_close_cuts_a_login_that_is_waiting_for_the_server(fast) -> None:
         def shutdown(self, _how: int) -> None:
             cut.set()
 
-    def connect(cfg, *, bitrate, station_name, on_socket):
+    def connect(cfg, *, bitrate, station_name, on_socket, details=None):
         on_socket(Waiting(b""))
         cut.wait(5)  # like a recv() that only a shutdown ends
         raise OSError(10053, "connection aborted")
@@ -754,7 +754,7 @@ def test_a_relay_stuck_past_close_never_shows_live_again(fast, monkeypatch) -> N
     release = threading.Event()
     connection = FakeConnection()
 
-    def connect(cfg, *, bitrate, station_name, on_socket):
+    def connect(cfg, *, bitrate, station_name, on_socket, details=None):
         release.wait(5)  # stuck where nothing can interrupt it, like a DNS lookup
         return connection
 
@@ -784,7 +784,7 @@ def test_manager_waits_for_all_relays_against_one_deadline(monkeypatch) -> None:
     monkeypatch.setattr(relay_module, "CLOSE_TIMEOUT", 0.3)
     release = threading.Event()
 
-    def stuck(cfg, *, bitrate, station_name, on_socket):
+    def stuck(cfg, *, bitrate, station_name, on_socket, details=None):
         release.wait(5)
         raise OSError(11001, "host not found")
 
@@ -829,3 +829,233 @@ def test_an_encoder_restart_at_the_same_bitrate_backs_off(fast, monkeypatch) -> 
         started = time.monotonic()
         relay.close()
     assert time.monotonic() - started < 1  # the wait ends at once on close
+
+
+# -- station details (#185) ---------------------------------------------------------
+
+
+def test_icecast_login_sends_the_station_details() -> None:
+    sock = FakeSocket(b"HTTP/1.1 100 Continue\r\n\r\n")
+    details = relay_module.StationDetails(
+        genre="Jazz, Soul", url="https://radio.example.org/", description="Late-night café"
+    )
+    open_source(
+        _icecast(),
+        bitrate=128,
+        station_name="Café FM",
+        details=details,
+        connect=_connector(sock, []),
+    )
+    head = sock.sent.decode("utf-8")
+    assert "Ice-Genre: Jazz, Soul\r\n" in head
+    assert "Ice-Url: https://radio.example.org/\r\n" in head
+    assert "Ice-Description: Late-night café\r\n" in head
+    # Expect stays last, so the details sit inside the request head.
+    assert head.endswith("Expect: 100-continue\r\n\r\n")
+
+
+def test_icecast_login_leaves_out_details_not_set() -> None:
+    sock = FakeSocket(b"HTTP/1.1 100 Continue\r\n\r\n")
+    open_source(_icecast(), bitrate=128, station_name="A", connect=_connector(sock, []))
+    assert b"Ice-Genre" not in sock.sent
+    assert b"Ice-Url" not in sock.sent
+    assert b"Ice-Description" not in sock.sent
+
+
+def test_shoutcast_login_sends_genre_and_url_but_no_description() -> None:
+    sock = FakeSocket(b"OK2\r\nicy-caps:11\r\n\r\n")
+    details = relay_module.StationDetails(
+        genre="Jazz", url="https://radio.example.org/", description="Not in this protocol"
+    )
+    open_source(
+        _shoutcast(),
+        bitrate=128,
+        station_name="Radio",
+        details=details,
+        connect=_connector(sock, []),
+    )
+    assert b"icy-genre:Jazz\r\n" in sock.sent
+    assert b"icy-url:https://radio.example.org/\r\n" in sock.sent
+    assert b"Not in this protocol" not in sock.sent
+
+
+def test_a_control_character_cannot_start_another_header() -> None:
+    sock = FakeSocket(b"HTTP/1.1 100 Continue\r\n\r\n")
+    details = relay_module.StationDetails(genre="Jazz\r\nX-Injected: 1")
+    open_source(
+        _icecast(), bitrate=128, station_name="A\nB", details=details, connect=_connector(sock, [])
+    )
+    head = sock.sent.decode("utf-8")
+    assert "\r\nX-Injected" not in head
+    assert "Ice-Genre: JazzX-Injected: 1\r\n" in head
+    assert "Ice-Name: AB\r\n" in head
+
+
+def test_relogin_logs_in_again_at_once_with_the_new_details(fast, monkeypatch) -> None:
+    # A wait that would fail the test if relogin waited like an encoder restart.
+    monkeypatch.setattr(relay_module, "BACKOFF_START", 30.0)
+    seen: list = []
+
+    def connect(cfg, *, bitrate, station_name, details, on_socket):
+        seen.append(details)
+        return FakeConnection()
+
+    genre = ["Jazz"]
+    relay = Relay(
+        _icecast(),
+        bitrate=lambda: 128,
+        station_name=lambda: "Radio",
+        station_details=lambda: relay_module.StationDetails(genre=genre[0]),
+        connect=connect,
+        update_metadata=lambda cfg, title: None,
+    )
+    relay.relogin()  # not live yet: nothing to do
+    relay.start()
+    try:
+        _wait_until(lambda: relay.status()["state"] == "live")
+        genre[0] = "Soul"
+        relay.relogin()
+        _wait_until(lambda: len(seen) == 2 and relay.status()["state"] == "live")
+        assert [details.genre for details in seen] == ["Jazz", "Soul"]
+    finally:
+        relay.close()
+
+
+# -- changing relays while the station plays (#185) ------------------------------------
+
+
+class LiveOutput(FakeOutput):
+    def remove_sink(self, sink) -> None:
+        self.sinks.remove(sink)
+
+
+class LiveRelay(FakeRelay):
+    def __init__(self, cfg, **kwargs) -> None:
+        super().__init__(cfg, **kwargs)
+        self.relogins = 0
+
+    def close(self) -> None:
+        self.closed = True
+
+    def relogin(self) -> None:
+        self.relogins += 1
+
+
+def _live_manager(configs, tmp_path: Path, made: list, bus: list):
+    def make_output(bitrate: int) -> LiveOutput:
+        made.append(LiveOutput(bitrate))
+        return made[-1]
+
+    main = LiveOutput(320)
+    manager = RelayManager(
+        configs,
+        main,
+        make_output=make_output,
+        station_name=lambda: "Radio",
+        status_path=tmp_path / "relay-status.json",
+        relay_factory=LiveRelay,
+        attach_output=bus.append,
+        detach_output=bus.remove,
+    )
+    return manager, main
+
+
+def test_a_relay_added_while_playing_starts_and_shares_its_encoder(tmp_path: Path) -> None:
+    made: list = []
+    bus: list = []
+    a = RelayConfig.from_table("a", {**_table(), "bitrate": 128})
+    manager, main = _live_manager([a], tmp_path, made, bus)
+    manager.set_title("Artist", "Song")
+    manager.start()
+    assert bus == made and len(made) == 1
+    first = made[0].sinks[0]
+    b = RelayConfig.from_table("b", {**_table(), "mount": "/b", "bitrate": 128})
+    manager.apply(b)
+    # The 128 kbps encoder is shared: nothing new was made.
+    assert len(made) == 1 and len(made[0].sinks) == 2
+    assert made[0].sinks[1].started and not first.closed
+    c = RelayConfig.from_table("c", {**_table(), "mount": "/c", "bitrate": 192})
+    manager.apply(c)
+    assert [output.bitrate for output in bus] == [128, 192]
+    assert made[1].titles == [("Artist", "Song")]
+    assert main.sinks == [] and not main.closed
+    assert [status["name"] for status in manager.status()] == ["a", "b", "c"]
+    manager.close()
+
+
+def test_a_change_restarts_only_that_relay_and_releases_an_unused_encoder(tmp_path: Path) -> None:
+    made: list = []
+    bus: list = []
+    a = RelayConfig.from_table("a", {**_table(), "bitrate": 128})
+    b = RelayConfig.from_table("b", {**_table(), "mount": "/b"})
+    manager, main = _live_manager([a, b], tmp_path, made, bus)
+    manager.start()
+    old_a, other = made[0].sinks[0], main.sinks[0]
+    # a moves to the station's own quality: its 128 kbps encoder goes.
+    manager.apply(RelayConfig.from_table("a", _table()))
+    assert old_a.closed and made[0].closed and bus == []
+    assert not other.closed and other in main.sinks and not main.closed
+    assert len(main.sinks) == 2 and main.sinks[1].started
+    # Turning it off stops it and keeps it listed as off.
+    manager.apply(RelayConfig.from_table("a", {**_table(), "enabled": False}))
+    assert main.sinks == [other]
+    assert [status["state"] for status in manager.status()] == ["off", "live"]
+    assert manager.active
+    manager.remove("b")
+    assert other.closed and not manager.active
+    assert [status["name"] for status in manager.status()] == ["a"]
+    manager.remove("missing")  # nothing to do
+    manager.close()
+    with pytest.raises(RelayError, match="stopping"):
+        manager.apply(RelayConfig.from_table("d", _table()))
+    with pytest.raises(RelayError, match="stopping"):
+        manager.remove("a")
+
+
+def test_a_failed_encoder_leaves_the_running_relay_alone(tmp_path: Path) -> None:
+    main = LiveOutput(320)
+
+    def broken(_bitrate: int):
+        raise OSError("ffmpeg is missing")
+
+    manager = RelayManager(
+        [RelayConfig.from_table("a", _table())],
+        main,
+        make_output=broken,
+        station_name=lambda: "R",
+        relay_factory=LiveRelay,
+    )
+    manager.start()
+    running = main.sinks[0]
+    with pytest.raises(OSError, match="ffmpeg"):
+        manager.apply(RelayConfig.from_table("a", {**_table(), "bitrate": 128}))
+    assert main.sinks == [running] and not running.closed
+    manager.close()
+
+
+def test_reconnect_asks_every_running_relay_to_log_in_again(tmp_path: Path) -> None:
+    made: list = []
+    manager, main = _live_manager(
+        [
+            RelayConfig.from_table("a", _table()),
+            RelayConfig.from_table("b", {**_table(), "enabled": False}),
+        ],
+        tmp_path,
+        made,
+        [],
+    )
+    manager.start()
+    manager.reconnect()
+    assert [relay.relogins for relay in main.sinks] == [1]
+    manager.close()
+
+
+def test_a_station_without_relays_writes_no_status_file(tmp_path: Path) -> None:
+    manager, _main = _live_manager([], tmp_path, [], [])
+    manager.start()
+    assert not (tmp_path / "relay-status.json").exists()
+    manager.apply(RelayConfig.from_table("a", _table()))
+    manager.remove("a")
+    saved = read_status_file(tmp_path / "relay-status.json")
+    assert saved is not None and saved["relays"] == {}
+    manager.close()

@@ -37,7 +37,9 @@ port = 8080
 # listener_password = "choose a strong password"
 #
 # Relay passwords belong here, beside the relay described in config.toml
-# under the same name; the two tables are merged key by key.
+# under the same name; the two tables are merged key by key.  A password
+# typed in Settings, Stream is kept in relay-passwords.json instead, and wins
+# over this one; an AUTODJ_STREAM_RELAY_<NAME>_PASSWORD variable wins over both.
 # [stream.relays.main]
 # password = "the source password from your host"
 

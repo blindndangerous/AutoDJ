@@ -9,8 +9,9 @@ that wrote it and the list of files) and these members:
   ``index/related-artists.toml``, ``index/related-tracks.toml``, ``index/schedule.json``,
   ``index/carts.json``,
   ``index/time_checks.json``, ``index/listener_bans.json``, ``index/recording.json``,
-  ``index/categories.json``, ``index/liner_dates.json`` and ``index/matched_intros.json``
-  from the active index folder.
+  ``index/categories.json``, ``index/liner_dates.json``, ``index/matched_intros.json`` and
+  ``index/relays.json`` (relays saved in Settings, without their passwords) from the active
+  index folder.
 - ``liners/...``, ``carts/...``, ``time_checks/...``, ``profiles/...``, ``clockwheels/...``
   and ``intros/...`` (the matched intros' audio): every file in those folders and their
   subfolders.  Time check
@@ -18,7 +19,8 @@ that wrote it and the list of files) and these members:
   from other folders do not, as they are external libraries like the music.
 - ``stereo-tool-presets/...``: the uploaded ``.sts`` presets.
 
-Broadcast recordings are archives, not station state: they can run to many
+Secrets stay out: ``relay-passwords.json``, like ``config.local.toml``, is never
+archived.  Broadcast recordings are archives, not station state: they can run to many
 gigabytes and a restore would replace the whole folder, so they stay out.
 """
 
@@ -58,6 +60,7 @@ INDEX_FILES = (
     "categories.json",
     "liner_dates.json",
     "matched_intros.json",
+    "relays.json",
     im.MANIFEST_NAME,
 )
 _FOLDERS = (
@@ -180,6 +183,9 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
                     "categories.json",
                     "liner_dates.json",
                     "matched_intros.json",
+                    # Relays saved in Settings, without their passwords:
+                    # relay-passwords.json stays out, like config.local.toml.
+                    "relays.json",
                 )
             ]
             for path in [*sorted(snapshot.glob("*")), *state_files]:

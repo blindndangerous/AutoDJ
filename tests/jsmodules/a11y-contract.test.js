@@ -1885,7 +1885,7 @@ describe("static accessibility contracts", () => {
     expect(fieldset.previousElementSibling.textContent).toBe("Stream");
     expect(document.querySelector("#stab-stream").hidden).toBe(true);
     expect([...fieldset.querySelectorAll("h4")].map((heading) => heading.textContent.trim()))
-      .toEqual(["Listeners", "Bans"]);
+      .toEqual(["Relays", "Listeners", "Bans"]);
 
     const name = document.querySelector("#stream-station-name");
     expect(name.getAttribute("type")).toBe("text");
@@ -1937,9 +1937,9 @@ describe("static accessibility contracts", () => {
     // The general settings, the now-playing group and broadcast recording
     // come first; the Listeners and Bans sections close the fieldset, so
     // heading navigation never puts a general setting under "Bans".
-    const order = ["#stream-relays", "#stream-station-name", "#stream-bitrate",
-      "#stream-continuous", "#np-settings", "#recording-controls", "#listener-control-title",
-      "#listener-bans-title"]
+    const order = ["#stream-station-name", "#stream-details-save", "#stream-bitrate",
+      "#stream-continuous", "#np-settings", "#recording-controls", "#stream-relays-title",
+      "#listener-control-title", "#listener-bans-title"]
       .map((selector) => document.querySelector(selector));
     for (let at = 1; at < order.length; at += 1) {
       expect(order[at - 1].compareDocumentPosition(order[at])
@@ -1957,6 +1957,84 @@ describe("static accessibility contracts", () => {
     expect(note.hasAttribute("role")).toBe(false);
     expect(note.hasAttribute("aria-hidden")).toBe(false);
 
+  });
+
+  it("groups the station details with labelled fields, linked errors and one Save", () => {
+    installDocument();
+    const labelText = (id) => document.querySelector(`label[for="${id}"]`)
+      ?.textContent.replace(/\s+/g, " ").trim();
+    const group = document.querySelector("#stream-station-details");
+    expect(group.tagName).toBe("FIELDSET");
+    expect(group.parentElement.id).toBe("stream-settings");
+    expect(group.querySelector(":scope > legend").textContent.trim()).toBe("Station details");
+    for (const [id, label] of [
+      ["stream-station-name", "Station name"], ["stream-station-genre", "Genre"],
+      ["stream-station-description", "Description"], ["stream-station-url", "Website"],
+    ]) {
+      const input = document.getElementById(id);
+      expect(labelText(id)).toBe(label);
+      expect(input.getAttribute("type")).toBe("text");
+      // Help is linked; the error is linked only while it shows.
+      expect(input.getAttribute("aria-describedby")).toBe(`${id}-desc`);
+      const error = document.getElementById(`${id}-error`);
+      expect(error.hidden).toBe(true);
+      expect(error.hasAttribute("aria-live")).toBe(false);
+    }
+    const save = document.querySelector("#stream-details-save");
+    expect(save.getAttribute("type")).toBe("button");
+    // The relays' reconnect is said beside Save, and read with it.
+    expect(save.getAttribute("aria-describedby")).toBe("stream-details-note");
+    expect(document.querySelector("#stream-details-note").textContent).toMatch(/log in again/);
+  });
+
+  it("lists relays in a keyboard grid with a modal form that never shows a password", () => {
+    installDocument();
+    const labelText = (id) => document.querySelector(`label[for="${id}"]`)
+      ?.textContent.replace(/\s+/g, " ").trim();
+    const section = document.querySelector("#stream-relays");
+    expect(section.tagName).toBe("SECTION");
+    expect(section.getAttribute("aria-labelledby")).toBe("stream-relays-title");
+    expect(section.closest("#stream-settings")).not.toBeNull();
+    const table = document.querySelector("#stream-relays-table");
+    expect(table.getAttribute("role")).toBe("grid");
+    expect(table.querySelector("caption").textContent.trim()).toBe("Relays of this station");
+    expect([...table.querySelectorAll("thead th")].map((th) => [th.textContent, th.getAttribute("scope")]))
+      .toEqual([["Relay", "col"], ["Server", "col"], ["Status", "col"], ["On", "col"],
+        ["Edit", "col"], ["Remove", "col"]]);
+    // Status is plain text: a relay retrying in the background says nothing.
+    expect(section.querySelector("[aria-live], [role=status], [role=alert]")).toBeNull();
+    expect(document.querySelector("#stream-relay-add").textContent.trim()).toBe("Add relay");
+
+    const dialog = document.querySelector("#relay-dialog");
+    expect(dialog.tagName).toBe("DIALOG");
+    expect(dialog.getAttribute("aria-labelledby")).toBe("relay-dialog-title");
+    expect(dialog.closest("[role=tabpanel]")).toBeNull();
+    for (const [id, label] of [
+      ["relay-name", "Name"], ["relay-enabled", "On"], ["relay-type", "Server type"],
+      ["relay-host", "Server host name or address"], ["relay-port", "Listener port"],
+      ["relay-mount", "Mount point"], ["relay-user", "Source user name"],
+      ["relay-stream-id", "Stream ID"], ["relay-password", "Source password"],
+      ["relay-bitrate", "Bitrate"], ["relay-public", "List in public directories"],
+    ]) {
+      expect(labelText(id)).toBe(label);
+    }
+    for (const field of ["name", "type", "host", "port", "mount", "user", "stream-id", "password", "bitrate"]) {
+      const error = document.getElementById(`relay-${field}-error`);
+      expect(error, field).not.toBeNull();
+      expect(error.hidden).toBe(true);
+    }
+    const password = document.querySelector("#relay-password");
+    expect(password.getAttribute("type")).toBe("password");
+    expect(password.hasAttribute("value")).toBe(false);
+    expect(password.getAttribute("autocomplete")).toBe("new-password");
+    // Says whether one is set, and that the connection is not encrypted.
+    expect(password.getAttribute("aria-describedby")).toBe("relay-password-state relay-password-help");
+    expect(document.querySelector("#relay-password-help").textContent).toMatch(/not encrypted/);
+    expect([...document.querySelector("#relay-bitrate").options].map((option) => option.value))
+      .toEqual(["", "128", "192", "256", "320"]);
+    expect(document.querySelector("#relay-form-error").getAttribute("role")).toBe("status");
+    expect([...dialog.querySelectorAll(".dialog-actions button")].map((button) => button.textContent))
+      .toEqual(["Cancel", "Save relay"]);
   });
 
   it("groups the now-playing feed in the Stream settings with labelled native controls", () => {

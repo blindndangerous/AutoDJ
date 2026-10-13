@@ -568,16 +568,35 @@ def _relay_check(
 def _relay_checks(
     cfg: AutoDJConfig, connect: Callable[..., socket.socket] = socket.create_connection
 ) -> tuple[DoctorCheck, ...]:
-    """Return one check per configured relay (``[stream.relays.<name>]``)."""
-    if not cfg.stream.relays:
-        return ()
-    from autodj.relay import read_status_file, relay_status_path
+    """Return one check per relay: ``[stream.relays.<name>]`` and those saved in Settings, Stream.
 
+    A relay that cannot run (a saved one without a password, say) is a
+    warning that says why.
+    """
+    from autodj.relay import TYPE_LABELS, read_status_file, relay_status_path
+    from autodj.relay_settings import station_relays
+    from autodj.station_log import DEFAULT_SLUG
+    from autodj.stations import StationPaths
+
+    entries = station_relays(cfg.stream.relays, StationPaths.default(cfg), DEFAULT_SLUG)
+    if not entries:
+        return ()
     report = read_status_file(relay_status_path(cfg)) or {"updated": "", "relays": {}}
-    return tuple(
-        _relay_check(relay, report["relays"].get(relay.name), report["updated"], connect)
-        for relay in cfg.stream.relays.values()
-    )
+    checks = []
+    for entry in entries.values():
+        if entry.config is not None:
+            last = report["relays"].get(entry.name)
+            checks.append(_relay_check(entry.config, last, report["updated"], connect))
+            continue
+        kind = TYPE_LABELS.get(str(entry.table.get("type")), "relay")
+        checks.append(
+            DoctorCheck(
+                f"relay-{entry.name}",
+                CheckStatus.WARN,
+                f"{kind} saved in Settings, Stream cannot run: {entry.problem}",
+            )
+        )
+    return tuple(checks)
 
 
 def _related_tracks_check(cfg: AutoDJConfig) -> DoctorCheck:

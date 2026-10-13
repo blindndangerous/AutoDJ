@@ -981,6 +981,12 @@ def create_app(
         UPLOAD_PATH: lambda: _break_upload_cap(stations),
         VOICE_UPLOAD_PATH: lambda: _break_upload_cap(stations),
         "/api/rotation-test": lambda: SMALL_BODY_MAX_BYTES,
+        # Relays and the station details (#185): a few short fields each.
+        "/api/stream/settings": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/stream/relays": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/stream/relays/edit": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/stream/relays/enabled": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/stream/relays/remove": lambda: SMALL_BODY_MAX_BYTES,
         "/api/library/tags": lambda: TAG_BODY_MAX_BYTES,
         WORKER_PREFIX + "result": lambda: RESULT_BODY_MAX_BYTES,
         **{
@@ -1417,6 +1423,15 @@ def create_app(
                     "icy-br": str(stream_cfg.bitrate),
                 }
             )
+            # The station details players show beside the name, as Icecast
+            # sends them; one not set is left out.
+            for header, value in (
+                ("icy-genre", stream_cfg.station_genre),
+                ("icy-url", stream_cfg.station_url),
+                ("icy-description", stream_cfg.station_description),
+            ):
+                if value:
+                    headers[header] = _header_text(value)
         if head:
             response = Response(media_type="audio/mpeg", headers=headers)
             del response.headers["content-length"]  # a live stream has no length
@@ -2038,6 +2053,7 @@ def _share_station(stations: StationRegistry, station: StationRuntime) -> None:
     station.bridge.stereo_tool_elsewhere = lambda: stations.stereo_tool_user(exclude=slug)
     station.bridge.stereo_tool_lock = stations.stereo_tool_lock
     station.owns_liner = functools.partial(stations.owns_liner, slug)
+    station.relays_elsewhere = functools.partial(stations.relays_elsewhere, slug)
 
 
 def _station_broadcast(station: StationRuntime) -> Callable[[], Coroutine[Any, Any, None]]:

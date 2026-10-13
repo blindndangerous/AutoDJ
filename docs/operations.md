@@ -877,11 +877,17 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
   the machine's own speakers, and the page's "Listen here" playback follows them. Stream
   listeners and speakers still hear the stream at full level.
 - Quality (bitrate) is chosen under Settings, Stream: 128, 192, 256 or 320 kbps, default 320.
-- **Station name**, also under Settings, Stream, is the name Sonos, VLC and other players show
-  for the station (`[stream] station_name`, default AutoDJ). A player shows a new name the next
-  time it connects.
-  Changing it restarts the encoder; every listener, including speakers, reconnects on its own a
-  moment later.
+- **Station details**, also under Settings, Stream: the **Station name** Sonos, VLC and other
+  players show (`[stream] station_name`, default AutoDJ), and an optional **Genre** (up to 100
+  characters), **Description** (one line, up to 255) and **Website** (an `https://` or
+  `http://` address), also `station_genre`, `station_description` and `station_url` in
+  `[stream]`. **Save station details** saves them together; a refused field says why under it
+  and takes focus. Players connected here get them as `icy-name`, `icy-genre`,
+  `icy-description` and `icy-url` the next time they connect, and relays as described in
+  [Relaying to Icecast and Shoutcast](#relaying-to-icecast-and-shoutcast). Text outside ASCII
+  is sent as UTF-8, as Icecast does; control characters are refused. Values saved on the page
+  are kept in `web_state.json` and win over `config.toml` at the next start, like the other
+  settings saved there.
 
 ### Idle sets
 
@@ -898,7 +904,9 @@ The listening address stays the same across restarts. There is no key to copy or
 
 AutoDJ can push the same station to one or more hosted Icecast or Shoutcast servers, so a
 station can use a host's listener capacity and directory listings as well as direct
-connections. Relays run in stream mode only. Supported servers:
+connections. Relays run in stream mode only, at most eight per station. Add and change them in
+Settings, Stream (see [Relays in Settings, Stream](#relays-in-settings-stream)) or describe them
+in `config.toml`. Supported servers:
 
 - Icecast 2.4 or later, which accepts a source over HTTP PUT.
 - Shoutcast 1 (DNAS 1.9).
@@ -969,17 +977,86 @@ What a relay does:
 - **It never slows down the stream.** Each relay sends from its own queue and threads, so a
   stalled server cannot hold up the mix or the other listeners.
 
-Settings, Stream, lists each relay with its state, read as one sentence each: "connecting",
-"live", "not connected, trying again" with the last error, or "off in the configuration". The
-list is plain text and does not interrupt the screen reader when it changes. The log has one
-warning when a relay starts failing and a line when it is live again. `autodj doctor` checks
-that each server answers on its source port, without sending the password, and shows the state
-the running AutoDJ last reported (it writes `relay-status.json` in the index folder whenever a
-relay changes state).
+What each server gets about the station, read at each login:
+
+- **Icecast:** `Ice-Name`, and `Ice-Genre`, `Ice-Url` and `Ice-Description` when the station has a
+  genre, website or description (Settings, Stream, Station details).
+- **Shoutcast 1 and 2:** `icy-name`, `icy-genre` and `icy-url`. Shoutcast's source login has no
+  place for a description, so it is not sent.
+- **Both:** whether to list the station publicly, a per-relay choice, and the bitrate.
+
+Song titles go separately, as before. Saving changed station details makes each live relay of
+that station log in again at once, so the server shows them; its listeners may hear a short gap.
+
+The log has one warning when a relay starts failing and a line when it is live again. `autodj
+doctor` checks that each server answers on its source port, without sending the password, and
+shows the state the running AutoDJ last reported (it writes `relay-status.json` in the index
+folder whenever a relay changes state). It checks relays saved in Settings, Stream too, and warns
+about one that cannot run, such as one without a password.
 
 The password crosses the network to the server as the protocol requires: in an HTTP Basic
 login for Icecast, and as plain text for Shoutcast, including in title updates. AutoDJ does
 not use TLS for relays, so use a host you trust on networks you trust. See the threat model.
+
+#### Relays in Settings, Stream
+
+Settings, Stream has a **Relays** table, after Broadcast recording, with one row per relay: its
+name, its server (type, host, port and mount or stream ID, bitrate, and whether a password is
+set and where it comes from), its status, an **On** box, **Edit** and **Remove**. The table is a
+grid: Tab reaches it once and the arrow keys, Home and End move between cells. The status cells
+are plain text: a relay that keeps retrying in the background says nothing. When you save or
+turn on a relay, the page says once whether it went live or could not connect, and why.
+
+**Add relay** and **Edit** open a form with the relay's name, On, server type, host name or
+address (for example `relay.example.org`, without `http://` or a port), listener port, the
+source password, Icecast's mount point and source user name, Shoutcast 2's stream ID, the
+bitrate (the station's quality, or a fixed 128, 192, 256 or 320 kbps) and public directory
+listing. Only the fields of the chosen server type are shown. A refused field says why under it
+and takes focus. The name cannot be changed after the relay is added: it names the relay's
+password variable.
+
+The password field is never filled in, not even with dots: the form says whether a password is
+set and where it comes from, and leaving the field empty keeps it. When an environment variable
+sets the password, the form names the variable instead of showing the field, because a password
+saved on the page would not be used.
+
+Saving checks the whole relay first, saves it, and only then restarts that relay. Playback, the
+stream's own encoder, its direct listeners, the other relays and the other stations keep
+running. A relay at a bitrate no other relay uses starts an extra encoder; the last relay to
+leave a bitrate stops its encoder. Turning a relay on or off takes effect at once, including
+whether the station keeps playing with nobody listening here. **Remove** deletes a relay added
+on the page, with its saved password, after asking. A relay that `config.toml` defines has no
+Remove: turn it off on the page, or delete its table and restart AutoDJ. Once changed on the
+page it has **Revert** instead, which goes back to its TOML settings and password.
+
+Where each value comes from, for each relay name:
+
+- **Settings:** a relay saved on the page uses those settings, whole, in place of a
+  `[stream.relays.<name>]` table of the same name. Otherwise the TOML table is used.
+- **Password:** the environment variable when it is set; then a password saved on the page;
+  then `config.local.toml` or `config.toml`.
+
+The page saves relays in `relays.json` in the station's folder (beside `web_state.json`), with
+every setting but the password, and the passwords in `relay-passwords.json` beside it, readable
+by the user AutoDJ runs as only (`0600`, or on Windows an access list for that user alone). Both
+are read at each start; nothing is written to `config.toml` or `config.local.toml`. Anything in
+`relays.json` besides the relay settings, such as a password typed into it by hand, is removed
+from the file with a warning, so a backup never carries it. A backup includes `relays.json` but not `relay-passwords.json`, so after a
+restore on another machine, edit each relay saved on the page and enter its password again
+(`autodj doctor` lists the ones without one). If either file cannot be read, AutoDJ says so in
+the log and on the page, keeps the relays it can, and refuses to save relays from the page until
+the file is fixed or removed, so a damaged file is never overwritten. Unknown keys in either file
+are warned about and ignored.
+
+Two relays of one station may not push to the same host, port and mount or stream ID, and two
+stations may not either; the page refuses both, naming the relay already there. A host typed or
+changed on the page must resolve, and may not be, or resolve to, an address that is never a
+server (unspecified, multicast or link-local, such as a cloud metadata address); write an IPv4
+address as four decimal numbers. Turning a relay on or off does not check its host again.
+If a saved change cannot be put on the air (its extra encoder fails to start, say), the table
+shows it as saved and the page says why; it starts with the station next time. While the
+station's stream is stopped, relay changes are refused and nothing is saved. Relay changes need
+the same signed-in session as every other setting.
 
 ### Recording the broadcast
 
@@ -1121,13 +1198,15 @@ The rules:
   a station of its own. A relay password can
   also come from `AUTODJ_STATION_<SLUG>_RELAY_<NAME>_PASSWORD`, upper-cased, with `-` written as
   `_`: for the example above, `AUTODJ_STATION_NIGHTOWL_RELAY_MAIN_PASSWORD`. Only relays named in
-  the TOML are looked up. The other `AUTODJ_STREAM_*` variables apply to the default station only.
+  the TOML or saved in that station's Settings, Stream are looked up. The other
+  `AUTODJ_STREAM_*` variables apply to the default station only.
 - **Each station needs its own recording folder.** A recorder deletes old recordings from its
   folder, so two stations sharing one could delete each other's. Leaving `recording.folder`
   unset in a station uses the default `recordings`, which the default station already uses, so
   set it.
 - **Each relay target belongs to one station.** Two stations pushing to the same host, port and
-  mount (or Shoutcast stream) are refused.
+  mount (or Shoutcast stream) are refused, whether the relays are in the TOML files or saved in
+  Settings, Stream. Each station's Settings, Stream manages that station's relays only.
 - **A station without a `stream.station_name` is called by its slug**, for example `nightowl`, in
   stream metadata and on its pages, so it never takes the default station's "AutoDJ". Two
   stations given the same name are warned about at startup: listeners could not tell them apart.
@@ -1138,7 +1217,8 @@ The rules:
 
 A station keeps its state in `<index_dir>/<name>/stations/<slug>/`, with the same file names as
 the default station: `web_state.json`, `schedule.json`, `carts.json` and `carts/`,
-`time_checks.json`, `listener_bans.json`, `recording.json`, `relay-status.json`, `clockwheels/`,
+`time_checks.json`, `listener_bans.json`, `recording.json`, `relay-status.json`, `relays.json`,
+`relay-passwords.json`, `clockwheels/`,
 `liners/` (unless `playback.liners_folder` is set) and `profiles/`. Its plays are kept in the
 shared `library.db`. The default station's files stay where they always were.
 
@@ -2363,6 +2443,8 @@ choose them to fit.
 - `categories.json`, the rotation categories. Their playlist files are not included; the script
   that writes them can write them again.
 - `liner_dates.json`, the voice liners' play dates.
+- `relays.json`, the relays saved in Settings, Stream, without their passwords.
+  `relay-passwords.json` is never backed up.
 - `manifest.json`, which records the AutoDJ version that made the archive and lists its files.
 
 Backups do not include `config.toml` or `config.local.toml`. Copy those yourself

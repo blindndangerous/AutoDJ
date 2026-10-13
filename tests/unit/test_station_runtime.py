@@ -1402,3 +1402,52 @@ def test_mastering_children_die_with_autodj_on_windows() -> None:
     finally:
         child.kill()
         child.wait(5)
+
+
+def test_relays_elsewhere_covers_running_and_stopped_stations(tmp_path: Path) -> None:
+    from autodj.config import StationSpec, StreamConfig
+
+    night_paths = SimpleNamespace(
+        relays=tmp_path / "night" / "relays.json",
+        relay_passwords=tmp_path / "night" / "relay-passwords.json",
+    )
+    night_paths.relays.parent.mkdir()
+    night_paths.relays.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "relays": {"saved": {"type": "icecast", "host": "b.example", "mount": "/s"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    toml = {"main": {"type": "shoutcast1", "host": "a.example", "password": "p"}}
+    spec = StationSpec(
+        slug="night",
+        autostart=False,
+        cfg=SimpleNamespace(stream=StreamConfig(relays=toml)),  # type: ignore[arg-type]
+    )
+    control = SimpleNamespace(targets=lambda: [("default", "d", ("c.example",), "VAR_D")])
+    default = SimpleNamespace(
+        slug="default",
+        cfg=SimpleNamespace(stations=(spec,), stream=StreamConfig()),
+        paths=SimpleNamespace(relays=tmp_path / "none.json", relay_passwords=tmp_path / "x"),
+        relay_control=control,
+    )
+    extra = ExtraStation(
+        slug="night",
+        name="Night",
+        autostart=False,
+        paths=night_paths,  # type: ignore[arg-type]
+        preset="",
+        build=lambda _registry: None,  # type: ignore[arg-type,return-value]
+    )
+    registry = StationRegistry(default, [extra])  # type: ignore[arg-type]
+    found = registry.relays_elsewhere("default")
+    assert [(slug, name, target) for slug, name, target, _variable in found] == [
+        ("night", "main", ("a.example", 8000, None, None)),
+        ("night", "saved", ("b.example", 8000, "/s", None)),
+    ]
+    assert found[0][3] == "AUTODJ_STATION_NIGHT_RELAY_MAIN_PASSWORD"
+    # The running default answers from its relays as they are now.
+    assert registry.relays_elsewhere("night") == [("default", "d", ("c.example",), "VAR_D")]

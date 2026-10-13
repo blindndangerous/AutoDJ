@@ -74,6 +74,7 @@ from autodj.stream import EncoderUnavailableError
 
 if TYPE_CHECKING:
     from autodj.listener_access import ListenerAccess
+    from autodj.relay_settings import RelayControl
 
 logger = logging.getLogger(__name__)
 
@@ -329,11 +330,71 @@ def _catalog_library(station: StationRuntime) -> Any:
     return library
 
 
+class RelayNameBody(BaseModel):
+    """Names one relay."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: Annotated[str, PydanticField(min_length=1, max_length=32)]
+
+
+class RelayEnabledBody(RelayNameBody):
+    """Turns one relay on or off."""
+
+    enabled: StrictBool
+
+
+def _station_details(cfg: Any) -> tuple[str, str, str, str]:
+    """What a relay announces about the station: name, genre, website, description."""
+    stream = cfg.stream
+    return (
+        stream.station_name,
+        stream.station_genre,
+        stream.station_url,
+        stream.station_description,
+    )
+
+
 def _require_stream_mode(station: StationRuntime) -> ListenerAccess:
     """404 unless the station streams."""
     if not station.bridge.stream_mode or station.listener_access is None:
         raise HTTPException(status_code=404, detail="Not Found")
     return station.listener_access
+
+
+def _relay_control(station: StationRuntime) -> RelayControl:
+    """The station's relays; 404 unless it streams."""
+    _require_stream_mode(station)
+    control = station.relay_control
+    if control is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return control
+
+
+def _with_warning(relay: dict[str, Any]) -> dict[str, Any]:
+    """The reply to a saved relay change.
+
+    ``warning`` says what went wrong putting it on the air after it was
+    saved (it starts with the station next time), or is ``None``.
+    """
+    warning = relay.pop("warning", None)
+    return {"relay": relay, "warning": warning}
+
+
+async def _relay_change(call: Callable[[], Any]) -> JSONResponse:
+    """Run a relay change off the event loop; a refusal names the field to blame.
+
+    A change waits at most a few seconds for the relay it replaces to stop.
+    """
+    from autodj.relay_settings import RelaySettingsError
+
+    try:
+        result = await asyncio.to_thread(call)
+    except RelaySettingsError as exc:
+        return JSONResponse(
+            {"detail": exc.message, "field": exc.field}, status_code=exc.status, headers=_NO_STORE
+        )
+    return JSONResponse(result, headers=_NO_STORE)
 
 
 def _profile_store(station: StationRuntime) -> Any:
@@ -1108,9 +1169,20 @@ def install_station_routes(router: StationRouter) -> None:
                 raise HTTPException(status_code=503, detail="stream encoder failed") from exc
         if body.continuous is not None:
             cfg.stream.continuous = body.continuous
+        before = _station_details(cfg)
         if body.station_name is not None:
             # Read per stream request, so each player shows it when it next connects.
             cfg.stream.station_name = body.station_name
+        if body.station_genre is not None:
+            cfg.stream.station_genre = body.station_genre
+        if body.station_description is not None:
+            cfg.stream.station_description = body.station_description
+        if body.station_url is not None:
+            cfg.stream.station_url = body.station_url
+        if _station_details(cfg) != before and station.relay_control is not None:
+            # Servers take the details only at login: the live relays log
+            # in again, each on its own, and the stream itself carries on.
+            await asyncio.to_thread(station.relay_control.reconnect)
         if body.show_next is not None:
             cfg.nowplaying.show_next = body.show_next
         station.nowplaying.refresh()
@@ -1119,6 +1191,57 @@ def install_station_routes(router: StationRouter) -> None:
             access.max_per_address = body.max_listeners_per_address
         await asyncio.to_thread(bridge.save_persistent_state)
         return bridge.stream_info()
+
+    # ------------------------------------------------------------------
+    # Relays (#185): added, changed and removed while the station plays
+    # ------------------------------------------------------------------
+
+    @router.get("/stream/relays")
+    async def api_stream_relays(station: StationDep) -> JSONResponse:
+        """Every relay with its settings, state and where its password comes from.
+
+        Never a password.
+        """
+        control = _relay_control(station)
+        return JSONResponse(await asyncio.to_thread(control.describe), headers=_NO_STORE)
+
+    @router.post("/stream/relays")
+    async def api_stream_relay_add(
+        station: StationDep, body: Annotated[Any, Body()]
+    ) -> JSONResponse:
+        """Add a relay, save it and start it."""
+        control = _relay_control(station)
+        return await _relay_change(lambda: _with_warning(control.save(body, create=True)))
+
+    @router.post("/stream/relays/edit")
+    async def api_stream_relay_edit(
+        station: StationDep, body: Annotated[Any, Body()]
+    ) -> JSONResponse:
+        """Change a relay; an empty password keeps the one it has."""
+        control = _relay_control(station)
+        return await _relay_change(lambda: _with_warning(control.save(body, create=False)))
+
+    @router.post("/stream/relays/enabled")
+    async def api_stream_relay_enabled(station: StationDep, body: RelayEnabledBody) -> JSONResponse:
+        """Turn a relay on or off."""
+        control = _relay_control(station)
+        return await _relay_change(
+            lambda: _with_warning(control.set_enabled(body.name, body.enabled))
+        )
+
+    @router.post("/stream/relays/remove")
+    async def api_stream_relay_remove(station: StationDep, body: RelayNameBody) -> JSONResponse:
+        """Remove a relay added here, or revert a config.toml relay to its TOML settings."""
+        control = _relay_control(station)
+
+        def remove() -> dict[str, Any]:
+            result, warning = control.remove(body.name)
+            reply: dict[str, Any] = {"result": result, "name": body.name, "warning": warning}
+            if result == "reverted":
+                reply["relay"] = control.entry(body.name)
+            return reply
+
+        return await _relay_change(remove)
 
     # ------------------------------------------------------------------
     # Profiles

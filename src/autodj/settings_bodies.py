@@ -11,9 +11,15 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
-from autodj.config import MAX_FADE_SECONDS
+from autodj.config import (
+    MAX_FADE_SECONDS,
+    STATION_DESCRIPTION_MAX,
+    STATION_GENRE_MAX,
+    check_station_text,
+    check_station_url,
+)
 from autodj.repeat_settings import RepeatSettings
 
 
@@ -90,16 +96,54 @@ class PresetBody(BaseModel):
     name: str | None = None
 
 
+class StationDetailError(ValueError):
+    """A station detail refused, naming the field.
+
+    ``reports_field`` marks it for the server's 422 handler, which then
+    answers ``{"detail": ..., "field": ...}`` so the page can link the
+    error to its field.
+    """
+
+    reports_field = True
+
+    def __init__(self, field_name: str, message: str) -> None:
+        super().__init__(message)
+        self.field = field_name
+        self.message = message
+
+
 class StreamSettingsBody(BaseModel):
-    """Partial stream settings update: bitrate, continuous playback and station name."""
+    """Partial stream settings update: bitrate, continuous playback and the station details.
+
+    The genre, description and website may be empty, which sends none.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     bitrate: Literal[128, 192, 256, 320] | None = None
     continuous: bool | None = Field(default=None, strict=True)
     station_name: Annotated[str, Field(max_length=100)] | None = None
+    station_genre: str | None = None
+    station_description: str | None = None
+    station_url: str | None = None
     show_next: bool | None = Field(default=None, strict=True)
     max_listeners_per_address: Annotated[int, Field(ge=0, le=100, strict=True)] | None = None
+
+    @field_validator("station_genre", "station_description", "station_url", mode="before")
+    @classmethod
+    def _check_station_detail(cls, value: object, info: ValidationInfo) -> object:
+        """Trim and check a station detail as config.toml does, naming the field refused."""
+        if value is None:
+            return None
+        field = str(info.field_name)
+        try:
+            if field == "station_url":
+                return check_station_url("The website", value)
+            if field == "station_genre":
+                return check_station_text("The genre", value, STATION_GENRE_MAX)
+            return check_station_text("The description", value, STATION_DESCRIPTION_MAX)
+        except (TypeError, ValueError) as exc:
+            raise StationDetailError(field, f"{exc}.") from None
 
     @field_validator("station_name")
     @classmethod

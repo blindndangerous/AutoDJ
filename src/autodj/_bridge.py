@@ -152,7 +152,7 @@ class PlayerBridge:
     stream: Any = None
     station: Any = None
     # The relays to other servers (:class:`~autodj.relay.RelayManager`),
-    # when any are configured.
+    # set in stream mode even before any relay is added.
     relays: Any = None
     public_state_changed: Callable[[], Any] | None = None
     track_started_callback: Callable[[], None] | None = None
@@ -265,6 +265,9 @@ class PlayerBridge:
             "bitrate": int(self.player._cfg.stream.bitrate),
             "continuous": bool(self.player._cfg.stream.continuous),
             "station_name": self.player._cfg.stream.station_name,
+            "station_genre": self.player._cfg.stream.station_genre,
+            "station_description": self.player._cfg.stream.station_description,
+            "station_url": self.player._cfg.stream.station_url,
             "show_next": self.player._cfg.nowplaying.show_next,
             "listeners": int(self.stream.listener_count),
             "state": self.station.state,
@@ -1622,6 +1625,9 @@ class PlayerBridge:
                 "stream_bitrate": int(cfg.stream.bitrate),
                 "stream_continuous": bool(cfg.stream.continuous),
                 "stream_station_name": cfg.stream.station_name,
+                "stream_station_genre": cfg.stream.station_genre,
+                "stream_station_description": cfg.stream.station_description,
+                "stream_station_url": cfg.stream.station_url,
                 "nowplaying_show_next": cfg.nowplaying.show_next,
                 "dmca_enabled": cfg.dmca.enabled,
                 "stream_max_listeners_per_address": cfg.stream.max_listeners_per_address,
