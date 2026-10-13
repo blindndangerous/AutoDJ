@@ -48,6 +48,13 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 logger = logging.getLogger(__name__)
 
 
+def has_legacy_index(directory: Path) -> bool:
+    """Recognize old library artifacts without loading or validating a generation."""
+    return any(
+        (directory / name).exists() for name in (MANIFEST_NAME, "tracks.db", "vectors.index")
+    ) or any(GENERATION_FILE_RE.fullmatch(path.name) for path in directory.glob("*.g*.*"))
+
+
 class IndexConsistencyError(RuntimeError):
     """Raised when published index artifacts do not describe one snapshot."""
 

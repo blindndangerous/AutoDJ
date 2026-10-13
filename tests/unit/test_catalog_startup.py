@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 import numpy as np
+import pytest
 from click.testing import CliRunner
 
 from autodj.catalog import LibraryCatalog, _path, catalog_counts
@@ -36,9 +37,7 @@ def test_serve_uses_catalog_counts_and_can_seed_an_unanalyzed_song(tmp_path):
 
     with (
         patch("autodj.cli._load_cfg_or_exit", return_value=cfg),
-        patch.object(
-            SimilarityIndex, "from_index_dir", side_effect=AssertionError("old index read")
-        ),
+        patch("autodj.indexer.load_index", side_effect=AssertionError("old index read")),
         patch("autodj.server.serve", side_effect=serve),
     ):
         result = CliRunner().invoke(cli, ["serve", "--seed", "Fresh"])
@@ -50,13 +49,17 @@ def test_serve_uses_catalog_counts_and_can_seed_an_unanalyzed_song(tmp_path):
     assert "1 songs; 0 analyzed" in _scan_index_rows(cfg.index.index_dir, "default")[0][1]
 
 
-def test_legacy_index_is_seeded_once_then_catalog_survives_without_it(tmp_path):
+def test_catalog_survives_without_a_manifest_and_ignores_stale_similarity(tmp_path):
     cfg = make_config(tmp_path)
     song = cfg.library.music_dir / "first.flac"
     song.write_bytes(b"audio")
     entry = make_entry(song)
     vectors = np.ones((1, FEATURE_DIM), dtype=np.float32)
     sim = SimilarityIndex(build_faiss_index(vectors), [entry])
+    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+        catalog.add_source(cfg.library.music_dir)
+        catalog.seed_entries([entry])
+        catalog.seed_vectors([entry], vectors)
     manager = LibraryManager(cfg, sim)
     manager.close()
     # Even a supplied stale index must not resurrect records on a later startup.
@@ -83,3 +86,21 @@ def test_catalog_reporting_does_not_repair_a_corrupt_catalog(tmp_path):
     assert _index_check(cfg).status == CheckStatus.FAIL
     assert "corrupt library" in _scan_index_rows(cfg.index.index_dir, "default")[0][1]
     assert path.read_bytes() == b"broken catalog"
+
+
+def test_legacy_only_startup_requires_explicit_migration_without_mutation(tmp_path):
+    from autodj.index_manifest import IndexConsistencyError
+
+    cfg = make_config(tmp_path)
+    cfg.index.active_dir.mkdir(parents=True)
+    manifest = cfg.index.active_dir / "index-manifest.json"
+    manifest.write_text("old data is inspected only by migration")
+    for start in (
+        lambda: _load_index_for_serve(cfg),
+        lambda: LibraryManager(cfg, SimilarityIndex.empty()),
+    ):
+        with pytest.raises(IndexConsistencyError, match="migrate-index"):
+            start()
+        assert not (cfg.index.active_dir / "library.db").exists()
+    assert _index_check(cfg).repair == "migrate-index"
+    assert "migration needed" in _scan_index_rows(cfg.index.index_dir, "default")[0][1]

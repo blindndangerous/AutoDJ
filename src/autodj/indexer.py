@@ -1,26 +1,7 @@
-"""FAISS index builder for the AutoDJ music library.
+"""Audio analysis, track records and FAISS helpers for the music library.
 
-Walks the music library (via beets or filesystem), extracts MuQ embeddings
-and librosa audio features per track, combines them into a single
-L2-normalized vector, and stores the result in a FAISS nearest-neighbor index.
-
-Index files in ``index_dir`` (see :mod:`autodj.index_manifest`):
-- ``index-manifest.json`` names the live generation and its checksums.
-- ``tracks.gN.db`` (SQLite metadata, one row per track) and
-  ``vectors.gN.index`` (FAISS ``IndexFlatIP`` vectors) hold generation N.
-
-Every change is written as a new generation.  Subsequent runs are
-**incremental**: tracks already in the live generation are skipped.  Pass
-``force=True`` to rebuild from scratch.
-
-Example:
-    >>> from autodj.config import load_config
-    >>> from autodj.model import download_model_if_needed, load_model
-    >>> from autodj.indexer import build_index
-    >>> cfg = load_config()
-    >>> model_path = download_model_if_needed(cfg.model, cfg.index)
-    >>> wrapper = load_model(model_path)
-    >>> build_index(cfg, wrapper=wrapper, limit=50, force=False)
+Current analysis writes vectors to library.db. Published-generation readers and
+serialization helpers remain here only for explicit migration of older libraries.
 """
 
 from __future__ import annotations
@@ -43,11 +24,9 @@ import faiss
 import librosa
 import numpy as np
 
-from autodj.beets import BeetsNotFoundError, Track, get_all_tracks
+from autodj.beets import Track
 from autodj.config import AutoDJConfig
-from autodj.fsutil import fsync_directory
 from autodj.index_manifest import (
-    MANIFEST_NAME,
     REBUILD_COMMAND,
     IndexConsistencyError,
     IndexManifest,
@@ -55,7 +34,6 @@ from autodj.index_manifest import (
     is_absolute_storage,
     publication_lock,
     publish_generation,
-    read_manifest,
     relative_storage_path,
     require_manifest,
     sha256_file,
@@ -90,12 +68,6 @@ _LIBROSA_DIM = 16
 
 # Combined feature vector dimension: 1024 (MuQ) + 16 (librosa)
 FEATURE_DIM = EMBEDDING_DIM + _LIBROSA_DIM
-
-# How often a long ``autodj index`` run publishes the tracks embedded so
-# far as a new generation.  Each publication rewrites the whole vectors file
-# (~290 MB at 70k tracks), so publishing after every track would pummel NAS
-# drives; an interrupted run resumes from the last publication.
-FAISS_CHECKPOINT_EVERY: int = 100
 
 # Per-track work (embedding, DJ analysis) logs one progress line per this
 # many tracks; file checks log one per _STAT_PROGRESS_EVERY files.
@@ -247,7 +219,7 @@ def source_mtime(path: str | Path) -> float:
     The ``OSError`` fallback covers a file that vanished or became unreadable
     between the scan and this call.  The local clock is the wrong clock, but
     the alternatives are worse: ``0.0`` means "never stamped", which
-    :func:`_detect_stale_entries` re-embeds on every run, and raising would
+    a scan treats the file as changed on every run, and raising would
     abort a whole indexing run over one bad file.  A local-clock stamp at worst
     makes that single track look stale once.
 
@@ -371,7 +343,7 @@ class IndexEntry:
         Returns:
             An :class:`IndexEntry` with the same metadata.  ``embedded_at``
             comes from the file server's clock rather than the indexing
-            host's, because :func:`_detect_stale_entries` compares it against
+            host's, because the scanner compares it against
             ``st_mtime``.  A NAS clock running ahead used to make every
             freshly embedded track look replaced on the next run, so the whole
             library was re-embedded forever.
@@ -878,38 +850,6 @@ def save_index(
     return manifest
 
 
-@dataclass
-class IncrementalCheckpoint:
-    """Publish the tracks embedded so far every ``flush_every`` new tracks."""
-
-    index_dir: Path
-    music_dir: Path | None
-    existing_entries: list[IndexEntry]
-    existing_vectors: list[np.ndarray]
-    base_generation: int
-    flush_every: int = FAISS_CHECKPOINT_EVERY
-    published_count: int = 0
-
-    def write(self, new_entries: list[IndexEntry], new_vectors: list[np.ndarray]) -> None:
-        """Publish when another ``flush_every`` new tracks are ready."""
-        if len(new_entries) - self.published_count >= self.flush_every:
-            self.finish(new_entries, new_vectors)
-
-    def finish(self, new_entries: list[IndexEntry], new_vectors: list[np.ndarray]) -> None:
-        """Publish every new track not yet published."""
-        if len(new_entries) == self.published_count:
-            return
-        manifest = save_index(
-            self.existing_entries + new_entries,
-            np.asarray([*self.existing_vectors, *new_vectors], dtype=np.float32),
-            self.index_dir,
-            self.music_dir,
-            base_generation=self.base_generation,
-        )
-        self.base_generation = manifest.generation
-        self.published_count = len(new_entries)
-
-
 class PruneSafetyError(RuntimeError):
     """Raised when prune would remove a suspiciously large fraction of entries.
 
@@ -1359,31 +1299,6 @@ def _stat_mtimes(entries: list[IndexEntry]) -> list[float | None]:
     return mtimes
 
 
-def _detect_stale_entries(entries: list[IndexEntry], mtimes: list[float | None]) -> set[str]:
-    """Find indexed entries whose audio file has been replaced on disk.
-
-    For every entry whose file still exists, compare its mtime against the
-    stored ``embedded_at``.  An entry is stale (the user replaced the file
-    with a different version since indexing) when ``file_mtime >
-    embedded_at + 1.0``; the 1 s margin absorbs filesystem timestamp
-    granularity.  An unstamped row (``embedded_at`` 0) is therefore
-    re-embedded, while a file whose own mtime is the epoch keeps the 0
-    stamp it was embedded with and is not re-embedded on every run.
-
-    Args:
-        entries: Existing index entries (with absolute paths).
-        mtimes: :func:`_stat_mtimes` of *entries*.
-
-    Returns:
-        The set of entry paths to drop and re-embed.
-    """
-    return {
-        e.path
-        for e, mt in zip(entries, mtimes, strict=True)
-        if mt is not None and mt > e.embedded_at + 1.0
-    }
-
-
 def _stat_size_mtime(path: str) -> tuple[int, float] | None:
     """Return ``(size, mtime)`` of *path*, or ``None`` when it cannot be read."""
     try:
@@ -1447,248 +1362,6 @@ def _detect_moves(
         if len(olds) == 1 and len(news) == 1 and identity not in present:
             moves[olds[0].path] = news[0]
     return moves
-
-
-def _apply_move(entry: IndexEntry, track: Track, mtime: float) -> None:
-    """Re-path *entry* to *track*'s file and refresh its metadata from *track*.
-
-    The vector stays.  Metadata follows the :func:`enrich_from_beets` rules,
-    using what the track carries (beets values when beets is configured).
-    """
-    from autodj.beets import parse_initial_key
-
-    entry.path = str(track.path)
-    entry.embedded_at = mtime
-    row = {
-        "title": track.title,
-        "artist": track.artist,
-        "album": track.album,
-        "genre": track.genre,
-        "bpm": track.bpm,
-        "year": track.year,
-        "length": track.length,
-        "initial_key": track.initial_key,
-    }
-    _apply_beets_row(entry, row, ("title", "artist", "album", "genre"), True, parse_initial_key)
-
-
-def _load_existing_index(
-    index_dir: Path,
-    music_dir: Path,
-    force: bool,
-    find_new: Callable[[set[str]], list[Track]] | None = None,
-) -> tuple[list[IndexEntry], list[np.ndarray], int]:
-    """Load the live generation, dropping missing and replaced files.
-
-    One stat() per entry gives both existence (missing files are pruned)
-    and mtime (replaced files are dropped so they are embedded again).
-
-    When files are missing and *find_new* is given, files that moved are
-    found first (:func:`_detect_moves`): their entries keep their vectors
-    under the new path and their ``dj_meta.db`` rows are re-keyed, before
-    anything is pruned or the prune-safety check runs.
-
-    Args:
-        index_dir: The index directory.
-        music_dir: Library root.
-        force: Ignore the existing index.
-        find_new: Called with every stored path except replaced files, when
-            something is missing; returns the files not in the index.
-
-    Returns:
-        ``(entries, vectors, base_generation)``.  With *force*, no entries;
-        an index this release cannot read is deleted so it can be rebuilt.
-    """
-    if force:
-        with publication_lock(index_dir):
-            try:
-                manifest = read_manifest(index_dir)
-            except IndexConsistencyError as exc:
-                # --force is how an unreadable or old index is rebuilt.
-                logger.warning("Discarding the unreadable index in %s: %s", index_dir, exc)
-                manifest = None
-                (index_dir / MANIFEST_NAME).unlink()
-            if manifest is None:
-                # Files of an index from before the manifest format.
-                for name in ("tracks.db", "tracks.db-wal", "tracks.db-shm", "vectors.index"):
-                    (index_dir / name).unlink(missing_ok=True)
-                fsync_directory(index_dir)
-        return [], [], 0 if manifest is None else manifest.generation
-
-    try:
-        entries, loaded, manifest = load_index(index_dir, music_dir=music_dir)
-    except FileNotFoundError:
-        return [], [], 0
-    base_generation = manifest.generation
-    vectors = list(loaded.reconstruct_n(0, loaded.ntotal))
-    if not entries:
-        return [], [], base_generation
-    logger.info("Incremental mode: %d tracks already indexed", len(entries))
-
-    print(
-        f"[AutoDJ] Phase: Prune + stale-check — checking {len(entries)} files.",
-        flush=True,
-    )
-    mtimes = _stat_mtimes(entries)
-    missing_paths = {e.path for e, mt in zip(entries, mtimes, strict=True) if mt is None}
-    stale = _detect_stale_entries(entries, mtimes)
-    moves: dict[str, tuple[Track, float]] = {}
-    if missing_paths and find_new is not None:
-        candidates = find_new({e.path for e in entries} - stale)
-        moves = _detect_moves(
-            entries, missing_paths, [t for t in candidates if str(t.path) not in stale]
-        )
-    if moves:
-        from autodj.dj_meta import get_cache
-
-        cache = get_cache(index_dir, music_dir=music_dir)
-        if cache is not None:
-            cache.rekey_many((old, str(track.path)) for old, (track, _) in moves.items())
-        for e in entries:
-            if e.path in moves:
-                _apply_move(e, *moves[e.path])
-        missing_paths -= moves.keys()
-        print(f"[AutoDJ] {len(moves)} moved files re-pathed.", flush=True)
-    try:
-        _check_prune_safety(len(missing_paths), len(entries), allow_mass_prune=False)
-    except PruneSafetyError as exc:
-        print(f"[AutoDJ] Skipping auto-prune (safety check): {exc}")
-        missing_paths = set()  # keep everything; safety failure means user config is wrong
-
-    drop_paths = missing_paths | stale
-    if not drop_paths and not moves:
-        return entries, vectors, base_generation
-    if missing_paths:
-        print(
-            f"[AutoDJ] Pruned {len(missing_paths)} missing tracks "
-            f"({len(entries) - len(missing_paths)} remain).",
-            flush=True,
-        )
-    if stale:
-        print(
-            f"[AutoDJ] Stale-check — dropping {len(stale)} replaced "
-            "tracks; they will be re-embedded.",
-            flush=True,
-        )
-    kept = [(e, v) for e, v in zip(entries, vectors, strict=True) if e.path not in drop_paths]
-    entries = [e for e, _ in kept]
-    vectors = [v for _, v in kept]
-    # Publish the drops now, so an interrupted run does not serve replaced
-    # files with their old vectors.
-    manifest = save_index(
-        entries,
-        np.asarray(vectors, dtype=np.float32),
-        index_dir,
-        music_dir,
-        base_generation=base_generation,
-    )
-    return entries, vectors, manifest.generation
-
-
-def _warn_missing_beets_files(missing: list[Path]) -> None:
-    """Log one warning naming beets items whose files are gone from disk."""
-    examples = "\n".join(f"  {p}" for p in missing[:5])
-    more = f"\n  ... and {len(missing) - 5} more" if len(missing) > 5 else ""
-    logger.warning(
-        "Skipping %d beets items whose files do not exist:\n%s%s\n"
-        "Run `beet update -M` to drop them from the beets library "
-        "(`beet update -p` previews the changes first).",
-        len(missing),
-        examples,
-        more,
-    )
-
-
-def _collect_tracks_to_index(
-    cfg: AutoDJConfig, indexed: set[str], limit: int | None
-) -> list[Track]:
-    """Return the tracks not in *indexed*, from beets if available, else the folder.
-
-    Beets items whose file is gone are skipped with one warning per run, so
-    a stale beets library does not queue the same dead paths every run.
-
-    Args:
-        cfg: Full AutoDJ configuration.
-        indexed: Paths already in the index; they are skipped.
-        limit: Return at most this many tracks.  The folder scan stops as
-            soon as it has them, so ``--limit`` on a large library reads
-            only that many files' tags.  ``None`` means no limit.
-    """
-    tracks: list[Track] = []
-    if cfg.library.beets_db and cfg.library.beets_db.exists():
-        try:
-            tracks = get_all_tracks(cfg.library.beets_db)
-            logger.info("Loaded %d tracks from beets library", len(tracks))
-        except BeetsNotFoundError:
-            logger.warning("Beets DB not found, falling back to filesystem scan")
-
-    if tracks:
-        tracks = [
-            Track(
-                path=_resolve_beets_path(t.path, cfg.library.music_dir),
-                title=t.title,
-                artist=t.artist,
-                album=t.album,
-                genre=t.genre,
-                bpm=t.bpm,
-                year=t.year,
-                length=t.length,
-            )
-            for t in tracks
-        ]
-        logger.info("Resolved beets paths against music_dir '%s'", cfg.library.music_dir)
-        inside: list[Track] = []
-        for t in tracks:
-            with contextlib.suppress(ValueError):
-                relative_storage_path(t.path, cfg.library.music_dir)
-                inside.append(t)
-        if len(inside) < len(tracks):
-            logger.warning(
-                "Skipping %d of %d beets tracks: they are outside music_dir %s, and the "
-                "index stores paths relative to music_dir",
-                len(tracks) - len(inside),
-                len(tracks),
-                cfg.library.music_dir,
-            )
-        new: list[Track] = []
-        missing: list[Path] = []
-        for t in inside:
-            if limit is not None and len(new) >= limit:
-                break
-            if str(t.path) in indexed:
-                continue
-            if t.path.is_file():
-                new.append(t)
-            else:
-                missing.append(t.path)
-        if missing:
-            _warn_missing_beets_files(missing)
-        return new
-
-    # No beets database — fall back to filesystem scan + ID3/Vorbis tag reads.
-    from autodj.audio_meta import read_file_tags
-
-    paths = walk_music_dir(cfg.library.music_dir, cfg.library.supported_formats)
-    for p in paths:
-        if limit is not None and len(tracks) >= limit:
-            break
-        if str(p) in indexed:
-            continue
-        tags = read_file_tags(p)
-        tracks.append(
-            Track(
-                path=p,
-                title=tags.title or p.stem,
-                artist=tags.artist,
-                album=tags.album,
-                genre=tags.genre,
-                bpm=tags.bpm,
-                year=tags.year,
-                length=tags.length,
-            )
-        )
-    logger.info("Filesystem scan + tag read found %d new tracks", len(tracks))
-    return tracks
 
 
 def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
@@ -1782,103 +1455,3 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
                 checkpoint(new_entries, new_vectors)
 
     return new_entries, new_vectors
-
-
-def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integration tests
-    cfg: AutoDJConfig,
-    wrapper: MuqWrapper,
-    limit: int | None,
-    force: bool,
-    workers: int | None = None,
-) -> None:
-    """Build or incrementally update the FAISS index for the music library.
-
-    Reads track list from beets (if configured) or walks the filesystem.
-    Skips tracks already present in the existing index unless *force* is set.
-    Publishes a new generation every :data:`FAISS_CHECKPOINT_EVERY` new
-    tracks and at the end.  ``[index] throttle_ms`` pauses before each track.
-
-    Args:
-        cfg: Full AutoDJ configuration.
-        wrapper: A loaded :class:`~autodj.model.MuqWrapper` for embedding.
-        limit: Maximum number of *new* tracks to embed. ``None`` means no limit.
-        force: If ``True``, ignore any existing index and re-embed everything.
-        workers: Audio-loader prefetch pool size.  ``None`` uses one worker
-            because full-track spectral analysis is memory intensive.  More
-            workers can hide decode latency behind GPU embedding, but require
-            enough RAM for multiple decoded tracks and feature matrices.
-
-    Raises:
-        FileNotFoundError: If the music directory does not exist and no beets
-            database is configured.
-    """
-    index_dir = cfg.index.active_dir
-    index_dir.mkdir(parents=True, exist_ok=True)
-    music_dir = cfg.library.music_dir
-
-    scanned: list[Track] | None = None
-
-    def find_new(indexed: set[str]) -> list[Track]:
-        nonlocal scanned
-        scanned = _collect_tracks_to_index(cfg, indexed, None)
-        return scanned
-
-    existing_entries, existing_vectors, base_generation = _load_existing_index(
-        index_dir, music_dir, force, find_new
-    )
-    existing_paths = {e.path for e in existing_entries}
-
-    if scanned is None:
-        new_tracks = _collect_tracks_to_index(cfg, existing_paths, limit)
-    else:  # the move check already scanned for every new file
-        new_tracks = [t for t in scanned if str(t.path) not in existing_paths][:limit]
-
-    logger.info(
-        "%d new tracks to index%s",
-        len(new_tracks),
-        f" (limit={limit})" if limit else "",
-    )
-
-    if not new_tracks:
-        print("[AutoDJ] Index is up to date — nothing to do.")
-        return
-
-    print(
-        f"[AutoDJ] Phase: Indexing — {len(new_tracks)} new tracks to embed.",
-        flush=True,
-    )
-
-    checkpoint = IncrementalCheckpoint(
-        index_dir=index_dir,
-        music_dir=music_dir,
-        existing_entries=existing_entries,
-        existing_vectors=existing_vectors,
-        base_generation=base_generation,
-    )
-    from autodj.stereo import DecodeReport
-
-    with DecodeReport() as report:
-        new_entries, new_vectors = _embed_new_tracks(
-            new_tracks, wrapper, workers, checkpoint.write, cfg.index.throttle_ms, report
-        )
-    _finish_decode_report(report, index_dir / INDEX_DECODE_LOG)
-
-    if not new_entries:  # pragma: no cover -- empty / failed-indexing CLI report path
-        if not existing_entries:
-            print(
-                "[AutoDJ] No tracks could be indexed. "
-                "Check that [library] music_dir in config.toml points to the local "
-                "mount point of your beets `directory` so relative paths resolve correctly."
-            )
-            return
-        # All new tracks were skipped — nothing changed
-        print(
-            f"[AutoDJ] No new tracks indexed "
-            f"({len(new_tracks)} attempted, all failed). "
-            "Check warnings above for details."
-        )
-        return
-
-    checkpoint.finish(new_entries, new_vectors)
-    total = len(existing_entries) + len(new_entries)
-    print(f"[AutoDJ] Index updated: {len(new_entries)} new tracks added, {total} total.")

@@ -133,7 +133,7 @@ def fake_loudness(path: Path, kind: str = "music") -> dict:
     }
 
 
-def test_seeds_missing_legacy_roots_and_does_not_rewrite_index(tmp_path: Path) -> None:
+def test_new_library_seeds_configured_folders_without_a_manifest(tmp_path: Path) -> None:
     cfg = make_config(
         tmp_path, music=tmp_path / "missing-music", liners=tmp_path / "missing-liners"
     )
@@ -150,33 +150,8 @@ def test_seeds_missing_legacy_roots_and_does_not_rewrite_index(tmp_path: Path) -
         manager.close()
 
 
-def test_seeds_legacy_records_and_vectors_without_touching_faiss_generation(tmp_path: Path) -> None:
-    music = tmp_path / "Music"
-    music.mkdir()
-    song = music / "gold.flac"
-    song.write_bytes(b"gold")
-    original = make_entry(song, title="Gold title", energy=0.7)
-    vector = np.arange(FEATURE_DIM, dtype=np.float32)
-    cfg = make_config(tmp_path, music=music)
-    sim = Similarity([original], vector[None, :])
-    manager = LibraryManager(cfg, sim)
-    try:
-        loaded = manager.entry_for_path(song)
-        assert loaded.title == "Gold title"
-        assert loaded.energy == 0.7
-        assert manager.catalog.has_vector(song)
-        np.testing.assert_array_equal(sim.replaced[1][0], vector)
-    finally:
-        manager.close()
-
-
-def test_constructor_closes_catalog_when_legacy_vectors_are_invalid(tmp_path, monkeypatch):
-    music = tmp_path / "Music"
-    music.mkdir()
-    song = music / "gold.flac"
-    song.write_bytes(b"gold")
-    cfg = make_config(tmp_path, music=music)
-    invalid = Similarity([make_entry(song)], np.zeros((1, FEATURE_DIM - 1), dtype=np.float32))
+def test_constructor_closes_catalog_when_refresh_fails(tmp_path):
+    cfg = make_config(tmp_path)
     opened = []
     catalog_factory = LibraryCatalog
 
@@ -187,9 +162,10 @@ def test_constructor_closes_catalog_when_legacy_vectors_are_invalid(tmp_path, mo
 
     with (
         patch("autodj.library.LibraryCatalog", side_effect=capture_catalog),
-        pytest.raises(ValueError, match="legacy vectors do not match"),
+        patch.object(LibraryManager, "refresh", side_effect=ValueError("invalid catalog")),
+        pytest.raises(ValueError, match="invalid catalog"),
     ):
-        LibraryManager(cfg, invalid)
+        LibraryManager(cfg, Similarity())
     assert len(opened) == 1
     assert opened[0]._conn is None
 
@@ -1378,49 +1354,31 @@ def _generation(number: int):
     return IndexManifest(1, number, 2, "2026-01-01T00:00:00Z", f"t{number}", f"v{number}")
 
 
-def test_legacy_generation_is_imported_once_in_chunks(tmp_path, monkeypatch):
-    import faiss
-
+def test_catalog_vectors_replace_stale_similarity_without_seeding(tmp_path, monkeypatch):
     from autodj.similarity import SimilarityIndex
 
-    music = tmp_path / "Music"
-    music.mkdir()
-    songs = [music / "a.flac", music / "b.flac"]
+    cfg = make_config(tmp_path)
+    songs = [cfg.library.music_dir / "a.flac", cfg.library.music_dir / "b.flac"]
     for song in songs:
         song.write_bytes(song.name.encode())
+    entries = [make_entry(song) for song in songs]
     vectors = np.eye(2, FEATURE_DIM, dtype=np.float32)
-    cfg = make_config(tmp_path, music=music)
-
-    def legacy(number):
-        index = faiss.IndexFlatIP(FEATURE_DIM)
-        index.add(vectors)
-        sim = SimilarityIndex(index, [make_entry(song) for song in songs])
-        sim._manifest = _generation(number)
-        return sim
-
-    # The first start imports the generation a chunk of rows at a time.
-    sim = legacy(1)
-    reconstruct = Mock(side_effect=AssertionError("one row at a time"))
-    monkeypatch.setattr(sim.faiss_index, "reconstruct", reconstruct, raising=False)
-    LibraryManager(cfg, sim).close()
-    monkeypatch.undo()
     with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
-        assert catalog.get_setting("imported_index_generation")["generation"] == 1
+        catalog.add_source(cfg.library.music_dir)
+        catalog.seed_entries(entries)
+        catalog.seed_vectors(entries, vectors)
 
     def no_seeding(*_args, **_kwargs):
         raise AssertionError("re-imported")
 
-    # Once the catalog exists, even a newer generation is not imported again.
     monkeypatch.setattr(LibraryCatalog, "seed_entries", no_seeding)
     sim = SimilarityIndex.empty()
     manager = LibraryManager(cfg, sim)
     try:
-        # The catalog's vectors reach sim.
         assert [Path(entry.path) for entry in sim.entries_snapshot()] == songs
         np.testing.assert_array_equal(sim.faiss_index.reconstruct_n(0, 2), vectors)
     finally:
         manager.close()
-    LibraryManager(cfg, legacy(2)).close()
 
 
 def test_library_database_uses_wal(tmp_path):

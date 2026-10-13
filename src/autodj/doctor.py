@@ -1,8 +1,6 @@
 """Installation and runtime diagnostics for AutoDJ.
 
-The checks repair nothing and write no data.  Loading the index takes its
-publication lock, which creates ``.index-publication.lock`` in the index
-directory when it is not there yet.
+The checks repair nothing and write no data.
 
 With several stations (``[stations.<slug>]``), the checks that belong to
 one station run once more for each other station, read from its own
@@ -30,10 +28,9 @@ from typing import TYPE_CHECKING, Any
 
 from autodj.config import is_loopback_bind
 from autodj.index_manifest import (
-    IndexConsistencyError,
     OldDjMetaCacheError,
-    UnsupportedIndexError,
     first_absolute_path,
+    has_legacy_index,
 )
 from autodj.repeat_settings import removed_saved_repeat_keys
 from autodj.sqlite_utils import readonly_uri
@@ -256,7 +253,7 @@ def _saved_settings_check(cfg: AutoDJConfig, paths: StationPaths | None = None) 
 
 
 def _index_check(cfg: AutoDJConfig) -> DoctorCheck:
-    """Check the current catalog, or the legacy index before its first import."""
+    """Check the current catalog without reading old generation files."""
     index_dir = cfg.index.active_dir
     catalog_path = index_dir / "library.db"
     if catalog_path.is_file():
@@ -272,45 +269,25 @@ def _index_check(cfg: AutoDJConfig) -> DoctorCheck:
             f"{ready} songs; {analyzed} analyzed",
             str(catalog_path),
         )
-    if not index_dir.exists():
+    if index_dir.exists() and not index_dir.is_dir():
         return DoctorCheck(
-            "index", CheckStatus.WARN, "no index", f"{index_dir}; run `autodj index`", "index"
+            "index", CheckStatus.FAIL, "library path is not a directory", str(index_dir)
         )
-    try:
-        from autodj.similarity import SimilarityIndex
-
-        sim = SimilarityIndex.from_index_dir(index_dir, music_dir=cfg.library.music_dir)
-    except FileNotFoundError as exc:
-        return DoctorCheck(
-            "index", CheckStatus.WARN, "no index", f"{exc}; run `autodj index`", "index"
-        )
-    except UnsupportedIndexError as exc:
-        if exc.schema_version == 3:
-            detail = (
-                f"{exc}; stop AutoDJ serving and indexing, then run `autodj migrate-index --apply` "
-                "to save a recovery copy and carry the index forward without re-embedding."
-            )
-            return DoctorCheck(
-                "index", CheckStatus.FAIL, type(exc).__name__, detail, "migrate-index"
-            )
-        return DoctorCheck("index", CheckStatus.FAIL, type(exc).__name__, str(exc), "rebuild-index")
-    except IndexConsistencyError as exc:
+    if has_legacy_index(index_dir):
         return DoctorCheck(
             "index",
             CheckStatus.FAIL,
-            type(exc).__name__,
-            f"{exc}; run `autodj index --force`",
-            "rebuild-index",
+            "library migration needed",
+            f"{index_dir}; stop AutoDJ and run `autodj migrate-index --apply`.",
+            "migrate-index",
         )
-    except Exception as exc:  # report whatever serve would fail with
-        return DoctorCheck("index", CheckStatus.FAIL, type(exc).__name__, str(exc))
-    manifest = sim.manifest
-    assert manifest is not None  # from_index_dir always sets it
-    summary = f"generation {manifest.generation}: {sim.ntotal} tracks"
-    detail = f"published {manifest.published_at}"
-    if sim.ntotal == 0:
-        return DoctorCheck("index", CheckStatus.WARN, summary, f"{detail}; the index is empty")
-    return DoctorCheck("index", CheckStatus.PASS, summary, detail)
+    return DoctorCheck(
+        "index",
+        CheckStatus.WARN,
+        "library is empty",
+        f"{index_dir}; add music folders in Library tools or run `autodj index`",
+        "index",
+    )
 
 
 def _dj_meta_database_check(cfg: AutoDJConfig) -> DoctorCheck:

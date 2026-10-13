@@ -15,7 +15,6 @@ import numpy as np
 from autodj.analysis_queue import SERVER_HOLDER, SERVER_LEASE_SECONDS, AnalysisQueue
 from autodj.beets import Track
 from autodj.catalog import (
-    VECTOR_CHUNK,
     Coverage,
     LibraryCatalog,
     _covered_by,
@@ -44,12 +43,23 @@ from autodj.stereo import SAMPLE_RATE, DecodeReport
 
 logger = logging.getLogger(__name__)
 
-# Catalog setting naming the legacy index generation already seeded.
-_IMPORTED_GENERATION = "imported_index_generation"
-
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
     from autodj.model import MuqWrapper
+
+
+def require_current_library(directory: Path) -> None:
+    """Refuse an unmigrated library before creating any new database files."""
+    if (directory / "library.db").is_file():
+        return
+    from autodj.index_manifest import IndexConsistencyError, has_legacy_index
+
+    if has_legacy_index(directory):
+        raise IndexConsistencyError(
+            f"The library in {directory} needs migration. Stop AutoDJ and run "
+            "`autodj migrate-index` to preview, then `autodj migrate-index --apply`. "
+            "Your original files will be kept."
+        )
 
 
 class _ImportState(TypedDict):
@@ -85,7 +95,7 @@ def _browse_order(entries: tuple[IndexEntry, ...]) -> list[_Indexed]:
 
 
 class LibraryManager:
-    """Keep a per-index catalog current without modifying legacy FAISS files."""
+    """Keep the playable library and its similarity view current."""
 
     def __init__(self, cfg: AutoDJConfig, sim: Any) -> None:
         self.cfg = cfg
@@ -144,6 +154,7 @@ class LibraryManager:
         self.categories = CategoryIndex(cfg, self.entries_snapshot, lambda: self.catalog.sources())
         self.clock_beets = BeetsConditions(cfg)
         catalog_path = cfg.index.active_dir / "library.db"
+        require_current_library(cfg.index.active_dir)
         existing_catalog = catalog_path.is_file()
         self.catalog = LibraryCatalog(catalog_path)
         # What each station played, and its settings; the default station's
@@ -161,70 +172,13 @@ class LibraryManager:
             self.catalog.close()
             raise
         try:
-            self.catalog.seed_sources(cfg.library.music_dir, liner_root)
-            if existing_catalog:
-                self.refresh()
-            else:
-                self.import_legacy()
+            if not existing_catalog:
+                self.catalog.seed_sources(cfg.library.music_dir, liner_root)
+            self.refresh()
         except BaseException:
             self.analysis_queue.close()
             self.catalog.close()
             raise
-
-    def import_legacy(self) -> None:
-        """Seed the loaded legacy generation into a new catalog, a chunk at a time.
-
-        Runs only when the library has no catalog yet.  The generation files
-        are never changed, and the manifest of the imported generation is
-        recorded.  The catalog's vectors are handed back to ``sim``.
-        """
-        manifest = getattr(self.sim, "manifest", None)
-        key = (
-            {
-                "generation": manifest.generation,
-                "tracks_sha256": manifest.tracks_sha256,
-                "vectors_sha256": manifest.vectors_sha256,
-            }
-            if manifest is not None
-            else None
-        )
-        if key is None or self.catalog.get_setting(_IMPORTED_GENERATION) != key:
-            self._seed_legacy(list(self.sim.entries_snapshot()))
-            if key is not None:
-                self.catalog.set_setting(_IMPORTED_GENERATION, key)
-        self.refresh(force_vectors=True)
-
-    def _legacy_rows(self, start: int, stop: int) -> np.ndarray:
-        """Rows *start* to *stop* of the legacy FAISS index, as one float32 matrix."""
-        index = self.sim.faiss_index
-        reconstruct_n = getattr(index, "reconstruct_n", None)
-        if reconstruct_n is not None:
-            rows = reconstruct_n(start, stop - start)
-        else:
-            rows = np.vstack([index.reconstruct(row) for row in range(start, stop)])
-        matrix = np.asarray(rows, dtype=np.float32)
-        if matrix.shape != (stop - start, FEATURE_DIM):
-            raise ValueError("legacy vectors do not match the index entries")
-        return matrix
-
-    def _seed_legacy(self, entries: list[IndexEntry]) -> None:
-        """Add the legacy tracks and vectors the catalog lacks, a chunk at a time."""
-        count = int(self.sim.faiss_index.ntotal)
-        if count != len(entries):
-            raise ValueError("legacy vectors do not match the index entries")
-        if count:
-            self._legacy_rows(0, 1)  # refuse a mismatched index before writing anything
-        self.catalog.seed_entries(entries)
-        have = self.catalog.paths_with_vectors()
-        for start in range(0, count, VECTOR_CHUNK):
-            stop = min(count, start + VECTOR_CHUNK)
-            wanted = [row for row in range(start, stop) if _path(entries[row].path) not in have]
-            if not wanted:
-                continue
-            rows = self._legacy_rows(start, stop)
-            self.catalog.seed_vectors(
-                [entries[row] for row in wanted], rows[[row - start for row in wanted]]
-            )
 
     def _changed(self) -> bool:
         """Whether records, vectors or sources changed since the last load."""

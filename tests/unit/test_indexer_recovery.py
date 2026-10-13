@@ -165,21 +165,6 @@ def test_chunked_faiss_write_survives_unsupported_fsync(tmp_path: Path) -> None:
     assert np.array_equal(restored.reconstruct(0), _vector()[0])
 
 
-def test_checkpoint_with_nothing_new_publishes_nothing(tmp_path: Path) -> None:
-    checkpoint = indexer.IncrementalCheckpoint(
-        index_dir=tmp_path,
-        music_dir=None,
-        existing_entries=[],
-        existing_vectors=[],
-        base_generation=0,
-    )
-
-    checkpoint.write([], [])
-    checkpoint.finish([], [])
-
-    assert list(tmp_path.iterdir()) == []
-
-
 def test_enrich_skips_index_entries_absent_from_beets(tmp_path: Path) -> None:
     index_dir = tmp_path / "index"
     entry = _entry(str(tmp_path / "indexed.flac"))
