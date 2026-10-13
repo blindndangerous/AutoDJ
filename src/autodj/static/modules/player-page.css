@@ -1,0 +1,192 @@
+/* The public player pages (/player and /embed).  Like the status page,
+   every colour is a system colour, so the page follows the reader's light
+   or dark preference and forced colours.  data-theme pins one: the full
+   page takes the Theme chosen in the web UI on this browser
+   (theme-init.js), the embed its host's ?theme=light or ?theme=dark. */
+
+:root {
+  color-scheme: light dark;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0 auto;
+  max-width: 40rem;
+  padding: 1rem;
+  font-family: system-ui, sans-serif;
+  font-size: 1.125rem;
+  line-height: 1.5;
+  background: Canvas;
+  color: CanvasText;
+  overflow-wrap: anywhere;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.75rem;
+}
+
+h2 {
+  margin: 1.5rem 0 0.25rem;
+  font-size: 1.25rem;
+}
+
+header p,
+footer {
+  margin: 0.25rem 0;
+}
+
+footer {
+  margin-top: 2rem;
+}
+
+a {
+  color: LinkText;
+  text-decoration: underline;
+}
+
+audio {
+  width: 100%;
+}
+
+.player-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.25rem;
+  margin: 0.5rem 0;
+}
+
+.player-volume {
+  display: flex;
+  flex: 1 1 14rem;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+button {
+  min-height: 44px;
+  padding: 0.25rem 0.75rem;
+  font: inherit;
+  /* The page's own colours, not ButtonFace and ButtonText: WebKit keeps
+     those light under a dark colour scheme (see status-page.css). */
+  color: CanvasText;
+  background: Canvas;
+  border: 2px solid CanvasText;
+  border-radius: 4px;
+}
+
+#player-toggle {
+  min-width: 6rem;
+  font-weight: 600;
+}
+
+/* Pressed is also said in words beside it ("Updates paused."). */
+button[aria-pressed="true"] {
+  border-width: 4px;
+}
+
+/* The slider: a 24 px high capsule outlined in the text colour, with a
+   solid dot for the thumb, so its edge and its thumb are both far above
+   3:1 in either theme.  System colours only, so forced colours keep it
+   visible without the browser repainting it. */
+input[type="range"] {
+  appearance: none;
+  flex: 1 1 8rem;
+  min-width: 0;
+  height: 24px;
+  margin: 0;
+  padding: 0 2px;
+  box-sizing: border-box;
+  background: Canvas;
+  border: 2px solid CanvasText;
+  border-radius: 12px;
+  forced-color-adjust: none;
+  cursor: pointer;
+}
+
+/* Vendor pseudo-elements need their own rules: an unknown one invalidates
+   the whole selector list. */
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 100%;
+  background: transparent;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border: none;
+  border-radius: 50%;
+  background: CanvasText;
+}
+
+input[type="range"]::-moz-range-track {
+  height: 100%;
+  background: transparent;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: CanvasText;
+}
+
+#player-volume-value {
+  min-width: 3rem;
+  text-align: right;
+}
+
+#player-state {
+  min-height: 1.5em;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible {
+  outline: 3px solid currentcolor;
+  outline-offset: 2px;
+}
+
+ol {
+  padding-left: 1.5rem;
+}
+
+/* The embeddable player: one compact column for a frame on another site. */
+body.embed {
+  max-width: none;
+  padding: 0.75rem;
+  font-size: 1rem;
+}
+
+body.embed h1 {
+  font-size: 1.25rem;
+}
+
+.embed-now,
+.embed-footer {
+  margin: 0.25rem 0;
+}
+
+.embed-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+}

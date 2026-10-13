@@ -650,6 +650,69 @@ stylesheet and feed requests. It uses the system's light or dark colours, or the
 theme chosen under Settings, Display and keys, Theme in a browser that opened the web page at the
 same address (`/modules/theme-init.js` reads that choice before the page is drawn).
 
+### Player page and embeddable player
+
+A station can also have a public page where listeners press Play to hear it in the browser, and
+a compact version of it to put on another website. Both are off until you turn them on, for each
+station on its own:
+
+```toml
+[player_page]
+enabled = true                 # the player page, /player
+embed = true                   # the embeddable player, /embed
+embed_origins = ["https://nightowlradio.example"]   # sites that may show /embed in a frame
+```
+
+For another station, write the same keys under `[stations.<slug>.player_page]`; its pages are at
+`/stations/<slug>/player` and `/stations/<slug>/embed` (the default station's also answer at
+`/stations/default/player` and `/stations/default/embed`). A page that is off answers 404. The
+settings are read when AutoDJ starts. `GET /api/stations` lists each station's `player_path` and
+`embed_path`, or `null` while that page is off.
+
+**The player page** (`/player`) has the station's name, a **Play** button, a **Volume** slider,
+the song playing, the next song when **Show the next song publicly** is on (never in DMCA mode),
+the songs played most recently (as many as `[nowplaying] history_limit`), and links to the stream,
+its playlist file and the status page. Nothing plays until Play is pressed; the button then reads
+**Stop**, and a line under it says "Connecting to the stream.", "Playing.", "Stopped." or why the
+stream could not be played. Stop closes the connection, so a stopped page does not hold a listener
+slot, and Play joins the live stream again. The volume is remembered in that browser. The song
+line is the only part a screen reader hears on its own, once per song, as on the status page;
+**Pause updates** stops the page following the station. Without JavaScript the browser's own audio
+controls play the stream instead. If the stream stalls while playing, the line says
+"Buffering." once and "Playing." when the sound is back; if nothing has started 15 seconds after
+Play, it stops and says the stream could not be played. Where the browser does not let a page set
+the volume (Safari on iPhone and iPad), the slider is replaced by a note that the device's own
+volume applies. The page uses the system's light or dark colours, or the Theme chosen in the web
+UI in that browser, and cannot be shown inside another site's frame. Like the rest of AutoDJ, both
+pages are in English (`lang="en"`); there is no language setting.
+
+**The embeddable player** (`/embed`) has the station's name, the song playing, Play, Volume,
+Pause updates and, when the player page is on, a link that opens it in a new tab. Put it on a web
+page with an `<iframe>`, giving the frame a title so screen readers can name it:
+
+```html
+<iframe src="https://radio.example.net/embed" title="Night Owl Radio player"
+        width="100%" height="240" style="border: 0"></iframe>
+```
+
+A frame 240 px high fits it on a wide page; give it about 330 px where the frame is as narrow as a
+phone, since the controls then wrap onto more lines. Add `?theme=light` or `?theme=dark` to the
+address to match the site; without it the player
+follows the visitor's system colours. A browser shows the embed only inside pages from the sites
+in `embed_origins` (and this server's own pages): list each site as `https://host`, with a port
+if it is not the usual one, or `"*"` to let any site show it. Leaving the list empty keeps it to
+this server's own pages. The list goes into the page's `Content-Security-Policy:
+frame-ancestors`, so browsers enforce it; it does not stop anyone from listening to the stream
+itself, which is public anyway.
+
+Both pages use the station's public feed and stream and nothing else: no pairing, no controls
+beyond listening, and no file paths, credentials or other private details. A station with a
+listener password still asks for it: AutoDJ never puts the password in the page, so the browser
+asks the listener, and a browser that will not ask inside another site's frame cannot play the
+embed. A station that does not stream (the default station outside stream mode) shows its song
+and says it cannot be played there. While a station is stopped, both pages answer 503, say it is
+off air, and notice when it is back.
+
 ### Settings
 
 In stream mode, **Settings, Stream** has a **Now-playing feed** group:
@@ -1042,8 +1105,8 @@ The rules:
   webhooks, listener password and recording folder. Set everything the station needs in its own
   tables, including machine settings such as `playback.stereotool_path`.
 - **A station's own sections** are `playback`, `djmix`, `transitions`, `replaygain`, `stream`,
-  `recording`, `nowplaying`, `time_checks`, `dmca` and `presets.<name>`, plus `webhooks` in
-  `config.local.toml`. They take the same keys as the root sections.
+  `recording`, `nowplaying`, `player_page`, `time_checks`, `dmca` and `presets.<name>`, plus
+  `webhooks` in `config.local.toml`. They take the same keys as the root sections.
 - **Shared sections:** `library`, `index`, `model`, `huggingface` and `server` belong to the whole
   server and are read only from the root. So are `stream.trusted_proxies` (from the root
   `[stream]`) and `server.station_timezone`.
@@ -1096,6 +1159,9 @@ other sites:
   to its stream and playlist. It polls the station's own feed, and only a feed on this server.
 - `/api/stations/<slug>/nowplaying`, the now-playing feed, in the same form as `/api/nowplaying`
   (see [Now-playing feed and webhooks](#now-playing-feed-and-webhooks)).
+- `/stations/<slug>/player` and `/stations/<slug>/embed`, the player page and embeddable player,
+  when the station's `[stations.<slug>.player_page]` turns them on (see
+  [Player page and embeddable player](#player-page-and-embeddable-player)).
 - Both are public without pairing, like the stream, but only for a configured station: any
   other name needs a paired browser and then answers 404. The station's listener password
   protects only its stream, not these.
@@ -1115,15 +1181,16 @@ need a paired browser, like the default station's.
 
 - `GET /api/stations` lists every configured station: its slug, name, state (`stopped`,
   `stopping`, `stuck stopping`, `idle`, `playing` or `paused`), listener count and current
-  song, and its public addresses: `status_path`, `nowplaying_path`, `stream_path` and
-  `m3u_path`. The stream and playlist are `null` for a default station that does not stream. For
-  example:
+  song, and its public addresses: `status_path`, `nowplaying_path`, `stream_path`, `m3u_path`,
+  `player_path` and `embed_path`. The stream and playlist are `null` for a default station that
+  does not stream, and the player page and embed are `null` while they are off. For example:
 
   ```json
   {"slug": "nightowl", "name": "Night Owl Radio", "state": "playing", "listeners": 3,
    "title": "Artist — Song", "status_path": "/stations/nightowl/status",
    "nowplaying_path": "/api/stations/nightowl/nowplaying",
-   "stream_path": "/stations/nightowl.mp3", "m3u_path": "/stations/nightowl.m3u"}
+   "stream_path": "/stations/nightowl.mp3", "m3u_path": "/stations/nightowl.m3u",
+   "player_path": "/stations/nightowl/player", "embed_path": null}
   ```
 - `POST /api/stations/<slug>/start` builds and starts a stopped station. Starting a running
   station changes nothing.

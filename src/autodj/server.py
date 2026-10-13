@@ -95,6 +95,7 @@ from autodj.machine_tokens import MachineTokenStore
 from autodj.matched_intros_api import UPLOAD_PATH as INTRO_UPLOAD_PATH
 from autodj.model_identity import CachedModelCommit
 from autodj.pairing import DeviceRegistry
+from autodj.player_page import install_player_pages
 from autodj.scheduler import system_timezone
 from autodj.secret_files import machine_tokens_path, paired_devices_path
 from autodj.security import (
@@ -1340,6 +1341,10 @@ def create_app(
             raise HTTPException(status_code=404, detail="Not Found") from None
         return status_page(station, by_name=True)
 
+    # The player page and embeddable player (#52), off unless [player_page]
+    # turns them on for the station.
+    install_player_pages(app, stations)
+
     # ------------------------------------------------------------------
     # Radio stream (stream mode only; 404 otherwise)
     # ------------------------------------------------------------------
@@ -2187,6 +2192,7 @@ def _extra_station(
         paths=StationPaths.for_station(spec.cfg, slug),
         preset=spec.cfg.playback.stereotool_preset,
         build=build,
+        player_page=spec.cfg.player_page,
     )
 
 
