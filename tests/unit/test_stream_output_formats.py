@@ -215,3 +215,88 @@ async def test_titles_follow_the_audio_written_for_formats_without_a_fixed_bitra
         _wait_until(lambda: out._title == "Artist - Song")
     finally:
         out.close()
+
+
+async def test_an_opus_listener_who_joins_before_the_header_hears_nothing_until_it_is_whole() -> (
+    None
+):
+    header, stream = ogg_stream(audio_pages=2)
+    first_half = header[:30]
+    out = _output(OPUS, [first_half, header[30:], stream[len(header) :]])
+    try:
+        out.write(_block())
+        _wait_until(lambda: out._mp3_out >= len(first_half))
+        listener = out.add_listener(icy=False)
+        assert listener._size == 0
+        assert out.listener_count == 1
+        out.write(_block())
+        out.write(_block())
+        # The stream from its very first page: the header, then the audio.
+        assert await _collect(listener, len(stream)) == stream
+        assert out._waiting == []
+    finally:
+        out.close()
+
+
+async def test_a_waiting_opus_listener_can_leave_and_is_dropped_on_close() -> None:
+    header, _stream = ogg_stream()
+    out = _output(OPUS, [header[:30]])
+    try:
+        out.write(_block())
+        _wait_until(lambda: out._mp3_out >= 30)
+        leaving, staying = out.add_listener(icy=False), out.add_listener(icy=False)
+        out.remove_listener(leaving)
+        assert leaving.closed and out.listener_count == 1
+        out.disconnect_all()
+        assert staying.closed and out.listener_count == 0
+    finally:
+        out.close()
+
+
+async def test_the_title_and_the_count_never_wait_on_the_output_lock() -> None:
+    """The mix thread retitles, and the loop counts, while an encoder restarts under the lock."""
+    out = _output(AAC, [])
+    held, release = threading.Event(), threading.Event()
+
+    def restart() -> None:
+        with out._lock:
+            held.set()
+            release.wait(5)
+
+    worker = threading.Thread(target=restart)
+    worker.start()
+    try:
+        assert held.wait(2)
+        start = time.monotonic()
+        out.set_title("Artist", "Song")
+        assert out.listener_count == 0
+        assert time.monotonic() - start < 0.5
+    finally:
+        release.set()
+        worker.join(5)
+        out.close()
+
+
+async def test_an_encoder_that_exits_has_its_last_words_logged_and_shown(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import collections
+
+    class Saying(FakeEncoder):
+        made = 0
+
+        def __init__(self, bitrate: int) -> None:
+            super().__init__(bitrate)
+            self.errors = collections.deque(["Unknown encoder 'libopus'"])
+            type(self).made += 1
+            if type(self).made == 1:
+                self.close()  # the first one exits at once
+
+    with caplog.at_level("WARNING", logger="autodj.stream"):
+        out = StreamOutput(64, 8, encoder_factory=Saying, loop=asyncio.get_running_loop(), fmt=OPUS)
+        try:
+            _wait_until(lambda: Saying.made >= 2)
+            assert out.last_error == "Unknown encoder 'libopus'"
+        finally:
+            out.close()
+    assert "Opus stream encoder exited; restarting. ffmpeg said: Unknown encoder" in caplog.text

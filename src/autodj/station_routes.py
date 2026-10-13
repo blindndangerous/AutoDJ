@@ -72,6 +72,8 @@ from autodj.station_ledger import StationLedger, setting_key
 from autodj.station_log import CURRENT_STATION
 from autodj.stations import DEFAULT_SLUG, StationRuntime
 from autodj.stream import EncoderUnavailableError
+from autodj.stream_formats import FORMATS
+from autodj.stream_mounts import MountsClosedError
 
 if TYPE_CHECKING:
     from autodj.listener_access import ListenerAccess
@@ -1158,23 +1160,38 @@ def install_station_routes(router: StationRouter) -> None:
                 status_code=409,
                 detail="DMCA mode is on, so the next song is never shown publicly.",
             )
+        # The AAC and Opus changes go first, all or none: each is checked and
+        # ffmpeg is tried on it before anything changes (#50).
+        formats: dict[str, int] = {
+            name: value
+            for name, value in (("aac", body.aac_bitrate), ("opus", body.opus_bitrate))
+            if value is not None
+        }
+        changed_formats: list[str] = []
+        if formats:
+            try:
+                changed_formats = await asyncio.to_thread(bridge.set_stream_formats, formats)
+            except EncoderUnavailableError as exc:
+                logger.error("A stream format could not be turned on: %s", exc)
+                raise HTTPException(status_code=503, detail=f"{exc}. Nothing was changed.") from exc
+            except (ValueError, MountsClosedError) as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         if body.bitrate is not None:
             try:
                 await asyncio.to_thread(bridge.set_stream_bitrate, body.bitrate)
             except EncoderUnavailableError as exc:
-                raise HTTPException(status_code=503, detail="stream encoder failed") from exc
-        for name, value in (("aac", body.aac_bitrate), ("opus", body.opus_bitrate)):
-            if value is None:
-                continue
-            try:
-                await asyncio.to_thread(bridge.set_stream_format_bitrate, name, value)
-            except (EncoderUnavailableError, OSError) as exc:
-                logger.error("Could not start the %s stream encoder", name, exc_info=True)
+                if not changed_formats:
+                    raise HTTPException(status_code=503, detail="stream encoder failed") from exc
+                # Say exactly what did change before the MP3 encoder failed.
+                await asyncio.to_thread(bridge.save_persistent_state)
+                labels = " and ".join(FORMATS[name].label for name in changed_formats)
                 raise HTTPException(
-                    status_code=503, detail=f"The {name} stream encoder could not start"
+                    status_code=503,
+                    detail=(
+                        "The MP3 stream encoder failed, so its quality is unchanged. "
+                        f"The {labels} change was saved; nothing else was changed."
+                    ),
                 ) from exc
-            except ValueError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
         if body.stats_days is not None:
             cfg.stream.stats_days = body.stats_days
             if station.listener_stats is not None:

@@ -292,33 +292,42 @@ class PlayerBridge:
             return int(self.mounts.listener_count)
         return int(self.stream.listener_count) if self.stream is not None else 0
 
-    def stream_output(self, name: str) -> Any:
-        """The output serving format *name* (``"mp3"``, ``"aac"``...), or ``None`` when off."""
+    def stream_enabled(self, name: str) -> bool:
+        """Whether format *name* (``"mp3"``, ``"aac"``...) is on; never starts an encoder."""
         if self.mounts is not None:
-            return self.mounts.get(name)
+            return bool(self.mounts.enabled(name))
+        return name == "mp3"
+
+    def stream_output(self, name: str) -> Any:
+        """The output serving format *name*, starting its encoder if needed; ``None`` when off.
+
+        Call off the event loop: an extra format's first listener starts ffmpeg.
+        """
+        if self.mounts is not None:
+            return self.mounts.acquire(name)
         return self.stream if name == "mp3" else None
 
     def stream_formats(self) -> list[dict]:
-        """Each format the station can stream in: its bitrate (0 when off), address and listeners."""
+        """Each format: its bitrate (0 when off), address, listeners and the encoder's last error."""
         from autodj.stream_formats import FORMATS
 
         base = self.stream_path.removesuffix(".mp3")
+        mounts = self.mounts
+        counts = mounts.counts() if mounts is not None else {"mp3": int(self.stream.listener_count)}
         result = []
         for name, fmt in FORMATS.items():
-            output = self.stream_output(name)
+            if name == "mp3":
+                bitrate = int(self.player._cfg.stream.bitrate)
+            else:
+                bitrate = int(mounts.bitrate(name)) if mounts is not None else 0
             result.append(
                 {
                     "format": name,
                     "label": fmt.label,
-                    "bitrate": (
-                        int(self.player._cfg.stream.bitrate)
-                        if name == "mp3"
-                        else int(output.bitrate)
-                        if output is not None
-                        else 0
-                    ),
+                    "bitrate": bitrate,
                     "path": f"{base}.{name}",
-                    "listeners": int(output.listener_count) if output is not None else 0,
+                    "listeners": int(counts.get(name, 0)),
+                    "error": mounts.last_error(name) if mounts is not None else None,
                 }
             )
         return result
@@ -414,22 +423,27 @@ class PlayerBridge:
         self.stream.set_bitrate(bitrate)
         self.player._cfg.stream.bitrate = bitrate
 
-    def set_stream_format_bitrate(self, name: str, bitrate: int) -> None:
-        """Turn the AAC or Opus stream on at *bitrate*, or off with 0, and remember it.
+    def set_stream_formats(self, changes: dict[str, int]) -> list[str]:
+        """Turn the AAC and Opus streams on, off or to new bitrates, all or none; remember them.
 
         Args:
-            name: ``"aac"`` or ``"opus"``.
-            bitrate: One of the format's bitrates, or 0.
+            changes: Bitrate by format name (``"aac"``, ``"opus"``); 0 is off.
+
+        Returns:
+            The formats that changed.
 
         Raises:
-            ValueError: Not an extra format or one of its bitrates.
-            EncoderUnavailableError: Its encoder could not be started;
+            ValueError: Not an extra format or one of its bitrates, or this
+                stream has no extra formats.
+            EncoderUnavailableError: ffmpeg cannot encode one of them;
                 nothing changed.
         """
         if self.mounts is None:
             raise ValueError("this stream has no extra formats")
-        self.mounts.set_bitrate(name, bitrate)
-        setattr(self.player._cfg.stream, f"{name}_bitrate", bitrate)
+        changed = self.mounts.apply(changes)
+        for name, bitrate in changes.items():
+            setattr(self.player._cfg.stream, f"{name}_bitrate", bitrate)
+        return list(changed)
 
     def on_track_started(self, entry: Any) -> None:
         """Record a track the mix bus started; retitle the stream.

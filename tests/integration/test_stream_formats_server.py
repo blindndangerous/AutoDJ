@@ -37,8 +37,11 @@ class Rig:
         self.bridge = bridge
         self.main = _output(b"\xff\xfb\x90\x00" + b"\x00" * 413)
         self.made: dict[str, MagicMock] = {}
-        self.fail = False
-        self.mounts = StreamMounts(self.main, self.make, lambda _o: None, lambda _o: None)
+        self.fail = False  # ffmpeg cannot encode the format (the probe says so)
+        self.fail_start = False  # the encoder cannot start for a listener
+        self.mounts = StreamMounts(
+            self.main, self.make, lambda _o: None, lambda _o: None, probe=self.probe
+        )
         cfg = bridge.player._cfg
         cfg.index.active_dir = tmp_path
         cfg.stream.enabled = True
@@ -46,9 +49,13 @@ class Rig:
         bridge.save_persistent_state = MagicMock()
         self.client = TestClient(create_app(bridge), client=("192.0.2.4", 50000))
 
-    def make(self, fmt: StreamFormat, bitrate: int) -> MagicMock:
+    def probe(self, fmt: StreamFormat, bitrate: int) -> None:
         if self.fail:
-            raise EncoderUnavailableError("stream encoder failed")
+            raise EncoderUnavailableError(f"ffmpeg could not encode {fmt.label}: Unknown encoder")
+
+    def make(self, fmt: StreamFormat, bitrate: int) -> MagicMock:
+        if self.fail_start:
+            raise OSError("ffmpeg vanished")
         first = b"OggS" if fmt.paged else b"\xff\xf1"
         output = self.made[fmt.name] = _output(first, bitrate)
         return output
@@ -67,16 +74,18 @@ def test_a_format_that_is_off_is_not_found(rig: Rig, path: str) -> None:
 
 def test_the_aac_stream_carries_titles_for_players_that_ask(rig: Rig) -> None:
     rig.mounts.set_bitrate("aac", 96)
-    aac = rig.made["aac"]
     for path in ("/stream.aac", "/stations/default.aac"):
         head = rig.client.head(path, headers={"Icy-MetaData": "1"})
         assert head.status_code == 200 and head.headers["content-type"] == "audio/aac"
+        # Asking about it starts no encoder; only a listener does.
+        assert path != "/stream.aac" or "aac" not in rig.made
         with rig.client.stream("GET", path, headers={"Icy-MetaData": "1"}) as response:
             assert response.status_code == 200
             assert response.headers["content-type"] == "audio/aac"
             assert response.headers["icy-br"] == "96"
             assert "icy-metaint" in response.headers
             assert next(response.iter_bytes()) == b"\xff\xf1"
+    aac = rig.made["aac"]
     aac.add_listener.assert_called_with(icy=True)
     rig.main.add_listener.assert_not_called()
 
@@ -111,6 +120,7 @@ def test_the_other_formats_need_no_pairing(bridge, tmp_path: Path) -> None:
 
 def test_listening_is_counted_in_the_statistics(rig: Rig) -> None:
     rig.mounts.set_bitrate("aac", 96)
+    rig.mounts.acquire("aac")
     # What the outputs report as connected now (the feed reads it at each release).
     rig.made["aac"].listener_count = 2
     rig.main.listener_count = 1
@@ -147,6 +157,7 @@ def test_formats_are_turned_on_changed_and_off_from_settings(rig: Rig) -> None:
         "bitrate": 128,
         "path": "/stream.aac",
         "listeners": 0,
+        "error": None,
     }
     rig.client.post("/api/stream/settings", json={"opus_bitrate": 48, "aac_bitrate": 0})
     assert rig.mounts.get("aac") is None and rig.mounts.bitrate("opus") == 48
@@ -159,13 +170,47 @@ def test_formats_are_turned_on_changed_and_off_from_settings(rig: Rig) -> None:
         assert rig.client.post("/api/stream/settings", json=body).status_code == 422
 
 
-def test_an_encoder_that_cannot_start_changes_nothing(rig: Rig) -> None:
+def test_a_format_ffmpeg_cannot_encode_is_refused_and_nothing_changes(rig: Rig) -> None:
+    rig.mounts.set_bitrate("aac", 96)
     rig.fail = True
-    response = rig.client.post("/api/stream/settings", json={"opus_bitrate": 64})
+    response = rig.client.post(
+        "/api/stream/settings", json={"opus_bitrate": 64, "aac_bitrate": 0, "bitrate": 192}
+    )
     assert response.status_code == 503
-    assert "opus" in response.json()["detail"]
-    assert rig.mounts.get("opus") is None
+    assert response.json()["detail"] == (
+        "ffmpeg could not encode Opus: Unknown encoder. Nothing was changed."
+    )
+    assert not rig.mounts.enabled("opus") and rig.mounts.bitrate("aac") == 96
     assert rig.bridge.player._cfg.stream.opus_bitrate == 0
+    assert rig.bridge.player._cfg.stream.bitrate == 320
+    rig.main.set_bitrate.assert_not_called()
+
+
+def test_an_mp3_failure_after_the_formats_changed_says_what_was_saved(rig: Rig) -> None:
+    rig.main.set_bitrate.side_effect = EncoderUnavailableError("stream encoder failed")
+    response = rig.client.post("/api/stream/settings", json={"opus_bitrate": 64, "bitrate": 192})
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "The MP3 stream encoder failed, so its quality is unchanged. "
+        "The Opus change was saved; nothing else was changed."
+    )
+    assert rig.mounts.bitrate("opus") == 64
+    assert rig.bridge.save_persistent_state.called
+
+
+def test_a_listener_whose_encoder_cannot_start_is_told_so(rig: Rig) -> None:
+    rig.mounts.set_bitrate("opus", 64)
+    rig.fail_start = True
+    response = rig.client.get("/stream.opus")
+    assert response.status_code == 503
+    assert response.json()["detail"] == "stream encoder failed"
+
+
+def test_a_stopped_stream_refuses_format_changes(rig: Rig) -> None:
+    rig.mounts.close()
+    response = rig.client.post("/api/stream/settings", json={"aac_bitrate": 96})
+    assert response.status_code == 409
+    assert rig.client.get("/stream.aac").status_code == 404
 
 
 def test_a_stream_without_mounts_refuses_format_changes(bridge, tmp_path: Path) -> None:
@@ -218,12 +263,17 @@ def test_the_station_starts_and_stops_its_extra_formats_with_the_mp3_stream() ->
     bridge = PlayerBridge(player=player, sim=_make_sim_mock())
     removed: list[object] = []
     player.bus.remove_output.side_effect = removed.append
+    probed: list[tuple[StreamFormat, int]] = []
     with (
         patch("autodj.stream.FfmpegEncoder", Encoder),
+        patch("autodj.stream.probe_encoder", lambda fmt, bitrate: probed.append((fmt, bitrate))),
         TestClient(create_app(bridge, stream_mode=True)) as client,
     ):
         mounts = bridge.mounts
-        aac, opus = mounts.get("aac"), mounts.get("opus")
+        # Both are on and checked, but no encoder runs until someone listens.
+        assert probed == [(AAC, 96), (OPUS, 64)]
+        assert made == [] and mounts.get("aac") is None
+        aac, opus = bridge.stream_output("aac"), bridge.stream_output("opus")
         assert isinstance(aac, StreamOutput) and aac.format is AAC and aac.bitrate == 96
         assert isinstance(opus, StreamOutput) and opus.format is OPUS
         assert made == [AAC, OPUS]

@@ -17,11 +17,10 @@ The counts live in memory and are written to the station's
 
 from __future__ import annotations
 
-import csv
-import io
 import json
 import logging
 import math
+import re
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -31,6 +30,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from autodj.fsutil import atomic_write
+from autodj.playlog import safe_csv
 from autodj.stream_formats import FORMATS
 
 logger = logging.getLogger(__name__)
@@ -55,6 +55,10 @@ _BAND_COLUMNS = (
 )
 _SAVE_EVERY_SECONDS = 60.0
 _VERSION = 1
+# A peak's time of day, as saved: "21:45".
+_PEAK_AT = re.compile(r"\d\d:\d\d")
+#: A session's start: wall-clock seconds (its day) and monotonic seconds (its length).
+Session = tuple[float, float]
 
 
 def session_band(seconds: float) -> int:
@@ -98,9 +102,7 @@ def _checked_row(raw: Any) -> dict[str, Any]:
         raise ValueError("a day must be an object")
     day = date.fromisoformat(raw["date"]).isoformat()
     peak_at = raw.get("peak_at")
-    if peak_at is not None and (
-        not isinstance(peak_at, str) or len(peak_at) != 5 or peak_at[2] != ":"
-    ):
+    if peak_at is not None and (not isinstance(peak_at, str) or not _PEAK_AT.fullmatch(peak_at)):
         raise ValueError("bad peak time")
     bands = raw["bands"]
     if not isinstance(bands, list) or len(bands) != len(SESSION_BANDS):
@@ -128,6 +130,21 @@ def _checked_row(raw: Any) -> dict[str, Any]:
     }
 
 
+def _merge(into: dict[str, Any], row: dict[str, Any]) -> None:
+    """Add day *row* to *into*, the same day counted since: sums, and the higher peaks."""
+    if row["peak"] > into["peak"]:
+        into["peak"], into["peak_at"] = row["peak"], row["peak_at"]
+    into["sessions"] += row["sessions"]
+    into["seconds"] = round(into["seconds"] + row["seconds"], 1)
+    into["longest"] = max(into["longest"], row["longest"])
+    into["bands"] = [a + b for a, b in zip(into["bands"], row["bands"], strict=True)]
+    for name, entry in row["formats"].items():
+        total = into["formats"].setdefault(name, {"peak": 0, "sessions": 0, "seconds": 0.0})
+        total["peak"] = max(total["peak"], entry["peak"])
+        total["sessions"] += entry["sessions"]
+        total["seconds"] = round(total["seconds"] + entry["seconds"], 1)
+
+
 class ListenerStats:
     """Count listeners as they come and go, by day and by format.
 
@@ -152,8 +169,9 @@ class ListenerStats:
             timezone: The station's time zone, which says where a day ends.
             keep_days: Days of statistics to keep, read at each use
                 (``[stream] stats_days``); 0 keeps none.
-            clock: Wall-clock seconds.
-            monotonic: Monotonic seconds, for the save interval.
+            clock: Wall-clock seconds, which say what day a session began.
+            monotonic: Monotonic seconds, for session lengths and the save
+                interval, so a clock change never stretches a session.
         """
         self.path = path
         self._zone = ZoneInfo(timezone)
@@ -166,36 +184,70 @@ class ListenerStats:
         self._live: dict[str, int] = {}
         self._dirty = False
         self._saved_at = monotonic()
+        # The saved days could not be read yet (the file system said no):
+        # nothing is written over them until they are, and each tick tries
+        # again.
+        self._unread = False
         self._load()
 
     # -- loading and saving ----------------------------------------------
 
-    def _load(self) -> None:
-        if not self.path.exists():
-            return
+    def _read(self) -> list[dict[str, Any]] | None:
+        """The saved days, or ``None`` when the file cannot be read just now.
+
+        A day that is not right is skipped and the others kept.  A file
+        that is not a statistics file at all is moved aside with a ``.bad``
+        suffix, as for the listener bans.
+        """
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            text = self.path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return []
+        except OSError as exc:
+            logger.warning(
+                "Cannot read listener statistics from %s: %s; trying again", self.path, exc
+            )
+            return None
+        try:
+            data = json.loads(text)
             if not isinstance(data, dict) or not isinstance(data.get("days"), list):
                 raise ValueError("not a listener statistics file")
-            for raw in data["days"]:
-                row = _checked_row(raw)
-                self._days[row["date"]] = row
-        except (OSError, ValueError, TypeError, KeyError) as exc:
+        except ValueError as exc:
             logger.error(
                 "Cannot load listener statistics from %s: %s; starting with none", self.path, exc
             )
-            self._days.clear()
             bad = self.path.with_name(f"{self.path.name}.{time.time_ns()}.bad")
             try:
                 self.path.replace(bad)
             except OSError:
                 logger.error("Cannot move the unreadable %s aside", self.path, exc_info=True)
+            return []
+        rows = []
+        for raw in data["days"]:
+            try:
+                rows.append(_checked_row(raw))
+            except (ValueError, TypeError, KeyError, AttributeError):
+                logger.warning("Skipping an unreadable day in %s: %.80r", self.path, raw)
+        return rows
+
+    def _load(self) -> None:
+        """Read the saved days into the counts, adding to any counted meanwhile."""
+        rows = self._read()
+        with self._lock:
+            self._unread = rows is None
+            for row in rows or []:
+                current = self._days.get(row["date"])
+                if current is None:
+                    self._days[row["date"]] = row
+                else:
+                    _merge(current, row)
+                    self._dirty = True
 
     def flush(self) -> None:
         """Write the counts now if they changed; a failure is logged and retried later."""
         with self._save_lock:
             with self._lock:
-                if not self._dirty:
+                if not self._dirty or self._unread:
                     return
                 days = [row for _key, row in sorted(self._days.items())]
                 text = json.dumps({"version": _VERSION, "days": days}, indent=1) + "\n"
@@ -213,6 +265,8 @@ class ListenerStats:
 
         Call about once a second (off the event loop).
         """
+        if self._unread:
+            self._load()
         now = self._clock()
         with self._lock:
             self._fold_peak(now)
@@ -273,7 +327,7 @@ class ListenerStats:
         if stale:
             self._dirty = True
 
-    def connected(self, fmt: str) -> float:
+    def connected(self, fmt: str) -> Session:
         """Count a listener who just connected to format *fmt*.
 
         Returns:
@@ -283,12 +337,17 @@ class ListenerStats:
         with self._lock:
             self._live[fmt] = self._live.get(fmt, 0) + 1
             self._fold_peak(now)
-        return now
+        return now, self._monotonic()
 
-    def disconnected(self, fmt: str, started: float) -> None:
-        """Count the session of a listener to *fmt*, connected since *started*, as ended."""
+    def disconnected(self, fmt: str, session: Session) -> None:
+        """Count the *session* of a listener to *fmt* as ended.
+
+        Its length is measured on the monotonic clock; its wall-clock start
+        only says what day it counts on.
+        """
         now = self._clock()
-        length = max(0.0, now - started)
+        started, started_mono = session
+        length = max(0.0, self._monotonic() - started_mono)
         with self._lock:
             self._live[fmt] = max(0, self._live.get(fmt, 0) - 1)
             if self._keep_days() <= 0:
@@ -352,12 +411,14 @@ class ListenerStats:
         }
 
     def csv_text(self) -> str:
-        """Every kept day, oldest first, as CSV: one row per day, counts only."""
+        """Every kept day, oldest first, as CSV: one row per day, counts only.
+
+        Cells go through the play log's spreadsheet guard, so none can run
+        as a formula.
+        """
         with self._lock:
             self._fold_peak(self._clock())
             rows = [json.loads(json.dumps(row)) for _key, row in sorted(self._days.items())]
-        out = io.StringIO()
-        writer = csv.writer(out, lineterminator="\n")
         header = [
             "date",
             "peak_listeners",
@@ -369,7 +430,7 @@ class ListenerStats:
         ]
         for name in FORMATS:
             header += [f"{name}_peak_listeners", f"{name}_sessions", f"{name}_listening_hours"]
-        writer.writerow([*header, *_BAND_COLUMNS])
+        lines: list[list[Any]] = []
         for row in rows:
             average = row["seconds"] / row["sessions"] / 60 if row["sessions"] else 0.0
             line: list[Any] = [
@@ -384,8 +445,8 @@ class ListenerStats:
             for name in FORMATS:
                 entry = row["formats"].get(name, {"peak": 0, "sessions": 0, "seconds": 0.0})
                 line += [entry["peak"], entry["sessions"], f"{entry['seconds'] / 3600:.2f}"]
-            writer.writerow([*line, *row["bands"]])
-        return out.getvalue()
+            lines.append([*line, *row["bands"]])
+        return safe_csv([*header, *_BAND_COLUMNS], lines)
 
 
 def _period(rows: list[dict[str, Any]]) -> dict[str, Any]:

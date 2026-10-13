@@ -1378,8 +1378,8 @@ def create_app(
             raise HTTPException(status_code=404, detail="Not Found")
         if ext not in _LISTEN_EXTENSIONS:
             raise HTTPException(status_code=404, detail="Not Found")
-        stream = sbridge.stream_output(ext) if ext != "m3u" else None
-        if ext != "m3u" and stream is None:
+        # Never starts an encoder: that happens off the loop, for a real listener.
+        if ext != "m3u" and not sbridge.stream_enabled(ext):
             raise HTTPException(status_code=404, detail="Not Found")
         stream_cfg = station.cfg.stream
         try:
@@ -1428,7 +1428,6 @@ def create_app(
                 headers["Content-Length"] = str(len(body))
                 body = b""
             return Response(body, media_type="audio/x-mpegurl", headers=headers)
-        assert stream is not None
         fmt = FORMATS[ext]
         # An Ogg (Opus) stream carries no ICY titles; its player is never offered them.
         icy = fmt.icy and request.headers.get("icy-metadata", "").strip() == "1"
@@ -1437,13 +1436,23 @@ def create_app(
                 {
                     "icy-metaint": str(METAINT),
                     "icy-name": _header_text(stream_cfg.station_name),
-                    "icy-br": str(stream_cfg.bitrate if ext == "mp3" else stream.bitrate),
+                    "icy-br": str(
+                        stream_cfg.bitrate if ext == "mp3" else sbridge.mounts.bitrate(ext)
+                    ),
                 }
             )
         if head:
             response = Response(media_type=fmt.media_type, headers=headers)
             del response.headers["content-length"]  # a live stream has no length
             return response
+        # Off the loop: an extra format's first listener starts its encoder.
+        try:
+            stream = await asyncio.to_thread(sbridge.stream_output, ext)
+        except (EncoderUnavailableError, OSError) as exc:
+            logger.error("The %s stream encoder could not start", ext, exc_info=True)
+            raise HTTPException(status_code=503, detail="stream encoder failed") from exc
+        if stream is None:
+            raise HTTPException(status_code=404, detail="Not Found")
         try:
             # Off the loop: a dead encoder is replaced here (spawns ffmpeg).
             ident, listener = await asyncio.to_thread(
@@ -1469,7 +1478,7 @@ def create_app(
         )
         feed = station.nowplaying
         stats = station.listener_stats
-        started = stats.connected(ext) if stats is not None else 0.0
+        started = stats.connected(ext) if stats is not None else (0.0, 0.0)
 
         def release() -> None:
             access.remove(ident)

@@ -281,8 +281,9 @@ def start_stream_station(
     player's mix bus, and hands the stream to the station, which reads its
     listener count and starts a set on the first listener.  The extra
     formats that are on (``[stream] aac_bitrate`` and ``opus_bitrate``)
-    start their own encoders on the same bus, and their listeners count
-    too (:mod:`autodj.stream_mounts`).  Configured
+    are checked with ffmpeg; each starts its own encoder on the same bus
+    when its first listener comes, and their listeners count too
+    (:mod:`autodj.stream_mounts`).  Configured
     relays (``[stream.relays.<name>]``) start connecting too; while any is
     enabled the station plays as if it always had a listener, because the
     relay's own listeners are invisible to AutoDJ.
@@ -335,7 +336,13 @@ def start_stream_station(
     mounts = None
     try:
         stream_out = make_output(cfg.stream.bitrate, cfg.stream.max_listeners)
-        mounts = StreamMounts(stream_out, make_mount, bus.add_output, bus.remove_output)
+        mounts = StreamMounts(
+            stream_out,
+            make_mount,
+            bus.add_output,
+            bus.remove_output,
+            probe=stream_module.probe_encoder,
+        )
         if cfg.stream.relays:
             from autodj.relay import RelayManager, relay_status_path
 
@@ -663,7 +670,7 @@ async def tick_every_second(
 async def tick_stream_workers(
     bridge: PlayerBridge, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
 ) -> None:
-    """Tick the station and the liner scheduler once a second, independently.
+    """Tick the station, the liner scheduler and the extra formats once a second, apart.
 
     Each has its own loop, so a slow liner decode (up to 30 s through
     ffmpeg) never holds up the station's idle check, and a failure in one
@@ -673,7 +680,12 @@ async def tick_stream_workers(
         bridge: The bridge holding the station and liner scheduler.
         sleep: ``asyncio.sleep`` replacement for tests.
     """
-    workers = (("station", bridge.station), ("liner scheduler", bridge.liner_scheduler))
+    workers = (
+        ("station", bridge.station),
+        ("liner scheduler", bridge.liner_scheduler),
+        # Stops an extra format's encoder once nobody listens to it (#50).
+        ("extra formats", getattr(bridge, "mounts", None)),
+    )
     async with asyncio.TaskGroup() as group:
         for name, worker in workers:
             if worker is not None:

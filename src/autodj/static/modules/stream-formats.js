@@ -18,9 +18,11 @@ import { announceStatus } from "./live-region.js";
 export const FORMAT_SETTLE_MS = 600;
 const FORMATS = ["aac", "opus"];
 
-// "AAC, 96 kbps: http://host/stream.aac"
+// "AAC, 96 kbps: http://host/stream.aac", and what its encoder last
+// said on stderr while it runs, if anything.
 export function formatLine(item, origin) {
-  return `${item.label}, ${item.bitrate} kbps: ${origin}${item.path}`;
+  const line = `${item.label}, ${item.bitrate} kbps: ${origin}${item.path}`;
+  return item.error ? `${line}. Its encoder last said: ${item.error}` : line;
 }
 
 // What a save did, in words.

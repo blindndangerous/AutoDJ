@@ -1048,11 +1048,21 @@ Changing a format's bitrate makes only that format's listeners reconnect.
 three Opus listeners fill the station. A listener on any format starts an idle set, as an MP3
 listener does. Relays and broadcast recordings stay MP3.
 
-Each format that is on runs its own ffmpeg encoder on this computer, fed the same mixed audio.
-The mix never waits for one: every encoder has its own queue of at most 2 seconds of audio, and
-an encoder that falls behind loses its oldest audio, with one warning in the log, while the mix,
-the MP3 stream and the other format carry on. A listener who joins starts on a whole frame (or,
-for Opus, the stream's header and then a whole page) from the last 2 seconds of audio.
+Turning a format on first has ffmpeg encode a moment of silence in it. If this ffmpeg cannot
+(for example one built without libopus), the setting is refused with ffmpeg's own words and
+nothing changes; when several changes are saved together, none is made unless all can be.
+
+A format that is on runs its own ffmpeg encoder on this computer, fed the same mixed audio, but
+only while someone listens to it: its first listener starts the encoder, and it stops once nobody
+has listened for a minute. So a format nobody uses costs nothing. (The MP3 encoder runs whenever
+the station streams, as before.) The mix never waits for an encoder: each has its own queue of at
+most 2 seconds of audio, and one that falls behind loses its oldest audio, with one warning in
+the log, while the mix, the MP3 stream and the other format carry on; the song title changes
+never wait on an encoder starting or stopping either. A listener who joins a running encoder
+starts on a whole frame (or, for Opus, the stream's header and then a whole page) from the last
+2 seconds of audio; the first listener, or one who joins before an Opus stream's header is
+complete, gets the stream from its start. When an encoder exits, the log gives its last words,
+and Settings shows them beside its address while it runs.
 
 What an encoder costs, measured with ffmpeg's `-benchmark` on 120 seconds of audio, as a share
 of one CPU core (an Intel Core i7-8809G at 3.1 GHz under Windows 11, ffmpeg 8.1):
@@ -1064,11 +1074,11 @@ of one CPU core (an Intel Core i7-8809G at 3.1 GHz under Windows 11, ffmpeg 8.1)
 Those are for music (two minutes of a DJ demo track). Pink noise under a chord gave 1.1 to
 1.5 % for MP3, 2.1 to 2.2 % for AAC and 1.3 to 1.6 % for Opus. The whole AutoDJ process with its
 encoders, on an idle station playing silence, went from 1.9 % of one core with MP3 alone to
-3.9 % with AAC at 96 kbps and Opus at 64 kbps turned on.
+3.9 % with AAC at 96 kbps and Opus at 64 kbps both running, as when each has a listener.
 
-So each extra format costs about as much as the MP3 stream already does: a few percent of one
-core. Several stations each run their own encoders, so multiply by the stations that have a
-format on.
+So each extra format costs about as much as the MP3 stream already does, a few percent of one
+core, and only while it has listeners (and a minute after). Several stations each run their own
+encoders, so multiply by the stations whose format is being heard.
 
 ### Listener statistics
 

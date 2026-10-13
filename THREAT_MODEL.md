@@ -618,10 +618,14 @@ Other stream formats (#50):
   password and its throttle, bans and `max_listeners_per_address`. `max_listeners` counts the
   listeners of all of a station's formats together, so turning a format on adds no listener
   slots and no way around the limit.
-- Each format that is on is one more ffmpeg process per station, started with a fixed argument
-  list (`-c:a aac -f adts`, or `-c:a libopus -ar 48000 -f ogg`) and a bitrate from a fixed
-  list; nothing a listener or the browser sends reaches its command line. A listener cannot
-  start an encoder: only the operator's setting does. The encoder gets audio through its own
+- Each format that is on is at most one more ffmpeg process per station, started with a fixed
+  argument list (`-c:a aac -f adts`, or `-c:a libopus -ar 48000 -f ogg`) and a bitrate from a
+  fixed list; nothing a listener or the browser sends reaches its command line. Turning a
+  format on probes it once with a fixed tenth of a second of silence. The encoder starts for
+  the format's first listener and stops a minute after its last; a request that is then turned
+  away (listener limit, ban) can keep it running for that minute, so repeated requests can keep
+  an enabled format's encoder up, which costs a few percent of one core and nothing more. The
+  encoder gets audio through its own
   bounded queue (2 seconds); one that stalls loses its oldest audio with a logged warning and
   never holds up the mix bus, the MP3 stream or the other format, and a listener that falls
   behind is dropped as on the MP3 stream. Measured cost is a few percent of one CPU core per

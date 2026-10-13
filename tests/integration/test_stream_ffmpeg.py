@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+import contextlib
+import dataclasses
 import shutil
 import threading
+import time
 
 import numpy as np
 import pytest
 
 from autodj.icy import mp3_frame_offset
-from autodj.stream import FfmpegEncoder
-from autodj.stream_formats import AAC, OPUS, adts_frame_offset, ogg_header_end, ogg_page_offset
+from autodj.stream import EncoderUnavailableError, FfmpegEncoder, probe_encoder
+from autodj.stream_formats import (
+    AAC,
+    MP3,
+    OPUS,
+    adts_frame_offset,
+    ogg_header_end,
+    ogg_page_offset,
+)
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
 
@@ -94,3 +104,36 @@ def test_an_opus_listener_joining_mid_stream_can_decode_it_with_the_header() -> 
     assert start >= 0
     joined = data[:header_end] + data[middle + start :]
     assert _decoded_seconds(joined, "ogg") > 1.0
+
+
+@pytest.mark.parametrize(("fmt", "bitrate"), [(AAC, 96), (OPUS, 64), (MP3, 128)])
+def test_the_probe_passes_a_format_ffmpeg_can_encode(fmt, bitrate: int) -> None:
+    probe_encoder(fmt, bitrate)
+
+
+def test_the_probe_refuses_an_encoder_this_ffmpeg_lacks_in_its_own_words() -> None:
+    missing = dataclasses.replace(OPUS, encoder=("-c:a", "autodj_no_such_encoder"))
+    with pytest.raises(
+        EncoderUnavailableError, match=r"(?i)ffmpeg could not encode Opus: .*encoder"
+    ):
+        probe_encoder(missing, 64)
+
+
+def test_an_encoder_keeps_what_ffmpeg_said_when_it_fails() -> None:
+    missing = dataclasses.replace(AAC, encoder=("-c:a", "autodj_no_such_encoder"))
+    encoder = FfmpegEncoder(96, missing)
+    try:
+        # Older ffmpeg (6.1 on Ubuntu) reads its input before it opens the
+        # encoder, so it is given audio, as the stream always gives it.  A
+        # newer one has already exited: the pipe is broken, as the stream's
+        # writer sees it.
+        with contextlib.suppress(OSError):
+            encoder.write(bytes(44100 // 10 * 2 * 4))
+            encoder.close_input()
+        assert encoder.read(4096) == b""
+        deadline = time.monotonic() + 5
+        while not encoder.errors and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert any("autodj_no_such_encoder" in line for line in encoder.errors)
+    finally:
+        encoder.close()

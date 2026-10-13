@@ -73,8 +73,71 @@ class EncoderUnavailableError(Exception):
     """The encoder failed repeatedly and is cooling down."""
 
 
+#: The encoder's last stderr lines kept for the log and the Stream settings.
+_STDERR_LINES = 8
+#: How long a probe encode (:func:`probe_encoder`) may take.
+_PROBE_TIMEOUT = 15.0
+
+
+def _encoder_argv(bitrate: int, fmt: StreamFormat) -> list[str]:
+    """ffmpeg's argument list: f32le stereo PCM on stdin, *fmt* at *bitrate* on stdout."""
+    return [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "f32le",
+        "-ac",
+        "2",
+        "-ar",
+        str(SAMPLE_RATE),
+        "-i",
+        "pipe:0",
+        *fmt.encoder,
+        "-b:a",
+        f"{bitrate}k",
+        *fmt.container,
+        "pipe:1",
+    ]
+
+
+def probe_encoder(fmt: StreamFormat, bitrate: int) -> None:
+    """Encode a tenth of a second of silence in *fmt* at *bitrate*, as a stream would.
+
+    Run once when a format is turned on, so an ffmpeg built without that
+    encoder (libopus, say) fails the setting with ffmpeg's own words
+    instead of a stream that restarts forever.
+
+    Raises:
+        EncoderUnavailableError: ffmpeg is missing, failed or took too long;
+            the message says why.
+    """
+    silence = bytes(SAMPLE_RATE // 10 * 2 * 4)
+    try:
+        result = subprocess.run(  # nosec B603 B607 -- fixed argv, ffmpeg from PATH
+            _encoder_argv(bitrate, fmt),
+            input=silence,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=_PROBE_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise EncoderUnavailableError(f"ffmpeg could not encode {fmt.label}: {exc}") from exc
+    if result.returncode != 0:
+        lines = [line.strip() for line in result.stderr.decode("utf-8", "replace").splitlines()]
+        reason = next((line for line in reversed(lines) if line), f"exit {result.returncode}")
+        raise EncoderUnavailableError(f"ffmpeg could not encode {fmt.label}: {reason}")
+
+
 class FfmpegEncoder:  # pragma: no cover -- exercised by tests/integration/test_stream_ffmpeg.py
-    """ffmpeg subprocess encoder: f32le stereo PCM in, MP3 (or *fmt*) out."""
+    """ffmpeg subprocess encoder: f32le stereo PCM in, MP3 (or *fmt*) out.
+
+    Its last few stderr lines are kept (:attr:`errors`) for the log and
+    the Stream settings, read by a thread of their own so a chatty ffmpeg
+    never blocks on a full pipe.
+    """
 
     def __init__(self, bitrate: int, fmt: StreamFormat = MP3) -> None:
         """Start an ffmpeg subprocess that encodes f32le stereo PCM to *fmt*.
@@ -83,30 +146,27 @@ class FfmpegEncoder:  # pragma: no cover -- exercised by tests/integration/test_
             bitrate: The bitrate in kbps.
             fmt: The format to encode; MP3 unless given.
         """
+        self.errors: collections.deque[str] = collections.deque(maxlen=_STDERR_LINES)
         self._proc = subprocess.Popen(  # nosec B603 B607 -- fixed argv, ffmpeg from PATH
-            [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-f",
-                "f32le",
-                "-ac",
-                "2",
-                "-ar",
-                str(SAMPLE_RATE),
-                "-i",
-                "pipe:0",
-                *fmt.encoder,
-                "-b:a",
-                f"{bitrate}k",
-                *fmt.container,
-                "pipe:1",
-            ],
+            _encoder_argv(bitrate, fmt),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
+        threading.Thread(
+            target=self._read_errors, name="autodj-encoder-stderr", daemon=True
+        ).start()
+
+    def _read_errors(self) -> None:
+        """Keep ffmpeg's last stderr lines until it closes the pipe."""
+        stderr = self._proc.stderr
+        if stderr is None:
+            return
+        with contextlib.suppress(OSError, ValueError):
+            for raw in stderr:
+                line = raw.decode("utf-8", "replace").strip()
+                if line:
+                    self.errors.append(line)
 
     @property
     def alive(self) -> bool:
@@ -148,7 +208,7 @@ class FfmpegEncoder:  # pragma: no cover -- exercised by tests/integration/test_
                 self._proc.kill()
             with contextlib.suppress(Exception):
                 self._proc.wait(timeout=5)
-        for pipe in (self._proc.stdin, self._proc.stdout):
+        for pipe in (self._proc.stdin, self._proc.stdout, self._proc.stderr):
             if pipe is not None:
                 with contextlib.suppress(Exception):
                     pipe.close()
@@ -274,6 +334,9 @@ class StreamOutput:
         self._clock = clock
         self._lock = threading.Lock()
         self._listeners: list[Listener] = []
+        # Ogg listeners who joined before the stream's header was complete:
+        # they get the stream from its first page once it is (lock held).
+        self._waiting: list[Listener] = []
         self._sinks: list[StreamSink] = []
         self._burst: collections.deque[bytes] = collections.deque()
         # When each burst chunk arrived: AAC and Opus spend far fewer bytes
@@ -330,7 +393,7 @@ class StreamOutput:
                 "Stream encoder failed %d times in a minute; pausing it for 60 s", _FAILURE_LIMIT
             )
 
-    def _flush_pending_titles(self) -> None:
+    def _flush_pending_titles(self) -> None:  # lock held
         """Apply the latest pending title and drop the rest.
 
         Pending title marks are positions in the *old* encoder's byte
@@ -341,9 +404,12 @@ class StreamOutput:
         most recently requested title is the one that should be showing
         once the new encoder starts producing output, so apply it now.
         """
-        if self._pending_titles:
-            self._title = self._pending_titles[-1][1]
-            self._pending_titles.clear()
+        # Taken one at a time: set_title appends without the lock.
+        last = None
+        while self._pending_titles:
+            last = self._pending_titles.popleft()
+        if last is not None:
+            self._title = last[1]
 
     def _install_encoder(self, encoder: FfmpegEncoder) -> None:
         """Make *encoder* current and start draining it (lock held).
@@ -421,7 +487,12 @@ class StreamOutput:
                 break
             self._on_encoded(encoder, data)
         if not self._closed and encoder is self._encoder:
-            logger.warning("Stream encoder exited; restarting")
+            said = list(getattr(encoder, "errors", ()))
+            logger.warning(
+                "%s stream encoder exited; restarting%s",
+                self._format.label,
+                f". ffmpeg said: {' | '.join(said)}" if said else "",
+            )
             self._restart_encoder(encoder)
 
     def _log_write_problem_once(self, message: str) -> None:
@@ -486,12 +557,16 @@ class StreamOutput:
     def set_title(self, artist: str, title: str) -> None:
         """Switch the ICY title once audio written from now reaches listeners.
 
+        Runs on the mix-bus thread, so it takes no lock: an encoder being
+        restarted under the output's lock must not hold up the mix.  A
+        deque append is atomic, and a byte position read a block early or
+        late moves the title by that block.
+
         Args:
             artist: The track artist.
             title: The track title.
         """
-        with self._lock:
-            self._pending_titles.append((self._pcm_in, format_stream_title(artist, title)))
+        self._pending_titles.append((self._pcm_in, format_stream_title(artist, title)))
 
     def _on_encoded(self, encoder: FfmpegEncoder, data: bytes) -> None:
         """Advance the title cursor and burst buffer, then fan *data* out.
@@ -522,6 +597,8 @@ class StreamOutput:
                 reached = self._pcm_in
             while self._pending_titles and reached >= self._pending_titles[0][0]:
                 self._title = self._pending_titles.popleft()[1]
+            if self._waiting and self._ogg_pending is None:
+                self._admit_waiting()
             burst_limit = int(self._bitrate * 1000 / 8 * _BURST_SECONDS)
             now = self._clock()
             self._burst.append(data)
@@ -562,6 +639,20 @@ class StreamOutput:
             )
             self._ogg_pending = None
 
+    def _admit_waiting(self) -> None:
+        """Give the Ogg listeners who waited for the header the stream so far (lock held).
+
+        The burst still starts at the new stream's first page: it is
+        cleared for each new Ogg encoder and holds 2 s, far more than the
+        header pages take.
+        """
+        first = self._join_bytes()
+        for listener in self._waiting:
+            if first:
+                listener.push(first, self._title)
+            self._listeners.append(listener)
+        self._waiting.clear()
+
     def _join_bytes(self) -> bytes:
         """What a new listener hears first: the recent audio from a whole frame or page.
 
@@ -600,9 +691,18 @@ class StreamOutput:
 
     @property
     def listener_count(self) -> int:
-        """Current number of listeners."""
-        with self._lock:
-            return len(self._listeners)
+        """Current number of listeners, those waiting for an Ogg header too.
+
+        Read without the lock (``len`` of a list is atomic), so the station
+        tick and the event loop never wait on an encoder restart.
+        """
+        return len(self._listeners) + len(self._waiting)
+
+    @property
+    def last_error(self) -> str | None:
+        """The encoder's last stderr line, if it said anything."""
+        errors = getattr(self._encoder, "errors", None)
+        return errors[-1] if errors else None
 
     def add_listener(self, icy: bool) -> Listener:
         """Register a listener and give it the recent burst.
@@ -635,10 +735,15 @@ class StreamOutput:
                     dead.close()
                 except Exception:
                     logger.debug("Closing the dead encoder raised", exc_info=True)
-            if len(self._listeners) >= self._max_listeners:
+            if len(self._listeners) + len(self._waiting) >= self._max_listeners:
                 raise ListenerLimitError("listener limit reached")
             max_bytes = int(self._bitrate * 1000 / 8 * _QUEUE_SECONDS)
             listener = Listener(icy and self._format.icy, max_bytes, self._loop)
+            if self._ogg_pending is not None:
+                # No Ogg header yet: nothing is sent until there is one, so
+                # the player never starts mid-page or without the header.
+                self._waiting.append(listener)
+                return listener
             first = self._join_bytes()
             if first:
                 listener.push(first, self._title)
@@ -652,9 +757,12 @@ class StreamOutput:
             listener: The listener to remove.
         """
         with self._lock:
-            if listener not in self._listeners:
+            if listener in self._waiting:
+                self._waiting.remove(listener)
+            elif listener in self._listeners:
+                self._listeners.remove(listener)
+            else:
                 return
-            self._listeners.remove(listener)
             listener.close()
 
     def disconnect_all(self) -> None:
@@ -664,9 +772,10 @@ class StreamOutput:
 
     def _disconnect_all_locked(self) -> None:
         """Close every listener (lock held)."""
-        for listener in self._listeners:
+        for listener in (*self._listeners, *self._waiting):
             listener.close()
         self._listeners.clear()
+        self._waiting.clear()
 
     def set_bitrate(self, bitrate: int) -> None:
         """Restart the encoder at *bitrate*; listeners reconnect on their own.

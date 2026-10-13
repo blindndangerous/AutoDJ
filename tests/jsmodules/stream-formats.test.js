@@ -46,6 +46,8 @@ describe("stream formats", () => {
   it("words each address and each save", () => {
     expect(formatLine(INFO.formats[1], "http://radio.local:8080"))
       .toBe("AAC, 96 kbps: http://radio.local:8080/stream.aac");
+    expect(formatLine({ ...INFO.formats[1], error: "Encoder not found" }, "http://h"))
+      .toBe("AAC, 96 kbps: http://h/stream.aac. Its encoder last said: Encoder not found");
     expect(formatSavedText("Opus", 64)).toBe("Opus stream on at 64 kbps.");
     expect(formatSavedText("AAC", 0)).toBe("AAC stream off.");
   });

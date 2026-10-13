@@ -620,14 +620,24 @@ function horizontalOverflow(page) {
   });
 }
 
+// Checkboxes and radio buttons under 24 px, and the Stream settings'
+// format Copy buttons and statistics buttons (#50) under the 44 px every
+// other button has.
 function smallChoiceControls(page) {
-  return page.evaluate(() => [...document.querySelectorAll(
-    'input[type="checkbox"], input[type="radio"]',
-  )]
-    .filter((input) => input.getClientRects().length)
-    .map((input) => ({ id: input.id, ...input.getBoundingClientRect().toJSON() }))
-    .filter(({ width, height }) => width < 23.5 || height < 23.5)
-    .map(({ id, width, height }) => `${id || "input"} ${Math.round(width)}x${Math.round(height)}`));
+  return page.evaluate(() => {
+    const measure = (selector, least) => [...document.querySelectorAll(selector)]
+      .filter((control) => control.getClientRects().length)
+      .map((control) => ({
+        id: control.id || control.textContent.trim() || control.tagName.toLowerCase(),
+        ...control.getBoundingClientRect().toJSON(),
+      }))
+      .filter(({ width, height }) => width < least || height < least)
+      .map(({ id, width, height }) => `${id} ${Math.round(width)}x${Math.round(height)}`);
+    return [
+      ...measure('input[type="checkbox"], input[type="radio"]', 23.5),
+      ...measure("#stream-formats-list button, #listener-stats button", 43.5),
+    ];
+  });
 }
 
 async function axeViolations(page) {
