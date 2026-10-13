@@ -1,5 +1,6 @@
 """Category conditions through the live player's filtering and fallback paths."""
 
+import logging
 from collections import deque
 from dataclasses import replace
 from types import SimpleNamespace
@@ -102,6 +103,7 @@ def test_category_read_failure_is_reported_and_does_not_use_stale_membership():
 
 def test_clock_skip_logs_deduplicate_and_reset_after_a_clear_pick(caplog):
     player = _clock_player([("A", "One")])
+    player._dry_run = False
     reason = [r"Step 1: music slot C:\missing: no matching entries"]
     with caplog.at_level("WARNING", logger="autodj.player"):
         player._log_clock_skips(reason)
@@ -111,8 +113,37 @@ def test_clock_skip_logs_deduplicate_and_reset_after_a_clear_pick(caplog):
     assert caplog.text.count("Clock selection skipped:") == 2
 
 
+def test_clock_skip_logs_are_suppressed_during_forecasts(caplog):
+    player = _clock_player([("A", "One")])
+    reason = ["Step 1: music slot: no matching entries"]
+    caplog.clear()
+    player._dry_run = True
+    with caplog.at_level(logging.INFO, logger="autodj.player"):
+        player._log_clock_skips(reason)
+        assert not caplog.records
+        assert not hasattr(player, "_clock_skips_logged")
+        player._dry_run = False
+        player._log_clock_skips(reason)
+    assert len(caplog.records) == 1
+    assert caplog.records[0].levelno == logging.WARNING
+
+
+def test_clock_skip_rule_blocks_are_info_but_missing_or_closed_steps_warn(caplog):
+    player = _clock_player([("A", "One")])
+    player._dry_run = False
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="autodj.player"):
+        player._log_clock_skips(["Step 1: category Power: all matching entries blocked by rules"])
+        player._log_clock_skips(["Step 1: category Night: outside its hours"])
+    assert [record.levelno for record in caplog.records] == [
+        logging.INFO,
+        logging.WARNING,
+    ]
+
+
 def test_clock_pick_logs_a_filtered_step_before_the_next_folder(caplog):
     player = _clock_player([("A", "One"), ("B", "Two")])
+    player._dry_run = False
     first, second = player.playable_entries()
     player._clock_slots = [
         ClockSlot(kind="track", path=first.path),

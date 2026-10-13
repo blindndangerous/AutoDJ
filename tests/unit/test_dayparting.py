@@ -254,6 +254,7 @@ def test_relaxing_the_repeat_rules_never_picks_a_song_outside_its_hours() -> Non
 
 def test_a_clock_skips_a_category_step_outside_its_hours_and_says_why(caplog) -> None:
     player = _dayparted(_player("clock", dmca=False), NIGHT, clock=True)
+    player._dry_run = False
     with caplog.at_level(logging.WARNING, logger="autodj.player"):
         for _ in range(6):
             picked = player._clock_pick(player._pick_context(), 0)

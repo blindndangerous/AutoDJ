@@ -1715,9 +1715,20 @@ class Player:
 
     def _log_clock_skips(self, skipped: list[str]) -> None:
         """Log skipped clock steps once until the reasons change or clear."""
+        if getattr(self, "_dry_run", False):
+            return
         reasons = tuple(skipped)
         if reasons and reasons != getattr(self, "_clock_skips_logged", ()):
-            logger.warning("Clock selection skipped: %s", "; ".join(reasons))
+            blocked = [
+                reason
+                for reason in reasons
+                if "blocked by rules" in reason and "missing or blocked by rules" not in reason
+            ]
+            other = [reason for reason in reasons if reason not in blocked]
+            if other:
+                logger.warning("Clock selection skipped: %s", "; ".join(other))
+            if blocked:
+                logger.info("Clock selection skipped: %s", "; ".join(blocked))
         self._clock_skips_logged = reasons
 
     def _candidate_filter(self, context: _PickContext) -> Callable[[IndexEntry], bool]:
