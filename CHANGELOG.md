@@ -562,6 +562,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The web page footer said "build unknown" in Docker, because the image has no git. Build it
+  with `AUTODJ_COMMIT=$(git rev-parse --short HEAD) docker compose build` (or `up -d --build`)
+  and the footer names that commit. Once paired, the commit in the footer, from git or from
+  the image, links to that commit on GitHub in a new tab. A value that is not 7 to 40
+  hexadecimal digits is ignored. See [Build stamp](docs/operations.md#build-stamp).
 - Positive liner overlap points now respect the next song's intro, just like zero and
   negative values. A cold opening waits until the liner's segue; its remaining tail can
   still overlap. Some songs now start later where the old overlap would have covered

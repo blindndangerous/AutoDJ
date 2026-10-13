@@ -2753,14 +2753,17 @@
   Placeholder text renders before /api/version resolves so a SR user
   landing here mid-fetch hears something coherent and there is no
   layout shift on populate.
+
+  When the server knows its commit, app.js wraps #ver-build in a link to
+  that commit on GitHub, so the link's name starts with its visible text,
+  "build 1a2b3c4" (2.5.3), and a hidden suffix says where it goes.
 -->
 <footer id="page-footer">
   <p id="version-stamp">
     AutoDJ
     <span id="ver-version">loading…</span>
     <span class="ver-sep" aria-hidden="true">·</span>
-    build
-    <span id="ver-commit">…</span>
+    <span id="ver-build">build <span id="ver-commit">…</span></span>
     <span class="ver-sep" aria-hidden="true">·</span>
     <time id="ver-built" datetime="">…</time>
   </p>
