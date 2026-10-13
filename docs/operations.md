@@ -1883,7 +1883,9 @@ Repeat limits are edited in Settings > Picking > Repeats and stored in
 `web_state.json`. Old repeat keys in `config.toml` or `web_state.json` are
 ignored with a warning; re-enter any limits that still use those keys in that panel. The related
 artists file is `index/<name>/related-artists.toml` and is read only when
-**Use related artists** is enabled. It must be at most 1 MiB.
+**Use related artists** is enabled. The related tracks file is
+`index/<name>/related-tracks.toml` and is read only when **Use related tracks** is enabled.
+Each must be at most 1 MiB.
 
 ## Testing the rotation
 
@@ -1894,7 +1896,7 @@ before the rules go live.
 
 It uses everything the station picks with: the pick mode or the active clockwheel and its place,
 the rotation categories and their days and hours, the schedule's song-picking changes (with their
-date ranges), the repeat rules including related artists, and the DMCA limits. It starts from the
+date ranges), the repeat rules including related artists and related tracks, and the DMCA limits. It starts from the
 station's real play history and last-played times. The run picks with a private copy of the
 player, with its own clock and its own random choices, so the on-air player, its history, the
 clockwheel place and the library are never touched.
@@ -1943,7 +1945,7 @@ The report, in words or JSON, gives:
   played;
 - songs never played, with a count and the first ten, overall and per category;
 - how often each rule had to be relaxed, and which: same artist, related artist, same album, same
-  title, the track repeat window, dayparting and back-to-back repeats, plus fallbacks to a random
+  title, related track, the track repeat window, dayparting and back-to-back repeats, plus fallbacks to a random
   song. A clockwheel step set not to enforce the rules is counted apart;
 - clockwheel steps that were skipped or came up empty, with the reason, such as "all matching
   entries blocked by rules" or "outside its hours";
@@ -1975,7 +1977,7 @@ songs) in about two minutes, and in a little over three with the DMCA limits on.
   `vectors.g<number>.index` files it names.
 - `dj_meta.db`, the intro, outro, beat grid and cue cache.
 - `web_state.json`, the settings chosen in the web page.
-- `related-artists.toml` in the active index folder.
+- `related-artists.toml` and `related-tracks.toml` in the active index folder.
 - `recording.json`, the broadcast recording settings and whether it was running. The recorded
   MP3 files are not included; archive the recordings folder yourself.
 - `library.db`, the station's registered folders, track data and cues, last-played times and

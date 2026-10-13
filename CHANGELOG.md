@@ -10,6 +10,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Related tracks (#101). Settings > Picking > Repeats has a **Use related tracks** checkbox, off
+  by default, with its own Tracks and Minutes limits (20 tracks to start with). It holds back
+  tracks that sound alike on air, such as a song and one that samples it, listed as
+  "Artist - Title" groups in `index/<name>/related-tracks.toml`. Every track in a group holds
+  back the others in both directions. AutoDJ copies a small sample there on first use and never
+  replaces your copy; an invalid file is refused on save and skipped with a warning at startup.
+  The rotation tester, `autodj doctor` and `autodj backup` include the file.
+- Related artists have their own Tracks and Minutes limits under **Use related artists**.
+  Settings saved before this keep using the artist limits.
+- A "(w/ X)" note in a title now credits X, like "(feat. X)" and "(with X)", for the artist
+  repeat rules, related artists and DMCA mode, and is ignored when titles are compared.
 - Negative liner **Overlap start** values down to -15 seconds start the next song first, then place
   liner content within its intro when it fits. For example, if a -3 second request has one second
   available before vocals, the liner starts one second after the song. If the main content is longer
