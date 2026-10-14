@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The page title no longer shows the album. It names the station whenever the station is not
+  called AutoDJ, even on a server with one station (#251).
+- Windows setup offers to install missing uv and FFmpeg with WinGet, explains what each tool
+  does, and gives manual installation steps when needed. The quick start uses one launcher
+  command, with instructions for moving to another computer.
 - History shows only the time on each play, with a date heading for each day instead of
   repeating dates on every row. Live updates keep existing rows and keyboard focus in place.
 
@@ -75,6 +80,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[ads] max_upload_mb` before the body is read and decoded one at a time off the event loop with
   the breaks' bounded decoder. Routes: `/api/ads` and `/api/stations/<name>/ads`. See
   [Ad breaks](docs/operations.md#ad-breaks).
+- Intro rules (#127): Library tools > Intro rules plays a voice liner as the next song starts
+  when that song matches clockwheel conditions, such as an artist name drop, a genre, a decade, the
+  first-release year, any Beets field, a folder or a saved category. Each rule chooses registered
+  voice liners or a liner folder, with a chance, a wait between plays that holds across restarts,
+  play dates and a priority next to the song's and artist's own matched intros (after them by
+  default). Each station keeps its own rules in `intro_rules.json`, which backups include.
 - More stream formats (#50): beside the MP3 stream, a station can serve the same mix in AAC
   (`/stream.aac`) and Opus (`/stream.opus`), and at `/stations/<name>.aac` and `.opus`, each at
   its own bitrate. Turn them on in Settings, Stream, **More formats** (AAC quality, Opus
@@ -125,11 +136,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is now kept exactly as it was with every save instead of being set aside, so moving between
   versions loses no event. An event with settings its action does not accept is still set
   aside as before.
+- Live DJs and talkover (#48): in stream mode a live DJ can take over a station from BUTT,
+  Mixxx or another Icecast source client, connecting to AutoDJ's own address and port at the
+  mount `live` (or `stations/<name>/live`) with their own username and password, added in
+  **Settings > Live DJ** (passwords are stored as scrypt hashes and never shown).
+  When the DJ's audio arrives AutoDJ crossfades to it and holds automation exactly where it
+  was; when they leave, or go silent for 15 seconds, it comes back with the next song,
+  rendered again for the time it airs. Hard-timed schedule events during a set take effect
+  when the DJ hands back, and liners, time checks and carts are not played over them. The page
+  says "Live: <name> since <time>" once when a DJ goes on or off, and the public feed, status
+  page and stream title show the DJ. Each set is a History row and a `live` row in the CSV
+  play log, left out of SoundExchange reports. Hold **Talk** on Now Playing (mouse, touch,
+  Space or Enter on the button, or Alt+M anywhere) to speak over the music from the browser's
+  microphone, with the duck amount and return time set per station; one person talks at a
+  time. Sources need HTTPS or this machine, unless `[server] live_plain_http_lan = true` also
+  allows plain HTTP from the local network. Backups keep the DJs but not their password
+  hashes, so set DJ passwords again after a restore. See
+  [Live DJs and talkover](docs/operations.md#live-djs-and-talkover).
 - Settings > Stream can edit Icecast and Shoutcast relays while the station runs. Relay definitions
   and passwords are saved per station; environment-managed passwords remain read-only. Station
   name, genre, description and website URL are sent where each stream protocol supports them. The
   saved relay file is readable only by the account AutoDJ runs as, on Windows too, and backups
   leave it and its passwords out; a restore keeps each station's own relay settings.
+- Listener requests can use up to three optional bridge songs to approach a distant request.
+  Requests now check the active clockwheel music step and daypart at their projected start.
+  Operators can choose whether a request with no smooth spot waits or uses the best legal spot;
+  bridge status and the reason appear in queue, preview and request API data (#49). Queue &
+  Search > Listener requests has a Smooth transitions form for these settings, and the queue
+  marks each bridge "Bridge to <request>". Removing a request removes only its own bridges.
 - Music speed (#162): Settings > Sound > Music speed has a slider and exact numeric field for
   10% slower to 10% faster. Speed and pitch change together. Browser music changes speed when
   safe; voice liners and previews stay at their normal speed. In stream and server-audio modes,

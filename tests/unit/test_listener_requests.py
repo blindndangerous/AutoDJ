@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from autodj._bridge import RequestSlot
+from autodj._bridge import QueueView, RequestInsert, RequestSlot
 from autodj.config import RequestsConfig, load_config
 from autodj.indexer import IndexEntry
 from autodj.listener_requests import (
@@ -70,6 +70,8 @@ def test_requests_are_off_by_default_with_safe_limits() -> None:
     assert cfg.enabled is False
     assert cfg.approval == "manual"
     assert (cfg.per_listener, cfg.per_listener_minutes, cfg.daily_limit) == (3, 60, 50)
+    assert (cfg.bridges_enabled, cfg.max_bridges, cfg.bridge_cost_threshold) == (False, 3, 2.0)
+    assert cfg.no_smooth_spot == "best"
 
 
 @pytest.mark.parametrize(
@@ -84,11 +86,28 @@ def test_requests_are_off_by_default_with_safe_limits() -> None:
         ({"blocked_folders": "Xmas"}, TypeError, "blocked_folders"),
         ({"blocked_artists": ["a"] * 501}, ValueError, "at most 500"),
         ({"ipv6_prefix": 16}, ValueError, "ipv6_prefix must be between 32 and 128"),
+        ({"bridges_enabled": "yes"}, TypeError, "bridges_enabled"),
+        ({"max_bridges": 4}, ValueError, "max_bridges"),
+        ({"bridge_cost_threshold": -1}, ValueError, "bridge_cost_threshold"),
+        ({"no_smooth_spot": "force"}, ValueError, "no_smooth_spot"),
     ],
 )
 def test_bad_request_settings_are_refused(values: dict, error: type, match: str) -> None:
     with pytest.raises(error, match=match):
         RequestsConfig(**values)
+
+
+def test_bridge_settings_load_and_unknown_keys_are_warned(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level("WARNING"):
+        cfg = RequestsConfig.from_dict(
+            {"bridges_enabled": True, "max_bridges": 2, "bridge_max": 9, "no_smooth_spot": "wait"}
+        )
+    assert (cfg.bridges_enabled, cfg.max_bridges, cfg.no_smooth_spot) == (True, 2, "wait")
+    assert "bridge_max" in caplog.text
+    with pytest.raises(ValueError, match="bridge_cost_threshold"):
+        RequestsConfig(bridge_cost_threshold=float("nan"))
+    with pytest.raises(TypeError, match="max_bridges"):
+        RequestsConfig(max_bridges=True)
 
 
 def test_each_station_has_its_own_request_settings(tmp_path: Path) -> None:
@@ -403,16 +422,34 @@ class FakeBridge:
     def entry_for_path(self, path: str) -> IndexEntry | None:
         return next((e for e in self.entries if e.path == path), None)
 
-    def request_slots(self, entry: IndexEntry, horizon_s: float) -> list[RequestSlot]:
+    def request_slots(
+        self,
+        entry: IndexEntry,
+        horizon_s: float,
+        view: QueueView | None = None,
+        clock_cursor: int | None = None,
+        only_position: int | None = None,
+    ) -> list[RequestSlot]:
         if self.slots is not None:
             return self.slots
         return [_slot(0, self.playing, None, *self.dmca)]
 
-    def insert_request(self, entry: IndexEntry, horizon_s: float, choose: Any) -> Any:
-        slot = choose(self.request_slots(entry, horizon_s))
-        if slot is not None:
-            self.queue.insert(slot.position, entry.path)
-        return slot
+    def _queue_view(self) -> QueueView:
+        return QueueView(self.playing, None, tuple(self.entry_for_path(p) for p in self.queue))
+
+    def insert_request(
+        self, entry: IndexEntry, horizon_s: float, choose: Any, *, with_view: bool = False
+    ) -> Any:
+        slots = self.request_slots(entry, horizon_s)
+        selected = choose(slots, self._queue_view()) if with_view else choose(slots)
+        if selected is not None:
+            plan = selected if isinstance(selected, RequestInsert) else RequestInsert(selected)
+            self.queue[plan.slot.position : plan.slot.position] = [
+                *(song.path for song in plan.bridges),
+                entry.path,
+            ]
+            return plan.slot
+        return None
 
     def coming_up(self) -> list[IndexEntry]:
         return [self.playing, *(self.entry_for_path(p) for p in self.queue)]
@@ -485,6 +522,143 @@ def test_auto_approval_queues_at_the_best_place_at_once(tmp_path: Path) -> None:
     assert outcome.detail == "Thanks. Song 4 by Artist 4 should play within the next half hour."
     assert bridge.queue == [bridge.entries[4].path]
     assert desk.book.recent()[0].note.startswith("Fits after Artist 1 — Song 1")
+
+
+def test_auto_request_waits_when_no_smooth_spot_is_allowed(tmp_path: Path) -> None:
+    desk, bridge, ids, _ = _desk(
+        tmp_path, approval="auto", bridge_cost_threshold=0.1, no_smooth_spot="wait"
+    )
+    outcome = desk.submit(ids.shown(bridge.entries[3].path), "", "192.0.2.1")
+    assert outcome.headline == "Request received"
+    assert bridge.queue == []
+    (waiting,) = desk.snapshot()["pending"]
+    assert desk.snapshot()["no_smooth_spot"] == "wait"
+    # The operator decides: approving uses the best legal spot.
+    assert waiting["can_approve"] is True
+    assert "No smooth spot" in waiting["reason"]
+    assert "Approving it uses the best legal spot" in waiting["reason"]
+    request = desk.approve(waiting["id"])
+    assert request.status == "queued"
+    assert bridge.queue == [bridge.entries[3].path]
+
+
+def test_best_legal_spot_explains_a_rough_transition(tmp_path: Path) -> None:
+    desk, bridge, ids, _ = _desk(
+        tmp_path, approval="auto", bridge_cost_threshold=0.1, no_smooth_spot="best"
+    )
+    outcome = desk.submit(ids.shown(bridge.entries[3].path), "", "192.0.2.1")
+    assert outcome.headline == "Request accepted"
+    assert "Using the best legal spot" in desk.snapshot()["recent"][0]["reason"]
+
+
+def test_clockwheel_mismatch_keeps_request_waiting(tmp_path: Path) -> None:
+    desk, bridge, ids, _ = _desk(tmp_path, approval="auto")
+    bridge.slots = [
+        _slot(0, bridge.playing, None, "the song does not match the clockwheel category")
+    ]
+    outcome = desk.submit(ids.shown(bridge.entries[3].path), "", "192.0.2.1")
+    assert outcome.headline == "Request received"
+    assert bridge.queue == []
+    assert "clockwheel" in desk.snapshot()["pending"][0]["reason"]
+
+
+def test_a_bridge_steps_toward_the_request_and_is_listed(tmp_path: Path) -> None:
+    desk, bridge, ids, _ = _desk(
+        tmp_path, approval="auto", bridges_enabled=True, bridge_cost_threshold=1.0
+    )
+    target = replace(bridge.entries[3], energy=0.9)
+    middle = replace(bridge.entries[1], energy=0.5)
+    bridge.entries[3] = target
+    bridge.entries[1] = middle
+    scores = {
+        frozenset((bridge.playing.path, target.path)): 0.0,
+        frozenset((bridge.playing.path, middle.path)): 0.9,
+        frozenset((middle.path, target.path)): 0.9,
+    }
+    bridge.sim = SimpleNamespace(
+        similarity=lambda a, b: scores.get(frozenset((a, b))),
+        bridge_candidates=lambda _path, _limit: (middle,),
+    )
+
+    def slots(entry, _horizon, view=None, _cursor=None, only_position=None):
+        preceding = view.queue if view is not None else ()
+        return [
+            RequestSlot(
+                position=position,
+                starts_in=180.0 * (position + 1),
+                before=preceding[position - 1] if position else bridge.playing,
+                after=None,
+                problems=(),
+            )
+            for position in (
+                range(len(preceding) + 1) if only_position is None else (only_position,)
+            )
+        ]
+
+    bridge.request_slots = slots
+    outcome = desk.submit(ids.shown(target.path), "", "192.0.2.1")
+    assert outcome.headline == "Request accepted"
+    assert bridge.queue == [middle.path, target.path]
+    assert "Bridge to" in desk.book.recent()[0].note
+    snapshot = desk.snapshot()
+    assert snapshot["bridges_enabled"] is True
+    assert snapshot["max_bridges"] == 3
+    assert snapshot["bridge_cost_threshold"] == 1.0
+    assert snapshot["recent"][0]["bridges"] == [middle.display_name]
+
+
+def test_the_operator_list_does_not_search_for_bridges(tmp_path: Path) -> None:
+    desk, bridge, ids, _ = _desk(tmp_path, bridges_enabled=True, bridge_cost_threshold=0.1)
+    searched: list[str] = []
+    bridge.sim = SimpleNamespace(
+        similarity=lambda *_: None,
+        bridge_candidates=lambda path, _limit: searched.append(path) or (),
+    )
+    assert desk.submit(ids.shown(bridge.entries[3].path), "", "192.0.2.1").headline == (
+        "Request received"
+    )
+    (waiting,) = desk.snapshot()["pending"]
+    assert searched == []
+    assert waiting["can_approve"] is True
+    assert "up to three bridge songs" in waiting["reason"]
+    desk.approve(waiting["id"])
+    assert searched  # approving looks for them
+
+
+def test_liners_silence_and_blocked_songs_are_never_bridges(tmp_path: Path) -> None:
+    desk, bridge, ids, _ = _desk(
+        tmp_path,
+        approval="auto",
+        bridges_enabled=True,
+        bridge_cost_threshold=1.0,
+        blocked_artists=["Blocked"],
+    )
+    target = replace(bridge.entries[3], energy=0.9)
+    bridge.entries[3] = target
+    liner = bridge.entries[1]
+    silent = replace(bridge.entries[2], energy=0.0)
+    blocked = replace(bridge.entries[4], artist="Blocked")
+    bridge.entries[2], bridge.entries[4] = silent, blocked
+    bridge.player = SimpleNamespace(_is_liner=lambda entry: entry.path == liner.path)
+    bridge.sim = SimpleNamespace(
+        similarity=lambda a, b: (
+            0.9 if bridge.playing.path not in (a, b) or target.path not in (a, b) else 0.0
+        ),
+        bridge_candidates=lambda _path, _limit: (liner, silent, blocked),
+    )
+    checked: list[str] = []
+    original = bridge.request_slots
+
+    def slots(entry, horizon, view=None, cursor=None, only_position=None):
+        checked.append(entry.path)
+        return original(entry, horizon, view, cursor, only_position)
+
+    bridge.request_slots = slots
+    outcome = desk.submit(ids.shown(target.path), "", "192.0.2.1")
+    assert outcome.headline == "Request accepted"
+    assert bridge.queue == [target.path]
+    assert set(checked) == {target.path}
+    assert "best legal spot" in desk.book.recent()[0].note
 
 
 def test_rules_limits_and_caps_turn_requests_away(tmp_path: Path) -> None:
@@ -579,7 +753,7 @@ def test_a_queue_that_keeps_changing_turns_a_request_away(tmp_path: Path) -> Non
 
     desk, bridge, ids, _ = _desk(tmp_path, approval="auto")
 
-    def changing(*_args):
+    def changing(*_args, **_kwargs):
         raise QueueChanged("The queue kept changing while the request was being placed.")
 
     bridge.insert_request = changing

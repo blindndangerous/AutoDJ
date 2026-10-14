@@ -547,7 +547,8 @@ that fails is kept in memory and written at the next upkeep.
 status page `GET /status` (and HEAD), which renders the same snapshot as HTML.
 They expose only the station name, artist/title/album/duration/timing of the current
 and optional next song, a capped recent history, the local stream listener count and
-the stream path. They contain no file paths, internal IDs, credentials or pairing
+the stream path, and while a live DJ is on the air their display name and start time
+(#48). They contain no file paths, internal IDs, credentials or pairing
 state. The response is cached on track and listener changes, and only this route has
 the wildcard CORS header. The next song is left out unless the operator turns on `show_next`.
 The feed adds today's peak listener count and the server uptime; both reveal roughly when
@@ -766,7 +767,10 @@ What a visitor can do, and the limits on it:
   seconds gets 503 "busy". So a flood cannot park the worker threads that carts, breaks, approvals
   and the player's helpers need.
 - **What cannot be bypassed.** Each accepted request still has to keep the repeat rules and, in
-  DMCA mode, the DMCA limits at the place it would play. It is never played at once or at a set
+  DMCA mode, the DMCA limits at the place it would play. Optional bridge songs receive the same
+  projected checks, plus blocklist, daypart and clockwheel matching. A bridge cannot target an
+  arbitrary path supplied by a listener: candidates come only from the station's indexed music.
+  It is never played at once or at a set
   time, and with `approval = "manual"` (the default) nothing reaches the queue until the operator
   approves it.
 
@@ -786,6 +790,14 @@ with that copy and the song is inserted, or the places are worked out again, at 
 when it changed. The mix bus, which takes `queue_lock`, therefore never waits on the projection,
 the key cache or the library. The projection takes `history_lock` and `queue_lock` one after the
 other, never one inside the other.
+Bridge search is bounded to at most six 24-neighbour vector queries, 36 projected candidate
+checks and three projected request checks per placement attempt. All run outside `queue_lock`; a
+changed queue makes the plan retry, up to the same few attempts as any request, rather than
+insert stale bridge tracks. When no smooth legal position exists, the operator sees why and
+the request either waits or uses the best legal position according to station settings.
+The operator's request list never runs the bridge search, so polling it costs one projection per
+waiting request. The four transition settings change only through the authenticated operator
+route `POST /api/requests/settings`, which validates them as config.toml does.
 
 `[stream] trusted_proxies` now applies in every mode, not only in stream mode. Without it, an
 existing `FORWARDED_ALLOW_IPS` is honoured. Every trusted peer that is not loopback is named in a
@@ -809,6 +821,103 @@ Rejected requests are audited. Successful or rejected unsafe HTTP actions are au
 response status is known. The WebSocket only pushes state; frames a browser sends on it are
 ignored. WebSocket connection, error, and disconnect events are audited. These records support
 single-user incident review but do not provide per-user attribution.
+
+### Live DJ source mounts and talkover (#48)
+
+**New listener surface.** `PUT` and `SOURCE` on `/live` (the default station) and
+`/stations/<slug>/live` are Icecast source mounts on the existing server port: no new port is
+opened. They are the only unsafe-method routes that skip the browser session and Origin checks,
+because source clients have neither; the security middleware exempts exactly those two path
+shapes and those two methods, and only when the path was sent exactly so: a percent-encoded
+spelling such as `/%6cive` gets no exemption (and the route refuses it), so the exemption and
+the source framing below always judge the same bytes. A `Host` header, when sent, must still be allowed; a request with
+none (an HTTP/1.0 source client) is admitted to the route's own checks, since a browser always
+sends `Host` and so a rebinding page cannot reach the mount without one. Responses on these
+paths, refusals by the middleware included, always carry `Connection: close` and bypass
+response compression.
+
+**Framing and smuggling.** Source clients send a body with no `Content-Length` and no
+`Transfer-Encoding`, ending when they hang up. `autodj.live_protocol.IcecastSourceH11Protocol`
+(uvicorn's h11 protocol with one change) recognises such a request only as the first request on
+a connection, only for those two methods and path shapes and only when the head names no
+length; it then adds `Transfer-Encoding: chunked` to the head and wraps every later byte from
+the client as chunk data. No byte after the head can therefore be parsed as a second request,
+and the connection carries the one request until it closes. Any request that frames its own
+body, malformed heads, folded headers and heads over 16 KiB are left to h11 unchanged, which
+frames or refuses them as before. On TLS the protocol sees decrypted bytes the same way. Every
+connection must complete its first request head within 10 seconds or is closed (slow-loris on
+the head), and the server takes at most 256 connections beyond every station's listener limit
+at once (uvicorn's `limit_concurrency`; more get 503).
+
+**Credentials.** Each station has its own DJ accounts in `live_djs.json`: usernames, display
+names and scrypt hashes (N=2^14, r=8, p=1, 16-byte random salts), never passwords; written by
+an atomic rename, mode 0600 on POSIX (on Windows the folder's ACL governs, as for
+`relays.json`). Passwords are 12 to 256 characters. A damaged file refuses every login. One
+`Authorization: Basic` header is required; usernames and hashes are compared in constant
+time, and an unknown username costs the same scrypt run as a wrong password, so timing does
+not reveal which usernames exist. A DJ credential opens only that station's source mount: it
+is not a session, not a machine token, and not valid on another station. Passwords and
+`Authorization` values never reach a log, an `/api` response or the WebSocket state; the
+accounts route returns names and a `password_set` flag only. Removing an account disconnects
+that DJ at once. **Backups keep the accounts and talkover settings but strip every salt and
+hash**, so an archive holds no DJ secret and each password must be set again after a restore;
+a `live_djs.json` that cannot be read is left out of the archive rather than copied whole.
+
+**Guessing and floods.** Five failed logins in a minute from one address (one /64 for IPv6)
+lock it out for the rest of the minute (429); only one login per address is checked at a time;
+at most two scrypt checks run at once across the server, and at most eight logins may be checked
+or waiting at once (more get 503), so a flood costs bounded CPU, memory (16 MiB per check) and
+waiting tasks. The address is the client uvicorn reports, so behind a reverse proxy it is the
+one a trusted proxy names (`[stream] trusted_proxies`), the same trust as listener requests,
+and an untrusted peer's forwarding headers are ignored. Failed logins are logged with the address, never the username or
+password.
+
+**Transport.** A Basic password can be read by anyone on the path, so by default a source is
+accepted only over HTTPS (directly, or through a trusted proxy that says so) or plain HTTP
+straight from loopback with no proxy headers, the rule machine tokens follow. BUTT and Mixxx
+DJs on a LAN often have no HTTPS; `[server] live_plain_http_lan = true` (off by default) also
+accepts plain HTTP from the private IPv4 ranges (10/8, 172.16/12, 192.168/16), link-local
+(169.254/16, fe80::/10) and IPv6 unique local addresses (fc00::/7), never from any other address
+or with proxy headers. With it on, a DJ's password crosses the LAN in the clear, where anyone
+on that network can capture it and then put audio on the air; an operator turns it on only for
+a network they trust, with passwords used nowhere else. Carrier-grade NAT and VPN overlay
+ranges (100.64/10) are not treated as LAN.
+
+**Decoding.** Only MP3, AAC (ADTS) and Ogg are accepted, by content type. Each source gets its
+own FFmpeg process with fixed arguments, no shell, the demuxer named by the content type (no
+probing for other formats), `-protocol_whitelist pipe` (no file or network access from inside
+the stream), a 32 KiB probe, and stderr discarded so crafted metadata cannot reach the logs.
+The route never waits on FFmpeg: encoded chunks go into a 64-chunk queue drained by a writer
+thread, and a full queue (a stuck decoder) ends the source; a reader thread drains decoded PCM
+into a buffer capped at 2 seconds that drops its oldest audio. A source is disconnected after
+10 seconds with no bytes (slow-loris), 30 minutes of standby sending only silence, 15 seconds
+of silence on the air, an input rate over 512 kbit/s over five seconds plus a 64 KiB burst,
+2 GiB in one connection, or a decoder exit. One source per station: the claim is reserved
+under the station's lock before FFmpeg starts, so two simultaneous logins cannot both get it.
+
+**The audio thread.** The mix bus only reads the buffers the routes fill: it never takes the
+live desk's lock, never waits on the network or a decoder, never writes a log line (an underrun
+is counted on the source and logged by its route), and inserts silence on an underrun. The
+buffers' own lock is held only to append a reference or copy one block.
+Starting a decoder, recording the session and readying automation all happen on other
+threads. Liners, time checks and carts are not played over a live DJ.
+
+**Talkover.** `WS /api/live/mic` and `/api/stations/<slug>/live/mic` need an allowed Host, an
+allowed Origin and, with pairing on, a valid session, checked again on every message, as the
+page's own socket does. **With pairing off** (a loopback-only server, or `insecure_lan`), the
+microphone follows the same policy as every other control on the page: anyone who can open the
+page can talk on the air, as they can already skip, queue or stop. The Live DJ settings and the
+Talk help say so. One talker per station. Messages must be binary 16-bit mono PCM, at
+most 32 KiB, at a declared rate from 8 to 192 kHz; a talker may send at most twice real time
+over a second plus one message (else close 1009), the buffer keeps half a second, and the
+socket closes after 2 seconds without a message. A paired operator can already control the
+station's playout; talkover adds speaking on the air, which is the point. The microphone is
+captured only while the Talk control is held (or, after a quick tap on the button, until the
+next press or two minutes, whichever comes first), and released after.
+
+**What a DJ can do.** A DJ with valid credentials can put any audio on the station's air and
+their display name in the public feed and stream title, which is what the account is for;
+give accounts only to trusted DJs. Their sets are logged in History as kind `live`.
 
 ## Relay credentials (outbound)
 
@@ -849,6 +958,9 @@ AutoDJ version and the files. It is safe to make while AutoDJ serves: the index 
 its publication lock and `dj_meta.db` through SQLite's backup API. The archive is written to a
 temporary file and renamed into place, and it may not be written inside the liners, profiles or
 uploaded preset folder.
+
+A station's live DJ accounts (`live_djs.json`) are archived with every salt and password
+hash removed, so a backup holds no DJ credential; DJ passwords are set again after a restore.
 
 With several stations, the archive also holds each other station's state files and folders
 under `stations/<slug>/`, including its `listener_bans.json`, `listener_stats.json` and

@@ -5,13 +5,17 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import replace
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from autodj._bridge import QueueChanged
+from autodj._bridge import QueueChanged, RequestInsert
+from autodj.clockwheel import ClockSlot
 from autodj.config import DmcaConfig
+from autodj.identity_map import IdentityMap
 from autodj.indexer import IndexEntry
+from autodj.player import Player
 from autodj.repeat_rules import PlayRecord, RepeatRules, TrackKeyCache
 from autodj.similarity import SimilarityIndex
 
@@ -20,6 +24,10 @@ from ._helpers import _make_entry
 
 def _song(n: int, artist: str | None = None) -> IndexEntry:
     return replace(_make_entry(n), artist=artist or f"Artist {n}", album=f"Album {n}")
+
+
+def state_queue_first(player) -> IndexEntry:
+    return player._state.queue[0]
 
 
 def _ready(bridge) -> None:
@@ -50,6 +58,7 @@ def test_each_place_has_its_start_neighbours_and_problems(bridge) -> None:
     assert slots[0].problems == ()
     assert slots[0].starts_in <= slots[1].starts_in <= slots[2].starts_in
     assert slots[1].starts_in - slots[0].starts_in == 180.0
+    assert bridge.request_slots(_song(5, artist="Artist 1"), 3600, only_position=1) == [slots[1]]
 
 
 def test_places_are_projected_at_the_music_speed(bridge) -> None:
@@ -148,6 +157,206 @@ def test_insert_request_places_outside_the_queue_lock_and_inserts_checked(bridge
     assert seen == [[0, 1, 2]]
     assert bridge.insert_request(_song(6), 3600, lambda slots: None) is None
     assert len(state.queue) == 3
+
+
+def test_request_and_bridges_are_inserted_and_removed_together(bridge) -> None:
+    _ready(bridge)
+    state = bridge.player._state
+
+    def choose(slots):
+        assert _lock_is_free(state.queue_lock)
+        return RequestInsert(slots[0], (_song(6), _song(7)))
+
+    bridge.insert_request(_song(5), 3600, choose)
+    assert [entry.path for entry in state.queue[:3]] == [
+        _song(6).path,
+        _song(7).path,
+        _song(5).path,
+    ]
+    bridge_of = bridge.player._request_bridge_of
+    assert [bridge_of.get(entry) for entry in state.queue[:2]] == [state.queue[2]] * 2
+    assert bridge.queue_remove(_song(5).path)
+    assert [entry.path for entry in state.queue] == [_song(1).path, _song(2).path]
+    assert not bridge_of
+
+
+def test_removing_a_request_keeps_a_same_path_song_the_operator_queued(bridge) -> None:
+    _ready(bridge)
+    state = bridge.player._state
+    bridge.insert_request(_song(5), 3600, lambda slots: RequestInsert(slots[0], (_song(6),)))
+    # The operator queues the bridge's song and the request's song again.
+    state.queue.extend([_song(6), _song(5)])
+    bridge_of = bridge.player._request_bridge_of
+    assert [entry for entry in state.queue if entry in bridge_of] == [state.queue[0]]
+    assert bridge.queue_remove(_song(5).path)
+    assert [entry.path for entry in state.queue] == [
+        _song(1).path,
+        _song(2).path,
+        _song(6).path,
+        _song(5).path,
+    ]
+    assert not bridge_of
+
+
+def test_removing_an_operator_copy_first_keeps_the_request_and_its_bridge(bridge) -> None:
+    _ready(bridge)
+    state = bridge.player._state
+    state.queue.insert(0, _song(5))
+    bridge.insert_request(_song(5), 3600, lambda slots: RequestInsert(slots[-1], (_song(6),)))
+    request = state.queue[-1]
+    assert bridge.queue_remove(_song(5).path)
+    assert [entry.path for entry in state.queue] == [
+        _song(1).path,
+        _song(2).path,
+        _song(6).path,
+        _song(5).path,
+    ]
+    assert bridge.player._request_bridge_of.get(state.queue[2]) is request
+
+
+def test_reorder_dropping_a_request_drops_only_its_bridges(bridge) -> None:
+    _ready(bridge)
+    state = bridge.player._state
+    bridge.insert_request(_song(5), 3600, lambda slots: RequestInsert(slots[0], (_song(6),)))
+    state.queue.append(_song(6))
+    assert bridge.queue_reorder([_song(6).path, _song(1).path, _song(2).path, _song(6).path])
+    assert [entry.path for entry in state.queue] == [_song(1).path, _song(2).path, _song(6).path]
+    assert not bridge.player._request_bridge_of
+
+
+def test_a_bridge_that_starts_stops_being_a_bridge(bridge) -> None:
+    _ready(bridge)
+    state = bridge.player._state
+    bridge.insert_request(_song(5), 3600, lambda slots: RequestInsert(slots[0], (_song(6),)))
+    started = state.queue.pop(0)
+    bridge.on_track_started(started)
+    assert started not in bridge.player._request_bridge_of
+
+
+def test_a_request_never_splits_a_queued_liner_from_its_song(bridge) -> None:
+    _ready(bridge)
+    player = bridge.player
+    player._library = object()
+    player._dayparts.return_value = (frozenset(), {})
+    player._is_liner.side_effect = lambda entry: entry.path == _song(1).path
+    slots = bridge.request_slots(_song(5), 3600)
+    assert slots[0].problems == ()
+    assert slots[1].problems == ("it would come between a queued liner and its song",)
+    assert slots[2].problems == ()
+
+
+def test_daypart_rule_reads_the_station_zone(bridge) -> None:
+    from datetime import UTC
+    from zoneinfo import ZoneInfo
+
+    _ready(bridge)
+    zone = ZoneInfo("America/Chicago")
+    bridge.player._station_zone.return_value = zone
+    rules = SimpleNamespace(daypart_days=7)
+    assert bridge._rule_zone(rules) is zone
+    assert bridge._rule_zone(SimpleNamespace(daypart_days=0)) is UTC
+
+
+def test_clockwheel_only_allows_matching_music_category(bridge) -> None:
+    _ready(bridge)
+    player = bridge.player
+    player._cfg.playback.pick_mode = "clock"
+    player._clock = {"cursor": 0}
+    player._library = object()
+    player._dayparts.return_value = (frozenset(), {})
+    player._pending_clock_cursor = None
+    player._clock_slots = (ClockSlot(kind="category", category="rock"),)
+    player._clock_step_hours = (None,)
+    player._category_members.return_value = {"rock": ("Rock", frozenset({_song(5).path}))}
+    assert bridge.request_slots(_song(5), 3600)[0].problems == ()
+    assert bridge.request_slots(_song(6), 3600)[0].problems == (
+        "the song does not match the clockwheel category",
+    )
+    player._clock_slots = (
+        ClockSlot(kind="liner", folder="Z:/Liners", recursive=True),
+        ClockSlot(kind="category", category="rock"),
+    )
+    assert bridge.request_slots(_song(5), 3600)[0].clock_next == 0
+    player._clock_slots = (ClockSlot(kind="track", path=_song(5).path),)
+    assert "reserved" in bridge.request_slots(_song(5), 3600)[0].problems[-1]
+    player._clock_slots = (ClockSlot(kind="category", category="rock"),)
+    bridge.insert_request(_song(5), 3600, lambda slots: slots[0])
+    assert player._request_clock_steps.get(state_queue_first(player)) == 0
+    # An operator's own copy of the song carries no clockwheel mark.
+    assert player._request_clock_steps.get(_song(5)) is None
+
+
+def test_clockwheel_music_conditions_use_the_picker_matcher(bridge) -> None:
+    _ready(bridge)
+    player = bridge.player
+    player._cfg.playback.pick_mode = "clock"
+    player._clock = {"cursor": 0}
+    player._pending_clock_cursor = None
+    player._clock_slots = (
+        ClockSlot(
+            kind="music",
+            conditions=({"field": "genre", "operator": "is", "value": "Rock"},),
+        ),
+    )
+    player._clock_step_hours = (None,)
+    player._library = object()
+    player._dayparts.return_value = (frozenset(), {})
+    assert bridge.request_slots(_song(5), 3600)[0].problems == ()
+    pop = replace(_song(5), genre="Pop")
+    assert "clockwheel conditions" in bridge.request_slots(pop, 3600)[0].problems[-1]
+
+
+def test_marked_clock_request_keeps_its_preceding_liner(bridge) -> None:
+    player = bridge.player
+    song = _song(5)
+    liner = _song(6)
+    player._cfg.playback.pick_mode = "clock"
+    player._clock = {"cursor": 0}
+    player._clock_slots = (
+        ClockSlot(kind="liner", folder="Z:/Liners", recursive=True),
+        ClockSlot(kind="category", category="rock"),
+    )
+    player._request_clock_steps = IdentityMap()
+    player._request_clock_steps[song] = 0
+    player._pending_clock_cursor = None
+    player._seed_clock_following = None
+    player._station_queue.return_value = ([], song)
+    player._dmca_checked.side_effect = lambda entry, *_args, **_kwargs: entry
+    player._clock_pick.return_value = SimpleNamespace(
+        step_index=1,
+        step_snapshot={"number": 2},
+        liner=liner,
+        liner_requires_following=False,
+    )
+    result = Player._choose_station_next(
+        player, _song(0), SimpleNamespace(queue_reserved=None), auto_liner=False
+    )
+    assert result[2] == ((liner, True),)
+    assert result[3] == 0
+
+
+def test_request_slot_respects_projected_daypart(bridge) -> None:
+    _ready(bridge)
+    bridge.player._library = object()
+    bridge.player._dayparts.return_value = (frozenset({_song(5).path}), {})
+    assert "outside the song's daypart" in bridge.request_slots(_song(5), 3600)[0].problems
+
+
+def test_clock_change_retries_request_before_insertion(bridge) -> None:
+    _ready(bridge)
+    bridge.player._clock = {"cursor": 0}
+    bridge.player._clock_revision = 1
+    calls = 0
+
+    def choose(slots):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            bridge.player._clock["cursor"] = 1
+        return slots[0]
+
+    bridge.insert_request(_song(5), 3600, choose)
+    assert calls == 2
 
 
 def test_a_queue_that_changed_meanwhile_is_placed_again(bridge) -> None:

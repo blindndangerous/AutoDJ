@@ -105,7 +105,8 @@ def _status_path(slug: str, *, by_name: bool) -> str:
 def _how_it_works(desk: RequestDesk) -> str:
     cfg = desk.cfg
     decided = (
-        "Requests that keep the station's rules are added to what is coming up."
+        "Requests that keep the station's rules are usually added to what is coming up. "
+        "Some wait for a smoother place."
         if cfg.approval == "auto"
         else "The station looks at each request and decides whether to play it."
     )

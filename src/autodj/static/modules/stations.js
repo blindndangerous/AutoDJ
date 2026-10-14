@@ -88,6 +88,8 @@ export const STATION_ROUTES = Object.freeze([
   "/intros",
   "/intros/{intro_id}",
   "/intros/{intro_id}/audio",
+  "/intros/rules",
+  "/intros/rules/{rule_id}",
   "/shows",
   "/shows/on-air",
   "/shows/{show_id}",
@@ -122,6 +124,12 @@ export const STATION_ROUTES = Object.freeze([
   "/requests/{request_id}/approve",
   "/requests/{request_id}/play-next",
   "/requests/{request_id}/reject",
+  "/requests/settings",
+  "/live",
+  "/live/settings",
+  "/live/djs",
+  "/live/djs/{username}",
+  "/live/mic",
 ]);
 
 // The routes are plain letters, hyphens and slashes, so only the {name}
