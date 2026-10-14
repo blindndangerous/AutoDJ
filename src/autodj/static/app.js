@@ -2720,7 +2720,7 @@ function historyRowHtml(it) {
     button.dataset.path = it.path || "";
     button.dataset.historyId = historyId;
     button.textContent = "Track info";
-    button.setAttribute("aria-label", `Track info for ${it.artist ?? ""}, ${it.title ?? ""}`);
+    button.setAttribute("aria-label", `Track info for ${[it.artist, it.title].filter(Boolean).join(", ")}`);
     actionCell = button;
   }
   const row = tableRow(document, [

@@ -1894,7 +1894,7 @@ class AdDesk:
         for spot_id, spot in choice.spots:
             heard.append(Heard(spot_id, spot.advertiser, spot.category, at))
         detail = (
-            f"Ad break, {len(choice.spots)} spot{'' if len(choice.spots) == 1 else 's'}, "
+            f"{len(choice.spots)} spot{'' if len(choice.spots) == 1 else 's'}, "
             f"{length_text(choice.seconds)}"
             if choice.spots
             else choice.reason
@@ -2081,9 +2081,9 @@ class AdDesk:
                 heard.append(Heard(spot_id, spot.advertiser, spot.category, moment))
             count = len(choice.spots)
             detail = (
-                f"Ad break, {count} spot{'' if count == 1 else 's'}, {length_text(choice.seconds)}"
+                f"{count} spot{'' if count == 1 else 's'}, {length_text(choice.seconds)}"
                 if count
-                else f"Ad break: {choice.reason}"
+                else choice.reason
             )
             found_runs.append(
                 Forecast(moment, f"Ad break: {item.name}", choice.seconds, detail, own)
