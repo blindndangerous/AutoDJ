@@ -1110,7 +1110,7 @@ def test_the_forecast_guesses_each_run_without_booking(station):
     found = ads.forecast(clock.now, clock.now + 3600)
     assert len(found) == 2
     assert all(run.label == "Ad break: Top" and run.own_point for run in found)
-    assert found[0].detail == "Ad break, 2 spots, 0:04"
+    assert found[0].detail == "2 spots, 0:04"
     assert not booked_spots(desk)
     player._cfg.ads = AdsConfig(enabled=False)
     assert ads.forecast(clock.now, clock.now + 3600) == []

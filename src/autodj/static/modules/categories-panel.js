@@ -110,11 +110,10 @@ export function installCategoriesPanel({ document: doc = document, request = req
     button.type = "button";
     button.dataset.action = action;
     button.dataset.id = category.id;
-    // The visible word starts the name; the hidden name says which category.
-    const hidden = doc.createElement("span");
-    hidden.className = "visually-hidden";
-    hidden.textContent = ` ${category.name}`;
-    button.append(title, hidden);
+    // The visible word starts the name, which says which category.  An
+    // aria-label, not hidden text: NVDA reads hidden text as a second line.
+    button.textContent = title;
+    button.setAttribute("aria-label", `${title} ${category.name}`);
     return button;
   }
 

@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -22,7 +22,7 @@ from autodj.live import (
     TalkoverSettings,
     strip_secrets,
 )
-from autodj.live_protocol import close_delimited_source_head
+from autodj.live_protocol import IcecastSourceH11Protocol, close_delimited_source_head
 from autodj.mixbus import _LIVE_PREROLL_FRAMES, BusEvents, MixBus, RenderedTrack
 from autodj.render_ahead import RenderAhead
 from autodj.station import Station
@@ -498,6 +498,55 @@ def test_rerender_keeps_the_waiting_track_to_fall_back_on() -> None:
 
 
 # --- the source framing shim ----------------------------------------------------
+
+
+@pytest.mark.parametrize("closing", [False, True])
+def test_head_deadline_ignores_gone_tls_transport(closing: bool) -> None:
+    transport = MagicMock()
+    transport.is_closing.return_value = closing
+    transport.get_protocol.side_effect = AttributeError("SSL protocol detached")
+    protocol = IcecastSourceH11Protocol.__new__(IcecastSourceH11Protocol)
+    protocol.transport = transport
+    protocol.cycle = None
+    protocol._head_deadline = MagicMock()
+
+    protocol._head_too_slow()
+
+    assert protocol._head_deadline is None
+    if closing:
+        transport.get_protocol.assert_not_called()
+    transport.close.assert_not_called()
+
+
+def test_head_deadline_closes_only_its_active_transport() -> None:
+    transport = MagicMock()
+    transport.is_closing.return_value = False
+    protocol = IcecastSourceH11Protocol.__new__(IcecastSourceH11Protocol)
+    protocol.transport = transport
+    protocol.cycle = None
+    protocol._head_deadline = MagicMock()
+    transport.get_protocol.return_value = protocol
+
+    protocol._head_too_slow()
+
+    transport.close.assert_called_once_with()
+    transport.close.reset_mock()
+    transport.get_protocol.return_value = object()
+    protocol._head_too_slow()
+    transport.close.assert_not_called()
+
+
+def test_connection_lost_cancels_head_deadline() -> None:
+    protocol = IcecastSourceH11Protocol.__new__(IcecastSourceH11Protocol)
+    deadline = MagicMock()
+    protocol._head_deadline = deadline
+
+    with patch("autodj.live_protocol.H11Protocol.connection_lost") as parent:
+        protocol.connection_lost(None)
+
+    deadline.cancel.assert_called_once_with()
+    assert protocol._head_deadline is None
+    parent.assert_called_once_with(None)
 
 
 @pytest.mark.parametrize(

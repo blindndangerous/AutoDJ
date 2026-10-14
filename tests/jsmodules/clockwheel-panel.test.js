@@ -457,14 +457,14 @@ describe("clockwheel editor", () => {
     expect(byId("clock-list").querySelector("button").textContent).toBe("Morning, active");
     expect(byId("clock-list").querySelector("button").getAttribute("aria-current")).toBe("true");
     const button = rowButton(1, "move-up");
-    expect(button.textContent).toBe("Move up step 2");
+    expect(button.textContent).toBe("Move up");
+    expect(button.getAttribute("aria-label")).toBe("Move up step 2");
     expect(rowCell(0, "edit").tabIndex).toBe(0);
     expect(rowCell(1, "edit").tabIndex).toBe(-1);
     expect([...byId("clock-slots").querySelectorAll('[role="gridcell"]')].filter((item) => item.tabIndex === 0)).toHaveLength(1);
     expect([...byId("clock-slots").querySelectorAll("button[data-action]")].every((item) => item.tabIndex === -1)).toBe(true);
     expect(rowCell(0, "move-up").getAttribute("aria-disabled")).toBe("true");
     expect(rowCell(1, "move-up").hasAttribute("aria-disabled")).toBe(false);
-    expect(button.querySelector(".visually-hidden").textContent).toBe(" step 2");
     expect(rowButton(0, "move-up").disabled).toBe(true);
     expect(rowButton(2, "move-down").disabled).toBe(true);
     expect(status()).toBe("");

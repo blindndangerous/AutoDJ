@@ -2724,7 +2724,7 @@ function historyRowHtml(it) {
     button.dataset.path = it.path || "";
     button.dataset.historyId = historyId;
     button.textContent = "Track info";
-    button.setAttribute("aria-label", `Track info for ${it.artist ?? ""}, ${it.title ?? ""}`);
+    button.setAttribute("aria-label", `Track info for ${[it.artist, it.title].filter(Boolean).join(", ")}`);
     actionCell = button;
   }
   const row = tableRow(document, [
@@ -3234,10 +3234,8 @@ function linkBuildStamp(build, url) {
   link.href = url;
   link.target = "_blank";
   link.rel = "noopener noreferrer";
-  const where = document.createElement("span");
-  where.className = "visually-hidden";
-  where.textContent = " on GitHub (opens in a new tab)";
-  link.append(...build.childNodes, where);
+  link.append(...build.childNodes);
+  link.setAttribute("aria-label", `${link.textContent} on GitHub (opens in a new tab)`);
   build.append(link);
 }
 

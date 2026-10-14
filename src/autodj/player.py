@@ -330,7 +330,7 @@ def apply_filter_sweep(
 # ---------------------------------------------------------------------------
 
 
-def effective_no_repeat_window(configured: int, library_size: int) -> int:
+def effective_no_repeat_window(configured: int, library_size: int, *, player: Any) -> int:
     """Return the no-repeat window the picker can honour for *library_size*.
 
     A library of 200 tracks with a window of 500 would refuse to repeat any
@@ -341,13 +341,14 @@ def effective_no_repeat_window(configured: int, library_size: int) -> int:
     if library_size <= 0 or configured < library_size:
         return configured
     effective = max(1, library_size - max(4, library_size // 10))
-    logger.warning(
-        "playback.repeat_rules.track.tracks=%d but library has only %d tracks; "
-        "using %d so the picker always has candidates.",
-        configured,
-        library_size,
-        effective,
-    )
+    warning = (configured, library_size, effective)
+    if getattr(player, "_last_repeat_cap_warning", None) != warning:
+        logger.warning(
+            "playback.repeat_rules.track.tracks=%d but library has only %d tracks; "
+            "using %d so the picker always has candidates.",
+            *warning,
+        )
+        player._last_repeat_cap_warning = warning
     return effective
 
 
@@ -373,7 +374,9 @@ def apply_repeat_windows(player: Any) -> None:
     player._state.set_repeat_rules(
         RepeatRules.from_playback(
             pb,
-            track_window=effective_no_repeat_window(pb.repeat_rules.track.tracks, library_size),
+            track_window=effective_no_repeat_window(
+                pb.repeat_rules.track.tracks, library_size, player=player
+            ),
             related=getattr(player, "_related_artists", None),
             related_tracks=getattr(player, "_related_tracks", None),
         )
@@ -990,6 +993,7 @@ class Player:
         # against the current pick.
         self._previous_track: IndexEntry | None = None
         self._discovery_every: int | None = cfg.playback.discovery_every
+        self._last_repeat_cap_warning: tuple[int, int, int] | None = None
         # Clamp no_repeat_window to the library size so the picker never
         # has zero candidates available.  Without this, a library of 200
         # tracks with the default window of 500 would refuse to repeat
@@ -1003,6 +1007,7 @@ class Player:
         effective = effective_no_repeat_window(
             cfg.playback.repeat_rules.track.tracks,
             library_size,
+            player=self,
         )
         from autodj.related_artist_file import (
             load_configured_related_artists,

@@ -416,12 +416,10 @@ describe("footer build stamp", () => {
     expect(link.target).toBe("_blank");
     expect(link.rel.split(" ")).toEqual(expect.arrayContaining(["noopener", "noreferrer"]));
     expect(link.querySelector("#ver-commit").textContent).toBe("1a2b3c4");
-    // Visible text first (2.5.3), then where it goes, for a screen reader.
-    expect(link.textContent.replace(/\s+/g, " ").trim())
-      .toBe("build 1a2b3c4 on GitHub (opens in a new tab)");
-    expect(link.querySelector(".visually-hidden").textContent)
-      .toBe(" on GitHub (opens in a new tab)");
-    expect(link.hasAttribute("aria-label")).toBe(false);
+    // Visible text first (2.5.3), then where it goes, in one name: hidden
+    // text inside the link would be read as a second line.
+    expect(link.textContent.replace(/\s+/g, " ").trim()).toBe("build 1a2b3c4");
+    expect(link.getAttribute("aria-label")).toBe("build 1a2b3c4 on GitHub (opens in a new tab)");
     // Reference data, not a status update: still no live region.
     expect(document.querySelector("#version-stamp [aria-live]")).toBeNull();
     expect(document.querySelector("#version-stamp").hasAttribute("aria-live")).toBe(false);
@@ -1624,7 +1622,7 @@ describe("app request behavior", () => {
             title: "Song", artist: "Artist", duration: 60,
           }, {
             event_id: "play-2", path: "M:/other.flac", played_at: "2025-12-31T23:00:00Z",
-            title: "Other", artist: "Another", duration: 120,
+            title: "Other", artist: "", duration: 120,
           }] })
           : url.startsWith("/api/library/points?")
             ? jsonResponse({ path: "M:/song.flac", title: "Song", artist: "Artist", kind: "music", points: {} })
@@ -1637,6 +1635,8 @@ describe("app request behavior", () => {
         return found;
       });
       expect(button.getAttribute("aria-label")).toBe("Track info for Artist, Song");
+      expect(document.querySelectorAll("#history-tbody .history-info")[1].getAttribute("aria-label"))
+        .toBe("Track info for Other");
       expect(button.textContent).toBe("Track info");
       const tbody = document.querySelector("#history-tbody");
       const cells = [...tbody.querySelectorAll("tr[data-played-at] td")];
