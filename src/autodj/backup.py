@@ -193,12 +193,6 @@ def _split(name: str) -> tuple[str, tuple[str, ...]]:
     return parts[0], parts[1:]
 
 
-def _overlap(first: Path, second: Path) -> bool:
-    """Whether two folders are the same folder or one holds the other."""
-    first, second = first.resolve(), second.resolve()
-    return first == second or first.is_relative_to(second) or second.is_relative_to(first)
-
-
 def _swallows(folder: Path, other: Path) -> bool:
     """Whether replacing *folder* whole would also replace *other*."""
     folder, other = folder.resolve(), other.resolve()
