@@ -3905,7 +3905,7 @@ class Player:
             now,
             self._track_keys(),
             at=(self._now() if at is None else at) if timed else None,
-            zone=self._station_zone() if rules.daypart_days else UTC,
+            zone=self._station_zone() if timed else UTC,
         )
         if minute_paths:
             held = set(paths)

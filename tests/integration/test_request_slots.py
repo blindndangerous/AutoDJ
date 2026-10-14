@@ -5,7 +5,9 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import replace
+from datetime import datetime
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pytest
@@ -253,9 +255,11 @@ def test_daypart_rule_reads_the_station_zone(bridge) -> None:
     _ready(bridge)
     zone = ZoneInfo("America/Chicago")
     bridge.player._station_zone.return_value = zone
-    rules = SimpleNamespace(daypart_days=7)
+    rules = SimpleNamespace(daypart_days=7, hourpart_plays=0)
     assert bridge._rule_zone(rules) is zone
-    assert bridge._rule_zone(SimpleNamespace(daypart_days=0)) is UTC
+    # The quarter-hour rule alone reads the station's clock too (#219).
+    assert bridge._rule_zone(SimpleNamespace(daypart_days=0, hourpart_plays=1)) is zone
+    assert bridge._rule_zone(SimpleNamespace(daypart_days=0, hourpart_plays=0)) is UTC
 
 
 def test_clockwheel_only_allows_matching_music_category(bridge) -> None:
@@ -420,6 +424,23 @@ def test_another_version_of_a_song_just_played_is_the_same_song(bridge) -> None:
     assert "same song" in slots[1].problems
     bridge.player._song_versions.return_value = None
     assert "same song" not in bridge.request_slots(live, horizon_s=3600)[1].problems
+
+
+def test_the_quarter_hour_rule_reads_the_station_clock(bridge) -> None:
+    """Across Lord Howe Island's half-hour clock change, 12:05 and 12:10 share a quarter (#219)."""
+    zone = ZoneInfo("Australia/Lord_Howe")
+
+    def wall(text: str) -> float:
+        return datetime.fromisoformat(text).replace(tzinfo=zone).timestamp()
+
+    bridge.player._track_keys.return_value = TrackKeyCache()
+    bridge.player._station_zone.return_value = zone
+    state = bridge.player._state
+    state.set_repeat_rules(RepeatRules(track_window=0, artist_window=0, hourpart_plays=1))
+    state.play_history.append(PlayRecord.of(_song(5), wall("2026-10-03T12:05")))
+    state.clock = lambda: wall("2026-10-05T12:10")
+    (slot,) = bridge.request_slots(_song(5), horizon_s=0)
+    assert slot.problems == ("same quarter hour",)
 
 
 # -- the queued songs after a request (#218) -----------------------------------

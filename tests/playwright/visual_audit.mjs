@@ -608,6 +608,21 @@ async function openDaypartErrors(page, visit) {
   await page.locator("#clock-step-type").selectOption("music");
 }
 
+// Library tools: an automatic rescan under 5 minutes refused in the
+// browser, its message under Minutes, linked to it and focused (#249).
+// Nothing is saved.
+async function openAutoRescanError(page, visit) {
+  const minutes = page.locator("#auto-rescan-minutes");
+  await minutes.waitFor({ state: "visible" });
+  const before = await minutes.inputValue();
+  await minutes.fill("3");
+  await page.locator("#auto-rescan-save").click();
+  await page.locator('#auto-rescan-minutes[aria-invalid="true"]').waitFor();
+  await page.locator("#auto-rescan-error").waitFor({ state: "visible" });
+  await visit("library/auto-rescan-error");
+  await minutes.fill(before);
+}
+
 // Library tools, Intro rules (#127): two saved rules and the station's
 // liners and folders are stood in for (the audit server has none), so the
 // list and the form with its liner checkboxes are measured.  One liner name
@@ -1207,6 +1222,7 @@ async function eachTarget(page, measure) {
       if (view === "queue") await openRequestSettingsError(page, visit);
       if (view === "track-info") await openTrackTags(page, visit);
       if (view === "library") {
+        await openAutoRescanError(page, visit);
         await openIntroRuleError(page, visit);
         await openDaypartErrors(page, visit);
         await openShowStates(page, visit);
