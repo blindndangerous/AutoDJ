@@ -58,7 +58,7 @@ user and machine PATH entries in its own process, so tools installed by WinGet c
 without opening a new terminal. This does not rewrite your PATH settings.
 
 First-run setup offers to install missing tools with WinGet package IDs `astral-sh.uv` and
-`Gyan.FFmpeg` for the current user. Normal starts with a saved runtime do not install tools.
+`Gyan.FFmpeg` for the current user. Starts that find an installed runtime do not install tools.
 The prompt defaults to No. Use `.\autodj.cmd setup --yes` to approve these downloads and
 the setup plan without prompts. This also accepts the packages' installation agreements.
 For a manual installation, add the folder containing each executable to PATH.

@@ -210,7 +210,7 @@ def test_missing_winget_reports_manual_uv_install(tmp_path: Path) -> None:
     result = _run(script, "setup", env=env)
 
     assert result.returncode == 1
-    assert "winget is unavailable" in result.stderr
+    assert "WinGet is not available" in result.stderr
     assert "winget install --id astral-sh.uv --exact --source winget --scope user" in result.stderr
     assert "https://docs.astral.sh/uv/getting-started/installation/" in result.stderr
 
@@ -239,7 +239,7 @@ def test_declined_install_is_actionable_and_does_not_launch(tmp_path: Path, answ
     result = _run(script, "setup", env=env)
 
     assert result.returncode == 1
-    assert "Tool installation was declined" in result.stderr
+    assert "cannot continue without it" in result.stderr
     assert "astral-sh.uv" in result.stderr
 
 
@@ -253,5 +253,38 @@ def test_failed_winget_install_reports_manual_commands(tmp_path: Path) -> None:
     result = _run(script, "setup", env=env)
 
     assert result.returncode == 1
-    assert "winget could not install uv" in result.stderr
+    assert "WinGet could not install uv" in result.stderr
     assert "winget install --id astral-sh.uv" in result.stderr
+
+
+def test_existing_runtime_without_saved_state_starts_without_uv(tmp_path: Path) -> None:
+    root, script = _project(tmp_path)
+    python_dir = root / ".venv" / "Scripts"
+    python_dir.mkdir(parents=True)
+    executable = sys_executable()
+    shutil.copy2(executable, python_dir / "python.exe")
+    (root / ".venv" / "pyvenv.cfg").write_text(
+        f"home = {Path(executable).parent}\n", encoding="utf-8"
+    )
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    result = _run(script, "serve", env=_env(tmp_path, empty))
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads((tmp_path / "run.json").read_text()) == ["serve"]
+    assert "uv" not in result.stderr
+
+
+def test_failed_ffmpeg_install_reports_exit_code_and_continues(tmp_path: Path) -> None:
+    _, script = _project(tmp_path, interactive=True)
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    _tool(tools / "uv.cmd")
+    _tool(tools / "winget.cmd", "@echo off\r\nexit /b 7\r\n")
+    env = _env(tmp_path, tools)
+    env["AUTODJ_TEST_ANSWER"] = "y"
+    result = _run(script, "setup", env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert "WinGet could not install FFmpeg (exit code 7)" in result.stderr
+    assert "FFmpeg is optional for setup" in result.stderr
