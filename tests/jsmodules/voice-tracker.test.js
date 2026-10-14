@@ -291,7 +291,7 @@ describe("voice tracker", () => {
     expect(document.activeElement).toBe(record);
     expect(byId("vt-playback").getAttribute("src")).toBe("blob:take");
     expect(byId("vt-timer").textContent).toBe("Recorded 0:02, not booked yet.");
-    await vi.waitFor(() => expect(status()).toMatch(/^Recording stopped at 2 seconds\. Listen back/));
+    await vi.waitFor(() => expect(status()).toMatch(/^Recording stopped at 0:02\. Listen back/));
   });
 
   it("speaks once a minute and stops itself at the length limit", async () => {
@@ -310,7 +310,7 @@ describe("voice tracker", () => {
       "30 seconds left before the length limit.", "1 minute.",
     ]));
     await advance(15);
-    await vi.waitFor(() => expect(spoken.at(-1)).toMatch(/^Stopped at the 1 minute 15 seconds limit\. Recording stopped/));
+    await vi.waitFor(() => expect(spoken.at(-1)).toMatch(/^Stopped at the 1:15 limit\. Recording stopped/));
     expect(mic.track.stop).toHaveBeenCalled();
     expect(byId("vt-record").getAttribute("aria-pressed")).toBe("false");
   });
@@ -321,7 +321,7 @@ describe("voice tracker", () => {
     await controls.refresh();
     await press("vt-record");
     await advance(10);
-    await vi.waitFor(() => expect(status()).toBe("The song change closes in about 30 seconds."));
+    await vi.waitFor(() => expect(status()).toBe("The song change closes in about 0:30."));
   });
 
   it.each([
@@ -360,7 +360,7 @@ describe("voice tracker", () => {
     byId("vt-placement").value = "standalone";
     byId("vt-allow-outro").checked = true;
     const book = await press("vt-book");
-    await vi.waitFor(() => expect(status()).toBe("Booked Third Song into Fourth Song. It airs in about 6 minutes."));
+    await vi.waitFor(() => expect(status()).toBe("Booked Third Song into Fourth Song. It airs in about 6:00."));
     expect(toWav).toHaveBeenCalledWith(expect.any(Blob), 44100);
     const post = server.calls.find((call) => call.method === "POST");
     expect(post.url).toBe("/api/voice-tracks");
@@ -373,7 +373,7 @@ describe("voice tracker", () => {
     expect(byId("vt-playback").hasAttribute("src")).toBe(false);
     const rows = byId("vt-list").querySelectorAll("li");
     expect(rows).toHaveLength(1);
-    expect(rows[0].textContent).toMatch(/^Third Song into Fourth Song: booked, waiting for its song change, airs in about 6 minutes Cancel$/);
+    expect(rows[0].textContent).toMatch(/^Third Song into Fourth Song: booked, waiting for its song change, airs in about 6:00 Cancel$/);
     expect(rows[0].querySelector("button").getAttribute("aria-label")).toBe("Cancel voice track Third Song into Fourth Song");
     expect(byId("vt-none").hidden).toBe(true);
   });
@@ -556,7 +556,7 @@ describe("voice tracker", () => {
     server.tracks = [track("1", "rendered"), track("2", "queued")];
     await controls.refresh();
     expect(document.activeElement).toBe(second);
-    expect(byId("vt-list").querySelector("li").textContent).toBe("Track 1: mixed in as a talk-up, airs in about 5 minutes");
+    expect(byId("vt-list").querySelector("li").textContent).toBe("Track 1: mixed in as a talk-up, airs in about 5:00");
   });
 
   it("starts and stops with Alt+R only while the tab shows, without moving focus", async () => {

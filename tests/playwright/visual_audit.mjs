@@ -1766,11 +1766,13 @@ async function previewOutputProblems(page) {
     const element = document.getElementById("preview-device");
     const button = document.getElementById("preview-device-choose");
     const note = document.getElementById("preview-device-note");
+    const help = document.getElementById("preview-device-desc");
     const box = (node) => node && node.getClientRects().length
       ? node.getBoundingClientRect().toJSON() : null;
     return {
       label: element.labels?.[0]?.textContent.trim(),
       describedBy: element.getAttribute("aria-describedby") || "",
+      helpShown: Boolean(help && !help.hidden && help.getClientRects().length && help.textContent.trim()),
       disabled: element.disabled,
       select: box(element),
       button: box(button),
@@ -1781,7 +1783,7 @@ async function previewOutputProblems(page) {
     };
   });
   if (info.label !== "Preview output device") problems.push(`label is ${JSON.stringify(info.label)}`);
-  if (!info.describedBy.split(" ").includes("preview-device-desc")) problems.push("help is not linked");
+  if (!info.helpShown) problems.push("help is not visible");
   if (info.buttonDesc === "") problems.push("button has no description");
   for (const [what, rect] of [["select", info.select], ["button", info.button]]) {
     if (rect && (rect.width < 24 || rect.height < 24)) {

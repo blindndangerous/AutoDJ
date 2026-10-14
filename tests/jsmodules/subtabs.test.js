@@ -69,7 +69,7 @@ describe("Settings subtabs markup", () => {
     }
   });
 
-  it("labels and describes every new setting", () => {
+  it("labels settings and keeps their help available without requiring spoken paragraphs", () => {
     installIndex();
     for (const id of [
       "pb-bass-cutoff", "dj-max-stretch", "dj-glide-bars", "dj-sweep-floor", "pb-pick-top-k",
@@ -78,8 +78,8 @@ describe("Settings subtabs markup", () => {
     ]) {
       const control = byId(id);
       expect(document.querySelector(`label[for="${id}"]`), id).not.toBeNull();
-      const described = (control.getAttribute("aria-describedby") || "").split(/\s+/);
-      expect(described.length, id).toBeGreaterThan(0);
+      expect(byId(`${id}-desc`)?.textContent.trim(), id).toBeTruthy();
+      const described = (control.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean);
       for (const ref of described) expect(byId(ref), `${id} -> ${ref}`).not.toBeNull();
     }
   });

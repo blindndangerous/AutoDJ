@@ -1260,7 +1260,7 @@ def land(point: Point, changes: Sequence[tuple[float, Item]], ends: float) -> La
 
 
 # ---------------------------------------------------------------------------
-# Words
+# Time text
 # ---------------------------------------------------------------------------
 
 
@@ -1273,7 +1273,8 @@ def clock_text(stamp: float, zone: ZoneInfo) -> str:
     moment = _wall(stamp, zone)
     hour = moment.hour % 12 or 12
     half = "AM" if moment.hour < 12 else "PM"
-    return f"{hour}:{moment.minute:02d}:{moment.second:02d} {half}"
+    seconds = f":{moment.second:02d}" if moment.second else ""
+    return f"{hour}:{moment.minute:02d}{seconds} {half}"
 
 
 def clock_words(stamp: float, zone: ZoneInfo) -> str:
@@ -1284,7 +1285,9 @@ def clock_words(stamp: float, zone: ZoneInfo) -> str:
 def length_text(seconds: float) -> str:
     """ "3:45": a length for the screen."""
     whole = max(0, round(seconds))
-    return f"{whole // 60}:{whole % 60:02d}"
+    hours, rest = divmod(whole, 3600)
+    minutes, seconds = divmod(rest, 60)
+    return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{whole // 60}:{seconds:02d}"
 
 
 def length_words(seconds: float) -> str:
@@ -1312,9 +1315,9 @@ def _who(item: Item) -> str:
 
 
 def landing_words(landing: Landing, zone: ZoneInfo) -> tuple[str, str]:
-    """``(short, sentence)``: how *landing* lands, such as "35 seconds early", and why."""
+    """``(short, sentence)``: numeric timing for *landing* and why it lands that way."""
     point = landing.point
-    when = clock_words(point.at, zone)
+    when = clock_text(point.at, zone)
     if point.kind == "event":
         name = f"{point.label} ({point.detail}), {point.timing}" if point.detail else point.label
         heading = f"{name}, at {when}"
@@ -1323,10 +1326,10 @@ def landing_words(landing: Landing, zone: ZoneInfo) -> tuple[str, str]:
     playing = landing.playing
     if playing is None or landing.began is None or landing.starts is None:
         return "not known", f"{heading}: the preview does not reach the song change after it."
-    after = clock_words(landing.starts, zone)
+    after = clock_text(landing.starts, zone)
     if point.kind == "event" and point.timing == "hard":
         if landing.cut:
-            cut = length_words(landing.cut)
+            cut = length_text(landing.cut)
             return (
                 f"on time, cuts {cut}",
                 f"{heading}: on time. It cuts {_who(playing)} short by about {cut}.",
@@ -1336,9 +1339,9 @@ def landing_words(landing: Landing, zone: ZoneInfo) -> tuple[str, str]:
         nearest = min((landing.began, landing.starts), key=lambda moment: abs(moment - point.at))
         return (
             "on time",
-            f"{heading}: lands on time, at the song change at {clock_words(nearest, zone)}.",
+            f"{heading}: lands on time, at the song change at {clock_text(nearest, zone)}.",
         )
-    amount = length_words(abs(landing.offset))
+    amount = length_text(abs(landing.offset))
     if point.kind == "event":
         return (
             f"{amount} late",
@@ -1352,11 +1355,11 @@ def landing_words(landing: Landing, zone: ZoneInfo) -> tuple[str, str]:
             f"{heading}: {lands} about {amount} late. {_who(playing)} is playing then; "
             f"the next song change is at {after}.",
         )
-    past = length_words(landing.starts - point.at)
+    past = length_text(landing.starts - point.at)
     return (
         f"{amount} early",
         f"{heading}: {lands} about {amount} early, at the song change into {_who(playing)} "
-        f"at {clock_words(landing.began, zone)}. That song runs {past} past {when}.",
+        f"at {clock_text(landing.began, zone)}. That song runs {past} past {when}.",
     )
 
 
@@ -1499,7 +1502,7 @@ def build_preview(
         if stopped
         else None
     )
-    view["summary"] = _summary(view, landings, zone, minutes)
+    view["summary"] = _summary(view, landings, zone, minutes, end)
     return view
 
 
@@ -1566,13 +1569,13 @@ def _point_view(landing: Landing, zone: ZoneInfo) -> dict[str, Any]:
 
 
 def _summary(
-    view: dict[str, Any], landings: Sequence[Landing], zone: ZoneInfo, minutes: int
+    view: dict[str, Any], landings: Sequence[Landing], zone: ZoneInfo, minutes: int, end: float
 ) -> str:
     counts = view["counts"]
     span = span_words(minutes)
     listed = (
         f"Next {span}: {counts['fixed']} fixed and {counts['predicted']} predicted, "
-        f"until {view['end_words']}."
+        f"until {clock_text(end, zone)}."
     )
     hours = [landing for landing in landings if landing.point.kind in {"hour", "restart"}]
     first = hours[0] if hours else (landings[0] if landings else None)
