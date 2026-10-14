@@ -8,6 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-14
+
+AutoDJ 0.21.0 is the first release since 0.19.1. It also ships everything listed under 0.20.0
+below, which was never released on its own. One server can now run several stations, each with
+its own schedule, clockwheels, liners and stream, and stations can be created or duplicated from
+the web page. A live DJ can take over a stream from BUTT or Mixxx, and the **Talk** button speaks
+over the music from the browser's microphone. Listeners can request songs from a public page, and
+AutoDJ can play up to three bridge songs to reach a distant request. The new Ads tab runs
+scheduled ad breaks, clockwheels can hold ad-break steps, and both are reported. Intro rules play
+a voice liner as a matching song starts. Hour fitting picks songs that end close to the top of the
+hour, and the Hour preview lists what plays over the coming hour. Spoken track landmarks read a
+song's structure with keys and speech instead of a waveform. Library tools can rescan the library
+automatically, and the lists and tables share one way of moving with the arrow keys. Also new are
+voice tracking from the browser, a cart wall, shows, more stream formats with listener statistics
+and a light theme. The library is now kept in one catalog, `library.db`: a library from an older
+release must be upgraded with `autodj migrate-index` before this version can use it. The
+screen-reader sample for this release is in
+[docs/accessibility-samples/0.21.0.md](docs/accessibility-samples/0.21.0.md).
+
 ### Changed
 
 - Save tags in Track info now saves the tags in AutoDJ only and leaves the file alone. Check
@@ -1148,7 +1167,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - AutoDJ now needs python-multipart 0.0.32 or later, which refuses a form part with more than
   eight headers or a header over about 4 KiB.
 
-## [0.20.0] - 2026-10-11
+## [0.20.0] - 2026-10-11 (not released on its own; shipped in 0.21.0)
 
 ### Added
 
@@ -2617,8 +2636,9 @@ The "make it feel like a real radio station" release.
 
 AutoDJ is built and maintained by a blind developer.  Every change to the web UI runs through an accessibility review before it ships.  If you find a screen-reader bug or a keyboard trap, please file an issue.
 
-[Unreleased]: https://github.com/blindndangerous/AutoDJ/compare/v0.20.0...HEAD
-[0.20.0]: https://github.com/blindndangerous/AutoDJ/compare/v0.19.1...v0.20.0
+[Unreleased]: https://github.com/blindndangerous/AutoDJ/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/blindndangerous/AutoDJ/compare/v0.19.1...v0.21.0
+[0.20.0]: https://github.com/blindndangerous/AutoDJ/commit/5f2fbd208ded518d7572dce755faaae186add889
 [0.19.1]: https://github.com/blindndangerous/AutoDJ/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/blindndangerous/AutoDJ/compare/v0.18.2...v0.19.0
 [0.18.2]: https://github.com/blindndangerous/AutoDJ/compare/v0.18.1...v0.18.2
