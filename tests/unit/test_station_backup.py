@@ -61,7 +61,8 @@ def _fill(cfg: AutoDJConfig) -> dict[Path, bytes]:
     for base, who in ((cfg.index.active_dir, b"default"), (_station_dir(cfg, "nightowl"), b"owl")):
         for name in STATION_FILES:
             put(base / name, b'{"station": "' + who + b'", "file": "' + name.encode() + b'"}')
-        put(base / "relays.json", b'{"password": "' + who + b'-relay-secret"}')
+        # Not in *written*: a backup never holds it, so a restore never brings it.
+        (base / "relays.json").write_bytes(b'{"password": "' + who + b'-relay-secret"}')
         put(base / "liners" / "id.mp3", who + b" liner")
         put(base / "carts" / "jingle.wav", who + b" cart")
         put(base / "time_checks" / "03_05.wav", who + b" clip")
@@ -81,9 +82,7 @@ def test_two_stations_round_trip(tmp_path: Path, caplog: pytest.LogCaptureFixtur
     with zipfile.ZipFile(archive) as opened:
         names = set(opened.namelist())
         manifest = json.loads(opened.read("manifest.json"))
-        default_relays = opened.read("index/relays.json")
-        owl_relays = opened.read("stations/nightowl/index/relays.json")
-        archive_manifest = opened.read("manifest.json")
+        contents = b"".join(opened.read(name) for name in opened.namelist())
     assert manifest["stations"] == ["nightowl"]
     # The default station keeps today's names; Night Owl's are under its slug.
     assert {"index/web_state.json", "liners/id.mp3", "profiles/Party.json"} <= names
@@ -97,13 +96,12 @@ def test_two_stations_round_trip(tmp_path: Path, caplog: pytest.LogCaptureFixtur
         "stations/nightowl/clockwheels/Night.json",
         "stations/nightowl/intros/intro.wav",
         "stations/nightowl/index/matched_intros.json",
-        "stations/nightowl/index/relays.json",
         "stations/nightowl/profiles/Party.json",
     } <= names
-    assert "index/relays.json" in names
-    assert default_relays == written[cfg.index.active_dir / "relays.json"]
-    assert owl_relays == written[_station_dir(cfg, "nightowl") / "relays.json"]
-    assert b"relay-secret" not in archive_manifest
+    # Relay settings hold source passwords: a backup never holds them.
+    assert "index/relays.json" not in names
+    assert "stations/nightowl/index/relays.json" not in names
+    assert b"relay-secret" not in contents
     assert "relay-secret" not in caplog.text
     # A station never holds the shared categories, and nothing is stored twice.
     assert "stations/nightowl/index/categories.json" not in names
@@ -115,6 +113,42 @@ def test_two_stations_round_trip(tmp_path: Path, caplog: pytest.LogCaptureFixtur
 
     for path, data in written.items():
         assert path.read_bytes() == data, path
+    # The live relay settings were left alone.
+    assert (cfg.index.active_dir / "relays.json").read_bytes() == (
+        b'{"password": "default-relay-secret"}'
+    )
+    assert (_station_dir(cfg, "nightowl") / "relays.json").read_bytes() == (
+        b'{"password": "owl-relay-secret"}'
+    )
+
+
+def test_restore_skips_relay_settings_in_an_archive_that_has_them(tmp_path: Path) -> None:
+    """An archive from a build that backed relays.json up never replaces the live one."""
+    cfg = _config(tmp_path)
+    written = _fill(cfg)
+    archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
+    old = tmp_path / "old.zip"
+    with zipfile.ZipFile(archive) as source, zipfile.ZipFile(old, "w") as target:
+        manifest = json.loads(source.read("manifest.json"))
+        for name in source.namelist():
+            if name != "manifest.json":
+                target.writestr(source.getinfo(name), source.read(name))
+        stale = {
+            "index/relays.json": b'{"password": "stale-default"}',
+            "stations/nightowl/index/relays.json": b'{"password": "stale-owl"}',
+        }
+        for name, data in stale.items():
+            target.writestr(name, data)
+        manifest["files"] = [*manifest["files"], *stale]
+        target.writestr("manifest.json", json.dumps(manifest))
+
+    warnings: list[str] = []
+    assert restore_backup(cfg, old, force=True, warnings=warnings) == len(manifest["files"]) - 2
+    assert any("Relay settings" in warning for warning in warnings)
+    for path, data in written.items():
+        assert path.read_bytes() == data, path
+    assert b"default-relay-secret" in (cfg.index.active_dir / "relays.json").read_bytes()
+    assert b"owl-relay-secret" in (_station_dir(cfg, "nightowl") / "relays.json").read_bytes()
 
 
 def test_restore_to_a_new_machine_creates_the_station_folder(tmp_path: Path) -> None:

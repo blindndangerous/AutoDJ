@@ -93,11 +93,16 @@ class PresetBody(BaseModel):
 
 
 class StreamSettingsBody(BaseModel):
-    """Partial stream settings update: bitrate, continuous playback and station name."""
+    """Partial stream settings update: bitrates, continuous playback, name and statistics."""
 
     model_config = ConfigDict(extra="forbid")
 
     bitrate: Literal[128, 192, 256, 320] | None = None
+    # The AAC and Opus streams (#50): 0 turns one off.
+    aac_bitrate: Literal[0, 64, 96, 128, 192, 256] | None = None
+    opus_bitrate: Literal[0, 48, 64, 96, 128, 192] | None = None
+    # Days of listener statistics to keep; 0 keeps none.
+    stats_days: Annotated[int, Field(ge=0, le=3650, strict=True)] | None = None
     continuous: bool | None = Field(default=None, strict=True)
     station_name: Annotated[str, Field(max_length=100)] | None = None
     genre: Annotated[str, Field(max_length=255)] | None = None
