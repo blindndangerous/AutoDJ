@@ -3482,6 +3482,14 @@ describe("several stations (#70)", () => {
     expect(document.getElementById("panel-queue").getAttribute("aria-labelledby")).toBe("tab-queue");
   });
 
+  it("titles the page without the album and names a lone station not called AutoDJ", async () => {
+    await setupApp({
+      initialState: { current_track: { path: "a.mp3", artist: "A", title: "B", album: "C" } },
+      stations: [{ ...AUTODJ, name: "Night Owl Radio" }],
+    });
+    await vi.waitFor(() => expect(document.title).toBe("A - B - Night Owl Radio - AutoDJ"));
+  });
+
   it("switches inside the page: socket, requests, names and the announcement", async () => {
     const app = await setupApp({
       initialState: { current_track: { path: "a.mp3", artist: "A", title: "B" } },

@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The page title no longer shows the album. It names the station whenever the station is not
+  called AutoDJ, even on a server with one station (#251).
 - Windows setup offers to install missing uv and FFmpeg with WinGet, explains what each tool
   does, and gives manual installation steps when needed. The quick start uses one launcher
   command, with instructions for moving to another computer.
