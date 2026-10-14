@@ -2015,9 +2015,9 @@ the authoritative check. Do not use world-writable Windows mounts.
 
 Track info has a **Tags** section for the song or liner it shows. It has a field each for Title,
 Artist, Album, Genre, Year, BPM, Key and ISRC, filled in with what AutoDJ has for the file.
-Change any of them and choose **Save tags**. AutoDJ writes only the fields you changed, so a tag
-you did not touch stays as it is in the file. Leave a field empty to remove that tag. Title cannot
-be empty.
+Change any of them and choose **Save tags**. AutoDJ saves only the fields you changed, in its own
+library. The file is not touched unless you check **Also save the tags to the file**, which starts
+unchecked for every track. Leave a field empty to remove that tag. Title cannot be empty.
 
 The fields take:
 
@@ -2028,13 +2028,16 @@ The fields take:
 
 A key or BPM you set here is kept when AutoDJ analyses the song later; the analysis still
 measures energy and the rest. Clear the field to let the analysis set it again.
-- ISRC: 12 characters, such as AB1CD2600001. Hyphens and spaces are ignored.
+- ISRC: 12 characters, such as AB1CD2600001. Hyphens and spaces are ignored. AutoDJ keeps the
+  ISRC only in the file, so changing it needs **Also save the tags to the file**.
 
 A field AutoDJ cannot take is marked invalid with the reason under it, and focus moves to the
 first one. When the save works, the page says so once and focus stays on Save tags.
 
 AutoDJ writes MP3, FLAC, M4A, Ogg Vorbis, Opus, WAV and AIFF tags. For any other kind of file,
-or one it cannot read, the Tags section says it cannot edit them. The write is safe to
+or one it cannot read, the Tags section says the tags are saved in AutoDJ only, and the checkbox
+and ISRC field are not shown. Writing the file is refused while the song is playing or up next;
+saving in AutoDJ only is not. The write is safe to
 interrupt: AutoDJ copies the file to a hidden `.<name>.<random>.autodj-tags.tmp` beside it,
 tags the copy, flushes it to disk, reads every changed field back, and only then puts it in
 place of the original in one step. On Linux and macOS it then flushes the folder too; Windows

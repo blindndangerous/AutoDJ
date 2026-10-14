@@ -103,13 +103,13 @@
   <div role="tablist" aria-orientation="horizontal">
     <button type="button" role="tab" id="tab-now"      data-view="now"      aria-selected="true"  tabindex="0">Now Playing</button>
     <button type="button" role="tab" id="tab-queue"    data-view="queue"    aria-selected="false" tabindex="-1">Queue &amp; Search</button>
+    <button type="button" role="tab" id="tab-track-info" data-view="track-info" aria-selected="false" tabindex="-1">Track info</button>
+    <button type="button" role="tab" id="tab-history"  data-view="history"  aria-selected="false" tabindex="-1">History</button>
     <button type="button" role="tab" id="tab-carts"    data-view="carts"    aria-selected="false" tabindex="-1">Carts</button>
     <button type="button" role="tab" id="tab-voice"    data-view="voice"    aria-selected="false" tabindex="-1">Voice tracks</button>
     <button type="button" role="tab" id="tab-ads"      data-view="ads"      aria-selected="false" tabindex="-1">Ads</button>
-    <button type="button" role="tab" id="tab-track-info" data-view="track-info" aria-selected="false" tabindex="-1">Track info</button>
-    <button type="button" role="tab" id="tab-history"  data-view="history"  aria-selected="false" tabindex="-1">History</button>
-    <button type="button" role="tab" id="tab-settings" data-view="settings" aria-selected="false" tabindex="-1">Settings</button>
     <button type="button" role="tab" id="tab-library"  data-view="library"  aria-selected="false" tabindex="-1" aria-describedby="shared-context">Library tools</button>
+    <button type="button" role="tab" id="tab-settings" data-view="settings" aria-selected="false" tabindex="-1">Settings</button>
   </div>
 </nav>
 
@@ -432,16 +432,17 @@
       <ol id="landmarks-list" class="landmark-list" role="list" aria-labelledby="landmarks-heading" hidden></ol>
       <p class="setting-desc" id="landmarks-note" hidden>Drops, breakdowns, phrases and bar numbers appear once AutoDJ has analysed this song: when it is next up to play, or when Analyse runs in Library tools.</p>
     </section>
-    <!-- Tags (modules/tag-editor.js).  Save tags writes only the fields that
-         changed into the file and the library; the analysis and cue points
-         stay.  A refused field is marked invalid, its error is linked to it
+    <!-- Tags (modules/tag-editor.js). Save tags stores only changed fields
+         in the library, and in the file when Also save the tags to the file
+         is checked. Analysis and cue points stay. A refused field is marked
+         invalid, its error is linked to it
          and the first one is focused; any other result is said once in
          #tags-status, and focus stays on Save tags. -->
     <section id="tags-editor" aria-labelledby="tags-heading" hidden>
       <h3 id="tags-heading">Tags</h3>
-      <p id="tags-unavailable" hidden>AutoDJ cannot edit the tags of this kind of file.</p>
+      <p id="tags-unavailable" hidden>AutoDJ cannot write tags into this kind of file, so Save tags changes them in AutoDJ only.</p>
       <form id="tags-form" novalidate>
-        <p class="setting-desc">Change any tag and choose Save tags. AutoDJ writes them into the file without analysing it again. Leave a field empty to remove that tag; Title is required.</p>
+        <p class="setting-desc">Change any tag and choose Save tags. AutoDJ keeps them in its library without analysing the song again. The file changes only if you check Also save the tags to the file. Leave a field empty to remove that tag; Title is required.</p>
         <div class="settings-row tag-field">
           <label for="tag-title">Title</label>
           <input type="text" id="tag-title" data-tag="title" autocomplete="off" required>
@@ -483,9 +484,10 @@
         <div class="settings-row tag-field">
           <label for="tag-isrc">ISRC</label>
           <input type="text" id="tag-isrc" data-tag="isrc" autocomplete="off" spellcheck="false" aria-describedby="tag-isrc-help">
-          <span class="setting-desc" id="tag-isrc-help">Optional. 12 characters, such as AB1CD2600001.</span>
+          <span class="setting-desc" id="tag-isrc-help">Optional. 12 characters, such as AB1CD2600001. Kept only in the file.</span>
           <p id="tag-isrc-error" class="field-error" hidden></p>
         </div>
+        <label id="tags-file-label" hidden><input type="checkbox" id="tags-file"> Also save the tags to the file</label>
         <label id="tags-beets-label" hidden><input type="checkbox" id="tags-beets" checked> Also update the beets library</label>
         <button type="submit" id="tags-save">Save tags</button>
       </form>
@@ -3559,6 +3561,7 @@
     <dt><kbd><span aria-hidden="true">,</span><span class="visually-hidden">Comma</span></kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd><span aria-hidden="true">.</span><span class="visually-hidden">Period</span></kbd></dt><dd>Seek back <span aria-hidden="true">/</span><span class="visually-hidden">or</span> forward 1 measure (BPM-derived; falls back to 5 s). Not available in stream mode.</dd>
     <dt><kbd><span aria-hidden="true">?</span><span class="visually-hidden">question mark</span></kbd></dt><dd>Open <span aria-hidden="true">/</span><span class="visually-hidden">or</span> close this dialog</dd>
     <dt><kbd>Esc</kbd></dt><dd>Close this dialog</dd>
+    <dt><kbd>Alt+1</kbd> to <kbd>Alt+9</kbd></dt><dd>Open the tab in that position: Now Playing, Queue &amp; Search, Track info, History, Carts, Voice tracks, Ads, Library tools, Settings. Works from anywhere, including text fields.</dd>
     <dt style="margin-top:0.5rem">Number keys 1 to 9 and 0, <kbd><span aria-hidden="true">-</span><span class="visually-hidden">minus</span></kbd>, <kbd><span aria-hidden="true">=</span><span class="visually-hidden">equals</span></kbd></dt><dd style="margin-top:0.5rem">Play carts 1 to 12 on the cart page shown. Only with focus on the cart wall, in the Carts tab.</dd>
     <dt><kbd>Page Up</kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd>Page Down</kbd></dt><dd>Previous <span aria-hidden="true">/</span><span class="visually-hidden">or</span> next cart page. Only with focus on the cart wall.</dd>
     <dt><kbd>Alt+M</kbd></dt><dd>Talk over the music while held, when the station can go live. Talk stops when you let go, however quick the press; focus stays where it is.</dd>

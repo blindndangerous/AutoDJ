@@ -547,7 +547,7 @@ describe("clock folder and points controls", () => {
     await switching;
     const urls = request.mock.calls.map(([url]) => url);
     expect(urls).toEqual(["/api/library/points?path=M%3A%2Fone.flac", "/api/library/tags", "/api/library/points?path=M%3A%2Ftwo.flac"]);
-    expect(JSON.parse(request.mock.calls[1][1].body)).toEqual({ path: "M:/one.flac", tags: { title: "Uno" }, beets: false });
+    expect(JSON.parse(request.mock.calls[1][1].body)).toEqual({ path: "M:/one.flac", tags: { title: "Uno" }, beets: false, write_file: false });
     expect(title.value).toBe("Two");
     // Saving here updates the details and the heading in place.
     title.value = "Dos";

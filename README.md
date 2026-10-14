@@ -363,6 +363,8 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Six tabs:
 - **Shift+J** — speak the library job status: what is running, for how long, and how far it has
   got as a percentage when the job shows one, or how the last job ended.
 - **Shift+H** — speak how the hour lands, from the hour preview.
+- **Alt+1** to **Alt+9** — open the tab in that position: Now Playing, Queue & Search, Track info,
+  History, Carts, Voice tracks, Ads, Library tools, Settings. These work in text fields too.
 - **Right bracket** / **Left bracket** — the next / previous landmark of the song (intro, vocals,
   drop, breakdown, outro, phrase). In Track info they move the cue point preview and say it ("Preview:
   Drop, 1:35, bar 49"). On other tabs they say the landmark of the song on air ("On air: Drop,

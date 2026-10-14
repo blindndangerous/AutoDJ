@@ -107,10 +107,10 @@ async function install(hooks = {}) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("cart wall markup", () => {
-  it("is a Carts main tab right after Queue, with a panel heading and no aria-controls", () => {
+  it("is a Carts main tab right after History, with a panel heading and no aria-controls", () => {
     installIndex();
     const tab = byId("tab-carts");
-    expect(byId("tab-queue").nextElementSibling).toBe(tab);
+    expect(byId("tab-history").nextElementSibling).toBe(tab);
     expect(tab.getAttribute("role")).toBe("tab");
     expect(tab.textContent).toBe("Carts");
     expect(tab.hasAttribute("aria-controls")).toBe(false);

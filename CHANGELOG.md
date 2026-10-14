@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Save tags in Track info now saves the tags in AutoDJ only and leaves the file alone. Check
+  Also save the tags to the file to write them into the file as before; it starts unchecked
+  for every track (#258).
+- The main tabs are now Now Playing, Queue & Search, Track info, History, Carts, Voice tracks,
+  Ads, Library tools and Settings, in that order. Alt+1 to Alt+9 open them (#256).
 - The Keyboard shortcuts button is at the bottom of every page, above the version line, next to
   a new Changelog link (#253).
 - Library tools can rescan the library automatically every so many hours and minutes (#249).

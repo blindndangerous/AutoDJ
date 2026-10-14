@@ -1550,7 +1550,7 @@ class LibraryCatalog:
         unchanged tag values do not cause a database write.
 
         Args:
-            path: The recording, already rewritten on disk.
+            path: The recording, rewritten on disk or left as it was.
             fields: New values for any of ``title``, ``artist``, ``album``,
                 ``genre``, ``year``, ``bpm``, ``key`` and ``mode``.
 
