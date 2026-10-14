@@ -183,7 +183,11 @@ def test_checkpoint_with_nothing_new_publishes_nothing(tmp_path: Path) -> None:
 def test_enrich_skips_index_entries_absent_from_beets(tmp_path: Path) -> None:
     index_dir = tmp_path / "index"
     entry = _entry(str(tmp_path / "indexed.flac"))
-    indexer.save_index([entry], _vector(), index_dir, music_dir=tmp_path, base_generation=0)
+    from autodj.catalog import LibraryCatalog
+
+    with LibraryCatalog(index_dir / "library.db") as catalog:
+        catalog.add_source(tmp_path)
+        catalog.put_entry(entry)
     beets_db = tmp_path / "beets.db"
     connection = sqlite3.connect(beets_db)
     try:

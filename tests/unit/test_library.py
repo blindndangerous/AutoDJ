@@ -1266,8 +1266,8 @@ def test_missing_removal_requires_clean_preview_and_preserves_history(manager_fa
     music, share = tmp_path / "Music", tmp_path / "Share"
     music.mkdir()
     share.mkdir()
-    gone, remote = music / "gone.flac", share / "remote.flac"
-    for path in (gone, remote):
+    gone, kept, remote = music / "gone.flac", music / "kept.flac", share / "remote.flac"
+    for path in (gone, kept, remote):
         path.write_bytes(path.name.encode())
     manager = manager_factory(music=music)
     manager.catalog.add_source(share)
@@ -1305,6 +1305,28 @@ def test_missing_removal_requires_clean_preview_and_preserves_history(manager_fa
     assert manager.remove_missing(preview["token"], confirmed=True, allow_mass=True) == 1
     assert manager.catalog.recent_history()[0]["path"] == os.path.normcase(str(gone))
     assert manager.catalog.record_for_path(remote) is not None
+
+
+def test_missing_removal_rejects_an_empty_but_mounted_source(manager_factory, tmp_path):
+    music = tmp_path / "Music"
+    music.mkdir()
+    songs = [music / "one.flac", music / "two.flac"]
+    for song in songs:
+        song.write_bytes(song.name.encode())
+    manager = manager_factory(music=music)
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+    ):
+        manager.scan()
+        for song in songs:
+            song.unlink()
+        manager.scan()
+
+    preview = manager.missing_removal_preview()
+    assert preview["ready"] is True
+    assert preview["count"] == 0
+    assert all(manager.catalog.record_for_path(song) is not None for song in songs)
 
 
 @pytest.mark.parametrize("processing", [None, "off", "replaygain"])
