@@ -321,6 +321,39 @@ def test_points_reject_unknown_or_invalid_times(tmp_path: Path, points: dict) ->
             catalog.set_points(track, points)
 
 
+def test_cues_within_display_rounding_move_onto_their_limit(tmp_path: Path) -> None:
+    """#237: Track info rounds cues to 0.01 s, which must not make a save invalid."""
+    root = tmp_path / "music"
+    root.mkdir()
+    track, liner = root / "song.flac", root / "voice.wav"
+    track.write_bytes(b"audio")
+    liner.write_bytes(b"voice")
+    with LibraryCatalog(tmp_path / "catalog.db") as catalog:
+        catalog.add_source(root)
+        catalog.put_entry(entry(track))
+        catalog.set_points(track, {"start": 10.004, "end": 170.004}, source="analysis")
+        # Start and End shown as 0:10 and 2:50; an Intro and Outro typed to match.
+        catalog.set_points(track, {"intro": 10.0, "outro": 170.01, "end": 180.005})
+        assert catalog.points(track)["intro"] == 10.004
+        assert catalog.points(track)["outro"] == 170.01
+        assert catalog.points(track)["end"] == 180
+        catalog.set_points(track, {"end": 170.004, "outro": 170.01})
+        assert catalog.points(track)["outro"] == 170.004
+        catalog.set_points(track, {"overlap_start": 160.01})
+        assert catalog.points(track)["overlap_start"] == pytest.approx(160.0)
+        for bad in ({"intro": 9.98}, {"outro": 170.02}, {"overlap_start": 160.02}):
+            with pytest.raises(ValueError):
+                catalog.set_points(track, bad)
+
+        catalog.put_entry(entry(liner), "liner")
+        catalog.set_points(liner, {"start": 2.01, "segue": 8.0})
+        catalog.set_points(liner, {"overlap_start": 6.0})
+        assert catalog.points(liner)["overlap_start"] == pytest.approx(5.99)
+        assert catalog.record_for_path(liner)["point_sources"]["overlap_start"] == "user"
+        with pytest.raises(ValueError, match="overlap_start"):
+            catalog.set_points(liner, {"overlap_start": 6.01})
+
+
 def test_rekey_preserves_record_identity_points_and_history(tmp_path: Path) -> None:
     root = tmp_path / "music"
     root.mkdir()
