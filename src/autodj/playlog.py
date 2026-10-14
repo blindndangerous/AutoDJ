@@ -17,9 +17,11 @@ that started inside the requested range:
 - ``isrc`` and ``label``, read from the file's tags at export time, so no
   re-index is needed.  An ISRC is written as 12 characters without
   hyphens; a tag that does not hold a valid one counts as missing.
-- ``kind``: ``song`` or ``liner``.  The mix bus logs only the tracks it
-  starts, so liners mixed over a transition are not in the log, and
-  nothing yet marks a file as an ad or a station ID.
+- ``kind``: ``song``, ``liner`` or ``ad``.  The mix bus logs only the
+  tracks it starts, so liners mixed over a transition are not in the log.
+  The ad spots that aired come from the station's ad play log
+  (:func:`autodj.ads.aired_plays`, #51): the advertiser as the artist and
+  the campaign as the album.
 - ``path``: relative to the music or liner folder that holds the file,
   with ``/`` separators; absolute when no folder holds it.
 - ``performances``: how many listeners heard the play, each counted once:

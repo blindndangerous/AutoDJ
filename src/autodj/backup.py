@@ -9,11 +9,12 @@ that wrote it and the list of files) and these members:
   ``index/carts.json``,
   ``index/time_checks.json``, ``index/listener_bans.json``, ``index/listener_stats.json``,
   ``index/recording.json``, ``index/categories.json``, ``index/liner_dates.json``,
-  ``index/matched_intros.json`` and ``index/shows.json`` from the active index folder.
-  ``relays.json``, which holds relay source passwords, is never backed up
+  ``index/matched_intros.json``, ``index/ads.json`` and ``index/shows.json`` from the active
+  index folder. ``relays.json``, which holds relay source passwords, is never backed up
   (:data:`SECRET_STATE_FILES`).
-- ``liners/...``, ``carts/...``, ``time_checks/...``, ``profiles/...``, ``clockwheels/...``
-  and ``intros/...`` (the matched intros' audio): every file in those folders and their
+- ``liners/...``, ``carts/...``, ``time_checks/...``, ``profiles/...``, ``clockwheels/...``,
+  ``intros/...`` (the matched intros' audio), ``ads/...`` (the ad spots' audio) and
+  ``ad_plays/...`` (the ad play log, #51): every file in those folders and their
   subfolders.  Time check
   voice packs kept in subfolders of the ``time_checks`` folder come along; packs listed
   from other folders do not, as they are external libraries like the music.
@@ -84,6 +85,7 @@ INDEX_FILES = (
     "categories.json",
     "liner_dates.json",
     "matched_intros.json",
+    "ads.json",
     "shows.json",
 )
 # Kept readable only to validate and refuse old archives that may still hold unmigrated vectors.
@@ -97,6 +99,8 @@ _FOLDERS = (
     "profiles",
     "clockwheels",
     "intros",
+    "ads",
+    "ad_plays",
     "stereo-tool-presets",
 )
 # The default station's state files in the active index folder.
@@ -111,12 +115,22 @@ _STATE_FILES = (
     "categories.json",
     "liner_dates.json",
     "matched_intros.json",
+    "ads.json",
     "shows.json",
 )
 # Another station's state files, in ``stations/<slug>/``.  The categories
 # are shared, so they are only in the default station's list.
 STATION_FILES = tuple(name for name in _STATE_FILES if name != "categories.json")
-STATION_FOLDERS = ("liners", "carts", "time_checks", "profiles", "clockwheels", "intros")
+STATION_FOLDERS = (
+    "liners",
+    "carts",
+    "time_checks",
+    "profiles",
+    "clockwheels",
+    "intros",
+    "ads",
+    "ad_plays",
+)
 # Restore refuses an archive that unpacks to more than this, and keeps this
 # much free beside what it unpacks.
 MAX_RESTORE_BYTES = 256 * 2**30
@@ -147,6 +161,8 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
         "profiles": station.profiles,
         "clockwheels": station.clockwheels,
         "intros": station.intros,
+        "ads": station.ad_spots,
+        "ad_plays": station.ad_plays,
         "stereo-tool-presets": active.parent / "stereo-tool-presets",
     }
     for spec in cfg.stations:
@@ -159,6 +175,8 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
         roots[f"{prefix}/profiles"] = paths.profiles
         roots[f"{prefix}/clockwheels"] = paths.clockwheels
         roots[f"{prefix}/intros"] = paths.intros
+        roots[f"{prefix}/ads"] = paths.ad_spots
+        roots[f"{prefix}/ad_plays"] = paths.ad_plays
     return roots
 
 

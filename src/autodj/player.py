@@ -2932,7 +2932,7 @@ class Player:
         desk = self.break_desk
         return (
             desk is not None
-            and desk.enabled
+            and desk.plans_slots
             and self._library is not None
             and self._cfg.playback.transition_mode == "saved_points"
         )
@@ -3201,6 +3201,45 @@ class Player:
             desk.add(item)
             plan.pinned = True
             return replace(plan)
+
+    def book_breaks(self, items: Sequence[Break], slot_id: str) -> SlotPlan:
+        """Book *items* together for the open song change *slot_id* and pin its pair.
+
+        All of them or none: the ad schedule books a whole ad break (#51).
+
+        Raises:
+            BreakError: 409 when *slot_id* is no longer the open one.
+        """
+        desk = self.break_desk
+        if desk is None:
+            raise BreakError(409, "Breaks are off for this station", "disabled")
+        with self._slot_lock:
+            plan = self._slot_plan
+            if (
+                plan is None
+                or plan.slot_id != slot_id
+                or plan.serial != self._cursor_serial
+                or (plan.stale and not plan.pinned)
+            ):
+                raise BreakError(409, "That song change is no longer open", "slot_closed")
+            added: list[Break] = []
+            failed: BreakError | None = None
+            for item in items:
+                try:
+                    desk.add(item)
+                except BreakError as exc:
+                    failed = exc
+                    break
+                added.append(item)
+            if failed is None and added:
+                plan.pinned = True
+            booked = replace(plan)
+        if failed is not None:
+            # Dropped with the slot lock released: the desk may unpin the slot.
+            for item in added:
+                desk.drop(item.break_id, "the rest of its ad break could not be booked")
+            raise failed
+        return booked
 
     def reset_render_ahead(
         self,
@@ -4794,7 +4833,8 @@ class Player:
 
     def _load_break_audio(self, item: Break) -> np.ndarray:
         """A break's audio, processed like a voice liner when the station processes them."""
-        return self._load_voice_audio(item.path, float(self.break_desk.config.max_seconds))
+        limit = item.limit_s if item.limit_s is not None else self.break_desk.config.max_seconds
+        return self._load_voice_audio(item.path, float(limit))
 
     def _load_voice_audio(self, path: Path, limit: float) -> np.ndarray:
         """A spoken clip's audio (a break or a matched intro), at most *limit* seconds.

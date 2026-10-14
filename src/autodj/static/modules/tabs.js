@@ -7,7 +7,7 @@
 import { showVisibleStatus } from "./live-region.js";
 import { markSelected, tabForKey } from "./tablist.js";
 
-const VIEW_NAMES = ["now", "queue", "carts", "voice", "track-info", "history", "settings", "library"];
+const VIEW_NAMES = ["now", "queue", "carts", "voice", "ads", "track-info", "history", "settings", "library"];
 
 const _viewSections = new Map();
 const _viewLinks = new Map();
