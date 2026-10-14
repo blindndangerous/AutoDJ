@@ -27,6 +27,14 @@ def _track(entry: Any) -> dict[str, Any] | None:
     }
 
 
+def _history_row(row: dict[str, Any]) -> dict[str, Any]:
+    """A History row for the public feed; a live DJ's set (#48) also says so and when it ended."""
+    public = {key: row.get(key) for key in ("artist", "title", "duration", "played_at")}
+    if row.get("kind") == "live":
+        public.update(kind="live", ended_at=row.get("ended_at"))
+    return public
+
+
 def _listeners(bridge: Any) -> int:
     """Listeners on every stream format together (a test double may have only the MP3 one)."""
     mounts = getattr(bridge, "mounts", None)
@@ -47,6 +55,9 @@ class NowPlaying:
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self.bridge = bridge
+        # Live DJ input (#48): the DJ on the air, if any, and the title shown.
+        self.live_status: Callable[[], dict[str, str] | None] = lambda: None
+        self.live_title = "Live"
         self._lock = threading.Lock()
         self._payload: dict[str, Any] = {}
         # The calendar day in the station time zone ([server]
@@ -82,14 +93,27 @@ class NowPlaying:
         cfg = self.bridge.player._cfg
         state = self.bridge.player._state
         current = _track(state.current_track)
+        live = self.live_status()
+        if live is not None:
+            current = {
+                "artist": live["dj"],
+                "title": self.live_title,
+                "album": "",
+                "duration": 0.0,
+                "started_at": live["since"],
+                "elapsed": 0.0,
+                "kind": "live",
+            }
         history = self.bridge.history_snapshot()
+        if live is not None and history and history[-1].get("kind") == "live":
+            history = history[:-1]
         open_play = getattr(self.bridge, "_open_play", None)
         started_at = (
             open_play[1]["played_at"]
             if current and open_play is not None and open_play[0] is state.current_track
             else None
         )
-        if current is not None:
+        if current is not None and live is None:
             current["started_at"] = started_at
             if started_at:
                 elapsed = (datetime.now(UTC) - datetime.fromisoformat(started_at)).total_seconds()
@@ -105,18 +129,14 @@ class NowPlaying:
             "schema": SCHEMA_VERSION,
             "station_name": cfg.stream.station_name,
             "current_track": current,
+            "live": live,
             # DMCA mode never announces a song before it plays.
             "next_track": (
                 _track(state.next_track)
-                if cfg.nowplaying.show_next and not cfg.dmca.enabled
+                if live is None and cfg.nowplaying.show_next and not cfg.dmca.enabled
                 else None
             ),
-            "history": [
-                {key: row.get(key) for key in ("artist", "title", "duration", "played_at")}
-                for row in reversed(history[-limit:])
-            ]
-            if limit
-            else [],
+            "history": [_history_row(row) for row in reversed(history[-limit:])] if limit else [],
             "listener_count": _listeners(self.bridge),
             "stream_path": stream_path if isinstance(stream_path, str) else "/stream.mp3",
         }
@@ -136,6 +156,11 @@ class NowPlaying:
         current = payload.get("current_track")
         if not current or not current.get("started_at"):
             return payload
+        if current.get("kind") == "live":
+            elapsed = (
+                datetime.now(UTC) - datetime.fromisoformat(current["started_at"])
+            ).total_seconds()
+            return {**payload, "current_track": {**current, "elapsed": max(0.0, elapsed)}}
         position = getattr(self.bridge.player, "_playback_pos", None)
         sample_rate = getattr(self.bridge.player, "_current_sr", None)
         if (

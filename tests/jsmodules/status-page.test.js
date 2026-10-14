@@ -52,6 +52,13 @@ describe("status page text", () => {
     expect(trackText(CURRENT, "")).toBe("Song by Artist, from the album Album.");
     expect(trackText({ title: " ", artist: "" }, "")).toBe("Unknown title by an unknown artist.");
     expect(trackText(null, NOTHING_PLAYING)).toBe(NOTHING_PLAYING);
+    // A live DJ's set (#48): the DJ, with no title, album or length to read.
+    const live = {
+      artist: "DJ Alice", title: "Live", album: "", duration: 0,
+      started_at: "2026-10-13T20:15:00Z", elapsed: 120, kind: "live",
+    };
+    expect(trackText(live, "")).toBe("Live: DJ Alice.");
+    expect(trackText({ ...live, artist: " " }, "")).toBe("Live: a DJ.");
     expect(listenersText(1)).toBe("1 listener");
     expect(listenersText(0)).toBe("0 listeners");
     expect(listenersText("bad")).toBe("0 listeners");

@@ -9,7 +9,8 @@ import re
 import secrets
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Protocol
+
+from autodj.liner_files import AsyncReader
 
 MAX_PRESET_BYTES = 2 * 1024 * 1024
 INCLUDED = "included"
@@ -17,10 +18,6 @@ INCLUDED_PATH = Path(__file__).with_name("presets") / "stereo-tool-free.sts"
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 _.-]{0,95}\.sts", re.IGNORECASE)
 # ntpath.isreserved leaves out COM0 and LPT0, which Windows also reserves.
 _EXTRA_RESERVED = {"COM0", "LPT0"}
-
-
-class AsyncReader(Protocol):
-    async def read(self, size: int = -1) -> bytes: ...
 
 
 class PresetInUseError(RuntimeError):

@@ -12,6 +12,7 @@ server stack.
 
 from __future__ import annotations
 
+import copy
 import logging
 import secrets
 import threading
@@ -19,14 +20,16 @@ from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from autodj.audience import StreamAudience
+from autodj.identity_map import attached
 
 if TYPE_CHECKING:
     from autodj.indexer import IndexEntry
+    from autodj.repeat_rules import PlayRecord
     from autodj.settings_bodies import PlaybackSettingsBody
 
 logger = logging.getLogger(__name__)
@@ -140,6 +143,8 @@ class QueueView:
     current: IndexEntry | None
     queued_next: IndexEntry | None
     queue: tuple[IndexEntry, ...]
+    clock_revision: int | None = None
+    clock_cursor: int | None = None
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, QueueView):
@@ -148,6 +153,8 @@ class QueueView:
             self.current is other.current
             and self.queued_next is other.queued_next
             and len(self.queue) == len(other.queue)
+            and self.clock_revision == other.clock_revision
+            and self.clock_cursor == other.clock_cursor
             and all(a is b for a, b in zip(self.queue, other.queue, strict=True))
         )
 
@@ -160,10 +167,13 @@ class RequestSlot:
 
     Attributes:
         position: Its index in the user queue; 0 plays first.
-        starts_in: Seconds from now until it would start, from track lengths.
+        starts_in: Seconds from now until it would start, timed as the hour
+            preview times the queue.
         before: The track it would follow, or ``None``.
         after: The queued track that would follow it, or ``None``.
-        problems: The rules it would break there, in words ("same artist").
+        problems: The rules it would break there, in words ("same artist"),
+            and the ones it would make a queued song after it break ("Artist
+            — Song after it: same artist").
         dmca: Those of *problems* that are DMCA limits.
     """
 
@@ -173,6 +183,28 @@ class RequestSlot:
     after: IndexEntry | None
     problems: tuple[str, ...]
     dmca: tuple[str, ...] = ()
+    clock_next: int | None = None
+
+
+def _request_settings(requests: Any) -> dict[str, Any]:
+    """The listener request settings the operator's card saves (#49), when the station has them."""
+    if requests is None:
+        return {}
+    return {
+        "requests_bridges_enabled": bool(requests.bridges_enabled),
+        "requests_max_bridges": int(requests.max_bridges),
+        "requests_bridge_cost_threshold": float(requests.bridge_cost_threshold),
+        "requests_no_smooth_spot": requests.no_smooth_spot,
+    }
+
+
+@dataclass(frozen=True)
+class RequestInsert:
+    """One request and its preceding bridge songs, committed together."""
+
+    slot: RequestSlot
+    bridges: tuple[IndexEntry, ...] = ()
+    bridge_clock_next: tuple[int | None, ...] = ()
 
 
 @dataclass
@@ -460,6 +492,7 @@ class PlayerBridge:
                 return
             row = self._append_history(entry)
             self._open_play = (entry, row)
+        self._forget_bridges(started=entry)
         if self.stream is not None:
             artist, title = getattr(entry, "artist", "") or "", getattr(entry, "title", "") or ""
             self.stream.set_title(artist, title)
@@ -552,13 +585,20 @@ class PlayerBridge:
             self._audience.disconnected(client)
 
     def history_snapshot(self) -> list[dict]:
-        """Return the latest plays across sessions, oldest first."""
+        """Return the latest plays across sessions, oldest first.
+
+        A live DJ's set (#48) also has ``kind`` ``"live"`` and ``ended_at``
+        (``None`` while it is on the air); songs keep their usual fields.
+        """
+        keys = ("event_id", "path", "title", "artist", "duration", "played_at")
         with self._history_lock:
             return [
-                {
-                    key: row.get(key)
-                    for key in ("event_id", "path", "title", "artist", "duration", "played_at")
-                }
+                {key: row.get(key) for key in keys}
+                | (
+                    {"kind": "live", "ended_at": row.get("ended_at")}
+                    if row.get("kind") == "live"
+                    else {}
+                )
                 for row in self._play_history
             ]
 
@@ -693,6 +733,14 @@ class PlayerBridge:
         if queued is not None:
             nxt = queued
             p._last_pick_mode = "queue"
+            marked_cursor = getattr(p, "_last_request_clock_cursor", None)
+            clock = getattr(p, "_clock", None)
+            if (
+                isinstance(marked_cursor, int)
+                and getattr(p._cfg.playback, "pick_mode", None) == "clock"
+                and isinstance(clock, dict)
+            ):
+                clock["cursor"] = marked_cursor
         elif state.next_track is not None:
             nxt = state.next_track
         elif cur is not None:
@@ -1198,7 +1246,13 @@ class PlayerBridge:
 
         current_dict = _cached_track_dict(current)
         next_dict = _cached_track_dict(upcoming)
-        queue_dicts = [_cached_track_dict(e) for e in self._queue_snapshot()]
+        queue_entries = self._queue_snapshot()
+        queue_dicts = [_cached_track_dict(e) for e in queue_entries]
+        bridge_of = attached(self.player, "_request_bridge_of")
+        for queued, data in zip(queue_entries, queue_dicts, strict=True):
+            request = bridge_of.get(queued)
+            if data is not None and request is not None:
+                data["bridge_to"] = request.display_name
         self._track_dicts = shown
 
         elapsed = round(pos / max(1, sr), 1)
@@ -1518,39 +1572,69 @@ class PlayerBridge:
         self.skip()
         return True
 
-    def _played_seconds(self, entry: IndexEntry) -> float:
-        """How long *entry* plays at the station's music speed, in seconds."""
-        length = float(entry.length)
-        rate = getattr(self.player, "music_playback_rate", None)
-        value = rate(entry) if callable(rate) else 1.0
-        if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
-            return length
-        return length / float(value)
+    def _playout_head(self, now: float) -> Any:
+        """The fixed part of the playout, as the hour preview reads it (#217).
+
+        Only the song on the air, timed from its cues, while the live read
+        finds nothing (the station stopped, or between songs).  Takes no
+        lock beyond the brief copies the preview's read takes.
+        """
+        from autodj.hour_preview import read_head, rough_head
+
+        desk = getattr(self.player, "break_desk", None)
+        return read_head(self.player, desk, now=now) or rough_head(self.player, now=now)
+
+    def history_ahead(
+        self, waiting: list[IndexEntry], index: int, entry: IndexEntry
+    ) -> tuple[list[PlayRecord], float]:
+        """The play history as it will stand when *entry*, put at *index* of *waiting*, starts.
+
+        Also returns that start.  *waiting* is the "play next" song and the
+        user queue.  Timed as the hour preview times the queue (#217): from
+        the playing song's position, the renders' own handoffs and music
+        speed, and saved cues for the rest (:func:`autodj.hour_preview.time_queue`).
+        Takes ``history_lock`` and the preview's brief locks one after the
+        other, never ``queue_lock`` together with another.
+        """
+        from autodj.hour_preview import history_at, time_queue
+
+        state = self.player._state
+        now = state.clock()
+        with state.history_lock:
+            history = list(state.play_history)
+        head = self._playout_head(now)
+        timed = time_queue(self.player, head, waiting, insert=(index, entry), limit=None)
+        when = timed.starts[index]
+        when = timed.handoff if when is None else when
+        return history_at(history, head, timed.unplayed, when), when
 
     def dmca_queue_limits(self, entry: IndexEntry, *, now: bool, append: bool) -> tuple[str, ...]:
         """The DMCA limits *entry* would break where it is about to be queued.
 
-        Its start is projected from track lengths at the music speed: after
-        the playing track (unless *now*), and with *append* after everything already queued
-        too.  Empty when DMCA mode is off or no limit is broken.
+        Now (*now*), next in the "play next" place, or with *append* after
+        everything already queued, its start timed as the hour preview
+        times the queue (:meth:`history_ahead`).  Empty when DMCA mode is
+        off or no limit is broken.
         """
-        from autodj.dmca import complement, projected_history
+        from autodj.dmca import complement
 
         player = self.player
         if not player._cfg.dmca.enabled:
             return ()
         state = player._state
-        with state.history_lock:
-            history = list(state.play_history)
-        with state.queue_lock:
-            waiting = [*([state.queued_next] if state.queued_next else []), *state.queue]
-        records, when = projected_history(
-            history,
-            state.clock(),
-            None if now else state.current_track,
-            waiting if append else [],
-            length=self._played_seconds,
-        )
+        if now:
+            with state.history_lock:
+                records, when = list(state.play_history), state.clock()
+        else:
+            with state.queue_lock:
+                queue = list(state.queue)
+                queued_next = state.queued_next
+            if append:
+                waiting = [*([queued_next] if queued_next else []), *queue]
+                records, when = self.history_ahead(waiting, len(waiting), entry)
+            else:
+                # Play next takes the "play next" place, ahead of the queue.
+                records, when = self.history_ahead(queue, 0, entry)
         return complement(records, when, player._track_keys()).broken(entry)
 
     def queue_add(self, path: str) -> bool:
@@ -1576,18 +1660,100 @@ class PlayerBridge:
                 state.current_track,
                 state.queued_next,
                 tuple(state.queue),
+                getattr(self.player, "_clock_revision", None),
+                self._request_clock_cursor(),
             )
 
+    def _request_clock_cursor(self) -> int | None:
+        player = self.player
+        pending = getattr(player, "_pending_clock_cursor", None)
+        if isinstance(pending, int):
+            return pending
+        clock = getattr(player, "_clock", None)
+        if isinstance(clock, dict):
+            return clock.get("cursor", 0)
+        return None
+
+    def _clock_fit(
+        self, entry: IndexEntry, when: float, cursor: int | None = None
+    ) -> tuple[str | None, int | None]:
+        """Check the next clock step using the picker's resolved condition matcher."""
+        from autodj.clockwheel import _slot_entries, condition_paths
+
+        player = self.player
+        clock = getattr(player, "_clock", None)
+        if getattr(player._cfg.playback, "pick_mode", None) != "clock" or not isinstance(
+            clock, dict
+        ):
+            return None, None
+        steps = getattr(player, "_clock_slots", ())
+        if not steps:
+            return "no active clockwheel music step", None
+        index = cursor if cursor is not None else getattr(player, "_pending_clock_cursor", None)
+        if index is None:
+            index = clock.get("cursor", 0)
+        index %= len(steps)
+        # Liner and settings instructions belong to the following music
+        # step. A fixed track step is a show song and cannot be replaced.
+        for _ in range(len(steps)):
+            if steps[index].kind not in {"liner", "settings"}:
+                break
+            index = (index + 1) % len(steps)
+        step = steps[index]
+        if step.kind not in {"music", "category"}:
+            return "the next clockwheel step is reserved", None
+        hours = getattr(player, "_clock_step_hours", ())
+        if (
+            index < len(hours)
+            and hours[index] is not None
+            and hours[index].refusal(player._station_now(when))
+        ):
+            return "the clockwheel step is outside its hours", None
+        categories = player._category_members() if getattr(player, "_library", None) else {}
+        categories = categories or {}
+        if step.kind == "category":
+            member = categories.get(step.category)
+            if member is None or entry.path not in member[1]:
+                return "the song does not match the clockwheel category", None
+        elif step.conditions:
+            fields = {
+                condition["name"] for condition in step.conditions if condition["field"] == "beets"
+            }
+            beets = None
+            if fields:
+                reader = getattr(getattr(player, "_library", None), "clock_beets", None)
+                if reader is None:
+                    return "the clockwheel conditions cannot be read", None
+                known, items, error = reader.snapshot(fields)
+                if error or not fields <= known:
+                    return "the clockwheel conditions cannot be read", None
+                beets = items
+            if entry.path not in condition_paths(step, [entry], beets, categories):
+                return "the song does not match the clockwheel conditions", None
+        elif entry.path not in {song.path for song in _slot_entries(step, [entry])}:
+            return "the song does not match the clockwheel folder", None
+        return None, (index + 1) % len(steps)
+
     def request_slots(
-        self, entry: IndexEntry, horizon_s: float, view: QueueView | None = None
+        self,
+        entry: IndexEntry,
+        horizon_s: float,
+        view: QueueView | None = None,
+        clock_cursor: int | None = None,
+        only_position: int | None = None,
     ) -> list[RequestSlot]:
         """Where *entry* could join the user queue, and what each place would break.
 
         One slot per queue position whose projected start is within
         *horizon_s* of now (the first, after the playing track and any
-        "play next" track, always counts).  Each start is projected from
-        track lengths at the music speed, and the repeat rules, the same-song window and, in
-        DMCA mode, the DMCA limits are checked as of that start.
+        "play next" track, always counts).  Starts are timed as the hour
+        preview times the queue (#217, :func:`autodj.hour_preview.time_queue`),
+        and the repeat rules, the same-song window and, in DMCA mode, the
+        DMCA limits are checked as of each start.  The queued songs after
+        the place are checked again with *entry* there (#218): a rule one
+        of them would break only because of it counts as a problem of the
+        place ("Song after it: same artist"); one it breaks already does
+        not, so an operator's earlier choice never stops a request.
 
         Lock order: this holds no lock while it works.  It copies the
         history under ``history_lock`` and the queue (*view*) under
@@ -1595,7 +1761,8 @@ class PlayerBridge:
         it never makes the mix bus (which takes ``queue_lock``) wait on the
         projection, the key cache or the library.
         """
-        from autodj.dmca import complement, projected_history
+        from autodj.dmca import complement
+        from autodj.hour_preview import Timed, history_at, time_queue
         from autodj.repeat_rules import SongVersions, build_filter
 
         player = self.player
@@ -1607,6 +1774,7 @@ class PlayerBridge:
         view = view if view is not None else self._queue_view()
         fixed = [view.queued_next] if view.queued_next is not None else []
         queue = list(view.queue)
+        waiting = [*fixed, *queue]
         current = view.current
         now = state.clock()
         rules = state.rules
@@ -1617,36 +1785,94 @@ class PlayerBridge:
         found = song_versions() if callable(song_versions) else None
         versions = found if isinstance(found, SongVersions) else None
         dmca = bool(player._cfg.dmca.enabled)
-        slots: list[RequestSlot] = []
-        for position in range(len(queue) + 1):
-            waiting = [*fixed, *queue[:position]]
-            records, when = projected_history(
-                history, now, current, waiting, length=self._played_seconds
+        head = self._playout_head(now)
+        liners = head.liners
+        marks = attached(player, "_request_clock_steps")
+        positions = (
+            range(len(queue) + 1)
+            if only_position is None
+            else (only_position,)
+            if 0 <= only_position <= len(queue)
+            else ()
+        )
+
+        def check(song: IndexEntry, timed: Timed, when: float) -> tuple[list[str], list[str]]:
+            """The rules *song* breaks starting at *when*, and the DMCA limits among them."""
+            records = history_at(history, head, timed.unplayed, when)
+            before = [e.path for e, at in timed.unplayed if at < when]
+            repeat, minute_paths = build_filter(
+                records, rules, when, keys, at=when, zone=self._rule_zone(rules)
             )
-            if position and when - now > horizon_s:
-                break
-            repeat, minute_paths = build_filter(records, rules, when, keys)
-            ahead = [*recent, *(e.path for e in (current, *waiting) if e is not None)]
+            ahead = [*recent, *([current.path] if current is not None else []), *before]
             window = deque(ahead, maxlen=track_window) if track_window else deque()
             problems: list[str] = []
             held = {*window, *minute_paths}
             if versions is not None:
                 # With Count versions as one song, every version of a song held back.
                 held = set(versions.with_versions(held))
-            if entry.path in held:
+            if song.path in held:
                 problems.append("same song")
-            if (why := repeat.reason(entry)) is not None:
+            if (why := repeat.reason(song)) is not None:
                 problems.append(why)
-            broken = complement(records, when, keys).broken(entry) if dmca else ()
+            broken = list(complement(records, when, keys).broken(song)) if dmca else []
             problems.extend(broken)
+            return problems, broken
+
+        # What the queued songs break as they are: an earlier choice, not the request's doing.
+        base = time_queue(player, head, waiting, limit=None)
+        already: list[tuple[set[str], set[str]]] = []
+        for index, song in enumerate(waiting):
+            when = base.starts[index]
+            if song.path in liners or when is None:
+                already.append((set(), set()))
+                continue
+            problems, broken = check(song, base, when)
+            already.append((set(problems), set(broken)))
+        slots: list[RequestSlot] = []
+        for position in positions:
+            index = len(fixed) + position
+            timed = time_queue(player, head, waiting, insert=(index, entry), limit=None)
+            when = timed.starts[index]
+            when = timed.handoff if when is None else when
+            if position and when - now > horizon_s:
+                break
+            problems, broken = check(entry, timed, when)
+            before = waiting[index - 1] if index else None
+            if before is not None and self._queued_liner(before):
+                problems.append("it would come between a queued liner and its song")
+            if getattr(player, "_library", None) is not None and hasattr(player, "_dayparts"):
+                closed, _categories = player._dayparts(when)
+                if entry.path in closed:
+                    problems.append("outside the song's daypart")
+            at_cursor = view.clock_cursor if clock_cursor is None else clock_cursor
+            if clock_cursor is None:
+                for earlier in queue[:position]:
+                    at_cursor = marks.get(earlier, at_cursor)
+            clock_problem, clock_next = self._clock_fit(entry, when, at_cursor)
+            if clock_problem:
+                problems.append(clock_problem)
+            order = [*waiting[:index], entry, *waiting[index:]]
+            for later in range(index + 1, len(order)):
+                song = order[later]
+                later_when = timed.starts[later]
+                if song.path in liners or later_when is None:
+                    continue
+                was, was_dmca = already[later - 1]
+                now_problems, now_broken = check(song, timed, later_when)
+                name = song.display_name
+                problems.extend(f"{name} after it: {why}" for why in now_problems if why not in was)
+                broken.extend(
+                    f"{name} after it: {why}" for why in now_broken if why not in was_dmca
+                )
             slots.append(
                 RequestSlot(
                     position=position,
                     starts_in=max(0.0, when - now),
-                    before=waiting[-1] if waiting else current,
+                    before=waiting[index - 1] if index else current,
                     after=queue[position] if position < len(queue) else None,
                     problems=tuple(problems),
                     dmca=tuple(broken),
+                    clock_next=clock_next,
                 )
             )
         return slots
@@ -1664,7 +1890,9 @@ class PlayerBridge:
         self,
         entry: IndexEntry,
         horizon_s: float,
-        choose: Callable[[list[RequestSlot]], RequestSlot | None],
+        choose: Callable[..., RequestSlot | RequestInsert | None],
+        *,
+        with_view: bool = False,
     ) -> RequestSlot | None:
         """Work out *entry*'s places, let *choose* pick one, and queue it there.
 
@@ -1686,14 +1914,33 @@ class PlayerBridge:
         state = self.player._state
         for _try in range(REQUEST_PLACE_TRIES):
             view = self._queue_view()
-            slot = choose(self.request_slots(entry, horizon_s, view))
-            if slot is None:
+            slots = self.request_slots(entry, horizon_s, view)
+            selected = choose(slots, view) if with_view else choose(slots)
+            if selected is None:
                 return None
+            plan = selected if isinstance(selected, RequestInsert) else RequestInsert(selected)
+            slot = plan.slot
             with state.queue_lock:
                 if self._queue_view_unlocked() != view:
                     continue
                 self._capture_pre_queue_seed()
-                state.queue.insert(min(slot.position, len(state.queue)), entry)
+                position = min(slot.position, len(state.queue))
+                # Each queued item is its own copy, so the request's marks and
+                # bridges belong to it alone, never to a same-path song the
+                # operator queued.
+                request = copy.copy(entry)
+                bridges = [copy.copy(song) for song in plan.bridges]
+                state.queue[position:position] = [*bridges, request]
+                bridge_of = attached(self.player, "_request_bridge_of", create=True)
+                marks = attached(self.player, "_request_clock_steps", create=True)
+                self._forget_queue_marks()
+                for song in bridges:
+                    bridge_of[song] = request
+                if slot.clock_next is not None:
+                    marks[request] = slot.clock_next
+                for song, next_cursor in zip(bridges, plan.bridge_clock_next, strict=False):
+                    if next_cursor is not None:
+                        marks[song] = next_cursor
                 self._refresh_bus_queue()
                 self._sync_next_for_prefetch()
                 return slot
@@ -1702,7 +1949,55 @@ class PlayerBridge:
     def _queue_view_unlocked(self) -> QueueView:
         """:meth:`_queue_view` for a caller that holds ``queue_lock`` already."""
         state = self.player._state
-        return QueueView(state.current_track, state.queued_next, tuple(state.queue))
+        return QueueView(
+            state.current_track,
+            state.queued_next,
+            tuple(state.queue),
+            getattr(self.player, "_clock_revision", None),
+            self._request_clock_cursor(),
+        )
+
+    def _forget_queue_marks(self) -> None:
+        """Drop bridge links and clock marks for items no longer waiting.
+
+        Call with ``queue_lock`` held.  A bridge whose request left the
+        queue loses its "bridge to" label but stays queued.
+        """
+        state = self.player._state
+        waiting = [*state.queue, state.queued_next, state.current_track]
+        bridge_of = attached(self.player, "_request_bridge_of")
+        bridge_of.retain(waiting)
+        attached(self.player, "_request_clock_steps").retain(waiting)
+        alive = {id(entry) for entry in waiting}
+        for bridge, request in bridge_of.items():
+            if id(request) not in alive:
+                bridge_of.pop(bridge)
+
+    def _forget_bridges(self, *, started: IndexEntry) -> None:
+        """A song started: it is no longer a bridge, and a request's bridges are done."""
+        bridge_of = attached(self.player, "_request_bridge_of")
+        if not bridge_of:
+            return
+        with self.player._state.queue_lock:
+            bridge_of.pop(started)
+            for bridge, request in bridge_of.items():
+                if request is started:
+                    bridge_of.pop(bridge)
+
+    def _queued_liner(self, entry: IndexEntry) -> bool:
+        is_liner = getattr(self.player, "_is_liner", None)
+        return getattr(self.player, "_library", None) is not None and (
+            callable(is_liner) and is_liner(entry) is True
+        )
+
+    def _rule_zone(self, rules: Any) -> Any:
+        """The zone the daypart rule reads hours in (UTC when the rule is off)."""
+        zone = getattr(self.player, "_station_zone", None)
+        if rules.daypart_days and callable(zone):
+            found = zone()
+            if isinstance(found, tzinfo):
+                return found
+        return UTC
 
     def queue_insert_if(self, entry: IndexEntry, position: int, view: QueueView) -> bool:
         """Put *entry* at *position* of the user queue if the queue still matches *view*.
@@ -1729,6 +2024,7 @@ class PlayerBridge:
             if self._queue_view_unlocked() != view or not 0 <= position < len(state.queue):
                 return False
             del state.queue[position]
+            self._forget_queue_marks()
             if not state.queue and state.queued_next is None:
                 state.pre_queue_seed = None
             self._refresh_bus_queue()
@@ -1777,7 +2073,12 @@ class PlayerBridge:
                 if not found:
                     return False
                 index = (others or found)[0]
-            del q[index]
+            removed = q.pop(index)
+            # A listener request takes its own bridges with it, by
+            # identity: a same-path song queued separately stays.
+            bridge_of = attached(self.player, "_request_bridge_of")
+            q[:] = [song for song in q if bridge_of.get(song) is not removed]
+            self._forget_queue_marks()
             if not q and state.queued_next is None:
                 state.pre_queue_seed = None
             self._refresh_bus_queue()
@@ -1841,7 +2142,7 @@ class PlayerBridge:
                     0 <= i < len(q) and q[i].path == p for i, p in zip(order, paths, strict=True)
                 )
             ):
-                q[:] = [q[i] for i in order]
+                ordered = [q[i] for i in order]
             else:
                 by_path: dict[str, deque[IndexEntry]] = {}
                 for entry in q:
@@ -1858,7 +2159,17 @@ class PlayerBridge:
                     ranked = sorted(range(len(entries)), key=lambda i: (shows[i], -i))
                     dropped = set(ranked[:extra])
                     by_path[p] = deque(e for i, e in enumerate(entries) if i not in dropped)
-                q[:] = [by_path[p].popleft() for p in paths if by_path.get(p)]
+                ordered = [by_path[p].popleft() for p in paths if by_path.get(p)]
+            # A request dropped here takes its bridges with it (by identity).
+            # One write, so a reader never sees a half-built queue.
+            kept = {id(entry) for entry in ordered}
+            bridge_of = attached(self.player, "_request_bridge_of")
+            q[:] = [
+                entry
+                for entry in ordered
+                if (request := bridge_of.get(entry)) is None or id(request) in kept
+            ]
+            self._forget_queue_marks()
             if not q and state.queued_next is None:
                 state.pre_queue_seed = None
             self._refresh_bus_queue()
@@ -2052,6 +2363,7 @@ class PlayerBridge:
                 "nowplaying_show_next": cfg.nowplaying.show_next,
                 "dmca_enabled": cfg.dmca.enabled,
                 "stream_max_listeners_per_address": cfg.stream.max_listeners_per_address,
+                **_request_settings(getattr(cfg, "requests", None)),
                 "stream_aac_bitrate": int(cfg.stream.aac_bitrate),
                 "stream_opus_bitrate": int(cfg.stream.opus_bitrate),
                 "stream_stats_days": int(cfg.stream.stats_days),

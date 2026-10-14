@@ -51,6 +51,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, Query, Request
 
+from autodj.identity_map import attached
 from autodj.rotation_sim import (
     _PICKING_ACTIONS,
     _UNSIMULATED_ACTIONS,
@@ -511,27 +512,56 @@ def _liner_paths(player: Any) -> set[str]:
     return {entry.path for entry in library.entries_snapshot("liner")}
 
 
-def read_station(
-    player: Any,
-    desk: Any = None,
-    *,
-    now: float | None = None,
-    show: tuple[str, Sequence[Any]] | None = None,
-) -> Decided:
-    """What *player* has decided, read without changing anything.
+@dataclass(frozen=True)
+class Head:
+    """What the live station has fixed ahead of the queue's own songs, read once (#217).
 
-    *desk* is the station's :class:`~autodj.breaks.BreakDesk`, for the
-    breaks' names and the ones booked on the open song change.  *show* is
-    the show on the air, its name and its songs not yet queued (#106): they
-    follow the queue, fixed.
+    :func:`read_station` times the queue after it for the preview, and the
+    queue checks (DMCA limits on queued songs, listener requests and shows)
+    time a queue with one song put in it, with :func:`time_queue`.
+
+    Attributes:
+        now: When it was read.
+        current: The song on the air; *started*: when it started.
+        items: The fixed items, in time order.
+        unplayed: Songs and liners among them that have not started, with
+            their start times.
+        taken: The queue entries the renders and the open song change hold,
+            in queue order.
+        last: The last fixed song; *handoff*: when the song after it starts.
+        clock: The clockwheel place, its name and its next restart, for the
+            pick after *last*.
+        waiting: The "play next" song and the queue, as read.
+        average: How long a song without a length counts as.
+        liners: The liner library's paths.
+    """
+
+    now: float
+    current: Any
+    started: float
+    items: tuple[Item, ...]
+    unplayed: tuple[tuple[Any, float], ...]
+    taken: tuple[Any, ...]
+    last: Any
+    handoff: float
+    clock: tuple[int | None, str | None, float | None]
+    waiting: tuple[Any, ...]
+    average: float
+    liners: frozenset[str]
+    ad_heard: tuple[Any, ...] = ()
+
+
+def read_head(player: Any, desk: Any = None, *, now: float | None = None) -> Head | None:
+    """The fixed part of what *player* will play, read without changing anything.
+
+    ``None`` when nothing is playing.  Takes ``queue_lock`` only for a copy
+    of the queue; the library is read with no lock held.
     """
     now = time.time() if now is None else now
-    state = player._state
-    current = state.current_track
+    current = player._state.current_track
     if current is None:
-        return Decided(now, reason=NOTHING_PLAYING)
-    entries = player.playable_entries()
-    average = average_length(entries)
+        return None
+    average = average_length(player.playable_entries())
     ads = getattr(player, "ad_desk", None)
     heard = ads.heard_snapshot() if ads is not None else []
     if getattr(player, "bus", None) is not None:
@@ -539,16 +569,201 @@ def read_station(
     else:
         found = _read_browser(player, now, average)
     if found is None:
-        return Decided(now, reason=NOTHING_PLAYING)
+        return None
     items, unplayed, queued, last, handoff, clock = found
-    waiting = _waiting(player)
-    for used in queued:
-        for number, entry in enumerate(waiting):
-            if entry.path == used.path:
-                del waiting[number]
-                break
-    liners = _liner_paths(player)
-    moment = handoff
+    return Head(
+        now=now,
+        current=current,
+        started=items[0].starts if items else now,
+        items=tuple(items),
+        unplayed=tuple(unplayed),
+        taken=tuple(queued),
+        last=last,
+        handoff=handoff,
+        clock=clock,
+        waiting=tuple(_waiting(player)),
+        average=average,
+        liners=frozenset(_liner_paths(player)),
+        ad_heard=tuple(heard),
+    )
+
+
+def rough_head(player: Any, *, now: float | None = None) -> Head:
+    """A :class:`Head` for when :func:`read_head` finds none: nothing fixed but the song on the air.
+
+    The song on the air (if any) is timed from its recorded start and its
+    cues; the queue follows it.  For checks that must answer even while the
+    station is stopped or between songs.
+    """
+    now = time.time() if now is None else now
+    state = player._state
+    current = state.current_track
+    average = average_length(player.playable_entries())
+    started = handoff = now
+    if current is not None:
+        record = _last_record(player)
+        if record is not None and record.path == current.path:
+            started = record.started
+        handoff = max(now, started + _remaining(player, current, 0.0, average))
+    return Head(
+        now=now,
+        current=current,
+        started=started,
+        items=(),
+        unplayed=(),
+        taken=(),
+        last=current,
+        handoff=handoff,
+        clock=(None, None, None),
+        waiting=tuple(_waiting(player)),
+        average=average,
+        liners=frozenset(_liner_paths(player)),
+    )
+
+
+@dataclass(frozen=True)
+class Timed:
+    """A queue timed after a :class:`Head` (see :func:`time_queue`).
+
+    Attributes:
+        items: The fixed items still fixed, then the queue's.
+        unplayed: The songs and liners not yet started, with their starts.
+        starts: When each entry of the queue starts, in the queue's order
+            (with an inserted song in its place); ``None`` for one past the
+            limit, or a liner a render mixes in.
+        last: The last song; *handoff*: when the song after it starts;
+            *last_rate*: its music speed.
+        timed: How many queue entries after the fixed part were timed.
+    """
+
+    items: tuple[Item, ...]
+    unplayed: tuple[tuple[Any, float], ...]
+    starts: tuple[float | None, ...]
+    last: Any
+    handoff: float
+    last_rate: float
+    timed: int
+
+
+_Places = tuple[list[int | None], list[int | None]]
+
+
+def _taken_places(head: Head, waiting: Sequence[Any]) -> _Places:
+    """For each of *head*'s taken entries: its place in *waiting*, and its place in ``unplayed``.
+
+    Places in *waiting* are matched by path, the first free one each, as
+    the player matches them; ``None`` when it is not waiting any more.  A
+    liner mixed into a render has no place in ``unplayed``.
+    """
+    free = list(range(len(waiting)))
+    in_waiting: list[int | None] = []
+    for used in head.taken:
+        found = next((number for number in free if waiting[number].path == used.path), None)
+        if found is not None:
+            free.remove(found)
+        in_waiting.append(found)
+    in_unplayed: list[int | None] = []
+    pointer = 0
+    for used in head.taken:
+        hit = next(
+            (n for n in range(pointer, len(head.unplayed)) if head.unplayed[n][0] is used), None
+        )
+        if hit is not None:
+            pointer = hit + 1
+        in_unplayed.append(hit)
+    return in_waiting, in_unplayed
+
+
+def _first_stale(head: Head, waiting: Sequence[Any], index: int, places: _Places) -> int:
+    """Where in ``unplayed`` an insertion at *index* of *waiting* makes the renders pick again.
+
+    A render that took a queue entry at or after *index* (or one no longer
+    waiting) picks again, as does one that picked a song by itself when
+    nothing was left in the queue for it: the queue comes first.  A render
+    whose song was picked while the queue had songs left (one with a booked
+    break, say) stays.
+    """
+    in_waiting, in_unplayed = places
+    by_unplayed = {n: q for q, n in enumerate(in_unplayed) if n is not None}
+    for number, (entry, _starts) in enumerate(head.unplayed):
+        if entry.path in head.liners:
+            continue
+        taken = by_unplayed.get(number)
+        if taken is not None:
+            place = in_waiting[taken]
+            if place is None or place >= index:
+                return number
+            continue
+        used = sum(
+            1
+            for q, place in enumerate(in_waiting)
+            if place is not None and ((hit := in_unplayed[q]) is None or hit < number)
+        )
+        if used >= len(waiting):
+            return number
+    return len(head.unplayed)
+
+
+def time_queue(
+    player: Any,
+    head: Head,
+    waiting: Sequence[Any] | None = None,
+    *,
+    insert: tuple[int, Any] | None = None,
+    limit: int | None = MAX_QUEUED,
+) -> Timed:
+    """Time *waiting* (the head's own copy when ``None``) after *head*, each entry with its start.
+
+    The one playout timing the preview and the queue checks share (#217):
+    the fixed part keeps the renders' own handoffs, at each render's own
+    music speed, with the playing song's position and the liners mixed in;
+    queue entries no render holds yet are timed from their saved start and
+    segue cues (or the crossfade) at the configured music speed, and liners
+    at their own speed with their overlap cues.
+
+    With *insert*, ``(index, entry)``, *entry* is put at that index of
+    *waiting* first, as a queue edit would.  The renders after it then pick
+    again (see :func:`_first_stale`): the fixed part ends where the first of
+    them starts, and the rest is timed from cues.  The bus plays an old
+    render when the new one is not ready in time; the timing assumes it is.
+    At most *limit* entries after the fixed part are timed.
+    """
+    waiting = list(head.waiting if waiting is None else waiting)
+    places = _taken_places(head, waiting)
+    in_waiting, in_unplayed = places
+    cut = len(head.unplayed)
+    order = list(waiting)
+    index = len(waiting) + 1
+    if insert is not None:
+        index = max(0, min(insert[0], len(waiting)))
+        cut = _first_stale(head, waiting, index, places)
+        order.insert(index, insert[1])
+
+    def moved(place: int) -> int:
+        return place + 1 if place >= index else place
+
+    starts: list[float | None] = [None] * len(order)
+    held: set[int] = set()
+    for taken, place in enumerate(in_waiting):
+        if place is None:
+            continue
+        hit = in_unplayed[taken]
+        if hit is None:
+            held.add(moved(place))
+        elif hit < cut:
+            held.add(moved(place))
+            starts[moved(place)] = head.unplayed[hit][1]
+    items = list(head.items)
+    unplayed = list(head.unplayed)
+    last, moment = head.last, head.handoff
+    liners = head.liners
+    if cut < len(head.unplayed):
+        moment = head.unplayed[cut][1]
+        unplayed = unplayed[:cut]
+        items = [item for item in items if item.starts < moment]
+        last = next(
+            (song for song, _at in reversed(unplayed) if song.path not in liners), head.current
+        )
     last_rate = next(
         (
             item.playback_rate
@@ -557,15 +772,18 @@ def read_station(
         ),
         music_rate(player, last) if last is not None else 1.0,
     )
-    queued = waiting[:MAX_QUEUED]
-    index = 0
-    while index < len(queued):
-        entry = queued[index]
+    rest = [place for place in range(len(order)) if place not in held]
+    if limit is not None:
+        rest = rest[:limit]
+    queued = [order[place] for place in rest]
+    number = 0
+    while number < len(queued):
+        entry = queued[number]
         if entry.path in liners:
-            end = index + 1
+            end = number + 1
             while end < len(queued) and queued[end].path in liners:
                 end += 1
-            group = queued[index:end]
+            group = queued[number:end]
             incoming = queued[end] if end < len(queued) else None
             if (
                 incoming is not None
@@ -587,37 +805,99 @@ def read_station(
                     length = float(item.length or 0.0)
                     rows.append((item, moment + delay, length))
                     delay += length
-            for liner, starts, seconds in rows:
-                items.append(Item("liner", starts, seconds, "queued", liner))
-                unplayed.append((liner, starts))
+            for offset, (liner, liner_starts, seconds) in enumerate(rows):
+                items.append(Item("liner", liner_starts, seconds, "queued", liner))
+                unplayed.append((liner, liner_starts))
+                starts[rest[number + offset]] = liner_starts
             moment += delay
-            index = end
+            number = end
             continue
-        seconds = _remaining(player, entry, 0.0, average)
+        seconds = _remaining(player, entry, 0.0, head.average)
         items.append(
             Item("song", moment, seconds, "queued", entry, playback_rate=music_rate(player, entry))
         )
         last_rate = music_rate(player, entry)
         unplayed.append((entry, moment))
+        starts[rest[number]] = moment
         last = entry
         moment += seconds
-        index += 1
+        number += 1
+    return Timed(
+        items=tuple(items),
+        unplayed=tuple(unplayed),
+        starts=tuple(starts),
+        last=last,
+        handoff=moment,
+        last_rate=last_rate,
+        timed=len(queued),
+    )
+
+
+def history_at(
+    history: Sequence[Any], head: Head, unplayed: Sequence[tuple[Any, float]], when: float
+) -> list[Any]:
+    """*history* as it will stand when a song starting at *when* starts (#217).
+
+    The song on the air counts from its start when its play is not recorded
+    yet, and each song of *unplayed* (liners left out) that starts before
+    *when* counts from its start.
+    """
+    from autodj.repeat_rules import PlayRecord
+
+    records = list(history)
+    planned = [
+        (starts, entry)
+        for entry, starts in unplayed
+        if entry.path not in head.liners and starts < when
+    ]
+    current = head.current
+    if current is not None and not (records and records[-1].path == current.path):
+        planned.insert(0, (min(head.started, when), current))
+    planned.sort(key=lambda play: play[0])
+    records.extend(PlayRecord.of(entry, starts) for starts, entry in planned)
+    return records
+
+
+def read_station(
+    player: Any,
+    desk: Any = None,
+    *,
+    now: float | None = None,
+    show: tuple[str, Sequence[Any]] | None = None,
+) -> Decided:
+    """What *player* has decided, read without changing anything.
+
+    *desk* is the station's :class:`~autodj.breaks.BreakDesk`, for the
+    breaks' names and the ones booked on the open song change.  *show* is
+    the show on the air, its name and its songs not yet queued (#106): they
+    follow the queue, fixed.
+    """
+    head = read_head(player, desk, now=now)
+    if head is None:
+        return Decided(time.time() if now is None else now, reason=NOTHING_PLAYING)
+    timed = time_queue(player, head)
+    items = list(timed.items)
+    unplayed = list(timed.unplayed)
+    last, moment = timed.last, timed.handoff
     if show is not None:
         name, entries_left = show
-        for entry in list(entries_left)[: max(0, MAX_QUEUED - len(queued))]:
+        for entry in list(entries_left)[: max(0, MAX_QUEUED - timed.timed)]:
             # As on the air: a song that would break a DMCA limit is skipped.
-            before = [song for song, _at in unplayed if song.path not in liners]
-            if _dmca_breaks(player, now, current, before, entry):
+            if _dmca_breaks(player, head, unplayed, moment, entry):
                 items.append(Item("skipped", moment, 0.0, "skipped", entry, name))
                 continue
-            seconds = _remaining(player, entry, 0.0, average)
+            seconds = _remaining(player, entry, 0.0, head.average)
             items.append(Item("song", moment, seconds, "show", entry, name))
             unplayed.append((entry, moment))
             last = entry
             moment += seconds
-    cursor, clock_name, boundary = clock
+    cursor, clock_name, boundary = head.clock
+    marks = attached(player, "_request_clock_steps")
+    for item in sorted(items, key=lambda item: item.starts):
+        if item.kind == "song" and item.status != "on_air" and item.entry is not None:
+            cursor = marks.get(item.entry, cursor)
     return Decided(
-        now=now,
+        now=head.now,
         items=tuple(sorted(items, key=lambda item: item.starts)),
         unplayed=tuple(unplayed),
         last=last,
@@ -625,9 +905,9 @@ def read_station(
         clock_cursor=cursor,
         clock_name=clock_name,
         clock_boundary=boundary,
-        last_rate=last_rate,
+        last_rate=timed.last_rate,
         speed_signature=str(getattr(player._cfg.playback, "music_speed_percent", 0.0)),
-        ad_heard=tuple(heard),
+        ad_heard=head.ad_heard,
     )
 
 
@@ -642,16 +922,16 @@ _Found = tuple[
 
 
 def _dmca_breaks(
-    player: Any, now: float, current: Any, before: Sequence[Any], entry: Any
+    player: Any, head: Head, unplayed: Sequence[tuple[Any, float]], when: float, entry: Any
 ) -> tuple[str, ...]:
-    """The DMCA limits *entry* would break after *current* and *before*; none when the mode is off."""
+    """The DMCA limits *entry* would break at *when*, after *unplayed*; none when the mode is off."""
     if not player._cfg.dmca.enabled:
         return ()
-    from autodj.dmca import complement, projected_history
+    from autodj.dmca import complement
 
     with player._pick_lock:
         history = list(player._state.play_history)
-    records, when = projected_history(history, now, current, list(before))
+    records = history_at(history, head, unplayed, when)
     return tuple(complement(records, when, player._track_keys()).broken(entry))
 
 
@@ -1510,6 +1790,12 @@ def build_preview(
         ends = max(ends, last.starts + last.seconds)
     shown = [item for item in timeline if item.starts < end]
     view["items"] = [_item_view(item, zone) for item in shown]
+    bridge_of = attached(source.player, "_request_bridge_of")
+    for item, row in zip(shown, view["items"], strict=True):
+        request = bridge_of.get(item.entry) if item.entry is not None else None
+        if request is not None:
+            row["bridge_to"] = request.display_name
+            row["status_text"] += f"; bridge to {request.display_name}"
     view["counts"] = {
         "fixed": sum(1 for item in shown if item.fixed),
         "predicted": sum(1 for item in shown if not item.fixed),
@@ -1935,10 +2221,16 @@ __all__ = [
     "DEFAULT_MINUTES",
     "MAX_MINUTES",
     "MIN_MINUTES",
+    "Head",
     "HourPreviews",
     "PreviewBusy",
     "PreviewsClosed",
+    "Timed",
     "build_preview",
+    "history_at",
     "install_hour_preview",
+    "read_head",
     "read_station",
+    "rough_head",
+    "time_queue",
 ]

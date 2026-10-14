@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import itertools
 import random
 import threading
@@ -40,6 +41,7 @@ from autodj.hour_preview import (
     song_changes,
     span_words,
 )
+from autodj.identity_map import IdentityMap
 from autodj.mixbus import RenderedTrack
 from autodj.player import apply_repeat_windows
 from autodj.repeat_rules import PlayRecord
@@ -437,6 +439,26 @@ def test_browser_playback_lists_fixed_then_predicted(tmp_path: Path) -> None:
 
     later = build_preview(source, 60, now=NOW + 31)
     assert later["summary"].endswith("until 1:10:31 PM.")
+
+
+def test_queued_bridge_names_its_request_in_preview(tmp_path: Path) -> None:
+    source, power, gold = _station(tmp_path)
+    player = source.player
+    _playing(source, gold[0], NOW - 50)
+    bridge, request = copy.copy(power[3]), copy.copy(gold[2])
+    # The operator queued the same song as the bridge too: it is no bridge.
+    player._state.queue.extend([bridge, request, power[3]])
+    player._request_bridge_of = IdentityMap()
+    player._request_bridge_of[bridge] = request
+    player._request_clock_steps = IdentityMap()
+    player._request_clock_steps[bridge] = 2
+    decided = hour_preview.read_station(player, None, now=NOW)
+    assert decided.clock_cursor == 2
+    view = build_preview(source, 60, now=NOW)
+    bridges = [item for item in view["items"] if item.get("bridge_to")]
+    assert len(bridges) == 1
+    assert bridges[0]["bridge_to"] == gold[2].display_name
+    assert f"bridge to {gold[2].display_name}" in bridges[0]["status_text"]
 
 
 def test_browser_queue_uses_music_rate_but_liners_keep_their_source_time(tmp_path: Path) -> None:

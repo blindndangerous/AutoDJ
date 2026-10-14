@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   ANNOUNCE_DELAY_MS,
+  THRESHOLD_ERROR,
+  fitText,
   installListenerRequests,
+  parseThreshold,
   requestedText,
   songText,
   summaryText,
@@ -19,6 +22,15 @@ function mount() {
         <ul id="requests-list" aria-label="Waiting requests" hidden></ul>
         <h3 id="requests-recent-heading" hidden>Recent decisions</h3>
         <ul id="requests-recent" hidden></ul>
+        <form id="requests-settings" novalidate>
+          <input type="checkbox" id="requests-bridges" aria-describedby="requests-bridges-help">
+          <select id="requests-max-bridges"><option value="1">1</option><option value="2">2</option><option value="3">3</option></select>
+          <input type="text" id="requests-threshold" aria-describedby="requests-threshold-help">
+          <p id="requests-threshold-error" class="field-error" hidden></p>
+          <input type="radio" name="requests-no-smooth" id="requests-no-smooth-best" value="best" checked>
+          <input type="radio" name="requests-no-smooth" id="requests-no-smooth-wait" value="wait">
+          <button type="submit" id="requests-settings-save">Save request settings</button>
+        </form>
       </details>
     </section>`;
 }
@@ -226,5 +238,104 @@ describe("listener requests card", () => {
     document.body.innerHTML = "";
     expect(installListenerRequests({ doc: document, request }).refresh).toBeTypeOf("function");
     expect(request).not.toHaveBeenCalled();
+  });
+});
+
+describe("smooth transitions (#49)", () => {
+  const SETTINGS = {
+    ...STATE, bridges_enabled: true, max_bridges: 2, bridge_cost_threshold: 1.5, no_smooth_spot: "wait",
+  };
+  let request;
+  let delayed;
+  const install = () => installListenerRequests({
+    doc: document,
+    request,
+    setTimer: () => 1,
+    later: (callback, ms) => { delayed.push({ callback, ms }); return 1; },
+    formatTime: () => "2:05 PM",
+  });
+
+  beforeEach(() => {
+    mount();
+    delayed = [];
+    request = vi.fn(async () => SETTINGS);
+  });
+
+  it("says where a request goes, why, and through which bridge songs", () => {
+    expect(fitText({ reason: "Fits after A. No smooth spot within the next 30 minutes.", fit: "x" }))
+      .toBe("Fits after A. No smooth spot within the next 30 minutes.");
+    expect(fitText({ fit: "Fits after A.", bridges: ["B", "C"] })).toBe("Fits after A. Bridge songs: B, C.");
+    expect(fitText({ reason: "Bridge to R through B.", bridges: ["B"] })).toBe("Bridge to R through B.");
+    expect(parseThreshold(" 1.5 ")).toBe(1.5);
+    expect(parseThreshold("2,5")).toBe(2.5);
+    expect(parseThreshold("0")).toBe(0);
+    for (const bad of ["", "-1", "10.5", "abc", "1e1", "NaN"]) expect(parseThreshold(bad)).toBeNull();
+  });
+
+  it("shows the saved settings and a bridged request in the recent list", async () => {
+    request = vi.fn(async () => ({
+      ...SETTINGS,
+      recent: [{ id: C, status: "queued", title: "Ballad", artist: "Singer",
+        note: "Bridge to Ballad — Singer through Middle — Band.", bridges: ["Middle — Band"] }],
+    }));
+    install();
+    await flush();
+    expect(byId("requests-bridges").checked).toBe(true);
+    expect(byId("requests-max-bridges").value).toBe("2");
+    expect(byId("requests-threshold").value).toBe("1.5");
+    expect(byId("requests-no-smooth-wait").checked).toBe(true);
+    expect(byId("requests-recent").textContent)
+      .toBe("Queued: Ballad by Singer. Bridge to Ballad — Singer through Middle — Band.");
+  });
+
+  it("saves the settings and says so once", async () => {
+    install();
+    await flush();
+    byId("requests-bridges").checked = false;
+    byId("requests-threshold").value = "3";
+    byId("requests-no-smooth-best").checked = true;
+    byId("requests-settings").dispatchEvent(new Event("change"));
+    request.mockResolvedValueOnce({ ...SETTINGS, bridges_enabled: false, bridge_cost_threshold: 3, no_smooth_spot: "best" });
+    byId("requests-settings").dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    const [url, options] = request.mock.calls.at(-1);
+    expect(url).toBe("/api/requests/settings");
+    expect(JSON.parse(options.body)).toEqual({
+      bridges_enabled: false, max_bridges: 2, bridge_cost_threshold: 3, no_smooth_spot: "best",
+    });
+    await vi.waitFor(() => expect(byId("requests-status").textContent).toBe("Request settings saved."));
+  });
+
+  it("refuses a roughness limit out of range: marked, linked, shown and focused", async () => {
+    install();
+    await flush();
+    const field = byId("requests-threshold");
+    field.value = "12";
+    const calls = request.mock.calls.length;
+    byId("requests-settings").dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    expect(request.mock.calls.length).toBe(calls);
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+    expect(field.getAttribute("aria-describedby")).toBe("requests-threshold-help requests-threshold-error");
+    expect(byId("requests-threshold-error").hidden).toBe(false);
+    expect(byId("requests-threshold-error").textContent).toBe(THRESHOLD_ERROR);
+    expect(document.activeElement).toBe(field);
+    field.value = "2";
+    byId("requests-settings").dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    expect(field.hasAttribute("aria-invalid")).toBe(false);
+    expect(field.getAttribute("aria-describedby")).toBe("requests-threshold-help");
+    expect(byId("requests-threshold-error").hidden).toBe(true);
+  });
+
+  it("does not overwrite settings being changed when the list refreshes", async () => {
+    install();
+    await flush();
+    byId("requests-threshold").value = "4";
+    byId("requests-settings").dispatchEvent(new Event("input"));
+    request.mockResolvedValueOnce({ ...SETTINGS, today: 5 });
+    byId("requests-card").dispatchEvent(new Event("toggle"));
+    await flush();
+    expect(byId("requests-threshold").value).toBe("4");
   });
 });
