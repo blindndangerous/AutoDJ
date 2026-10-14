@@ -2130,6 +2130,60 @@
 .stream-detail {
   margin: 0.4rem 0;
 }
+/* Live DJ (#48).  The live line is words ("Live: DJ Alice since 8:15 PM"),
+   marked by an edge as well, never by colour alone. */
+.live-on-air {
+  margin: 0.4rem 0;
+  padding: 0.2rem 0.6rem;
+  border-left: 3px solid var(--accent);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.talk-desk {
+  margin-top: 0.75rem;
+}
+/* Latched talk, in words and with an edge, never by colour alone. */
+.talk-latched {
+  margin: 0.4rem 0;
+  padding: 0.2rem 0.6rem;
+  border-left: 3px solid var(--accent);
+  font-weight: 600;
+}
+/* Pressed, Talk gets the tick every toggle shows (button[aria-pressed]). */
+#btn-talk {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+#live-source-url {
+  flex: 1;
+  min-width: 0;
+}
+.live-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 1rem;
+  row-gap: 0.25rem;
+  margin: 0.5rem 0;
+}
+.live-facts dt { color: var(--text-dim); }
+.live-facts dd { overflow-wrap: anywhere; }
+#live-dj-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+}
+#live-dj-table th,
+#live-dj-table td {
+  padding: 0.45rem 0.4rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: middle;
+  overflow-wrap: anywhere;
+}
+#live-talkover {
+  margin-top: 1rem;
+}
 #confirm-dialog h2,
 #device-rename-dialog h2 {
   margin-top: 0;

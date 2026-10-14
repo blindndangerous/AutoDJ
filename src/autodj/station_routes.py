@@ -1161,6 +1161,7 @@ def install_station_routes(router: StationRouter) -> None:
     from autodj.breaks_api import install_breaks
     from autodj.carts import install_carts
     from autodj.hour_preview import install_hour_preview
+    from autodj.live_routes import install_live_api
     from autodj.matched_intros_api import install_matched_intros
     from autodj.requests_api import install_requests
     from autodj.rotation_api import install_rotation_test
@@ -1172,6 +1173,7 @@ def install_station_routes(router: StationRouter) -> None:
     async def api_status(station: StationDep) -> JSONResponse:
         """Return the current player state snapshot."""
         state = await asyncio.to_thread(station.bridge.get_state)
+        state.update(station.live_state())
         if station.recorder is not None:
             state["recording"] = station.recorder.status()
         return JSONResponse(state)
@@ -1812,6 +1814,12 @@ def install_station_routes(router: StationRouter) -> None:
             return {"played": None, "message": "Nobody is listening, so the liner was not played."}
         if state == "paused":
             return {"played": None, "message": "Playback is paused, so the liner was not played."}
+        if station.live.status() is not None:
+            # AutoDJ does not talk over a live DJ (#48).
+            return {
+                "played": None,
+                "message": "A live DJ is on the air, so the liner was not played.",
+            }
         # Test never plays a liner outside its play dates, as the automatic
         # liners skip it; the page says why.
         refused = await asyncio.to_thread(scheduler.refusal, body.name) if body.name else None
@@ -2206,6 +2214,7 @@ def install_station_routes(router: StationRouter) -> None:
     install_shows(router)
     install_rotation_test(router)
     install_hour_preview(router)
+    install_live_api(router)
 
 
 __all__ = [

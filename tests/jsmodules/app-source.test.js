@@ -1680,6 +1680,62 @@ describe("app request behavior", () => {
     }
   });
 
+  it("lists a live DJ session in History without Track info", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    window.location.hash = "#history";
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    try {
+      await setupApp({
+        onRequest: (url) => url.startsWith("/api/history")
+          ? jsonResponse({ total: 3, page: 1, pages: 1, items: [{
+            event_id: "live-1", kind: "live", path: null, played_at: "2026-01-01T01:00:00Z",
+            title: "Live", artist: "DJ Alice", duration: 0, ended_at: null,
+          }, {
+            event_id: "live-0", kind: "live", path: null, played_at: "2026-01-01T00:30:00Z",
+            title: "Live", artist: "DJ Bob", duration: 754, ended_at: "2026-01-01T00:42:34Z",
+          }, {
+            event_id: "play-1", kind: "song", path: "M:/song.flac", played_at: "2026-01-01T00:00:00Z",
+            title: "Song", artist: "Artist", duration: 60,
+          }] })
+          : jsonResponse({ ok: true }),
+      });
+      const rows = await vi.waitFor(() => {
+        // The rows themselves; a date heading row comes before them.
+        const found = [...document.querySelectorAll("#history-tbody tr[data-played-at]")];
+        expect(found).toHaveLength(3);
+        return found;
+      });
+      const text = (row) => [...row.cells].map((cell) => cell.textContent.trim());
+      expect(text(rows[0]).slice(1)).toEqual(["Live", "DJ Alice", "On the air"]);
+      expect(text(rows[1]).slice(1)).toEqual(["Live", "DJ Bob", "12:34"]);
+      expect(rows[0].querySelector("button")).toBeNull();
+      expect(rows[1].querySelector("button")).toBeNull();
+      expect(rows[2].querySelector(".history-info").textContent).toBe("Track info");
+      // The title cell is still the row header, so the row reads the same.
+      expect(rows[0].cells[1].getAttribute("role")).toBe("rowheader");
+      expect(rows.map((row) => row.dataset.historyId)).toEqual(["live-1", "live-0", "play-1"]);
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
+  it("shows Settings > Live DJ and Talk when the station can go live", async () => {
+    await setupApp({
+      onRequest: (url) => url === "/api/live"
+        ? jsonResponse({
+          available: true, reason: null, live: { dj: "DJ Alice", since: "2026-01-01T00:00:00Z" },
+          talkover: false, source_path: "/live", plain_http_lan: false,
+          settings: { mic_return_seconds: 0.5, mic_duck_db: 12 }, djs: [],
+        })
+        : jsonResponse({ ok: true }),
+    });
+    await vi.waitFor(() => expect(document.querySelector("#stab-live").hidden).toBe(false));
+    expect(document.querySelector("#talk-desk").hidden).toBe(false);
+    expect(document.querySelector("#live-on-air").textContent).toMatch(/^Live: DJ Alice since /);
+    expect(document.querySelector("#live-dj-none").hidden).toBe(false);
+  });
+
   it("keeps the History page on Return but opens page 1 on a normal visit", async () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
     window.location.hash = "#history";
@@ -3480,6 +3536,14 @@ describe("several stations (#70)", () => {
     expect(document.getElementById("station-context").textContent).toBe("");
     expect(document.getElementById("main-content").hasAttribute("aria-label")).toBe(false);
     expect(document.getElementById("panel-queue").getAttribute("aria-labelledby")).toBe("tab-queue");
+  });
+
+  it("titles the page without the album and names a lone station not called AutoDJ", async () => {
+    await setupApp({
+      initialState: { current_track: { path: "a.mp3", artist: "A", title: "B", album: "C" } },
+      stations: [{ ...AUTODJ, name: "Night Owl Radio" }],
+    });
+    await vi.waitFor(() => expect(document.title).toBe("A - B - Night Owl Radio - AutoDJ"));
   });
 
   it("switches inside the page: socket, requests, names and the announcement", async () => {

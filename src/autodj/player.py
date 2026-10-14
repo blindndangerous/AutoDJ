@@ -3393,6 +3393,20 @@ class Player:
             self._render_ahead.refresh()
         self._recheck_slot_plan()
 
+    def prepare_live_return(self, timeout: float) -> None:
+        """Render the track after a live DJ's set again, for now (#48).
+
+        The track rendered to follow the song a live DJ interrupted waited
+        through the set; its liners and time checks were planned for
+        then.  It is rendered again from its own start, the old render
+        kept to fall back on, and this waits up to *timeout* seconds for
+        the new one.  The clockwheel place, the queue and the planned song
+        change are those it had: nothing advanced while the DJ was on.
+        """
+        self._render_ahead.rerender()
+        if not self._render_ahead.wait_rendered(timeout):
+            logger.info("Automation returns with the song readied before the live set")
+
     def play_now(self, entry: IndexEntry, pick_mode: str = "queue") -> None:
         """Fade out the playing track and play *entry* next, from its start.
 

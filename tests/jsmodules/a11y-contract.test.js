@@ -3021,6 +3021,115 @@ describe("static accessibility contracts", () => {
     expect(keys).toContain("Alt+R");
   });
 
+  it("gives Live DJ a fixed-name hold-to-talk toggle, a silent live line and labelled settings", () => {
+    installDocument({ html: htmlSource });
+    const idsOf = (element) => (element.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean);
+    const quiet = (element) => element.closest("[aria-live], [role=status], [role=alert], [role=log]") === null;
+    // The live line is plain text under the title; #sr-status says the change.
+    const line = document.getElementById("live-on-air");
+    expect(line.tagName).toBe("P");
+    expect(line.hidden).toBe(true);
+    expect(quiet(line)).toBe(true);
+    expect(line.closest("#now-playing-card")).not.toBeNull();
+    // Talk: a native button with a name that never changes and aria-pressed.
+    const desk = document.getElementById("talk-desk");
+    expect(desk.hidden).toBe(true);
+    expect(desk.closest("[role=group]").getAttribute("aria-label")).toBe("Playback controls");
+    const talk = document.getElementById("btn-talk");
+    expect(talk.tagName).toBe("BUTTON");
+    expect(talk.getAttribute("type")).toBe("button");
+    expect(talk.textContent).toBe("Talk");
+    expect(talk.hasAttribute("aria-label")).toBe(false);
+    expect(talk.getAttribute("aria-pressed")).toBe("false");
+    expect(idsOf(talk)).toEqual(["talk-help", "station-context"]);
+    expect(document.getElementById("talk-help").textContent).toMatch(/hold Space or Enter on it, or hold Alt\+M/);
+    for (const id of ["talk-help", "talk-latched", "talk-note", "talk-error"]) {
+      expect(quiet(document.getElementById(id)), id).toBe(true);
+    }
+    // Latched talk is shown in words while it lasts (live-talk.js fills it).
+    const latched = document.getElementById("talk-latched");
+    expect(latched.tagName).toBe("P");
+    expect(latched.hidden).toBe(true);
+    expect(latched.classList.contains("talk-latched")).toBe(true);
+    // Alt+M is hold-only; only the button latches, for 2 minutes at most.
+    expect(document.getElementById("talk-help").textContent)
+      .toMatch(/for 2 minutes at most; Alt\+M talks only while held/);
+    // Without sign-in anyone who can open the page can talk: said plainly.
+    for (const id of ["talk-help", "live-intro"]) {
+      expect(document.getElementById(id).textContent, id)
+        .toMatch(/no sign-in \(pairing is off\), anyone who can open this page can talk on the air/);
+    }
+    expect(document.getElementById("talk-error").classList.contains("field-error")).toBe(true);
+    // The shortcut is listed with the others, in words.
+    const keys = [...document.querySelectorAll("#hotkey-help-modal dt kbd")].map((kbd) => kbd.textContent);
+    expect(keys).toContain("Alt+M");
+    // Settings > Live DJ: its own tab and panel, hidden until the station can go live.
+    const tab = document.getElementById("stab-live");
+    expect(tab.hidden).toBe(true);
+    expect(tab.textContent).toBe("Live DJ");
+    const panel = document.getElementById(tab.dataset.panel);
+    expect(panel.getAttribute("aria-labelledby")).toBe("stab-live");
+    expect(panel.querySelector(":scope > h3").textContent).toBe("Live DJ");
+    expect(panel.querySelector("[aria-live], [role=status], [role=alert]")).toBeNull();
+    const labelText = (id) => document.querySelector(`label[for="${id}"]`)?.textContent.trim();
+    for (const [id, label] of [
+      ["live-source-url", "Source address"],
+      ["live-dj-username", "Username"],
+      ["live-dj-name", "Display name"],
+      ["live-dj-password", "Password"],
+      ["live-return-seconds", "Return time (seconds)"],
+      ["live-duck-db", "Duck amount (dB)"],
+    ]) {
+      expect(labelText(id), id).toBe(label);
+      for (const ref of idsOf(document.getElementById(id))) {
+        expect(document.getElementById(ref), `${id} -> ${ref}`).not.toBeNull();
+      }
+    }
+    expect(document.getElementById("live-source-url").readOnly).toBe(true);
+    const password = document.getElementById("live-dj-password");
+    expect(password.getAttribute("type")).toBe("password");
+    expect(password.getAttribute("autocomplete")).toBe("new-password");
+    for (const id of ["live-return-seconds", "live-duck-db"]) {
+      expect(document.getElementById(id).getAttribute("type"), id).toBe("number");
+    }
+    expect(document.getElementById("live-talkover").tagName).toBe("FIELDSET");
+    expect(document.querySelector("#live-talkover > legend").textContent).toBe("Talk over the music");
+    const table = document.getElementById("live-dj-table");
+    expect(table.getAttribute("role")).toBe("grid");
+    expect(document.getElementById(table.getAttribute("aria-labelledby")).textContent).toBe("DJ accounts");
+    expect([...table.querySelectorAll("th")].map((th) => th.textContent))
+      .toEqual(["DJ", "Password", "Edit", "Remove"]);
+    expect(document.getElementById("live-djs-desc").textContent).toMatch(/backups leave them out/);
+    for (const button of panel.querySelectorAll("button")) {
+      expect(button.textContent.trim(), button.id).not.toBe("");
+      expect(["button", "submit"], button.id).toContain(button.getAttribute("type"));
+    }
+    for (const id of ["live-dj-error", "live-talkover-error"]) {
+      const error = document.getElementById(id);
+      expect(error.classList.contains("field-error"), id).toBe(true);
+      expect(error.hidden, id).toBe(true);
+    }
+  });
+
+  it("styles the live line and Talk from theme tokens, not colour alone", () => {
+    const css = stripCssComments(cssSource);
+    const rule = (selector) => {
+      const at = css.indexOf(`${selector} {`);
+      expect(at, selector).toBeGreaterThanOrEqual(0);
+      return css.slice(at, css.indexOf("}", at));
+    };
+    // An edge and weight mark the live line as well as its words.
+    expect(rule(".live-on-air")).toMatch(/border-left: 3px solid var\(--accent\)/);
+    expect(rule(".live-on-air")).toMatch(/font-weight: 600/);
+    // Talk is held, not selected: no scrolling or text selection under a finger.
+    expect(rule("#btn-talk")).toMatch(/touch-action: none/);
+    // Latched talk: words with an edge, not colour alone.
+    expect(rule(".talk-latched")).toMatch(/border-left: 3px solid var\(--accent\)/);
+    for (const selector of [".live-on-air", ".talk-desk", ".talk-latched", ".live-facts", "#live-talkover", "#btn-talk"]) {
+      expect(rule(selector), selector).not.toMatch(/#[0-9a-f]{3,8}\b|rgb\(/i);
+    }
+  });
+
   it("gives the Ads tab labelled forms, one polite status and report tables with headers", () => {
     installDocument({ html: htmlSource });
     const panel = document.getElementById("panel-ads");
@@ -3259,6 +3368,7 @@ describe("station switcher and station context contracts (#70)", () => {
     for (const id of [
       "btn-pause", "btn-skip", "queue-clear", "recording-toggle", "stream-station-name",
       "stream-bitrate", "stream-continuous", "station-stop", "station-start",
+      "btn-talk", "live-dj-add", "live-talkover-save",
     ]) {
       const control = document.getElementById(id);
       expect(control, id).not.toBeNull();
