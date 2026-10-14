@@ -9,10 +9,11 @@ that wrote it and the list of files) and these members:
   ``index/carts.json``,
   ``index/time_checks.json``, ``index/listener_bans.json``, ``index/listener_stats.json``,
   ``index/recording.json``, ``index/categories.json``, ``index/liner_dates.json``,
-  ``index/matched_intros.json``, ``index/ads.json``, ``index/shows.json`` and
-  ``index/live_djs.json`` from the active index folder.  The live DJ accounts are kept without
-  their password hashes, so each DJ's password is set again after a restore.  ``relays.json``,
-  which holds relay source passwords, is never backed up (:data:`SECRET_STATE_FILES`).
+  ``index/matched_intros.json``, ``index/intro_rules.json``, ``index/ads.json``,
+  ``index/shows.json`` and ``index/live_djs.json`` from the active index folder.
+  The live DJ accounts are kept without password hashes, so each DJ's password
+  must be set again after a restore.  ``relays.json``, which holds relay source
+  passwords, is never backed up (:data:`SECRET_STATE_FILES`).
 - ``liners/...``, ``carts/...``, ``time_checks/...``, ``profiles/...``, ``clockwheels/...``,
   ``intros/...`` (the matched intros' audio), ``ads/...`` (the ad spots' audio) and
   ``ad_plays/...`` (the ad play log, #51): every file in those folders and their
@@ -86,6 +87,7 @@ INDEX_FILES = (
     "categories.json",
     "liner_dates.json",
     "matched_intros.json",
+    "intro_rules.json",
     "ads.json",
     "shows.json",
     "live_djs.json",
@@ -117,6 +119,7 @@ _STATE_FILES = (
     "categories.json",
     "liner_dates.json",
     "matched_intros.json",
+    "intro_rules.json",
     "ads.json",
     "shows.json",
     "live_djs.json",

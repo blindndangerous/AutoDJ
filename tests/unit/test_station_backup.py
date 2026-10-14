@@ -118,6 +118,7 @@ def test_two_stations_round_trip(tmp_path: Path, caplog: pytest.LogCaptureFixtur
         "stations/nightowl/clockwheels/Night.json",
         "stations/nightowl/intros/intro.wav",
         "stations/nightowl/index/matched_intros.json",
+        "stations/nightowl/index/intro_rules.json",
         "stations/nightowl/index/live_djs.json",
         "stations/nightowl/profiles/Party.json",
     } <= names

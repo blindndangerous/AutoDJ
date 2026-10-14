@@ -1047,6 +1047,15 @@ def equip_station(
         station.paths.intros,
         day_at=lambda at: station_wall(station.cfg, at).date(),
     )
+    from autodj.intro_rules import IntroRules
+
+    # Rules share the intros' day and random source (never the picker's).
+    station.intros.rules = IntroRules(
+        station.paths.state_dir / "intro_rules.json",
+        station.intros._day_at,
+        station.intros._rng,
+        library=lambda: bridge.library,
+    )
     bridge.player.matched_intros = station.intros
 
 
