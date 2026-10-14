@@ -130,19 +130,8 @@ BREAK_KINDS = {
 }
 
 NOTES = (
-    "Predicted songs come from a dry run of the station's own picker, starting where the fixed "
-    "part ends. They change as the real picks are made.",
-    "Times are estimates: music uses saved start and segue cues, or the configured crossfade, "
-    "with music cues scaled to wall time at the configured speed. Liner placement uses saved "
-    "start, end, segue and overlap cues; liners and booked breaks keep their full voice duration, "
-    "and trimmed audio tails can still vary from the catalog length.",
-    "Automatic liners, matched intros not yet mixed, time checks and carts are left out; a "
-    "scheduled change of song picking "
-    "applies from the first song after its time.",
-    "An ad break not yet booked is predicted at the first predicted song change at or after its "
-    "time, with the spots its rules would pick now; once booked on a song change it is fixed.",
-    "A show's songs are listed as saved, from the first song after its time; on the air one "
-    "that would break a DMCA limit is skipped.",
+    "Predicted rows come from a dry run of the picker and change as real picks are made. "
+    "All times are estimates.",
 )
 
 NOTHING_PLAYING = "Nothing is playing, so there is nothing to time. Start playback first."
@@ -1625,68 +1614,54 @@ def _who(item: Item) -> str:
 def landing_words(landing: Landing, zone: ZoneInfo) -> tuple[str, str]:
     """``(short, sentence)``: numeric timing for *landing* and why it lands that way."""
     point = landing.point
-    when = clock_text(point.at, zone)
-    if point.kind == "event":
-        name = f"{point.label} ({point.detail}), {point.timing}" if point.detail else point.label
-        heading = f"{name}, at {when}"
-    else:
-        heading = f"{point.label}, {when}"
+    heading = landing_heading(landing, zone)
     playing = landing.playing
     if playing is None or landing.began is None or landing.starts is None:
-        return "not known", f"{heading}: the preview does not reach the song change after it."
+        return "not known", f"{heading}: past the end of the preview."
     after = clock_text(landing.starts, zone)
     if point.kind == "event" and point.timing == "hard" and landing.offset == 0:
         if landing.cut:
             cut = length_text(landing.cut)
             return (
                 f"on time, cuts {cut}",
-                f"{heading}: on time. It cuts {_who(playing)} short by about {cut}.",
+                f"{heading}: expected on time, cuts {_who(playing)} by {cut}.",
             )
-        return "on time", f"{heading}: on time, between songs."
+        return "on time", f"{heading}: expected on time, between songs."
     if landing.offset == 0:
         nearest = min((landing.began, landing.starts), key=lambda moment: abs(moment - point.at))
-        return (
-            "on time",
-            f"{heading}: lands on time, at the song change at {clock_text(nearest, zone)}.",
-        )
+        return "on time", f"{heading}: expected on time, song change {clock_text(nearest, zone)}."
     amount = length_text(abs(landing.offset))
     if point.kind == "event":
         return (
             f"{amount} late",
-            f"{heading}: runs about {amount} late, after {_who(playing)} ends at {after}. "
-            + (
-                "A hard event waits because the song ends within its wait limit."
-                if point.timing == "hard"
-                else "A soft event waits for the song playing to end."
-            ),
+            f"{heading}: expected {amount} late, after {_who(playing)} ends {after}.",
         )
-    lands = "the clockwheel restarts" if point.kind == "restart" else "lands"
     if landing.offset > 0:
         return (
             f"{amount} late",
-            f"{heading}: {lands} about {amount} late. {_who(playing)} is playing then; "
-            f"the next song change is at {after}.",
+            f"{heading}: expected {amount} late. {_who(playing)} runs over, next change {after}.",
         )
     past = length_text(landing.starts - point.at)
     return (
         f"{amount} early",
-        f"{heading}: {lands} about {amount} early, at the song change into {_who(playing)} "
-        f"at {clock_text(landing.began, zone)}. That song runs {past} past {when}.",
+        f"{heading}: expected {amount} early. {_who(playing)} starts "
+        f"{clock_text(landing.began, zone)}, runs {past} past.",
     )
+
+
+def landing_heading(landing: Landing, zone: ZoneInfo) -> str:
+    """ "Top of the hour, 13:00" or "News (Play a liner: news.mp3), 12:30, hard"."""
+    point = landing.point
+    when = clock_text(point.at, zone)
+    if point.kind != "event":
+        return f"{point.label}, {when}"
+    name = f"{point.label} ({point.detail})" if point.detail else point.label
+    return f"{name}, {when}, {point.timing}"
 
 
 # ---------------------------------------------------------------------------
 # The whole preview
 # ---------------------------------------------------------------------------
-
-
-def span_words(minutes: int) -> str:
-    """ "hour", "2 hours" or "90 minutes": the span a preview covers."""
-    if minutes == 60:
-        return "hour"
-    if minutes % 60 == 0:
-        return f"{minutes // 60} hours"
-    return f"{minutes} minutes"
 
 
 def check_minutes(minutes: int) -> int:
@@ -1813,7 +1788,7 @@ def build_preview(
         if stopped
         else None
     )
-    view["summary"] = _summary(view, landings, zone, minutes, end)
+    view["summary"] = _summary(view, landings, zone, end)
     return view
 
 
@@ -1878,20 +1853,32 @@ def _point_view(landing: Landing, zone: ZoneInfo) -> dict[str, Any]:
     }
 
 
-def _summary(
-    view: dict[str, Any], landings: Sequence[Landing], zone: ZoneInfo, minutes: int, end: float
-) -> str:
+def _summary(view: dict[str, Any], landings: Sequence[Landing], zone: ZoneInfo, end: float) -> str:
     counts = view["counts"]
-    span = span_words(minutes)
+    fixed = counts["fixed"]
     listed = (
-        f"Next {span}: {counts['fixed']} fixed and {counts['predicted']} predicted, "
-        f"until {clock_text(end, zone)}."
+        f"{fixed} fixed item{'' if fixed == 1 else 's'}, {counts['predicted']} predicted, "
+        f"through {clock_text(end, zone)}."
     )
     hours = [landing for landing in landings if landing.point.kind in {"hour", "restart"}]
     first = hours[0] if hours else (landings[0] if landings else None)
     if first is None:
-        return f"{listed} No top of the hour, clockwheel restart or scheduled event falls in it."
-    return f"{landing_words(first, zone)[1]} {listed}"
+        return f"No top of the hour, clockwheel restart or scheduled event. {listed}"
+    said = [first]
+    # A plain top of the hour does not restart the clockwheel: say the restart too.
+    if first.point.kind == "hour":
+        said += [landing for landing in hours if landing.point.kind == "restart"][:1]
+    return " ".join(_next_words(landing, zone) for landing in said) + f" {listed}"
+
+
+def _next_words(landing: Landing, zone: ZoneInfo) -> str:
+    """ "Next top of the hour, 13:00: expected 0:32 early." for the summary."""
+    heading = landing_heading(landing, zone)
+    if landing.point.kind != "event":
+        heading = heading[0].lower() + heading[1:]
+    short = landing_words(landing, zone)[0]
+    lands = "past the end of the preview" if short == "not known" else f"expected {short}"
+    return f"Next {heading}: {lands}."
 
 
 # ---------------------------------------------------------------------------

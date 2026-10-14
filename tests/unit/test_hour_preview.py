@@ -37,7 +37,6 @@ from autodj.hour_preview import (
     length_text,
     read_station,
     song_changes,
-    span_words,
 )
 from autodj.identity_map import IdentityMap
 from autodj.mixbus import RenderedTrack
@@ -111,9 +110,6 @@ def test_times_and_lengths_read_well() -> None:
     assert length_text(3600) == "1:00:00"
     assert length_text(3725) == "1:02:05"
     assert length_text(1) == "0:01"
-    assert span_words(60) == "hour"
-    assert span_words(120) == "2 hours"
-    assert span_words(30) == "30 minutes"
 
 
 def test_preview_lrp_preference_breaks_only_a_best_choice_tie() -> None:
@@ -262,16 +258,15 @@ def test_the_hour_lands_at_the_nearer_song_change() -> None:
     short, sentence = landing_words(early, UTC_ZONE)
     assert short == "0:35 early"
     assert sentence == (
-        "Top of the hour, 13:00: lands about 0:35 early, at the song change into "
-        "Artist 1, Song 1 (predicted) at 12:59:25. "
-        "That song runs 2:40 past 13:00."
+        "Top of the hour, 13:00: expected 0:35 early. "
+        "Artist 1, Song 1 (predicted) starts 12:59:25, runs 2:40 past."
     )
     late = land(hour, song_changes(_songs(TOP - 150, TOP + 20)), TOP + 220)
     assert late.offset == pytest.approx(20)
     assert landing_words(late, UTC_ZONE) == (
         "0:20 late",
-        "Top of the hour, 13:00: lands about 0:20 late. Artist 0, Song 0 (predicted) is "
-        "playing then; the next song change is at 13:00:20.",
+        "Top of the hour, 13:00: expected 0:20 late. "
+        "Artist 0, Song 0 (predicted) runs over, next change 13:00:20.",
     )
     on_time = land(hour, song_changes(_songs(TOP - 200, TOP + 0.4)), TOP + 200)
     assert on_time.offset == 0
@@ -294,16 +289,15 @@ def test_events_wait_or_cut_by_their_timing() -> None:
     soft = land(Point("event", TOP, "News", "soft", "Play a liner: News"), songs, TOP + 300)
     assert soft.offset == pytest.approx(90)
     assert landing_words(soft, UTC_ZONE)[1] == (
-        "News (Play a liner: News), soft, at 13:00: runs about 1:30 late, after "
-        "Artist 0, Song 0 (predicted) ends at 13:01:30. A soft event waits for "
-        "the song playing to end."
+        "News (Play a liner: News), 13:00, soft: expected 1:30 late, after "
+        "Artist 0, Song 0 (predicted) ends 13:01:30."
     )
     hard = land(Point("event", TOP, "News", "hard", "Play a liner: News"), songs, TOP + 300)
     assert (hard.offset, hard.cut) == (0.0, pytest.approx(90))
     assert landing_words(hard, UTC_ZONE) == (
         "on time, cuts 1:30",
-        "News (Play a liner: News), hard, at 13:00: on time. It cuts Artist 0, Song 0 "
-        "(predicted) short by about 1:30.",
+        "News (Play a liner: News), 13:00, hard: expected on time, cuts Artist 0, Song 0 "
+        "(predicted) by 1:30.",
     )
 
 
@@ -311,7 +305,10 @@ def test_hard_event_with_wait_limit_reports_late_without_cutting() -> None:
     songs = song_changes(_songs(TOP - 100, TOP + 25))
     waited = land(Point("event", TOP, "News", "hard", "Liner", 30), songs, TOP + 300)
     assert (waited.offset, waited.cut) == (pytest.approx(25), 0.0)
-    assert "hard event waits" in landing_words(waited, UTC_ZONE)[1]
+    assert landing_words(waited, UTC_ZONE)[1] == (
+        "News (Liner), 13:00, hard: expected 0:25 late, after Artist 0, Song 0 (predicted) "
+        "ends 13:00:25."
+    )
     cut = land(Point("event", TOP, "News", "hard", "Liner", 20), songs, TOP + 300)
     assert cut.cut == pytest.approx(25)
 
@@ -323,7 +320,7 @@ def test_a_point_past_the_preview_is_not_guessed() -> None:
     assert landing.starts is None
     assert landing_words(landing, UTC_ZONE) == (
         "not known",
-        "Top of the hour, 13:00: the preview does not reach the song change after it.",
+        "Top of the hour, 13:00: past the end of the preview.",
     )
 
 
@@ -425,15 +422,33 @@ def test_browser_playback_lists_fixed_then_predicted(tmp_path: Path) -> None:
     last = datetime.fromisoformat(items[-1]["starts_at"]).timestamp()
     assert NOW + 3600 - 400 < last < NOW + 3600
     assert view["counts"] == {"fixed": 3, "predicted": len(predicted)}
-    assert view["summary"].startswith("Top of the hour, 13:00: lands about ")
+    assert view["summary"].startswith("Next top of the hour, 13:00: expected ")
     assert view["summary"].endswith(
-        f"Next hour: 3 fixed and {len(predicted)} predicted, until 13:10."
+        f"early. 3 fixed items, {len(predicted)} predicted, through 13:10."
     )
     assert [point["kind"] for point in view["points"]] == ["hour"]
     assert view["stopped"] is None
 
     later = build_preview(source, 60, now=NOW + 31)
-    assert later["summary"].endswith("until 13:10:31.")
+    assert later["summary"].endswith("through 13:10:31.")
+
+
+def test_the_summary_adds_the_next_restart_after_a_plain_top_of_the_hour(tmp_path: Path) -> None:
+    source, _power, gold = _station(
+        tmp_path,
+        clockwheels=[
+            {
+                "name": "Main",
+                "resync_minutes": [30],
+                "steps": [liner_step(), category_step("power"), category_step("gold")],
+            }
+        ],
+    )
+    later = NOW + 1800  # 12:40: the top of the hour comes before the 13:30 restart
+    _playing(source, gold[0], later - 50)
+    summary = build_preview(source, 120, now=later)["summary"]
+    assert summary.startswith("Next top of the hour, 13:00: expected ")
+    assert ". Next clockwheel restart, " in summary
 
 
 def test_queued_bridge_names_its_request_in_preview(tmp_path: Path) -> None:
@@ -766,7 +781,7 @@ class _Ads:
 
         self.asked: list[tuple[float, float]] = []
         self.runs = [
-            Forecast(NOW + 900, "Ad break: Top", 60.0, "Ad break, 2 spots, 1:00"),
+            Forecast(NOW + 900, "Ad break: Top", 60.0, "2 spots, 1:00"),
         ]
 
     def forecast(self, now: float, end: float, events: Any = ()) -> list[Any]:
@@ -801,7 +816,7 @@ def test_an_ad_break_not_yet_booked_is_predicted_and_timed(tmp_path: Path) -> No
     )
     assert shift.total_seconds() == pytest.approx(60)
     (point,) = [entry for entry in view["points"] if entry["label"] == "Ad break: Top"]
-    assert point["kind"] == "event" and point["detail"] == "Ad break, 2 spots, 1:00"
+    assert point["kind"] == "event" and point["detail"] == "2 spots, 1:00"
     # A desk that fails leaves the preview as it was.
     source.ads.forecast = lambda *_args: 1 / 0
     assert not [
