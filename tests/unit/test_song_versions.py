@@ -314,6 +314,47 @@ def test_least_recent_ties_choose_songs_before_versions(with_filter: bool) -> No
     assert all(900 < count < 1100 for count in picks.values()), picks
 
 
+def test_least_recent_preview_preference_keeps_a_tied_song_but_respects_age_and_version() -> None:
+    versions = SongVersions(LIBRARY)
+    tied = least_recent(
+        LIBRARY,
+        {},
+        random.Random(27),
+        versions=versions,
+        preferred_path="b",
+    )
+    assert tied.path == "b"
+
+    played = {"a1": 10.0, "a2": 20.0, "a3": 30.0, "b": 40.0, "c": 50.0}
+    older_version = least_recent(
+        LIBRARY,
+        played,
+        random.Random(27),
+        versions=versions,
+        preferred_path="a3",
+    )
+    assert older_version.path == "a1"
+
+    preferred_is_newer_song = least_recent(
+        LIBRARY,
+        {"a1": 10.0, "a2": 10.0, "a3": 10.0, "b": 20.0, "c": 30.0},
+        random.Random(27),
+        versions=versions,
+        preferred_path="c",
+    )
+    assert versions.song(preferred_is_newer_song.path) == "a1"
+
+    disallowed_preference = least_recent(
+        LIBRARY,
+        {},
+        random.Random(27),
+        versions=versions,
+        allowed=lambda entry: entry.path != "b",
+        preferred_path="b",
+    )
+    assert disallowed_preference.path != "b"
+
+
 def test_least_recent_checks_other_versions_when_oldest_is_blocked() -> None:
     versions = SongVersions(LIBRARY)
     picked = least_recent(
