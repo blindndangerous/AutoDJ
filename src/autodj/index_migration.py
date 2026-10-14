@@ -573,7 +573,7 @@ def _migrate_catalog(
 
 def migrate_catalog(
     index_dir: Path,
-    music_dir: Path,
+    music_dir: Path | None,
     liner_dir: Path,
     moves: dict[str, str],
     *,
