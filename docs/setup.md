@@ -1,21 +1,22 @@
 # Set up AutoDJ
 
-Install Git and [uv](https://docs.astral.sh/uv/getting-started/installation/), then clone AutoDJ.
+Install Git and clone AutoDJ; the [README quick start](../README.md#quick-start) has the commands.
 The launcher obtains Python 3.14 when needed. Node.js is not required to run the application.
-Install [FFmpeg](https://ffmpeg.org/download.html) for MP3 indexing, AAC/M4A decoding, and radio streaming.
 
 On Windows:
 
 ```powershell
-.\autodj.cmd setup
-.\autodj.cmd serve
+.\autodj.cmd
 ```
 
-On Linux or macOS:
+On first start, Windows offers to install missing [uv](https://docs.astral.sh/uv/getting-started/installation/)
+and [FFmpeg](https://ffmpeg.org/download.html) through WinGet. If WinGet is unavailable, the
+launcher prints the manual installation instructions. It reuses tools already on PATH.
+
+On Linux or macOS, install uv and FFmpeg first, then run:
 
 ```sh
-./autodj setup
-./autodj serve
+./autodj
 ```
 
 Starting `serve`, `doctor`, or another command interactively before setup also starts the setup
@@ -40,6 +41,66 @@ mode during setup. An old index or another doctor finding is reported without st
 rebuild or preventing a verified runtime from being remembered. Run `doctor` afterwards to review
 its repair offers. Model downloads and indexing are separate actions unless `--test-import` is supplied.
 
+## Starting from the Windows Run dialog
+
+You do not need to open a command prompt first. Press Windows+R and enter this, replacing
+`C:\git\AutoDJ` with your checkout folder:
+
+```text
+cmd /k "cd /d C:\git\AutoDJ && autodj.cmd setup"
+```
+
+This opens a terminal in the AutoDJ folder and keeps it open after setup finishes or fails,
+so you can read its messages. Use `autodj.cmd` without `setup` in the same command to start
+AutoDJ after installation. Starting in the checkout folder ensures that AutoDJ finds your
+configuration and relative paths. Entering just `.\autodj.cmd` in Run does not select that folder.
+
+## CPU-only installation
+
+No backend flag is needed on a fresh CPU-only computer. Setup detects the hardware and saves
+the CPU choice. Use `setup --backend cpu` only to deliberately force CPU, such as replacing a
+previously saved GPU choice. You do not need an AMD environment or GPU drivers for CPU mode.
+
+Use the launcher for ordinary commands. You do not need to activate an environment or run
+`uv sync` separately.
+
+## Finding uv and FFmpeg
+
+AutoDJ finds these programs on PATH, the operating system's list of executable directories.
+FFmpeg handles common music formats and streaming. The Windows launcher includes registered
+user and machine PATH entries in its own process, so tools installed by WinGet can be used
+without opening a new terminal. This does not rewrite your PATH settings.
+
+First-run setup offers to install missing tools with WinGet package IDs `astral-sh.uv` and
+`Gyan.FFmpeg` for the current user. Normal starts with a saved runtime do not install tools.
+The prompt defaults to No. Use `.\autodj.cmd setup --yes` to approve these downloads and
+the setup plan without prompts. This also accepts the packages' installation agreements.
+For a manual installation, add the folder containing each executable to PATH.
+
+## Moving an existing station
+
+Install a fresh checkout on the destination; leave `.venv`, `.uv`, and their saved hardware
+selection on the old computer. Use the same AutoDJ version on both machines for backup/restore.
+
+1. Copy `config.toml` and `config.local.toml` if present, original music and external liner
+   folders, and any configured external tools such as Stereo Tool. Preserve file paths where
+   possible; changing drive letters requires updating saved paths, not just the configuration.
+2. Run `.\autodj.cmd setup` on Windows, or `./autodj setup` on Linux/macOS. Decline the
+   optional test import and leave the destination server stopped until after restoring.
+3. On Windows, create a backup with `.\autodj.cmd backup station.zip`, copy it to the new
+   checkout, then run `.\autodj.cmd restore station.zip` there. On Linux/macOS, use `./autodj`.
+   See [Backup](operations.md#backup) and [Restore and validate](operations.md#restore-and-validate)
+   for details. For the final handoff, stop the old server and analysis jobs before taking
+   the final backup. Use `--force` only when intentionally replacing existing destination data.
+4. Run `doctor`, check folder availability and the restored station settings, then start
+   `serve` on the destination. Pair its browser again and update listening devices to its address.
+
+The backup preserves catalog analysis and cues, so moving to CPU does not itself require
+reanalyzing tracks when their files remain available at the recorded paths. Original audio,
+configuration, model downloads, recordings, external tools,
+and relay credentials are not included in the backup; transfer what you need separately.
+Keep the old installation available until you have verified the new one.
+
 ## Options
 
 Use `setup --help` to see all options. Common examples (replace `./autodj` with `./autodj.cmd` on Windows):
@@ -52,8 +113,11 @@ Use `setup --help` to see all options. Common examples (replace `./autodj` with 
 ./autodj setup --test-import
 ```
 
-`--dry-run` inspects hardware and prints a plan without installing or writing files. `--yes` accepts
-the setup plan for unattended installation. Optional
+`--dry-run` inspects hardware and prints a plan without installing or writing files; bootstrap
+Python or uv must already be available. `--yes` accepts the setup plan for unattended
+installation; on Windows it also installs missing uv and FFmpeg through WinGet. If WinGet
+is unavailable, install these tools beforehand. Help and `--dry-run` never install tools,
+even with `--yes`. Optional
 `--test-import` and `--serve` actions still require their flags in unattended mode. `--environment`
 validates and adopts an existing installation without replacing its packages. Rerunning setup uses
 the remembered runtime rather than creating a duplicate.
