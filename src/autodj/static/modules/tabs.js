@@ -46,9 +46,7 @@ export function initViewRouter() {
     const name = digit && VIEW_NAMES.filter((n) => _viewLinks.has(n))[digit[1] - 1];
     if (!name || document.querySelector("dialog[open]")) return;
     e.preventDefault();
-    clearStaleStatus(name);
-    if (location.hash !== "#" + name) location.hash = name;
-    else applyView(name, true);
+    selectTab(name);
   });
   window.addEventListener("hashchange", (event) => {
     if (event.newURL && new URL(event.newURL).hash !== location.hash) return;
@@ -96,18 +94,23 @@ function _onTabKeydown(e) {
   const order = VIEW_NAMES.filter(n => _viewLinks.has(n)).map(n => _viewLinks.get(n));
   const next = tabForKey(order, e.currentTarget, e.key);
   if (!next) return;
-  const nextName = next.dataset.view;
   e.preventDefault();
-  clearStaleStatus(nextName);
-  // Select first, then focus, as the APG tabs example does, so focus
-  // lands on a tab that is already selected.  The hashchange that
-  // follows finds the state already set and changes nothing.  The tabs
-  // carry no aria-controls (see index.html): that relation to the panel
-  // shown here made NVDA speak the focused tab a second time.
-  applyView(nextName, false);
-  const nextTab = _viewLinks.get(nextName);
-  if (nextTab) nextTab.focus();
-  if (location.hash !== "#" + nextName) location.hash = nextName;
+  selectTab(next.dataset.view);
+}
+
+// Arrow keys on the tabs and Alt+1 to Alt+9: select the tab, then focus
+// it, as the APG tabs example does, so focus lands on a tab that is
+// already selected and its name is said once.  Moving focus into the
+// panel instead said the name twice: once for the panel, named after its
+// tab, and once for the panel's heading.  The hashchange that follows
+// finds the state already set and changes nothing.  The tabs carry no
+// aria-controls (see index.html): that relation to the panel shown here
+// made NVDA speak the focused tab a second time.
+function selectTab(name) {
+  clearStaleStatus(name);
+  applyView(name, false);
+  _viewLinks.get(name)?.focus();
+  if (location.hash !== "#" + name) location.hash = name;
 }
 
 // The visible status mirror reports what was just done in the view being
@@ -123,12 +126,14 @@ function applyView(name, userInitiated) {
   if (_currentView === "track-info" && name !== "track-info") {
     document.getElementById("points-preview")?.pause();
   }
+  const changed = _currentView !== name;
   _currentView = name;
   for (const [k, sec] of _viewSections) {
     if (k === name) sec.removeAttribute("hidden");
     else sec.setAttribute("hidden", "");
   }
   markSelected([..._viewLinks.values()], _viewLinks.get(name));
+  if (changed) document.dispatchEvent(new CustomEvent("autodj:view", { detail: { view: name } }));
   if (userInitiated) {
     const sec = _viewSections.get(name);
     const tab = _viewLinks.get(name);

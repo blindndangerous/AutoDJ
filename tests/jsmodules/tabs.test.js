@@ -126,7 +126,7 @@ describe("tab arrow keys", () => {
       expect(document.activeElement).toBe(document.getElementById("tab-track-info"));
       alt("Digit9");
       await vi.waitFor(() => expect(document.querySelector("#panel-settings").hidden).toBe(false));
-      expect(document.querySelector("#panel-settings").contains(document.activeElement)).toBe(true);
+      expect(document.activeElement).toBe(document.getElementById("tab-settings"));
       // An open dialog keeps the page behind it where it is.
       document.getElementById("hotkey-help-modal").setAttribute("open", "");
       alt("Digit4");

@@ -794,6 +794,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Alt+1 to Alt+9 put focus on the tab they open, so its name is said once (#296).
+- The open hour preview refreshes as soon as Now Playing shows again (#295).
 - A slow request-head deadline no longer logs an asyncio error when a TLS connection has already
   closed or detached (#277).
 - The track repeat-rule cap warning appears once per station for each setting and library size,

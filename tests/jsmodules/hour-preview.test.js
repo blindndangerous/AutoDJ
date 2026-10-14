@@ -220,6 +220,18 @@ describe("hour preview card", () => {
     expect(request).toHaveBeenCalledTimes(1);
   });
 
+  it("catches up quietly when Now Playing is shown again", async () => {
+    const { request, spoken } = harness([view(), view()]);
+    await open();
+    byId("panel-now").hidden = true;
+    document.dispatchEvent(new CustomEvent("autodj:view", { detail: { view: "history" } }));
+    byId("panel-now").hidden = false;
+    document.dispatchEvent(new CustomEvent("autodj:view", { detail: { view: "now" } }));
+    await settle();
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(spoken).toEqual([]);
+  });
+
   it("says the summary once when Refresh preview is pressed", async () => {
     vi.useFakeTimers();
     try {
