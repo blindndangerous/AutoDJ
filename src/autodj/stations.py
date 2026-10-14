@@ -44,6 +44,7 @@ from autodj.station_log import CURRENT_STATION, DEFAULT_SLUG
 
 if TYPE_CHECKING:
     from autodj._bridge import PlayerBridge
+    from autodj.ads import AdDesk
     from autodj.breaks import BreakDesk
     from autodj.carts import StationCarts
     from autodj.clip_dates import LinerGate
@@ -193,6 +194,21 @@ class StationPaths:
     def announcements(self) -> Path:
         """Breaks from the announcer program (#88), never in liner rotation."""
         return self.state_dir / "announcements"
+
+    @property
+    def ads(self) -> Path:
+        """Ad spots, ad breaks and their settings (#51)."""
+        return self.state_dir / "ads.json"
+
+    @property
+    def ad_spots(self) -> Path:
+        """The ad spots' audio, never in liner rotation."""
+        return self.state_dir / "ads"
+
+    @property
+    def ad_plays(self) -> Path:
+        """The ad play log, one file a month, for the Ads report."""
+        return self.state_dir / "ad_plays"
 
     @property
     def liner_dates(self) -> Path:
@@ -802,6 +818,7 @@ class StationRuntime:
     time_checks: TimeChecks
     carts: StationCarts
     breaks: BreakDesk
+    ads: AdDesk
     intros: MatchedIntros
     shows: ShowStore
     show_runner: ShowRunner
@@ -1000,6 +1017,13 @@ class StationRuntime:
                 await asyncio.to_thread(desk.maintain)
             except Exception:
                 logger.exception("Break upkeep failed")
+        ads = getattr(self, "ads", None)
+        if ads is not None and not ads.enabled:
+            try:
+                # Ads off: no break is owed for this run when they come back on.
+                await asyncio.to_thread(ads.station_started)
+            except Exception:
+                logger.exception("Ad schedule upkeep failed")
         self.stopped = False
         bridge = self.bridge
         cfg = self.cfg
@@ -1089,6 +1113,12 @@ class StationRuntime:
         await _step(
             "cancelling its schedule", lambda: _cancel(self._schedule_ticker, Exception), problems
         )
+        # What the ad spots did up to now reaches the play log before the stop.
+        ads = getattr(self, "ads", None)
+        if ads is not None and ads.needs_flush():
+            await _step(
+                "writing its ad play log", functools.partial(asyncio.to_thread, ads.flush), problems
+            )
         # A cart's end timer must not fire after the station has stopped.
         carts = getattr(self, "carts", None)
         if carts is not None:
@@ -1222,6 +1252,12 @@ class StationRuntime:
                     await asyncio.to_thread(desk.maintain)
             except Exception:
                 logger.exception("Break upkeep failed")
+            ads = getattr(self, "ads", None)
+            try:
+                if ads is not None and ads.needs_tick():
+                    await asyncio.to_thread(ads.tick)
+            except Exception:
+                logger.exception("Ad break upkeep failed")
             intros = getattr(self, "intros", None)
             try:
                 if intros is not None and intros.needs_upkeep():
