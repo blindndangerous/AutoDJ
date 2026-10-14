@@ -182,6 +182,18 @@ describe("page shortcut scope", () => {
     expect(volumeInput).not.toHaveBeenCalled();
   });
 
+  it("leaves a key a table already used, such as arrows between rows", () => {
+    const table = document.createElement("table");
+    table.innerHTML = '<tbody><tr><td role="rowheader" tabindex="0">Song</td></tr></tbody>';
+    document.body.append(table);
+    keyEvent(table.querySelector("td"), "ArrowDown");
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowDown" }));
+    table.remove();
+
+    expect(document.querySelector("#volume").value).toBe("50");
+    expect(volumeInput).not.toHaveBeenCalled();
+  });
+
   it("does not latch keys from a dialog button or nested tab widget", () => {
     document.querySelector("#hotkey-help-modal").setAttribute("open", "");
     const dialogEvent = keyEvent(
