@@ -5,12 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   barsIn,
-  clockTime,
   installLandmarks,
   landmarkSpeech,
   nextLandmark,
   previousLandmark,
   renderStructure,
+  structureText,
   upcomingSpeech,
 } from "../../src/autodj/static/modules/landmarks.js";
 import { AuthenticationRequiredError } from "../../src/autodj/static/modules/api-client.js";
@@ -37,17 +37,18 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 const el = (id) => document.getElementById(id);
 
 describe("landmark words", () => {
-  it("says a landmark with its time in words and its bar", () => {
-    expect(landmarkSpeech(LANDMARKS[4])).toBe("Drop, 1 minute 35 seconds, bar 49");
-    expect(landmarkSpeech(lm(45, "vocals", "Vocals"))).toBe("Vocals, 45 seconds");
-    expect(landmarkSpeech(LANDMARKS[0])).toBe("Intro, 0 seconds, bar 1");
+  it("says a landmark with its numeric time and its bar", () => {
+    expect(landmarkSpeech(LANDMARKS[4])).toBe("Drop, 1:35, bar 49");
+    expect(landmarkSpeech(lm(45, "vocals", "Vocals"))).toBe("Vocals, 0:45");
+    expect(landmarkSpeech(LANDMARKS[0])).toBe("Intro, 0:00, bar 1");
   });
 
-  it("shows times rounded the way the words are", () => {
-    expect(clockTime(95.2)).toBe("1:35");
-    expect(clockTime(59.6)).toBe("1:00");
-    expect(clockTime(-3)).toBe("0:00");
-    expect(clockTime(undefined)).toBe("0:00");
+  it("writes a song structure item as plain text", () => {
+    expect(structureText(LANDMARKS[0])).toBe("Intro, 0:00 to 0:32, bars 1 to 17");
+    expect(structureText(LANDMARKS[2])).toBe("Vocals from 0:45, bar 23");
+    expect(structureText(lm(95.2, "drop", "Drop"))).toBe("Drop, 1:35");
+    const merged = { ...lm(45, "vocals", "Vocals and drop"), kinds: ["vocals", "drop"] };
+    expect(structureText(merged)).toBe("Vocals and drop, 0:45");
   });
 
   it("finds the next and previous landmark from a position", () => {
@@ -63,21 +64,21 @@ describe("landmark words", () => {
     expect(nextLandmark(null, 0)).toBeNull();
   });
 
-  it("says what is coming next with seconds and bars", () => {
+  it("says what is coming next with the time and bars", () => {
     expect(barsIn(8, 120)).toBe(4);
     expect(barsIn(0.9, 120)).toBeNull();
     expect(barsIn(8, 0)).toBeNull();
-    expect(upcomingSpeech(LANDMARKS, 87.2, { bpm: 120 })).toBe("Drop in 8 seconds, 4 bars.");
+    expect(upcomingSpeech(LANDMARKS, 87.2, { bpm: 120 })).toBe("Drop in 0:08, 4 bars.");
     // Phrases are never "coming next"; the outro starts.
-    expect(upcomingSpeech(LANDMARKS, 200, { bpm: 120 })).toBe("Outro starts in 30 seconds, 15 bars.");
-    expect(upcomingSpeech(LANDMARKS, 10, { bpm: 0 })).toBe("Intro ends in 22 seconds.");
-    expect(upcomingSpeech(LANDMARKS, 40, { bpm: 120 })).toBe("Vocals start in 5 seconds, 3 bars.");
+    expect(upcomingSpeech(LANDMARKS, 200, { bpm: 120 })).toBe("Outro starts in 0:30, 15 bars.");
+    expect(upcomingSpeech(LANDMARKS, 10, { bpm: 0 })).toBe("Intro ends in 0:22.");
+    expect(upcomingSpeech(LANDMARKS, 40, { bpm: 120 })).toBe("Vocals start in 0:05, 3 bars.");
     expect(upcomingSpeech(LANDMARKS, 94.8, { bpm: 120 })).toBe("Drop now.");
-    expect(upcomingSpeech(LANDMARKS, 235, { duration: 250 })).toBe("No more landmarks. The song ends in 15 seconds.");
+    expect(upcomingSpeech(LANDMARKS, 235, { duration: 250 })).toBe("No more landmarks. The song ends in 0:15.");
     expect(upcomingSpeech(LANDMARKS, 235)).toBe("No more landmarks in this song.");
     expect(upcomingSpeech([], 0)).toBe("No landmarks for this song yet.");
     const merged = { ...lm(120, "drop", "Drop and vocals"), kinds: ["drop", "vocals"] };
-    expect(upcomingSpeech([merged], 100, { bpm: 120 })).toBe("Drop and vocals in 20 seconds, 10 bars.");
+    expect(upcomingSpeech([merged], 100, { bpm: 120 })).toBe("Drop and vocals in 0:20, 10 bars.");
   });
 });
 
@@ -86,25 +87,20 @@ describe("Song structure list", () => {
     document.body.innerHTML = section;
   });
 
-  it("is a real list of text, structure only, times shown as 1:35 and read in words", () => {
+  it("is a real list of plain text, structure only, times numeric as everywhere else", () => {
     const list = el("landmarks-list");
     expect(renderStructure(list, LANDMARKS)).toBe(5);
     expect(list.hidden).toBe(false);
     const items = [...list.querySelectorAll("li")];
     expect(items.map((item) => item.textContent)).toEqual([
-      "Intro, 0:000 seconds to 0:3232 seconds, bars 1 to 17",
-      "Vocals from 0:4545 seconds, bar 23",
-      "Drop, 1:351 minute 35 seconds, bar 49",
-      "Breakdown, 2:402 minutes 40 seconds, bar 81",
-      "Outro, 3:503 minutes 50 seconds to 4:104 minutes 10 seconds, bars 116 to 126",
+      "Intro, 0:00 to 0:32, bars 1 to 17",
+      "Vocals from 0:45, bar 23",
+      "Drop, 1:35, bar 49",
+      "Breakdown, 2:40, bar 81",
+      "Outro, 3:50 to 4:10, bars 116 to 126",
     ]);
-    // What a screen reader reads: the words, never the bare clock time.
-    const spoken = (item) => [...item.childNodes]
-      .filter((node) => !(node.nodeType === 1 && node.getAttribute("aria-hidden") === "true"))
-      .map((node) => node.textContent).join("");
-    expect(spoken(items[2])).toBe("Drop, 1 minute 35 seconds, bar 49");
-    expect(items[2].querySelector('[aria-hidden="true"]').textContent).toBe("1:35");
-    expect(items[2].querySelector(".visually-hidden").textContent).toBe("1 minute 35 seconds");
+    // The same text for the eye and the screen reader: nothing hidden or swapped.
+    expect(list.querySelectorAll("[aria-hidden], .visually-hidden, [aria-label]")).toHaveLength(0);
     expect(renderStructure(list, [])).toBe(0);
     expect(list.hidden).toBe(true);
   });
@@ -187,12 +183,12 @@ describe("landmark keys and Track info", () => {
     preview.currentTime = 50;
     await landmarks.jump(1);
     expect(preview.currentTime).toBeCloseTo(63);
-    expect(speak).toHaveBeenLastCalledWith("Preview: Phrase, 1 minute 3 seconds, bar 33");
+    expect(speak).toHaveBeenLastCalledWith("Preview: Phrase, 1:03, bar 33");
     await landmarks.jump(1);
     expect(preview.currentTime).toBeCloseTo(95.2);
-    expect(speak).toHaveBeenLastCalledWith("Preview: Drop, 1 minute 35 seconds, bar 49");
+    expect(speak).toHaveBeenLastCalledWith("Preview: Drop, 1:35, bar 49");
     await landmarks.jump(-1);
-    expect(speak).toHaveBeenLastCalledWith("Preview: Phrase, 1 minute 3 seconds, bar 33");
+    expect(speak).toHaveBeenLastCalledWith("Preview: Phrase, 1:03, bar 33");
     expect(speak).toHaveBeenCalledTimes(3);
     // Never the song on air, never focus, whatever the seek setting.
     seekOn = true;
@@ -219,10 +215,10 @@ describe("landmark keys and Track info", () => {
 
   it("only says the landmark of the song on air by default, never moving it", async () => {
     await landmarks.jump(1);
-    expect(speak).toHaveBeenLastCalledWith("On air: Phrase, 1 minute 3 seconds, bar 33, in 13 seconds");
+    expect(speak).toHaveBeenLastCalledWith("On air: Phrase, 1:03, bar 33, in 0:13");
     playing = { ...playing, position: 100 };
     await landmarks.jump(-1);
-    expect(speak).toHaveBeenLastCalledWith("On air: Drop, 1 minute 35 seconds, bar 49, 5 seconds ago");
+    expect(speak).toHaveBeenLastCalledWith("On air: Drop, 1:35, bar 49, 0:04 ago");
     expect(seeks()).toHaveLength(0);
     expect(applyLocalSeek).not.toHaveBeenCalled();
     // Asked afresh on every key: the song on air moves on.
@@ -241,7 +237,7 @@ describe("landmark keys and Track info", () => {
     expect(seeks()).toHaveLength(1);
     expect(JSON.parse(seeks()[0][1].body)).toEqual({ seconds: 63, path: ANSWER.path });
     expect(applyLocalSeek).toHaveBeenCalledWith(63);
-    expect(speak).toHaveBeenLastCalledWith("On air: Phrase, 1 minute 3 seconds, bar 33");
+    expect(speak).toHaveBeenLastCalledWith("On air: Phrase, 1:03, bar 33");
     expect(speak).toHaveBeenCalledTimes(1);
   });
 
@@ -280,10 +276,10 @@ describe("landmark keys and Track info", () => {
 
   it("says what is coming next on air, asked afresh each time", async () => {
     playing = { ...playing, position: 87.2 };
-    await expect(landmarks.upcoming()).resolves.toBe("On air: Drop in 8 seconds, 4 bars.");
+    await expect(landmarks.upcoming()).resolves.toBe("On air: Drop in 0:08, 4 bars.");
     // The server's tempo and length stand in when the page has none.
     playing = { path: ANSWER.path, position: 200, duration: 0, bpm: 0 };
-    await expect(landmarks.upcoming()).resolves.toBe("On air: Outro starts in 30 seconds, 15 bars.");
+    await expect(landmarks.upcoming()).resolves.toBe("On air: Outro starts in 0:30, 15 bars.");
     expect(landmarkCalls()).toHaveLength(2);
     playing = null;
     await expect(landmarks.upcoming()).resolves.toBe("On air: Nothing is playing.");

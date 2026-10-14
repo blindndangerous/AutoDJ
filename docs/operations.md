@@ -2455,7 +2455,7 @@ always a DJ break.
 
 ## Song structure and landmarks
 
-A sighted DJ reads a song's shape from its waveform. AutoDJ gives the same picture in words: a
+A sighted DJ reads a song's shape from its waveform. AutoDJ gives the same picture as text: a
 song's **landmarks** are its intro, the start of the singing, drops, breakdowns, build-ups, the
 outro and the segue, plus every 32-beat phrase and the hot and memory cues named in DJ software.
 They come from what AutoDJ already knows about the song, merged into one list:
@@ -2484,8 +2484,7 @@ order, for example:
 - Breakdown, 2:40, bar 81
 - Outro, 3:50 to 4:10, bars 116 to 126
 
-A screen reader reads each time in words ("1 minute 35 seconds"), because a bare "1:35" can be
-read as a time of day. Phrases, unnamed cues and the end of the intro (its item already says
+Times are numeric on screen and to a screen reader alike, as elsewhere in AutoDJ. Phrases, unnamed cues and the end of the intro (its item already says
 where it ends) are not listed; the bracket keys still stop on them, and Shift+U says when the intro
 ends.
 
@@ -2494,10 +2493,10 @@ ends.
 - **Right bracket** and **Left bracket** go to the next and previous landmark and say it. Each
   answer starts with what it is about: "Preview:" or "On air:".
   - While Track info shows, they move the cue point preview, whether it is playing or paused, and
-    say "Preview: Drop, 1 minute 35 seconds, bar 49". **Use preview position** then copies that
+    say "Preview: Drop, 1:35, bar 49". **Use preview position** then copies that
     time into a cue point.
   - On any other tab they speak about the song on air, from where it is playing: "On air: Drop,
-    1 minute 35 seconds, bar 49, in 12 seconds" (or "8 seconds ago" for Left bracket). They do not
+    1:35, bar 49, in 0:12" (or "0:08 ago" for Left bracket). They do not
     move it, because listeners would hear the jump.
   - To have them move the song on air too, turn on **Bracket keys seek the song on air** under
     Settings, Display and keys, Keyboard. It is off by default and saved in this browser only.
@@ -2507,8 +2506,7 @@ ends.
   - Left bracket goes back to the start of the landmark you are in, or to the one before when you
     are within a second of it.
 - **Shift+U** says what is coming next in the song on air, with the seconds and, when the tempo is
-  known, the bars: "On air: Drop in 12 seconds, 6 bars", "On air: Outro starts in 30 seconds, 15
-  bars". After the last landmark it says how long the song has left. With several stations it
+  known, the bars: "On air: Drop in 0:12, 6 bars", "On air: Outro starts in 0:30, 15 bars". After the last landmark it says how long the song has left. With several stations it
   starts with the station's name.
 
 Each key says its answer once, politely, and never moves focus. They are single-key shortcuts, so

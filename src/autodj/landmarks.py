@@ -3,7 +3,7 @@
 A sighted DJ reads a song's shape from its waveform: where the intro ends,
 where the drop hits, where the singing starts and where the outro begins.
 This module gives the same picture as a short list of named moments that a
-screen reader can say, such as "Drop, 1 minute 35 seconds, bar 49".
+screen reader can say, such as "Drop, 1:35, bar 49".
 
 It merges what AutoDJ already knows about a song:
 

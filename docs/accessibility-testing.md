@@ -104,13 +104,13 @@ Before every release, each flow below must be sampled with either NVDA and Firef
 - Playback controls, seeking, volume, and the spoken hotkeys.
 - Search, queue additions, reordering, removal, and empty states.
 - Now-playing changes, persistent metadata, cue descriptions, and timed lyrics.
-- Track landmarks (#60): Track info's Song structure read as a list, each time in words ("Drop,
-  1 minute 35 seconds, bar 49"), never as a bare clock time; Right and Left bracket in Track info
+- Track landmarks (#60): Track info's Song structure read as a list of plain text ("Drop, 1:35,
+  bar 49"); Right and Left bracket in Track info
   moving the cue point preview and saying each landmark once ("Preview: ..."), with focus staying
-  put; on Now Playing saying the landmark of the song on air ("On air: ..., in 12 seconds")
+  put; on Now Playing saying the landmark of the song on air ("On air: ..., in 0:12")
   without moving it, and moving it only with Bracket keys seek the song on air checked (that
   checkbox read with its label, unchecked by default, and its help); Shift+U saying what is coming
-  next once ("On air: Drop in 12 seconds, 6 bars"); and none of them firing with Enable keyboard
+  next once ("On air: Drop in 0:12, 6 bars"); and none of them firing with Enable keyboard
   shortcuts cleared.
 - Settings changes and their status or error feedback.  Settings, Display and keys, Theme: the
   radio group read with its name, its help available through browsing, a choice said as the checked radio button and

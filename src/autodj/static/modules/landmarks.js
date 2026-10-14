@@ -7,26 +7,25 @@
 // This module:
 //
 // - draws Track info's Song structure: a real list, one landmark per item,
-//   in time order.  Times show as 1:35 and are read as "1 minute 35
-//   seconds": a bare "1:35" can be read as a clock time.  The list is
-//   never live; it is drawn when a song opens.
+//   in time order, as plain text.  Times are numeric (1:35) on screen and
+//   in speech alike, per the UI wording guidance.  The list is never live;
+//   it is drawn when a song opens.
 // - moves to the next or previous landmark (Right and Left bracket).  With
 //   Track info showing, the cue point preview moves there ("Preview: Drop,
-//   1 minute 35 seconds, bar 49").  On any other tab the keys speak about
-//   the song on air ("On air: Drop, 1 minute 35 seconds, bar 49, in 12
-//   seconds") and only move it when Settings, Keyboard, "Bracket keys seek
+//   1:35, bar 49").  On any other tab the keys speak about
+//   the song on air ("On air: Drop, 1:35, bar 49, in 0:12") and only move it when Settings, Keyboard, "Bracket keys seek
 //   the song on air" is on (off by default): a seek names its song, and the
 //   server refuses it once another song plays.  Each answer is said once
 //   through the page's polite #sr-status, and focus stays where it is.
-// - says what is coming next on air (Shift+U): "On air: Drop in 12
-//   seconds, 6 bars".  Phrases and unnamed cues are stops for the bracket
+// - says what is coming next on air (Shift+U): "On air: Drop in 0:12,
+//   6 bars".  Phrases and unnamed cues are stops for the bracket
 //   keys only, never "coming next".
 //
 // The song on air is asked about afresh on every key; Track info keeps the
 // answer for the song it shows until it opens another or is refreshed.
 
 import { isStaleStationReply, requestJson } from "./api-client.js";
-import { fmtDurationWords, srSpeak } from "./dom-helpers.js";
+import { fmtTime, srSpeak } from "./dom-helpers.js";
 import { stationEpoch } from "./stations.js";
 
 // A landmark this close ahead counts as where you are, not the next one.
@@ -43,17 +42,11 @@ const SOON = {
   outro: "Outro starts",
 };
 
-// "1:35" for the screen, rounded as fmtDurationWords rounds, so the
-// screen and the speech never differ by a second.
-export function clockTime(sec) {
-  const total = Math.max(0, Math.round(Number(sec) || 0));
-  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
-}
-
-// "Drop, 1 minute 35 seconds, bar 49".
+// "Drop, 1:35, bar 49": numeric times on screen and in speech alike, as
+// fmtTime writes them (docs/accessibility-testing.md, UI wording).
 export function landmarkSpeech(landmark) {
   const bar = landmark.bar ? `, bar ${landmark.bar}` : "";
-  return `${landmark.name}, ${fmtDurationWords(landmark.time_s)}${bar}`;
+  return `${landmark.name}, ${fmtTime(landmark.time_s)}${bar}`;
 }
 
 export function nextLandmark(landmarks, position) {
@@ -84,38 +77,27 @@ export function upcomingSpeech(landmarks, position, { bpm = 0, duration = 0 } = 
   if (!next) {
     const left = duration - position;
     return left >= 1
-      ? `No more landmarks. The song ends in ${fmtDurationWords(left)}.`
+      ? `No more landmarks. The song ends in ${fmtTime(left)}.`
       : "No more landmarks in this song.";
   }
   const lead = (next.kinds || [next.kind]).length === 1 && SOON[next.kind] ? SOON[next.kind] : next.name;
   const seconds = next.time_s - position;
   if (seconds < 1) return `${lead} now.`;
   const bars = barsIn(seconds, bpm);
-  return `${lead} in ${fmtDurationWords(seconds)}${bars ? `, ${bars} bar${bars === 1 ? "" : "s"}` : ""}.`;
+  return `${lead} in ${fmtTime(seconds)}${bars ? `, ${bars} bar${bars === 1 ? "" : "s"}` : ""}.`;
 }
 
-// A time on the page: "1:35" to the eye, "1 minute 35 seconds" to a
-// screen reader (the established aria-hidden plus visually-hidden pair).
-function timeNodes(doc, sec) {
-  const shown = doc.createElement("span");
-  shown.setAttribute("aria-hidden", "true");
-  shown.textContent = clockTime(sec);
-  const spoken = doc.createElement("span");
-  spoken.className = "visually-hidden";
-  spoken.textContent = fmtDurationWords(sec);
-  return [shown, spoken];
-}
-
-// The parts of one Song structure item, as text and time nodes.
-function structureParts(landmark) {
+// One Song structure item: "Intro, 0:00 to 0:32, bars 1 to 17",
+// "Vocals from 0:45, bar 23", "Drop, 1:35, bar 49".
+export function structureText(landmark) {
   const single = (landmark.kinds || [landmark.kind]).length === 1;
   if (landmark.end_s != null) {
     const bars = landmark.bar && landmark.end_bar ? `, bars ${landmark.bar} to ${landmark.end_bar}` : "";
-    return [`${landmark.name}, `, { time: landmark.time_s }, " to ", { time: landmark.end_s }, bars];
+    return `${landmark.name}, ${fmtTime(landmark.time_s)} to ${fmtTime(landmark.end_s)}${bars}`;
   }
   const bar = landmark.bar ? `, bar ${landmark.bar}` : "";
-  if (single && landmark.kind === "vocals") return ["Vocals from ", { time: landmark.time_s }, bar];
-  return [`${landmark.name}, `, { time: landmark.time_s }, bar];
+  if (single && landmark.kind === "vocals") return `Vocals from ${fmtTime(landmark.time_s)}${bar}`;
+  return `${landmark.name}, ${fmtTime(landmark.time_s)}${bar}`;
 }
 
 // The structure list leaves out "Intro ends" on its own: the intro's item
@@ -131,13 +113,7 @@ export function renderStructure(listEl, landmarks) {
   const items = (landmarks || []).filter(inStructure);
   listEl.replaceChildren(...items.map((landmark) => {
     const item = doc.createElement("li");
-    for (const part of structureParts(landmark)) {
-      if (typeof part === "string") {
-        if (part) item.append(part);
-      } else {
-        item.append(...timeNodes(doc, part.time));
-      }
-    }
+    item.textContent = structureText(landmark);
     return item;
   }));
   listEl.hidden = items.length === 0;
@@ -307,7 +283,7 @@ export function installLandmarks({
     }
     // Only said: how far it is from where the song is now.
     const gap = landmark.time_s - now.position;
-    const when = gap >= 0 ? `in ${fmtDurationWords(gap)}` : `${fmtDurationWords(-gap)} ago`;
+    const when = gap >= 0 ? `in ${fmtTime(gap)}` : `${fmtTime(-gap)} ago`;
     speak(`${ON_AIR}${landmarkSpeech(landmark)}, ${when}`);
   }
 

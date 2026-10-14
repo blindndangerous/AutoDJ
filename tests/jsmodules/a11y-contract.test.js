@@ -2760,7 +2760,7 @@ describe("static accessibility contracts", () => {
     for (const rule of rules) expect(rule).not.toMatch(/display:\s*(?:flex|grid)/);
   });
 
-  it("gives \"Bracket keys seek the song on air\" a native checkbox, off, with linked help (#60)", () => {
+  it("gives \"Bracket keys seek the song on air\" a native checkbox, off, with help to read (#60)", () => {
     installDocument({ html: htmlSource });
     const box = document.getElementById("hotkeys-bracket-seek");
     expect(box.type).toBe("checkbox");
@@ -2770,8 +2770,11 @@ describe("static accessibility contracts", () => {
       .toBe("Bracket keys seek the song on air");
     expect(box.closest("fieldset").querySelector("legend").textContent).toBe("Keyboard");
     expect(box.parentElement.classList.contains("settings-check")).toBe(true);
-    const help = document.getElementById(box.getAttribute("aria-describedby"));
+    // Help readable below it, not attached to every focus (UI wording guidance).
+    expect(box.hasAttribute("aria-describedby")).toBe(false);
+    const help = document.getElementById("hotkeys-bracket-seek-desc");
     expect(help.classList.contains("setting-desc")).toBe(true);
+    expect(help.previousElementSibling).toBe(box.parentElement);
     expect(help.textContent).toMatch(/Off by default\./);
     expect(help.closest("[aria-live], [role=status]")).toBeNull();
   });

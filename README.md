@@ -363,11 +363,11 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Six tabs:
 - **Shift+H** — speak how the hour lands, from the hour preview.
 - **Right bracket** / **Left bracket** — the next / previous landmark of the song (intro, vocals,
   drop, breakdown, outro, phrase). In Track info they move the cue point preview and say it ("Preview:
-  Drop, 1 minute 35 seconds, bar 49"). On other tabs they say the landmark of the song on air ("On
-  air: Drop, 1 minute 35 seconds, bar 49, in 12 seconds") and move the song there only with
+  Drop, 1:35, bar 49"). On other tabs they say the landmark of the song on air ("On air: Drop,
+  1:35, bar 49, in 0:12") and move the song there only with
   **Bracket keys seek the song on air** on (Settings, Display and keys; off by default; never in
   stream mode).
-- **Shift+U** — speak what is coming next in the song on air, such as "On air: Drop in 12 seconds,
+- **Shift+U** — speak what is coming next in the song on air, such as "On air: Drop in 0:12,
   6 bars".
 - **?** — open the shortcut list.
 

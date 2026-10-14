@@ -306,7 +306,7 @@ async function checkTrackLandmarks(page) {
     watch.disconnect();
     return { said, time: preview.currentTime, focus: document.activeElement?.id };
   });
-  if (result.said.join("|") !== "Preview: Vocals, 13 seconds, bar 7" || Math.abs(result.time - 12.5) > 0.01
+  if (result.said.join("|") !== "Preview: Vocals, 0:12, bar 7" || Math.abs(result.time - 12.5) > 0.01
       || result.focus !== "track-info-heading") {
     throw new Error(`Right bracket in Track info: ${JSON.stringify(result)}`);
   }
