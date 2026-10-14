@@ -53,6 +53,7 @@ def _catalog(tmp_path: Path, *, count: int = 3, liners: bool = False):
     liner_root = tmp_path / "Liners" if liners else None
     cfg = _config(tmp_path, music, liner_root)
     manager = LibraryManager(cfg, _sim())
+    manager.catalog.add_source(music)
     for song in songs:
         manager.catalog.put_entry(_entry(song))
     liner = None

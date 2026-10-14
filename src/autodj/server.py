@@ -585,6 +585,15 @@ class LibraryRescanBody(BaseModel):
     override_tags: StrictBool = False
 
 
+class LibraryRemoveMissingBody(BaseModel):
+    """Explicit confirmation for removing catalog records after a clean scan."""
+
+    model_config = ConfigDict(extra="forbid")
+    token: str
+    confirmed: StrictBool
+    allow_mass: StrictBool = False
+
+
 class SongPointsBody(BaseModel):
     """Editable points; the catalog validates their times against the recording."""
 
@@ -1792,8 +1801,31 @@ def create_app(
     @app.post("/api/library/rescan")
     async def api_library_rescan(body: LibraryRescanBody | None = None) -> dict:
         library = _catalog_library()
-        library.start_scan(override_tags=body.override_tags if body else False)
+        if not library.start_scan(override_tags=body.override_tags if body else False):
+            raise HTTPException(status_code=409, detail="Library cleanup is running")
         return library.snapshot()
+
+    @app.get("/api/library/missing")
+    async def api_library_missing_preview() -> dict:
+        """Preview records missing after a complete scan of available folders."""
+        return await asyncio.to_thread(_catalog_library().missing_removal_preview)
+
+    @app.post("/api/library/remove-missing")
+    async def api_library_remove_missing(body: LibraryRemoveMissingBody) -> dict:
+        """Remove only the unchanged set shown by a clean-scan preview."""
+        library = _catalog_library()
+        try:
+            removed = await asyncio.to_thread(
+                library.remove_missing,
+                body.token,
+                confirmed=body.confirmed,
+                allow_mass=body.allow_mass,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"removed": removed, "remaining": library.snapshot()["tracks_ready"]}
 
     @app.get("/api/library/points")
     async def api_library_points(path: str) -> dict:
