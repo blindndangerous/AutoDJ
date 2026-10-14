@@ -181,8 +181,15 @@ def test_keyboard_interrupt_returns_130(tmp_path: Path, monkeypatch: pytest.Monk
     assert launcher.main() == 130
 
 
-def test_first_run_sets_up_then_runs_original_command(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("existing_venv", [False, True])
+def test_first_run_sets_up_then_runs_original_command(
+    tmp_path: Path, monkeypatch, existing_venv: bool
+) -> None:
     root = _project(tmp_path, monkeypatch)
+    if existing_venv:
+        python = launcher._python_path(root / ".venv")
+        python.parent.mkdir(parents=True)
+        python.touch()
     (root / "scripts").mkdir()
     (root / "scripts/setup.py").touch()
     monkeypatch.setattr(launcher.sys.stdin, "isatty", lambda: True)

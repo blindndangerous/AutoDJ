@@ -47,13 +47,14 @@ try {
         }
     }
     $runtimePython = Join-Path $runtimePath 'Scripts\python.exe'
+    $interactive = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
+    $firstSetup = $interactive -and -not (Test-Path -LiteralPath $statePath -PathType Leaf)
 
-    if ($setupRequested -or -not (Test-Path -LiteralPath $runtimePython -PathType Leaf)) {
+    if ($setupRequested -or $firstSetup -or -not (Test-Path -LiteralPath $runtimePython -PathType Leaf)) {
         $missing = @(Find-MissingTools)
         if ($missing.Count -gt 0) {
             $noInstall = ($args -contains '--dry-run') -or ($args -contains '--help') -or ($args -contains '-h')
             $acceptInstall = $setupRequested -and ($args -contains '--yes')
-            $interactive = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
             if (-not $noInstall -and ($interactive -or $acceptInstall)) {
                 $winget = Get-Command 'winget' -CommandType Application -ErrorAction SilentlyContinue
                 if ($winget) {

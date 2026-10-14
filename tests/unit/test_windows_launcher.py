@@ -257,8 +257,11 @@ def test_failed_winget_install_reports_manual_commands(tmp_path: Path) -> None:
     assert "winget install --id astral-sh.uv" in result.stderr
 
 
-def test_existing_runtime_without_saved_state_starts_without_uv(tmp_path: Path) -> None:
-    root, script = _project(tmp_path)
+@pytest.mark.parametrize("interactive", [False, True])
+def test_existing_runtime_without_state_checks_tools_for_interactive_setup(
+    tmp_path: Path, interactive: bool
+) -> None:
+    root, script = _project(tmp_path, interactive=interactive)
     python_dir = root / ".venv" / "Scripts"
     python_dir.mkdir(parents=True)
     executable = sys_executable()
@@ -270,6 +273,12 @@ def test_existing_runtime_without_saved_state_starts_without_uv(tmp_path: Path) 
     empty.mkdir()
     result = _run(script, "serve", env=_env(tmp_path, empty))
 
+    if interactive:
+        assert result.returncode == 1
+        assert "WinGet is not available" in result.stderr
+        assert "winget install --id astral-sh.uv" in result.stderr
+        assert not (tmp_path / "run.json").exists()
+        return
     assert result.returncode == 0, result.stderr
     assert json.loads((tmp_path / "run.json").read_text()) == ["serve"]
     assert "uv" not in result.stderr
