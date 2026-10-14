@@ -430,7 +430,7 @@ describe("footer build stamp", () => {
     await setupApp({ version: { version: "0.20.0", commit: "unknown", built_at: built } });
     await vi.waitFor(() => expect(document.querySelector("#ver-commit").textContent)
       .toBe("unknown"));
-    expect(document.querySelector("#page-footer a")).toBeNull();
+    expect(document.querySelector("#version-stamp a")).toBeNull();
     expect(document.querySelector("#ver-build").textContent.replace(/\s+/g, " ").trim())
       .toBe("build unknown");
   });
@@ -446,7 +446,7 @@ describe("footer build stamp", () => {
     });
     await vi.waitFor(() => expect(document.querySelector("#ver-commit").textContent)
       .toBe("1a2b3c4"));
-    expect(document.querySelector("#page-footer a")).toBeNull();
+    expect(document.querySelector("#version-stamp a")).toBeNull();
   });
 });
 

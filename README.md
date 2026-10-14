@@ -370,7 +370,7 @@ browser only.
 To turn the shortcuts off, clear **Enable keyboard shortcuts** under Settings, Display and keys. The
 setting is on by default and is saved in this browser only, not on the server. With it off, no
 single-key shortcut fires; buttons, sliders, tabs and dialogs keep their normal keys, and the
-Keyboard shortcuts button still opens the list. If the browser blocks site storage, shortcuts stay
+Keyboard shortcuts button at the bottom of the page still opens the list. If the browser blocks site storage, shortcuts stay
 on and the choice lasts only until the page is reloaded.
 
 ### Theme and status messages
