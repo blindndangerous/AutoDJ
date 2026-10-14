@@ -19,6 +19,10 @@
 //         their neighbours, its numbers 4.5:1;
 //       - Now Playing's Hour preview opened, with a stood-in answer: its
 //         table of fixed and predicted rows and its backtiming list;
+//       - Song picking with Fit songs to the hour ticked (not saved), so its
+//         window field and help are shown (#126); and Schedule with a hard
+//         event's Wait up to seconds refused in the browser, the error
+//         linked and focused, against a stood-in action list;
 //       - Settings > Stream (when the server streams) with its Listener
 //         statistics stood in for: the summary, the tables by format and
 //         by day (a long run of days, every format) and the session
@@ -386,6 +390,58 @@ async function standInForHourPreview(page) {
   await page.route("**/api/hour-preview*", (route) => route.fulfill({
     status: 200, contentType: "application/json", body: JSON.stringify(HOUR_PREVIEW),
   }));
+}
+
+// Settings > Schedule: one action with no settings of its own, so the
+// form's own checks reach Wait up to seconds whatever the server offers.
+const SCHEDULE = {
+  timezone: "UTC",
+  actions: [{ name: "audit", description: "Audit action", fields: [] }],
+  events: [], upcoming: [], runs: [],
+};
+const schedulePages = new WeakSet();
+
+async function standInForSchedule(page) {
+  if (schedulePages.has(page)) return;
+  schedulePages.add(page);
+  await page.route("**/api/schedule", (route) => (route.request().method() === "GET"
+    ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(SCHEDULE) })
+    : route.continue()));
+}
+
+// Song picking: Fit songs to the hour ticked in the page only, without the
+// change event, so nothing is saved; its window field and help show (#126).
+async function openHourFit(page, visit) {
+  const toggle = page.locator("#pb-hour-fit");
+  await toggle.waitFor({ state: "visible" });
+  const was = await toggle.isChecked();
+  await toggle.evaluate((box) => { box.checked = true; });
+  await page.locator("#pb-hour-fit-window").waitFor({ state: "visible" });
+  await settle(page);
+  await visit("settings/picking/hour-fit");
+  await toggle.evaluate((box, checked) => { box.checked = checked; }, was);
+}
+
+// Schedule: a hard event's Wait up to seconds refused in the browser, the
+// field marked invalid and focused, the error shown and linked.  Nothing
+// is saved; Cancel closes the form.
+async function openScheduleWaitError(page, visit) {
+  await page.locator("#schedule-add").click();
+  await page.locator("#schedule-name").fill("News");
+  await page.locator("#schedule-time").fill("13:00");
+  await page.locator("#schedule-timing").selectOption("hard");
+  const wait = page.locator("#schedule-wait");
+  await wait.waitFor({ state: "visible" });
+  await wait.fill("301");
+  await page.locator("#schedule-save").click();
+  await page.locator('#schedule-wait[aria-invalid="true"]').waitFor();
+  await page.locator("#schedule-form-error").waitFor({ state: "visible" });
+  const linked = await wait.evaluate((input) => input === document.activeElement
+    && input.getAttribute("aria-describedby").split(/\s+/).includes("schedule-form-error"));
+  if (!linked) throw new Error("Wait up to seconds error is not focused and linked");
+  await settle(page);
+  await visit("settings/schedule/wait-error");
+  await page.locator("#schedule-cancel").click();
 }
 
 async function standInForTimeChecks(page) {
@@ -821,6 +877,7 @@ async function eachTarget(page, measure) {
   await standInForAds(page);
   await standInForShows(page);
   await standInForStations(page);
+  await standInForSchedule(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   for (const view of VIEWS) {
     await page.locator(`#tab-${view}`).click();
@@ -854,7 +911,9 @@ async function eachTarget(page, measure) {
       if (id === "stab-picking") {
         await openRotationTest(page, visit);
         await openRepeatHoursError(page, visit);
+        await openHourFit(page, visit);
       }
+      if (id === "stab-schedule") await openScheduleWaitError(page, visit);
       if (id === "stab-time-checks") await openPackDatesError(page, visit);
     }
   }

@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { formatPlayedAt, historyNeedsDates } from
-  "../../src/autodj/static/modules/history-format.js";
+import { formatPlayedAt } from "../../src/autodj/static/modules/history-format.js";
 import { applyMixSettings, installMixSettings } from
   "../../src/autodj/static/modules/mix-settings.js";
 import { installProfiles, profileFromSettings } from
@@ -56,15 +55,10 @@ afterEach(() => {
 });
 
 describe("history dates", () => {
-  const now = new Date(2026, 8, 27, 12, 0, 0);
-
-  it("adds the date only when the rows are not all from today", () => {
-    const today = { played_at: new Date(2026, 8, 27, 9, 0, 0).toISOString() };
-    const yesterday = { played_at: new Date(2026, 8, 26, 23, 0, 0).toISOString() };
-    expect(historyNeedsDates([today, today], now)).toBe(false);
-    expect(historyNeedsDates([today, yesterday], now)).toBe(true);
-    expect(formatPlayedAt(yesterday.played_at, true, "en-GB")).toContain("2026");
-    expect(formatPlayedAt(yesterday.played_at, false, "en-GB")).not.toContain("2026");
+  it("formats a play as a time or a date and time for last-played views", () => {
+    const yesterday = new Date(2026, 8, 26, 23, 0, 0).toISOString();
+    expect(formatPlayedAt(yesterday, true, "en-GB")).toContain("2026");
+    expect(formatPlayedAt(yesterday, false, "en-GB")).not.toContain("2026");
   });
 });
 
@@ -177,6 +171,31 @@ describe("mix settings", () => {
       "Could not save ReplayGain peak limit: enter a number from 0.1 to 2.  It is still 1.",
     ));
     expect(postSettings).not.toHaveBeenCalled();
+  });
+
+  it("saves the hour fitting window as whole minutes from 1 to 30", async () => {
+    document.body.innerHTML = `<input type="number" id="window" value="10">
+      <p id="settings-status"></p><div id="status-toast" hidden></div>`;
+    const pbHourFitWindow = document.querySelector("#window");
+    const settingsStatus = document.querySelector("#settings-status");
+    const postSettings = vi.fn().mockResolvedValue(true);
+    installMixSettings({ pbHourFitWindow }, { postSettings, settingsStatus });
+    applyMixSettings({ playback: { hour_fit_window_minutes: 12 } }, { pbHourFitWindow });
+    expect(pbHourFitWindow.value).toBe("12");
+
+    pbHourFitWindow.value = "2.5";
+    pbHourFitWindow.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(settingsStatus.textContent).toBe(
+      "Could not save Minutes before to start fitting: enter a whole number from 1 to 30.  It is still 12.",
+    ));
+    expect(pbHourFitWindow.value).toBe("12");
+    expect(postSettings).not.toHaveBeenCalled();
+
+    pbHourFitWindow.value = "30";
+    pbHourFitWindow.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledWith(
+      "/api/playback-settings", { hour_fit_window_minutes: 30 }, pbHourFitWindow,
+    ));
   });
 
   it("saves Stereo Tool AGC drive within its server range and reads the saved value", async () => {

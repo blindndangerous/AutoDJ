@@ -11,7 +11,7 @@ import math
 import random
 import threading
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import FrozenInstanceError, dataclass, fields
 from typing import cast
 
@@ -19,6 +19,7 @@ import faiss
 import numpy as np
 import numpy.typing as npt
 
+from autodj.hour_fit import FIT_CANDIDATES
 from autodj.indexer import IndexEntry
 from autodj.repeat_rules import RELAXED_RULES
 
@@ -388,6 +389,7 @@ class SimilarityIndex:
         repeat_filter: Callable[[IndexEntry], bool] | None = None,
         rng: random.Random | None = None,
         song_of: Callable[[str], str] | None = None,
+        fit: Callable[[Sequence[IndexEntry]], IndexEntry] | None = None,
     ) -> IndexEntry:
         """Find the best next track after *current_path* that isn't in *recently_played*.
 
@@ -511,12 +513,18 @@ class SimilarityIndex:
             if target_bpm is None:
                 candidates.sort(key=lambda x: x[0], reverse=True)
                 candidates = _one_per_song(candidates, song_of)
-                best = _softmax_pick(candidates, pick_top_k, pick_temperature, rng)
+                if fit is None:
+                    best = _softmax_pick(candidates, pick_top_k, pick_temperature, rng)
+                else:
+                    best = fit([entry for _, entry in candidates[:FIT_CANDIDATES]])
                 logger.debug("Next track: %s", best.display_name)
                 return self._public_entry(best)
 
             reranked = _one_per_song(self._rerank(candidates, target_bpm, bpm_weight), song_of)
-            best = _softmax_pick(reranked, pick_top_k, pick_temperature, rng)
+            if fit is None:
+                best = _softmax_pick(reranked, pick_top_k, pick_temperature, rng)
+            else:
+                best = fit([entry for _, entry in reranked[:FIT_CANDIDATES]])
             logger.debug(
                 "Next track (BPM re-ranked): %s (bpm=%.0f, target=%.0f)",
                 best.display_name,
@@ -531,6 +539,7 @@ class SimilarityIndex:
         recently_played: deque[str],
         allowed: Callable[[IndexEntry], bool] | None = None,
         rng: random.Random | None = None,
+        fit: Callable[[Sequence[IndexEntry]], IndexEntry] | None = None,
     ) -> IndexEntry:
         """Find a sonically *distant* track for discovery mode injection.
 
@@ -605,7 +614,15 @@ class SimilarityIndex:
 
             if distant_candidates:
                 # Non-security discovery pick — random.choice is fine here.
-                chosen = chooser.choice(distant_candidates)  # nosec B311
+                chosen = (
+                    fit(
+                        chooser.sample(
+                            distant_candidates, min(FIT_CANDIDATES, len(distant_candidates))
+                        )
+                    )
+                    if fit is not None
+                    else chooser.choice(distant_candidates)  # nosec B311
+                )
                 logger.debug("Discovery track: %s", chosen.display_name)
                 return self._public_entry(chosen)
 
