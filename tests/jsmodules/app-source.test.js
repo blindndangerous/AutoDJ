@@ -1652,7 +1652,7 @@ describe("app request behavior", () => {
       cells[5].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
       expect(document.activeElement).toBe(cells[0]);
       cells[0].dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
-      expect(document.activeElement).toBe(button);
+      expect(document.activeElement).toBe(cells[4]);
       button.click();
       await vi.waitFor(() => expect(document.querySelector("#panel-track-info").hidden).toBe(false));
       expect(document.querySelector("#track-info-heading").textContent).toBe("Track info: Artist — Song");
@@ -1665,14 +1665,13 @@ describe("app request behavior", () => {
       document.addEventListener("focusin", (event) => focusEvents.push(event.target));
       back.click();
       await vi.waitFor(() => expect(document.querySelector("#panel-history").hidden).toBe(false));
-      await vi.waitFor(() => expect(document.activeElement).toBe(
-        document.querySelector("#history-tbody .history-info")));
+      await vi.waitFor(() => expect(document.activeElement).toBe(cells[4]));
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(historyCalls()).toHaveLength(beforeReturn);
       expect(document.querySelector("#history-tbody .history-info")).toBe(button);
       expect(focusEvents.filter((node) => node.classList?.contains("history-info"))).toEqual([button]);
-      expect(button.tabIndex).toBe(0);
-      button.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+      expect(cells[4].tabIndex).toBe(0);
+      cells[4].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
       expect(document.activeElement).toBe(cells[3]);
       expect(document.querySelector("#sr-status").textContent).toBe("");
     } finally {
@@ -1822,7 +1821,7 @@ describe("app request behavior", () => {
         .toContain("no longer in the library"));
       expect(document.querySelector("#panel-history").hidden).toBe(false);
       expect(document.querySelector("#panel-track-info").hidden).toBe(true);
-      expect(document.activeElement).toBe(button);
+      expect(document.activeElement).toBe(button.closest("td"));
       expect(document.querySelector("#points-status").textContent).toBe("");
     } finally {
       window.location.hash = "";
@@ -1923,7 +1922,7 @@ describe("app request behavior", () => {
       const back = document.querySelector("#track-info-return");
       expect(back.textContent).toBe("Return to Queue & Search");
       back.click();
-      await vi.waitFor(() => expect(document.activeElement).toBe(info));
+      await vi.waitFor(() => expect(document.activeElement).toBe(info.closest("td")));
     } finally {
       window.location.hash = "";
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1949,7 +1948,7 @@ describe("app request behavior", () => {
       await vi.waitFor(() => expect(resultInfo()).not.toBe(original));
       const replacement = resultInfo();
       document.querySelector("#track-info-return").click();
-      await vi.waitFor(() => expect(document.activeElement).toBe(replacement));
+      await vi.waitFor(() => expect(document.activeElement).toBe(replacement.closest("td")));
       expect(document.querySelector("#sr-status").textContent).toBe("");
     } finally {
       window.location.hash = "";
@@ -2150,7 +2149,7 @@ describe("app request behavior", () => {
         is_muted: false, is_paused: false, next_track: null, queue: [], settings: null, volume: 1 }) });
       await vi.waitFor(() => expect(historyCall).toBe(2));
       expect(document.querySelector("#sr-status").textContent).toBe("");
-      expect(document.activeElement).toBe(button);
+      expect(document.activeElement).toBe(button.closest("td"));
       expect(button.isConnected).toBe(true);
       expect(document.querySelector("#history-table").hidden).toBe(false);
       document.querySelector("#hist-refresh").click();

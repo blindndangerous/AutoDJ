@@ -1,16 +1,17 @@
 // One tab stop per native table grid; arrows move between its cells.
+// A cell with a button takes focus itself, never the button: moving focus
+// on to the button made NVDA read the cell and then the button.  Enter or
+// Space on the cell presses the button, which is for the mouse and browse
+// mode.  A checkbox takes focus itself, so its state is read.
 export function installTableNavigation(body) {
   if (!body) return { refresh() {} };
   const cells = () => [...body.querySelectorAll("tr > td[role=gridcell], tr > td[role=rowheader]")];
   const controls = (cell) => cell ? [...cell.querySelectorAll("button, input")] : [];
-  const cellControl = (cell) => {
-    const items = controls(cell);
-    return items.length === 1 && !items[0].disabled ? items[0] : null;
-  };
+  const input = (cell) => controls(cell).find((item) => item.tagName === "INPUT" && !item.disabled);
+  const stop = (cell) => input(cell) || cell;
   function setRovingFocus(active) {
     for (const cell of cells()) {
-      const control = cellControl(cell);
-      cell.tabIndex = active === cell && !control ? 0 : -1;
+      cell.tabIndex = active === cell ? 0 : -1;
       for (const item of controls(cell)) item.tabIndex = item === active ? 0 : -1;
     }
   }
@@ -18,18 +19,18 @@ export function installTableNavigation(body) {
     const items = cells();
     const focused = body.ownerDocument.activeElement;
     const activeCell = focused?.closest?.("td[role=gridcell], td[role=rowheader]");
-    const cell = activeCell && body.contains(activeCell) ? activeCell : items[0];
-    const active = cellControl(cell) || cell;
-    setRovingFocus(active);
+    setRovingFocus(stop(activeCell && body.contains(activeCell) ? activeCell : items[0]));
   }
   body.addEventListener("focusin", (event) => {
     const cell = event.target.closest?.("td");
     if (!cell || !body.contains(cell)) return;
     // Firefox can focus a tall cell while leaving its bottom below the viewport.
     cell.scrollIntoView({ block: "nearest", inline: "nearest" });
-    const control = cellControl(cell);
-    if (event.target === cell && control) { control.focus(); return; }
-    setRovingFocus(control === event.target ? event.target : cell);
+    const target = stop(cell);
+    // Focus that lands on a cell's button, such as Track info handing it
+    // back, moves to the cell.
+    if (event.target !== target) { target.focus(); return; }
+    setRovingFocus(target);
   });
   body.addEventListener("keydown", (event) => {
     const rowEdge = event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
@@ -66,7 +67,7 @@ export function installTableNavigation(body) {
       target = rowCells[rowEdge ? Math.min(column, rowCells.length - 1) : event.key === "Home" ? 0 : rowCells.length - 1];
     }
     if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) event.preventDefault();
-    if (target) (cellControl(target) || target).focus();
+    if (target) stop(target).focus();
   });
   refresh();
   return { refresh };

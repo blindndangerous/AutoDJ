@@ -9,8 +9,8 @@ describe("native table grid navigation", () => {
     navigation.refresh();
     body.innerHTML = '<tr><td role="gridcell"><button>Play now</button></td></tr>';
     navigation.refresh();
-    expect(body.querySelector("button").tabIndex).toBe(0);
-    expect(body.querySelector("td").tabIndex).toBe(-1);
+    expect(body.querySelector("button").tabIndex).toBe(-1);
+    expect(body.querySelector("td").tabIndex).toBe(0);
   });
 
   it("keeps one tab stop and moves by row, action, and row edge", () => {
@@ -24,10 +24,9 @@ describe("native table grid navigation", () => {
     expect([one, two, three, four].map((item) => item.tabIndex)).toEqual([0, -1, -1, -1]);
     one.focus();
     one.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-    const twoButton = two.querySelector("button");
-    expect(document.activeElement).toBe(twoButton);
-    twoButton.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-    expect(document.activeElement).toBe(four.querySelector("button"));
+    expect(document.activeElement).toBe(two);
+    two.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(document.activeElement).toBe(four);
     four.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
     expect(document.activeElement).toBe(three);
     const first = new KeyboardEvent("keydown", { key: "Home", ctrlKey: true, bubbles: true, cancelable: true });
@@ -97,11 +96,11 @@ describe("native table grid navigation", () => {
     expect([folder.tabIndex, checkboxCell.tabIndex, checkbox.tabIndex, other.tabIndex, button.tabIndex]).toEqual([-1, -1, 0, -1, -1]);
 
     checkbox.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-    expect(document.activeElement).toBe(button);
-    expect([folder, checkboxCell, other, buttonCell].filter((item) => item.tabIndex === 0)).toEqual([]);
-    expect(button.tabIndex).toBe(0);
-    buttonCell.focus();
-    expect(document.activeElement).toBe(button);
+    expect(document.activeElement).toBe(buttonCell);
+    expect([folder, checkboxCell, other, buttonCell].filter((item) => item.tabIndex === 0)).toEqual([buttonCell]);
+    expect(button.tabIndex).toBe(-1);
+    button.focus();
+    expect(document.activeElement).toBe(buttonCell);
   });
 
   it("does not synthesize a second activation for a native control key event", () => {
