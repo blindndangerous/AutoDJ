@@ -183,6 +183,8 @@ STATION = frozenset(
         "/intros",
         "/intros/{intro_id}/audio",
         "/intros/{intro_id}",
+        "/intros/rules",
+        "/intros/rules/{rule_id}",
         "/ws",
     }
 )

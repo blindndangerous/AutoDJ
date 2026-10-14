@@ -9,7 +9,8 @@ that wrote it and the list of files) and these members:
   ``index/related-artists.toml``, ``index/related-tracks.toml``, ``index/schedule.json``,
   ``index/carts.json``,
   ``index/time_checks.json``, ``index/listener_bans.json``, ``index/recording.json``,
-  ``index/categories.json``, ``index/liner_dates.json`` and ``index/matched_intros.json``
+  ``index/categories.json``, ``index/liner_dates.json``, ``index/matched_intros.json``
+  and ``index/intro_rules.json``
   from the active index folder.
 - ``liners/...``, ``carts/...``, ``time_checks/...``, ``profiles/...``, ``clockwheels/...``
   and ``intros/...`` (the matched intros' audio): every file in those folders and their
@@ -78,6 +79,7 @@ INDEX_FILES = (
     "categories.json",
     "liner_dates.json",
     "matched_intros.json",
+    "intro_rules.json",
     im.MANIFEST_NAME,
 )
 _FOLDERS = (
@@ -100,6 +102,7 @@ _STATE_FILES = (
     "categories.json",
     "liner_dates.json",
     "matched_intros.json",
+    "intro_rules.json",
 )
 # Another station's state files, in ``stations/<slug>/``.  The categories
 # are shared, so they are only in the default station's list.

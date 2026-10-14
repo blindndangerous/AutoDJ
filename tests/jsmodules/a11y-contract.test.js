@@ -2578,6 +2578,66 @@ describe("static accessibility contracts", () => {
     for (const rule of rules) expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
   });
 
+  it("gives Library tools' intro rules labelled native fields, linked help and errors, and one status", () => {
+    installDocument({ html: htmlSource });
+    const section = document.querySelector("#panel-library #intro-rules");
+    expect(document.getElementById(section.getAttribute("aria-labelledby")).tagName).toBe("H2");
+    const list = document.getElementById("intro-rules-list");
+    expect(list.getAttribute("role")).toBe("list");
+    expect(document.getElementById(list.getAttribute("aria-labelledby")).tagName).toBe("H3");
+    expect(list.closest("[aria-live], [role=status]")).toBeNull();
+    const form = section.querySelector("form#intro-rules-form");
+    expect(form.hasAttribute("novalidate")).toBe(true);
+    expect(form.hidden).toBe(true);
+    const fields = [
+      ["label", "Label", "text"], ["chance", "Chance (percent)", "text"],
+      ["cooldown", "Wait between plays (minutes)", "text"], ["not-before", "Not before", "date"],
+      ["not-after", "Do not play after", "date"],
+    ];
+    for (const [name, label, type] of fields) {
+      const input = document.getElementById(`intro-rules-${name}`);
+      expect(input.getAttribute("type"), name).toBe(type);
+      expect(form.querySelector(`label[for="intro-rules-${name}"]`).textContent.trim()).toBe(label);
+      // Help is linked; the error is hidden words, linked only while shown, never live.
+      const described = (input.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean);
+      expect(described.length, name).toBeGreaterThan(0);
+      for (const id of described) expect(document.getElementById(id).classList.contains("setting-desc")).toBe(true);
+      const error = document.getElementById(`intro-rules-${name}-error`);
+      expect(error.classList.contains("field-error")).toBe(true);
+      expect(error.hidden).toBe(true);
+      expect(error.hasAttribute("role")).toBe(false);
+      expect(error.closest("[aria-live]")).toBeNull();
+    }
+    for (const [id, label] of [["intro-rules-match", "Match conditions"], ["intro-rules-priority", "Priority"], ["intro-rules-folder", "Liner folder"]]) {
+      expect(document.getElementById(id).tagName).toBe("SELECT");
+      expect(form.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+    }
+    // The conditions are a named group; the liners a fieldset with a legend and linked help.
+    const group = document.getElementById("intro-rules-conditions");
+    expect(group.getAttribute("role")).toBe("group");
+    expect(document.getElementById(group.getAttribute("aria-labelledby")).textContent).toBe("Conditions the next song must meet");
+    const clips = document.getElementById("intro-rules-clips");
+    expect(clips.tagName).toBe("FIELDSET");
+    expect(clips.querySelector(":scope > legend").textContent).toBe("Voice liners to choose from");
+    expect(document.getElementById(clips.getAttribute("aria-describedby")).classList.contains("setting-desc")).toBe(true);
+    for (const id of ["intro-rules-conditions-error", "intro-rules-clips-error", "intro-rules-folder-error", "intro-rules-problem"]) {
+      const error = document.getElementById(id);
+      expect(error.classList.contains("field-error"), id).toBe(true);
+      expect(error.hidden, id).toBe(true);
+      expect(error.hasAttribute("role"), id).toBe(false);
+    }
+    expect(document.getElementById("intro-rules-save").getAttribute("type")).toBe("submit");
+    // One polite status, not nested in another live region.
+    const live = [...section.querySelectorAll("[aria-live], [role='status'], [role='alert']")];
+    expect(live.map((node) => node.id)).toEqual(["intro-rules-status"]);
+    expect(live[0].getAttribute("aria-live")).toBe("polite");
+    expect(live[0].getAttribute("aria-atomic")).toBe("true");
+    // The layout uses the shared tokens only: no colour of its own.
+    const rules = stripCssComments(cssSource).match(/[^{}]*(?:#intro-rules|\.intro-rule-liners)[^{}]*\{[^{}]*\}/g);
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
+  });
+
   it("gives the preview output device a labelled native select and silent help", () => {
     installDocument({ html: htmlSource });
     const select = document.getElementById("preview-device");

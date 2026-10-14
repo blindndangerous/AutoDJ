@@ -45,6 +45,9 @@
 //         named select with linked help and 24 px targets, focus staying
 //         on Token use; it is measured in every theme mode (axe-core and
 //         non-text contrast) and at 320 px with that choice shown;
+//       - Library tools, Intro rules with two rules stood in for: the
+//         list, and Add intro rule saved with no liner chosen, its error
+//         linked to the first liner's checkbox;
 //       - Track info with a song open, its server answers stood in for: the
 //         Tags form, a refused save with its errors, the Save or Discard
 //         dialog, and Matched intros with a song intro (skipped now) and an
@@ -388,6 +391,57 @@ async function openDaypartErrors(page, visit) {
   await visit("library/step-hours-error");
 }
 
+// Library tools, Intro rules (#127): two saved rules and the station's
+// liners and folders are stood in for (the audit server has none), so the
+// list and the form with its liner checkboxes are measured.  One liner name
+// has no spaces, for the reflow checks.  Only reading is stood in for.
+const INTRO_RULES = {
+  rules: [
+    { id: "d".repeat(32), label: "Eighties", match: "all", priority: "after_artist",
+      conditions: [{ field: "year", operator: "between", value: 1980, upper: 1989 }],
+      clip_ids: ["l1"], chance: 50, cooldown_minutes: 90, created_at: 1, last_aired: null },
+    { id: "e".repeat(32), label: "", match: "any", priority: "before_song",
+      conditions: [{ field: "genre", operator: "is", value: "Rock" }, { field: "artist", operator: "contains", value: "Example" }],
+      clip_ids: [], liner_folder: "D:\\Radio\\Liners\\An_Unbroken_Folder_Name_Without_Any_Spaces_0001",
+      chance: 100, cooldown_minutes: 0, not_before: "2026-12-01", not_after: "2026-12-26", created_at: 2, last_aired: null },
+  ],
+  problem: "1 invalid intro rules retained in intro_rules.json",
+  max_rules: 2000,
+  max_cooldown_minutes: 10080,
+  liners: [
+    { id: "l1", label: "eighties.wav" },
+    { id: "l2", label: "An_Unbroken_Liner_Name_Without_Any_Spaces_From_A_Tagless_File_0001.wav" },
+  ],
+  liner_folders: ["D:\\Radio\\Liners"],
+  sources: [{ id: "music", path: "D:\\Radio\\Music" }],
+  genres: ["Pop", "Rock"],
+  beets_fields: [],
+  beets_error: null,
+  categories: [],
+};
+const introRulePages = new WeakSet();
+
+async function standInForIntroRules(page) {
+  if (introRulePages.has(page)) return;
+  introRulePages.add(page);
+  await page.route(/\/api\/(stations\/[^/]+\/)?intros\/rules$/, (route) => (route.request().method() === "GET"
+    ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(INTRO_RULES) })
+    : route.continue()));
+}
+
+// Add intro rule, saved with no liner chosen: the error shown under the
+// liners, linked to the first liner's checkbox and focused.  Nothing is
+// sent; Cancel closes the form again.
+async function openIntroRuleError(page, visit) {
+  await page.locator("#intro-rules-list li").first().waitFor({ state: "visible" });
+  await page.locator("#intro-rules-add").click();
+  await page.locator("#intro-rules-form").waitFor({ state: "visible" });
+  await page.locator("#intro-rules-save").click();
+  await page.locator("#intro-rules-clips-error").waitFor({ state: "visible" });
+  await visit("library/intro-rule-error");
+  await page.locator("#intro-rules-cancel").click();
+}
+
 // Voice tracks (#128): the open song change and a booked list are stood
 // in for (the audit server takes no breaks), and the microphone and the
 // recorder are stubbed before any page script, so Record works with no
@@ -546,6 +600,7 @@ async function eachTarget(page, visit) {
   await standInForHourPreview(page);
   await standInForVoiceTracker(page);
   await standInForStations(page);
+  await standInForIntroRules(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   for (const view of VIEWS) {
     await page.locator(`#tab-${view}`).click();
@@ -561,7 +616,10 @@ async function eachTarget(page, visit) {
       await settle(page);
       await visit(view);
       if (view === "track-info") await openTrackTags(page, visit);
-      if (view === "library") await openDaypartErrors(page, visit);
+      if (view === "library") {
+        await openIntroRuleError(page, visit);
+        await openDaypartErrors(page, visit);
+      }
       if (view === "voice") await openVoiceStates(page, visit);
       if (view === "now") await openStationMenu(page, visit);
       continue;
@@ -1008,12 +1066,13 @@ async function themeSettingProblems(page) {
     background: window.getComputedStyle(document.body).backgroundColor,
     stored: window.localStorage.getItem("autodj.theme"),
     toast: document.getElementById("status-toast-box")?.hidden,
+    toastText: document.getElementById("status-toast")?.textContent.trim(),
   }));
   if (after.theme !== "dark" || after.background !== THEME_BG.dark) {
     problems.push(`after choosing Dark: ${JSON.stringify(after)}`);
   }
   if (after.stored !== "dark") problems.push(`Dark not stored: ${after.stored}`);
-  if (after.toast === false) problems.push("choosing a theme showed a status message");
+  if (after.toast === false) problems.push(`choosing a theme showed a status message: ${after.toastText}`);
   if (await regions() !== before) problems.push("choosing a theme wrote a live region");
   await page.reload({ waitUntil: "networkidle" });
   const reloaded = await page.evaluate(() => ({

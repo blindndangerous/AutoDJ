@@ -2698,6 +2698,91 @@
       <p id="clock-apply-help">Continuing keeps the next step number. Moving or deleting steps can change what plays there. If that number no longer exists, the clock starts at step 1.</p>
       <button type="button" id="clock-save">Save clockwheel</button>
     </section>
+
+    <section class="card" id="intro-rules" aria-labelledby="intro-rules-heading">
+      <h2 id="intro-rules-heading">Intro rules</h2>
+      <!-- intro-rules-panel.js fills this section.  The list is plain text;
+           each result of a button is said once through #intro-rules-status.
+           A refused field is marked aria-invalid, its error is linked to it
+           and it takes focus, which reads the error. -->
+      <p>An intro rule plays a voice liner as the next song starts when that song matches its conditions: a name drop for an artist, a jingle before rock songs, or “here’s one from the eighties” before songs first released in the 1980s. It uses the same conditions as clockwheel steps and categories. A song’s own matched intros, set in Track info, come first, then its artist’s, then intro rules, unless a rule’s priority says otherwise. Rules play only with saved segue playback, and a DJ break booked for the song change wins.</p>
+      <!-- Rules the station's file holds that are not valid: skipped, kept
+           in the file, and said here in words (never live). -->
+      <p class="field-error" id="intro-rules-problem" hidden></p>
+      <h3 id="intro-rules-list-heading">Saved intro rules</h3>
+      <p id="intro-rules-empty">No intro rules yet. Press Add intro rule to make one.</p>
+      <!-- role="list": list-style none drops the list role in Safari. -->
+      <ul id="intro-rules-list" class="intro-list" role="list" aria-labelledby="intro-rules-list-heading"></ul>
+      <button type="button" id="intro-rules-add">Add intro rule</button>
+      <form id="intro-rules-form" novalidate hidden>
+        <fieldset>
+          <legend id="intro-rules-form-legend">Add intro rule</legend>
+          <div class="settings-row tag-field">
+            <label for="intro-rules-label">Label</label>
+            <input type="text" id="intro-rules-label" maxlength="120" autocomplete="off" aria-describedby="intro-rules-label-help">
+            <span class="setting-desc" id="intro-rules-label-help">Optional. A name for the rule, such as Eighties name drops, so you can tell rules apart.</span>
+            <p id="intro-rules-label-error" class="field-error" hidden></p>
+          </div>
+          <div class="settings-row">
+            <label for="intro-rules-match">Match conditions</label>
+            <select id="intro-rules-match"><option value="all">Match all</option><option value="any">Match any</option></select>
+          </div>
+          <p id="intro-rules-conditions-label">Conditions the next song must meet</p>
+          <div id="intro-rules-conditions" role="group" aria-labelledby="intro-rules-conditions-label"></div>
+          <p id="intro-rules-conditions-error" class="field-error" hidden></p>
+          <button type="button" id="intro-rules-condition-add" aria-describedby="intro-rules-conditions-help">Add condition</button>
+          <span class="setting-desc" id="intro-rules-conditions-help">Up to 32. For a decade, use Year between 1980 and 1989, or the Beets field original_year for the first release; for a name drop, Artist contains. A song with no value for a field never matches a condition on it.</span>
+          <fieldset id="intro-rules-clips" aria-describedby="intro-rules-clips-help">
+            <legend>Voice liners to choose from</legend>
+            <span class="setting-desc" id="intro-rules-clips-help">Check registered voice liners, choose a liner folder, or both. One of them plays, picked at random; a file that is missing, outside its play dates or another station’s is passed over.</span>
+            <p id="intro-rules-liners-empty">This station has no registered voice liners. Add a Voice liner folder under Music folders and Voice liner folders.</p>
+            <div id="intro-rules-liners" class="intro-rule-liners"></div>
+            <p id="intro-rules-clips-error" class="field-error" hidden></p>
+            <div class="settings-row tag-field">
+              <label for="intro-rules-folder">Liner folder</label>
+              <select id="intro-rules-folder" aria-describedby="intro-rules-folder-help"><option value="">None</option></select>
+              <span class="setting-desc" id="intro-rules-folder-help">Optional. Every registered liner in the folder and its subfolders.</span>
+              <p id="intro-rules-folder-error" class="field-error" hidden></p>
+            </div>
+          </fieldset>
+          <div class="settings-row tag-field">
+            <label for="intro-rules-priority">Priority</label>
+            <select id="intro-rules-priority" aria-describedby="intro-rules-priority-help">
+              <option value="after_artist">After the song’s and the artist’s own intros</option>
+              <option value="before_artist">After the song’s own intros, before the artist’s</option>
+              <option value="before_song">Before the song’s and the artist’s own intros</option>
+            </select>
+            <span class="setting-desc" id="intro-rules-priority-help">The first in this order that is ready plays. Among rules of the same priority, the one heard longest ago goes first.</span>
+          </div>
+          <div class="settings-row tag-field">
+            <label for="intro-rules-chance">Chance (percent)</label>
+            <input type="text" id="intro-rules-chance" value="100" inputmode="numeric" autocomplete="off" spellcheck="false" aria-describedby="intro-rules-chance-help">
+            <span class="setting-desc" id="intro-rules-chance-help">From 1 to 100. At 50 the rule plays about every other time a matching song comes up.</span>
+            <p id="intro-rules-chance-error" class="field-error" hidden></p>
+          </div>
+          <div class="settings-row tag-field">
+            <label for="intro-rules-cooldown">Wait between plays (minutes)</label>
+            <input type="text" id="intro-rules-cooldown" value="60" inputmode="numeric" autocomplete="off" spellcheck="false" aria-describedby="intro-rules-cooldown-help">
+            <span class="setting-desc" id="intro-rules-cooldown-help">From 0 to 10080 (a week). After it plays, the rule waits this long before it plays again, across restarts.</span>
+            <p id="intro-rules-cooldown-error" class="field-error" hidden></p>
+          </div>
+          <div class="settings-row tag-field">
+            <label for="intro-rules-not-before">Not before</label>
+            <input type="date" id="intro-rules-not-before" aria-describedby="intro-rules-dates-help">
+            <p id="intro-rules-not-before-error" class="field-error" hidden></p>
+          </div>
+          <div class="settings-row tag-field">
+            <label for="intro-rules-not-after">Do not play after</label>
+            <input type="date" id="intro-rules-not-after" aria-describedby="intro-rules-dates-help">
+            <p id="intro-rules-not-after-error" class="field-error" hidden></p>
+          </div>
+          <span class="setting-desc" id="intro-rules-dates-help">Optional. Both days are included, in the station’s time zone.</span>
+          <button type="submit" id="intro-rules-save">Save intro rule</button>
+          <button type="button" id="intro-rules-cancel">Cancel</button>
+        </fieldset>
+      </form>
+      <p id="intro-rules-status" role="status" aria-live="polite" aria-atomic="true"></p>
+    </section>
   </section>
 
 <!-- Volume announcement region — only written on user-initiated volume changes -->

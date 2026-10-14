@@ -15,6 +15,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Intro rules (#127): Library tools > Intro rules plays a voice liner as the next song starts
+  when that song matches clockwheel conditions, such as an artist name drop, a genre, a decade, the
+  first-release year, any Beets field, a folder or a saved category. Each rule chooses registered
+  voice liners or a liner folder, with a chance, a wait between plays that holds across restarts,
+  play dates and a priority next to the song's and artist's own matched intros (after them by
+  default). Each station keeps its own rules in `intro_rules.json`, which backups include.
+
 - Music speed (#162): Settings > Sound > Music speed has a slider and exact numeric field for
   10% slower to 10% faster. Speed and pitch change together. Browser music changes speed when
   safe; voice liners and previews stay at their normal speed. In stream and server-audio modes,

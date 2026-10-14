@@ -93,6 +93,7 @@ def test_two_stations_round_trip(tmp_path: Path) -> None:
         "stations/nightowl/clockwheels/Night.json",
         "stations/nightowl/intros/intro.wav",
         "stations/nightowl/index/matched_intros.json",
+        "stations/nightowl/index/intro_rules.json",
         "stations/nightowl/profiles/Party.json",
     } <= names
     # A station never holds the shared categories, and nothing is stored twice.

@@ -31,6 +31,7 @@ import { tableRow } from "./modules/table-row.js";
 import { installTableNavigation } from "./modules/table-navigation.js";
 import { installLibraryFolders } from "./modules/library-folders.js";
 import { installCategoriesPanel } from "./modules/categories-panel.js";
+import { installIntroRulesPanel } from "./modules/intro-rules-panel.js";
 import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
 import { describeStep } from "./modules/clockwheel-step.js";
 import { installRotationTest } from "./modules/rotation-test.js";
@@ -247,6 +248,7 @@ let authExpiryHandled = false;
 let libraryFoldersControls = null;
 let clockwheelPanelControls = null;
 let categoriesPanelControls = null;
+let introRulesControls = null;
 let schedulerPanelControls = null;
 let rotationTestControls = null;
 let hourPreviewControls = null;
@@ -332,6 +334,7 @@ function clearStationViews() {
   resetSettingsState(_settingsEls());
   settingsStatus.textContent = "";
   clockwheelPanelControls?.clearProtectedData();
+  introRulesControls?.clear();
   schedulerPanelControls?.clear();
   rotationTestControls?.clear();
   hourPreviewControls?.clear();
@@ -373,6 +376,7 @@ function clearProtectedSessionData() {
   libraryKind.value = "music";
   libraryFoldersControls?.clearProtectedData();
   categoriesPanelControls?.clearProtectedData();
+  introRulesControls?.clearProtectedData();
   const browseFolder = document.getElementById("library-folder");
   if (browseFolder) {
     const option = (value, label) => {
@@ -1447,6 +1451,7 @@ function connectWS({ quiet = false } = {}) {
           libraryFoldersControls?.resume();
           clockwheelPanelControls?.resume();
           categoriesPanelControls?.resume();
+          introRulesControls?.resume();
           void schedulerPanelControls?.refresh();
           void rotationTestControls?.refresh();
           hourPreviewControls?.resume();
@@ -1649,6 +1654,7 @@ function refreshStationPanels() {
   void profileControls?.refresh();
   void fetchHistory(1);
   void libraryFoldersControls?.refreshIntros?.();
+  introRulesControls?.refresh();
 }
 
 // Shows the station this page now controls: its state, its socket, its
@@ -2834,7 +2840,12 @@ libraryFoldersControls = installLibraryFolders({
 
 clockwheelPanelControls = installClockwheelPanel();
 // A saved or deleted category reaches the clockwheel step form at once.
-categoriesPanelControls = installCategoriesPanel({ onChange: () => clockwheelPanelControls?.refresh() });
+// A saved or deleted category reaches intro rules' condition choices too.
+categoriesPanelControls = installCategoriesPanel({ onChange: () => {
+  void clockwheelPanelControls?.refresh();
+  introRulesControls?.refresh();
+} });
+introRulesControls = installIntroRulesPanel();
 schedulerPanelControls = installSchedulerPanel();
 rotationTestControls = installRotationTest();
 hourPreviewControls = installHourPreview();
@@ -2942,6 +2953,7 @@ function startAuthenticatedApp(initialState) {
   libraryFoldersControls?.resume();
   clockwheelPanelControls?.resume();
   categoriesPanelControls?.resume();
+  introRulesControls?.resume();
   void schedulerPanelControls?.refresh();
   void rotationTestControls?.refresh();
   hourPreviewControls?.resume();

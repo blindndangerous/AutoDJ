@@ -970,6 +970,13 @@
     .intro-list .intro-text { flex: 1 1 16rem; min-width: 0; overflow-wrap: anywhere; }
     #intro-applies { border: none; padding: 0; margin: 0.4rem 0; }
     #intros-form > fieldset { margin: 0.75rem 0; min-width: 0; }
+    /* Library tools, Intro rules (#127): the form as Track info's intro
+       form, and the liners to choose from in a box that scrolls when a
+       station has many, padded so each checkbox's focus ring shows. */
+    #intro-rules-form > fieldset,
+    #intro-rules-clips { margin: 0.75rem 0; min-width: 0; }
+    .intro-rule-liners { max-height: 20rem; overflow-y: auto; padding: 0.25rem; }
+    .intro-rule-liners label { min-width: 0; overflow-wrap: anywhere; }
     .queue-name {
       flex: 1;
       min-width: 0;
