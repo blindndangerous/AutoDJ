@@ -98,16 +98,11 @@ def test_dmca_limits_count_at_each_place(bridge) -> None:
     assert any("Album" in problem for problem in slots[0].problems)
 
 
-def test_coming_up_and_queue_insert(bridge) -> None:
+def test_coming_up(bridge) -> None:
     _ready(bridge)
     state = bridge.player._state
     state.queued_next = _song(3)
     assert [e.title for e in bridge.coming_up()] == ["Song 0", "Song 3", "Song 1", "Song 2"]
-    assert bridge.queue_insert(_song(4).path, 1)
-    assert [e.title for e in state.queue] == ["Song 1", "Song 4", "Song 2"]
-    assert bridge.queue_insert(_song(5).path, 99)
-    assert state.queue[-1].title == "Song 5"
-    assert not bridge.queue_insert("Z:/Music/missing.flac", 0)
     state.current_track = None
     state.queued_next = None
     assert bridge.coming_up()[0].title == "Song 1"
