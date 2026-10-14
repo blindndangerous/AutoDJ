@@ -10,6 +10,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Library tools can rescan the library automatically every so many hours and minutes (#249).
+- DMCA checks on queued songs, listener request placement and show songs now use the hour
+  preview's timing: the playing song's position, mixed handoffs, saved start and segue cues,
+  overlapping liners and music speed, instead of whole file lengths (#217).
+- A listener request is no longer placed where a queued song after it would then break a repeat
+  rule or DMCA limit. Rules a queued song already broke do not count against the request (#218).
+- The page title no longer shows the album. It names the station whenever the station is not
+  called AutoDJ, even on a server with one station (#251).
 - Windows setup offers to install missing uv and FFmpeg with WinGet, explains what each tool
   does, and gives manual installation steps when needed. The quick start uses one launcher
   command, with instructions for moving to another computer.
@@ -76,6 +84,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[ads] max_upload_mb` before the body is read and decoded one at a time off the event loop with
   the breaks' bounded decoder. Routes: `/api/ads` and `/api/stations/<name>/ads`. See
   [Ad breaks](docs/operations.md#ad-breaks).
+- Intro rules (#127): Library tools > Intro rules plays a voice liner as the next song starts
+  when that song matches clockwheel conditions, such as an artist name drop, a genre, a decade, the
+  first-release year, any Beets field, a folder or a saved category. Each rule chooses registered
+  voice liners or a liner folder, with a chance, a wait between plays that holds across restarts,
+  play dates and a priority next to the song's and artist's own matched intros (after them by
+  default). Each station keeps its own rules in `intro_rules.json`, which backups include.
 - More stream formats (#50): beside the MP3 stream, a station can serve the same mix in AAC
   (`/stream.aac`) and Opus (`/stream.opus`), and at `/stations/<name>.aac` and `.opus`, each at
   its own bitrate. Turn them on in Settings, Stream, **More formats** (AAC quality, Opus
@@ -126,6 +140,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is now kept exactly as it was with every save instead of being set aside, so moving between
   versions loses no event. An event with settings its action does not accept is still set
   aside as before.
+- Live DJs and talkover (#48): in stream mode a live DJ can take over a station from BUTT,
+  Mixxx or another Icecast source client, connecting to AutoDJ's own address and port at the
+  mount `live` (or `stations/<name>/live`) with their own username and password, added in
+  **Settings > Live DJ** (passwords are stored as scrypt hashes and never shown).
+  When the DJ's audio arrives AutoDJ crossfades to it and holds automation exactly where it
+  was; when they leave, or go silent for 15 seconds, it comes back with the next song,
+  rendered again for the time it airs. Hard-timed schedule events during a set take effect
+  when the DJ hands back, and liners, time checks and carts are not played over them. The page
+  says "Live: <name> since <time>" once when a DJ goes on or off, and the public feed, status
+  page and stream title show the DJ. Each set is a History row and a `live` row in the CSV
+  play log, left out of SoundExchange reports. Hold **Talk** on Now Playing (mouse, touch,
+  Space or Enter on the button, or Alt+M anywhere) to speak over the music from the browser's
+  microphone, with the duck amount and return time set per station; one person talks at a
+  time. Sources need HTTPS or this machine, unless `[server] live_plain_http_lan = true` also
+  allows plain HTTP from the local network. Backups keep the DJs but not their password
+  hashes, so set DJ passwords again after a restore. See
+  [Live DJs and talkover](docs/operations.md#live-djs-and-talkover).
 - Settings > Stream can edit Icecast and Shoutcast relays while the station runs. Relay definitions
   and passwords are saved per station; environment-managed passwords remain read-only. Station
   name, genre, description and website URL are sent where each stream protocol supports them. The
@@ -725,6 +756,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Prevent a song from playing in the same quarter of the hour** reads quarters on the
+  station's clock. Across Lord Howe Island's half-hour clock change it compared UTC quarters, so
+  a song could return to the quarter it last played in. Listener request checks read it on the
+  station's clock too (#219).
+
+- Saving cue points in Track info no longer fails with "end exceeds track length" on some
+  tracks when the End was left as loaded. Track info shows cue times to the nearest 0.01 s,
+  which could round the End just past the song's length. The catalog now accepts a cue that
+  rounding pushed up to 0.01 s past its limit (the length, Start, End, or the Overlap start
+  room) and moves it onto that limit; anything further is still rejected (#237).
 - A matched intro reserved for a handoff is available again if playback skips that handoff before the intro starts. Intros already heard keep their cooldown.
 
 

@@ -55,7 +55,7 @@ from pydantic import (
     model_validator,
 )
 
-from autodj.fsutil import atomic_write, confirm_missing
+from autodj.fsutil import atomic_write, file_signature, set_aside
 
 logger = logging.getLogger(__name__)
 
@@ -216,12 +216,7 @@ class ShowStore:
         self._skipped: dict[str, Any] = {}
 
     def _stat(self) -> tuple[int, int, int] | None:
-        try:
-            found = self.path.stat()
-        except FileNotFoundError as exc:
-            confirm_missing(self.path, exc)
-            return None
-        return found.st_mtime_ns, found.st_size, found.st_ino
+        return file_signature(self.path)
 
     def _keep_bad_copy(self, reason: str) -> None:
         """Set the invalid file aside.
@@ -229,16 +224,11 @@ class ShowStore:
         Raises:
             OSError: It could not be set aside: nothing may be written over it.
         """
-        bad = self.path.with_name(f"{self.path.name}.bad-{uuid.uuid4().hex[:8]}")
-        try:
-            self.path.replace(bad)
-        except OSError as exc:
-            logger.exception("Could not set aside the invalid shows file %s", self.path)
+        if not set_aside(self.path, "shows file", reason):
             raise OSError(
                 f"The shows file {self.path.name} is not valid and could not be set aside; "
                 "nothing is saved over it"
-            ) from exc
-        logger.error("Shows file %s is invalid (%s); set it aside as %s", self.path, reason, bad)
+            )
 
     def _load_locked(self) -> dict[str, Show]:
         """Every show, read again if the file changed.  Caller holds ``_lock``.
@@ -719,21 +709,20 @@ class _OnAir:
 def dmca_limits_at(bridge: Any, entry: Any, view: Any, position: int) -> tuple[str, ...]:
     """The DMCA limits *entry* would break at *position* of the user queue in *view*.
 
-    Its start is projected from track lengths: after the playing song, any
-    "play next" song and the queue before *position*.  Empty when DMCA mode
-    is off.  Takes ``history_lock`` for a copy, never ``queue_lock``.
+    Its start is timed as the hour preview times the queue (#217): after
+    the playing song, any "play next" song and the queue before *position*
+    (:meth:`~autodj._bridge.PlayerBridge.history_ahead`).  Empty when DMCA
+    mode is off.  Never holds ``queue_lock`` while it works.
     """
     player = bridge.player
     if not player._cfg.dmca.enabled:
         return ()
-    from autodj.dmca import complement, projected_history
+    from autodj.dmca import complement
 
-    state = player._state
-    with state.history_lock:
-        history = list(state.play_history)
-    before = [view.queued_next] if view.queued_next is not None else []
-    before.extend(view.queue[:position])
-    records, when = projected_history(history, state.clock(), view.current, before)
+    waiting = [view.queued_next] if view.queued_next is not None else []
+    index = len(waiting) + position
+    waiting.extend(view.queue)
+    records, when = bridge.history_ahead(waiting, index, entry)
     return tuple(complement(records, when, player._track_keys()).broken(entry))
 
 

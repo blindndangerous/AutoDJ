@@ -1109,6 +1109,7 @@ def test_every_stop_step_is_tried_and_a_failed_stop_is_not_remembered() -> None:
     runtime.carts = SimpleNamespace(close=broken_async)  # type: ignore[assignment]
     runtime.webhooks = SimpleNamespace(close=broken)  # type: ignore[assignment]
     runtime.stream_out = None
+    runtime.live = SimpleNamespace(source=None)  # type: ignore[assignment]
     runtime.recorder = SimpleNamespace(close=broken)  # type: ignore[assignment]
     runtime.server_audio = True
     runtime.player_thread = None

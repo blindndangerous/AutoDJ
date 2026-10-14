@@ -62,7 +62,7 @@ from pydantic import (
 
 from autodj.beets_query import FIRST_RELEASE_YEAR, Query, QueryError, parse_query
 from autodj.beets_query import first_release_year as _first_release_year
-from autodj.fsutil import atomic_write
+from autodj.fsutil import atomic_write, set_aside
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
@@ -489,15 +489,7 @@ class CategoryStore:
         self.path = Path(path)
 
     def _keep_bad_copy(self, reason: str) -> None:
-        bad = self.path.with_name(f"{self.path.name}.bad-{uuid.uuid4().hex[:8]}")
-        try:
-            os.replace(self.path, bad)
-        except OSError:
-            logger.exception("Could not set aside the invalid categories file %s", self.path)
-            return
-        logger.error(
-            "Categories file %s is invalid (%s); set it aside as %s", self.path, reason, bad
-        )
+        set_aside(self.path, "categories file", reason)
 
     def load(self) -> list[Category]:
         """Read the file; a missing file is no categories, a bad one is set aside."""

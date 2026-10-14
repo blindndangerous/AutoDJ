@@ -28,6 +28,7 @@ refused and deleted.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import stat
 import time
@@ -47,9 +48,11 @@ from autodj.breaks_api import (
     _within,
     decode_gate,
 )
+from autodj.intro_rules import MAX_RULES, IntroRules
 from autodj.liner_files import LinerTooLargeError, store_liner_upload
 from autodj.liners import LINER_EXTS
 from autodj.matched_intros import (
+    MAX_COOLDOWN_MINUTES,
     MAX_INTRO_SECONDS,
     TRACK_ID_PATTERN,
     Intro,
@@ -68,6 +71,9 @@ logger = logging.getLogger(__name__)
 
 #: The upload route, for the request-body cap.
 UPLOAD_PATH = "/api/intros"
+#: The intro rules route, and the most a rule's JSON may be, in bytes.
+RULES_PATH = "/api/intros/rules"
+RULE_BODY_MAX_BYTES = 64 * 1024
 #: An upload must arrive within this many seconds, plus one second per
 #: 256 KiB it declares (408 past that).
 BODY_DEADLINE_SECONDS = 60.0
@@ -110,6 +116,128 @@ def _library(station: StationRuntime) -> Any:
     if library is None:
         raise HTTPException(status_code=503, detail="Matched intros need the folder library")
     return library
+
+
+class RuleRefused(Exception):
+    """An intro rule that cannot be saved, naming the field at fault for the page."""
+
+    def __init__(self, field_name: str, message: str, status: int = 422) -> None:
+        super().__init__(message)
+        self.field = field_name
+        self.message = message
+        self.status = status
+
+    def response(self) -> JSONResponse:
+        return JSONResponse(
+            status_code=self.status,
+            content={"detail": self.message, "field": self.field},
+            headers=_NO_STORE,
+        )
+
+
+#: What each rule field is called on the page, for the errors.
+_RULE_LABELS = {
+    "match": "Match",
+    "priority": "Priority",
+    "label": "Label",
+    "chance": "Chance",
+    "cooldown_minutes": "Wait between plays",
+    "not_before": "Not before",
+    "not_after": "Do not play after",
+}
+
+
+def parse_rule(value: Any) -> Any:
+    """An :class:`~autodj.intro_rules.IntroRule` from a request body, or :class:`RuleRefused`."""
+    from autodj.clip_dates import ClipDatesError
+    from autodj.intro_rules import IntroRule
+
+    if not isinstance(value, dict):
+        raise RuleRefused("", "Send an intro rule as a JSON object")
+    if set(value) & {"created_at", "last_aired"}:
+        raise RuleRefused("", "created_at and last_aired are kept by the server")
+    try:
+        return IntroRule.model_validate(value)
+    except ValidationError as exc:
+        error = exc.errors()[0]
+        cause = error.get("ctx", {}).get("error")
+        if isinstance(cause, ClipDatesError):
+            raise RuleRefused(cause.field, cause.message) from None
+        field = str(error["loc"][0]) if error["loc"] else "clip_ids"
+        message = str(cause) if isinstance(cause, ValueError) else error["msg"]
+        if field in _RULE_LABELS:
+            message = f"{_RULE_LABELS[field]}: {message}"
+        raise RuleRefused(field, message) from None
+
+
+def rule_choices(station: StationRuntime, library: Any) -> dict[str, Any]:
+    """What the page offers in a rule: the condition editor's choices (as a
+    clockwheel's), and the station's registered voice liners and liner folders."""
+    from autodj.station_routes import _category_names, _clock_beets, _clock_genres
+
+    owns = station.owns_liner
+    found: list[tuple[str, str, str]] = []
+    for entry in library.entries_snapshot("liner"):
+        if not owns(entry.path):
+            continue  # another station's liner
+        record = library.catalog.record_for_path(entry.path)
+        if record and record.get("kind") == "liner":
+            path = Path(record["path"])
+            found.append((str(record["id"]), path.name, str(path.parent)))
+    counts: dict[str, int] = {}
+    for _id, name, _folder in found:
+        counts[name.casefold()] = counts.get(name.casefold(), 0) + 1
+    # Two liners of one name are told apart by their folder.
+    liners = [
+        {"id": key, "label": f"{name} in {folder}" if counts[name.casefold()] > 1 else name}
+        for key, name, folder in found
+    ]
+    liners.sort(key=lambda item: (item["label"].casefold(), item["id"]))
+    folders = [
+        str(source["path"]) for source in library.catalog.sources("liner") if owns(source["path"])
+    ]
+    known, _items, beets_error = _clock_beets(station, library).snapshot()
+    return {
+        "liners": liners,
+        "liner_folders": folders,
+        "sources": [
+            {"id": source["id"], "path": source["path"]}
+            for source in library.catalog.sources("music")
+        ],
+        "genres": _clock_genres.names(library),
+        "beets_fields": sorted(known),
+        "beets_error": beets_error,
+        "categories": [{"id": key, "name": name} for key, name in _category_names(library).items()],
+    }
+
+
+def validate_rule_clips(rule: Any, station: StationRuntime, library: Any) -> None:
+    """Only this station's registered liners and liner folders may be chosen by a rule."""
+    from autodj.clockwheel import _under
+    from autodj.clockwheel_store import resolve_conditions
+
+    owns = station.owns_liner
+    for clip_id in rule.clip_ids:
+        record = library.record_for_id(clip_id)
+        if record is None or record.get("kind") != "liner" or not owns(record["path"]):
+            raise RuleRefused(
+                "clip_ids", "A chosen liner is not one of this station's registered voice liners"
+            )
+    folder = rule.liner_folder
+    if folder is not None and not any(
+        _under(folder, source["path"]) and owns(source["path"])
+        for source in library.catalog.sources("liner")
+    ):
+        raise RuleRefused(
+            "liner_folder", "Choose one of this station's registered voice liner folders"
+        )
+    if any(c["field"] == "folder" for c in rule.conditions):
+        sources = {source["id"]: source for source in library.catalog.sources()}
+        try:
+            resolve_conditions({"type": "music", "conditions": rule.conditions}, sources, 1)
+        except ValueError as exc:
+            message = str(exc).removeprefix("Step 1: ")
+            raise RuleRefused("conditions", message[:1].upper() + message[1:]) from None
 
 
 def _inactive_reason(station: StationRuntime) -> str | None:
@@ -259,6 +387,114 @@ def install_matched_intros(router: StationRouter) -> None:
     """Add the matched intros routes; each acts on the station its URL names."""
     # One decode at a time across the server, shared with breaks and ad spots.
     decoder = decode_gate
+
+    def _rules(station: StationRuntime) -> IntroRules:
+        rules: IntroRules | None = getattr(_store(station), "rules", None)
+        if rules is None:
+            raise HTTPException(status_code=503, detail="This station cannot keep intro rules")
+        return rules
+
+    async def rule_body(request: Request, station: StationRuntime) -> Any:
+        """Read a bounded JSON rule and check its liners against the library."""
+        payload = bytearray()
+        async for chunk in request.stream():
+            payload.extend(chunk)
+            if len(payload) > RULE_BODY_MAX_BYTES:
+                raise RuleRefused("", "An intro rule may be at most 64 KiB", 413)
+        try:
+            value = json.loads(payload)
+        except (ValueError, UnicodeError):
+            raise RuleRefused("", "Send an intro rule as a JSON object") from None
+        rule = parse_rule(value)
+        await asyncio.to_thread(validate_rule_clips, rule, station, _library(station))
+        return rule
+
+    def _saved(key: str, rule: Any, status_code: int = 200) -> JSONResponse:
+        return JSONResponse(
+            {"id": key, **rule.model_dump(mode="json")}, status_code=status_code, headers=_NO_STORE
+        )
+
+    @router.get("/intros/rules")
+    async def intro_rules(station: StationDep) -> JSONResponse:
+        """The station's intro rules, and the liners and liner folders they may use."""
+        store = _rules(station)
+        rules = await asyncio.to_thread(store.all)
+        library = station.bridge.library
+        choices = (
+            await asyncio.to_thread(rule_choices, station, library)
+            if library is not None
+            else {"liners": [], "liner_folders": [], "sources": [], "genres": []}
+        )
+        ordered = sorted(rules.items(), key=lambda item: (item[1].created_at, item[0]))
+        return JSONResponse(
+            {
+                "rules": [{"id": key, **rule.model_dump(mode="json")} for key, rule in ordered],
+                "problem": store.problem(),
+                "max_rules": MAX_RULES,
+                "max_cooldown_minutes": MAX_COOLDOWN_MINUTES,
+                **choices,
+            },
+            headers=_NO_STORE,
+        )
+
+    @router.post("/intros/rules", status_code=201)
+    async def intro_rule_create(station: StationDep, request: Request) -> JSONResponse:
+        store = _rules(station)
+        try:
+            fields = await rule_body(request, station)
+        except RuleRefused as exc:
+            return exc.response()
+        key = new_id()
+        rule = fields.model_copy(update={"created_at": time.time()})
+        try:
+            await asyncio.to_thread(store.save, key, rule, create=True)
+        except ValueError as exc:
+            return RuleRefused("", str(exc), 409).response()
+        except OSError as exc:
+            raise HTTPException(
+                status_code=503, detail="The intro rules file could not be saved"
+            ) from exc
+        return _saved(key, rule, 201)
+
+    @router.put("/intros/rules/{rule_id}")
+    async def intro_rule_edit(station: StationDep, rule_id: str, request: Request) -> JSONResponse:
+        store = _rules(station)
+        if not valid_id(rule_id):
+            raise HTTPException(status_code=404, detail="No intro rule has that ID")
+        try:
+            fields = await rule_body(request, station)
+        except RuleRefused as exc:
+            return exc.response()
+        previous = (await asyncio.to_thread(store.all)).get(rule_id)
+        if previous is None:
+            raise HTTPException(status_code=404, detail="No intro rule has that ID")
+        rule = fields.model_copy(
+            update={"created_at": previous.created_at, "last_aired": previous.last_aired}
+        )
+        try:
+            await asyncio.to_thread(store.save, rule_id, rule, create=False)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="No intro rule has that ID") from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=503, detail="The intro rules file could not be saved"
+            ) from exc
+        return _saved(rule_id, rule)
+
+    @router.delete("/intros/rules/{rule_id}")
+    async def intro_rule_delete(station: StationDep, rule_id: str) -> JSONResponse:
+        store = _rules(station)
+        if not valid_id(rule_id):
+            raise HTTPException(status_code=404, detail="No intro rule has that ID")
+        try:
+            removed = await asyncio.to_thread(store.remove, rule_id)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=503, detail="The intro rules file could not be saved"
+            ) from exc
+        if not removed:
+            raise HTTPException(status_code=404, detail="No intro rule has that ID")
+        return JSONResponse({"deleted": rule_id}, headers=_NO_STORE)
 
     @router.get("/intros")
     async def intros(
