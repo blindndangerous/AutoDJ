@@ -808,9 +808,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- Opening a tab leaves focus on the tab, whether by click, arrow keys or Alt+1 to Alt+9, so its
-  name is said once (#296).
-- The open hour preview refreshes as soon as Now Playing shows again (#295).
 - Tables no longer say "row header" when focus lands on a track's name (#302).
 - In tables, a cell with a button such as Track info takes focus itself, so it is read once.
   Enter or Space on the cell presses the button (#294).
