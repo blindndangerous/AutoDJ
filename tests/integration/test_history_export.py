@@ -293,3 +293,43 @@ def test_local_playback_counts_one_listener() -> None:
     )
     bridge.on_track_started(_make_entry(2))
     assert library.rows[-1]["performances"] == 1
+
+
+def test_the_csv_lists_the_ad_spots_that_aired(catalog, tmp_path: Path) -> None:
+    from datetime import UTC
+
+    from autodj.ads import AdLog, PlayRecord
+
+    client = _paired(SimpleNamespace(catalog=catalog))
+    station = client.app.state.stations.default
+    # This station's own folder, not the shared stand-in the mock points at.
+    station.bridge.player._cfg.index.active_dir = tmp_path / "index"
+    aired = datetime(2026, 9, 1, 12, 30).astimezone()
+    common = {
+        "run": "d" * 32,
+        "scheduled": aired.astimezone(UTC),
+        "spot_id": "a" * 32,
+        "title": "Fall sale",
+        "advertiser": "Example Motors",
+        "campaign": "Autumn",
+        "seconds": 30.0,
+        "logged": aired.astimezone(UTC),
+    }
+    AdLog(station.paths.ad_plays).append(
+        [
+            PlayRecord.model_validate(
+                {**common, "id": "c" * 32, "status": "aired", "aired_at": aired}
+            ),
+            PlayRecord.model_validate({**common, "id": "e" * 32, "status": "missed"}),
+        ]
+    )
+    response = client.get(URL)
+    assert response.headers["x-play-count"] == "2"
+    rows = list(csv.reader(io.StringIO(response.text, newline="")))
+    assert [(row[3], row[4], row[5], row[8], row[2]) for row in rows[1:]] == [
+        ("Artist", "'@Song", "Album", "song", "180"),
+        ("Example Motors", "Fall sale", "Autumn", "ad", "30"),
+    ]
+    # The SoundExchange report stays songs only.
+    report = client.get(URL + "&format=soundexchange&service=Example")
+    assert "Fall sale" not in report.text

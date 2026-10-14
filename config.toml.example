@@ -428,6 +428,21 @@ quota_mb = 400                 # disk space the waiting break files may use
 requests_per_minute = 120      # per token
 
 # ---------------------------------------------------------------------------
+# Scheduled ad breaks
+# ---------------------------------------------------------------------------
+# Spots (advertiser, campaign, flight dates, daily and hourly caps) and ad
+# breaks (minutes past the hour, or a Schedule event) are set up in the Ads
+# tab.  A break airs between two songs at the next song change it can join,
+# and every spot that aired or was missed is logged for the Ads report.
+# Like [breaks], ads need saved-point playback with the server mixing the
+# audio.  docs/operations.md, "Ad breaks", has the details.
+[ads]
+enabled = false
+max_upload_mb = 20             # largest spot file (at most 200)
+max_spot_seconds = 120.0       # longest spot (5 to 600)
+max_spots = 200                # spots one station keeps (at most 1000)
+
+# ---------------------------------------------------------------------------
 # ReplayGain loudness normalisation
 # ---------------------------------------------------------------------------
 [replaygain]

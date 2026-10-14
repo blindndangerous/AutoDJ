@@ -31,7 +31,6 @@ import asyncio
 import logging
 import stat
 import time
-import weakref
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -41,7 +40,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from autodj.breaks import BreakCues, new_id, speech_cues, valid_id
-from autodj.breaks_api import MULTIPART_OVERHEAD_BYTES, _gated_decode, _quiet_unlink, _within
+from autodj.breaks_api import (
+    MULTIPART_OVERHEAD_BYTES,
+    _gated_decode,
+    _quiet_unlink,
+    _within,
+    decode_gate,
+)
 from autodj.liner_files import LinerTooLargeError, store_liner_upload
 from autodj.liners import LINER_EXTS
 from autodj.matched_intros import (
@@ -252,13 +257,8 @@ async def _read_form(request: Request) -> tuple[dict[str, str], StarletteUploadF
 
 def install_matched_intros(router: StationRouter) -> None:
     """Add the matched intros routes; each acts on the station its URL names."""
-    # One decode at a time; uploads share the breaks' one decode thread too.
-    decoding: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
-        weakref.WeakKeyDictionary()
-    )
-
-    def decoder() -> asyncio.Semaphore:
-        return decoding.setdefault(asyncio.get_running_loop(), asyncio.Semaphore(1))
+    # One decode at a time across the server, shared with breaks and ad spots.
+    decoder = decode_gate
 
     @router.get("/intros")
     async def intros(

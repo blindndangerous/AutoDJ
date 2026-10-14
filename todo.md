@@ -5,7 +5,7 @@ This is a list of ideas. Not all items below may be implemented.
 Expand to artist, song title, track. Song titles may be in multiple formats, like Christmas.
 Handle multiple artists/featuring/etc.
 related artists, i.e. Bruno Mars and Silksonic considered as the same, relationship does not need to be symbiotic
-repeat options should accept number of tracks like now or number of minutes 
+repeat options should accept number of tracks like now or number of minutes
 perhaps a starting list of related artists as an optional include for common artist similarities
 
 ##Playout
@@ -28,5 +28,4 @@ Redesign of settings screen into subtabs
 switching tabs currently says selected selected
 
 ## Other
-ad breaks and scheduling
 station reporting logs

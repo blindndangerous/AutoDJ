@@ -78,10 +78,13 @@ from starlette.types import Receive, Scope, Send
 
 # PlayerBridge lives in autodj._bridge; it is re-exported here.
 from autodj._bridge import PlayerBridge
+from autodj.ads_api import BREAKS_PATH as AD_BREAKS_PATH
+from autodj.ads_api import JSON_BODY_MAX_BYTES as AD_JSON_BODY_MAX_BYTES
+from autodj.ads_api import UPLOAD_PATH as AD_UPLOAD_PATH
 from autodj.breaks_api import ANNOUNCER_SCOPES, UPLOAD_PATH, VOICE_UPLOAD_PATH
 from autodj.breaks_api import MULTIPART_OVERHEAD_BYTES as BREAK_MULTIPART_OVERHEAD
 from autodj.categories_api import install_categories
-from autodj.config import BreaksConfig
+from autodj.config import AdsConfig, BreaksConfig
 from autodj.icy import METAINT
 from autodj.indexer import analysis_identity
 from autodj.lan import PAIRING_ON_REQUEST_HINT, format_lan_banner, lan_urls, running_in_container
@@ -1050,6 +1053,9 @@ def create_app(
         # The largest break any station takes; each station checks its own.
         UPLOAD_PATH: lambda: _break_upload_cap(stations),
         VOICE_UPLOAD_PATH: lambda: _break_upload_cap(stations),
+        # Ad spots (#51): the largest any station takes; each checks its own.
+        AD_UPLOAD_PATH: lambda: _ad_upload_cap(stations),
+        AD_BREAKS_PATH: lambda: AD_JSON_BODY_MAX_BYTES,
         "/api/rotation-test": lambda: SMALL_BODY_MAX_BYTES,
         # Shows (#106): POST and PUT; a list of up to 500 songs is the largest.
         "/api/shows": lambda: SMALL_BODY_MAX_BYTES,
@@ -2160,6 +2166,19 @@ def _break_upload_cap(stations: StationRegistry) -> int:
     largest = max(
         (cap for cap in caps if isinstance(cap, int)),
         default=BreaksConfig().max_upload_bytes,
+    )
+    return largest + BREAK_MULTIPART_OVERHEAD
+
+
+def _ad_upload_cap(stations: StationRegistry) -> int:
+    """The request-body cap of a spot upload: the largest any running station takes."""
+    caps = [
+        getattr(getattr(station.cfg, "ads", None), "max_upload_bytes", None)
+        for station in stations.all()
+    ]
+    largest = max(
+        (cap for cap in caps if isinstance(cap, int)),
+        default=AdsConfig().max_upload_bytes,
     )
     return largest + BREAK_MULTIPART_OVERHEAD
 
