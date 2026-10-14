@@ -8,10 +8,10 @@ that wrote it and the list of files) and these members:
 - ``index/dj_meta.db``, ``index/library.db``, ``index/web_state.json``,
   ``index/related-artists.toml``, ``index/related-tracks.toml``, ``index/schedule.json``,
   ``index/carts.json``,
-  ``index/time_checks.json``, ``index/listener_bans.json``, ``index/recording.json``,
-  ``index/categories.json``, ``index/liner_dates.json``, ``index/matched_intros.json``,
-  ``index/ads.json``, ``index/shows.json`` and ``index/relays.json`` from the active
-  index folder. Relay files contain source passwords.
+  ``index/time_checks.json``, ``index/listener_bans.json``, ``index/listener_stats.json``,
+  ``index/recording.json``, ``index/categories.json``, ``index/liner_dates.json``,
+  ``index/matched_intros.json``, ``index/ads.json``, ``index/shows.json`` and
+  ``index/relays.json`` from the active index folder. Relay files contain source passwords.
 - ``liners/...``, ``carts/...``, ``time_checks/...``, ``profiles/...``, ``clockwheels/...``,
   ``intros/...`` (the matched intros' audio), ``ads/...`` (the ad spots' audio) and
   ``ad_plays/...`` (the ad play log, #51): every file in those folders and their
@@ -77,6 +77,7 @@ INDEX_FILES = (
     "carts.json",
     "time_checks.json",
     "listener_bans.json",
+    "listener_stats.json",
     "recording.json",
     "categories.json",
     "liner_dates.json",
@@ -104,6 +105,7 @@ _STATE_FILES = (
     "carts.json",
     "time_checks.json",
     "listener_bans.json",
+    "listener_stats.json",
     "recording.json",
     "categories.json",
     "liner_dates.json",

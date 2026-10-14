@@ -889,8 +889,10 @@ with, so a page opened as `localhost` or `127.0.0.1` gives a link only that comp
 page says so); open AutoDJ by the network address in its start-up message before copying a link
 for a speaker.
 
-The listening address is `/stream.mp3`, with a playlist at `/stream.m3u`. Anyone who can
-reach the server can listen without pairing. Playback controls and settings still require
+The listening address is `/stream.mp3`, with a playlist at `/stream.m3u`; the AAC and Opus
+streams, when on, are at `/stream.aac` and `/stream.opus` (see
+[More formats](#more-formats-aac-and-opus)). Anyone who can reach the server can listen without
+pairing. Playback controls and settings still require
 pairing when LAN authentication is enabled. Older addresses containing a stream key, such as
 `/stream/<secret>.mp3`, no longer work: set any speaker or player saved with one to
 `/stream.mp3`. AutoDJ no longer uses the `index/.stream-secret` file those versions made, and you
@@ -1040,6 +1042,103 @@ connected, the set stops; the next listener to connect starts a fresh set from t
 track, never mid-song.
 
 The listening address stays the same across restarts. There is no key to copy or renew.
+
+### More formats: AAC and Opus
+
+Beside the MP3 stream, a station can serve the same mix in AAC, in Opus, or both, each at its
+own address and bitrate. Turn them on in Settings, Stream, **More formats**, with **AAC
+quality** and **Opus quality** (Off, or a bitrate), or in `config.toml`:
+
+```toml
+[stream]
+aac_bitrate = 96    # 0 (off), 64, 96, 128, 192 or 256
+opus_bitrate = 64   # 0 (off), 48, 64, 96, 128 or 192
+```
+
+A format that is on answers at `/stream.aac` or `/stream.opus` for the default station, and at
+`/stations/<slug>.aac` or `/stations/<slug>.opus` for any station; a format that is off answers
+404. Settings, Stream lists the address of every format that is on, each with its own Copy
+button. The addresses are public like `/stream.mp3`, and the station's listener password, bans
+and per-address limit apply to them too. The choice made in Settings is saved in
+`web_state.json` and wins over `config.toml` at the next start, as the MP3 quality does.
+Changing a format's bitrate makes only that format's listeners reconnect.
+
+- **AAC** (AAC-LC in ADTS frames, `audio/aac`) sounds better than MP3 at the same bitrate and
+  plays on most phones, browsers and smart speakers. Players that ask for ICY titles get the
+  song titles, as with MP3.
+- **Opus** (in Ogg, `audio/ogg`, resampled to 48 kHz) sounds good at low bitrates, which suits
+  mobile data. Browsers and players such as VLC play it; some smart speakers and older players
+  do not. Song titles are not sent inside an Opus stream; players can read them from the
+  now-playing feed.
+
+`max_listeners` counts listeners on every format together: with the default 8, five MP3 and
+three Opus listeners fill the station. A listener on any format starts an idle set, as an MP3
+listener does. Relays and broadcast recordings stay MP3.
+
+Turning a format on first has ffmpeg encode a moment of silence in it. If this ffmpeg cannot
+(for example one built without libopus), the setting is refused with ffmpeg's own words and
+nothing changes; when several changes are saved together, none is made unless all can be.
+
+A format that is on runs its own ffmpeg encoder on this computer, fed the same mixed audio, but
+only while someone listens to it: its first listener starts the encoder, and it stops once nobody
+has listened for a minute. So a format nobody uses costs nothing. (The MP3 encoder runs whenever
+the station streams, as before.) The mix never waits for an encoder: each has its own queue of at
+most 2 seconds of audio, and one that falls behind loses its oldest audio, with one warning in
+the log, while the mix, the MP3 stream and the other format carry on; the song title changes
+never wait on an encoder starting or stopping either. A listener who joins a running encoder
+starts on a whole frame (or, for Opus, the stream's header and then a whole page) from the last
+2 seconds of audio; the first listener, or one who joins before an Opus stream's header is
+complete, gets the stream from its start. When an encoder exits, the log gives its last words,
+and Settings shows them beside its address while it runs.
+
+What an encoder costs, measured with ffmpeg's `-benchmark` on 120 seconds of audio, as a share
+of one CPU core (an Intel Core i7-8809G at 3.1 GHz under Windows 11, ffmpeg 8.1):
+
+- MP3 (the stream that is always on): 2.1 % at 320 kbps, 2.9 % at 128 kbps.
+- AAC: 3.5 % at 96 kbps, 4.9 % at 256 kbps.
+- Opus: 1.3 % at 64 kbps, 1.9 % at 192 kbps.
+
+Those are for music (two minutes of a DJ demo track). Pink noise under a chord gave 1.1 to
+1.5 % for MP3, 2.1 to 2.2 % for AAC and 1.3 to 1.6 % for Opus. The whole AutoDJ process with its
+encoders, on an idle station playing silence, went from 1.9 % of one core with MP3 alone to
+3.9 % with AAC at 96 kbps and Opus at 64 kbps both running, as when each has a listener.
+
+So each extra format costs about as much as the MP3 stream already does, a few percent of one
+core, and only while it has listeners (and a minute after). Several stations each run their own
+encoders, so multiply by the stations whose format is being heard.
+
+### Listener statistics
+
+Settings, Stream, **Listener statistics** shows, for the station the page controls:
+
+- a summary in words: how many are listening now on each format, today's peak and when it was,
+  today's sessions and listening hours, and the same for the chosen period with its peak day
+  and longest session;
+- a table **Listeners by format**: listening now, the peak, sessions and listening hours of
+  MP3, AAC and Opus;
+- a table **Listeners by day**, newest first: the peak and when it was, sessions, listening
+  hours, the average and the longest session;
+- **How long sessions lasted**: how many sessions were under 1 minute, 1 to 5 minutes, 5 to 15
+  minutes, 15 minutes to 1 hour, 1 to 3 hours, and 3 hours or more.
+
+**Show** picks the last 7, 30 or 90 days, or every day kept. The view changes only when you open
+Settings, press **Refresh statistics** or change Show, so a screen reader reading a table is
+never interrupted. **Download statistics (CSV)** saves every day kept as a spreadsheet file,
+one row per day, with the same numbers for each format and each session length band.
+
+A session is one connection, from connect to disconnect, and counts on the day it began, in
+the station's time zone (`[server] station_timezone`). The peak is the most listeners connected
+at once. Listeners of a relay's server are not counted here; that server keeps its own figures.
+
+Nothing in the statistics identifies a listener. AutoDJ keeps no address, player name or
+connection time for them: only the daily counts and totals above, in the station's
+`listener_stats.json`, written about once a minute and when the station stops, and included in
+backups. **Days to keep statistics** (`[stream] stats_days`, 90 by default, 0 to 3650) deletes
+older days; 0 keeps none and deletes those kept. The connected listeners' addresses and player
+names in the Listeners list above are shown only while they are connected, as before.
+
+Routes: `GET /api/stream/stats?days=30` (JSON) and `GET /api/stream/stats/export` (CSV), and
+the same under `/api/stations/<slug>/`. Both need a paired browser.
 
 ### Relaying to Icecast and Shoutcast
 
@@ -1197,8 +1296,13 @@ client for a running server.
   origin with `--allowed-origin`) if it is a name `--lan` cannot detect, such as a router DNS
   entry.
 - **A player gets a 503 "Stream listener limit reached"** — `max_listeners` (default 8) is full.
-  Raise `[stream] max_listeners` (or `AUTODJ_STREAM_MAX_LISTENERS`) if you regularly have more
+  It counts the listeners of every format (MP3, AAC and Opus) together. Raise
+  `[stream] max_listeners` (or `AUTODJ_STREAM_MAX_LISTENERS`) if you regularly have more
   simultaneous listeners.
+- **The AAC or Opus address answers 404** — that format is off for the station. Turn it on in
+  Settings, Stream, More formats. If the log says the Opus stream encoder keeps exiting, the
+  ffmpeg on the PATH was built without libopus; install a build with it (the container image
+  has one).
 - **A relay says "the server rejected the user name or password"** — check the password in
   `config.local.toml` and, for Icecast, the `user` and `mount`. Many hosts give a separate
   source password; the admin password is not always accepted.
@@ -1303,7 +1407,7 @@ The rules:
 
 A station keeps its state in `<index_dir>/<name>/stations/<slug>/`, with the same file names as
 the default station: `web_state.json`, `schedule.json`, `carts.json` and `carts/`,
-`time_checks.json`, `listener_bans.json`, `recording.json`, `relay-status.json`, `clockwheels/`,
+`time_checks.json`, `listener_bans.json`, `listener_stats.json`, `recording.json`, `relay-status.json`, `clockwheels/`,
 `liners/` (unless `playback.liners_folder` is set) and `profiles/`. Its plays are kept in the
 shared `library.db`. The default station's files stay where they always were.
 
@@ -1312,7 +1416,9 @@ shared `library.db`. The default station's files stay where they always were.
 `autodj serve` starts the default station as before, then every other station with
 `autostart = true`. Each other station mixes on the server and streams at
 `/stations/<slug>.mp3`, with a one-line playlist at `/stations/<slug>.m3u`; the startup log lists
-the addresses. These are public like `/stream.mp3`, and the station's own `listener_user` and
+the addresses. A station's AAC and Opus streams, when its `[stations.<slug>.stream]` table sets
+`aac_bitrate` or `opus_bitrate` (or Settings does), are at `/stations/<slug>.aac` and
+`/stations/<slug>.opus`, each with its own encoders. These are public like `/stream.mp3`, and the station's own `listener_user` and
 `listener_password` protect them. The default station keeps `/stream.mp3`, `/stream.m3u` and
 `/status`, and also answers at `/stations/default.mp3`. A station's stream needs ffmpeg, even when
 the default station is browser-driven.
@@ -2890,6 +2996,7 @@ choose them to fit.
 - `liner_dates.json`, the voice liners' play dates.
 - `ads.json`, the ad spots, ad breaks and their rules, with the spots' audio in the `ads`
   folder and the ad play log in the `ad_plays` folder (see [Ad breaks](#ad-breaks)).
+- `listener_stats.json`, the daily listener counts (no addresses or player names).
 - `shows.json`, the shows and their lists of songs.
 - Every other station's state files and folders, under `stations/<slug>/` (see
   [Backups and doctor](#backups-and-doctor)).

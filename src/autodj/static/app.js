@@ -45,6 +45,8 @@ import { createRecordingControls } from "./modules/recording-controls.js";
 import { installRelaySettings } from "./modules/relay-settings.js";
 import { installNowPlayingSettings } from "./modules/nowplaying-settings.js";
 import { createListenerControls } from "./modules/listener-controls.js";
+import { installStreamFormats } from "./modules/stream-formats.js";
+import { installListenerStats } from "./modules/listener-stats.js";
 import { initSubtabs } from "./modules/subtabs.js";
 import { installThemeSetting } from "./modules/theme.js";
 import { confirmAction } from "./modules/confirm-dialog.js";
@@ -213,10 +215,23 @@ btnListen.addEventListener("click", () => {
 });
 // Settings subtabs (./modules/subtabs.js).  Stream shows only in stream mode.
 const settingsTabs = initSubtabs(document.getElementById("settings-tabs"));
+// Settings > Stream > More formats: the AAC and Opus streams (#50).
+const streamFormats = installStreamFormats({
+  doc: document,
+  save: (name, value, control) =>
+    postSettings("/api/stream/settings", { [`${name}_bitrate`]: value }, control),
+  refresh: () => { void streamSettings.refresh(); },
+  srStatus: document.getElementById("sr-status"),
+  settingsStatus,
+});
 // Settings > Stream.
 const streamSettings = createStreamSettings({
   doc: document,
-  fetchInfo: () => requestJson("/api/stream"),
+  fetchInfo: async () => {
+    const info = await requestJson("/api/stream");
+    streamFormats.fill(info);
+    return info;
+  },
   saveBitrate: (value, control) =>
     postSettings("/api/stream/settings", { bitrate: value }, control),
   saveContinuous: (value, control) =>
@@ -248,6 +263,13 @@ const listenerControls = createListenerControls(
   ),
 );
 const recordingControls = createRecordingControls(document, document.getElementById("sr-status"));
+// Settings > Stream > Listener statistics (#50).
+const listenerStats = installListenerStats({
+  doc: document,
+  saveKeepDays: (value, control) =>
+    postSettings("/api/stream/settings", { stats_days: value }, control),
+  settingsStatus,
+});
 // A lookup that failed while another tab showed was never heard; opening
 // Settings tries again.
 window.addEventListener("hashchange", () => {
@@ -303,10 +325,12 @@ function stopProtectedPlayback() {
 function clearStationViews() {
   _seekController?.cancel();
   streamSettings.reset();
+  streamFormats.reset();
   relaySettings.reset();
   recordingControls.reset();
   nowPlayingSettings?.reset();
   listenerControls.reset();
+  listenerStats.reset();
   resetTrackCaches();
   historyRequest?.abort();
   _histPlayingPath = null;
@@ -566,6 +590,8 @@ function applyState(s) {
   else recordingControls.reset();
   nowPlayingSettings?.apply(s);
   listenerControls.apply(s);
+  streamFormats.apply(s);
+  listenerStats.apply(s);
   const browserMode = Boolean(s.browser_playback) && !inStream;
 
   // Now Playing
