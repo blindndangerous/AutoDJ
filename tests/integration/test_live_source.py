@@ -22,6 +22,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from autodj.catalog import LibraryCatalog
 from autodj.config import ServerConfig
+from autodj.listener_access import ListenerAuthLimiter
 from autodj.live import LiveDesk, PcmBuffer
 from autodj.live_protocol import IcecastSourceH11Protocol
 from autodj.live_routes import SourceEndpoint
@@ -297,6 +298,9 @@ def _source(client: TestClient, path: str = "/live", **headers: str):
 
 def test_source_logins_are_checked_and_limited(tmp_path, bridge) -> None:
     client = _app(tmp_path, bridge)
+    # Keep the failed-login sequence inside one limiter window.
+    source_endpoint = next(route.endpoint for route in client.app.routes if route.path == "/live")
+    source_endpoint.limiter = ListenerAuthLimiter(clock=lambda: 120.0)
     live = client.app.state.stations.default.live
     live.credentials.save("alice", "DJ Alice", PASSWORD)
     assert _source(client).status_code == 401
