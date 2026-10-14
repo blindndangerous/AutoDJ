@@ -56,6 +56,7 @@ from pydantic import (
 )
 
 from autodj.fsutil import atomic_write, file_signature, set_aside
+from autodj.timefmt import length_text
 
 logger = logging.getLogger(__name__)
 
@@ -382,19 +383,6 @@ def with_songs(show: Show, paths: Sequence[str], **fields: Any) -> Show:
 # ---------------------------------------------------------------------------
 
 
-def length_text(seconds: float) -> str:
-    """ "1:02:05" or "4:05": a length as a clock shows it."""
-    total = max(0, round(seconds))
-    hours, rest = divmod(total, 3600)
-    minutes, secs = divmod(rest, 60)
-    return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
-
-
-def length_words(seconds: float) -> str:
-    """Compatibility name for the same concise duration shown on screen."""
-    return length_text(seconds)
-
-
 def song_title(entry: Any) -> str:
     """ "Artist, Title" (a comma, which a screen reader pauses on)."""
     artist = (getattr(entry, "artist", "") or "").strip()
@@ -558,8 +546,8 @@ def generate(
             else "the songs the repeat rules and the DMCA limits allow ran out"
         )
         note = (
-            f"The list is {length_words(total)}, shorter than the target of "
-            f"{length_words(target)}: {why}."
+            f"The list is {length_text(total)}, shorter than the target of "
+            f"{length_text(target)}: {why}."
         )
     return Generated(picked, total, note)
 
@@ -1453,7 +1441,6 @@ def songs_view(show: Show, entry_for_path: Callable[[str], Any]) -> tuple[list[d
                     "missing": True,
                     "seconds": 0,
                     "length_text": "",
-                    "length_words": "",
                 }
             )
             continue
@@ -1466,7 +1453,6 @@ def songs_view(show: Show, entry_for_path: Callable[[str], Any]) -> tuple[list[d
                 "missing": False,
                 "seconds": round(seconds, 1),
                 "length_text": length_text(seconds),
-                "length_words": length_words(seconds),
             }
         )
     return rows, total

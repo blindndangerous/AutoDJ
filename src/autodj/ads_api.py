@@ -273,9 +273,10 @@ def spot_view(
 
 def _clock_words(stamp: float, zone: Any) -> str:
     from autodj.clip_dates import day_words
+    from autodj.timefmt import clock_text
 
     local = datetime.fromtimestamp(stamp, zone)
-    return f"{local:%A} {day_words(local.date())} at {local:%H:%M}"
+    return f"{local:%A} {day_words(local.date())} at {clock_text(local)}"
 
 
 def break_view(break_id: str, item: AdBreak, now: float, zone: Any) -> dict[str, Any]:

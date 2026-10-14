@@ -1,5 +1,7 @@
 // History dates are headings; each play shows only its time.
 
+import { clockText } from "./time-format.js";
+
 function localDay(date) {
   return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
 }
@@ -37,8 +39,6 @@ export function updateHistoryDateHeadings(tbody, locale = undefined) {
 export function formatPlayedAt(iso, withDate, locale = undefined) {
   const played = new Date(iso);
   if (Number.isNaN(played.getTime())) return String(iso);
-  const time = { hour: "2-digit", minute: "2-digit", second: "2-digit" };
-  return withDate
-    ? played.toLocaleString(locale, { day: "numeric", month: "short", year: "numeric", ...time })
-    : played.toLocaleTimeString(locale, time);
+  const date = withDate ? { day: "numeric", month: "short", year: "numeric" } : {};
+  return clockText(played, { seconds: true, locale, ...date });
 }

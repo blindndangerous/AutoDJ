@@ -76,6 +76,7 @@ from pydantic import (
 from autodj.clip_dates import ClipDates, day_words
 from autodj.fsutil import atomic_write, file_signature, fsync_directory, set_aside
 from autodj.liners import LINER_EXTS
+from autodj.timefmt import clock_text, length_text
 
 if TYPE_CHECKING:
     from autodj.breaks import BreakDesk
@@ -1893,8 +1894,8 @@ class AdDesk:
         for spot_id, spot in choice.spots:
             heard.append(Heard(spot_id, spot.advertiser, spot.category, at))
         detail = (
-            f"Ad break, {len(choice.spots)} spot{'' if len(choice.spots) == 1 else 's'}, "
-            f"about {round(choice.seconds)} seconds"
+            f"{len(choice.spots)} spot{'' if len(choice.spots) == 1 else 's'}, "
+            f"{length_text(choice.seconds)}"
             if choice.spots
             else choice.reason
         )
@@ -2080,9 +2081,9 @@ class AdDesk:
                 heard.append(Heard(spot_id, spot.advertiser, spot.category, moment))
             count = len(choice.spots)
             detail = (
-                f"Ad break, {count} spot{'' if count == 1 else 's'}, about {round(choice.seconds)} seconds"
+                f"{count} spot{'' if count == 1 else 's'}, {length_text(choice.seconds)}"
                 if count
-                else f"Ad break: {choice.reason}"
+                else choice.reason
             )
             found_runs.append(
                 Forecast(moment, f"Ad break: {item.name}", choice.seconds, detail, own)
@@ -2111,7 +2112,7 @@ def _clock_words(moment: datetime | None, zone: ZoneInfo) -> str:
     if moment is None:
         return ""
     local = moment.astimezone(zone)
-    return f"{day_words(local.date())} at {local:%H:%M:%S}"
+    return f"{day_words(local.date())} at {clock_text(local, seconds=True)}"
 
 
 def report_rows(records: Iterable[PlayRecord], start: datetime, end: datetime) -> list[PlayRecord]:

@@ -23,6 +23,7 @@
 
 import { requestJson } from "./api-client.js";
 import { announceStatus } from "./live-region.js";
+import { clockText } from "./time-format.js";
 
 const POLL_MS = 15000;
 // Long enough for a screen reader to start on the focused button first.
@@ -81,9 +82,7 @@ const STATUS_WORDS = {
 };
 
 function defaultTime(seconds) {
-  return new Date(Number(seconds) * 1000).toLocaleTimeString([], {
-    hour: "numeric", minute: "2-digit",
-  });
+  return clockText(new Date(Number(seconds) * 1000));
 }
 
 function setText(node, text) {

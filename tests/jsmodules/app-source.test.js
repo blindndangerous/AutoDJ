@@ -1622,7 +1622,7 @@ describe("app request behavior", () => {
             title: "Song", artist: "Artist", duration: 60,
           }, {
             event_id: "play-2", path: "M:/other.flac", played_at: "2025-12-31T23:00:00Z",
-            title: "Other", artist: "Another", duration: 120,
+            title: "Other", artist: "", duration: 120,
           }] })
           : url.startsWith("/api/library/points?")
             ? jsonResponse({ path: "M:/song.flac", title: "Song", artist: "Artist", kind: "music", points: {} })
@@ -1635,6 +1635,8 @@ describe("app request behavior", () => {
         return found;
       });
       expect(button.getAttribute("aria-label")).toBe("Track info for Artist, Song");
+      expect(document.querySelectorAll("#history-tbody .history-info")[1].getAttribute("aria-label"))
+        .toBe("Track info for Other");
       expect(button.textContent).toBe("Track info");
       const tbody = document.querySelector("#history-tbody");
       const cells = [...tbody.querySelectorAll("tr[data-played-at] td")];

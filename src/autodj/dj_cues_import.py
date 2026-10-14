@@ -220,7 +220,7 @@ def import_from_rekordbox_xml(xml_path: Path) -> dict[str, list[Cue]]:
         return {}
 
     try:
-        tree = ET.parse(xml_path)  # nosec B314 — local user-owned export
+        tree = ET.parse(xml_path)  # nosec B314 nosemgrep: use-defused-xml-parse — local user-owned export; expat fetches no external entities
     except (OSError, ET.ParseError) as exc:
         logger.debug("Rekordbox XML unreadable: %s", exc)
         return {}
@@ -294,7 +294,7 @@ def import_from_traktor_nml(nml_path: Path) -> dict[str, list[Cue]]:
         return {}
 
     try:
-        tree = ET.parse(nml_path)  # nosec B314 — local user-owned export
+        tree = ET.parse(nml_path)  # nosec B314 nosemgrep: use-defused-xml-parse — local user-owned export; expat fetches no external entities
     except (OSError, ET.ParseError) as exc:
         logger.debug("Traktor NML unreadable: %s", exc)
         return {}

@@ -444,7 +444,8 @@ def install_worker_api(
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        logger.info(
+        # The token's name and scopes, never its secret.
+        logger.info(  # nosemgrep: python-logger-credential-disclosure
             "Machine token %r created with scopes %s%s",
             token.name,
             ", ".join(token.scopes),
