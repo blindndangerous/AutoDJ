@@ -813,6 +813,10 @@ screen-reader sample for this release is in
 
 ### Fixed
 
+- A slow request-head deadline no longer logs an asyncio error when a TLS connection has already
+  closed or detached (#277).
+- The track repeat-rule cap warning appears once per station for each setting and library size,
+  instead of on every pick (#278).
 - **Prevent a song from playing in the same quarter of the hour** reads quarters on the
   station's clock. Across Lord Howe Island's half-hour clock change it compared UTC quarters, so
   a song could return to the quarter it last played in. Listener request checks read it on the
