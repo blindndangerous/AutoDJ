@@ -92,11 +92,13 @@ class IcecastSourceH11Protocol(H11Protocol):
         """Close a connection that has not sent one complete request head."""
         self._head_deadline = None
         transport = self.transport
-        if (
-            self.cycle is None  # no request has begun
-            and transport.get_protocol() is self  # not handed to a WebSocket
-            and not transport.is_closing()
-        ):
+        if self.cycle is not None or transport.is_closing():
+            return
+        try:
+            protocol = transport.get_protocol()
+        except AttributeError:  # TLS transport has detached its SSL protocol
+            return
+        if protocol is self:  # not handed to a WebSocket
             transport.close()
 
     def data_received(self, data: bytes) -> None:
