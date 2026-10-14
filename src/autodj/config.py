@@ -13,15 +13,18 @@ Example:
 from __future__ import annotations
 
 import ipaddress
+import json
 import logging
 import math
 import os
 import re
+import stat
 import tomllib
 from collections.abc import Callable, Iterable, Mapping
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import MISSING, dataclass, field, fields, replace
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Self
@@ -1877,6 +1880,7 @@ class AutoDJConfig:
     webhooks: tuple[WebhookConfig, ...] = ()
     stations: tuple[StationSpec, ...] = ()
     config_sources: tuple[str, ...] = ("defaults",)
+    skipped_definitions: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1897,6 +1901,7 @@ class StationSpec:
     slug: str
     autostart: bool
     cfg: AutoDJConfig = field(repr=False)
+    defined_in: str = "config"
 
     @property
     def name(self) -> str:
@@ -2199,7 +2204,103 @@ def _build_config(
     )
     if "stations" in raw:
         cfg.stations = _build_stations(raw["stations"], cfg)
+    _load_web_stations(cfg)
     return cfg
+
+
+def _definition_spec(
+    path: Path,
+    slug: str,
+    root: AutoDJConfig,
+    existing: tuple[StationSpec, ...],
+    *,
+    document: object | None = None,
+) -> StationSpec:
+    """Validate a web definition with the same station rules as config.toml."""
+    if document is None:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(document, dict)
+        or type(document.get("version")) is not int
+        or document["version"] != 1
+    ):
+        raise ValueError("station.json needs version 1")
+    created = document.get("created")
+    try:
+        timestamp = datetime.fromisoformat(created) if isinstance(created, str) else None
+    except ValueError as exc:
+        raise ValueError("created must be an ISO 8601 UTC timestamp") from exc
+    if (
+        timestamp is None
+        or timestamp.tzinfo is None
+        or timestamp.utcoffset() != UTC.utcoffset(timestamp)
+    ):
+        raise ValueError("created must be an ISO 8601 UTC timestamp")
+    if document.get("source") is not None and not isinstance(document["source"], str):
+        raise ValueError("source must be a station ID or null")
+    table = document.get("station")
+    if not isinstance(table, dict):
+        raise ValueError("station must be a table")
+    stream = table.get("stream", {})
+    if "webhooks" in table or (
+        isinstance(stream, dict)
+        and any(key in stream for key in ("relays", "listener_user", "listener_password"))
+    ):
+        raise ValueError("station.json must not contain secrets")
+    if len(existing) >= MAX_STATIONS:
+        raise ValueError(f"stations allows at most {MAX_STATIONS} stations besides the default")
+    spec = replace(_build_station(slug, table, root), defined_in="web")
+    if spec.name.strip().casefold() in {
+        root.stream.station_name.strip().casefold(),
+        *(item.name.strip().casefold() for item in existing),
+    }:
+        raise ValueError("a station with that display name already exists")
+    _check_station_conflicts(root, (*existing, spec))
+    return spec
+
+
+def _load_web_stations(cfg: AutoDJConfig) -> None:
+    from autodj.stations import DEFAULT_SLUG, SLUG_PATTERN, StationPaths
+
+    folder = StationPaths.default(cfg).stations_dir
+    if not folder.is_dir():
+        return
+    skipped: list[tuple[str, str]] = []
+    for child in sorted(folder.iterdir()):
+        slug = child.name
+        if (
+            slug == DEFAULT_SLUG
+            or not SLUG_PATTERN.fullmatch(slug)
+            or child.is_symlink()
+            or child.is_junction()
+            or not child.is_dir()
+        ):
+            continue
+        path = StationPaths.for_station(cfg, slug).definition
+        try:
+            if not stat.S_ISREG(path.lstat().st_mode):
+                continue
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            reason = str(exc)
+            logger.error("Skipping %s: %s", path, reason)
+            skipped.append((str(path), reason))
+            continue
+        if any(spec.slug == slug for spec in cfg.stations):
+            reason = "config.toml defines this station and takes precedence"
+            logger.warning("Ignoring %s: %s", path, reason)
+            skipped.append((str(path), reason))
+            continue
+        try:
+            spec = _definition_spec(path, slug, cfg, cfg.stations)
+        except (OSError, UnicodeError, ValueError, TypeError, KeyError) as exc:
+            reason = str(exc)
+            logger.error("Skipping %s: %s", path, reason)
+            skipped.append((str(path), reason))
+            continue
+        cfg.stations += (spec,)
+    cfg.skipped_definitions = tuple(skipped)
 
 
 def _build_stations(raw: Any, root: AutoDJConfig) -> tuple[StationSpec, ...]:
@@ -2427,7 +2528,8 @@ def _refuse_local_only_stations(local: Mapping[str, Any], defined: set[str]) -> 
             raise ValueError(
                 f"[stations.{slug}] is in config.local.toml but not in config.toml; define "
                 "the station in config.toml (config.local.toml holds only its secrets), "
-                "or correct the name"
+                "or correct the name. A web-created station is defined by station.json; "
+                "move its table into config.toml before adding secrets here"
             )
 
 

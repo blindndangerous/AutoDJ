@@ -32,6 +32,8 @@ uploaded Stereo Tool presets.
   a `[stations.<slug>]` table that starts from the defaults, never from the root sections, so
   it cannot quietly inherit the default station's relays, webhooks, listener password or
   recording folder.
+- A station can also use `station.json` written from the web page. A matching `config.toml`
+  table wins, and the station keeps its state folder.
 - The default station keeps its files where they always were. Another station keeps the same
   file names under `<index_dir>/<name>/stations/<slug>/`. `StationPaths` is the only code that
   knows these locations. Nothing on disk moves and no conversion runs.

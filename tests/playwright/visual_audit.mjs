@@ -82,6 +82,14 @@
 //         Dismiss button works by mouse and by keyboard, putting focus
 //         back where it was.
 //
+//   - Settings > Stations (#233): New station refused by a stood-in
+//     server, its error on the page, linked to Station ID and focused, is
+//     measured like a view in every theme mode and at 320 px and 200 %
+//     text; in the System light mode a refused create keeps nothing said
+//     but the focused field, and a stood-in create says it once and moves
+//     focus to Switch.  /api/stations never receives a create: the stand-in
+//     answers every POST, so no audit run adds a station to the server.
+//
 //   - the station switcher (#70), a menu button in the banner: with its
 //     menu open it is measured like a view in every theme mode (axe-core,
 //     non-text contrast, focus rings) and at 320 px and 200 % text; and
@@ -801,12 +809,35 @@ async function standInForStations(page) {
   const seen = { real: [] };
   stationPages.set(page, seen);
   await page.route("**/api/stations", async (route) => {
+    // A create is refused here, never sent: the audit must not add a station.
+    if (route.request().method() !== "GET") return route.fulfill(jsonReply(CREATE_REFUSAL, 409));
     const response = await route.fetch();
     const body = await response.json().catch(() => null);
     seen.real = Array.isArray(body?.stations) ? body.stations : [];
     if (seen.real.length >= 2) return route.fulfill({ response });
     return route.fulfill({ response, json: { stations: [...seen.real, STAND_IN_STATION] } });
   });
+}
+
+function jsonReply(body, status) {
+  return { status, contentType: "application/json", body: JSON.stringify(body) };
+}
+
+// The refusal a stood-in server gives New station, naming its field.
+const CREATE_REFUSAL = {
+  detail: "A folder from an earlier station called audit-refused is still in the stations folder. Choose another ID, or move that folder away.",
+  field: "slug",
+};
+
+// Settings > Stations: New station, a copy, refused on its Station ID.
+async function openStationCreateError(page, visit) {
+  await page.locator("#station-create-source").selectOption("default");
+  await page.locator("#station-create-copies").waitFor({ state: "visible" });
+  await page.locator("#station-create-name").fill("Audit Refused Station With A Long Name");
+  await page.locator("#station-create-slug").fill("audit-refused");
+  await page.locator("#station-create-submit").click();
+  await page.locator("#station-create-error").waitFor({ state: "visible" });
+  await visit("settings/stations-refused");
 }
 
 function realStations(page) {
@@ -915,6 +946,7 @@ async function eachTarget(page, measure) {
       }
       if (id === "stab-schedule") await openScheduleWaitError(page, visit);
       if (id === "stab-time-checks") await openPackDatesError(page, visit);
+      if (id === "stab-stations") await openStationCreateError(page, visit);
     }
   }
 }
@@ -1515,6 +1547,69 @@ async function toastBehaviourProblems(page) {
 // The preview output device setting, in whatever this engine supports.
 // Settings > Analysis workers with an announcer token chosen: the Station
 // choice shows (#88).  Back to the default choice with `false`.
+// New station by keyboard: a refused create marks, links and focuses
+// Station ID and says nothing else; a stood-in create says it once and
+// moves focus to Switch to <name>.  Nothing reaches the server.
+async function stationCreateProblems(page) {
+  await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
+  await page.locator("#tab-settings").click();
+  await page.locator("#stab-stations").click();
+  await page.locator("#station-create-name").waitFor({ state: "visible" });
+  const problems = [];
+  const state = () => page.evaluate(() => {
+    const slug = document.getElementById("station-create-slug");
+    return {
+      invalid: slug.getAttribute("aria-invalid"),
+      linked: (slug.getAttribute("aria-describedby") || "").split(/\s+/),
+      error: document.getElementById("station-create-error").textContent.trim(),
+      focus: document.activeElement?.id,
+      said: document.getElementById("stations-status").textContent.trim(),
+      done: !document.getElementById("station-create-done").hidden,
+    };
+  });
+  await page.locator("#station-create-name").fill("Audit Refused Station");
+  await page.locator("#station-create-slug").fill("audit-refused");
+  await page.locator("#station-create-slug").press("Enter");
+  await page.locator("#station-create-error").waitFor({ state: "visible" });
+  const refused = await state();
+  if (!refused.error) problems.push("a refused create shows no error");
+  if (refused.invalid !== "true") problems.push("Station ID is not marked invalid");
+  if (!refused.linked.includes("station-create-error")) problems.push("the error is not linked to Station ID");
+  if (!refused.linked.includes("station-create-slug-help")) problems.push("the ID's format hint lost its link");
+  if (refused.focus !== "station-create-slug") problems.push(`a refused create moved focus to ${refused.focus}`);
+  if (refused.said) problems.push(`a refused create also said ${JSON.stringify(refused.said)}`);
+
+  const created = {
+    ...STAND_IN_STATION, slug: "audit-created", name: "Audit Created Station",
+    status_path: "/stations/audit-created/status", copied: ["saved settings"], not_copied: [],
+  };
+  const createdHandler = async (route) => {
+    if (route.request().method() === "POST") return route.fulfill(jsonReply(created, 201));
+    const response = await route.fetch();
+    const body = await response.json().catch(() => null);
+    const listed = Array.isArray(body?.stations) ? body.stations : [];
+    return route.fulfill({ response, json: { stations: [...listed, created] } });
+  };
+  await page.route("**/api/stations", createdHandler);
+  try {
+    await page.locator("#station-create-name").fill("Audit Created Station");
+    await page.locator("#station-create-slug").fill("audit-created");
+    await page.locator("#station-create-submit").focus();
+    await page.keyboard.press("Enter");
+    await page.locator("#station-create-done").waitFor({ state: "visible" });
+    await page.waitForFunction(() => document.getElementById("stations-status").textContent.trim());
+    const done = await state();
+    if (done.focus !== "station-create-switch") problems.push(`a create moved focus to ${done.focus}`);
+    if (done.said !== "Created Audit Created Station, off air. Copied saved settings.") {
+      problems.push(`a create said ${JSON.stringify(done.said)}`);
+    }
+    if (done.invalid) problems.push("Station ID is still marked invalid after a create");
+  } finally {
+    await page.unroute("**/api/stations", createdHandler);
+  }
+  return problems;
+}
+
 async function chooseAnnouncer(page, announcer = true) {
   await page.locator("#token-scope").selectOption(announcer ? "announcer" : "analysis-worker");
   await page.locator("#token-station-row").waitFor({ state: announcer ? "visible" : "hidden" });
@@ -2006,6 +2101,8 @@ export async function audit(name, launcher) {
     if (voiceTracker.length) out.behaviour.voiceTracker = voiceTracker;
     const ads = await adsProblems(page);
     if (ads.length) out.behaviour.ads = ads;
+    const stationCreate = await stationCreateProblems(page);
+    if (stationCreate.length) out.behaviour.stationCreate = stationCreate;
     const switcher = await stationSwitcherProblems(page);
     if (switcher.length) out.behaviour.stationSwitcher = switcher;
     // 200 % text at the same window width.

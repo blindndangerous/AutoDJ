@@ -43,6 +43,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Stations can be created or duplicated from the web page without restarting AutoDJ. New
+  stations start stopped with their own state and recording folder (#233).
 - `autodj migrate-index` now completes the move from supported schema-3/4 published indexes into
   `library.db`, carrying vectors and catalog state without reanalyzing audio. It also explicitly
   upgrades version-1 web settings, old play-history JSON, and initial folder registrations, with a

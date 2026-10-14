@@ -55,6 +55,12 @@ AutoDJ is a single-user local music player with these exposed surfaces:
   and insert; in DMCA mode a song that would break a limit is skipped, never played.
   `shows.json` is written atomically; an invalid show is skipped and kept, a file that is not a
   file of shows is set aside, and one that cannot be read just now is never written over.
+- `POST /api/stations` requires a paired browser session and an allowed Origin. Machine and
+  announcer tokens do not cover it. Its body is capped at 4 KiB, and the eight-station limit
+  bounds how many stations it can add. The browser supplies a slug, never a path; all state
+  paths come from `StationPaths`. Duplication copies only named settings and asset files and
+  refuses links and junctions. It removes relay targets, listener credentials, and webhooks
+  from the new definition, which is backed up as `station.json` without secrets.
 - Machine tokens let a program on another computer use one narrow API without a browser. The
   only scope so far is "analysis worker" (`autodj worker`); see "Machine tokens and analysis
   workers" below.

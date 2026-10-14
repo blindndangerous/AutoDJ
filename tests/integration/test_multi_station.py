@@ -214,6 +214,118 @@ def _stations(client: TestClient) -> dict[str, dict[str, Any]]:
     return {entry["slug"]: entry for entry in response.json()["stations"]}
 
 
+def test_create_station_registers_stopped_and_persists(rig: Any) -> None:
+    client, library, cfg, _song, _closes = rig
+    response = client.post(
+        "/api/stations",
+        json={"slug": "new", "name": "New Radio"},
+        headers={"Origin": "http://testserver"},
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["state"] == "stopped"
+    assert response.json()["defined_in"] == "web"
+    assert _stations(client)["new"]["defined_in"] == "web"
+    assert client.get("/api/stations/new/status").status_code == 409
+    assert client.get("/stations/new/status").status_code == 503
+    assert library.catalog.last_played("new") == {}
+    assert {path.name for path in (cfg.index.active_dir / "stations" / "new").iterdir()} == {
+        "station.json"
+    }
+    loaded = load_config(cfg.config_path, environ={})
+    assert loaded.stations[-1].slug == "new"
+    assert loaded.stations[-1].autostart is False
+    assert (
+        client.post("/api/stations/new/start", headers={"Origin": "http://testserver"}).status_code
+        == 200
+    )
+    assert client.get("/stations/new/status").status_code == 200
+    with client.websocket_connect("/api/stations/new/ws") as socket:
+        assert socket.receive_json()
+        assert len(client.app.state.stations.get("new").ws_clients) == 1
+
+
+def test_create_station_rejects_conflicts_and_bad_flags(rig: Any) -> None:
+    client, library, cfg, _song, _closes = rig
+    headers = {"Origin": "http://testserver"}
+
+    def post(slug: str, name: str, **options: Any) -> Any:
+        return client.post(
+            "/api/stations", json={"slug": slug, "name": name, **options}, headers=headers
+        )
+
+    assert post("default", "Other").status_code == 422
+    assert post("Upper", "Other").status_code == 422
+    assert post("new", "Other", copy_carts=True).status_code == 422
+    assert post("nightowl", "Other").status_code == 409
+    assert post("new", " NIGHT OWL RADIO ").status_code == 409
+    assert post("new", "Other", source="missing").status_code == 404
+    (cfg.index.active_dir / "stations" / "leftover").mkdir(parents=True)
+    assert post("leftover", "Other").status_code == 409
+    library.catalog.remember_play("old-song.flac", station="history")
+    assert post("history", "Other").status_code == 409
+    assert post("new", "Other").status_code == 201
+    assert post("new", "Another").status_code == 409
+
+
+def test_create_rolls_back_after_registration_fails(
+    rig: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, library, cfg, _song, _closes = rig
+    library.catalog.set_setting("clock:nightowl", "Evening")
+
+    def fail(_extra: Any) -> None:
+        raise RuntimeError("injected failure")
+
+    monkeypatch.setattr(client.app.state.stations, "add", fail)
+    response = client.post(
+        "/api/stations",
+        json={
+            "slug": "new",
+            "name": "New Radio",
+            "source": "nightowl",
+            "copy_clockwheels": True,
+        },
+        headers={"Origin": "http://testserver"},
+    )
+    assert response.status_code == 409
+    assert not (cfg.index.active_dir / "stations" / "new").exists()
+    assert library.catalog.get_setting("clock:new") is None
+    assert "new" not in client.app.state.stations.slugs()
+
+
+def test_create_checks_recording_conflict_and_station_limit(rig: Any) -> None:
+    client, _library, cfg, _song, _closes = rig
+    body = {"slug": "new", "name": "New Radio"}
+    original = cfg.stations[0].cfg.recording.folder
+    cfg.stations[0].cfg.recording.folder = cfg.recording.folder / "new"
+    response = client.post("/api/stations", json=body, headers={"Origin": "http://testserver"})
+    assert response.status_code == 409
+    assert "recording folder" in response.json()["detail"]
+    cfg.stations[0].cfg.recording.folder = original
+    cfg.stations = cfg.stations * 8
+    response = client.post("/api/stations", json=body, headers={"Origin": "http://testserver"})
+    assert response.status_code == 409
+    assert "At most 8" in response.json()["detail"]
+
+
+def test_duplicate_copies_active_clock_setting(rig: Any) -> None:
+    client, library, cfg, _song, _closes = rig
+    library.catalog.set_setting("clock:nightowl", "Evening")
+    response = client.post(
+        "/api/stations",
+        json={
+            "slug": "new",
+            "name": "New Radio",
+            "source": "nightowl",
+            "copy_clockwheels": True,
+        },
+        headers={"Origin": "http://testserver"},
+    )
+    assert response.status_code == 201, response.text
+    assert library.catalog.get_setting("clock:new") == "Evening"
+    assert load_config(cfg.config_path, environ={}).stations[-1].defined_in == "web"
+
+
 def test_two_stations_run_side_by_side(rig: Any) -> None:
     client, library, cfg, _song, _closes = rig
     stations = client.app.state.stations
@@ -239,6 +351,7 @@ def test_two_stations_run_side_by_side(rig: Any) -> None:
     assert listing["default"]["stream_path"] == "/stream.mp3"
     assert listing["nightowl"] == {
         "slug": "nightowl",
+        "defined_in": "config",
         "name": "Night Owl Radio",
         "state": "idle",
         "listeners": 0,

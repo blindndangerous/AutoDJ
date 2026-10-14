@@ -68,6 +68,8 @@ def _fill(cfg: AutoDJConfig) -> dict[Path, bytes]:
 
     for base, who in ((cfg.index.active_dir, b"default"), (_station_dir(cfg, "nightowl"), b"owl")):
         for name in STATION_FILES:
+            if name == "station.json":
+                continue
             put(base / name, b'{"station": "' + who + b'", "file": "' + name.encode() + b'"}')
         # Not in *written*: a backup never holds it, so a restore never brings it.
         (base / "relays.json").write_bytes(b'{"password": "' + who + b'-relay-secret"}')
@@ -308,6 +310,48 @@ def test_restore_refuses_a_member_of_an_undefined_station_without_a_list(tmp_pat
 
     with pytest.raises(BackupError, match="does not define"):
         restore_backup(cfg, archive, force=True)
+
+
+def test_restore_accepts_web_station_definition(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, stations="")
+    definition = {
+        "version": 1,
+        "created": "2026-01-01T00:00:00+00:00",
+        "source": None,
+        "station": {
+            "autostart": False,
+            "stream": {"station_name": "Web Radio"},
+            "recording": {"folder": str(cfg.recording.folder / "web")},
+        },
+    }
+    archive = _archive(
+        tmp_path / "web.zip",
+        {"stations/web/index/station.json": json.dumps(definition).encode()},
+        stations=["web"],
+    )
+    restore_backup(cfg, archive, force=True)
+    assert load_config(cfg.config_path, environ={}).stations[0].defined_in == "web"
+
+
+def test_backup_carries_web_station_definition(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, stations="")
+    definition = {
+        "version": 1,
+        "created": "2026-01-01T00:00:00+00:00",
+        "source": None,
+        "station": {
+            "autostart": False,
+            "stream": {"station_name": "Web Radio"},
+            "recording": {"folder": str(cfg.recording.folder / "web")},
+        },
+    }
+    path = cfg.index.active_dir / "stations" / "web" / "station.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(definition), encoding="utf-8")
+    loaded = load_config(cfg.config_path, environ={})
+    archive = create_backup(loaded, tmp_path / "web.zip", force=False)
+    with zipfile.ZipFile(archive) as opened:
+        assert json.loads(opened.read("stations/web/index/station.json")) == definition
 
 
 @pytest.mark.parametrize(

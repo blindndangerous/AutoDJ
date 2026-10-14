@@ -1631,6 +1631,20 @@ class LibraryCatalog:
             )
             self._db().commit()
 
+    def delete_setting(self, key: str) -> None:
+        with self._lock:
+            self._db().execute("DELETE FROM catalog_settings WHERE key=?", (key,))
+            self._db().commit()
+
+    def has_station_plays(self, station: str) -> bool:
+        with self._lock:
+            return (
+                self._db()
+                .execute("SELECT 1 FROM station_plays WHERE station=? LIMIT 1", (station,))
+                .fetchone()
+                is not None
+            )
+
     def rekey(self, old: str | Path, new: str | Path) -> bool:
         """Move a confirmed record key, retaining user work and playback history."""
         with self._lock:

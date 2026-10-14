@@ -1335,8 +1335,8 @@ client for a running server.
 
 One AutoDJ server can play more than one station from the same music library. The root sections
 of `config.toml` (`[playback]`, `[stream]` and the rest) are the default station, exactly as
-before: a server with one station needs no change. Each other station is a `[stations.<slug>]`
-table. Each station has its own player, mix bus, mastering process, encoder, relays, recorder,
+before: a server with one station needs no change. Another station has a `[stations.<slug>]`
+table or a `station.json` definition created from the web page. Each station has its own player, mix bus, mastering process, encoder, relays, recorder,
 schedule, carts, time checks, clockwheels, liners, profiles and saved settings; the library, the
 similarity index, pairing and the web server are shared.
 
@@ -1422,10 +1422,40 @@ The rules:
   `[stations.nightowl] playback.crossfade_seconds must be between 0 and 20, got 99.0`.
 
 A station keeps its state in `<index_dir>/<name>/stations/<slug>/`, with the same file names as
-the default station: `web_state.json`, `schedule.json`, `carts.json` and `carts/`,
+the default station: `station.json` for a web-created station, `web_state.json`, `schedule.json`, `carts.json` and `carts/`,
 `time_checks.json`, `listener_bans.json`, `listener_stats.json`, `recording.json`, `relay-status.json`, `clockwheels/`,
 `liners/` (unless `playback.liners_folder` is set) and `profiles/`. Its plays are kept in the
 shared `library.db`. The default station's files stay where they always were.
+
+### Creating a station from the web page
+
+Use **New station** in the station switcher to create a station with AutoDJ defaults. Enter a
+unique ID and display name. AutoDJ gives it `<root recording.folder>/<slug>` (typically
+`recordings/nightowl`), creates it stopped, and adds it to the switcher without restarting or interrupting a
+running station. Review its settings, then start it. `autostart` controls later server starts.
+
+Use **Duplicate station** to copy a source station's written configuration and current web-saved
+settings. You can also choose to copy its clockwheels, schedule, and carts. The copies live in
+the new station's folder, so editing them does not change the source. A copied schedule starts
+with no run history; an event that names a missing profile, cart, clockwheel, show, or liner
+reports an error when it runs. An uploaded cart belongs to the new station. A cart slot that
+names a liner in the source station's liner folder can still play it while its record and file
+remain in the shared library. The liner file itself is not copied.
+
+The new station starts with an empty queue and play history. AutoDJ does not copy active
+playback, pending listener requests, listener sessions, bans or statistics, running jobs,
+recording state, relays or their passwords, liner play dates, ads and reports, shows, matched
+intros, profiles, liners, time-check clips, announcements, or caches. Relays stay off until
+configured for the new station. Music files, library records, analysis, song cue points, and
+Stereo Tool preset files remain shared.
+
+AutoDJ stores the definition at `<index_dir>/<name>/stations/<slug>/station.json` alongside
+that station's state. It never edits `config.toml`, which may be read-only. To move a web-created
+station into `config.toml`, copy the `station` table from `station.json` into
+`[stations.<slug>]`; `config.toml` then wins and the existing state folder remains in use.
+Move the definition into `config.toml` before adding that station's secrets to
+`config.local.toml`. To remove a web-created station, stop AutoDJ and move its station folder
+away. There is no delete button yet.
 
 ### Running
 
@@ -1468,19 +1498,27 @@ Every control route of a station answers under `/api/stations/<slug>/`, for exam
 `/api/stations/nightowl/queue/add`; the default station keeps its `/api/...` addresses. These
 need a paired browser, like the default station's.
 
-- `GET /api/stations` lists every configured station: its slug, name, state (`stopped`,
+- `GET /api/stations` lists every configured station: its slug, `defined_in` (`config` or `web`), name, state (`stopped`,
   `stopping`, `stuck stopping`, `idle`, `playing` or `paused`), listener count and current
   song, and its public addresses: `status_path`, `nowplaying_path`, `stream_path`, `m3u_path`,
   `player_path` and `embed_path`. The stream and playlist are `null` for a default station that
   does not stream, and the player page and embed are `null` while they are off. For example:
 
   ```json
-  {"slug": "nightowl", "name": "Night Owl Radio", "state": "playing", "listeners": 3,
+  {"slug": "nightowl", "defined_in": "config", "name": "Night Owl Radio", "state": "playing", "listeners": 3,
    "title": "Artist — Song", "status_path": "/stations/nightowl/status",
    "nowplaying_path": "/api/stations/nightowl/nowplaying",
    "stream_path": "/stations/nightowl.mp3", "m3u_path": "/stations/nightowl.m3u",
    "player_path": "/stations/nightowl/player", "embed_path": null}
   ```
+- `POST /api/stations` creates a stopped station. Its JSON body requires string `slug` and
+  `name`; optional `source` is an existing slug or `null`. Optional Boolean
+  `copy_clockwheels`, `copy_schedule`, and `copy_carts` require a source and default to `false`.
+  Optional Boolean `autostart` defaults to `false`. The response is 201 with the station entry
+  and `copied` and `not_copied` lists. Invalid bodies return 422, an unknown source returns 404,
+  a duplicate name or ID, existing state folder or play history, station limit, or conflicting
+  recording or relay location returns 409. A server without the shared library returns 503.
+  The route requires a paired browser and an allowed Origin, and caps the body at 4 KiB.
 - `POST /api/stations/<slug>/start` builds and starts a stopped station. Starting a running
   station changes nothing.
 - `POST /api/stations/<slug>/stop` stops a station completely: its listeners are disconnected,
