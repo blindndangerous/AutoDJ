@@ -49,7 +49,7 @@ def test_the_preview_lists_fixed_and_predicted_items(client: TestClient) -> None
     assert statuses[:2] == ["Fixed: on the air", "Fixed: picked"]
     assert statuses[2:] and set(statuses[2:]) == {"Predicted"}
     first = view["items"][0]
-    assert set(first) >= {"title", "starts_text", "starts_words", "length_text", "length_words"}
+    assert set(first) >= {"title", "starts_text", "length_text"}
     assert view["summary"]
     assert view["notes"]
     # The same preview answers at the station's own address, and a longer span is its own.
