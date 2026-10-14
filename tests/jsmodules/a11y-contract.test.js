@@ -1885,7 +1885,7 @@ describe("static accessibility contracts", () => {
     expect(fieldset.previousElementSibling.textContent).toBe("Stream");
     expect(document.querySelector("#stab-stream").hidden).toBe(true);
     expect([...fieldset.querySelectorAll("h4")].map((heading) => heading.textContent.trim()))
-      .toEqual(["Relays", "Listeners", "Bans"]);
+      .toEqual(["Relays", "Listeners", "Bans", "Listener statistics"]);
 
     const name = document.querySelector("#stream-station-name");
     expect(name.getAttribute("type")).toBe("text");
@@ -1935,20 +1935,21 @@ describe("static accessibility contracts", () => {
       expect(labelText(id)).toBeTruthy();
     }
 
-    // The general settings, the now-playing group and broadcast recording
-    // come first; the Listeners and Bans sections close the fieldset, so
-    // heading navigation never puts a general setting under "Bans".
+    // The general settings, the other formats, the now-playing group and
+    // broadcast recording come first; the Listeners, Bans and Listener
+    // statistics sections close the fieldset, so heading navigation never
+    // puts a general setting under one of them.
     const order = ["#stream-relays", "#stream-station-name", "#stream-bitrate",
-      "#stream-continuous", "#np-settings", "#recording-controls", "#listener-control-title",
-      "#listener-bans-title"]
+      "#stream-continuous", "#stream-formats", "#np-settings", "#recording-controls",
+      "#listener-control-title", "#listener-bans-title", "#listener-stats-title"]
       .map((selector) => document.querySelector(selector));
     for (let at = 1; at < order.length; at += 1) {
       expect(order[at - 1].compareDocumentPosition(order[at])
         & document.defaultView.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
-    const bans = document.querySelector("#listener-bans-title").closest("section");
-    expect(bans.nextElementSibling).toBeNull();
-    expect(bans.parentElement).toBe(fieldset);
+    const stats = document.querySelector("#listener-stats-title").closest("section");
+    expect(stats.nextElementSibling).toBeNull();
+    expect(stats.parentElement).toBe(fieldset);
 
     // The "not loaded yet" note is visible text, silent like the count.
     const note = document.querySelector("#stream-url-note");
@@ -1958,6 +1959,107 @@ describe("static accessibility contracts", () => {
     expect(note.hasAttribute("role")).toBe(false);
     expect(note.hasAttribute("aria-hidden")).toBe(false);
 
+  });
+
+  it("gives the other stream formats labelled selects, help and a plain address list", () => {
+    installDocument();
+    const labelText = (id) => document.querySelector(`label[for="${id}"]`)
+      ?.textContent.replace(/\s+/g, " ").trim();
+    const describedBy = (element) => (element.getAttribute("aria-describedby") || "")
+      .split(/\s+/).filter(Boolean).map((id) => document.getElementById(id));
+
+    // Nested in the Stream fieldset, so it hides and hands focus away with
+    // it; its legend names the group and no heading splits it.
+    const group = document.querySelector("#stream-formats");
+    expect(group.tagName).toBe("FIELDSET");
+    expect(group.parentElement.id).toBe("stream-settings");
+    expect(group.querySelector(":scope > legend").textContent.trim()).toBe("More formats");
+    expect(group.querySelector("h1, h2, h3, h4, h5, h6")).toBeNull();
+    for (const [id, label, values] of [
+      ["stream-aac-bitrate", "AAC quality", ["0", "64", "96", "128", "192", "256"]],
+      ["stream-opus-bitrate", "Opus quality", ["0", "48", "64", "96", "128", "192"]],
+    ]) {
+      const select = document.getElementById(id);
+      expect(select.tagName).toBe("SELECT");
+      expect(labelText(id)).toBe(label);
+      expect([...select.options].map((option) => option.value)).toEqual(values);
+      // Off is said as a word, every bitrate with its unit.
+      expect(select.options[0].textContent).toBe("Off");
+      expect([...select.options].slice(1).every((option) => / kbps$/.test(option.textContent)))
+        .toBe(true);
+      // Its help, then which station it changes (#70).
+      const described = describedBy(select);
+      expect(described.every(Boolean)).toBe(true);
+      expect(described.at(-1).id).toBe("station-context");
+    }
+    expect(document.getElementById("stream-opus-desc").textContent)
+      .toContain("Song titles are not sent in an Opus stream.");
+    // The addresses are a plain list named by its intro, never a live region.
+    const list = document.getElementById("stream-formats-list");
+    expect(list.tagName).toBe("UL");
+    expect(document.getElementById(list.getAttribute("aria-labelledby")).textContent.trim())
+      .toBe("Addresses for each format that is on:");
+    expect(group.querySelector("[aria-live], [role=status], [role=alert], [role=log]")).toBeNull();
+  });
+
+  it("gives listener statistics headed tables, words for every number and no live region", () => {
+    installDocument();
+    const labelText = (id) => document.querySelector(`label[for="${id}"]`)
+      ?.textContent.replace(/\s+/g, " ").trim();
+    const section = document.querySelector("#listener-stats");
+    expect(section.tagName).toBe("SECTION");
+    expect(section.getAttribute("aria-labelledby")).toBe("listener-stats-title");
+    const heading = document.getElementById("listener-stats-title");
+    expect(heading.tagName).toBe("H4");
+    expect(heading.textContent.trim()).toBe("Listener statistics");
+    // Says what is kept, and what is not, before anything else.
+    expect(heading.nextElementSibling.id).toBe("listener-stats-privacy");
+    expect(heading.nextElementSibling.textContent).toContain("no address, player name");
+    // Tables with a caption and a header for each column: never a chart.
+    expect(section.querySelector("canvas, svg, img")).toBeNull();
+    for (const [id, caption, columns] of [
+      ["listener-stats-formats", "Listeners by format",
+        ["Format", "Listening now", "Peak", "Sessions", "Listening hours"]],
+      ["listener-stats-days", "Listeners by day",
+        ["Date", "Peak", "Sessions", "Listening hours", "Average session", "Longest session"]],
+    ]) {
+      const table = document.getElementById(id);
+      expect(table.tagName).toBe("TABLE");
+      expect(table.hidden).toBe(true);
+      expect(table.querySelector("caption").textContent.trim()).toBe(caption);
+      expect([...table.querySelectorAll("thead th")]
+        .map((th) => [th.textContent.trim(), th.getAttribute("scope")]))
+        .toEqual(columns.map((name) => [name, "col"]));
+    }
+    // The summary and the session lengths are plain text and a named list.
+    const summary = document.getElementById("listener-stats-summary");
+    expect(summary.tagName).toBe("P");
+    expect(summary.textContent.trim()).toBe("Statistics not loaded yet.");
+    const lengths = document.getElementById("listener-stats-lengths");
+    expect(lengths.tagName).toBe("UL");
+    expect(lengths.getAttribute("aria-labelledby")).toBe("listener-stats-lengths-title");
+    expect(section.querySelector("[aria-live], [role=status], [role=alert], [role=log]")).toBeNull();
+    // Native, labelled controls; the actions say which station they act on.
+    expect(labelText("listener-stats-span")).toBe("Show");
+    expect([...document.getElementById("listener-stats-span").options].map((o) => o.textContent))
+      .toEqual(["Last 7 days", "Last 30 days", "Last 90 days", "Every day kept"]);
+    const keep = document.getElementById("listener-stats-keep");
+    expect(labelText("listener-stats-keep")).toBe("Days to keep statistics");
+    expect([keep.type, keep.min, keep.max, keep.step]).toEqual(["number", "0", "3650", "1"]);
+    expect(keep.getAttribute("aria-describedby")).toBe("listener-stats-keep-desc station-context");
+    for (const [id, name] of [
+      ["listener-stats-refresh", "Refresh statistics"],
+      ["listener-stats-export", "Download statistics (CSV)"],
+    ]) {
+      const button = document.getElementById(id);
+      expect(button.getAttribute("type")).toBe("button");
+      expect(button.textContent.trim()).toBe(name);
+      expect(button.getAttribute("aria-describedby")).toContain("station-context");
+    }
+    // Colours come from the theme tokens only, so both themes follow.
+    const rules = stripCssComments(cssSource).match(/#(?:listener-stats|stream-formats)-[^{]*\{[^}]*\}/g);
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgb|hsl/i);
   });
 
   it("groups the now-playing feed in the Stream settings with labelled native controls", () => {
