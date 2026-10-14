@@ -90,7 +90,8 @@ class LibraryConfig(_Section):
     """Settings for the music library location and format filtering.
 
     Attributes:
-        music_dir: Path to the root music folder (local or NAS mapped drive).
+        music_dir: Initial folder for a new library and base for legacy relative
+            paths; registered folders determine the current library.
             For beets users, this should match the local mount point of the
             beets ``directory`` setting — relative paths stored in the beets
             database are resolved against ``music_dir``.

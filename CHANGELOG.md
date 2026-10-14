@@ -12,6 +12,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Multiple stations can use independent Stereo Tool processing instances when configured with the
   required per-instance licences and executable paths (#163).
+- Library Analyse, Enrich and Detailed Stats now read the current catalog. Analyse runs CPU DJ-meta
+  work without MuQ, publishes automatic cues while preserving manual cues, and skips completed
+  tracks across all registered folders. Existing DJ-meta cache entries are preserved. The web summary
+  stats remain separate. The web no longer starts the legacy prune job.
+- The Library panel can preview and confirm removal of tracks missing from available source folders.
+  A clean scan and unchanged preview are required; more than 20% missing requires a second
+  confirmation. Catalog cues and vectors are removed with the record, while audio files and play
+  history remain. Disconnected and unreadable sources are protected.
+- `prepared_path` is no longer part of the catalog schema API, serialization or change tracking.
+  Existing SQLite columns are ignored without rebuilding the database.
 - Hour preview rows now use the same compact timestamp and duration on screen and in screen-reader
   output. A refresh keeps a predicted choice while it remains eligible and tied for best, while
   still following the picker when eligibility or play history changes.

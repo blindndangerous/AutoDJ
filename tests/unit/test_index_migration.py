@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -121,6 +122,11 @@ def _cues(path: Path) -> list[tuple[str, str]]:
         return conn.execute("SELECT path, cues FROM dj_meta ORDER BY path").fetchall()
 
 
+def _dj_meta_path(path: Path) -> str:
+    absolute = os.path.abspath(path)
+    return os.path.normcase(absolute) if os.name == "nt" else absolute
+
+
 def test_dry_run_writes_nothing(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     index_dir, music_dir = _fixture(tmp_path)
     (music_dir / "old.flac").write_bytes(b"audio bytes")
@@ -183,7 +189,7 @@ def test_apply_rekeys_cues_and_recovery_copy_contains_wal_cues_and_history(tmp_p
     ):
         index_migration.convert(index_dir, music_dir, {"old.flac": "new.flac"}, apply=True)
 
-    assert _cues(dj_meta_path)[0][0] == "new.flac"
+    assert _cues(dj_meta_path)[0][0] == _dj_meta_path(music_dir / "new.flac")
     assert json.loads(_cues(dj_meta_path)[0][1])[0]["label"] == "Hook"
     backup_path = Path(
         next(line.split(" to ", 1)[1] for line in recovery_output if "recovery copy to" in line)
@@ -275,7 +281,7 @@ def test_manifest_fsync_failure_keeps_cues_with_published_generation(tmp_path: P
     assert (
         json.loads((index_dir / MANIFEST_NAME).read_text(encoding="utf-8"))["schema_version"] == 4
     )
-    assert _cues(index_dir / "dj_meta.db")[0][0] == "new.flac"
+    assert _cues(index_dir / "dj_meta.db")[0][0] == _dj_meta_path(music_dir / "new.flac")
 
 
 def test_cli_migrate_default_is_dry_run(tmp_path: Path) -> None:

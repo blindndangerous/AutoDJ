@@ -448,7 +448,6 @@ def test_master_processing_uses_originals_and_cached_measurements(
     prepared.write_bytes(b"reference")
     measurement = {"lufs": -20}
     player._library.catalog.record_for_path = lambda _path: {
-        "prepared_path": str(prepared),
         "kind": kind,
         "loudness": measurement,
         "intro_lift_db": 4,
