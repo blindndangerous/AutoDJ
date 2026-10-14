@@ -57,6 +57,12 @@
 //         and lets the microphone go, a refused booking is shown,
 //         linked to Book voice track, focus staying there, and leaving
 //         the tab stops a recording and says so once;
+//       - Queue & Search's Listener requests card, its answers stood in
+//         for: a waiting request that would get bridge songs, one with no
+//         smooth spot and its reason, a bridged request in the decisions,
+//         and the Smooth transitions settings; queue rows marked "Bridge
+//         to <request>"; and a refused Roughness limit, marked, linked and
+//         focused (#49);
 //       - the status message stays while the pointer is over it, goes
 //         after the pointer leaves, lets a click on its frame (outside the
 //         message and the button) through to the page underneath, and its
@@ -334,6 +340,80 @@ async function standInForHourPreview(page) {
   }));
 }
 
+// Listener requests (#49): the audit server has them off, so the card's
+// answers are stood in for.  Long unbroken names test reflow.
+const REQUESTS = {
+  enabled: true,
+  approval: "manual",
+  bridges_enabled: true,
+  max_bridges: 3,
+  bridge_cost_threshold: 2,
+  no_smooth_spot: "wait",
+  today: 3,
+  daily_limit: 50,
+  pending: [
+    {
+      id: "a".repeat(32), title: "Slow Ballad", artist: "Example Singer", name: "Sam",
+      requested_at: 1767268800, status: "pending", bridges: [],
+      fit: "Fits after Example Artist — Song 3. It is far from the songs around it, so approving it looks for up to three bridge songs to lead into it first.",
+      reason: "Fits after Example Artist — Song 3. It is far from the songs around it, so approving it looks for up to three bridge songs to lead into it first.",
+      can_approve: true,
+    },
+    {
+      id: "b".repeat(32), title: "An_Exceptionally_Long_Request_Title_Without_Any_Spaces_0001",
+      artist: "Another Example", name: "", requested_at: 1767269100, status: "pending", bridges: [],
+      fit: "Fits after Example Artist — Song 4: 30 BPM apart. No smooth spot within the next 30 minutes. Approving it uses the best legal spot.",
+      reason: "Fits after Example Artist — Song 4: 30 BPM apart. No smooth spot within the next 30 minutes. Approving it uses the best legal spot.",
+      can_approve: true,
+    },
+  ],
+  recent: [
+    {
+      id: "c".repeat(32), title: "Quiet Song", artist: "Example Band", name: "Alex",
+      requested_at: 1767265200, status: "queued", decided_at: 1767265260,
+      note: "Bridge to Example Band — Quiet Song through Example Artist — Song 2.",
+      reason: "Bridge to Example Band — Quiet Song through Example Artist — Song 2.",
+      bridges: ["Example Artist — Song 2"],
+    },
+  ],
+};
+const requestPages = new WeakSet();
+
+async function standInForRequests(page) {
+  if (requestPages.has(page)) return;
+  requestPages.add(page);
+  await page.route("**/api/requests", (route) => (route.request().method() === "GET"
+    ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REQUESTS) })
+    : route.continue()));
+}
+
+// Two queue rows that lead into a request, drawn by the page's own queue
+// module.  Only the drawing: the queue the server pushes is unchanged, so
+// it does not redraw over them.
+async function showBridgedQueue(page) {
+  // The page's own module URL, passed in so the import is the page's.
+  await page.evaluate(async (moduleUrl) => {
+    const { renderQueue } = await import(moduleUrl);
+    renderQueue([
+      { path: "/audit/bridge-1.mp3", artist: "Example Artist", title: "Song 2", bridge_to: "Example Band — Quiet Song" },
+      { path: "/audit/bridge-2.mp3", artist: "Example Artist", title: "An_Exceptionally_Long_Bridge_Title_Without_Spaces_0002", bridge_to: "Example Band — An_Exceptionally_Long_Request_Title_Without_Spaces" },
+      { path: "/audit/request.mp3", artist: "Example Band", title: "Quiet Song" },
+    ], { queueList: document.getElementById("queue-list"), queueCount: document.getElementById("queue-count") });
+  }, "/modules/queue.js");
+}
+
+// Smooth transitions: a Roughness limit out of range is refused in the
+// browser, marked, linked and focused.  Nothing is saved.
+async function openRequestSettingsError(page, visit) {
+  const field = page.locator("#requests-threshold");
+  await field.waitFor({ state: "visible" });
+  await field.fill("12");
+  await page.locator("#requests-settings-save").click();
+  await page.locator("#requests-threshold-error").waitFor({ state: "visible" });
+  await visit("queue/request-settings-error");
+  await field.fill("2");
+}
+
 async function standInForTimeChecks(page) {
   if (timeCheckPages.has(page)) return;
   timeCheckPages.add(page);
@@ -546,6 +626,7 @@ async function eachTarget(page, visit) {
   await standInForHourPreview(page);
   await standInForVoiceTracker(page);
   await standInForStations(page);
+  await standInForRequests(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   for (const view of VIEWS) {
     await page.locator(`#tab-${view}`).click();
@@ -558,8 +639,13 @@ async function eachTarget(page, visit) {
       if (view === "now") {
         await page.locator("#hour-preview-table").waitFor({ state: "visible", timeout: 10000 });
       }
+      if (view === "queue") {
+        await page.locator("#requests-card").waitFor({ state: "visible", timeout: 10000 });
+        await showBridgedQueue(page);
+      }
       await settle(page);
       await visit(view);
+      if (view === "queue") await openRequestSettingsError(page, visit);
       if (view === "track-info") await openTrackTags(page, visit);
       if (view === "library") await openDaypartErrors(page, visit);
       if (view === "voice") await openVoiceStates(page, visit);

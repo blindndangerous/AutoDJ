@@ -14,6 +14,12 @@
 // card's summary when none is left.  The result ("Queued Song by Artist.")
 // is said once through #requests-status a moment later, so the speech for
 // the newly focused button does not cut it off.
+//
+// Smooth transitions (bridge songs and what happens when no smooth spot is
+// found) save with their own button.  A refresh fills the form only while
+// nobody is changing it.  A refused Roughness limit gets aria-invalid, its
+// error linked to the field and shown under it, and focus; the result of a
+// save is said once through #requests-status.
 
 import { requestJson } from "./api-client.js";
 import { announceStatus } from "./live-region.js";
@@ -38,6 +44,24 @@ export function requestedText(request, formatTime) {
   const when = formatTime(request.requested_at);
   return `${who ? `Requested by ${who}` : "Requested"} at ${when}.`;
 }
+
+// Where a waiting request would go and why, with any bridge songs.
+export function fitText(request) {
+  const reason = String(request.reason || request.fit || "").trim();
+  const bridges = Array.isArray(request.bridges) ? request.bridges.filter(Boolean) : [];
+  if (!bridges.length || /^Bridge to /.test(reason)) return reason;
+  return `${reason} Bridge songs: ${bridges.join(", ")}.`.trim();
+}
+
+// The Roughness limit as typed: a number from 0 to 10, or null.
+export function parseThreshold(text) {
+  const value = String(text ?? "").trim().replace(",", ".");
+  if (!/^\d+(\.\d+)?$|^\.\d+$/.test(value)) return null;
+  const number = Number(value);
+  return number >= 0 && number <= 10 ? number : null;
+}
+
+export const THRESHOLD_ERROR = "Enter a roughness limit from 0 to 10, such as 2 or 1.5.";
 
 export function summaryText(state) {
   const waiting = state.pending.length;
@@ -130,7 +154,7 @@ export function installListenerRequests({
   function updateRow(li, item) {
     setText(li.querySelector(".request-song"), songText(item));
     setText(li.querySelector(".request-when"), requestedText(item, formatTime));
-    setText(li.querySelector(".request-fit"), item.fit || "");
+    setText(li.querySelector(".request-fit"), fitText(item));
     const buttons = li.querySelector(".request-actions");
     ACTIONS.forEach(([action, label], index) => {
       const offered = action !== "approve" || item.can_approve !== false;
@@ -168,7 +192,95 @@ export function installListenerRequests({
 
   function recentLine(item) {
     const word = STATUS_WORDS[item.status] || item.status;
-    return `${word}: ${songText(item)}. ${item.note || ""}`.trim();
+    return `${word}: ${songText(item)}. ${fitText({ ...item, reason: item.note || "" })}`.trim();
+  }
+
+  const settingsForm = doc.getElementById("requests-settings");
+  const bridgesBox = doc.getElementById("requests-bridges");
+  const maxBridges = doc.getElementById("requests-max-bridges");
+  const threshold = doc.getElementById("requests-threshold");
+  const thresholdError = doc.getElementById("requests-threshold-error");
+  let settingsDirty = false;
+  let saving = false;
+
+  function linkThresholdError(linked) {
+    if (!threshold || !thresholdError) return;
+    const ids = (threshold.getAttribute("aria-describedby") || "").split(/\s+/)
+      .filter((id) => id && id !== thresholdError.id);
+    if (linked) ids.push(thresholdError.id);
+    threshold.setAttribute("aria-describedby", ids.join(" "));
+  }
+
+  function clearThresholdError() {
+    threshold?.removeAttribute("aria-invalid");
+    linkThresholdError(false);
+    if (thresholdError) { thresholdError.textContent = ""; thresholdError.hidden = true; }
+  }
+
+  function showThresholdError(message) {
+    threshold.setAttribute("aria-invalid", "true");
+    linkThresholdError(true);
+    thresholdError.textContent = message;
+    thresholdError.hidden = false;
+    threshold.focus();
+    say(message, "error");
+  }
+
+  function noSmoothChoice() {
+    return settingsForm?.querySelector('input[name="requests-no-smooth"]:checked')?.value || "best";
+  }
+
+  // The saved settings, unless the operator is changing them now.
+  function fillSettings(state) {
+    if (!settingsForm || settingsDirty || saving) return;
+    if (settingsForm.contains(doc.activeElement)) return;
+    if (bridgesBox) bridgesBox.checked = state.bridges_enabled === true;
+    if (maxBridges && state.max_bridges != null) maxBridges.value = String(state.max_bridges);
+    if (threshold && state.bridge_cost_threshold != null) {
+      threshold.value = String(state.bridge_cost_threshold);
+    }
+    const choice = settingsForm.querySelector(
+      `input[name="requests-no-smooth"][value="${state.no_smooth_spot === "wait" ? "wait" : "best"}"]`,
+    );
+    if (choice) choice.checked = true;
+  }
+
+  if (settingsForm) {
+    settingsForm.addEventListener("input", () => { settingsDirty = true; });
+    settingsForm.addEventListener("change", () => { settingsDirty = true; });
+    settingsForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (saving) return;
+      clearThresholdError();
+      const limit = parseThreshold(threshold?.value);
+      if (limit === null) {
+        showThresholdError(THRESHOLD_ERROR);
+        return;
+      }
+      const body = {
+        bridges_enabled: Boolean(bridgesBox?.checked),
+        max_bridges: Number(maxBridges?.value || 3),
+        bridge_cost_threshold: limit,
+        no_smooth_spot: noSmoothChoice(),
+      };
+      saving = true;
+      try {
+        const reply = await request("/api/requests/settings", {
+          method: "POST",
+          headers: { Accept: "application/json", "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        settingsDirty = false;
+        saving = false;
+        lastJson = null;
+        render({ ...reply, pending: reply.pending || [], recent: reply.recent || [] });
+        say("Request settings saved.");
+      } catch (error) {
+        say(error?.message || "Could not save the request settings.", "error");
+      } finally {
+        saving = false;
+      }
+    });
   }
 
   function render(state) {
@@ -176,6 +288,7 @@ export function installListenerRequests({
     const json = JSON.stringify(state);
     if (json === lastJson) return;
     lastJson = json;
+    fillSettings(state);
     setText(summary, summaryText(state));
     renderPending(state.pending);
     // The decisions list has no buttons, so it may be rebuilt when it changes.
@@ -270,6 +383,8 @@ export function installListenerRequests({
   function clear() {
     lastJson = null;
     lastState = null;
+    settingsDirty = false;
+    clearThresholdError();
     list.replaceChildren();
     recent.replaceChildren();
     card.hidden = true;

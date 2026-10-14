@@ -21,7 +21,15 @@ let _renderGeneration = 0;
 let _pendingFromKey = null;
 
 function _queueKey(queue) {
-  return JSON.stringify(queue.map((t) => t.path));
+  // A bridge song's label is part of the row, so a change to it redraws.
+  return JSON.stringify(queue.map((t) => (t.bridge_to ? [t.path, t.bridge_to] : t.path)));
+}
+
+// "Bridge to Song" for a song AutoDJ queued to lead into a listener
+// request (#49), said with the row and in each button's name.
+function bridgeText(track) {
+  const target = String(track?.bridge_to || "").trim();
+  return target ? `Bridge to ${target}` : "";
 }
 
 // A websocket push rebuilds every row, which destroys the button a
@@ -86,12 +94,17 @@ export function renderQueue(queue, { queueList, queueCount }) {
     return;
   }
   queueList.innerHTML = queue.map((t, i) => {
-    const name = escHtml(fmtTrack(t));
+    const bridge = bridgeText(t);
+    // Each button names the song, and a bridge says which request it leads into.
+    const name = escHtml(bridge ? `${fmtTrack(t)}, b${bridge.slice(1)}` : fmtTrack(t));
+    const shown = escHtml(fmtTrack(t));
     const path = escHtml(t.path);
     const isFirst = i === 0;
     const isLast  = i === queue.length - 1;
-    return `<li data-path="${path}" data-queue-index="${i}">
-      <span class="queue-name" title="${name}">${i + 1}. ${name}</span>
+    const bridgeAttr = bridge ? ` data-bridge-to="${escHtml(t.bridge_to)}"` : "";
+    const bridgeNote = bridge ? `<span class="queue-bridge">${escHtml(bridge)}</span>` : "";
+    return `<li data-path="${path}" data-queue-index="${i}"${bridgeAttr}>
+      <span class="queue-name" title="${shown}">${i + 1}. ${shown}</span>${bridgeNote}
       <button type="button" class="queue-btn" data-action="info" data-path="${path}"
               aria-label="Track info for ${name}">Track info</button>
       <button class="queue-btn" data-action="top"    data-path="${path}"
@@ -193,6 +206,7 @@ export function installQueueButtons(els) {
     const snapshot = items.map((li) => ({
       path: li.dataset.path,
       display_name: li.querySelector(".queue-name").textContent.replace(/^\d+\.\s*/, ""),
+      ...(li.dataset.bridgeTo ? { bridge_to: li.dataset.bridgeTo } : {}),
     }));
     const paths = items.map((li) => li.dataset.path);
     const idx   = items.indexOf(btn.closest("li[data-path]"));

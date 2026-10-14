@@ -911,6 +911,21 @@
       font-size: 0.9rem;
     }
     #queue-list li:last-child { border-bottom: none; }
+    /* "Bridge to <request>" (#49): its own words, never only a colour. */
+    #queue-list .queue-bridge {
+      flex: 0 1 12rem;
+      min-width: 0;
+      overflow-wrap: anywhere;
+      font-size: 0.85rem;
+      color: var(--text-dim);
+    }
+    #requests-settings {
+      margin-top: 1rem;
+      padding-top: 0.5rem;
+      border-top: 1px solid var(--border);
+    }
+    #requests-no-smooth { border: none; padding: 0; margin: 0.4rem 0; min-width: 0; }
+    #requests-no-smooth legend { padding: 0; font-weight: 600; }
 
     /* ---- Cart wall ---- */
     #cart-slots {

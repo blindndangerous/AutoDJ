@@ -306,3 +306,51 @@ def test_one_listener_cannot_rotate_addresses_past_the_limit(
     track, token = _confirm(two, 3)
     limited = _send(two, track, token)
     assert limited.status_code == 429, limited.text
+
+
+def test_the_operator_saves_bridge_settings_and_they_survive_a_restart(
+    bridge, tmp_path: Path
+) -> None:
+    import json
+
+    from autodj.runtime_state import load_into_bridge
+
+    client = _client(bridge, tmp_path, token=False, enabled=True)
+    saved = client.post(
+        "/api/requests/settings",
+        json={
+            "bridges_enabled": True,
+            "max_bridges": 2,
+            "bridge_cost_threshold": 1.5,
+            "no_smooth_spot": "wait",
+        },
+        headers=ORIGIN,
+    )
+    assert saved.status_code == 200
+    view = saved.json()
+    assert (view["bridges_enabled"], view["max_bridges"]) == (True, 2)
+    assert (view["bridge_cost_threshold"], view["no_smooth_spot"]) == (1.5, "wait")
+    for refused in (
+        {"max_bridges": 4},
+        {"bridge_cost_threshold": 11},
+        {"no_smooth_spot": "never"},
+        {"bridges_enabled": "yes"},
+        {"bridge_max": 2},
+    ):
+        answer = client.post("/api/requests/settings", json=refused, headers=ORIGIN)
+        assert answer.status_code == 422, refused
+    assert client.get("/api/requests").json()["max_bridges"] == 2
+    stored = json.loads((tmp_path / "web_state.json").read_text(encoding="utf-8"))["playback"]
+    assert stored["requests_max_bridges"] == 2
+    assert stored["requests_no_smooth_spot"] == "wait"
+    bridge.player._cfg.requests = RequestsConfig(enabled=True)
+    load_into_bridge(bridge, tmp_path)
+    restored = bridge.player._cfg.requests
+    assert (restored.bridges_enabled, restored.max_bridges) == (True, 2)
+    assert (restored.bridge_cost_threshold, restored.no_smooth_spot) == (1.5, "wait")
+
+
+def test_bridge_settings_need_requests_on(bridge, tmp_path: Path) -> None:
+    client = _client(bridge, tmp_path, token=False)
+    answer = client.post("/api/requests/settings", json={"max_bridges": 2}, headers=ORIGIN)
+    assert answer.status_code == 404

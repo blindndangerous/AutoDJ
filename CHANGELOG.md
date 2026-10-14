@@ -18,6 +18,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Settings > Stream can edit Icecast and Shoutcast relays while the station runs. Relay definitions
   and passwords are saved per station; environment-managed passwords remain read-only. Station
   name, genre, description and website URL are sent where each stream protocol supports them.
+- Listener requests can use up to three optional bridge songs to approach a distant request.
+  Requests now check the active clockwheel music step and daypart at their projected start.
+  Operators can choose whether a request with no smooth spot waits or uses the best legal spot;
+  bridge status and the reason appear in queue, preview and request API data (#49). Queue &
+  Search > Listener requests has a Smooth transitions form for these settings, and the queue
+  marks each bridge "Bridge to <request>". Removing a request removes only its own bridges.
 - Music speed (#162): Settings > Sound > Music speed has a slider and exact numeric field for
   10% slower to 10% faster. Speed and pitch change together. Browser music changes speed when
   safe; voice liners and previews stay at their normal speed. In stream and server-audio modes,

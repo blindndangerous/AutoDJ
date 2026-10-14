@@ -670,7 +670,10 @@ What a visitor can do, and the limits on it:
   seconds gets 503 "busy". So a flood cannot park the worker threads that carts, breaks, approvals
   and the player's helpers need.
 - **What cannot be bypassed.** Each accepted request still has to keep the repeat rules and, in
-  DMCA mode, the DMCA limits at the place it would play. It is never played at once or at a set
+  DMCA mode, the DMCA limits at the place it would play. Optional bridge songs receive the same
+  projected checks, plus blocklist, daypart and clockwheel matching. A bridge cannot target an
+  arbitrary path supplied by a listener: candidates come only from the station's indexed music.
+  It is never played at once or at a set
   time, and with `approval = "manual"` (the default) nothing reaches the queue until the operator
   approves it.
 
@@ -690,6 +693,14 @@ with that copy and the song is inserted, or the places are worked out again, at 
 when it changed. The mix bus, which takes `queue_lock`, therefore never waits on the projection,
 the key cache or the library. The projection takes `history_lock` and `queue_lock` one after the
 other, never one inside the other.
+Bridge search is bounded to at most six 24-neighbour vector queries, 36 projected candidate
+checks and three projected request checks per placement attempt. All run outside `queue_lock`; a
+changed queue makes the plan retry, up to the same few attempts as any request, rather than
+insert stale bridge tracks. When no smooth legal position exists, the operator sees why and
+the request either waits or uses the best legal position according to station settings.
+The operator's request list never runs the bridge search, so polling it costs one projection per
+waiting request. The four transition settings change only through the authenticated operator
+route `POST /api/requests/settings`, which validates them as config.toml does.
 
 `[stream] trusted_proxies` now applies in every mode, not only in stream mode. Without it, an
 existing `FORWARDED_ALLOW_IPS` is honoured. Every trusted peer that is not loopback is named in a

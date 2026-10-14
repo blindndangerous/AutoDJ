@@ -72,6 +72,13 @@ def _make_similarity_index(
 
 
 class TestSimilarityIndexConstruction:
+    def test_bridge_candidates_use_a_bounded_pool(self) -> None:
+        sim, _ = _make_similarity_index(100)
+        candidates = sim.bridge_candidates(sim.entries[0].path, 12)
+        assert len(candidates) == 12
+        assert sim.entries[0].path not in {entry.path for entry in candidates}
+        assert sim.bridge_candidates("missing.flac") == ()
+
     def test_public_entries_are_immutable_and_keep_path_mapping(self) -> None:
         from dataclasses import FrozenInstanceError
 

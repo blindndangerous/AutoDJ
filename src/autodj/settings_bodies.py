@@ -92,6 +92,22 @@ class PresetBody(BaseModel):
     name: str | None = None
 
 
+class RequestSettingsBody(BaseModel):
+    """Partial listener request settings: bridge songs and the give-up rule (#49).
+
+    The same limits as ``[requests]`` in config.toml (:class:`RequestsConfig`).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    bridges_enabled: bool | None = Field(default=None, strict=True)
+    max_bridges: Annotated[int, Field(ge=1, le=3, strict=True)] | None = None
+    bridge_cost_threshold: Annotated[float, Field(ge=0.0, le=10.0, allow_inf_nan=False)] | None = (
+        None
+    )
+    no_smooth_spot: Literal["best", "wait"] | None = None
+
+
 class StreamSettingsBody(BaseModel):
     """Partial stream settings update: bitrate, continuous playback and station name."""
 

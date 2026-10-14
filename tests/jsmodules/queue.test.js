@@ -582,3 +582,32 @@ describe("queue focus while a change is saved", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("bridge songs in the queue (#49)", () => {
+  it("says in words which request a bridge song leads into, in the row and each button", () => {
+    document.body.innerHTML = '<ul id="queue"></ul>';
+    const els = { queueList: document.querySelector("#queue"), queueCount: document.createElement("span") };
+    resetQueueState(els);
+    applyQueueState([
+      { path: "mid.mp3", display_name: "Mid", bridge_to: "Ballad — Singer" },
+      { path: "ballad.mp3", display_name: "Ballad — Singer" },
+      { path: "mid.mp3", display_name: "Mid" },
+    ], els);
+    const rows = els.queueList.querySelectorAll("li[data-path]");
+    expect(rows[0].querySelector(".queue-bridge").textContent).toBe("Bridge to Ballad — Singer");
+    expect(rows[0].querySelector(".queue-name").textContent).toBe("1. Mid");
+    expect(rows[0].querySelector('[data-action="remove"]').getAttribute("aria-label"))
+      .toBe("Remove Mid, bridge to Ballad — Singer from queue");
+    // The operator's own copy of the same song is no bridge.
+    expect(rows[2].querySelector(".queue-bridge")).toBeNull();
+    expect(rows[2].querySelector('[data-action="remove"]').getAttribute("aria-label"))
+      .toBe("Remove Mid from queue");
+    // Only the label changing still redraws the row.
+    applyQueueState([
+      { path: "mid.mp3", display_name: "Mid" },
+      { path: "ballad.mp3", display_name: "Ballad — Singer" },
+      { path: "mid.mp3", display_name: "Mid" },
+    ], els);
+    expect(els.queueList.querySelector(".queue-bridge")).toBeNull();
+  });
+});

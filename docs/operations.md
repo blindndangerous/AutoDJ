@@ -763,8 +763,12 @@ approval = "manual"          # or "auto": a request that keeps the rules is queu
 per_listener = 3             # requests one address may make ...
 per_listener_minutes = 60    # ... in this many minutes
 daily_limit = 50             # requests the station takes per day, from everyone
-max_pending = 20             # requests that may wait for you at once (manual approval)
+max_pending = 20             # requests that may wait for you at once
 window_minutes = 30          # how far ahead in the queue a request may be placed
+bridges_enabled = false       # optional transition songs; off by default
+max_bridges = 3              # one to three when enabled
+bridge_cost_threshold = 2.0  # seek a bridge above this fit cost (0 to 10)
+no_smooth_spot = "best"       # "best" or "wait" for operator approval
 blocked_artists = ["Night Owl Jingles"]
 blocked_folders = ["Christmas"]   # full paths, or folders inside [library] music_dir
 ipv6_prefix = 56             # an IPv6 listener's limits count over this network
@@ -817,8 +821,43 @@ artist, album, title, and related tracks and artists) as of then, and in
 where the song joins its neighbours most smoothly. It weighs sound (the embeddings), tempo (half
 and double time count as a match), Camelot key and the step in energy, and the sooner place wins a
 tie. Working out the place and adding the song there happen as one step, so the queue cannot
-change in between. A request is a song in the queue like any other. It never takes the place of a station ID, a
-liner, a break or a time check, which play between songs.
+change in between. A request is a song in the queue like any other. When a clockwheel is active,
+the request must match its next music or category step, including that step's folder or conditions,
+category membership, and step hours. A preceding clockwheel liner or settings step still runs;
+a fixed track step cannot be taken by a request. A matching request advances the clockwheel
+cursor when it plays. Station IDs, ad breaks and time checks retain their own scheduled places.
+The queue does not reserve a music step beyond a fixed show-song step in advance; the request
+waits until that step has passed and the next music step can be checked. A request never goes
+between a liner you queued and the song after it, which that liner leads into.
+
+With `bridges_enabled = true`, a request above `bridge_cost_threshold` may get one to
+`max_bridges` bridge songs before it. AutoDJ searches the same embedding index the picker uses,
+from both the preceding song and the request, and prefers smaller steps in sound, tempo, key and
+energy. It checks each bridge at its projected play time against repeat and song-version holds,
+DMCA limits, dayparting, the daypart and quarter-hour rules (on the station's clock), the
+clockwheel step and request blocklists. Liners and silent tracks are never bridges. The bridges
+and request are inserted together after a queue version check. Removing the queued request
+(Remove, or a reorder that leaves it out) removes its bridges that have not played yet. They
+belong to that request alone: a song you queued yourself stays, even when it is the same song. The
+queue, the hour preview and their API data mark each bridge "Bridge to <request>"; the
+operator API includes `bridges`, a `reason`, and the four transition settings.
+
+If no bridge is eligible or no transition reaches the threshold, `no_smooth_spot = "best"`
+uses the best legal position and explains that choice to the operator. With `"wait"`, an
+automatically approved request stays waiting for you instead, with the reason; when you approve
+it, it goes in the best legal position. When no matching clockwheel music step is available, it
+waits regardless of that setting; a request never overrides a reserved step. An automatic request
+that has to wait counts toward `max_pending`.
+
+The bridge search examines at most 24 nearest neighbours from each end at each of three steps,
+and validates at most 12 candidates per step. On a synthetic library of 50,000 songs with
+1,040-dimensional vectors, two 24-neighbour searches took a median 255 ms and a 95th percentile
+741 ms over 25 warm runs on the development machine (Windows, Python 3.14, FAISS CPU). These
+numbers cover vector search, not rule projection or disk-backed category reads. Search and rule
+checks run outside the queue lock and off the event loop, inside the listener request slots
+when a listener's request is approved automatically; the lock covers the final version check,
+insertion, bridge markers and the existing queue refresh. The operator's list, which refreshes
+every 15 seconds, never runs the search: it says when approving would look for bridge songs.
 
 **What you do.** While requests are on, Queue & Search has a **Listener requests** card. It says
 how many requests are waiting and how many the station took today. Each waiting request shows who
@@ -828,8 +867,17 @@ Artist: same key, 2 BPM apart.") or what stops it. Each request has three button
 - **Approve** queues it at that place, checked again at that moment. It is left out while no place
   keeps the rules.
 - **Play next** queues it first, after the song playing and any "play next" song, whatever fits.
-  DMCA limits still hold, counting that "play next" song.
+  DMCA limits and clockwheel step restrictions still hold, counting that "play next" song.
 - **Turn down**.
+
+Below the decisions, **Smooth transitions** holds the same four settings as `[requests]`:
+**Add bridge songs before a request that would sound abrupt**, **Most bridge songs** (1 to 3),
+**Roughness limit** (0 to 10, the `bridge_cost_threshold`) and **When no smooth spot is found**
+(**Use the best spot that keeps the rules** or **Keep the request waiting for you to decide**).
+**Save request settings** saves them for this station at once (`POST /api/requests/settings`);
+they are kept in `web_state.json` and, like the other settings saved on the page, take the place
+of the config.toml values from then on. A Roughness limit outside 0 to 10 is refused in the
+browser: the field is marked, its error shown under it and linked to it, and focus goes to it.
 
 Focus moves to the next request's Approve button (its first button when Approve is not offered),
 or to the card's title when none is left, and the result is said once just after that. Recent
@@ -848,9 +896,8 @@ past their 30 days are applied even when nobody uses the page or the card. At mo
 or request checks run at once, across all stations. Others wait their turn without holding a
 worker thread, and get "busy" after two seconds. The same search within 30 seconds is answered
 from memory. A song can be requested only after a search has shown it, which needs no map of the
-whole library. So a flood of requests cannot take the server's time from the music. Listener addresses are kept in memory only, for the limits, and are forgotten when
-AutoDJ restarts. Requests do not yet get bridge songs to lead into them, and are not yet matched to
-clockwheel categories.
+whole library. So a flood of requests cannot take the server's time from the music. Listener
+addresses are kept in memory only, for the limits, and are forgotten when AutoDJ restarts.
 
 Letting listeners choose when songs play can make a station an "interactive" service, which the
 US statutory webcasting licence does not cover. Requests therefore never play at once or at a

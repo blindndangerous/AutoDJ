@@ -35,6 +35,7 @@ from autodj.settings_bodies import (
     EqBody,
     PlaybackSettingsBody,
     PresetBody,
+    RequestSettingsBody,
     StreamSettingsBody,
     TransitionBody,
     VolumeBody,
@@ -51,6 +52,15 @@ logger = logging.getLogger(__name__)
 #: enable key filtering through a stored ``harmonic_mode`` value.
 STATE_VERSION = 2
 
+#: Listener request settings the operator's Listener requests card saves
+#: (``/api/requests/settings``), by their ``[requests]`` names.
+REQUEST_SETTING_KEYS = (
+    "requests_bridges_enabled",
+    "requests_max_bridges",
+    "requests_bridge_cost_threshold",
+    "requests_no_smooth_spot",
+)
+
 #: Saved under ``playback`` but set by their own routes (``/api/volume``,
 #: ``/api/mute``, ``/api/stream/settings``).
 _OWN_ROUTE_PLAYBACK_FIELDS = frozenset(
@@ -65,6 +75,7 @@ _OWN_ROUTE_PLAYBACK_FIELDS = frozenset(
         "stream_url",
         "nowplaying_show_next",
         "stream_max_listeners_per_address",
+        *REQUEST_SETTING_KEYS,
     }
 )
 #: Playback keys mirrored into ``web_state.json``.
@@ -260,6 +271,13 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
         )
         if limit is not _INVALID and limit is not None:
             player._cfg.stream.max_listeners_per_address = limit
+
+    for key in REQUEST_SETTING_KEYS:
+        if key in playback:
+            field = key.removeprefix("requests_")
+            value = _checked(RequestSettingsBody, field, playback[key], key)
+            if value is not _INVALID and value is not None:
+                setattr(player._cfg.requests, field, value)
 
     values: dict[str, Any] = {}
     for field, saved in playback.items():
