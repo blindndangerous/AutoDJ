@@ -3372,7 +3372,8 @@ Backtiming goes to each fixed point in the span:
 
 The card's summary is the first top of the hour (or clockwheel restart) and how it lands, then
 how many rows are fixed and predicted, such as "Next top of the hour, 13:00: expected 0:35 early. 3 fixed
-items, 20 predicted, through 13:10." **Refresh preview** says
+items, 20 predicted, through 13:10." When that top of the hour does not restart the clockwheel, the summary also
+times the next clockwheel restart in the span. **Refresh preview** says
 it once; **Shift+H** says it from any tab. While the card is open and Now Playing is showing, the
 table refreshes every 30 seconds and shortly after the song changes, changing cells in place,
 saying nothing and leaving focus where it is; if those refreshes start failing, the failure is

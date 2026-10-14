@@ -1864,12 +1864,21 @@ def _summary(view: dict[str, Any], landings: Sequence[Landing], zone: ZoneInfo, 
     first = hours[0] if hours else (landings[0] if landings else None)
     if first is None:
         return f"No top of the hour, clockwheel restart or scheduled event. {listed}"
-    heading = landing_heading(first, zone)
-    if first.point.kind != "event":
+    said = [first]
+    # A plain top of the hour does not restart the clockwheel: say the restart too.
+    if first.point.kind == "hour":
+        said += [landing for landing in hours if landing.point.kind == "restart"][:1]
+    return " ".join(_next_words(landing, zone) for landing in said) + f" {listed}"
+
+
+def _next_words(landing: Landing, zone: ZoneInfo) -> str:
+    """ "Next top of the hour, 13:00: expected 0:32 early." for the summary."""
+    heading = landing_heading(landing, zone)
+    if landing.point.kind != "event":
         heading = heading[0].lower() + heading[1:]
-    short = landing_words(first, zone)[0]
+    short = landing_words(landing, zone)[0]
     lands = "past the end of the preview" if short == "not known" else f"expected {short}"
-    return f"Next {heading}: {lands}. {listed}"
+    return f"Next {heading}: {lands}."
 
 
 # ---------------------------------------------------------------------------

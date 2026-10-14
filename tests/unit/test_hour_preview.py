@@ -433,6 +433,24 @@ def test_browser_playback_lists_fixed_then_predicted(tmp_path: Path) -> None:
     assert later["summary"].endswith("through 13:10:31.")
 
 
+def test_the_summary_adds_the_next_restart_after_a_plain_top_of_the_hour(tmp_path: Path) -> None:
+    source, _power, gold = _station(
+        tmp_path,
+        clockwheels=[
+            {
+                "name": "Main",
+                "resync_minutes": [30],
+                "steps": [liner_step(), category_step("power"), category_step("gold")],
+            }
+        ],
+    )
+    later = NOW + 1800  # 12:40: the top of the hour comes before the 13:30 restart
+    _playing(source, gold[0], later - 50)
+    summary = build_preview(source, 120, now=later)["summary"]
+    assert summary.startswith("Next top of the hour, 13:00: expected ")
+    assert ". Next clockwheel restart, " in summary
+
+
 def test_queued_bridge_names_its_request_in_preview(tmp_path: Path) -> None:
     source, power, gold = _station(tmp_path)
     player = source.player
