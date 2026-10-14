@@ -148,8 +148,8 @@ describe("clockwheel editor", () => {
     row.querySelector("select").dispatchEvent(new Event("change", { bubbles: true }));
     row.querySelectorAll("select")[3].value = "Rock";
     row.querySelectorAll("select")[3].dispatchEvent(new Event("change", { bubbles: true }));
-    await vi.waitFor(() => expect(byId("clock-step-match-count").textContent).toContain("12 tracks match"));
-    expect(status()).toContain("12 tracks match this selection before repeat protection");
+    await vi.waitFor(() => expect(byId("clock-step-match-count").textContent).toBe("12 tracks"));
+    expect(status()).toContain("12 tracks");
     const call = server.calls.find((item) => item.url === "/api/library/clock/check");
     expect(call.body.step.conditions).toEqual([{ field: "genre", operator: "is", value: "Rock" }]);
   });
