@@ -104,8 +104,10 @@ describe("categories markup", () => {
     const fieldsets = [...section.querySelectorAll("fieldset")];
     expect(fieldsets.map((set) => set.querySelector(":scope > legend")?.textContent)).toEqual(["Add category", "Songs come from", "When the songs may play", "Days"]);
     expect([...section.querySelectorAll('input[type="radio"]')].every((radio) => radio.name === "categories-source")).toBe(true);
-    expect(byId("categories-query").getAttribute("aria-describedby")).toBe("categories-query-help");
-    expect(byId("categories-playlist").getAttribute("aria-describedby")).toBe("categories-playlist-help");
+    for (const id of ["categories-query", "categories-playlist"]) {
+      expect(byId(id).hasAttribute("aria-describedby")).toBe(false);
+      expect(byId(`${id}-help`).textContent.trim()).not.toBe("");
+    }
     expect(byId("categories-check").getAttribute("aria-describedby")).toBe("categories-match");
     expect(byId("categories-list").getAttribute("aria-labelledby")).toBe("categories-list-heading");
     expect(byId("categories-match").getAttribute("aria-live")).toBe("off");
