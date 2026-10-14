@@ -20,7 +20,7 @@
 // Lowercase n = skip, uppercase N (Shift+N) = speak next track.
 // Shift+L speaks the current lyric line; lowercase l is unused.
 // s/S and m/M are shuffle and mute in either case, so no status key may
-// use them.  Status keys: T N R B K L E V Q J H.
+// use them.  Status keys: T N R B K L E V Q J H U.
 // Stations (#70): lowercase c moves focus to the station switcher while
 // the server has several stations; Shift+C says which station the page
 // controls.  With several stations the status keys about the station
@@ -37,6 +37,18 @@
 // browser command uses it; Firefox's menu bar keys are F E V S B T H),
 // the page gives no element accesskey="r", and NVDA and JAWS pass it
 // through to the page in browse and focus mode alike.
+//
+// Landmarks (#60, modules/landmarks.js): Left and Right bracket move to the
+// previous and next landmark of the song -- the cue point preview's while
+// Track info shows, else the song on air -- and say it; Shift+U says what is
+// coming next on air.  No shortcut here or in Chrome, Edge, Firefox or
+// Safari uses a bare bracket or Shift+U (Firefox's quick find keys are ' and
+// /).  NVDA and JAWS have no focus-mode or forms-mode command on them; in
+// browse mode they keep every printable key, as they do for the other
+// shortcuts, so a key reaches the page in focus mode or after the
+// pass-through key (NVDA+F2, JAWS Insert+3).  On layouts that type a
+// bracket with AltGr (German, French, Nordic) the browser reports Ctrl+Alt,
+// so a bracket typed with AltGr is accepted.
 //
 // WCAG 2.1.4: single-key shortcuts can be switched off with the
 // Settings > Keyboard checkbox.  The choice is kept per browser in
@@ -162,6 +174,10 @@ export function installHotkeys({
   // What Space / k do: Play / Pause, or in stream mode start or stop
   // listening on this page.
   togglePlay,
+  // Landmarks (#60): the brackets move by one (+1 or -1) and say it;
+  // Shift+U resolves to the sentence about what is coming next on air.
+  jumpLandmark = null,
+  getUpcomingLandmark = null,
 }) {
   installShortcutToggle(shortcutToggle);
   const active = () => isEnabled() && shortcutsEnabled();
@@ -207,9 +223,11 @@ export function installHotkeys({
 
     const nowPanel = document.getElementById("panel-now");
     const nowVisible = nowPanel && !nowPanel.hasAttribute("hidden");
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
-
     const key = e.key;
+    const altGraphBracket = (key === "[" || key === "]")
+      && typeof e.getModifierState === "function" && e.getModifierState("AltGraph");
+    if (e.metaKey || ((e.ctrlKey || e.altKey) && !altGraphBracket)) return;
+
     const scrollsPage = key === " " || key === "ArrowUp" || key === "ArrowDown";
     if (!nowVisible && scrollsPage) return;
 
@@ -315,6 +333,18 @@ export function installHotkeys({
       case "H":
         if (speakHour) void speakHour();
         else speakForStation("No hour preview yet.");
+        break;
+      case "[":
+      case "]":
+        if (!jumpLandmark) return;
+        void jumpLandmark(key === "]" ? 1 : -1);
+        break;
+      case "U":
+        if (!getUpcomingLandmark) return;
+        void Promise.resolve()
+          .then(getUpcomingLandmark)
+          .then((text) => { if (text) speakForStation(text); })
+          .catch((error) => speakForStation(`Could not load the landmarks: ${error.message}`));
         break;
       case "?":
         if (!toggleShortcutsModal()) return;

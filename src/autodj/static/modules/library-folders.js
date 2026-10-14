@@ -40,7 +40,10 @@ export function formatPointTime(value) {
 }
 
 
-export function installLibraryFolders({ document: doc = document, request = requestJson, getCurrentTrack = () => null, getCurrentPosition = () => null, onFolders }) {
+const NO_LANDMARKS = { load() {}, clear() {}, refresh() {}, invalidate() {} };
+
+// landmarks: Track info's Song structure (modules/landmarks.js, #60).
+export function installLibraryFolders({ document: doc = document, request = requestJson, getCurrentTrack = () => null, getCurrentPosition = () => null, onFolders, landmarks = NO_LANDMARKS }) {
   const panel = doc.getElementById("panel-library");
   const searchPanel = doc.getElementById("library-kind")?.closest("section[data-view]") || null;
   let searchShown = false;
@@ -432,6 +435,9 @@ export function installLibraryFolders({ document: doc = document, request = requ
       if (!requestCurrent(epoch, generation)) return false;
       if (data.points) setPointFields(data.points, data.point_sources || {});
       else savedFields = fieldSnapshot();
+      // New cue points can move the intro, outro and segue landmarks.
+      landmarks.invalidate(currentPath);
+      landmarks.refresh();
       pointSay(`Saved changes to ${currentName}.`);
       return true;
     } catch (error) {
@@ -523,6 +529,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       pointPath.value = currentPath;
       setPointFields(data.points || {}, data.point_sources || {});
       renderDetails(data);
+      landmarks.load({ path: currentPath, kind: currentKind });
       tags.load(data);
       intros.load(data);
       editor.hidden = false;
@@ -557,6 +564,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
           currentPath = null;
           tags.clear();
           intros.clear();
+          landmarks.clear();
           editor.hidden = true;
           pointPath.value = "";
           const details = doc.getElementById("track-info-details");
@@ -644,6 +652,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     editor.hidden = true;
     tags.clear();
     intros.clear();
+    landmarks.clear();
     currentPath = null;
     currentKind = "music";
     currentName = "this track";
@@ -679,6 +688,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
   }
   function resume() { suspended = false; updatePolling(); }
   // Matched intros are each station's own (#70); the rest of Track info is shared.
-  const refreshIntros = () => intros.refresh();
+  // The song structure is read through the station too.
+  const refreshIntros = () => { landmarks.refresh(); return intros.refresh(); };
   return { refresh, openEditor, clearProtectedData, resume, refreshIntros, destroy() { clearProtectedData(); tags.destroy(); intros.destroy(); returnButton.remove(); window.removeEventListener("hashchange", updatePolling); doc.removeEventListener("visibilitychange", updatePolling); doc.removeEventListener("autodj:edit-points", onEditPoints); } };
 }

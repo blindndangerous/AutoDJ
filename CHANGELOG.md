@@ -40,6 +40,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Spoken track landmarks (#60): a song's structure through keys and speech, in place of a
+  waveform. A new station route, `/api/landmarks`, merges the cue points, the DJ analysis (drops,
+  breakdowns, build-ups, phrases, named DJ-software cues, the beat grid for bar numbers) and the
+  synced lyrics (where the singing starts) into named landmarks, merged when they fall together
+  and kept in a cache until the song's cue points, analysis or lyrics change. Track info lists
+  them under **Song structure** ("Intro, 0:00 to 0:32", "Vocals from 0:45", "Drop, 1:35, bar 49"),
+  with each time read in words. **Right bracket** and **Left bracket** move to the next or
+  previous landmark and say it ("Drop, 1 minute 35 seconds, bar 49"): the cue point preview in
+  Track info, the song on air elsewhere (not in stream mode). **Shift+U** says what is coming next
+  on air ("Drop in 12 seconds, 6 bars"). Each answer is said once, politely, without moving focus,
+  and the keys follow Enable keyboard shortcuts.
 - `autodj migrate-index` now completes the move from supported schema-3/4 published indexes into
   `library.db`, carrying vectors and catalog state without reanalyzing audio. It also explicitly
   upgrades version-1 web settings, old play-history JSON, and initial folder registrations, with a

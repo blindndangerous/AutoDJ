@@ -2453,6 +2453,64 @@ page's `Origin`, never an announcer token. `POST` takes the announcer upload's f
 `ending_id`, `upcoming_id`, `placement`, `allow_outro` and `file`), with no `kind`: a voice track is
 always a DJ break.
 
+## Song structure and landmarks
+
+A sighted DJ reads a song's shape from its waveform. AutoDJ gives the same picture in words: a
+song's **landmarks** are its intro, the start of the singing, drops, breakdowns, build-ups, the
+outro and the segue, plus every 32-beat phrase and the hot and memory cues named in DJ software.
+They come from what AutoDJ already knows about the song, merged into one list:
+
+- the cue points in Track info (Start, Intro, Outro and Segue), whoever set them;
+- the DJ analysis: detected drops, breakdowns and phrases, the beat grid (for bar numbers), and the
+  cues imported from Mixxx, Rekordbox, Serato or Traktor. A hot cue named "Drop 2" or "Breakdown"
+  counts as one. Cues that only time a mix (first and last downbeat) are left out;
+- the synced lyrics: where the singing starts.
+
+Marks less than a second apart are one landmark. Of two marks of the same kind, one set by hand
+wins over DJ software, then lyrics, then analysis; two kinds that fall together share a name, such
+as "Drop and vocals". Bars count from the first beat of the beat grid, so bar 1 is the first
+detected beat; a song with no beat grid has no bar numbers. Drops, breakdowns, phrases and bars
+appear once the song has been analysed: when it is next up to play, or when Analyse runs in
+Library tools.
+
+### In Track info
+
+Track info lists the song's structure under **Song structure**, one landmark per list item in time
+order, for example:
+
+- Intro, 0:00 to 0:32, bars 1 to 17
+- Vocals from 0:45, bar 23
+- Drop, 1:35, bar 49
+- Breakdown, 2:40, bar 81
+- Outro, 3:50 to 4:10, bars 116 to 126
+
+A screen reader reads each time in words ("1 minute 35 seconds"), because a bare "1:35" can be
+read as a time of day. Phrases, unnamed cues and the end of the intro (its item already says
+where it ends) are not listed; the bracket keys still stop on them, and Shift+U says when the intro
+ends.
+
+### Keys
+
+- **Right bracket** and **Left bracket** move to the next and previous landmark and say it, for
+  example "Drop, 1 minute 35 seconds, bar 49". While Track info shows, they move the cue point
+  preview, whether it is playing or paused, so **Use preview position** then copies that time into
+  a cue point. On any other tab they move the song on air, as Comma and Period do, which is not
+  possible in stream mode. Left bracket goes back to the start of the landmark you are in, or to
+  the one before when you are within a second of it.
+- **Shift+U** says what is coming next in the song on air, with the seconds and, when the tempo is
+  known, the bars: "Drop in 12 seconds, 6 bars", "Outro starts in 30 seconds, 15 bars". After the
+  last landmark it says how long the song has left. With several stations it starts with the
+  station's name.
+
+Each key says its answer once, politely, and never moves focus. They are single-key shortcuts, so
+**Enable keyboard shortcuts** (Settings, Display and keys) turns them off with the rest. Neither
+bracket nor Shift+U is used by the browsers or by NVDA and JAWS outside browse mode; in browse
+mode, use focus mode, or press NVDA+F2 or JAWS Insert+3 first to pass the key through. On a
+keyboard layout that types brackets with AltGr, AltGr and the bracket key work.
+
+The landmarks are read through the station the page controls, at `GET /api/landmarks?path=...`
+or `/api/stations/<slug>/landmarks?path=...`, for a song in the library only.
+
 ## Matched intros
 
 A matched intro is a short voice clip tied to one song, or to every song by one artist, such as

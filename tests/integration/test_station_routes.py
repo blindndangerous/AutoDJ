@@ -207,6 +207,8 @@ STATION = frozenset(
         "/shows/{show_id}/songs",
         "/shows/{show_id}/generate",
         "/shows/{show_id}/start",
+        # Spoken track landmarks (#60): read through the station's player.
+        "/landmarks",
         "/ws",
     }
 )

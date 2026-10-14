@@ -1152,6 +1152,7 @@ def install_station_routes(router: StationRouter) -> None:
     from autodj.breaks_api import install_breaks
     from autodj.carts import install_carts
     from autodj.hour_preview import install_hour_preview
+    from autodj.landmarks import install_landmarks
     from autodj.matched_intros_api import install_matched_intros
     from autodj.requests_api import install_requests
     from autodj.rotation_api import install_rotation_test
@@ -2197,6 +2198,7 @@ def install_station_routes(router: StationRouter) -> None:
     install_shows(router)
     install_rotation_test(router)
     install_hour_preview(router)
+    install_landmarks(router)
 
 
 __all__ = [

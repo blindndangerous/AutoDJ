@@ -408,6 +408,18 @@
     <h2 id="track-info-heading" tabindex="-1">Track info</h2>
     <p id="track-info-empty">Choose Track info beside a song or liner.</p>
     <dl id="track-info-details" hidden></dl>
+    <!-- Song structure (modules/landmarks.js, #60): the song's landmarks as
+         a list of text in time order, each time shown as 1:35 and read as
+         words.  Never live: it is drawn when a song opens, and the bracket
+         keys say where they land through #sr-status instead. -->
+    <section id="landmarks-section" aria-labelledby="landmarks-heading" hidden>
+      <h3 id="landmarks-heading">Song structure</h3>
+      <p class="setting-desc" id="landmarks-help">Where the intro, the singing, drops, breakdowns and the outro are, from AutoDJ’s analysis, the synced lyrics and the cue points. While Track info shows, the Right bracket key moves the cue point preview to the next landmark and the Left bracket key to the previous one, and says what is there.</p>
+      <p id="landmarks-empty" hidden></p>
+      <!-- role="list": list-style none drops the list role in Safari. -->
+      <ol id="landmarks-list" class="landmark-list" role="list" aria-labelledby="landmarks-heading" hidden></ol>
+      <p class="setting-desc" id="landmarks-note" hidden>Drops, breakdowns, phrases and bar numbers appear once AutoDJ has analysed this song: when it is next up to play, or when Analyse runs in Library tools.</p>
+    </section>
     <!-- Tags (modules/tag-editor.js).  Save tags writes only the fields that
          changed into the file and the library; the analysis and cue points
          stay.  A refused field is marked invalid, its error is linked to it
@@ -3282,6 +3294,8 @@
     <dt><kbd>Shift+Q</kbd></dt><dd>Speak how many tracks are queued, and the first one</dd>
     <dt><kbd>Shift+J</kbd></dt><dd>Speak the library job status</dd>
     <dt><kbd>Shift+H</kbd></dt><dd>Speak how the hour lands, from the hour preview</dd>
+    <dt style="margin-top:0.5rem"><kbd><span aria-hidden="true">]</span><span class="visually-hidden">Right bracket</span></kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd><span aria-hidden="true">[</span><span class="visually-hidden">Left bracket</span></kbd></dt><dd style="margin-top:0.5rem">Move to the next <span aria-hidden="true">/</span><span class="visually-hidden">or</span> previous landmark (intro, vocals, drop, breakdown, outro, phrase) and speak it. In Track info, moves the cue point preview; on other tabs, the song on air (not in stream mode).</dd>
+    <dt><kbd>Shift+U</kbd></dt><dd>Speak what is coming next in the song on air, such as “Drop in 12 seconds, 6 bars”</dd>
     <dt style="margin-top:0.5rem"><kbd>c</kbd></dt><dd style="margin-top:0.5rem">Move to the station switcher. Only when the server has several stations.</dd>
     <dt><kbd>Shift+C</kbd></dt><dd>Speak which station this page controls, whether it is on air, its listeners and its song</dd>
   </dl>
