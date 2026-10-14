@@ -71,7 +71,8 @@ The maintainer cuts releases from `master`. For version `X.Y.Z`:
 1. Set `version = "X.Y.Z"` in `pyproject.toml` and run `uv lock` so the lock records the new
    project version.
 2. In `CHANGELOG.md`, add `## [X.Y.Z] - YYYY-MM-DD` with the user-facing changes from the PRs
-   merged since the last tag, one line each. Leave out fixes to changes that were never released.
+   merged since the last tag: a few lines for a big new feature, one short line for anything
+   else. Leave out fixes to changes that were never released.
    Keep an empty `## [Unreleased]` above it, and update the link references at the bottom of the
    file.
 3. Record the manual screen-reader sample that
