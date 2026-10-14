@@ -1009,6 +1009,8 @@ FEED_FIELDS = {
     "stream_path",
     "peak_listeners_today",
     "uptime_seconds",
+    # Live DJs (#48): the DJ on the air and since when, or null.
+    "live",
 }
 TRACK_FIELDS = {"artist", "title", "album", "duration", "started_at", "elapsed"}
 HISTORY_FIELDS = {"artist", "title", "duration", "played_at"}

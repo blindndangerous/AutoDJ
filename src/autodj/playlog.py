@@ -17,11 +17,13 @@ that started inside the requested range:
 - ``isrc`` and ``label``, read from the file's tags at export time, so no
   re-index is needed.  An ISRC is written as 12 characters without
   hyphens; a tag that does not hold a valid one counts as missing.
-- ``kind``: ``song``, ``liner`` or ``ad``.  The mix bus logs only the
-  tracks it starts, so liners mixed over a transition are not in the log.
+- ``kind``: ``song``, ``liner``, ``ad`` or ``live``.  The mix bus logs only
+  the tracks it starts, so liners mixed over a transition are not in the log.
   The ad spots that aired come from the station's ad play log
   (:func:`autodj.ads.aired_plays`, #51): the advertiser as the artist and
-  the campaign as the album.
+  the campaign as the album.  A live DJ's set (#48) has the DJ's name as
+  artist, its length to when they left, and no path; it is never in a
+  SoundExchange report, whose music came from the DJ's own software.
 - ``path``: relative to the music or liner folder that holds the file,
   with ``/`` separators; absolute when no folder holds it.
 - ``performances``: how many listeners heard the play, each counted once:
@@ -176,11 +178,15 @@ def plays_between(
         if started is None or not start <= started < end:
             continue
         length = float(row["duration"])
-        following = history_start(row["following_at"])
+        following = (
+            history_start(row["ended_at"])
+            if row["kind"] == "live"
+            else history_start(row["following_at"])
+        )
         if following is not None and following >= started:
             length = min(length, (following - started).total_seconds())
         path = row["path"] or ""
-        if path and path not in files:
+        if path and row["kind"] != "live" and path not in files:
             isrc, label = read_tags(path)
             files[path] = (_relative(path, sources), isrc, label)
         relative, isrc, label = files.get(path, ("", "", ""))
@@ -199,7 +205,7 @@ def plays_between(
                 album=row["album"] or "",
                 isrc=isrc,
                 label=label,
-                kind="liner" if kind == "liner" else "song",
+                kind="live" if kind == "live" else "liner" if kind == "liner" else "song",
                 path=relative,
                 performances=row["performances"],
             )

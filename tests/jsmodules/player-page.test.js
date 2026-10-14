@@ -324,6 +324,16 @@ describe("recent songs", () => {
     expect(list.children).toHaveLength(0);
   });
 
+  it("lists a live DJ's set by the DJ's name, with no song words", () => {
+    const render = historyRenderer(document);
+    render({ history: [
+      { artist: "DJ Alice", title: "Live", played_at: "2", kind: "live", ended_at: null, duration: 0 },
+      { artist: "A", title: "One", played_at: "1" },
+    ] });
+    expect([...byId("player-history").children].map((item) => item.textContent))
+      .toEqual(["Live: DJ Alice.", "One by A."]);
+  });
+
   it("does nothing on a page without the list", () => {
     document.body.innerHTML = "";
     expect(() => historyRenderer(document)({ history: [] })).not.toThrow();

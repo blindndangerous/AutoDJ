@@ -795,8 +795,12 @@ approval = "manual"          # or "auto": a request that keeps the rules is queu
 per_listener = 3             # requests one address may make ...
 per_listener_minutes = 60    # ... in this many minutes
 daily_limit = 50             # requests the station takes per day, from everyone
-max_pending = 20             # requests that may wait for you at once (manual approval)
+max_pending = 20             # requests that may wait for you at once
 window_minutes = 30          # how far ahead in the queue a request may be placed
+bridges_enabled = false       # optional transition songs; off by default
+max_bridges = 3              # one to three when enabled
+bridge_cost_threshold = 2.0  # seek a bridge above this fit cost (0 to 10)
+no_smooth_spot = "best"       # "best" or "wait" for operator approval
 blocked_artists = ["Night Owl Jingles"]
 blocked_folders = ["Christmas"]   # full paths, or folders relative to registered music folders
 ipv6_prefix = 56             # an IPv6 listener's limits count over this network
@@ -856,8 +860,43 @@ song breaks already does not count against the request. Of the places that break
 where the song joins its neighbours most smoothly. It weighs sound (the embeddings), tempo (half
 and double time count as a match), Camelot key and the step in energy, and the sooner place wins a
 tie. Working out the place and adding the song there happen as one step, so the queue cannot
-change in between. A request is a song in the queue like any other. It never takes the place of a station ID, a
-liner, a break or a time check, which play between songs.
+change in between. A request is a song in the queue like any other. When a clockwheel is active,
+the request must match its next music or category step, including that step's folder or conditions,
+category membership, and step hours. A preceding clockwheel liner or settings step still runs;
+a fixed track step cannot be taken by a request. A matching request advances the clockwheel
+cursor when it plays. Station IDs, ad breaks and time checks retain their own scheduled places.
+The queue does not reserve a music step beyond a fixed show-song step in advance; the request
+waits until that step has passed and the next music step can be checked. A request never goes
+between a liner you queued and the song after it, which that liner leads into.
+
+With `bridges_enabled = true`, a request above `bridge_cost_threshold` may get one to
+`max_bridges` bridge songs before it. AutoDJ searches the same embedding index the picker uses,
+from both the preceding song and the request, and prefers smaller steps in sound, tempo, key and
+energy. It checks each bridge at its projected play time against repeat and song-version holds,
+DMCA limits, dayparting, the daypart and quarter-hour rules (on the station's clock), the
+clockwheel step and request blocklists. Liners and silent tracks are never bridges. The bridges
+and request are inserted together after a queue version check. Removing the queued request
+(Remove, or a reorder that leaves it out) removes its bridges that have not played yet. They
+belong to that request alone: a song you queued yourself stays, even when it is the same song. The
+queue, the hour preview and their API data mark each bridge "Bridge to <request>"; the
+operator API includes `bridges`, a `reason`, and the four transition settings.
+
+If no bridge is eligible or no transition reaches the threshold, `no_smooth_spot = "best"`
+uses the best legal position and explains that choice to the operator. With `"wait"`, an
+automatically approved request stays waiting for you instead, with the reason; when you approve
+it, it goes in the best legal position. When no matching clockwheel music step is available, it
+waits regardless of that setting; a request never overrides a reserved step. An automatic request
+that has to wait counts toward `max_pending`.
+
+The bridge search examines at most 24 nearest neighbours from each end at each of three steps,
+and validates at most 12 candidates per step. On a synthetic library of 50,000 songs with
+1,040-dimensional vectors, two 24-neighbour searches took a median 255 ms and a 95th percentile
+741 ms over 25 warm runs on the development machine (Windows, Python 3.14, FAISS CPU). These
+numbers cover vector search, not rule projection or disk-backed category reads. Search and rule
+checks run outside the queue lock and off the event loop, inside the listener request slots
+when a listener's request is approved automatically; the lock covers the final version check,
+insertion, bridge markers and the existing queue refresh. The operator's list, which refreshes
+every 15 seconds, never runs the search: it says when approving would look for bridge songs.
 
 **What you do.** While requests are on, Queue & Search has a **Listener requests** card. It says
 how many requests are waiting and how many the station took today. Each waiting request shows who
@@ -867,8 +906,18 @@ Artist: same key, 2 BPM apart.") or what stops it. Each request has three button
 - **Approve** queues it at that place, checked again at that moment. It is left out while no place
   keeps the rules.
 - **Play next** queues it first, after the song playing and any "play next" song, whatever fits.
-  DMCA limits still hold, counting that "play next" song, and for the queued songs after it.
+  DMCA limits and clockwheel step restrictions still hold, counting that "play next" song
+  and the queued songs after it.
 - **Turn down**.
+
+Below the decisions, **Smooth transitions** holds the same four settings as `[requests]`:
+**Add bridge songs before a request that would sound abrupt**, **Most bridge songs** (1 to 3),
+**Roughness limit** (0 to 10, the `bridge_cost_threshold`) and **When no smooth spot is found**
+(**Use the best spot that keeps the rules** or **Keep the request waiting for you to decide**).
+**Save request settings** saves them for this station at once (`POST /api/requests/settings`);
+they are kept in `web_state.json` and, like the other settings saved on the page, take the place
+of the config.toml values from then on. A Roughness limit outside 0 to 10 is refused in the
+browser: the field is marked, its error shown under it and linked to it, and focus goes to it.
 
 Focus moves to the next request's Approve button (its first button when Approve is not offered),
 or to the card's title when none is left, and the result is said once just after that. Recent
@@ -887,9 +936,8 @@ past their 30 days are applied even when nobody uses the page or the card. At mo
 or request checks run at once, across all stations. Others wait their turn without holding a
 worker thread, and get "busy" after two seconds. The same search within 30 seconds is answered
 from memory. A song can be requested only after a search has shown it, which needs no map of the
-whole library. So a flood of requests cannot take the server's time from the music. Listener addresses are kept in memory only, for the limits, and are forgotten when
-AutoDJ restarts. Requests do not yet get bridge songs to lead into them, and are not yet matched to
-clockwheel categories.
+whole library. So a flood of requests cannot take the server's time from the music. Listener
+addresses are kept in memory only, for the limits, and are forgotten when AutoDJ restarts.
 
 Letting listeners choose when songs play can make a station an "interactive" service, which the
 US statutory webcasting licence does not cover. Requests therefore never play at once or at a
@@ -1280,6 +1328,131 @@ relay changes state).
 The password crosses the network to the server as the protocol requires: in an HTTP Basic
 login for Icecast, and as plain text for Shoutcast, including in title updates. AutoDJ does
 not use TLS for relays, so use a host you trust on networks you trust. See the threat model.
+
+### Live DJs and talkover
+
+A live DJ can take over a station from their own DJ software, and anyone signed in to the page
+can talk over the music from the browser. Both need stream mode (`serve --stream`, or a station
+under `[stations.<name>]`), because the server mixes what goes on the air.
+
+**Adding DJs.** In **Settings > Live DJ**, add each DJ with a username, the name
+listeners see (for example "DJ Alice") and a password of 12 to 256 characters. Passwords are
+never shown again; editing a DJ with the password left blank keeps the saved one. Each station
+has its own DJs, kept in that station's `live_djs.json` as scrypt hashes, written atomically and,
+on POSIX systems, readable only by the server's user. Removing a DJ who is on the air takes them
+off at once. A backup keeps the DJs and the talkover settings but not the password hashes, so
+after a restore each DJ shows "no password" until you set their password again.
+
+**Connecting BUTT or Mixxx.** Live DJs connect to the station's source mount on AutoDJ's own
+address and port, with the same settings as an Icecast 2 server:
+
+- Server type: Icecast (Icecast 2).
+- Address and port: the ones the page is open on, for example `radio.example.com` and `8080`.
+- Mount: `live` for the default station, `stations/<name>/live` for another station. The
+  Live DJ tab shows the full address for the station the page controls.
+- Username and password: the DJ's. (Not `source`: each DJ has their own login.)
+- Format: MP3, AAC or Ogg Vorbis, at up to 512 kbit/s.
+- Encryption: turn on SSL/TLS in BUTT ("Use SSL/TLS") when AutoDJ serves HTTPS.
+
+A DJ's password goes in an HTTP Basic login, so AutoDJ accepts it only over HTTPS or from the
+machine AutoDJ runs on. To let DJs on your local network connect over plain HTTP, set
+`live_plain_http_lan = true` under `[server]`; their passwords then cross your LAN unencrypted,
+so use it only on a network you trust. It never admits plain HTTP from outside the private
+address ranges, or through a proxy. Five wrong passwords from one address in a minute (one
+IPv6 /64) lock that address out for the rest of the minute, and one station takes one DJ at a
+time: a second DJ is refused until the first disconnects.
+
+**Going on the air.** A DJ who connects is on standby until their software sends sound: silence
+does not take the station. When sound arrives, AutoDJ buffers about 0.3 seconds of it and
+crossfades from the music to the DJ over one second, at equal power so the level holds. From
+that moment no new song starts: if the song playing ends during the crossfade, the DJ comes in
+over silence rather than the next song. The interrupted song's History row ends when the DJ
+came on. While the DJ is on, automation waits exactly where it was: nothing is added to the play history or the repeat rules, the clockwheel does not move
+on, and the queue, a show on the air and any waiting breaks stay as they were. The stream
+title, the status page and the public feed show the DJ's name and "Live", and the page says
+"Live: DJ Alice since 9:02 PM" once, politely. The station keeps playing while a DJ or a talker
+is connected, even with no listeners.
+
+**Handing back.** When the DJ disconnects, or sends only silence for 15 seconds, automation
+takes back the air. It does not resume the interrupted song: the song that was due next is
+rendered again for now (its time check and liners were planned before the DJ came on), and
+the DJ's last buffered audio crossfades into it. If that render takes longer than the DJ's
+remaining audio, the song as rendered before the DJ came on plays instead, so there is never
+dead air. A station with no set playing (no listeners and nothing keeping it on) goes back to
+idle.
+
+**Scheduled events while a DJ is on.** Events still run at their time and are logged as usual,
+but AutoDJ does not put its own audio over a live DJ:
+
+- An event that changes the song with hard timing (**Play a show**, a song played now) takes
+  effect when the DJ hands back: its song is the first one automation plays.
+- Soft-timed events queue as usual and play in turn after the DJ.
+- A station ID or other liner due while the DJ is on (fired by the schedule or **Test**) plays
+  once when the DJ hands back, over the first song; if several fall due, only the latest plays.
+  The log says it waits.
+- A time check due while the DJ is on would be stale by then: it is skipped, and the log says
+  so.
+- Cart clips are refused while the DJ is on, and the cart wall says why.
+- A voice break (#88) waiting for the next song change misses its slot: it is dropped and
+  logged as missed, "live DJ on air". (The missed and late rules being designed in #215 will
+  decide this in time.)
+- **Stop playing** stops automation behind the DJ; the DJ stays on, and when they leave the
+  station is idle.
+
+**When a source is cut off.** A connection is closed when it sends nothing for 10 seconds,
+waits on standby (only silence) for 30 minutes, sends faster than 512 kbit/s over five seconds
+(with a 64 KiB burst allowance), passes 2 GiB in one connection (about 14 hours at 320 kbit/s),
+or when the decoder cannot keep up or fails. If the DJ's audio briefly runs out (a network
+stall), AutoDJ plays silence, logs one warning, and resumes when 0.3 seconds have buffered
+again. Each source is decoded by its own FFmpeg process, reading only the format the DJ's
+software declared, from a pipe, with no access to files or the network; at most 2 seconds of
+decoded audio wait for the mixer, and older audio is dropped first.
+
+On the development PC (Windows 11, FFmpeg 8.1.2), decoding 30 seconds of 128 kbit/s MP3 the way
+a source is decoded took 0.09 seconds of CPU and 16.3 MiB of memory for the FFmpeg process, so a
+DJ costs well under 1% of one core. The mixer spends about 30 microseconds on each 20 ms block
+while a DJ is on, less than with music (the music's EQ is skipped), and about 20 microseconds
+more while someone talks over.
+
+**Talkover from the browser.** The **Talk** button in the Controls card on Now Playing puts
+your microphone on the air while you hold it: hold the mouse button or a finger on it, or
+press and hold Space or Enter while it has focus, or hold **Alt+M** anywhere on the page.
+Alt+M only ever talks while held. A quick press or click on the button itself (under about a
+third of a second), such as a screen reader's click or a switch, keeps talk on until you press
+Talk again instead: the page then shows "Talking until you press Talk again, for 2 minutes at
+most." under the button and says so once, and talk turns itself off after 2 minutes, saying
+"Talk turned off after 2 minutes." The button stays named "Talk" and reports pressed while you
+are on the air; Alt+M also says "Talking." and "Stopped talking." The browser asks
+for the microphone when you first press, and the page lets it go when you stop, leave the
+window or tab, switch station or sign out. Alt+M is not turned off by the Settings keyboard
+switch, which covers single-key shortcuts. While you talk, the
+music (or the live DJ) is lowered by the **Duck amount** (12 dB to start with) within 40 ms,
+and when you release it comes back up over the **Return time** (half a second to start with);
+set both in **Settings > Live DJ**, per station. One person talks at a time on each
+station; while someone else talks, Talk shows as unavailable. When the server has no sign-in
+(pairing is off), anyone who can open the page can talk on the air and change the Live DJ
+settings, as with every other control on the page. Talkover needs a secure page (HTTPS, or
+`localhost`), because browsers give the microphone only to secure pages.
+
+The browser sends 16-bit mono PCM at its own sample rate over a WebSocket, about 0.7 to 0.8
+Mbit/s, rather than Opus: there is no decoder process per talker and no codec delay, and the
+server resamples to the station's rate. Programs can use the same socket,
+`wss://<host>/api/live/mic?rate=48000` (or `/api/stations/<name>/live/mic`), with the page's
+session cookie and Origin: binary messages of little-endian 16-bit mono samples, at most 32 KiB
+each, sent continuously while talking. The server closes the socket after 2 seconds without a
+message, keeps at most half a second of a talker's audio, and closes a talker sending more than
+twice real time.
+
+**History and reports.** A DJ's set is one History row with the DJ's name, "Live", when it
+started and, once over, when it ended and its length. It is in the CSV play log with kind
+`live`, and left out of SoundExchange reports and the repeat rules: the music came from the
+DJ's own software, which AutoDJ cannot see. Report a DJ's songs from their own software.
+
+The routes, for scripts: `GET /api/live` (the DJ on the air, the DJs without their passwords,
+the talkover settings and the source mount), `PUT /api/live/settings`, `POST /api/live/djs`
+(`username`, `display_name`, and `password`, or `null` to keep the saved one),
+`DELETE /api/live/djs/<username>`, each also under `/api/stations/<name>/`. They need a paired
+browser session like the rest of the page.
 
 ### Recording the broadcast
 
@@ -2749,7 +2922,8 @@ The CSV has one row per play, in this column order:
   not a valid ISRC (2 letters, 3 letters or digits, then 7 digits) counts as missing, so the song
   shows up in `--missing`. Label comes from `LABEL`, `ORGANIZATION` or `PUBLISHER` (FLAC and Ogg), `TPUB` or
   `TXXX:LABEL` (MP3), or the iTunes `LABEL` atom (M4A).
-- `kind`: `song` or `liner`.
+- `kind`: `song`, `liner`, or `live` for a live DJ's set (see "Live DJs and talkover"),
+  which has no path and is never in a SoundExchange report.
 - `path`: the file's path inside its music or liner folder, with `/` between folders.
 - `performances`: how many listeners heard the play; see "Listener counts" below. Empty for plays
   logged before AutoDJ counted listeners.

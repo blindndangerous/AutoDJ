@@ -69,6 +69,24 @@
 //         and lets the microphone go, a refused booking is shown,
 //         linked to Book voice track, focus staying there, and leaving
 //         the tab stops a recording and says so once;
+//       - Live DJ (#48), its server answers stood in for and the socket
+//         pushes naming a live DJ: Now Playing's live line and Talk, Talk
+//         latched on, Settings > Live DJ with its DJ list, and Add DJ
+//         refused with its error linked.  Talk held with Space keeps focus
+//         on it and sets aria-pressed, sends microphone audio and lets the
+//         microphone go when released; Alt+M held from another control
+//         talks without moving focus and says "Talking" and "Stopped
+//         talking" once each, and a quick Alt+M never leaves it on; a
+//         quick press of Talk keeps it on, said once and shown in words,
+//         until Talk is pressed again; a DJ going live and leaving is said
+//         once each.  The microphone, the capture worklet and the talk socket
+//         are stubbed;
+//       - Queue & Search's Listener requests card, its answers stood in
+//         for: a waiting request that would get bridge songs, one with no
+//         smooth spot and its reason, a bridged request in the decisions,
+//         and the Smooth transitions settings; queue rows marked "Bridge
+//         to <request>"; and a refused Roughness limit, marked, linked and
+//         focused (#49);
 //       - Ads, with its spots, breaks and report stood in for: the lists,
 //         the spot form refused (its error linked to the file field), the
 //         break form, and the report's two tables; by keyboard Add spot
@@ -392,6 +410,80 @@ async function standInForHourPreview(page) {
   }));
 }
 
+// Listener requests (#49): the audit server has them off, so the card's
+// answers are stood in for.  Long unbroken names test reflow.
+const REQUESTS = {
+  enabled: true,
+  approval: "manual",
+  bridges_enabled: true,
+  max_bridges: 3,
+  bridge_cost_threshold: 2,
+  no_smooth_spot: "wait",
+  today: 3,
+  daily_limit: 50,
+  pending: [
+    {
+      id: "a".repeat(32), title: "Slow Ballad", artist: "Example Singer", name: "Sam",
+      requested_at: 1767268800, status: "pending", bridges: [],
+      fit: "Fits after Example Artist — Song 3. It is far from the songs around it, so approving it looks for up to three bridge songs to lead into it first.",
+      reason: "Fits after Example Artist — Song 3. It is far from the songs around it, so approving it looks for up to three bridge songs to lead into it first.",
+      can_approve: true,
+    },
+    {
+      id: "b".repeat(32), title: "An_Exceptionally_Long_Request_Title_Without_Any_Spaces_0001",
+      artist: "Another Example", name: "", requested_at: 1767269100, status: "pending", bridges: [],
+      fit: "Fits after Example Artist — Song 4: 30 BPM apart. No smooth spot within the next 30 minutes. Approving it uses the best legal spot.",
+      reason: "Fits after Example Artist — Song 4: 30 BPM apart. No smooth spot within the next 30 minutes. Approving it uses the best legal spot.",
+      can_approve: true,
+    },
+  ],
+  recent: [
+    {
+      id: "c".repeat(32), title: "Quiet Song", artist: "Example Band", name: "Alex",
+      requested_at: 1767265200, status: "queued", decided_at: 1767265260,
+      note: "Bridge to Example Band — Quiet Song through Example Artist — Song 2.",
+      reason: "Bridge to Example Band — Quiet Song through Example Artist — Song 2.",
+      bridges: ["Example Artist — Song 2"],
+    },
+  ],
+};
+const requestPages = new WeakSet();
+
+async function standInForRequests(page) {
+  if (requestPages.has(page)) return;
+  requestPages.add(page);
+  await page.route("**/api/requests", (route) => (route.request().method() === "GET"
+    ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REQUESTS) })
+    : route.continue()));
+}
+
+// Two queue rows that lead into a request, drawn by the page's own queue
+// module.  Only the drawing: the queue the server pushes is unchanged, so
+// it does not redraw over them.
+async function showBridgedQueue(page) {
+  // The page's own module URL, passed in so the import is the page's.
+  await page.evaluate(async (moduleUrl) => {
+    const { renderQueue } = await import(moduleUrl);
+    renderQueue([
+      { path: "/audit/bridge-1.mp3", artist: "Example Artist", title: "Song 2", bridge_to: "Example Band — Quiet Song" },
+      { path: "/audit/bridge-2.mp3", artist: "Example Artist", title: "An_Exceptionally_Long_Bridge_Title_Without_Spaces_0002", bridge_to: "Example Band — An_Exceptionally_Long_Request_Title_Without_Spaces" },
+      { path: "/audit/request.mp3", artist: "Example Band", title: "Quiet Song" },
+    ], { queueList: document.getElementById("queue-list"), queueCount: document.getElementById("queue-count") });
+  }, "/modules/queue.js");
+}
+
+// Smooth transitions: a Roughness limit out of range is refused in the
+// browser, marked, linked and focused.  Nothing is saved.
+async function openRequestSettingsError(page, visit) {
+  const field = page.locator("#requests-threshold");
+  await field.waitFor({ state: "visible" });
+  await field.fill("12");
+  await page.locator("#requests-settings-save").click();
+  await page.locator("#requests-threshold-error").waitFor({ state: "visible" });
+  await visit("queue/request-settings-error");
+  await field.fill("2");
+}
+
 // Settings > Schedule: one action with no settings of its own, so the
 // form's own checks reach Wait up to seconds whatever the server offers.
 const SCHEDULE = {
@@ -652,6 +744,154 @@ async function openVoiceStates(page, visit) {
   await page.evaluate(() => { window.__micRefusal = ""; });
 }
 
+// Live DJ (#48): GET /api/live says the station can go live, with a DJ
+// on the air and two DJ accounts (one with a long unbroken username, for
+// reflow); Add DJ is refused by the server.  The station's socket pushes
+// are passed through with "live" set to what the stand-in says, and the
+// talk socket is answered here, counting what the page sends.  The capture
+// worklet and the microphone source are stubbed (the microphone itself is
+// the Voice tracks stand-in's).
+const LIVE_DJ = { dj: "DJ Alice", since: "2026-10-13T20:15:00Z" };
+const LIVE_INFO = (live) => ({
+  available: true, reason: null, live, talkover: false, source_path: "/live", plain_http_lan: false,
+  settings: { mic_return_seconds: 0.5, mic_duck_db: 12 },
+  djs: [
+    { username: "dj_an_exceptionally_long_username_without_any_spaces_0001", display_name: "DJ Alice", password_set: true },
+    { username: "bob", display_name: "Bob", password_set: false },
+  ],
+});
+const livePages = new WeakMap();
+
+async function standInForLiveDj(page) {
+  if (livePages.has(page)) return livePages.get(page);
+  const state = { live: LIVE_DJ, micSockets: 0, micMessages: 0 };
+  livePages.set(page, state);
+  await page.addInitScript(() => {
+    const RealNode = window.AudioWorkletNode;
+    window.AudioWorkletNode = function AudioWorkletNode(context, name, options) {
+      if (name !== "autodj-talk-capture") return new RealNode(context, name, options);
+      const node = { port: { onmessage: null, close() {} } };
+      const timer = setInterval(() => node.port.onmessage?.({ data: new ArrayBuffer(4096) }), 50);
+      node.disconnect = () => clearInterval(timer);
+      return node;
+    };
+    const worklet = window.AudioWorklet?.prototype;
+    if (worklet) {
+      const addModule = worklet.addModule;
+      worklet.addModule = function stubbedAddModule(url, options) {
+        return String(url).startsWith("blob:") ? Promise.resolve() : addModule.call(this, url, options);
+      };
+    }
+    const context = (window.AudioContext || window.webkitAudioContext)?.prototype;
+    if (context) {
+      const createSource = context.createMediaStreamSource;
+      context.createMediaStreamSource = function stubbedSource(stream) {
+        if (window.MediaStream && stream instanceof window.MediaStream) return createSource.call(this, stream);
+        return { connect() {}, disconnect() {} };
+      };
+    }
+  });
+  await page.route("**/api/live", (route) => (route.request().method() === "GET"
+    ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(LIVE_INFO(state.live)) })
+    : route.continue()));
+  await page.route("**/api/live/djs", (route) => (route.request().method() === "POST"
+    ? route.fulfill({ status: 400, contentType: "application/json",
+      body: JSON.stringify({ detail: "Username must be 1 to 64 printable ASCII characters" }) })
+    : route.continue()));
+  await page.routeWebSocket(/\/live\/mic(\?|$)/, (socket) => {
+    state.micSockets += 1;
+    socket.onMessage(() => { state.micMessages += 1; });
+  });
+  await page.routeWebSocket(/\/(ws|api\/stations\/[^/]+\/ws)$/, (socket) => {
+    const server = socket.connectToServer();
+    server.onMessage((message) => {
+      let data = message;
+      try {
+        const parsed = JSON.parse(message);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && !parsed.type) {
+          data = JSON.stringify({ ...parsed, live: state.live, talkover: false });
+        }
+      } catch { /* not JSON: passed on as it is */ }
+      socket.send(data);
+    });
+    socket.onMessage((message) => server.send(message));
+  });
+  return state;
+}
+
+// WebKit's Windows build has no Web Audio at all.  While Talk is tried
+// there, a stand-in audio context exists, and it is taken away after, so
+// nothing else on the page ever sees it.
+function fakeTalkAudio(page, on) {
+  return page.evaluate((install) => {
+    if (install && !window.AudioContext && !window.webkitAudioContext) {
+      window.__fakeTalkAudio = true;
+      window.AudioContext = class FakeTalkContext {
+        constructor() {
+          this.sampleRate = 48000;
+          this.state = "running";
+          this.destination = {};
+          this.audioWorklet = { addModule: () => Promise.resolve() };
+        }
+
+        resume() { return Promise.resolve(); }
+
+        close() { return Promise.resolve(); }
+
+        createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
+      };
+    } else if (!install && window.__fakeTalkAudio) {
+      delete window.AudioContext;
+      delete window.__fakeTalkAudio;
+    }
+  }, on);
+}
+
+// Talk latched on by a quick press, as a state of Now Playing.
+async function openTalkState(page, visit) {
+  await fakeTalkAudio(page, true);
+  try {
+    await talkState(page, visit);
+  } finally {
+    await fakeTalkAudio(page, false);
+  }
+}
+
+async function talkState(page, visit) {
+  const talk = page.locator("#btn-talk");
+  await talk.waitFor({ state: "visible", timeout: 5000 });
+  await talk.focus();
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.getElementById("btn-talk").getAttribute("aria-pressed") === "true",
+    null, { timeout: 5000 }).catch(async () => {
+    const why = await page.evaluate(() => document.getElementById("talk-error").textContent);
+    throw new Error(`Talk did not latch on: ${why || "no error shown"}`);
+  });
+  await settle(page);
+  await visit("now/talking");
+  // Tabbing past the last control leaves the page, which stops talk; if it
+  // is still on, pressing Talk again stops it.
+  if (await talk.getAttribute("aria-pressed") === "true") {
+    await talk.focus();
+    await page.keyboard.press("Enter");
+  }
+  await page.waitForFunction(() => document.getElementById("btn-talk").getAttribute("aria-pressed") === "false",
+    null, { timeout: 5000 });
+}
+
+// Settings > Live DJ with Add DJ refused: the error in words, linked.
+async function openLiveDjError(page, visit) {
+  await page.locator("#live-dj-add").click();
+  await page.locator("#live-dj-username").fill("dj");
+  await page.locator("#live-dj-name").fill("DJ Carol");
+  await page.locator("#live-dj-password").fill("correct horse battery");
+  await page.locator("#live-dj-save").click();
+  await page.locator("#live-dj-error").waitFor({ state: "visible", timeout: 5000 });
+  await settle(page);
+  await visit("settings/live/dj-error");
+  await page.locator("#live-dj-cancel").click();
+}
+
 // Ads (#51): the spots, breaks and report are stood in for (the audit
 // server airs no ads), so the lists, the forms with a refused field and
 // the report's two tables are measured with long words in them.
@@ -877,6 +1117,8 @@ async function eachTarget(page, measure) {
   await standInForAds(page);
   await standInForShows(page);
   await standInForStations(page);
+  await standInForLiveDj(page);
+  await standInForRequests(page);
   await standInForSchedule(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   for (const view of VIEWS) {
@@ -890,7 +1132,12 @@ async function eachTarget(page, measure) {
       if (view === "now") {
         await page.locator("#hour-preview-table").waitFor({ state: "visible", timeout: 10000 });
       }
+      if (view === "queue") {
+        await page.locator("#requests-card").waitFor({ state: "visible", timeout: 10000 });
+        await showBridgedQueue(page);
+      }
       await visit(view);
+      if (view === "queue") await openRequestSettingsError(page, visit);
       if (view === "track-info") await openTrackTags(page, visit);
       if (view === "library") {
         await openDaypartErrors(page, visit);
@@ -898,7 +1145,10 @@ async function eachTarget(page, measure) {
       }
       if (view === "voice") await openVoiceStates(page, visit);
       if (view === "ads") await openAdsStates(page, visit);
-      if (view === "now") await openStationMenu(page, visit);
+      if (view === "now") {
+        await openStationMenu(page, visit);
+        await openTalkState(page, visit);
+      }
       continue;
     }
     const ids = await page.$$eval("#settings-tabs [role='tab']:not([hidden])",
@@ -915,6 +1165,7 @@ async function eachTarget(page, measure) {
       }
       if (id === "stab-schedule") await openScheduleWaitError(page, visit);
       if (id === "stab-time-checks") await openPackDatesError(page, visit);
+      if (id === "stab-live") await openLiveDjError(page, visit);
     }
   }
 }
@@ -1632,6 +1883,124 @@ async function voiceTrackerProblems(page) {
   return problems;
 }
 
+// Live DJ (#48): Talk held with Space and with Alt+M, and the live line
+// said once as a DJ goes live and once as they leave.
+async function liveDjProblems(page) {
+  await standInForVoiceTracker(page);
+  const live = await standInForLiveDj(page);
+  live.live = LIVE_DJ;
+  await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
+  const problems = [];
+  const talk = page.locator("#btn-talk");
+  try {
+    await talk.waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    return ["Talk is not shown while the station can go live"];
+  }
+  await fakeTalkAudio(page, true);
+  await page.evaluate(() => {
+    window.__liveSaid = [];
+    const region = document.getElementById("sr-status");
+    new window.MutationObserver(() => {
+      if (region.textContent) window.__liveSaid.push(region.textContent);
+    }).observe(region, { childList: true, characterData: true, subtree: true });
+  });
+  const state = () => page.evaluate(() => ({
+    pressed: document.getElementById("btn-talk").getAttribute("aria-pressed"),
+    focus: document.activeElement?.id || document.activeElement?.tagName.toLowerCase(),
+    said: [...window.__liveSaid],
+    stopped: window.__micStopped || 0,
+    line: document.getElementById("live-on-air").textContent,
+  }));
+  const pressedIs = (value) => page.waitForFunction(
+    (wanted) => document.getElementById("btn-talk").getAttribute("aria-pressed") === wanted,
+    value, { timeout: 5000 },
+  ).then(() => true, () => false);
+
+  // Hold Space on Talk.
+  const before = await state();
+  await talk.focus();
+  await page.keyboard.down("Space");
+  if (!await pressedIs("true")) problems.push("holding Space on Talk did not talk");
+  await page.waitForTimeout(800);
+  let now = await state();
+  if (now.focus !== "btn-talk") problems.push(`holding Space moved focus to ${now.focus}`);
+  if (!live.micMessages) problems.push("talking sent no microphone audio");
+  await page.keyboard.up("Space");
+  if (!await pressedIs("false")) problems.push("letting go of Space did not stop talking");
+  now = await state();
+  if (now.stopped <= before.stopped) problems.push("letting go of Talk kept the microphone");
+  if (now.focus !== "btn-talk") problems.push(`letting go of Space moved focus to ${now.focus}`);
+  if (now.said.length) problems.push(`holding Talk said ${JSON.stringify(now.said)}`);
+
+  // Hold Alt+M from another control.
+  await page.locator("#btn-skip").focus();
+  await page.keyboard.down("Alt");
+  await page.keyboard.down("KeyM");
+  if (!await pressedIs("true")) problems.push("holding Alt+M did not talk");
+  // Held well past the latch time, so letting go ends it.
+  await page.waitForTimeout(800);
+  await page.keyboard.up("KeyM");
+  await page.keyboard.up("Alt");
+  if (!await pressedIs("false")) problems.push("letting go of Alt+M did not stop talking");
+  await page.waitForTimeout(300);
+  now = await state();
+  if (now.focus !== "btn-skip") problems.push(`Alt+M moved focus to ${now.focus}`);
+  const talkSaid = now.said.filter((text) => /talking/i.test(text));
+  if (JSON.stringify(talkSaid) !== JSON.stringify(["Talking.", "Stopped talking."])) {
+    problems.push(`Alt+M said ${JSON.stringify(now.said)}`);
+  }
+
+  // A quick Alt+M never leaves the microphone on.
+  await page.keyboard.press("Alt+KeyM");
+  await page.waitForTimeout(1000);
+  if (await talk.getAttribute("aria-pressed") !== "false") {
+    problems.push("a quick Alt+M left talk on");
+    await page.keyboard.press("Alt+KeyM");
+  }
+
+  // A quick press of Talk latches it, said once and shown in words.
+  await talk.focus();
+  const latchFrom = (await state()).said.length;
+  await page.keyboard.press("Enter");
+  if (!await pressedIs("true")) problems.push("a quick press of Talk did not keep it on");
+  await page.waitForTimeout(300);
+  const latched = await page.evaluate(() => {
+    const note = document.getElementById("talk-latched");
+    return { shown: !note.hidden && note.getBoundingClientRect().height > 0, text: note.textContent };
+  });
+  if (!latched.shown || latched.text !== "Talking until you press Talk again, for 2 minutes at most.") {
+    problems.push(`latched talk shows ${JSON.stringify(latched)}`);
+  }
+  now = await state();
+  const latchSaid = now.said.slice(latchFrom);
+  if (latchSaid.length !== 1 || !/^Talking\. Press Talk again to stop\./.test(latchSaid[0])) {
+    problems.push(`latching said ${JSON.stringify(latchSaid)}`);
+  }
+  await page.keyboard.press("Enter");
+  if (!await pressedIs("false")) problems.push("pressing Talk again did not stop latched talk");
+
+  // A DJ going live and leaving, said once each from the socket pushes.
+  live.live = { dj: "DJ Bob", since: "2026-10-13T21:00:00Z" };
+  const lineIs = (pattern) => page.waitForFunction(
+    (source) => new RegExp(source).test(document.getElementById("live-on-air").textContent),
+    pattern, { timeout: 8000 },
+  ).then(() => true, () => false);
+  if (!await lineIs("^Live: DJ Bob since ")) problems.push("the live line did not follow the socket");
+  await page.waitForTimeout(2500);
+  live.live = null;
+  if (!await lineIs("^$")) problems.push("the live line stayed after the DJ left");
+  await page.waitForTimeout(2500);
+  now = await state();
+  const liveSaid = now.said.filter((text) => /^Live: |live DJ has left/.test(text));
+  if (liveSaid.length !== 2 || !/^Live: DJ Bob since /.test(liveSaid[0]) || !/left/.test(liveSaid[1])) {
+    problems.push(`a DJ going live and leaving said ${JSON.stringify(liveSaid)}`);
+  }
+  live.live = LIVE_DJ;
+  await fakeTalkAudio(page, false);
+  return problems;
+}
+
 // The station switcher by keyboard (#70): the APG menu button pattern,
 // focus rings and target sizes on the items, and with real stations the
 // switch itself, there and back.
@@ -2004,6 +2373,8 @@ export async function audit(name, launcher) {
     if (tokenScope.length) out.behaviour.tokenScope = tokenScope;
     const voiceTracker = await voiceTrackerProblems(page);
     if (voiceTracker.length) out.behaviour.voiceTracker = voiceTracker;
+    const liveDj = await liveDjProblems(page);
+    if (liveDj.length) out.behaviour.liveDj = liveDj;
     const ads = await adsProblems(page);
     if (ads.length) out.behaviour.ads = ads;
     const switcher = await stationSwitcherProblems(page);

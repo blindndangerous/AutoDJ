@@ -70,6 +70,8 @@ class Station:
         # starts with it instead of the queue or a shuffle pick.
         self._start_entry: Any = None
         self._start_mode = "queue"
+        # Whether live input is connected; set by the station runtime (#48).
+        self.live_active: Callable[[], bool] = lambda: False
 
     @property
     def state(self) -> str:
@@ -88,6 +90,12 @@ class Station:
         """
         count = self._stream.listener_count
         with self._lock:
+            if self.live_active():
+                # A live DJ or talker is connected (#48): the bus plays them
+                # whether or not a set is playing, and a playing set is held
+                # under them rather than stopped for want of listeners.
+                self._empty_since = None
+                return
             if self._scheduled_override is False:
                 return
             if self._scheduled_override is True:
