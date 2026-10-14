@@ -158,25 +158,27 @@ document.getElementById("fx-https-note").hidden = "AudioWorkletNode" in window;
 // Settings > Display and keys > Theme.  Kept per browser.
 installThemeSetting();
 
-// Settings > Announcements.  Kept per browser, like the shortcut switch;
-// off (the default) speaks a new track only while Now Playing shows.
-const ANNOUNCE_ALL_TABS_KEY = "autodj.announceTrackChangesEverywhere";
-const announceAllTabs = document.getElementById("announce-all-tabs");
+// Settings > Announcements: track changes spoken on every tab, only while
+// Now Playing shows (the default), or not at all.  Kept per browser; the
+// old checkbox's "on" still means every tab.
+const ANNOUNCE_KEY = "autodj.announceTrackChanges";
+const OLD_ANNOUNCE_KEY = "autodj.announceTrackChangesEverywhere";
+const announceTrackChanges = document.getElementById("announce-track-changes");
 try {
-  announceAllTabs.checked = globalThis.localStorage?.getItem(ANNOUNCE_ALL_TABS_KEY) === "on";
+  const storage = globalThis.localStorage;
+  const saved = storage?.getItem(ANNOUNCE_KEY)
+    || (storage?.getItem(OLD_ANNOUNCE_KEY) === "on" ? "all" : "now");
+  if (["all", "now", "off"].includes(saved)) announceTrackChanges.value = saved;
 } catch (_) {
   // Blocked storage: the default, for this page load.
 }
-announceAllTabs.addEventListener("change", () => {
+announceTrackChanges.addEventListener("change", () => {
   try {
-    globalThis.localStorage?.setItem(ANNOUNCE_ALL_TABS_KEY, announceAllTabs.checked ? "on" : "off");
+    globalThis.localStorage?.setItem(ANNOUNCE_KEY, announceTrackChanges.value);
   } catch (_) {
     // Still honoured until the page is reloaded.
   }
 });
-function announceTrackChangesEverywhere() {
-  return announceAllTabs.checked;
-}
 
 // Stream mode (`autodj serve --stream`): the server mixes, so this page is
 // a remote plus an optional listener.  See modules/stream-mode.js.
@@ -649,7 +651,8 @@ function applyState(s) {
     // Spoken from #track-announce at body level: a live region inside
     // the hidden Now Playing panel never spoke on another tab.  Other
     // tabs hear it only when Settings > Announcements asks for it.
-    if (trackKey && (!panelNow.hidden || announceTrackChangesEverywhere())) {
+    const announce = announceTrackChanges.value;
+    if (trackKey && (announce === "all" || (announce === "now" && !panelNow.hidden))) {
       announceStatus(trackAnnounce, trackLabel + trackChangeDetails(s),
         { mirror: false, dwellMs: 10000 });
     }
@@ -802,7 +805,7 @@ function applyState(s) {
     if (playout.error && s.current_track && s.next_track) {
       message = "The next handoff could not be prepared. The player will use its regular transition.";
     } else if (!s.browser_playback && s.current_track && s.next_track && playout.queue_locked) {
-      message = `The next handoff is prepared. Queue edits apply after ${fmtTrack(s.next_track)}; Play now interrupts.`;
+      message = "The next handoff is prepared. Queue edits apply after this track; Play now interrupts.";
     }
     if (handoffStatus.textContent !== message) handoffStatus.textContent = message;
   }

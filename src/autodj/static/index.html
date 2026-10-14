@@ -349,7 +349,7 @@
     <!-- Not live: it changes in the same tick as the track title, which
          is the one track-change announcement.  Shift+N speaks it. -->
     <p id="next-track-text"><span aria-hidden="true">—</span><span class="visually-hidden">None</span></p>
-    <p id="handoff-status" aria-live="polite" aria-atomic="true" class="setting-desc"></p>
+    <p id="handoff-status" class="setting-desc"></p>
   </details>
 
   <!-- Hour preview (#126, hour-preview.js): what plays next, when it is
@@ -1526,13 +1526,15 @@
 
     <fieldset>
       <legend>Announcements</legend>
-      <div class="settings-check">
-        <input type="checkbox" id="announce-all-tabs">
-        <label for="announce-all-tabs">Announce track changes on every tab</label>
+      <div class="settings-row">
+        <label for="announce-track-changes">Announce track changes</label>
+        <select id="announce-track-changes" aria-describedby="announce-track-changes-desc">
+          <option value="all">On every tab</option>
+          <option value="now">Only on Now Playing</option>
+          <option value="off">Off</option>
+        </select>
       </div>
-      <span class="setting-desc" id="announce-all-tabs-desc">
-        When off, a new track is spoken only while the Now Playing tab is showing.  Saved in this browser only.
-      </span>
+      <span class="setting-desc" id="announce-track-changes-desc">Saved in this browser only.</span>
     </fieldset>
 
     <fieldset>
