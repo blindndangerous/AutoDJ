@@ -2687,6 +2687,84 @@ as the speech ends. With Smooth or Stereo Tool processing the clip gets the voic
 A clip that cannot be decoded is left out and the music plays on. The hour preview lists an intro
 once its song change is mixed, as "Matched intro" and its label.
 
+### Intro rules
+
+An intro rule plays a voice liner as the next song starts when that song matches the rule's
+conditions: a name drop for an artist, a jingle before rock songs, or "here's one from the eighties"
+before songs first released in the 1980s. Each station keeps its own rules. Manage them in
+**Library tools**, **Intro rules**, below Shows. Each rule is listed in words with an
+**Edit** and a **Delete** button; Delete asks first and leaves the liners in the library.
+
+**Add intro rule** (or Edit) opens one form:
+
+- **Label**: optional words to tell rules apart, shown in the list.
+- **Match conditions** and the conditions themselves: the same 1 to 32 condition rows as clockwheel
+  steps and categories, with **Match all** or **Match any**. A rule can match the artist (Artist
+  contains, for a name drop), title, album, genre, year (Year between 1980 and 1989 for a decade),
+  BPM, duration, any Beets field (`original_year` is the first release, with the release year
+  standing in when Beets has none), a registered music folder, or a saved music category. A song
+  with no value for a field, or a category that no longer exists, never matches a condition on it.
+- **Voice liners to choose from**: check any of the station's registered voice liners, choose a
+  registered **Liner folder** (every registered liner in it and its subfolders), or both. One clip
+  is picked at random each time. A clip whose file is missing, that is outside its liner play
+  dates, or that belongs to another station's liner folder is passed over.
+- **Priority**: where the rule stands next to the song's own matched intros and its artist's.
+  By default rules come after both; a rule can come after the song's own intros and before the
+  artist's, or before both.
+- **Chance (percent)**, **Wait between plays (minutes)**, **Not before** and **Do not play after**:
+  as for a matched intro. The wait holds across restarts.
+
+Choose **Save intro rule**. A field the page or the server refuses is marked, its error is shown
+under it and it takes focus; any other result is said once.
+
+At each song change AutoDJ tries, in priority order, the song's own intros, the artist's and the
+rules. Among the rules of one priority whose dates, wait and conditions allow them, the one heard
+longest ago is tried first, and its chance is rolled on the matched intros' own random source, so
+the rotation tester and the hour preview keep predicting the same songs. A chosen clip is placed
+as a matched intro is (talk-up or before the song, below), takes the automatic liner's place in
+the same way, and gives way in the same way to a DJ break and to **Only when no liner is
+scheduled**. A song change that is rendered again, or that ended before its intro aired, gives the
+rule back for the next one.
+
+Rules are chosen on the render-ahead thread, one song ahead, never on the audio thread. Measured on
+Windows with Python 3.14 and synthetic data (no audio decoded), 100 rules of two conditions each
+took 3.3 ms median and 6.9 ms at the 95th percentile per song change against 1,000 songs, and 4.2
+ms and 9.0 ms against 50,000; the music library's size does not enter the checks. A liner folder's
+clips are gathered by the station's upkeep, which looks every 5 seconds, off the render path: 40 ms
+for 50,000 registered liners, once each time the liner library changes; until then the clips
+gathered before serve, less any no longer registered. A song change then took 0.3 ms median
+and 1.3 ms at the 95th percentile with that folder. For one song change at most 256 clips of a
+large folder are looked at, so a folder of missing files cannot hold up the render.
+
+`intro_rules.json` in the station's state folder holds the rules and when each last aired; backups
+include it. When it cannot be read just now, the rules last read are used and saves are refused,
+so nothing is written over it. A rule in it that is not valid is skipped, logged and named under
+the Intro rules heading, and written back as it was with every save; only a file that is not a
+file of rules at all is set aside, as `intro_rules.json.bad-<id>`.
+
+For scripts, the routes are `GET` and `POST /api/intros/rules`, and `PUT` and `DELETE
+/api/intros/rules/<id>` (`/api/stations/<slug>/intros/rules` for any station), with the browser
+session and the page's `Origin`. The body is a JSON object of at most 64 KiB:
+
+```json
+{
+  "label": "Rock jingles",
+  "conditions": [{"field": "genre", "operator": "is", "value": "Rock"}],
+  "match": "all",
+  "clip_ids": ["<registered liner library ID>"],
+  "liner_folder": "D:\\Radio\\Liners\\Rock",
+  "priority": "after_artist",
+  "chance": 50,
+  "cooldown_minutes": 60,
+  "not_before": "2026-12-01",
+  "not_after": "2026-12-26"
+}
+```
+
+`clip_ids`, `liner_folder` or both are required; `priority` is `after_artist` (the default),
+`before_artist` or `before_song`. A refused rule answers 422 with `detail` and the `field` at fault.
+`GET` also lists the liners, liner folders and condition choices the page offers.
+
 ### Where they are kept
 
 Each station keeps its own: `matched_intros.json` in the station's state folder (the active index

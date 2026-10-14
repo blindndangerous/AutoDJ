@@ -79,6 +79,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[ads] max_upload_mb` before the body is read and decoded one at a time off the event loop with
   the breaks' bounded decoder. Routes: `/api/ads` and `/api/stations/<name>/ads`. See
   [Ad breaks](docs/operations.md#ad-breaks).
+- Intro rules (#127): Library tools > Intro rules plays a voice liner as the next song starts
+  when that song matches clockwheel conditions, such as an artist name drop, a genre, a decade, the
+  first-release year, any Beets field, a folder or a saved category. Each rule chooses registered
+  voice liners or a liner folder, with a chance, a wait between plays that holds across restarts,
+  play dates and a priority next to the song's and artist's own matched intros (after them by
+  default). Each station keeps its own rules in `intro_rules.json`, which backups include.
 - More stream formats (#50): beside the MP3 stream, a station can serve the same mix in AAC
   (`/stream.aac`) and Opus (`/stream.opus`), and at `/stations/<name>.aac` and `.opus`, each at
   its own bitrate. Turn them on in Settings, Stream, **More formats** (AAC quality, Opus
