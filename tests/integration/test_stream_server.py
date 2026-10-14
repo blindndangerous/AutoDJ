@@ -118,6 +118,62 @@ def test_stream_needs_no_session_when_authentication_is_on(bridge, tmp_path: Pat
     assert client.post("/api/stream/bans", json={"address": "192.0.2.4"}).status_code == 401
     assert client.get("/stream.m3u").status_code == 200
     assert client.head("/stream.m3u").status_code == 200
+
+
+def test_web_relay_save_persists_privately_and_never_returns_password(stream_app, bridge) -> None:
+    client, _ = stream_app
+    manager = MagicMock()
+    manager.status.return_value = []
+    bridge.relays = manager
+    response = client.post(
+        "/api/stream/relays",
+        json={
+            "name": "web",
+            "type": "icecast",
+            "host": "192.168.1.20",
+            "port": 8000,
+            "mount": "/live",
+            "password": "source-secret",
+            "enabled": True,
+            "public": False,
+            "bitrate": None,
+        },
+    )
+    assert response.status_code == 200
+    assert "source-secret" not in response.text
+    assert client.get("/api/stream/relays").json()["relays"][0]["password_configured"] is True
+    saved = bridge.player._cfg.index.active_dir / "relays.json"
+    assert "source-secret" in saved.read_text(encoding="utf-8")
+    assert manager.reconfigure.call_count == 1
+
+
+def test_web_relay_failed_private_save_keeps_live_configuration(
+    stream_app, bridge, monkeypatch
+) -> None:
+    import autodj.station_routes as routes
+
+    client, _ = stream_app
+    manager = MagicMock()
+    manager.status.return_value = []
+    bridge.relays = manager
+    monkeypatch.setattr(
+        routes, "save_relays", lambda *args: (_ for _ in ()).throw(OSError("private"))
+    )
+    response = client.post(
+        "/api/stream/relays",
+        json={
+            "name": "web",
+            "type": "icecast",
+            "host": "192.168.1.20",
+            "port": 8000,
+            "mount": "/live",
+            "password": "source-secret",
+        },
+    )
+    assert response.status_code == 503
+    assert not bridge.player._cfg.stream.relays
+    manager.reconfigure.assert_not_called()
+    assert "source-secret" not in response.text
     assert client.head("/stream.mp3").status_code == 200
     with client.stream("GET", "/stream.mp3", headers={"Accept-Encoding": "gzip"}) as response:
         assert response.status_code == 200
@@ -396,10 +452,41 @@ def test_stream_info(stream_app) -> None:
         "bitrate": 320,
         "continuous": False,
         "station_name": "AutoDJ",
+        "genre": "",
+        "description": "",
+        "url": "",
         "show_next": False,
         "listeners": 2,
         "state": "idle",
         "relays": [],
+        # Without extra mounts only MP3 is on; AAC and Opus show as off.
+        "formats": [
+            {
+                "format": "mp3",
+                "label": "MP3",
+                "bitrate": 320,
+                "path": "/stream.mp3",
+                "listeners": 2,
+                "error": None,
+            },
+            {
+                "format": "aac",
+                "label": "AAC",
+                "bitrate": 0,
+                "path": "/stream.aac",
+                "listeners": 0,
+                "error": None,
+            },
+            {
+                "format": "opus",
+                "label": "Opus",
+                "bitrate": 0,
+                "path": "/stream.opus",
+                "listeners": 0,
+                "error": None,
+            },
+        ],
+        "stats_days": 90,
     }
 
 

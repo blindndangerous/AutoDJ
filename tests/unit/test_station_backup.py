@@ -61,6 +61,7 @@ def _fill(cfg: AutoDJConfig) -> dict[Path, bytes]:
     for base, who in ((cfg.index.active_dir, b"default"), (_station_dir(cfg, "nightowl"), b"owl")):
         for name in STATION_FILES:
             put(base / name, b'{"station": "' + who + b'", "file": "' + name.encode() + b'"}')
+        put(base / "relays.json", b'{"password": "' + who + b'-relay-secret"}')
         put(base / "liners" / "id.mp3", who + b" liner")
         put(base / "carts" / "jingle.wav", who + b" cart")
         put(base / "time_checks" / "03_05.wav", who + b" clip")
@@ -71,7 +72,7 @@ def _fill(cfg: AutoDJConfig) -> dict[Path, bytes]:
     return written
 
 
-def test_two_stations_round_trip(tmp_path: Path) -> None:
+def test_two_stations_round_trip(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     cfg = _config(tmp_path)
     written = _fill(cfg)
 
@@ -80,6 +81,9 @@ def test_two_stations_round_trip(tmp_path: Path) -> None:
     with zipfile.ZipFile(archive) as opened:
         names = set(opened.namelist())
         manifest = json.loads(opened.read("manifest.json"))
+        default_relays = opened.read("index/relays.json")
+        owl_relays = opened.read("stations/nightowl/index/relays.json")
+        archive_manifest = opened.read("manifest.json")
     assert manifest["stations"] == ["nightowl"]
     # The default station keeps today's names; Night Owl's are under its slug.
     assert {"index/web_state.json", "liners/id.mp3", "profiles/Party.json"} <= names
@@ -94,8 +98,14 @@ def test_two_stations_round_trip(tmp_path: Path) -> None:
         "stations/nightowl/intros/intro.wav",
         "stations/nightowl/index/matched_intros.json",
         "stations/nightowl/index/intro_rules.json",
+        "stations/nightowl/index/relays.json",
         "stations/nightowl/profiles/Party.json",
     } <= names
+    assert "index/relays.json" in names
+    assert default_relays == written[cfg.index.active_dir / "relays.json"]
+    assert owl_relays == written[_station_dir(cfg, "nightowl") / "relays.json"]
+    assert b"relay-secret" not in archive_manifest
+    assert "relay-secret" not in caplog.text
     # A station never holds the shared categories, and nothing is stored twice.
     assert "stations/nightowl/index/categories.json" not in names
     assert not any(name.startswith("stations/nightowl/stations/") for name in names)
@@ -1127,3 +1137,45 @@ def test_undo_removes_the_folders_it_made_innermost_first(tmp_path: Path) -> Non
     assert swap.undo() == []
     assert not (tmp_path / "a").exists()
     assert not (tmp_path / "journal.json").exists()
+
+
+def test_each_stations_shows_are_backed_up_and_restored(tmp_path: Path) -> None:
+    """Shows (#106) are a station's own: each station gets its own shows.json back."""
+    cfg = _config(tmp_path)
+    assert "shows.json" in STATION_FILES
+    shows = {
+        cfg.index.active_dir / "shows.json": {"schema_version": 1, "shows": {"a" * 32: "day"}},
+        _station_dir(cfg, "nightowl") / "shows.json": {
+            "schema_version": 1,
+            "shows": {"b" * 32: "night"},
+        },
+    }
+    for path, document in shows.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(document), encoding="utf-8")
+    archive = create_backup(cfg, tmp_path / "shows.zip", force=False)
+    with zipfile.ZipFile(archive) as opened:
+        names = set(opened.namelist())
+    assert {"index/shows.json", "stations/nightowl/index/shows.json"} <= names
+    for path in shows:
+        path.unlink()
+    restore_backup(cfg, archive, force=True)
+    for path, document in shows.items():
+        assert json.loads(path.read_text(encoding="utf-8")) == document, path
+
+
+def test_a_restore_forgets_every_stations_show_on_the_air(tmp_path: Path) -> None:
+    """show_on_air.json (#106) is runtime state: never backed up, cleared by a restore."""
+    cfg = _config(tmp_path)
+    marks = [
+        cfg.index.active_dir / "show_on_air.json",
+        _station_dir(cfg, "nightowl") / "show_on_air.json",
+    ]
+    for mark in marks:
+        mark.parent.mkdir(parents=True, exist_ok=True)
+        mark.write_text('{"version": 1}', encoding="utf-8")
+    archive = create_backup(cfg, tmp_path / "air.zip", force=False)
+    with zipfile.ZipFile(archive) as opened:
+        assert not any(name.endswith("show_on_air.json") for name in opened.namelist())
+    restore_backup(cfg, archive, force=True)
+    assert not any(mark.exists() for mark in marks)

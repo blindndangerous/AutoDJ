@@ -81,6 +81,9 @@ def _make_player() -> SimpleNamespace:
             continuous=False,
             station_name="AutoDJ",
             max_listeners_per_address=0,
+            aac_bitrate=0,
+            opus_bitrate=0,
+            stats_days=90,
         ),
         nowplaying=NowPlayingConfig(),
         dmca=DmcaConfig(),
@@ -153,6 +156,9 @@ def _warnings(caplog: pytest.LogCaptureFixture, field: str) -> int:
         ({"playback": {"stream_bitrate": 100}}, "stream_bitrate"),
         ({"playback": {"stream_bitrate": "320"}}, "stream_bitrate"),
         ({"playback": {"stream_bitrate": True}}, "stream_bitrate"),
+        ({"playback": {"stream_aac_bitrate": 320}}, "stream_aac_bitrate"),
+        ({"playback": {"stream_opus_bitrate": "64"}}, "stream_opus_bitrate"),
+        ({"playback": {"stream_stats_days": -1}}, "stream_stats_days"),
         ({"playback": {"transition_wet_mix": 2.0}}, "transition_wet_mix"),
         ({"playback": {"replaygain_target_db": "loud"}}, "replaygain_target_db"),
         ({"playback": {"volume": True}}, "volume"),
@@ -446,6 +452,22 @@ class TestLoadInto:
         _load(player, tmp_path)
         assert player._cfg.stream.bitrate == 128
 
+    def test_stream_formats_and_statistics_days_are_restored(self, tmp_path) -> None:
+        player = _make_player()
+        _write_state(
+            tmp_path,
+            {
+                "playback": {
+                    "stream_aac_bitrate": 96,
+                    "stream_opus_bitrate": 64,
+                    "stream_stats_days": 30,
+                }
+            },
+        )
+        _load(player, tmp_path)
+        stream = player._cfg.stream
+        assert (stream.aac_bitrate, stream.opus_bitrate, stream.stats_days) == (96, 64, 30)
+
     def test_stream_continuous_restores_and_rejects_non_boolean(self, tmp_path) -> None:
         player = _make_player()
         _write_state(tmp_path, {"playback": {"stream_continuous": True}})
@@ -619,6 +641,9 @@ class TestRoundTrip:
         p1._cfg.playback.liners_duck_db = -9.0
         p1._cfg.stream.bitrate = 192
         p1._cfg.stream.station_name = "Kitchen Radio"
+        p1._cfg.stream.genre = "Jazz"
+        p1._cfg.stream.description = "Late night radio"
+        p1._cfg.stream.url = "https://radio.example/"
         p1._cfg.djmix.beatmatch_max_stretch = 0.12
         p1._cfg.djmix.beatmatch_glide_bars = 4
         p1._cfg.djmix.filter_sweep_floor_hz = 400.0
@@ -692,9 +717,15 @@ class TestRoundTrip:
             "stream_bitrate",
             "stream_continuous",
             "stream_station_name",
+            "stream_genre",
+            "stream_description",
+            "stream_url",
             "nowplaying_show_next",
             "dmca_enabled",
             "stream_max_listeners_per_address",
+            "stream_aac_bitrate",
+            "stream_opus_bitrate",
+            "stream_stats_days",
             "crossfade_bass_cutoff_hz",
             "pick_top_k",
             "pick_temperature",
@@ -730,6 +761,9 @@ class TestRoundTrip:
         assert stored["playback"]["prefetch_next_track"] is False
         assert stored["playback"]["silence_trigger_crossfade"] is False
         assert stored["playback"]["stream_station_name"] == "Kitchen Radio"
+        assert stored["playback"]["stream_genre"] == "Jazz"
+        assert stored["playback"]["stream_description"] == "Late night radio"
+        assert stored["playback"]["stream_url"] == "https://radio.example/"
 
         p2 = _make_player()
         _load(p2, tmp_path)

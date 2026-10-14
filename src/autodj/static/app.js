@@ -32,6 +32,7 @@ import { installTableNavigation } from "./modules/table-navigation.js";
 import { installLibraryFolders } from "./modules/library-folders.js";
 import { installCategoriesPanel } from "./modules/categories-panel.js";
 import { installIntroRulesPanel } from "./modules/intro-rules-panel.js";
+import { installShowsPanel } from "./modules/shows-panel.js";
 import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
 import { describeStep } from "./modules/clockwheel-step.js";
 import { installRotationTest } from "./modules/rotation-test.js";
@@ -41,8 +42,11 @@ import { installCartWall } from "./modules/cart-wall.js";
 import { installVoiceTracker } from "./modules/voice-tracker.js";
 import { createStreamMode, createStreamSettings } from "./modules/stream-mode.js";
 import { createRecordingControls } from "./modules/recording-controls.js";
+import { installRelaySettings } from "./modules/relay-settings.js";
 import { installNowPlayingSettings } from "./modules/nowplaying-settings.js";
 import { createListenerControls } from "./modules/listener-controls.js";
+import { installStreamFormats } from "./modules/stream-formats.js";
+import { installListenerStats } from "./modules/listener-stats.js";
 import { initSubtabs } from "./modules/subtabs.js";
 import { installThemeSetting } from "./modules/theme.js";
 import { confirmAction } from "./modules/confirm-dialog.js";
@@ -184,6 +188,16 @@ const streamMode = createStreamMode({
   // The stream never starts before it has the page's volume and mute.
   beforePlay: () => applyPageLevel(),
 });
+const relaySettings = installRelaySettings({
+  doc: document,
+  request: requestJson,
+  post: (url, body, control, options) => postSettings(url, body, control, options),
+  remove: async (url) => {
+    try { await requestJson(url, { method: "DELETE" }); return true; }
+    catch (err) { announceStatus(settingsStatus, `Could not remove relay: ${err.message}`, { tone: "error", force: true }); return false; }
+  },
+  announce: (message, error = false) => announceStatus(settingsStatus, message, { tone: error ? "error" : "success", force: true }),
+});
 // Whether the listener has started playback with Play or Pause (or its
 // hotkey), or pressed Listen here, on this page since signing in.  A page
 // plays only after that: server pushes never start a deck
@@ -201,17 +215,34 @@ btnListen.addEventListener("click", () => {
 });
 // Settings subtabs (./modules/subtabs.js).  Stream shows only in stream mode.
 const settingsTabs = initSubtabs(document.getElementById("settings-tabs"));
+// Settings > Stream > More formats: the AAC and Opus streams (#50).
+const streamFormats = installStreamFormats({
+  doc: document,
+  save: (name, value, control) =>
+    postSettings("/api/stream/settings", { [`${name}_bitrate`]: value }, control),
+  refresh: () => { void streamSettings.refresh(); },
+  srStatus: document.getElementById("sr-status"),
+  settingsStatus,
+});
 // Settings > Stream.
 const streamSettings = createStreamSettings({
   doc: document,
-  fetchInfo: () => requestJson("/api/stream"),
+  fetchInfo: async () => {
+    const info = await requestJson("/api/stream");
+    streamFormats.fill(info);
+    return info;
+  },
   saveBitrate: (value, control) =>
     postSettings("/api/stream/settings", { bitrate: value }, control),
   saveContinuous: (value, control) =>
     postSettings("/api/stream/settings", { continuous: value }, control),
   saveStationName: (value, control) =>
     postSettings("/api/stream/settings", { station_name: value }, control),
-  setAvailable: (available) => settingsTabs.setTabHidden("stream", !available),
+  setAvailable: (available) => {
+    settingsTabs.setTabHidden("stream", !available);
+    relaySettings.setAvailable(available);
+  },
+  onRelays: (relays) => relaySettings.applyStatuses(relays),
   focusAway: () => settingsTabs.focusSelected(),
   srStatus: document.getElementById("sr-status"),
   settingsStatus,
@@ -232,6 +263,13 @@ const listenerControls = createListenerControls(
   ),
 );
 const recordingControls = createRecordingControls(document, document.getElementById("sr-status"));
+// Settings > Stream > Listener statistics (#50).
+const listenerStats = installListenerStats({
+  doc: document,
+  saveKeepDays: (value, control) =>
+    postSettings("/api/stream/settings", { stats_days: value }, control),
+  settingsStatus,
+});
 // A lookup that failed while another tab showed was never heard; opening
 // Settings tries again.
 window.addEventListener("hashchange", () => {
@@ -249,6 +287,7 @@ let libraryFoldersControls = null;
 let clockwheelPanelControls = null;
 let categoriesPanelControls = null;
 let introRulesControls = null;
+let showsPanelControls = null;
 let schedulerPanelControls = null;
 let rotationTestControls = null;
 let hourPreviewControls = null;
@@ -286,9 +325,12 @@ function stopProtectedPlayback() {
 function clearStationViews() {
   _seekController?.cancel();
   streamSettings.reset();
+  streamFormats.reset();
+  relaySettings.reset();
   recordingControls.reset();
   nowPlayingSettings?.reset();
   listenerControls.reset();
+  listenerStats.reset();
   resetTrackCaches();
   historyRequest?.abort();
   _histPlayingPath = null;
@@ -335,6 +377,8 @@ function clearStationViews() {
   settingsStatus.textContent = "";
   clockwheelPanelControls?.clearProtectedData();
   introRulesControls?.clear();
+  // Shows are the station's own (#106).
+  showsPanelControls?.clearProtectedData();
   schedulerPanelControls?.clear();
   rotationTestControls?.clear();
   hourPreviewControls?.clear();
@@ -547,6 +591,8 @@ function applyState(s) {
   else recordingControls.reset();
   nowPlayingSettings?.apply(s);
   listenerControls.apply(s);
+  streamFormats.apply(s);
+  listenerStats.apply(s);
   const browserMode = Boolean(s.browser_playback) && !inStream;
 
   // Now Playing
@@ -1396,6 +1442,10 @@ function connectWS({ quiet = false } = {}) {
         cartWallControls?.event(message);
       } else if (message.type === "schedule_changed" || message.type === "schedule_run") {
         void schedulerPanelControls?.refresh();
+        // A schedule event may play a show: its list says which events do.
+        void showsPanelControls?.refresh();
+      } else if (message.type === "shows_changed") {
+        void showsPanelControls?.refresh();
       } else applyState(message);
     } catch (_) {}
   };
@@ -1452,6 +1502,7 @@ function connectWS({ quiet = false } = {}) {
           clockwheelPanelControls?.resume();
           categoriesPanelControls?.resume();
           introRulesControls?.resume();
+          showsPanelControls?.resume();
           void schedulerPanelControls?.refresh();
           void rotationTestControls?.refresh();
           hourPreviewControls?.resume();
@@ -1643,6 +1694,7 @@ function refreshStationPanels() {
   void nowPlayingSettings?.load();
   clockwheelPanelControls?.resume();
   void clockwheelPanelControls?.refresh();
+  showsPanelControls?.resume();
   void schedulerPanelControls?.refresh();
   void rotationTestControls?.refresh();
   hourPreviewControls?.resume();
@@ -2846,6 +2898,7 @@ categoriesPanelControls = installCategoriesPanel({ onChange: () => {
   introRulesControls?.refresh();
 } });
 introRulesControls = installIntroRulesPanel();
+showsPanelControls = installShowsPanel();
 schedulerPanelControls = installSchedulerPanel();
 rotationTestControls = installRotationTest();
 hourPreviewControls = installHourPreview();
@@ -2954,6 +3007,7 @@ function startAuthenticatedApp(initialState) {
   clockwheelPanelControls?.resume();
   categoriesPanelControls?.resume();
   introRulesControls?.resume();
+  showsPanelControls?.resume();
   void schedulerPanelControls?.refresh();
   void rotationTestControls?.refresh();
   hourPreviewControls?.resume();

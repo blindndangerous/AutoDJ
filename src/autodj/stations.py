@@ -55,7 +55,10 @@ if TYPE_CHECKING:
     from autodj.matched_intros import MatchedIntros
     from autodj.recorder import Recorder
     from autodj.scheduler import Scheduler
+    from autodj.shows import ShowRunner, ShowStore
     from autodj.stream import StreamOutput
+    from autodj.stream_formats import StreamFormat
+    from autodj.stream_mounts import StreamMounts
     from autodj.time_checks import TimeChecks
     from autodj.webhooks import WebhookWorker
 
@@ -207,6 +210,16 @@ class StationPaths:
         return self.state_dir / "matched_intros.json"
 
     @property
+    def shows(self) -> Path:
+        """Shows: lists of songs prepared ahead (#106)."""
+        return self.state_dir / "shows.json"
+
+    @property
+    def show_on_air(self) -> Path:
+        """The show on the air and its place, so a restart resumes it (#106)."""
+        return self.state_dir / "show_on_air.json"
+
+    @property
     def intros(self) -> Path:
         """The audio of the matched intros."""
         return self.state_dir / "intros"
@@ -215,6 +228,11 @@ class StationPaths:
     def listener_bans(self) -> Path:
         """Banned listener addresses."""
         return self.state_dir / "listener_bans.json"
+
+    @property
+    def listener_stats(self) -> Path:
+        """Daily listener counts: peaks, sessions and listening time, no addresses (#50)."""
+        return self.state_dir / "listener_stats.json"
 
     @property
     def recording(self) -> Path:
@@ -231,6 +249,11 @@ class StationPaths:
         if self.is_default:
             return Path(self._cfg.index.index_dir) / "relay-status.json"
         return self.state_dir / "relay-status.json"
+
+    @property
+    def relays(self) -> Path:
+        """Private web-managed relay definitions and source passwords."""
+        return self.state_dir / "relays.json"
 
     @property
     def clockwheels(self) -> Path:
@@ -272,7 +295,11 @@ def start_stream_station(
 
     Starts the MP3 encoder, registers the stream as an output of the
     player's mix bus, and hands the stream to the station, which reads its
-    listener count and starts a set on the first listener.  Configured
+    listener count and starts a set on the first listener.  The extra
+    formats that are on (``[stream] aac_bitrate`` and ``opus_bitrate``)
+    are checked with ffmpeg; each starts its own encoder on the same bus
+    when its first listener comes, and their listeners count too
+    (:mod:`autodj.stream_mounts`).  Configured
     relays (``[stream.relays.<name>]``) start connecting too; while any is
     enabled the station plays as if it always had a listener, because the
     relay's own listeners are invisible to AutoDJ.
@@ -297,9 +324,14 @@ def start_stream_station(
     from autodj import stream as stream_module
     from autodj.liner_scheduler import LinerScheduler
     from autodj.station import Station
+    from autodj.stream_mounts import StreamMounts
 
     player = bridge.player
     cfg = player._cfg
+    from autodj.relay_settings import load_relays
+
+    relay_paths = paths or StationPaths.default(cfg)
+    cfg.stream.relays = load_relays(relay_paths.relays, cfg.stream.relays, relay_paths.slug)
     bus = player.bus
     # Every encoder made, the station's own first: each starts ffmpeg.
     made: list[StreamOutput] = []
@@ -311,29 +343,52 @@ def start_stream_station(
         made.append(output)
         return output
 
+    def make_mount(fmt: StreamFormat, bitrate: int) -> StreamOutput:
+        return stream_module.StreamOutput(
+            bitrate,
+            cfg.stream.max_listeners,
+            encoder_factory=functools.partial(stream_module.FfmpegEncoder, fmt=fmt),
+            loop=loop,
+            fmt=fmt,
+        )
+
     relays = None
+    mounts = None
     try:
         stream_out = make_output(cfg.stream.bitrate, cfg.stream.max_listeners)
-        if cfg.stream.relays:
-            from autodj.relay import RelayManager, relay_status_path
+        mounts = StreamMounts(
+            stream_out,
+            make_mount,
+            bus.add_output,
+            bus.remove_output,
+            probe=stream_module.probe_encoder,
+        )
+        from autodj.relay import RelayManager, relay_status_path
 
-            relays = RelayManager(
-                cfg.stream.relays.values(),
-                stream_out,
-                make_output=make_output,
-                station_name=lambda: cfg.stream.station_name,
-                status_path=relay_status_path(cfg, paths),
-            )
-        relays_active = relays is not None and relays.active
+        relays = RelayManager(
+            cfg.stream.relays.values(),
+            stream_out,
+            make_output=make_output,
+            station_name=lambda: cfg.stream.station_name,
+            station_metadata=lambda: {
+                "name": cfg.stream.station_name,
+                "genre": cfg.stream.genre,
+                "description": cfg.stream.description,
+                "url": cfg.stream.url,
+            },
+            status_path=relay_status_path(cfg, paths),
+            add_output=bus.add_output,
+            remove_output=bus.remove_output,
+        )
         station = Station(
             bus,
-            stream_out,
+            mounts,
             player,
             cfg.stream.idle_grace_seconds,
             on_event=bridge.announce_station_event,
             forget_track=bridge.forget_track,
             continuous=lambda: (
-                cfg.stream.continuous or relays_active or bool(recorder and recorder.wanted)
+                cfg.stream.continuous or relays.active or bool(recorder and recorder.wanted)
             ),
         )
         scheduler = LinerScheduler(
@@ -351,23 +406,26 @@ def start_stream_station(
         )
         if first_track is not None:
             station.start_with(first_track, "seed")
-        bridge.attach_stream(stream=stream_out, station=station, relays=relays)
+        bridge.attach_stream(stream=stream_out, station=station, relays=relays, mounts=mounts)
         bridge.attach_liner_scheduler(scheduler)
         if recorder is not None:
             stream_out.add_sink(recorder)
         bus.add_output(stream_out)
-        if relays is not None:
-            for output in relays.outputs:
-                bus.add_output(output)
-            relays.start()
+        for output in relays.outputs:
+            bus.add_output(output)
+        relays.start()
+        mounts.start({"aac": cfg.stream.aac_bitrate, "opus": cfg.stream.opus_bitrate})
     except BaseException:
-        _undo_stream_start(bridge, made, relays)
+        _undo_stream_start(bridge, made, relays, mounts)
         raise
     return stream_out
 
 
 def _undo_stream_start(
-    bridge: PlayerBridge, made: Sequence[StreamOutput], relays: Any | None
+    bridge: PlayerBridge,
+    made: Sequence[StreamOutput],
+    relays: Any | None,
+    mounts: StreamMounts | None = None,
 ) -> None:
     """Close what a failed :func:`start_stream_station` made: relays, encoders, liner worker.
 
@@ -376,6 +434,8 @@ def _undo_stream_start(
     """
     bus = bridge.player.bus
     steps: list[tuple[str, Callable[[], None]]] = []
+    if mounts is not None:
+        steps.append(("stopping the extra formats", mounts.close))
     # The relays close their own encoders.
     theirs = {id(output) for output in relays.outputs} if relays is not None else set()
     for output in made:
@@ -389,7 +449,7 @@ def _undo_stream_start(
             step()
         except Exception:
             logger.exception("A stream that failed to start: %s it failed too", what)
-    bridge.attach_stream(stream=None, station=None, relays=None)
+    bridge.attach_stream(stream=None, station=None, relays=None, mounts=None)
 
 
 def start_server_audio_liners(
@@ -598,7 +658,13 @@ async def stop_stream_station(bridge: PlayerBridge, stream_out: StreamOutput) ->
             for output in bridge.relays.outputs
         ]
         relay_steps.append(("stopping the relays", bridge.relays.close))
+    # The AAC and Opus mounts leave the bus and close their own encoders.
+    mounts = getattr(bridge, "mounts", None)
+    mount_steps: list[tuple[str, Callable[[], None]]] = (
+        [("stopping the extra formats", mounts.close)] if mounts is not None else []
+    )
     steps: tuple[tuple[str, Callable[[], None]], ...] = (
+        *mount_steps,
         *relay_steps,
         ("detaching", functools.partial(bridge.player.bus.remove_output, stream_out)),
         ("closing", stream_out.close),
@@ -629,7 +695,7 @@ async def tick_every_second(
 async def tick_stream_workers(
     bridge: PlayerBridge, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
 ) -> None:
-    """Tick the station and the liner scheduler once a second, independently.
+    """Tick the station, the liner scheduler and the extra formats once a second, apart.
 
     Each has its own loop, so a slow liner decode (up to 30 s through
     ffmpeg) never holds up the station's idle check, and a failure in one
@@ -639,7 +705,12 @@ async def tick_stream_workers(
         bridge: The bridge holding the station and liner scheduler.
         sleep: ``asyncio.sleep`` replacement for tests.
     """
-    workers = (("station", bridge.station), ("liner scheduler", bridge.liner_scheduler))
+    workers = (
+        ("station", bridge.station),
+        ("liner scheduler", bridge.liner_scheduler),
+        # Stops an extra format's encoder once nobody listens to it (#50).
+        ("extra formats", getattr(bridge, "mounts", None)),
+    )
     async with asyncio.TaskGroup() as group:
         for name, worker in workers:
             if worker is not None:
@@ -732,6 +803,8 @@ class StationRuntime:
     carts: StationCarts
     breaks: BreakDesk
     intros: MatchedIntros
+    shows: ShowStore
+    show_runner: ShowRunner
     # Pushes the state to this station's WebSocket clients once a second.
     broadcast: Callable[[], Coroutine[Any, Any, None]]
 
@@ -761,6 +834,7 @@ class StationRuntime:
         """
         from autodj._bridge import PlayerBridge
         from autodj.listener_access import ListenerAccess
+        from autodj.listener_stats import ListenerStats
         from autodj.nowplaying import NowPlaying
         from autodj.webhooks import WebhookWorker
 
@@ -778,12 +852,25 @@ class StationRuntime:
         bridge.player.liner_filter = lambda entries, at=None: self._playable_liners(entries, at)
         self.nowplaying = NowPlaying(bridge, timezone=timezone)
         self.webhooks: WebhookWorker = WebhookWorker(getattr(bridge.player._cfg, "webhooks", ()))
+        streams = stream_mode or (isinstance(bridge, PlayerBridge) and bridge.stream_mode)
+        stream_cfg = bridge.player._cfg.stream
         self.listener_access: ListenerAccess | None = (
             ListenerAccess(
                 self.paths.listener_bans,
-                bridge.player._cfg.stream.max_listeners_per_address,
+                stream_cfg.max_listeners_per_address,
+                max_total=stream_cfg.max_listeners,
             )
-            if stream_mode or (isinstance(bridge, PlayerBridge) and bridge.stream_mode)
+            if streams
+            else None
+        )
+        # Daily listener counts, no addresses (#50).
+        self.listener_stats: ListenerStats | None = (
+            ListenerStats(
+                self.paths.listener_stats,
+                timezone=timezone,
+                keep_days=lambda: int(self.cfg.stream.stats_days),
+            )
+            if streams
             else None
         )
         self.recorder: Recorder | None = None
@@ -867,7 +954,7 @@ class StationRuntime:
             "slug": self.slug,
             "name": self.name,
             "state": state,
-            "listeners": int(stream.listener_count) if stream is not None else 0,
+            "listeners": bridge.listener_total() if stream is not None else 0,
             "title": getattr(track, "display_name", None) if track is not None else None,
             **public_addresses(
                 self.slug, streams=bool(bridge.stream_mode), player_page=self.cfg.player_page
@@ -920,10 +1007,15 @@ class StationRuntime:
         schedule.start()
         loop = asyncio.get_running_loop()
 
+        runner = getattr(self, "show_runner", None)
+
         def schedule_track_changed() -> None:
             # The mix-bus thread calls this; it only hands over to the loop.
             with contextlib.suppress(RuntimeError):  # the loop closed at shutdown
                 loop.call_soon_threadsafe(schedule.track_changed)
+                if runner is not None:
+                    # A show on the air queues its next songs (#106).
+                    loop.call_soon_threadsafe(runner.track_changed)
 
         bridge.scheduler_track_changed = schedule_track_changed
         self._schedule_ticker = asyncio.create_task(self._tick_schedule())
@@ -1009,6 +1101,13 @@ class StationRuntime:
             await _step(
                 "stopping its stream",
                 functools.partial(stop_stream_station, bridge, self.stream_out),
+                problems,
+            )
+        stats = getattr(self, "listener_stats", None)
+        if stats is not None:
+            await _step(
+                "saving its listener statistics",
+                functools.partial(asyncio.to_thread, stats.flush),
                 problems,
             )
         if self.recorder is not None:
@@ -1315,6 +1414,7 @@ class StationRegistry:
         self._locks: dict[str, asyncio.Lock] = {slug: asyncio.Lock() for slug in self._extras}
         # Set once shutdown begins: no station starts after that.
         self._closing = False
+        self.relay_lock = threading.RLock()
         # Stations being stopped.  From the moment a stop is asked for,
         # their routes answer 409 at once and a start is refused at once,
         # instead of waiting while the player finishes (up to
@@ -1371,6 +1471,26 @@ class StationRegistry:
     def all(self) -> tuple[StationRuntime, ...]:
         """Every running station, the default first."""
         return tuple(self._running.values())
+
+    def relay_configs(self) -> dict[str, dict[str, Any]]:
+        """Current relay definitions for every configured station, including stopped ones."""
+        from autodj.relay_settings import load_relays
+
+        result = {}
+        for slug in self.slugs():
+            runtime = self._running.get(slug)
+            paths = (
+                runtime.paths
+                if runtime is not None
+                else (
+                    self._default.paths if slug == self._default.slug else self._extras[slug].paths
+                )
+            )
+            baseline = (
+                runtime.cfg.stream.relays if runtime is not None else paths._cfg.stream.relays
+            )
+            result[slug] = load_relays(paths.relays, baseline, slug)
+        return result
 
     def slugs(self) -> frozenset[str]:
         """The name of every configured station, running or not."""

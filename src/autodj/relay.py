@@ -22,12 +22,13 @@ import base64
 import collections
 import contextlib
 import http.client
+import ipaddress
 import json
 import logging
 import socket
 import threading
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -134,6 +135,52 @@ def source_port(cfg: RelayConfig) -> int:
     return cfg.port if cfg.type == "icecast" else cfg.port + 1
 
 
+def resolve_safe_relay_addresses(
+    host: str, port: int
+) -> Sequence[tuple[socket.AddressFamily, socket.SocketKind, int, str, tuple[Any, ...]]]:
+    """Resolve a relay destination and reject unspecified, multicast and link-local IPs."""
+    results = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    if not results:
+        raise ValueError("relay host did not resolve")
+    for _, _, _, _, address in results:
+        ip = ipaddress.ip_address(address[0])
+        if isinstance(ip, ipaddress.IPv6Address):
+            if ip == ipaddress.IPv6Address("fd00:ec2::254"):
+                raise ValueError("relay host resolves to a restricted address")
+            mapped = ip.ipv4_mapped
+            if mapped is not None:
+                ip = mapped
+            else:
+                sixtofour = ip.sixtofour
+                if sixtofour is not None and (
+                    sixtofour.is_private
+                    or sixtofour.is_unspecified
+                    or sixtofour.is_multicast
+                    or sixtofour.is_link_local
+                ):
+                    raise ValueError("relay host resolves to a restricted address")
+        if ip.is_unspecified or ip.is_multicast or ip.is_link_local:
+            raise ValueError("relay host resolves to a restricted address")
+    return results
+
+
+def _connect_relay(host: str, port: int, *, timeout: float = CONNECT_TIMEOUT) -> socket.socket:
+    """Connect only to addresses checked in the same DNS lookup."""
+    last_error = None
+    for family, socktype, proto, _, address in resolve_safe_relay_addresses(host, port):
+        sock = socket.socket(family, socktype, proto)
+        try:
+            sock.settimeout(timeout)
+            sock.connect(address)
+            return sock
+        except OSError as exc:
+            last_error = exc
+            sock.close()
+    if last_error is not None:
+        raise last_error
+    raise OSError("relay host did not resolve")
+
+
 def _shut_down(sock: socket.socket) -> None:
     """Shut *sock* down, which ends a send or receive blocked in another thread."""
     with contextlib.suppress(OSError):
@@ -196,7 +243,9 @@ def _host_header(host: str, port: int) -> str:
     return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
 
 
-def _icecast_login(sock: socket.socket, cfg: RelayConfig, bitrate: int, station_name: str) -> None:
+def _icecast_login(
+    sock: socket.socket, cfg: RelayConfig, bitrate: int, metadata: Mapping[str, str]
+) -> None:
     """Start an Icecast 2.4 source with HTTP PUT.
 
     Raises:
@@ -209,7 +258,10 @@ def _icecast_login(sock: socket.socket, cfg: RelayConfig, bitrate: int, station_
         f"Authorization: {_basic_auth(cfg.user, cfg.password)}",
         f"User-Agent: {_USER_AGENT}",
         "Content-Type: audio/mpeg",
-        f"Ice-Name: {station_name}",
+        f"Ice-Name: {metadata['name']}",
+        f"Ice-Genre: {metadata.get('genre', '')}",
+        f"Ice-Url: {metadata.get('url', '')}",
+        f"Ice-Description: {metadata.get('description', '')}",
         f"Ice-Public: {int(cfg.public)}",
         f"Ice-Bitrate: {bitrate}",
         f"Ice-Audio-Info: bitrate={bitrate};samplerate={_SAMPLE_RATE};channels=2",
@@ -237,7 +289,7 @@ def _icecast_login(sock: socket.socket, cfg: RelayConfig, bitrate: int, station_
 
 
 def _shoutcast_login(
-    sock: socket.socket, cfg: RelayConfig, bitrate: int, station_name: str
+    sock: socket.socket, cfg: RelayConfig, bitrate: int, metadata: Mapping[str, str]
 ) -> None:
     """Log in with the Shoutcast 1 source protocol, which Shoutcast 2 also accepts.
 
@@ -258,9 +310,9 @@ def _shoutcast_login(
             raise RelayError("the server closed the connection during login")
         raise RelayError("the server did not accept the source connection")
     headers = (
-        f"icy-name:{station_name}\r\n"
-        "icy-genre:\r\n"
-        "icy-url:\r\n"
+        f"icy-name:{metadata['name']}\r\n"
+        f"icy-genre:{metadata.get('genre', '')}\r\n"
+        f"icy-url:{metadata.get('url', '')}\r\n"
         f"icy-pub:{int(cfg.public)}\r\n"
         f"icy-br:{bitrate}\r\n"
         "content-type:audio/mpeg\r\n"
@@ -274,6 +326,7 @@ def open_source(
     *,
     bitrate: int,
     station_name: str,
+    station_metadata: Mapping[str, str] | None = None,
     connect: Callable[..., socket.socket] = socket.create_connection,
     on_socket: Callable[[socket.socket], None] | None = None,
 ) -> Connection:
@@ -294,15 +347,22 @@ def open_source(
         RelayError: The server refused the login.
         OSError: The connection failed.
     """
-    sock = connect((cfg.host, source_port(cfg)), timeout=CONNECT_TIMEOUT)
+    port = source_port(cfg)
+    sock = (
+        _connect_relay(cfg.host, port)
+        if connect is socket.create_connection
+        else connect((cfg.host, port), timeout=CONNECT_TIMEOUT)
+    )
     try:
         if on_socket is not None:
             on_socket(sock)
         sock.settimeout(SEND_TIMEOUT)
         if cfg.type == "icecast":
-            _icecast_login(sock, cfg, bitrate, station_name)
+            metadata = station_metadata or {"name": station_name}
+            _icecast_login(sock, cfg, bitrate, metadata)
         else:
-            _shoutcast_login(sock, cfg, bitrate, station_name)
+            metadata = station_metadata or {"name": station_name}
+            _shoutcast_login(sock, cfg, bitrate, metadata)
         sock.settimeout(SEND_TIMEOUT)
     except BaseException:
         with contextlib.suppress(OSError):
@@ -348,6 +408,8 @@ def send_metadata(
         headers = {"User-Agent": _SHOUTCAST_USER_AGENT}
     conn = connection_factory(cfg.host, cfg.port, timeout=METADATA_TIMEOUT)
     try:
+        if connection_factory is http.client.HTTPConnection:
+            conn.sock = _connect_relay(cfg.host, cfg.port, timeout=METADATA_TIMEOUT)
         conn.request("GET", path, headers=headers)
         response = conn.getresponse()
         response.read(_REPLY_LIMIT)
@@ -375,6 +437,7 @@ class Relay:
         *,
         bitrate: Callable[[], int],
         station_name: Callable[[], str],
+        station_metadata: Callable[[], Mapping[str, str]] | None = None,
         connect: Callable[..., Connection] = open_source,
         update_metadata: Callable[[RelayConfig, str], None] = send_metadata,
         on_change: Callable[[], None] = lambda: None,
@@ -395,12 +458,15 @@ class Relay:
         self.cfg = cfg
         self._bitrate = bitrate
         self._station_name = station_name
+        self._station_metadata = station_metadata
         self._connect = connect
         self._update_metadata = update_metadata
         self._on_change = on_change
         self._clock = clock
         self._cond = threading.Condition()
         self._closed = threading.Event()
+        self._start_gate = threading.Event()
+        self._start_gate.set()
         self._title_event = threading.Event()
         self._queue: collections.deque[bytes] = collections.deque()
         self._size = 0
@@ -475,6 +541,19 @@ class Relay:
         for thread in self._threads:
             thread.start()
 
+    def start_paused(self) -> None:
+        """Start workers but hold source connections until :meth:`resume`.
+
+        The relay manager uses this while staging replacements so thread
+        startup failures leave the currently configured relays untouched.
+        """
+        self._start_gate.clear()
+        self.start()
+
+    def resume(self) -> None:
+        """Allow a successfully staged relay to connect to its source."""
+        self._start_gate.set()
+
     def close(self) -> None:
         """Disconnect and stop both threads, waiting at most ``CLOSE_TIMEOUT``."""
         self.begin_close()
@@ -486,6 +565,7 @@ class Relay:
             self._closed.set()
             connection, login = self._connection, self._login_socket
             self._cond.notify_all()
+        self._start_gate.set()
         self._title_event.set()
         if connection is not None:
             connection.close()
@@ -559,16 +639,19 @@ class Relay:
 
     def _send_loop(self) -> None:
         """Log in, send audio until something fails, wait, and repeat until closed."""
+        self._start_gate.wait()
         while not self._closed.is_set():
             if self._state != "retrying":
                 self._set_state("connecting", None)
             try:
-                connection = self._connect(
-                    self.cfg,
-                    bitrate=self._bitrate(),
-                    station_name=self._station_name(),
-                    on_socket=self._login_started,
-                )
+                args = {
+                    "bitrate": self._bitrate(),
+                    "station_name": self._station_name(),
+                    "on_socket": self._login_started,
+                }
+                if self._station_metadata is not None:
+                    args["station_metadata"] = self._station_metadata()
+                connection = self._connect(self.cfg, **args)
             except Exception as exc:
                 if not self._closed.is_set():
                     self._fail(describe_error(exc))
@@ -717,8 +800,11 @@ class RelayManager:
         *,
         make_output: Callable[[int], Any],
         station_name: Callable[[], str],
+        station_metadata: Callable[[], Mapping[str, str]] | None = None,
         status_path: Path | None = None,
         relay_factory: Callable[..., Relay] = Relay,
+        add_output: Callable[[Any], None] = lambda output: None,
+        remove_output: Callable[[Any], None] = lambda output: None,
     ) -> None:
         """Build a relay for every enabled entry; :meth:`start` connects them.
 
@@ -733,9 +819,20 @@ class RelayManager:
         """
         self._configs = list(relays)
         self._status_path = status_path
+        self._main = main
+        self._make_output = make_output
+        self._station_name = station_name
+        self._station_metadata = station_metadata
+        self._relay_factory = relay_factory
+        self._add_output = add_output
+        self._remove_output = remove_output
         self._status_lock = threading.Lock()
+        self._lock = threading.RLock()
         self.outputs: list[Any] = []
         self._relays: list[Relay] = []
+        self._by_name: dict[str, tuple[Relay, Any]] = {}
+        self._started = False
+        self._closed = False
         by_bitrate: dict[int, Any] = {}
         for cfg in self._configs:
             if not cfg.enabled:
@@ -747,14 +844,17 @@ class RelayManager:
             else:
                 output = by_bitrate[cfg.bitrate] = make_output(cfg.bitrate)
                 self.outputs.append(output)
-            relay = relay_factory(
-                cfg,
-                bitrate=lambda output=output: int(output.bitrate),
-                station_name=station_name,
-                on_change=self._write_status,
-            )
+            relay_args = {
+                "bitrate": lambda output=output: int(output.bitrate),
+                "station_name": station_name,
+                "on_change": self._write_status,
+            }
+            if station_metadata is not None:
+                relay_args["station_metadata"] = station_metadata
+            relay = relay_factory(cfg, **relay_args)
             output.add_sink(relay)
             self._relays.append(relay)
+            self._by_name[cfg.name] = (relay, output)
 
     @property
     def active(self) -> bool:
@@ -763,9 +863,126 @@ class RelayManager:
 
     def start(self) -> None:
         """Start every relay connecting."""
-        self._write_status()
+        self._started = True
+        if self._configs:
+            self._write_status()
         for relay in self._relays:
             relay.start()
+
+    def reconfigure(self, configs: Iterable[RelayConfig], *, restart_all: bool = False) -> None:
+        """Apply a validated relay set, restarting only entries that changed."""
+        configs = list(configs)
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("relay manager is stopped")
+            requested = {cfg.name: cfg for cfg in configs}
+            existing = {cfg.name: cfg for cfg in self._configs}
+            changed = {
+                name
+                for name in existing.keys() | requested.keys()
+                if existing.get(name) != requested.get(name)
+            }
+            if restart_all:
+                changed |= requested.keys()
+            if not changed:
+                return
+            prepared: dict[str, tuple[Relay, Any]] = {}
+            created: list[Any] = []
+            outputs_by_rate = {int(output.bitrate): output for output in self.outputs}
+            try:
+                for name in changed:
+                    cfg = requested.get(name)
+                    if cfg is None or not cfg.enabled:
+                        continue
+                    output = self._main
+                    if cfg.bitrate is not None:
+                        output = outputs_by_rate.get(cfg.bitrate)
+                        if output is None:
+                            output = self._make_output(cfg.bitrate)
+                            created.append(output)
+                            self._add_output(output)
+                            outputs_by_rate[cfg.bitrate] = output
+                    relay_args = {
+                        "bitrate": lambda output=output: int(output.bitrate),
+                        "station_name": self._station_name,
+                        "on_change": self._write_status,
+                    }
+                    if self._station_metadata is not None:
+                        relay_args["station_metadata"] = self._station_metadata
+                    prepared[name] = (self._relay_factory(cfg, **relay_args), output)
+            except Exception:
+                for output in created:
+                    self._remove_output(output)
+                    output.close()
+                raise
+            attached: list[tuple[Relay, Any]] = []
+            staged: list[Relay] = []
+            try:
+                for relay, output in prepared.values():
+                    output.add_sink(relay)
+                    attached.append((relay, output))
+                if self._started:
+                    for relay, _ in prepared.values():
+                        # Include it before starting: start_paused may fail
+                        # after starting its first worker thread.
+                        staged.append(relay)
+                        relay.start_paused()
+            except Exception:
+                for relay in staged:
+                    relay.begin_close()
+                deadline = time.monotonic() + CLOSE_TIMEOUT
+                for relay in staged:
+                    relay.finish_close(deadline)
+                for relay, output in attached:
+                    remove_sink = getattr(output, "remove_sink", None)
+                    if remove_sink is not None:
+                        remove_sink(relay)
+                for output in created:
+                    self._remove_output(output)
+                    output.close()
+                raise
+            old = {name: self._by_name.pop(name) for name in changed if name in self._by_name}
+            for relay, output in old.values():
+                remove_sink = getattr(output, "remove_sink", None)
+                if remove_sink is not None:
+                    try:
+                        remove_sink(relay)
+                    except Exception:
+                        logger.exception("Could not detach replaced relay %s", relay.cfg.name)
+                try:
+                    relay.begin_close()
+                except Exception:
+                    logger.exception("Could not stop replaced relay %s", relay.cfg.name)
+            deadline = time.monotonic() + CLOSE_TIMEOUT
+            for relay, _ in old.values():
+                try:
+                    relay.finish_close(deadline)
+                except Exception:
+                    logger.exception("Could not finish stopping replaced relay %s", relay.cfg.name)
+            for name in changed:
+                if name not in prepared:
+                    continue
+                relay, output = prepared[name]
+                if output is not self._main and output not in self.outputs:
+                    self.outputs.append(output)
+                self._by_name[name] = (relay, output)
+            self._configs = configs
+            self._relays = [relay for relay, _ in self._by_name.values()]
+            for relay in staged:
+                relay.resume()
+            used = {id(output) for _, output in self._by_name.values()}
+            for output in list(self.outputs):
+                if id(output) not in used:
+                    try:
+                        self._remove_output(output)
+                    except Exception:
+                        logger.exception("Could not detach an unused relay encoder")
+                    try:
+                        output.close()
+                    except Exception:
+                        logger.exception("Could not close an unused relay encoder")
+                    self.outputs.remove(output)
+            self._write_status()
 
     def set_title(self, artist: str, title: str) -> None:
         """Retitle the extra outputs (the stream's own is retitled by the bridge)."""
@@ -795,22 +1012,26 @@ class RelayManager:
         one shared deadline, so shutdown takes at most ``CLOSE_TIMEOUT``
         however many relays are stuck.
         """
-        for relay in self._relays:
-            try:
-                relay.begin_close()
-            except Exception:
-                logger.exception("Stopping relay %s failed", relay.cfg.name)
-        deadline = time.monotonic() + CLOSE_TIMEOUT
-        for relay in self._relays:
-            try:
-                relay.finish_close(deadline)
-            except Exception:
-                logger.exception("Stopping relay %s failed", relay.cfg.name)
-        for output in self.outputs:
-            try:
-                output.close()
-            except Exception:
-                logger.exception("Closing a relay encoder failed")
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            for relay in list(self._relays):
+                try:
+                    relay.begin_close()
+                except Exception:
+                    logger.exception("Stopping relay %s failed", relay.cfg.name)
+            deadline = time.monotonic() + CLOSE_TIMEOUT
+            for relay in self._relays:
+                try:
+                    relay.finish_close(deadline)
+                except Exception:
+                    logger.exception("Stopping relay %s failed", relay.cfg.name)
+            for output in self.outputs:
+                try:
+                    output.close()
+                except Exception:
+                    logger.exception("Closing a relay encoder failed")
 
     def _write_status(self) -> None:
         """Rewrite the status file for ``autodj doctor``; failures are only logged."""

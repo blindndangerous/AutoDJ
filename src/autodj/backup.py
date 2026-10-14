@@ -8,10 +8,10 @@ that wrote it and the list of files) and these members:
 - ``index/dj_meta.db``, ``index/library.db``, ``index/web_state.json``,
   ``index/related-artists.toml``, ``index/related-tracks.toml``, ``index/schedule.json``,
   ``index/carts.json``,
-  ``index/time_checks.json``, ``index/listener_bans.json``, ``index/recording.json``,
-  ``index/categories.json``, ``index/liner_dates.json``, ``index/matched_intros.json``
-  and ``index/intro_rules.json``
-  from the active index folder.
+  ``index/time_checks.json``, ``index/listener_bans.json``, ``index/listener_stats.json``,
+  ``index/recording.json``, ``index/categories.json``, ``index/liner_dates.json``,
+  ``index/matched_intros.json``, ``index/intro_rules.json``, ``index/shows.json`` and
+  ``index/relays.json`` from the active index folder. Relay files contain source passwords.
 - ``liners/...``, ``carts/...``, ``time_checks/...``, ``profiles/...``, ``clockwheels/...``
   and ``intros/...`` (the matched intros' audio): every file in those folders and their
   subfolders.  Time check
@@ -28,6 +28,7 @@ that wrote it and the list of files) and these members:
 
 Every station's state files are copied with the index generation under its
 publication lock; each SQLite database is copied through SQLite's backup API.
+The ZIP is not encrypted; protect it as you would the relay passwords it contains.
 Restore is all or nothing: what it replaces is set aside first
 (``.<name>.old-<id>``), each step written to a journal (``.autodj-restore.json``),
 and put back if any replacement fails; after a crash, :func:`recover_restore`
@@ -75,11 +76,14 @@ INDEX_FILES = (
     "carts.json",
     "time_checks.json",
     "listener_bans.json",
+    "listener_stats.json",
     "recording.json",
     "categories.json",
     "liner_dates.json",
     "matched_intros.json",
     "intro_rules.json",
+    "shows.json",
+    "relays.json",
     im.MANIFEST_NAME,
 )
 _FOLDERS = (
@@ -98,11 +102,14 @@ _STATE_FILES = (
     "carts.json",
     "time_checks.json",
     "listener_bans.json",
+    "listener_stats.json",
     "recording.json",
     "categories.json",
     "liner_dates.json",
     "matched_intros.json",
     "intro_rules.json",
+    "shows.json",
+    "relays.json",
 )
 # Another station's state files, in ``stations/<slug>/``.  The categories
 # are shared, so they are only in the default station's list.
@@ -1025,15 +1032,36 @@ def restore_backup(
             index or a station the configuration lacks, is too big for the free
             space, or would replace existing files without *force*.
     """
+    said = warnings if warnings is not None else []
     try:
         with zipfile.ZipFile(archive) as opened:
-            return _restore(
-                opened, _roots(cfg), force=force, warnings=warnings if warnings is not None else []
-            )
+            restored = _restore(opened, _roots(cfg), force=force, warnings=said)
     except BackupError:
         raise
     except (OSError, RuntimeError, NotImplementedError, zipfile.BadZipFile) as exc:
         raise BackupError(f"could not restore {archive}: {exc}") from exc
+    _forget_shows_on_air(cfg, said)
+    return restored
+
+
+def _forget_shows_on_air(cfg: AutoDJConfig, warnings: list[str]) -> None:
+    """Forget every station's show on the air (#106) after a restore.
+
+    ``show_on_air.json`` is runtime state, never in a backup: the show it
+    names belongs to the time before the restore, so it must not resume.
+    """
+    from autodj.stations import StationPaths
+
+    places = [StationPaths.default(cfg)]
+    places += [StationPaths.for_station(cfg, spec.slug) for spec in cfg.stations]
+    for paths in places:
+        try:
+            paths.show_on_air.unlink(missing_ok=True)
+        except OSError as exc:
+            warnings.append(
+                f"Could not remove {paths.show_on_air} ({exc}); delete it before serving, "
+                "or the show it names resumes."
+            )
 
 
 # ---------------------------------------------------------------------------

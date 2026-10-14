@@ -261,7 +261,11 @@ export function installQueueButtons(els) {
         {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(action === "remove" && !duplicateRemoval ? { path } : { paths: newPaths }),
+        // The place in the queue as shown, so the server moves or removes
+        // that very entry, not another of the same file (a show's copy, #106).
+        body: JSON.stringify(action === "remove" && !duplicateRemoval
+          ? { path, position: idx }
+          : { paths: newPaths, from_paths: paths, order: newQueue.map((item) => snapshot.indexOf(item)) }),
         },
       );
       if (!isAuthenticatedRequestCurrent(epoch)) return;

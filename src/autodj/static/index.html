@@ -1795,7 +1795,7 @@
           </select>
         </div>
         <span class="setting-desc" id="schedule-timing-desc">
-          Soft waits for the current song to end.  Hard runs on time and, except for stream events, fades the current song out.
+          Soft waits for the current song to end.  Hard runs on time and, except for stream events, fades the current song out.  A show starts at once with Hard, and a Play next song you chose plays right after its first song. With Soft it is queued at its time to follow the current song; with server audio or a stream it can start one song later, because the song after the current one may already be mixed in.
         </span>
         <div class="settings-check">
           <input type="checkbox" id="schedule-enabled">
@@ -1834,7 +1834,7 @@
       <!-- Relays to other servers ([stream.relays.<name>] in config.toml),
            filled by stream-mode.js.  Plain text, not live. -->
       <div id="stream-relays" hidden>
-        <p class="stream-detail" id="stream-relays-intro">Relays to other servers. While a relay is on, the station keeps playing even when nobody listens here.</p>
+        <p class="stream-detail" id="stream-relays-intro">Relays to other servers. While a relay is on, the station keeps playing even when nobody listens here. The config.toml relay list is used until you save here; after that, this station's saved list takes precedence. Environment-managed passwords override saved values. Relay source passwords are sent without TLS encryption.</p>
         <ul class="stream-detail" id="stream-relays-list" aria-labelledby="stream-relays-intro"></ul>
       </div>
       <div class="settings-row">
@@ -1845,6 +1845,35 @@
       <span class="setting-desc" id="stream-station-name-desc">
         The name players such as Sonos and VLC show for this station, up to 100 characters.  A player shows a new name the next time it connects.
       </span>
+      <div class="settings-row"><label for="stream-station-genre">Genre</label><input id="stream-station-genre" maxlength="255" autocomplete="off"></div>
+      <div class="settings-row"><label for="stream-station-description">Description</label><input id="stream-station-description" maxlength="255" autocomplete="off"></div>
+      <div class="settings-row"><label for="stream-station-url">Website URL</label><input id="stream-station-url" type="url" maxlength="2048" autocomplete="url"></div>
+      <p class="setting-desc">Station metadata changes reconnect enabled relays after you save. Description is sent to Icecast; Shoutcast and direct listener streams do not support it.</p>
+      <button type="button" id="stream-metadata-save">Save station metadata</button>
+      <div id="stream-relay-settings">
+        <h4>Relays</h4>
+        <button type="button" id="stream-relay-add">Add relay</button>
+        <table id="stream-relay-table" role="grid" aria-label="Stream relays">
+          <thead><tr><th scope="col">Relay</th><th scope="col">Status and error</th><th scope="col">Edit</th><th scope="col">Enable</th><th scope="col">Remove</th></tr></thead>
+          <tbody id="stream-relay-rows"></tbody>
+        </table>
+        <form id="stream-relay-form" hidden>
+          <h5 id="stream-relay-form-title">Add relay</h5>
+          <label for="stream-relay-name">Name</label><input id="stream-relay-name" maxlength="32" required pattern="[A-Za-z0-9_-]+">
+          <label for="stream-relay-type">Server type</label><select id="stream-relay-type"><option value="icecast">Icecast</option><option value="shoutcast1">Shoutcast 1</option><option value="shoutcast2">Shoutcast 2</option></select>
+          <label for="stream-relay-host">Host</label><input id="stream-relay-host" required autocomplete="off">
+          <label for="stream-relay-port">Listener port</label><input id="stream-relay-port" type="number" min="1" max="65535" value="8000" required>
+          <label for="stream-relay-password">Source password</label><input id="stream-relay-password" type="password" autocomplete="new-password" aria-describedby="stream-relay-password-help">
+          <p id="stream-relay-password-help">Saved passwords stay private. Leave blank to keep the current password.</p>
+          <p>Relay TLS is unsupported; the source password is sent without encryption.</p>
+          <div id="stream-relay-icecast"><label for="stream-relay-mount">Mount point</label><input id="stream-relay-mount" value="/live"><label for="stream-relay-user">Username</label><input id="stream-relay-user" value="source"></div>
+          <div id="stream-relay-shoutcast2" hidden><label for="stream-relay-stream-id">Stream ID</label><input id="stream-relay-stream-id" type="number" min="1" value="1"></div>
+          <label for="stream-relay-bitrate">Bitrate</label><select id="stream-relay-bitrate"><option value="">Use station stream quality</option><option>128</option><option>192</option><option>256</option><option>320</option></select>
+          <label><input id="stream-relay-public" type="checkbox"> Public directory listing</label>
+          <label><input id="stream-relay-enabled" type="checkbox" checked> Enabled</label>
+          <button type="submit">Save relay</button><button type="button" id="stream-relay-cancel">Cancel</button>
+        </form>
+      </div>
       <div class="settings-row">
         <label for="stream-bitrate">Quality</label>
         <select id="stream-bitrate" aria-describedby="stream-bitrate-desc station-context">
@@ -1864,6 +1893,46 @@
       <span class="setting-desc" id="stream-continuous-desc">
         Keep the station running even when nobody is listening. When off, it starts when a listener connects and stops after a short wait once the last listener leaves.
       </span>
+      <!-- The AAC and Opus streams beside the MP3 one (#50), filled by
+           stream-formats.js.  The address list is plain text, rebuilt
+           only when it changes; saves and Copy speak through the status
+           regions. -->
+      <fieldset id="stream-formats">
+        <legend>More formats</legend>
+        <p class="setting-desc" id="stream-formats-desc">
+          Serve the station in AAC or Opus too, each at its own address beside the MP3 one. Each format that is on runs its own encoder on this computer. Listeners on every format count toward the listener limit.
+        </p>
+        <div class="settings-row">
+          <label for="stream-aac-bitrate">AAC quality</label>
+          <select id="stream-aac-bitrate" aria-describedby="stream-aac-desc station-context">
+            <option value="0">Off</option>
+            <option value="64">64 kbps</option>
+            <option value="96">96 kbps</option>
+            <option value="128">128 kbps</option>
+            <option value="192">192 kbps</option>
+            <option value="256">256 kbps</option>
+          </select>
+        </div>
+        <span class="setting-desc" id="stream-aac-desc">
+          AAC sounds better than MP3 at the same bitrate and plays on most phones, browsers and smart speakers. Players that show song titles get them. Changing it makes AAC listeners reconnect for a moment.
+        </span>
+        <div class="settings-row">
+          <label for="stream-opus-bitrate">Opus quality</label>
+          <select id="stream-opus-bitrate" aria-describedby="stream-opus-desc station-context">
+            <option value="0">Off</option>
+            <option value="48">48 kbps</option>
+            <option value="64">64 kbps</option>
+            <option value="96">96 kbps</option>
+            <option value="128">128 kbps</option>
+            <option value="192">192 kbps</option>
+          </select>
+        </div>
+        <span class="setting-desc" id="stream-opus-desc">
+          Opus sounds good at low bitrates, which suits mobile data. Browsers and players such as VLC play it; some smart speakers and older players do not. Song titles are not sent in an Opus stream. Changing it makes Opus listeners reconnect for a moment.
+        </span>
+        <p class="stream-detail" id="stream-formats-intro">Addresses for each format that is on:</p>
+        <ul class="stream-detail" id="stream-formats-list" aria-labelledby="stream-formats-intro"></ul>
+      </fieldset>
       <!-- The public now-playing feed and the webhooks from
            config.local.toml; nowplaying-settings.js fills it.  Nested so
            it shows, hides and hands focus away with the Stream settings.
@@ -1990,6 +2059,71 @@
         <h4 id="listener-bans-title" tabindex="-1">Bans</h4>
         <ul id="listener-ban-list" aria-label="Banned addresses"></ul>
         <p id="listener-ban-empty" hidden>No bans.</p>
+      </section>
+      <!-- Listener statistics (#50), filled by listener-stats.js: plain
+           text and tables, never a live region and never a chart alone.
+           They change only when asked (opening, Refresh, Show), so reading
+           a table is never disturbed; results speak through the settings
+           status region. -->
+      <section id="listener-stats" aria-labelledby="listener-stats-title">
+        <h4 id="listener-stats-title" tabindex="-1">Listener statistics</h4>
+        <p class="setting-desc" id="listener-stats-privacy">
+          Counts only: no address, player name or other detail of a listener is kept. Days are in the station's time zone, and a session counts on the day it began.
+        </p>
+        <div class="settings-row">
+          <label for="listener-stats-span">Show</label>
+          <select id="listener-stats-span" aria-describedby="station-context">
+            <option value="7">Last 7 days</option>
+            <option value="30" selected>Last 30 days</option>
+            <option value="90">Last 90 days</option>
+            <option value="3650">Every day kept</option>
+          </select>
+          <button type="button" id="listener-stats-refresh" aria-describedby="station-context">Refresh statistics</button>
+        </div>
+        <p class="stream-detail" id="listener-stats-summary">Statistics not loaded yet.</p>
+        <table id="listener-stats-formats" hidden>
+          <caption id="listener-stats-formats-caption">Listeners by format</caption>
+          <thead>
+            <tr>
+              <th scope="col">Format</th>
+              <th scope="col">Listening now</th>
+              <th scope="col">Peak</th>
+              <th scope="col">Sessions</th>
+              <th scope="col">Listening hours</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <table id="listener-stats-days" hidden>
+          <caption id="listener-stats-days-caption">Listeners by day</caption>
+          <thead>
+            <tr>
+              <th scope="col">Date</th>
+              <th scope="col">Peak</th>
+              <th scope="col">Sessions</th>
+              <th scope="col">Listening hours</th>
+              <th scope="col">Average session</th>
+              <th scope="col">Longest session</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <p class="stream-detail" id="listener-stats-lengths-title" hidden>How long sessions lasted:</p>
+        <ul class="stream-detail" id="listener-stats-lengths" aria-labelledby="listener-stats-lengths-title" hidden></ul>
+        <div class="settings-row">
+          <label for="listener-stats-keep">Days to keep statistics</label>
+          <input type="number" id="listener-stats-keep" min="0" max="3650" step="1" required
+                 aria-describedby="listener-stats-keep-desc station-context">
+        </div>
+        <span class="setting-desc" id="listener-stats-keep-desc">
+          From 0 to 3650; 90 unless changed. Older days are deleted. 0 keeps no statistics and deletes those kept.
+        </span>
+        <div class="settings-row">
+          <button type="button" id="listener-stats-export" aria-describedby="listener-stats-export-desc station-context">Download statistics (CSV)</button>
+        </div>
+        <span class="setting-desc" id="listener-stats-export-desc">
+          A spreadsheet file with one row per day kept: peaks, sessions, listening hours and session lengths, in total and for each format.
+        </span>
       </section>
     </fieldset>
     <!-- A station other than the default one can be stopped (#70); it asks
@@ -2697,6 +2831,81 @@
       </select>
       <p id="clock-apply-help">Continuing keeps the next step number. Moving or deleting steps can change what plays there. If that number no longer exists, the clock starts at step 1.</p>
       <button type="button" id="clock-save">Save clockwheel</button>
+    </section>
+
+    <section class="card" aria-labelledby="shows-heading" id="shows-card">
+      <h2 id="shows-heading">Shows</h2>
+      <!-- shows-panel.js fills this section.  The lists, the on-air line and
+           the totals are plain text, not live regions: each result of a
+           button is said once through #shows-status.  A refused field gets
+           aria-invalid, the error linked to it and focus. -->
+      <p>A show is a list of songs you prepare ahead, such as Remembering the 2000s, and air at a set time. AutoDJ picks the list from a category or a clockwheel with the station's own repeat rules and DMCA limits; you can then reorder it, remove songs, add others or generate it again. To air a show, add an event with the action Play a show under Settings, Schedule. Hard timing starts it at its time, with a Play next song you chose right after its first song; Soft lets the current song finish, and with server audio or a stream the show can start one song later. While a show plays, its songs go ahead of songs already in the queue, listener requests included.</p>
+      <p id="shows-problem" class="field-error" hidden></p>
+      <div id="shows-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+      <p id="shows-on-air">No show is on the air.</p>
+      <button type="button" id="shows-stop" hidden>Stop show</button>
+      <h3 id="shows-list-heading">Saved shows</h3>
+      <ul id="shows-list" aria-labelledby="shows-list-heading"><li>No shows loaded.</li></ul>
+      <button type="button" id="shows-add">Add show</button>
+      <!-- Add and Edit share this form. -->
+      <form id="shows-form" novalidate hidden>
+        <fieldset>
+          <legend id="shows-form-legend">Add show</legend>
+          <p id="shows-form-error" class="field-error" hidden></p>
+          <div class="settings-row">
+            <label for="shows-name">Name</label>
+            <input id="shows-name" type="text" maxlength="100" autocomplete="off" spellcheck="false" required>
+          </div>
+          <fieldset id="shows-source">
+            <legend>Songs come from</legend>
+            <div class="settings-check">
+              <input type="radio" name="shows-source" id="shows-source-category" value="category" checked>
+              <label for="shows-source-category">A category</label>
+            </div>
+            <div class="settings-check">
+              <input type="radio" name="shows-source" id="shows-source-clockwheel" value="clockwheel">
+              <label for="shows-source-clockwheel">A clockwheel</label>
+            </div>
+          </fieldset>
+          <div class="settings-row" id="shows-category-field">
+            <label for="shows-category">Category</label>
+            <select id="shows-category" aria-describedby="shows-category-help"></select>
+          </div>
+          <p class="setting-desc" id="shows-category-help">Songs are picked from the category at random, with the repeat rules. Make categories, such as one from the beets query original_year:2000..2009, under Categories above.</p>
+          <div class="settings-row" id="shows-clockwheel-field" hidden>
+            <label for="shows-clockwheel">Clockwheel</label>
+            <select id="shows-clockwheel" aria-describedby="shows-clockwheel-help"></select>
+          </div>
+          <p class="setting-desc" id="shows-clockwheel-help" hidden>Songs are picked by the clockwheel's steps and conditions, in its order. Its voice liners are left out of the list.</p>
+          <div class="settings-row">
+            <label for="shows-target">Target length (minutes)</label>
+            <input id="shows-target" type="text" inputmode="numeric" autocomplete="off" value="60" aria-describedby="shows-target-help">
+          </div>
+          <p class="setting-desc" id="shows-target-help">5 to 360. Generating stops once the songs reach this length.</p>
+          <button type="submit" id="shows-save">Save show</button>
+          <button type="button" id="shows-cancel">Cancel</button>
+        </fieldset>
+      </form>
+
+      <section id="shows-editor" class="flow-form" aria-labelledby="shows-editor-heading" hidden>
+        <h3 id="shows-editor-heading" tabindex="-1">Songs of <span id="shows-editor-name"></span></h3>
+        <p id="shows-summary"></p>
+        <p id="shows-note" hidden></p>
+        <label for="shows-start">Pick as if at</label>
+        <input id="shows-start" type="datetime-local" aria-describedby="shows-start-help">
+        <p class="setting-desc" id="shows-start-help">Optional. Generate picks as the station would at this time, in the station time zone, so a category's days, hours and dates and a step's hours count then. Leave it empty for now.</p>
+        <button type="button" id="shows-generate">Generate list</button>
+        <p id="shows-songs-help">Move up and Move down change a song's place; Remove takes it out. Each change is saved at once, and the show plays its list as it is when it starts.</p>
+        <ol id="shows-songs" aria-labelledby="shows-editor-heading" aria-describedby="shows-songs-help"><li class="no-results">No songs yet. Press Generate list, or add songs below.</li></ol>
+        <h4 id="shows-add-heading">Add songs</h4>
+        <label for="shows-search">Search the library</label>
+        <input id="shows-search" type="search" autocomplete="off" spellcheck="false" aria-describedby="shows-search-help">
+        <p class="setting-desc" id="shows-search-help">Title, artist or album. Add puts the song at the end of the list.</p>
+        <button type="button" id="shows-search-run">Search</button>
+        <ul id="shows-results" aria-labelledby="shows-add-heading"></ul>
+        <button type="button" id="shows-play-now">Start after this song</button>
+        <button type="button" id="shows-close">Close list</button>
+      </section>
     </section>
 
     <section class="card" id="intro-rules" aria-labelledby="intro-rules-heading">

@@ -1112,6 +1112,12 @@ class HuggingFaceConfig(_Section):
 
 
 STREAM_BITRATES = (128, 192, 256, 320)
+#: The AAC mount's bitrates in kbps (``[stream] aac_bitrate``; 0 is off).
+AAC_BITRATES = (64, 96, 128, 192, 256)
+#: The Opus mount's bitrates in kbps (``[stream] opus_bitrate``; 0 is off).
+OPUS_BITRATES = (48, 64, 96, 128, 192)
+#: The most days of listener statistics ``[stream] stats_days`` may keep.
+MAX_STATS_DAYS = 3650
 
 
 def parse_env_bool(value: str) -> bool:
@@ -1293,9 +1299,14 @@ class StreamConfig(_Section):
         enabled: Serve in stream mode.
         bitrate: MP3 bitrate in kbps, one of :data:`STREAM_BITRATES`.
         idle_grace_seconds: Seconds without listeners before the set stops.
-        max_listeners: Concurrent listener limit.
+        max_listeners: Concurrent listener limit, across every format.
         station_name: Name sent to players as ``icy-name``.
         relays: External servers to push the stream to, by name.
+        aac_bitrate: The AAC mount's bitrate in kbps, one of
+            :data:`AAC_BITRATES`, or 0 for no AAC mount.
+        opus_bitrate: The Opus mount's bitrate in kbps, one of
+            :data:`OPUS_BITRATES`, or 0 for no Opus mount.
+        stats_days: Days of listener statistics to keep, 0 to keep none.
     """
 
     SECTION: ClassVar[str] = "stream"
@@ -1310,10 +1321,26 @@ class StreamConfig(_Section):
     listener_user: str = ""
     listener_password: str = field(default="", repr=False)
     station_name: str = "AutoDJ"
+    genre: str = ""
+    description: str = ""
+    url: str = ""
     relays: dict[str, RelayConfig] = field(default_factory=dict)
+    aac_bitrate: int = 0
+    opus_bitrate: int = 0
+    stats_days: int = 90
 
     def __post_init__(self) -> None:
         """Validate every field."""
+        for name, allowed in (("aac_bitrate", AAC_BITRATES), ("opus_bitrate", OPUS_BITRATES)):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"stream.{name} must be an integer")
+            if value and value not in allowed:
+                raise ValueError(f"stream.{name} must be 0 (off) or one of {allowed}, got {value}")
+        if isinstance(self.stats_days, bool) or not isinstance(self.stats_days, int):
+            raise TypeError("stream.stats_days must be an integer")
+        if not 0 <= self.stats_days <= MAX_STATS_DAYS:
+            raise ValueError(f"stream.stats_days must be between 0 and {MAX_STATS_DAYS}")
         if not isinstance(self.relays, Mapping):
             raise TypeError(
                 "stream.relays must be named tables such as [stream.relays.main], not a list"
@@ -1372,6 +1399,19 @@ class StreamConfig(_Section):
         if not self.station_name.isprintable():
             # It is sent as an HTTP header (icy-name): no control characters.
             raise ValueError("stream.station_name must not contain control characters")
+        for key in ("genre", "description", "url"):
+            value = getattr(self, key)
+            limit = 2048 if key == "url" else 255
+            if not isinstance(value, str) or len(value) > limit or not value.isprintable():
+                raise ValueError(
+                    f"stream.{key} must be at most {limit} characters without control characters"
+                )
+        if self.url:
+            from urllib.parse import urlsplit
+
+            parsed = urlsplit(self.url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError("stream.url must be an HTTP or HTTPS URL")
         self.idle_grace_seconds = float(self.idle_grace_seconds)
 
 

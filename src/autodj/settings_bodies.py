@@ -12,7 +12,7 @@ from collections.abc import Callable, Mapping
 from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from autodj.config import MAX_FADE_SECONDS
 from autodj.repeat_settings import RepeatSettings
@@ -93,13 +93,21 @@ class PresetBody(BaseModel):
 
 
 class StreamSettingsBody(BaseModel):
-    """Partial stream settings update: bitrate, continuous playback and station name."""
+    """Partial stream settings update: bitrates, continuous playback, name and statistics."""
 
     model_config = ConfigDict(extra="forbid")
 
     bitrate: Literal[128, 192, 256, 320] | None = None
+    # The AAC and Opus streams (#50): 0 turns one off.
+    aac_bitrate: Literal[0, 64, 96, 128, 192, 256] | None = None
+    opus_bitrate: Literal[0, 48, 64, 96, 128, 192] | None = None
+    # Days of listener statistics to keep; 0 keeps none.
+    stats_days: Annotated[int, Field(ge=0, le=3650, strict=True)] | None = None
     continuous: bool | None = Field(default=None, strict=True)
     station_name: Annotated[str, Field(max_length=100)] | None = None
+    genre: Annotated[str, Field(max_length=255)] | None = None
+    description: Annotated[str, Field(max_length=255)] | None = None
+    url: Annotated[str, Field(max_length=2048)] | None = None
     show_next: bool | None = Field(default=None, strict=True)
     max_listeners_per_address: Annotated[int, Field(ge=0, le=100, strict=True)] | None = None
 
@@ -115,6 +123,21 @@ class StreamSettingsBody(BaseModel):
         if not name.isprintable():
             raise ValueError("station_name must not contain control characters")
         return name
+
+    @field_validator("genre", "description", "url")
+    @classmethod
+    def _check_station_metadata(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is None:
+            return None
+        if not value.isprintable():
+            raise ValueError(f"{info.field_name} must not contain control characters")
+        if info.field_name == "url" and value:
+            from urllib.parse import urlsplit
+
+            parsed = urlsplit(value)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError("url must be an HTTP or HTTPS URL")
+        return value
 
 
 class TransitionBody(BaseModel):

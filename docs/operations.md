@@ -791,6 +791,9 @@ happened, so a screen reader hears it as the page loads. It is one of:
 
 The page needs no JavaScript and works without pairing. A listener is only ever told roughly when
 a song may play ("within the next half hour", "within the next hour or so"), never a set time.
+While a show is on the air, or due to start within `window_minutes`, a request is placed after
+the show's waiting songs and the listener is told only that it plays "after the station's show"
+(see [Shows](#shows)).
 
 **What the station checks**, in this order:
 
@@ -886,8 +889,10 @@ with, so a page opened as `localhost` or `127.0.0.1` gives a link only that comp
 page says so); open AutoDJ by the network address in its start-up message before copying a link
 for a speaker.
 
-The listening address is `/stream.mp3`, with a playlist at `/stream.m3u`. Anyone who can
-reach the server can listen without pairing. Playback controls and settings still require
+The listening address is `/stream.mp3`, with a playlist at `/stream.m3u`; the AAC and Opus
+streams, when on, are at `/stream.aac` and `/stream.opus` (see
+[More formats](#more-formats-aac-and-opus)). Anyone who can reach the server can listen without
+pairing. Playback controls and settings still require
 pairing when LAN authentication is enabled. Older addresses containing a stream key, such as
 `/stream/<secret>.mp3`, no longer work: set any speaker or player saved with one to
 `/stream.mp3`. AutoDJ no longer uses the `index/.stream-secret` file those versions made, and you
@@ -1038,6 +1043,103 @@ track, never mid-song.
 
 The listening address stays the same across restarts. There is no key to copy or renew.
 
+### More formats: AAC and Opus
+
+Beside the MP3 stream, a station can serve the same mix in AAC, in Opus, or both, each at its
+own address and bitrate. Turn them on in Settings, Stream, **More formats**, with **AAC
+quality** and **Opus quality** (Off, or a bitrate), or in `config.toml`:
+
+```toml
+[stream]
+aac_bitrate = 96    # 0 (off), 64, 96, 128, 192 or 256
+opus_bitrate = 64   # 0 (off), 48, 64, 96, 128 or 192
+```
+
+A format that is on answers at `/stream.aac` or `/stream.opus` for the default station, and at
+`/stations/<slug>.aac` or `/stations/<slug>.opus` for any station; a format that is off answers
+404. Settings, Stream lists the address of every format that is on, each with its own Copy
+button. The addresses are public like `/stream.mp3`, and the station's listener password, bans
+and per-address limit apply to them too. The choice made in Settings is saved in
+`web_state.json` and wins over `config.toml` at the next start, as the MP3 quality does.
+Changing a format's bitrate makes only that format's listeners reconnect.
+
+- **AAC** (AAC-LC in ADTS frames, `audio/aac`) sounds better than MP3 at the same bitrate and
+  plays on most phones, browsers and smart speakers. Players that ask for ICY titles get the
+  song titles, as with MP3.
+- **Opus** (in Ogg, `audio/ogg`, resampled to 48 kHz) sounds good at low bitrates, which suits
+  mobile data. Browsers and players such as VLC play it; some smart speakers and older players
+  do not. Song titles are not sent inside an Opus stream; players can read them from the
+  now-playing feed.
+
+`max_listeners` counts listeners on every format together: with the default 8, five MP3 and
+three Opus listeners fill the station. A listener on any format starts an idle set, as an MP3
+listener does. Relays and broadcast recordings stay MP3.
+
+Turning a format on first has ffmpeg encode a moment of silence in it. If this ffmpeg cannot
+(for example one built without libopus), the setting is refused with ffmpeg's own words and
+nothing changes; when several changes are saved together, none is made unless all can be.
+
+A format that is on runs its own ffmpeg encoder on this computer, fed the same mixed audio, but
+only while someone listens to it: its first listener starts the encoder, and it stops once nobody
+has listened for a minute. So a format nobody uses costs nothing. (The MP3 encoder runs whenever
+the station streams, as before.) The mix never waits for an encoder: each has its own queue of at
+most 2 seconds of audio, and one that falls behind loses its oldest audio, with one warning in
+the log, while the mix, the MP3 stream and the other format carry on; the song title changes
+never wait on an encoder starting or stopping either. A listener who joins a running encoder
+starts on a whole frame (or, for Opus, the stream's header and then a whole page) from the last
+2 seconds of audio; the first listener, or one who joins before an Opus stream's header is
+complete, gets the stream from its start. When an encoder exits, the log gives its last words,
+and Settings shows them beside its address while it runs.
+
+What an encoder costs, measured with ffmpeg's `-benchmark` on 120 seconds of audio, as a share
+of one CPU core (an Intel Core i7-8809G at 3.1 GHz under Windows 11, ffmpeg 8.1):
+
+- MP3 (the stream that is always on): 2.1 % at 320 kbps, 2.9 % at 128 kbps.
+- AAC: 3.5 % at 96 kbps, 4.9 % at 256 kbps.
+- Opus: 1.3 % at 64 kbps, 1.9 % at 192 kbps.
+
+Those are for music (two minutes of a DJ demo track). Pink noise under a chord gave 1.1 to
+1.5 % for MP3, 2.1 to 2.2 % for AAC and 1.3 to 1.6 % for Opus. The whole AutoDJ process with its
+encoders, on an idle station playing silence, went from 1.9 % of one core with MP3 alone to
+3.9 % with AAC at 96 kbps and Opus at 64 kbps both running, as when each has a listener.
+
+So each extra format costs about as much as the MP3 stream already does, a few percent of one
+core, and only while it has listeners (and a minute after). Several stations each run their own
+encoders, so multiply by the stations whose format is being heard.
+
+### Listener statistics
+
+Settings, Stream, **Listener statistics** shows, for the station the page controls:
+
+- a summary in words: how many are listening now on each format, today's peak and when it was,
+  today's sessions and listening hours, and the same for the chosen period with its peak day
+  and longest session;
+- a table **Listeners by format**: listening now, the peak, sessions and listening hours of
+  MP3, AAC and Opus;
+- a table **Listeners by day**, newest first: the peak and when it was, sessions, listening
+  hours, the average and the longest session;
+- **How long sessions lasted**: how many sessions were under 1 minute, 1 to 5 minutes, 5 to 15
+  minutes, 15 minutes to 1 hour, 1 to 3 hours, and 3 hours or more.
+
+**Show** picks the last 7, 30 or 90 days, or every day kept. The view changes only when you open
+Settings, press **Refresh statistics** or change Show, so a screen reader reading a table is
+never interrupted. **Download statistics (CSV)** saves every day kept as a spreadsheet file,
+one row per day, with the same numbers for each format and each session length band.
+
+A session is one connection, from connect to disconnect, and counts on the day it began, in
+the station's time zone (`[server] station_timezone`). The peak is the most listeners connected
+at once. Listeners of a relay's server are not counted here; that server keeps its own figures.
+
+Nothing in the statistics identifies a listener. AutoDJ keeps no address, player name or
+connection time for them: only the daily counts and totals above, in the station's
+`listener_stats.json`, written about once a minute and when the station stops, and included in
+backups. **Days to keep statistics** (`[stream] stats_days`, 90 by default, 0 to 3650) deletes
+older days; 0 keeps none and deletes those kept. The connected listeners' addresses and player
+names in the Listeners list above are shown only while they are connected, as before.
+
+Routes: `GET /api/stream/stats?days=30` (JSON) and `GET /api/stream/stats/export` (CSV), and
+the same under `/api/stations/<slug>/`. Both need a paired browser.
+
 ### Relaying to Icecast and Shoutcast
 
 AutoDJ can push the same station to one or more hosted Icecast or Shoutcast servers, so a
@@ -1048,7 +1150,24 @@ connections. Relays run in stream mode only. Supported servers:
 - Shoutcast 1 (DNAS 1.9).
 - Shoutcast 2 (DNAS 2), through its Shoutcast 1 source login with a stream ID.
 
-Describe each server as a named table in `config.toml`:
+In **Settings > Stream**, add or edit relays, enable or disable them, and check their
+connection status. Set the station name, genre, description and website there too; relays
+inherit this metadata. Saving metadata reconnects enabled relays, but leaves direct stream
+listeners connected. Changing one relay reconnects that relay only.
+
+Until the first web relay save, the list comes from `config.toml`. After that, the complete
+list is stored in the station's `relays.json`, including an empty list if every relay is
+removed; saved definitions and passwords then take precedence over TOML. A blank password
+keeps the saved one only when editing the same relay destination (host, port and type).
+Environment passwords take precedence over both files and cannot be edited in the web form.
+`relays.json` contains credentials and is deliberately excluded from AutoDJ backups; keep a
+separate private copy if needed. Unreadable saved relay settings leave relays off and block
+web saves until the file is repaired. On POSIX systems the file is written with mode 0600.
+On Windows, Python's `chmod(0o600)` sets the read-only attribute; access is governed by the
+directory's inherited Windows ACL, which administrators must restrict to trusted users.
+Station metadata is saved with the other web settings in `web_state.json`.
+
+For initial configuration, describe each server as a named table in `config.toml`:
 
 ```toml
 [stream.relays.main]
@@ -1177,8 +1296,13 @@ client for a running server.
   origin with `--allowed-origin`) if it is a name `--lan` cannot detect, such as a router DNS
   entry.
 - **A player gets a 503 "Stream listener limit reached"** — `max_listeners` (default 8) is full.
-  Raise `[stream] max_listeners` (or `AUTODJ_STREAM_MAX_LISTENERS`) if you regularly have more
+  It counts the listeners of every format (MP3, AAC and Opus) together. Raise
+  `[stream] max_listeners` (or `AUTODJ_STREAM_MAX_LISTENERS`) if you regularly have more
   simultaneous listeners.
+- **The AAC or Opus address answers 404** — that format is off for the station. Turn it on in
+  Settings, Stream, More formats. If the log says the Opus stream encoder keeps exiting, the
+  ffmpeg on the PATH was built without libopus; install a build with it (the container image
+  has one).
 - **A relay says "the server rejected the user name or password"** — check the password in
   `config.local.toml` and, for Icecast, the `user` and `mount`. Many hosts give a separate
   source password; the admin password is not always accepted.
@@ -1283,7 +1407,7 @@ The rules:
 
 A station keeps its state in `<index_dir>/<name>/stations/<slug>/`, with the same file names as
 the default station: `web_state.json`, `schedule.json`, `carts.json` and `carts/`,
-`time_checks.json`, `listener_bans.json`, `recording.json`, `relay-status.json`, `clockwheels/`,
+`time_checks.json`, `listener_bans.json`, `listener_stats.json`, `recording.json`, `relay-status.json`, `clockwheels/`,
 `liners/` (unless `playback.liners_folder` is set) and `profiles/`. Its plays are kept in the
 shared `library.db`. The default station's files stay where they always were.
 
@@ -1292,7 +1416,9 @@ shared `library.db`. The default station's files stay where they always were.
 `autodj serve` starts the default station as before, then every other station with
 `autostart = true`. Each other station mixes on the server and streams at
 `/stations/<slug>.mp3`, with a one-line playlist at `/stations/<slug>.m3u`; the startup log lists
-the addresses. These are public like `/stream.mp3`, and the station's own `listener_user` and
+the addresses. A station's AAC and Opus streams, when its `[stations.<slug>.stream]` table sets
+`aac_bitrate` or `opus_bitrate` (or Settings does), are at `/stations/<slug>.aac` and
+`/stations/<slug>.opus`, each with its own encoders. These are public like `/stream.mp3`, and the station's own `listener_user` and
 `listener_password` protect them. The default station keeps `/stream.mp3`, `/stream.m3u` and
 `/status`, and also answers at `/stations/default.mp3`. A station's stream needs ffmpeg, even when
 the default station is browser-driven.
@@ -1390,7 +1516,9 @@ destinations that point outside their configured folder.
 
 `autodj backup` includes every configured station. The default station's files keep their names
 in the archive; another station's are under `stations/<slug>/`, for example
-`stations/nightowl/index/web_state.json` and `stations/nightowl/liners/...`. A folder two
+`stations/nightowl/index/web_state.json`, `stations/nightowl/index/relays.json` and
+`stations/nightowl/liners/...`. Relay settings include source passwords. Backups are plain ZIP
+files without encryption, so store them with the same care as those credentials. A folder two
 stations share, such as one liner folder for both, is stored once, under the default station's
 name, and the archive notes that it was shared. If you restore it with a configuration that gives
 that station a folder of its own, the folder is restored to the default station's place only, and
@@ -2356,7 +2484,7 @@ once its song change is mixed, as "Matched intro" and its label.
 An intro rule plays a voice liner as the next song starts when that song matches the rule's
 conditions: a name drop for an artist, a jingle before rock songs, or "here's one from the eighties"
 before songs first released in the 1980s. Each station keeps its own rules. Manage them in
-**Library tools**, **Intro rules**, below Clockwheels. Each rule is listed in words with an
+**Library tools**, **Intro rules**, below Shows. Each rule is listed in words with an
 **Edit** and a **Delete** button; Delete asks first and leaves the liners in the library.
 
 **Add intro rule** (or Edit) opens one form:
@@ -2688,7 +2816,7 @@ What it approximates:
   with saved-point transitions, less the crossfade otherwise. A song with no length counts as the
   library's average.
 - A clockwheel liner adds its full length. Automatic liners, time checks, carts and the queue are
-  left out.
+  left out, and so are shows, which play through the queue (the hour preview lists them).
 - A scheduled change applies from the first song after its time; hard events do not cut a song
   short. Profile switches are not simulated; the report names them.
 
@@ -2713,6 +2841,10 @@ Each row says in its Status column whether it is fixed or predicted:
   it (the open song change) and its liners.
 - **Fixed: booked break**: an announcer break booked on the open song change.
 - **Fixed: in the queue**: the request queue, which plays before any pick.
+- **Fixed: show** and its name: the songs of a show, the rest of the one on the air after the
+  queue and a scheduled one's from the first song change after its time (see [Shows](#shows)).
+- **Skipped from show** and its name: a show's song that would break a DMCA limit there, as it
+  is skipped on the air; it takes no time.
 - **Predicted**: the rest, from a dry run of the station's own picker that starts where the
   fixed part ends, with the station's clockwheel place, play history, repeat rules, DMCA limits,
   categories and schedule. It is the same dry run the rotation tester uses (see
@@ -2782,6 +2914,8 @@ choose them to fit.
 - `categories.json`, the rotation categories. Their playlist files are not included; the script
   that writes them can write them again.
 - `liner_dates.json`, the voice liners' play dates.
+- `listener_stats.json`, the daily listener counts (no addresses or player names).
+- `shows.json`, the shows and their lists of songs.
 - Every other station's state files and folders, under `stations/<slug>/` (see
   [Backups and doctor](#backups-and-doctor)).
 - `manifest.json`, which records the AutoDJ version that made the archive, lists its files and
@@ -2930,6 +3064,12 @@ one reads differently:
   `liner_dates.json`, which an older AutoDJ does not read.
 - Voice pack play dates are kept beside the time check switches in `time_checks.json`; an older
   AutoDJ ignores them and lets every ticked pack speak.
+- Shows (#106): an AutoDJ without shows does not have the **Play a show** action. It sets
+  `schedule.json` aside as `schedule.json.bad-<id>`, starts without those events, and drops them
+  for good the next time it saves the schedule. Delete or disable the show events, or keep a copy
+  of `schedule.json`, before going back. `shows.json` and `show_on_air.json` are not read by an
+  older AutoDJ. From this release on, AutoDJ keeps an event whose action it does not have exactly
+  as it was, with every save, so going back after a later release adds actions loses nothing.
 
 ## Cart wall
 
@@ -3071,20 +3211,26 @@ Actions:
   stop keeps it off the air even with listeners, and automatic hands control back to the
   listener count. The choice lasts until the next stream event or a restart.
 - Turn discovery on or off. Discovery needs a rate set in Song picking before it can be on.
+- Play a show: its prepared list of songs goes to the queue (see [Shows](#shows)).
 
 Timing is soft or hard. A soft event waits for the current song to end; with nothing playing it
 runs at once. A hard event runs at its time and fades out the current song through the normal
 skip: after the change for profile, preset, song picking and discovery events, so the next song
-follows it, and before the liner for liner events. Stream and Stereo Tool preset events never
+follows it, and before the liner for liner events. A show event is the exception: hard plays the
+show's first song at once, and soft queues it at its time without waiting (see [Shows](#shows)). Stream and Stereo Tool preset events never
 skip.
 
 **Run now** runs an event's action at once, to test it. Each run, failure and missed event goes
 to the server log and to **Recent runs**, which keeps the last 200.
 
 Schedules live in `schedule.json` in the active index folder, next to `web_state.json`. AutoDJ
-writes the file atomically and includes it in `autodj backup`. A damaged schedule file, or an
-event whose action this version does not have, is copied to `schedule.json.bad-<id>` and left
-out, so the server still starts. Events are not replayed after downtime: a one-time event whose
+writes the file atomically and includes it in `autodj backup`. A damaged schedule file is copied
+to `schedule.json.bad-<id>` and left out, so the server still starts. An event whose action this
+version does not have (one a newer AutoDJ added) never runs and is not listed, but it is logged
+and written back exactly as it was with every save, so going back and forth between versions
+loses no event; it counts toward the 100 events. An event for an action this version has, but
+with settings it does not accept, is copied to `schedule.json.bad-<id>` and left out, as
+before. Events are not replayed after downtime: a one-time event whose
 time passed while AutoDJ was stopped is disabled and recorded as missed, and an event more than
 two minutes late (the computer slept) is recorded as missed instead of running. The schedule
 holds at most 100 events.
@@ -3424,6 +3570,141 @@ The playlists are optional when beets is on the same machine: a category from th
    **Throwback**, and one at 21:00 that changes it back to your usual clockwheel.
 
 For a narrower hour, add terms: `original_year:2000..2009 genre:rock ^genre:christmas`.
+
+The clockwheel picks the songs as the hour plays. To choose them ahead of time instead, and
+edit the list, make a show (see [Shows](#shows)).
+
+## Shows
+
+A show is a list of songs prepared ahead of time, such as "Remembering the 2000s", that airs at
+a scheduled time. Clockwheels pick songs as they play; a show fixes them in advance, so you can
+read the list, change it, and know what will air. Shows are in **Library tools**, **Shows**,
+below Clockwheels. Each station has its own.
+
+### Planning a show
+
+1. Press **Add show** and fill in:
+   - **Name**, such as Remembering the 2000s. Names are unique within the station.
+   - **Songs come from**: **A category** (see [Rotation categories](#rotation-categories); a
+     category can hold any genre, year or beets field, such as `original_year:2000..2009`), or
+     **A clockwheel** (see [Clockwheels](#clockwheels)), whose steps may use conditions such as
+     Genre is Rock and categories.
+   - **Target length (minutes)**: 5 to 360.
+
+   Press **Save show**, then **Open list** on the show.
+2. Press **Generate list**. AutoDJ runs the rotation tester's dry run of the station's own picker
+   (see [Testing the rotation](#testing-the-rotation)): a category is played as a one-step
+   clockwheel that picks its songs at random, a clockwheel in its own order. The repeat rules,
+   related artists and tracks, dayparting and the DMCA limits apply as they do on the air, from
+   the station's real play history. Voice liners are left out of the list, and for a category so
+   is any song outside it. Generating stops once the songs reach the target length; if the songs
+   the rules allow run out first, the list is shorter and the page says why. Nothing on the air
+   changes, and each generation gives a new list. **Pick as if at** (optional) generates as the
+   station would at that date and time in the station time zone, so a category's season, days
+   and hours and a step's hours count then: use it to plan a Christmas show in November.
+   Generating runs off the web server's event loop, below normal priority, for at most 20
+   seconds, one show at a time for the whole server.
+3. Edit the list. Every song has **Move up**, **Move down** and **Remove** buttons; Move up on
+   the first song and Move down on the last stay in the tab order and say why they do nothing.
+   Focus stays on the moved song's button, and Remove moves it to the next song's Remove, or the
+   previous song's when it was the last (the search box when none is left). Under **Add
+   songs**, search the library by title, artist or album and press **Add** to put a song at the
+   end. Each change is saved at once and said once, with the new total against the target. A
+   song whose file has gone from the library stays in the list, marked, and is skipped on the
+   air. A song may be in the list more than once; each copy plays, and the list and its total
+   warn about it. While the list is being generated, Move up, Move down, Remove and Add stay in
+   the tab order but are marked unavailable and say why, and the server refuses a change to the
+   list (409) until the new list is saved. A list holds at most 500 songs, and a station at most
+   200 shows.
+
+**Edit** changes the name, source or target and keeps the list; generate again to apply a new
+source. **Delete** asks first and names the schedule events that play the show; those events
+fail, in the run log, until you change them.
+
+### Airing a show
+
+Add an event under **Settings**, **Schedule** with the action **Play a show** and the show (see
+[Scheduler](#scheduler)): once on a date, or repeating, with an optional date range. **Start
+after this song**, in the open list, airs it now, to test it.
+
+- Timing: a **hard** event plays the show's first song at its time, fading out the song
+  playing, as Play now does. A **soft** event queues the show's first songs at its time without
+  cutting the song playing, so the show follows that song. With server audio or a stream, the
+  song after it may already be mixed into its ending; the show then follows that one.
+- The show feeds the queue: its first two songs go to the front of the queue, and as each one
+  starts the next joins after the show's last waiting song. Liners, time checks, breaks, matched
+  intros and the clockwheel's place behave as they do with any queued song. The scheduled show
+  wins: its songs go ahead of everything already in the queue, listener requests included, and
+  songs you queue while it plays wait after its songs; use **Play next** to put one before them.
+  A listener request accepted while a show is on the air, or due to start within the request
+  window, is placed after the show's waiting songs and the listener is told only that it plays
+  "after the station's show", never a time; the operator's card says "After the show" and its
+  name. A request queued earlier waits until the show ends, and when a show starts the
+  operator's card adds "After the show" and its name to every request still in the queue, so it
+  promises no place it cannot keep. (A listener is told only once, when sending the request.)
+- A hard start is the same in every playback mode: the show's first song plays at once, and a
+  song the operator chose with **Play next** plays right after it, then the rest of the show.
+- The show's songs in the queue are its own entries. Removing or moving a song in Queue & Search
+  acts on the very entry you pressed, so a listener's request for the same song never takes a
+  show song's place, and a show song is never removed by mistake.
+- Show songs are pre-approved: the repeat rules do not hold them back, as with any song you
+  queue. The DMCA limits are never broken: in DMCA mode each song is checked where it would play
+  just before it joins the queue, and the waiting songs again at every song change. A song that
+  would break a limit is taken out, skipped and logged, and the next one is tried.
+- When the list ends, the show is over and the station's own picking resumes. A new show
+  replaces the one on the air, whose waiting songs leave the queue.
+- The card says which show is on the air, how many songs have played, are waiting and are to
+  come, and what was skipped and why. **Stop show** takes its waiting songs out of the queue,
+  and only those; a song already mixed into the one playing still plays. If the queue keeps
+  changing and a song cannot be taken out at once, the card says the show is stopping, nothing
+  more is queued, and AutoDJ tries again at each song change until they are out.
+- The show plays its list as it was when it started; changes made meanwhile count the next time.
+- A restart resumes the show on the air: AutoDJ saves the show and its place in
+  `show_on_air.json` in the station's state folder as it goes. Until a song plays again, the
+  card says the show will resume at the next song, and from which song; **Stop show** cancels
+  that. Then it goes on from the earliest song that had not started, songs it had queued
+  included (the queue itself is not kept over a restart). It is not resumed when its list would
+  have ended by then: the time it started plus the length of its songs plus 15 minutes. **Stop
+  show** and the end of the list remove the file; if it cannot be removed (held open), AutoDJ
+  writes a stopped marker into it, which is never resumed, and removes it at a later song
+  change.
+- `show_on_air.json` is runtime state and is left out of backups on purpose. A restore removes
+  every station's `show_on_air.json`, so no show from before the restore resumes; restore warns
+  if one cannot be removed.
+
+The hour preview lists the rest of a show on the air as "Fixed: show" and its name, and a
+scheduled show's songs the same way from the first song change after the event's time. A song the
+DMCA limits would skip on the air is listed where it would have played as "Skipped from show" and
+the show's name, taking no time, as on the air.
+
+### Where they are kept
+
+`shows.json` in the station's state folder (the active index folder for the default station),
+written atomically and included in `autodj backup` for every station (another station's under
+`stations/<slug>/index/shows.json`). A show in the file
+that is not valid (edited by hand, say) is skipped and logged, and the card says which; every
+save writes it back as it was, so correct it in the file and it returns. Only a file that is
+not a file of shows at all is set aside, as `shows.json.bad-<id>`; if it cannot be set aside,
+saves are refused so nothing is written over it. When the file cannot be read just now, the
+shows last read are used and saves are refused. Request bodies are capped before they are read:
+8 KiB for a show's settings, generating and starting, and 1 MiB for its list of songs.
+
+For scripts and other stations, the routes are under `/api/shows` and
+`/api/stations/<slug>/shows`, with the browser session and the page's `Origin`:
+
+- `GET /api/shows`: every show without its songs, the categories and clockwheels a show can
+  use, the show on the air (`on_air`) and any shows the file skips (`problem`).
+- `GET /api/shows/<id>`: one show with its `songs` (path, title, length, `missing`) and total.
+- `POST /api/shows`: `name`, `source` (`category` or `clockwheel`), `category` (its ID) or
+  `clockwheel` (its name), and `target_minutes`. `201` answers with the show.
+- `PUT /api/shows/<id>`: the same fields; the list stays.
+- `PUT /api/shows/<id>/songs`: `songs`, the file paths in order. A song added must be in the
+  library.
+- `POST /api/shows/<id>/generate`: optional `start` (a station wall time such as
+  `2026-12-24T20:00`) and `seed`. `409` while another generation runs.
+- `POST /api/shows/<id>/start`, `DELETE /api/shows/on-air` and `DELETE /api/shows/<id>`.
+
+A refused field answers `400` with `detail` and `field`.
 
 ## Spoken time checks
 

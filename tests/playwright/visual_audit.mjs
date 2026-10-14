@@ -19,6 +19,10 @@
 //         their neighbours, its numbers 4.5:1;
 //       - Now Playing's Hour preview opened, with a stood-in answer: its
 //         table of fixed and predicted rows and its backtiming list;
+//       - Settings > Stream (when the server streams) with its Listener
+//         statistics stood in for: the summary, the tables by format and
+//         by day (a long run of days, every format) and the session
+//         lengths, and the address list of the formats that are on;
 //       - the status message with its Dismiss button, as a confirmation
 //         and as an error, through axe-core as well;
 //       - the footer's link to the running commit, when the server knows
@@ -52,6 +56,10 @@
 //         Tags form, a refused save with its errors, the Save or Discard
 //         dialog, and Matched intros with a song intro (skipped now) and an
 //         artist intro, then Upload intro refused with its error linked;
+//       - Library tools > Shows, its server answers stood in for: a show on
+//         the air with a skipped song, the saved shows, one show's list open
+//         with its Move up, Move down and Remove buttons and a search result,
+//         and Save show refused with its error linked to Name;
 //       - Voice tracks, with the microphone and recorder stubbed and the
 //         open song change stood in for: shown idle, recording, with a
 //         take, and with the microphone refused (its error linked to
@@ -329,6 +337,45 @@ const HOUR_PREVIEW = {
 };
 const hourPreviewPages = new WeakSet();
 
+// Settings > Stream > Listener statistics (#50), stood in for so its
+// tables, summary and session lengths are measured filled, with every
+// format and a long run of days, on a server nobody has listened to.
+const STATS_DAY = (date, peak, sessions) => ({
+  date, peak, peak_at: peak ? "21:45" : null, sessions, seconds: sessions * 1260,
+  longest: sessions ? 11400 : 0, bands: [1, 2, 0, Math.max(0, sessions - 4), 1, 0],
+  formats: peak ? { mp3: { peak, sessions, seconds: sessions * 1260 } } : {},
+});
+const LISTENER_STATS = {
+  keep_days: 90,
+  days_shown: 30,
+  today: "2026-10-13",
+  now: { total: 12, formats: { mp3: 7, aac: 3, opus: 2 } },
+  days: [
+    STATS_DAY("2026-10-13", 14, 38), STATS_DAY("2026-10-12", 9, 21),
+    STATS_DAY("2026-10-11", 0, 0), STATS_DAY("2026-10-10", 100, 1234),
+  ],
+  period: {
+    sessions: 1293, seconds: 1629180, longest: 11400, peak: 100, peak_date: "2026-10-10",
+    peak_at: "21:45", bands: [4, 8, 0, 1281, 4, 0],
+    formats: {
+      mp3: { peak: 100, sessions: 1293, seconds: 1629180 },
+      aac: { peak: 3, sessions: 40, seconds: 50400 },
+      opus: { peak: 2, sessions: 12, seconds: 15120 },
+    },
+  },
+  bands: ["Under 1 minute", "1 to 5 minutes", "5 to 15 minutes", "15 minutes to 1 hour",
+    "1 to 3 hours", "3 hours or more"],
+};
+const listenerStatsPages = new WeakSet();
+
+async function standInForListenerStats(page) {
+  if (listenerStatsPages.has(page)) return;
+  listenerStatsPages.add(page);
+  await page.route("**/stream/stats?*", (route) => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify(LISTENER_STATS),
+  }));
+}
+
 async function standInForHourPreview(page) {
   if (hourPreviewPages.has(page)) return;
   hourPreviewPages.add(page);
@@ -440,6 +487,78 @@ async function openIntroRuleError(page, visit) {
   await page.locator("#intro-rules-clips-error").waitFor({ state: "visible" });
   await visit("library/intro-rule-error");
   await page.locator("#intro-rules-cancel").click();
+}
+
+// Library tools > Shows (#106): the server's answers are stood in for, so a
+// show on the air, a saved list and a search result look the same on an empty
+// library as on a full one.  The titles are long and unbroken, for the reflow
+// checks.
+const SHOW_ID = "d".repeat(32);
+const SHOW_SONGS = [
+  { path: "/music/1.flac", title: "Example Artist, An_Exceptionally_Long_Title_Without_Any_Spaces_From_A_Tagless_File_0003",
+    missing: false, seconds: 215, length_text: "3:35", length_words: "3 minutes 35 seconds" },
+  { path: "/music/2.flac", title: "Another Example, Second Song", missing: false, seconds: 187,
+    length_text: "3:07", length_words: "3 minutes 7 seconds" },
+  { path: "/music/gone.flac", title: "gone.flac", missing: true, seconds: 0, length_text: "", length_words: "" },
+];
+const SHOW = {
+  id: SHOW_ID, name: "Remembering the 2000s", source: "category", category: "hits", clockwheel: "",
+  source_text: "Category Remembering the 2000s", target_minutes: 60, count: 3, missing: 1,
+  total_seconds: 402, total_text: "6:42", total_words: "6 minutes 42 seconds",
+  generated_at: "2026-10-12T20:00:00+00:00", note: "The list is 6 minutes 42 seconds, shorter than the target of 1 hour: the songs the repeat rules and the DMCA limits allow ran out.",
+  events: ["Saturday throwback"],
+};
+const SHOWS = {
+  shows: [SHOW],
+  categories: [{ id: "hits", name: "Remembering the 2000s" }],
+  clockwheels: ["Throwback"],
+  on_air: {
+    id: SHOW_ID, name: "Remembering the 2000s", total: 3, played: 1, waiting: 1, to_come: 0,
+    skipped: [{ path: "/music/gone.flac", title: "gone.flac", reason: "it is not in the library" }],
+    skipped_count: 1, started_at: "2026-10-12T20:00:00+00:00",
+  },
+  problem: null,
+  limits: { max_shows: 200, max_songs: 500, min_minutes: 5, max_minutes: 360 },
+  timezone: "UTC",
+};
+const showPages = new WeakSet();
+
+async function standInForShows(page) {
+  if (showPages.has(page)) return;
+  showPages.add(page);
+  await page.route("**/api/shows**", (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "POST" && path === "/api/shows") {
+      return route.fulfill({ status: 400, contentType: "application/json",
+        body: JSON.stringify({ detail: "A show named Remembering the 2000s already exists", field: "name" }) });
+    }
+    const body = path === "/api/shows" ? SHOWS : { ...SHOW, songs: SHOW_SONGS };
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await page.route("**/api/search?*", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({ results: [{ path: "/music/9.flac", title: "An_Exceptionally_Long_Title_Without_Any_Spaces_0009",
+      artist: "Example Artist", album: "", length: 200, display_name: "" }] }),
+  }));
+}
+
+// Shows: one list open with a search result, then Save show refused by the
+// server with its error on the page, linked to Name and focused.
+async function openShowStates(page, visit) {
+  await page.locator("#shows-list button[data-action='open']").first().click();
+  await page.locator("#shows-songs li[data-index]").first().waitFor({ state: "visible" });
+  await page.locator("#shows-search").fill("example");
+  await page.locator("#shows-search-run").click();
+  await page.locator("#shows-results li").first().waitFor({ state: "visible" });
+  await visit("library/show-list");
+  await page.locator("#shows-close").click();
+  await page.locator("#shows-add").click();
+  await page.locator("#shows-name").fill("Remembering the 2000s");
+  await page.locator("#shows-save").click();
+  await page.locator("#shows-form-error").waitFor({ state: "visible" });
+  await visit("library/show-error");
+  await page.locator("#shows-cancel").click();
 }
 
 // Voice tracks (#128): the open song change and a booked list are stood
@@ -598,7 +717,9 @@ async function eachTarget(page, visit) {
   await standInForTrackInfo(page);
   await standInForTimeChecks(page);
   await standInForHourPreview(page);
+  await standInForListenerStats(page);
   await standInForVoiceTracker(page);
+  await standInForShows(page);
   await standInForStations(page);
   await standInForIntroRules(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
@@ -619,6 +740,7 @@ async function eachTarget(page, visit) {
       if (view === "library") {
         await openIntroRuleError(page, visit);
         await openDaypartErrors(page, visit);
+        await openShowStates(page, visit);
       }
       if (view === "voice") await openVoiceStates(page, visit);
       if (view === "now") await openStationMenu(page, visit);
@@ -654,14 +776,24 @@ function horizontalOverflow(page) {
   });
 }
 
+// Checkboxes and radio buttons under 24 px, and the Stream settings'
+// format Copy buttons and statistics buttons (#50) under the 44 px every
+// other button has.
 function smallChoiceControls(page) {
-  return page.evaluate(() => [...document.querySelectorAll(
-    'input[type="checkbox"], input[type="radio"]',
-  )]
-    .filter((input) => input.getClientRects().length)
-    .map((input) => ({ id: input.id, ...input.getBoundingClientRect().toJSON() }))
-    .filter(({ width, height }) => width < 23.5 || height < 23.5)
-    .map(({ id, width, height }) => `${id || "input"} ${Math.round(width)}x${Math.round(height)}`));
+  return page.evaluate(() => {
+    const measure = (selector, least) => [...document.querySelectorAll(selector)]
+      .filter((control) => control.getClientRects().length)
+      .map((control) => ({
+        id: control.id || control.textContent.trim() || control.tagName.toLowerCase(),
+        ...control.getBoundingClientRect().toJSON(),
+      }))
+      .filter(({ width, height }) => width < least || height < least)
+      .map(({ id, width, height }) => `${id} ${Math.round(width)}x${Math.round(height)}`);
+    return [
+      ...measure('input[type="checkbox"], input[type="radio"]', 23.5),
+      ...measure("#stream-formats-list button, #listener-stats button", 43.5),
+    ];
+  });
 }
 
 async function axeViolations(page) {
