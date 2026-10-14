@@ -12,7 +12,7 @@ import pytest
 
 from autodj._bridge import QueueChanged, RequestInsert
 from autodj.clockwheel import ClockSlot
-from autodj.config import DmcaConfig
+from autodj.config import DmcaConfig, PlaybackConfig
 from autodj.identity_map import IdentityMap
 from autodj.indexer import IndexEntry
 from autodj.player import Player
@@ -32,8 +32,12 @@ def state_queue_first(player) -> IndexEntry:
 
 def _ready(bridge) -> None:
     bridge.player._track_keys.return_value = TrackKeyCache()
+    # A 3 s crossfade: each queued song hands over 3 s before its end (#217).
+    bridge.player._cfg.playback = PlaybackConfig()
     state = bridge.player._state
     state.current_track = _song(0)
+    # The page has not fetched a next song yet: the queue follows the song playing.
+    state.next_track = None
     state.queue.extend([_song(1), _song(2)])
     bridge.sim.entries = [_song(n) for n in range(8)]
 
@@ -55,19 +59,21 @@ def test_each_place_has_its_start_neighbours_and_problems(bridge) -> None:
     # Song 1's artist plays at position 1, so the artist rule holds it near there.
     assert slots[1].problems == ("same artist",)
     assert slots[2].problems == ("same artist",)
-    assert slots[0].problems == ()
+    # First, the request itself is fine, but Song 1 would then follow its artist (#218).
+    assert slots[0].problems == ("Artist 1 — Song 1 after it: same artist",)
+    assert slots[0].dmca == ()
     assert slots[0].starts_in <= slots[1].starts_in <= slots[2].starts_in
-    assert slots[1].starts_in - slots[0].starts_in == 180.0
+    assert slots[1].starts_in - slots[0].starts_in == 177.0
     assert bridge.request_slots(_song(5, artist="Artist 1"), 3600, only_position=1) == [slots[1]]
 
 
 def test_places_are_projected_at_the_music_speed(bridge) -> None:
-    """At +10% music speed each song plays 1/1.1 of its file length (#162)."""
+    """At +10% music speed each song plays 1/1.1 of its time to the handoff (#162)."""
     _ready(bridge)
     bridge.player.music_playback_rate = lambda entry: 1.1
     slots = bridge.request_slots(_song(5), horizon_s=3600)
-    assert slots[1].starts_in - slots[0].starts_in == pytest.approx(180.0 / 1.1)
-    assert slots[2].starts_in - slots[1].starts_in == pytest.approx(180.0 / 1.1)
+    assert slots[1].starts_in - slots[0].starts_in == pytest.approx(177.0 / 1.1)
+    assert slots[2].starts_in - slots[1].starts_in == pytest.approx(177.0 / 1.1)
 
 
 def test_places_beyond_the_window_are_left_out_but_the_first_always_counts(bridge) -> None:
@@ -236,7 +242,7 @@ def test_a_bridge_that_starts_stops_being_a_bridge(bridge) -> None:
 def test_a_request_never_splits_a_queued_liner_from_its_song(bridge) -> None:
     _ready(bridge)
     player = bridge.player
-    player._library = object()
+    player._library = SimpleNamespace(entries_snapshot=lambda _kind: ())
     player._dayparts.return_value = (frozenset(), {})
     player._is_liner.side_effect = lambda entry: entry.path == _song(1).path
     slots = bridge.request_slots(_song(5), 3600)
@@ -262,7 +268,7 @@ def test_clockwheel_only_allows_matching_music_category(bridge) -> None:
     player = bridge.player
     player._cfg.playback.pick_mode = "clock"
     player._clock = {"cursor": 0}
-    player._library = object()
+    player._library = SimpleNamespace(entries_snapshot=lambda _kind: ())
     player._dayparts.return_value = (frozenset(), {})
     player._pending_clock_cursor = None
     player._clock_slots = (ClockSlot(kind="category", category="rock"),)
@@ -299,7 +305,7 @@ def test_clockwheel_music_conditions_use_the_picker_matcher(bridge) -> None:
         ),
     )
     player._clock_step_hours = (None,)
-    player._library = object()
+    player._library = SimpleNamespace(entries_snapshot=lambda _kind: ())
     player._dayparts.return_value = (frozenset(), {})
     assert bridge.request_slots(_song(5), 3600)[0].problems == ()
     pop = replace(_song(5), genre="Pop")
@@ -337,7 +343,7 @@ def test_marked_clock_request_keeps_its_preceding_liner(bridge) -> None:
 
 def test_request_slot_respects_projected_daypart(bridge) -> None:
     _ready(bridge)
-    bridge.player._library = object()
+    bridge.player._library = SimpleNamespace(entries_snapshot=lambda _kind: ())
     bridge.player._dayparts.return_value = (frozenset({_song(5).path}), {})
     assert "outside the song's daypart" in bridge.request_slots(_song(5), 3600)[0].problems
 
@@ -419,3 +425,84 @@ def test_another_version_of_a_song_just_played_is_the_same_song(bridge) -> None:
     assert "same song" in slots[1].problems
     bridge.player._song_versions.return_value = None
     assert "same song" not in bridge.request_slots(live, horizon_s=3600)[1].problems
+
+
+# -- the queued songs after a request (#218) -----------------------------------
+
+
+def test_a_request_before_a_same_artist_song_goes_where_it_breaks_nothing(bridge) -> None:
+    """The request alone is fine first, but the queued song after it would break the rule."""
+    from autodj.listener_requests import place
+
+    _ready(bridge)
+    state = bridge.player._state
+    state.queue[:] = [_song(1, artist="Artist A"), _song(2), _song(3)]
+    state.set_repeat_rules(RepeatRules(track_window=10, artist_window=1))
+    request = _song(5, artist="Artist A")
+    slots = bridge.request_slots(request, horizon_s=3600)
+    assert slots[0].problems == ("Artist A — Song 1 after it: same artist",)
+    assert slots[1].problems == ("same artist",)
+    assert slots[2].problems == slots[3].problems == ()
+    placement = place(request, slots, lambda _a, _b: None)
+    # The request moves past the clash, after Song 2 or Song 3.
+    assert placement.slot is not None and placement.slot.position >= 2
+
+
+def test_a_queued_song_already_breaking_a_rule_does_not_stop_a_request(bridge) -> None:
+    """An operator's earlier choice stays theirs: only new problems count."""
+    _ready(bridge)
+    state = bridge.player._state
+    state.queue[:] = [_song(1, artist="Artist A"), _song(2, artist="Artist A")]
+    state.set_repeat_rules(RepeatRules(track_window=10, artist_window=1))
+    slots = bridge.request_slots(_song(5, artist="Artist C"), horizon_s=3600)
+    assert [slot.problems for slot in slots] == [(), (), ()]
+
+
+def test_a_request_that_takes_a_later_song_over_a_dmca_limit_is_refused(bridge) -> None:
+    _ready(bridge)
+    bridge.player._cfg.dmca = DmcaConfig(enabled=True)
+    state = bridge.player._state
+    state.set_repeat_rules(RepeatRules(track_window=10, artist_window=0))
+    now = time.time()
+    # Three songs by X in the last hour, never in a row.
+    plays = [
+        replace(_make_entry(10 + n), artist="X" if n % 2 == 0 else f"Other {n}", album=f"A{n}")
+        for n in range(5)
+    ]
+    state.play_history.extend(
+        PlayRecord.of(entry, now - 3000 + 500 * n) for n, entry in enumerate(plays)
+    )
+    state.current_track = replace(_make_entry(0), album="Now")
+    state.queue[:] = [
+        replace(_make_entry(1), album="B1"),
+        replace(_make_entry(2), artist="X", album="B2"),
+    ]
+    request = replace(_make_entry(5), artist="X", album="Request")
+    slots = bridge.request_slots(request, horizon_s=3600)
+    later = "X — Song 2 after it: more than 4 songs by X in 3 hours"
+    # Before Song 2, the request is the fourth play by X, so Song 2 would be the fifth.
+    assert slots[0].dmca == (later,) and later in slots[0].problems
+    assert slots[1].dmca == (later,)
+    # After it, the request itself is the fifth.
+    assert slots[2].dmca == ("more than 4 songs by X in 3 hours",)
+
+
+def test_queue_dmca_checks_time_the_song_after_the_queue(bridge) -> None:
+    """Play next goes ahead of the queue; Add to queue after it (#217)."""
+    _ready(bridge)
+    bridge.player._cfg.dmca = DmcaConfig(enabled=True)
+    state = bridge.player._state
+    now = time.time()
+    album = [replace(_make_entry(n), album="Hits", artist=f"A{n}") for n in (10, 11)]
+    state.play_history.extend(
+        PlayRecord.of(entry, now - 600 + 100 * n) for n, entry in enumerate(album)
+    )
+    state.current_track = replace(_make_entry(0), album="Now")
+    state.queue[:] = [replace(_make_entry(1), album="Hits", artist="A1")]
+    entry = replace(_make_entry(5), album="Hits", artist="A5")
+    # Next: two plays from Hits so far, so a third is fine.
+    assert bridge.dmca_queue_limits(entry, now=False, append=False) == ()
+    # At the end of the queue: the queued Hits song is the third, so this is a fourth.
+    assert bridge.dmca_queue_limits(entry, now=False, append=True) == (
+        "more than 3 songs from the album “Hits” in 3 hours",
+    )
