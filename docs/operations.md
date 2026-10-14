@@ -985,8 +985,9 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
 - **Music speed** (Settings, Sound) runs music from 10% slower to 10% faster, with 0 as the
   default. Type up to two decimal places; the slider's arrow keys move one percentage point.
   Pitch changes with speed. Liners, voice tracks, matched intros and cue previews keep their
-  normal speed. Saved cues and seek positions still refer to the original file; clock fitting
-  and forecasts account for the changed playing time.
+  normal speed. Saved cues and seek positions still refer to the original file; clock fitting,
+  forecasts and the DMCA and repeat checks on queued songs and listener requests account for the
+  changed playing time.
   Stream and server audio apply changes at the next safe rendered-buffer handoff, keeping the
   current audio and booked speech intact. Browser playback applies a change immediately when
   no transition is running. At nonzero speed, ordinary music/liner crossfades use a plain fade
