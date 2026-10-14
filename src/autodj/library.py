@@ -504,7 +504,8 @@ class LibraryManager:
             scan_lock_held=scan_lock_held, cleanup_lock_held=cleanup_lock_held
         )
         if candidates is None:
-            return {"ready": False, "count": 0, "tracks": [], "token": None}
+            # nosec B105 below: an absent cleanup confirmation token, not a password.
+            return {"ready": False, "count": 0, "tracks": [], "token": None}  # nosec B105
         versions = self.catalog.change_versions()
         token_data = json.dumps(
             [
