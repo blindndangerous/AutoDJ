@@ -105,8 +105,10 @@ def test_times_and_lengths_read_well() -> None:
     assert clock_words(two_pm, UTC_ZONE) == "2 PM"
     assert clock_words(two_pm + 61, UTC_ZONE) == "2:01 PM and 1 second"
     midnight = datetime(2026, 10, 12, 0, 5, tzinfo=UTC).timestamp()
-    assert clock_text(midnight, UTC_ZONE) == "12:05:00 AM"
+    assert clock_text(midnight, UTC_ZONE) == "12:05 AM"
     assert length_text(225) == "3:45"
+    assert length_text(3600) == "1:00:00"
+    assert length_text(3725) == "1:02:05"
     assert length_words(225) == "3 minutes 45 seconds"
     assert length_words(60) == "1 minute"
     assert length_words(1) == "1 second"
@@ -139,18 +141,18 @@ def test_the_hour_lands_at_the_nearer_song_change() -> None:
     assert early.offset == pytest.approx(-35)
     assert early.playing is not None and early.playing.entry.artist == "Artist 1"
     short, sentence = landing_words(early, UTC_ZONE)
-    assert short == "35 seconds early"
+    assert short == "0:35 early"
     assert sentence == (
-        "Top of the hour, 1 PM: lands about 35 seconds early, at the song change into "
-        "Artist 1, Song 1 (predicted) at 12:59 PM and 25 seconds. "
-        "That song runs 2 minutes 40 seconds past 1 PM."
+        "Top of the hour, 1:00 PM: lands about 0:35 early, at the song change into "
+        "Artist 1, Song 1 (predicted) at 12:59:25 PM. "
+        "That song runs 2:40 past 1:00 PM."
     )
     late = land(hour, song_changes(_songs(TOP - 150, TOP + 20)), TOP + 220)
     assert late.offset == pytest.approx(20)
     assert landing_words(late, UTC_ZONE) == (
-        "20 seconds late",
-        "Top of the hour, 1 PM: lands about 20 seconds late. Artist 0, Song 0 (predicted) is "
-        "playing then; the next song change is at 1:00 PM and 20 seconds.",
+        "0:20 late",
+        "Top of the hour, 1:00 PM: lands about 0:20 late. Artist 0, Song 0 (predicted) is "
+        "playing then; the next song change is at 1:00:20 PM.",
     )
     on_time = land(hour, song_changes(_songs(TOP - 200, TOP + 0.4)), TOP + 200)
     assert on_time.offset == 0
@@ -173,16 +175,16 @@ def test_events_wait_or_cut_by_their_timing() -> None:
     soft = land(Point("event", TOP, "News", "soft", "Play a liner: News"), songs, TOP + 300)
     assert soft.offset == pytest.approx(90)
     assert landing_words(soft, UTC_ZONE)[1] == (
-        "News (Play a liner: News), soft, at 1 PM: runs about 1 minute 30 seconds late, after "
-        "Artist 0, Song 0 (predicted) ends at 1:01 PM and 30 seconds. A soft event waits for "
+        "News (Play a liner: News), soft, at 1:00 PM: runs about 1:30 late, after "
+        "Artist 0, Song 0 (predicted) ends at 1:01:30 PM. A soft event waits for "
         "the song playing to end."
     )
     hard = land(Point("event", TOP, "News", "hard", "Play a liner: News"), songs, TOP + 300)
     assert (hard.offset, hard.cut) == (0.0, pytest.approx(90))
     assert landing_words(hard, UTC_ZONE) == (
-        "on time, cuts 1 minute 30 seconds",
-        "News (Play a liner: News), hard, at 1 PM: on time. It cuts Artist 0, Song 0 "
-        "(predicted) short by about 1 minute 30 seconds.",
+        "on time, cuts 1:30",
+        "News (Play a liner: News), hard, at 1:00 PM: on time. It cuts Artist 0, Song 0 "
+        "(predicted) short by about 1:30.",
     )
 
 
@@ -193,7 +195,7 @@ def test_a_point_past_the_preview_is_not_guessed() -> None:
     assert landing.starts is None
     assert landing_words(landing, UTC_ZONE) == (
         "not known",
-        "Top of the hour, 1 PM: the preview does not reach the song change after it.",
+        "Top of the hour, 1:00 PM: the preview does not reach the song change after it.",
     )
 
 
@@ -294,12 +296,15 @@ def test_browser_playback_lists_fixed_then_predicted(tmp_path: Path) -> None:
     last = datetime.fromisoformat(items[-1]["starts_at"]).timestamp()
     assert NOW + 3600 - 400 < last < NOW + 3600
     assert view["counts"] == {"fixed": 3, "predicted": len(predicted)}
-    assert view["summary"].startswith("Top of the hour, 1 PM: lands about ")
+    assert view["summary"].startswith("Top of the hour, 1:00 PM: lands about ")
     assert view["summary"].endswith(
         f"Next hour: 3 fixed and {len(predicted)} predicted, until 1:10 PM."
     )
     assert [point["kind"] for point in view["points"]] == ["hour"]
     assert view["stopped"] is None
+
+    later = build_preview(source, 60, now=NOW + 31)
+    assert later["summary"].endswith("until 1:10:31 PM.")
 
 
 def test_browser_queue_uses_music_rate_but_liners_keep_their_source_time(tmp_path: Path) -> None:

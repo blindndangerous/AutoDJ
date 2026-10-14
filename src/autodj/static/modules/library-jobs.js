@@ -21,7 +21,7 @@ import {
   requestJson,
   withDisabled,
 } from "./api-client.js";
-import { fmtDurationWords, fmtTime, setNoValue } from "./dom-helpers.js";
+import { fmtTime, setNoValue } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 
 // The page has one Library panel.  Its memory: the phase last spoken, the
@@ -70,7 +70,7 @@ function lastOutputLine(job) {
 }
 
 function finishedText(job) {
-  const took = fmtDurationWords(job.elapsed_seconds);
+  const took = fmtTime(job.elapsed_seconds);
   if (job.exit_code === 0) return `${job.name} finished cleanly in ${took}.`;
   // A job the user stopped exits non-zero (1 on Windows), which is not
   // a failure worth an exit code.
@@ -87,7 +87,7 @@ export function libraryJobStatusText(job) {
   if (!job || !job.name) return "No library job has run.";
   if (job.running) {
     const percent = /(\d{1,3})(?:\.\d+)?%/.exec(lastOutputLine(job));
-    return `${job.name} running, ${fmtDurationWords(job.elapsed_seconds)} elapsed`
+    return `${job.name} running, ${fmtTime(job.elapsed_seconds)} elapsed`
       + (percent ? `, ${percent[1]} percent done.` : ".");
   }
   if (job.exit_code != null) return finishedText(job);

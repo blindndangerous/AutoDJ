@@ -31,8 +31,6 @@ const RESERVED = /^(con|prn|aux|nul|com\d|lpt\d)$/i;
 const JSON_HEADERS = { "Content-Type": "application/json" };
 const copy = (value) => JSON.parse(JSON.stringify(value));
 const FOLDER_TYPES = new Set(["music", "liner"]);
-// The wildcard and MM:SS help under the conditions, for each value field.
-const CONDITION_HELP = "clock-step-conditions-help";
 // Field wrappers shown for each step type; the rest are hidden.
 const FIELDS_FOR = {
   music: ["conditions", "selection", "enforce-rules"],
@@ -174,7 +172,6 @@ export function installClockwheelPanel({ document: doc = document, request = req
       genreChoices: (data.genres || []).map((item) => [item, item]),
       beetsChoices: (data.beets_fields || []).map((item) => [item, item]),
       categoryChoices: data.categories.map((item) => [item.id, item.name]),
-      helpId: CONDITION_HELP,
       onFieldChange: updateBeetsNotice,
       onRemove: (row) => {
       const host = row.parentElement;
@@ -216,9 +213,11 @@ export function installClockwheelPanel({ document: doc = document, request = req
       notice.hidden = !unavailable || !hasBeets;
     }
     // A hidden notice named by aria-describedby would still be read.
-    const describedBy = notice && !notice.hidden ? `${CONDITION_HELP} clock-step-beets-notice` : CONDITION_HELP;
+    const describedBy = notice && !notice.hidden ? "clock-step-beets-notice" : null;
     for (const row of el("clock-step-conditions")?.children || []) {
-      row.querySelectorAll("select")[4].setAttribute("aria-describedby", describedBy);
+      const field = row.querySelectorAll("select")[4];
+      if (describedBy) field.setAttribute("aria-describedby", describedBy);
+      else field.removeAttribute("aria-describedby");
     }
   }
 

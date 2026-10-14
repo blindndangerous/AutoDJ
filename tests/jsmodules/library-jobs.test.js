@@ -111,7 +111,7 @@ describe("library job live region", () => {
     };
     applyLibraryJobState(finished, els);
     await settle();
-    expect(els.jobStatus.textContent).toBe("index finished cleanly in 1 minute 1 second.");
+    expect(els.jobStatus.textContent).toBe("index finished cleanly in 1:01.");
     expect(seen.announcements()).toBe(2);
 
     for (let i = 0; i < 10; i++) applyLibraryJobState(finished, els);
@@ -134,7 +134,7 @@ describe("library job live region", () => {
     await settle();
 
     expect(els.jobStatus.textContent).toBe(
-      "prune exited with code 2 after 5 seconds. Refusing to prune: most files are missing.",
+      "prune exited with code 2 after 0:04. Refusing to prune: most files are missing.",
     );
     expect(seen.announcements()).toBe(1);
     seen.stop();
@@ -154,7 +154,7 @@ describe("library job live region", () => {
     }, els);
 
     expect(els.jobStatus.textContent).toBe(
-      "enrich exited with code 1 after 1 second. No beets_db in config — enrich requires beets.",
+      "enrich exited with code 1 after 0:01. No beets_db in config — enrich requires beets.",
     );
   });
 
@@ -162,11 +162,11 @@ describe("library job live region", () => {
     expect(libraryJobStatusText({
       name: "prune", running: true, elapsed_seconds: 27.2,
       lines: ["Pruning:  43%|████▎     | 32919/76728 [00:22<00:29, 1477.44file/s]"],
-    })).toBe("prune running, 27 seconds elapsed, 43 percent done.");
+    })).toBe("prune running, 0:27 elapsed, 43 percent done.");
     expect(libraryJobStatusText({
       name: "stats", running: true, elapsed_seconds: 65,
       lines: ["[autodj-jobs] $ autodj stats", "Loading faiss."],
-    })).toBe("stats running, 1 minute 5 seconds elapsed.");
+    })).toBe("stats running, 1:05 elapsed.");
   });
 
   it("reports a job the user stopped as stopped, not as an exit code", () => {
@@ -178,7 +178,7 @@ describe("library job live region", () => {
       },
     }, els);
 
-    expect(els.jobStatus.textContent).toBe("enrich stopped after 6 minutes 57 seconds.");
+    expect(els.jobStatus.textContent).toBe("enrich stopped after 6:57.");
   });
 
   it("does not re-announce the start click on the next websocket tick", async () => {

@@ -135,7 +135,8 @@ describe("cart wall markup", () => {
     expect(help.closest(".visually-hidden")).toBeNull();
     expect(help.textContent).toMatch(/1 to 9 and 0, minus and equals play carts 1 to 12/);
     expect(help.textContent).toMatch(/Page Up and Page Down change the page/);
-    expect(byId("cart-mode").getAttribute("aria-describedby")).toBe("cart-mode-desc");
+    expect(byId("cart-mode").hasAttribute("aria-describedby")).toBe(false);
+    expect(byId("cart-mode-desc").hidden).toBe(false);
     expect(byId("cart-status").getAttribute("role")).toBe("status");
     const shortcuts = byId("hotkey-help-modal").textContent;
     expect(shortcuts).toMatch(/Play carts 1 to 12/);

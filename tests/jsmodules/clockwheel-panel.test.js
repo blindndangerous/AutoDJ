@@ -1024,7 +1024,7 @@ describe("clockwheel step conditions, for screen readers", () => {
     operator.dispatchEvent(new Event("change"));
   };
 
-  it("names the conditions as a group and links the help to every value", async () => {
+  it("keeps general help visible without repeating it on controls", async () => {
     await open(fakeServer({ beets_fields: [], beets_error: "Beets database unavailable." }));
     startMusicStep();
     const host = byId("clock-step-conditions");
@@ -1038,17 +1038,17 @@ describe("clockwheel step conditions, for screen readers", () => {
     const [row] = conditions();
     const [, value, upper] = row.querySelectorAll("input[type=text]");
     const beetsField = row.querySelectorAll("select")[4];
-    expect(value.getAttribute("aria-describedby")).toBe("clock-step-conditions-help");
-    expect(upper.getAttribute("aria-describedby")).toBe("clock-step-conditions-help");
+    expect(value.hasAttribute("aria-describedby")).toBe(false);
+    expect(upper.hasAttribute("aria-describedby")).toBe(false);
     // The Beets notice is linked only while it shows, since a hidden one would still be read.
-    expect(beetsField.getAttribute("aria-describedby")).toBe("clock-step-conditions-help");
+    expect(beetsField.hasAttribute("aria-describedby")).toBe(false);
     row.querySelector('option[value="beets"]').disabled = false;
     setField(row, "beets");
     expect(byId("clock-step-beets-notice").hidden).toBe(false);
-    expect(beetsField.getAttribute("aria-describedby")).toBe("clock-step-conditions-help clock-step-beets-notice");
+    expect(beetsField.getAttribute("aria-describedby")).toBe("clock-step-beets-notice");
     setField(row, "year");
     expect(byId("clock-step-beets-notice").hidden).toBe(true);
-    expect(beetsField.getAttribute("aria-describedby")).toBe("clock-step-conditions-help");
+    expect(beetsField.hasAttribute("aria-describedby")).toBe(false);
   });
 
   it("says each condition added or removed, numbers Remove buttons and keeps focus in place", async () => {

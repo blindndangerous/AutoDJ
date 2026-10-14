@@ -1150,8 +1150,8 @@
       flex: none;
       vertical-align: middle;
     }
-    /* Inline help text — sighted readers see grey description below
-       each control; screen readers receive it via aria-describedby. */
+    /* Help remains available through normal reading; only concise hints,
+       restrictions and errors belong in aria-describedby. */
     .setting-desc {
       display: block;
       margin: 0.15rem 0 0.55rem 2rem;

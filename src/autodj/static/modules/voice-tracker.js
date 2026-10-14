@@ -26,7 +26,7 @@
 // page, linked to the control they are about, and said once.
 
 import { requestJson, withDisabled } from "./api-client.js";
-import { fmtDurationWords, nextRowControl, rowButton } from "./dom-helpers.js";
+import { fmtTime, nextRowControl, rowButton } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 
 const POLL_TICKS = 5;
@@ -41,15 +41,14 @@ export const INSECURE_TEXT = "Recording needs a secure connection: open AutoDJ o
 
 // 65.4 seconds is "1:05".
 export function clock(seconds) {
-  const whole = Math.max(0, Math.round(Number(seconds) || 0));
-  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+  return fmtTime(Math.round(Number(seconds) || 0));
 }
 
-// About how long, in words: whole minutes from a minute up, so a list
+// Round longer waits to whole minutes, so a list
 // that is read again a few seconds later says the same thing.
 function roughly(seconds) {
   const value = Math.max(0, Number(seconds) || 0);
-  return fmtDurationWords(value >= 90 ? Math.round(value / 60) * 60 : value);
+  return clock(value >= 90 ? Math.round(value / 60) * 60 : value);
 }
 
 // An intro's length to a tenth of a second: "8.5 seconds", "1 second".
@@ -648,7 +647,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     }
     showTake(blob, seconds, current.slot);
     renderTimer();
-    say(`${current.note}Recording stopped at ${fmtDurationWords(seconds)}. Listen back, then Book voice track, or Record again to replace it.`);
+    say(`${current.note}Recording stopped at ${clock(seconds)}. Listen back, then Book voice track, or Record again to replace it.`);
   }
 
   async function toggle() {
@@ -674,7 +673,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       const elapsed = (now() - current.started) / 1000;
       const limit = limitSeconds();
       if (elapsed >= limit) {
-        stop(`Stopped at the ${fmtDurationWords(limit)} limit. `);
+        stop(`Stopped at the ${fmtTime(limit)} limit. `);
       } else {
         const minutes = Math.floor(elapsed / 60);
         if (minutes > current.minutes) {
@@ -691,7 +690,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
             && data.slot.slot_id === current.slot.slot_id) {
           current.closing = true;
           say(left > 0
-            ? `The song change closes in about ${fmtDurationWords(left)}.`
+            ? `The song change closes in about ${fmtTime(left)}.`
             : "The song change is closing now.");
         }
       }

@@ -204,7 +204,7 @@ function setControlVisible(control, visible) {
   if (!control) return;
   const row = control.closest(".settings-row, .settings-check");
   if (row) row.hidden = !visible;
-  for (const id of (control.getAttribute("aria-describedby") || "").split(/\s+/)) {
+  for (const id of (control.getAttribute("data-help") || "").split(/\s+/)) {
     if (id) {
       const description = control.ownerDocument.getElementById(id);
       if (description) description.hidden = !visible;

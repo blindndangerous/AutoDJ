@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Settings keep longer help available to read without repeating it on every field focus.
+  Track counts, hour preview and matched-intro explanations are shorter (#235).
+- Preview columns, show lengths and duration messages use numeric times for both visual
+  and screen-reader output, with hours shown for durations of an hour or more (#235).
 - Multiple stations can use independent Stereo Tool processing instances when configured with the
   required per-instance licences and executable paths (#163).
 
@@ -112,8 +116,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   or predicted. The prediction is a dry run of the station's own picker from where the fixed part
   ends, so nothing on the air changes. The card then says how early or late the song changes
   land against the top of the hour, each clockwheel restart and each scheduled event, and which
-  song is the reason. The list is a table with column headers; times read as "2:04 PM and 30
-  seconds". It refreshes every 30 seconds while open, in place and silently; **Refresh preview**
+  song is the reason. The list is a table with column headers; times use numeric text such as
+  "2:04:30 PM". It refreshes every 30 seconds while open, in place and silently; **Refresh preview**
   and the new **Shift+H** shortcut say the summary. Every station has its own, at
   `/api/hour-preview` and `/api/stations/<name>/hour-preview`. Previews run on one low-priority
   worker thread, stop after 80 songs or about 4 seconds, and are shared and reused for 45 seconds

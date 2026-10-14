@@ -31,13 +31,13 @@ function view(overrides = {}) {
   return {
     minutes: 60,
     reason: null,
-    summary: "Top of the hour, 1 PM: lands about 35 seconds early. Next hour: 2 fixed and 1 predicted, until 1:10 PM.",
+    summary: "Top of the hour, 1:00 PM: lands about 0:35 early. Next hour: 2 fixed and 1 predicted, until 1:10 PM.",
     items: [
       item("Gold 0, Song 100", "on_air", true),
       item("Gold 1, Song 101", "picked", true, ["12:12:30 PM", "12:12 PM and 30 seconds"]),
       item("Gold 9, Song 109", "predicted", false, ["12:15:50 PM", "12:15 PM and 50 seconds"]),
     ],
-    points: [{ kind: "hour", text: "Top of the hour, 1 PM: lands about 35 seconds early." }],
+    points: [{ kind: "hour", text: "Top of the hour, 1:00 PM: lands about 0:35 early." }],
     notes: ["Predicted songs come from a dry run."],
     stopped: null,
     ...overrides,
@@ -95,19 +95,19 @@ async function open() {
 }
 
 describe("hour preview rendering", () => {
-  it("shows figures on screen and reads words", () => {
+  it("uses the same numeric text for both time columns and assistive technology", () => {
     const cells = rowCells(item("Gold 0, Song 100", "on_air", true));
     expect(cells).toEqual([
-      { shown: "12:09:10 PM", read: "12:09 PM and 10 seconds" },
-      { text: "Gold 0, Song 100" },
-      { shown: "3:20", read: "3 minutes 20 seconds" },
-      { text: "Fixed: on air" },
+      "12:09:10 PM",
+      "Gold 0, Song 100",
+      "3:20",
+      "Fixed: on air",
     ]);
     const tbody = document.createElement("tbody");
     renderRows(document, tbody, [item("Gold 0, Song 100", "on_air", true)]);
-    const time = tbody.children[0].children[0];
-    expect(time.querySelector("[aria-hidden='true']").textContent).toBe("12:09:10 PM");
-    expect(time.querySelector(".visually-hidden").textContent).toBe("12:09 PM and 10 seconds");
+    expect(tbody.children[0].children[0].textContent).toBe("12:09:10 PM");
+    expect(tbody.children[0].children[2].textContent).toBe("3:20");
+    expect(tbody.querySelector("[aria-hidden], .visually-hidden")).toBeNull();
     expect(tbody.children[0].className).toBe("is-fixed is-on-air");
   });
 
@@ -167,7 +167,7 @@ describe("hour preview card", () => {
     expect(request).toHaveBeenCalledWith("/api/hour-preview?minutes=60");
     expect(byId("hour-preview-table").hidden).toBe(false);
     expect(byId("hour-preview-tbody").children).toHaveLength(3);
-    expect(byId("hour-preview-summary").textContent).toContain("lands about 35 seconds early");
+    expect(byId("hour-preview-summary").textContent).toContain("lands about 0:35 early");
     expect(byId("hour-preview-backtiming").hidden).toBe(false);
     expect(byId("hour-preview-status").textContent).toBe("");
     expect(timers.at(-1).ms).toBe(30000);

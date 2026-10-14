@@ -63,6 +63,25 @@ interface repeating itself.
 When adding a status message, write it through `announceStatus()` rather than assigning
 `textContent`, and check the region it lands in is not also inside another live region.
 
+## UI wording
+
+Use the same concise numeric text on screen and in accessible names, values and status
+messages. Use `HH:MM` or `HH:MM:SS` for clock times and `m:ss` or `h:mm:ss` for durations,
+with the existing locale, time zone and AM/PM context. Reuse `fmtTime` for browser durations.
+Do not hide `3:45` from assistive technology and substitute “3 minutes 45 seconds”, or spell
+out numbers solely on the assumption that NVDA needs it. Actual broadcast speech is separate.
+
+Keep native labels short. Put general help outside labels and leave it readable through
+normal browsing, rather than attaching paragraphs with `aria-describedby` on every focus.
+Retain concise format hints, units, active restrictions, station context and associated errors.
+Check that hidden settings hide their help too, and that errors still set `aria-invalid`
+and receive focus when appropriate.
+
+Keep text that supplies meaning a symbol alone lacks, such as missing-value states, key
+names and the sign of a negative value. A screen-reader-specific wording exception needs a
+reproduced problem and a recorded browser/screen-reader sample; automated tests should not
+require expanded speech merely because an earlier implementation used it.
+
 ## Release sampling
 
 Before every release, each flow below must be sampled with either NVDA and Firefox or NVDA and Chrome, by a person or by an agent that drives the page and captures NVDA's speech; the record says which:
@@ -82,7 +101,7 @@ Before every release, each flow below must be sampled with either NVDA and Firef
 - Search, queue additions, reordering, removal, and empty states.
 - Now-playing changes, persistent metadata, cue descriptions, and timed lyrics.
 - Settings changes and their status or error feedback.  Settings, Display and keys, Theme: the
-  radio group read with its name and description, a choice said as the checked radio button and
+  radio group read with its name, its help available through browsing, a choice said as the checked radio button and
   nothing more, and the visible status message's Dismiss button reachable without it being
   announced along with the message.
 - Settings, Profiles and access: renaming a device (focus back on its Rename, the new name said
@@ -171,7 +190,7 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   Music with its category selected; a missing category named as unavailable; Category absent
   from voice liner conditions.
 - Library tools, Clockwheels: the conditions read as a group named Conditions, each with its
-  numbered legend; Value and Upper value reading the wildcard and MM:SS help; Add condition
+  numbered legend; wildcard and MM:SS help available through browsing without repeating on Value and Upper value; Add condition
   focusing the new condition and saying "Condition 2 added"; Remove condition 2 focusing the
   condition that took its place (or the one before it), saying how many are left, and Add
   condition once none are left; an invalid value or duration marked invalid and focused; Match
@@ -200,7 +219,8 @@ Before every release, each flow below must be sampled with either NVDA and Firef
 - Why this track: reading the reasons for the current pick, and confirming they are not read
   again on their own when the track changes.
 - Now Playing, Hour preview: the table read with table navigation (column headers Starts, What,
-  Length and Status), each start time and length read in words, Fixed or Predicted said in the
+  Length and Status), both time columns exposing their displayed numeric text without hidden
+  word-expanded alternatives, Fixed or Predicted said in the
   Status column; Refresh preview saying the summary once with focus staying on it; nothing said
   by the 30-second refresh or a song change, with the reading position kept; and Shift+H saying
   the summary from another tab; a new span under Show said once with its summary; and a failed

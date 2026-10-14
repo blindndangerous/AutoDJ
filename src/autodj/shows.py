@@ -401,7 +401,7 @@ def length_text(seconds: float) -> str:
 
 
 def length_words(seconds: float) -> str:
-    """ "1 hour 2 minutes 5 seconds": a length in words, for a screen reader."""
+    """Length wording for server messages and legacy API fields."""
     total = max(0, round(seconds))
     hours, rest = divmod(total, 3600)
     minutes, secs = divmod(rest, 60)
