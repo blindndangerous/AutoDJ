@@ -210,7 +210,12 @@ def relaxed[T](
 
 
 def projected_history(
-    history: Sequence[PlayRecord], now: float, playing: Any | None, waiting: Sequence[Any]
+    history: Sequence[PlayRecord],
+    now: float,
+    playing: Any | None,
+    waiting: Sequence[Any],
+    *,
+    length: Callable[[Any], float] | None = None,
 ) -> tuple[list[PlayRecord], float]:
     """The history as it will stand when a song queued after *waiting* starts, and that time.
 
@@ -221,7 +226,10 @@ def projected_history(
             recorded start (it counts as starting now when it is not the
             latest play); ``None`` when the queued song starts now.
         waiting: Tracks that play first, each for its length.
+        length: How long a track plays, in seconds; its file length when
+            ``None``.  Music speed makes music play shorter or longer.
     """
+    played = length if length is not None else (lambda entry: float(entry.length))
     records = list(history)
     when = now
     if playing is not None:
@@ -230,10 +238,10 @@ def projected_history(
         else:
             started = now
             records.append(PlayRecord.of(playing, now))
-        when = max(now, started + max(0.0, float(playing.length)))
+        when = max(now, started + max(0.0, played(playing)))
     for entry in waiting:
         records.append(PlayRecord.of(entry, when))
-        when += max(0.0, float(entry.length))
+        when += max(0.0, played(entry))
     return records, when
 
 

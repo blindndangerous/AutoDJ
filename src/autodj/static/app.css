@@ -682,6 +682,25 @@
     }
     #hour-preview-points li + li,
     #hour-preview-notes li + li { margin-top: 0.35rem; }
+    /* The relay table keeps its buttons whole; under about 350 px it
+       scrolls sideways inside its own box, never the page (1.4.10 lets a
+       data table scroll in two dimensions). */
+    #stream-relay-table-wrap {
+      max-width: 100%;
+      overflow-x: auto;
+    }
+    #stream-relay-table {
+      border-collapse: collapse;
+    }
+    #stream-relay-table th,
+    #stream-relay-table td {
+      padding: 0.25rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    #stream-relay-table td:nth-child(-n+2) {
+      overflow-wrap: anywhere;
+    }
     #hour-preview-table {
       width: 100%;
       /* As History: fixed layout keeps the table inside a narrow window. */
