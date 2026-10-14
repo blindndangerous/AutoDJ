@@ -165,6 +165,8 @@ class SimulationSource:
         events: The station's scheduled events.
         timezone: The station's time zone, which the schedule reads.
         liner_dates: The station's liner play dates file, if any.
+        ads: The station's :class:`~autodj.ads.AdDesk`, for the ad breaks
+            the hour preview expects; the rotation tester does not read it.
         clockwheel: A clockwheel to play in place of a saved one of the same
             name, as its definition and its slots (a show's category, #106);
             ``None`` reads every clockwheel from the station's folder.
@@ -181,6 +183,7 @@ class SimulationSource:
     timezone: str = "UTC"
     liner_dates: Path | None = None
     snapshot: PlayerSnapshot | None = None
+    ads: Any = None
     clockwheel: tuple[Mapping[str, Any], Sequence[Any]] | None = None
     shows: Any = None
 

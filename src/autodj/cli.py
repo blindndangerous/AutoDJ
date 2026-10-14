@@ -2127,8 +2127,9 @@ def cmd_export_plays(
     """Export the play log between two dates as CSV, for royalty reports.
 
     Writes one row per play: start, end, duration played, artist, title,
-    album, ISRC, label, kind, the path inside the music folder and the
-    performances (listeners who heard it).  Times are local, with their UTC offset.  With
+    album, ISRC, label, kind (song, liner or ad: the ad spots that aired),
+    the path inside the music folder and the performances (listeners who
+    heard it).  Times are local, with their UTC offset.  With
     --format soundexchange it writes a SoundExchange Report of Use instead:
     songs only, one line per recording.  A summary goes to standard error.
 
@@ -2181,6 +2182,12 @@ def cmd_export_plays(
         except ValueError as exc:
             raise click.UsageError(str(exc)) from exc
     else:
+        from autodj.ads import aired_plays
+
+        slug = None if station == "default" else station
+        if slug is None or any(spec.slug == slug for spec in cfg.stations):
+            ads = aired_plays(_station_state_dir(cfg, slug) / "ad_plays", start, end)
+            plays = sorted([*plays, *ads], key=lambda play: play.start)
         text = plays_csv(plays)
     data = text.encode("utf-8")
     if out_path is None:

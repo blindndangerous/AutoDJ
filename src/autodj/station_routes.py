@@ -60,7 +60,7 @@ from autodj.relay_settings import (
     public_relay,
     save_relays,
 )
-from autodj.scheduler import Action
+from autodj.scheduler import Action, ActionField
 from autodj.settings_bodies import (
     BpmRangeBody,
     DiscoveryBody,
@@ -1012,6 +1012,7 @@ def equip_station(
 
     station.breaks = BreakDesk(lambda: station.cfg.breaks, station.paths.announcements)
     bridge.player.break_desk = station.breaks
+    _equip_ads(station, schedule)
 
     requests_cfg = station.cfg.requests
     if requests_cfg.enabled is True:
@@ -1056,6 +1057,47 @@ def equip_station(
         library=lambda: bridge.library,
     )
     bridge.player.matched_intros = station.intros
+
+
+def _equip_ads(station: StationRuntime, schedule: Any) -> None:
+    """Give *station* its ad breaks (#51) and the Schedule's Ad break action."""
+    from autodj.ads import AdDesk, AdLog, AdsError, AdStore
+
+    paths = station.paths
+    store = AdStore(paths.ads, paths.ad_spots, max_spots=lambda: station.cfg.ads.max_spots)
+    station.ads = AdDesk(
+        lambda: station.cfg.ads,
+        store,
+        AdLog(paths.ad_plays),
+        station.timezone,
+        player=station.bridge.player,
+        breaks=station.breaks,
+        events=lambda: list(schedule.events.values()),
+    )
+
+    async def ad_break(params: dict[str, str]) -> None:
+        desk = station.ads
+        reason = desk.refusal()
+        if reason is not None:
+            raise ValueError(reason)
+        try:
+            desk.request_named(params["name"], "schedule")
+        except AdsError as exc:
+            raise ValueError(exc.message) from exc
+
+    def break_names() -> list[str]:
+        return sorted(item.name for item in store.state().breaks.values())
+
+    schedule.register(
+        Action(
+            "ad_break",
+            "Ad break",
+            ad_break,
+            (ActionField("name", "Ad break", names=break_names),),
+            # The break waits for a song change: it never cuts a song.
+            interrupt="none",
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1115,6 +1157,7 @@ class StationRouter:
 
 def install_station_routes(router: StationRouter) -> None:
     """Register every station route, with paths relative to the API root (``/skip``, ...)."""
+    from autodj.ads_api import install_ads
     from autodj.breaks_api import install_breaks
     from autodj.carts import install_carts
     from autodj.hour_preview import install_hour_preview
@@ -1177,7 +1220,8 @@ def install_station_routes(router: StationRouter) -> None:
 
         Dates are ``YYYY-MM-DD`` in the server's time zone and ``to`` is
         included.  ``format=soundexchange`` gives a Report of Use for
-        *service* and transmission *category* instead of the CSV.
+        *service* and transmission *category* instead of the CSV.  The CSV
+        also lists the ad spots that aired (#51), as ``kind`` ``ad``.
         ``X-Play-Count`` and ``X-Songs-Missing-Fields`` give the page the
         numbers it announces.
         """
@@ -1189,12 +1233,18 @@ def install_station_routes(router: StationRouter) -> None:
                 functools.partial(plays_between, station=station.slug), library.catalog, start, end
             )
             last_day = end - timedelta(microseconds=1)
+            count = len(plays)
             if report_format == "soundexchange":
                 body = soundexchange_report(plays, service, category)
                 media_type = "text/plain; charset=us-ascii"
                 name = soundexchange_filename(service, start, last_day)
             else:
-                body = plays_csv(plays)
+                from autodj.ads import aired_plays
+
+                ads = await asyncio.to_thread(aired_plays, station.paths.ad_plays, start, end)
+                rows = sorted([*plays, *ads], key=lambda play: play.start)
+                body = plays_csv(rows)
+                count = len(rows)
                 media_type = "text/csv; charset=utf-8"
                 name = f"autodj-plays-{start:%Y-%m-%d}-to-{last_day:%Y-%m-%d}.csv"
         except ValueError as exc:
@@ -1206,7 +1256,7 @@ def install_station_routes(router: StationRouter) -> None:
             headers={
                 **_NO_STORE,
                 "Content-Disposition": f'attachment; filename="{name}"',
-                "X-Play-Count": str(len(plays)),
+                "X-Play-Count": str(count),
                 "X-Songs-Missing-Fields": str(len(missing)),
                 "X-Songs-Unmatchable": str(sum(1 for item in missing if item[5] == "no")),
             },
@@ -2150,6 +2200,7 @@ def install_station_routes(router: StationRouter) -> None:
     install_scheduler(router)
     install_time_checks(router)
     install_breaks(router)
+    install_ads(router)
     install_requests(router)
     install_matched_intros(router)
     install_shows(router)

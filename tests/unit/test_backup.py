@@ -463,6 +463,30 @@ def test_liner_play_dates_are_backed_up_and_restored(tmp_path: Path) -> None:
     assert "promo.mp3" in json.loads(state.read_text(encoding="utf-8"))["liners"]
 
 
+def test_ads_their_audio_and_the_ad_play_log_are_backed_up_and_restored(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    state = cfg.index.active_dir / "ads.json"
+    state.write_text('{"schema_version": 1, "spots": {}, "breaks": {}}', encoding="utf-8")
+    audio = cfg.index.active_dir / "ads" / ("spot-" + "a" * 32 + ".wav")
+    audio.parent.mkdir()
+    audio.write_bytes(b"RIFF")
+    plays = cfg.index.active_dir / "ad_plays" / "2026-10.jsonl"
+    plays.parent.mkdir()
+    plays.write_bytes(b'{"v": 1}\n')
+    archive = create_backup(cfg, tmp_path / "ads.zip", force=False)
+    with zipfile.ZipFile(archive) as backup:
+        assert backup.read("index/ads.json") == state.read_bytes()
+        assert backup.read(f"ads/{audio.name}") == b"RIFF"
+        assert backup.read("ad_plays/2026-10.jsonl") == b'{"v": 1}\n'
+    state.unlink()
+    audio.unlink()
+    plays.unlink()
+    restore_backup(cfg, archive, force=True)
+    assert json.loads(state.read_text(encoding="utf-8"))["schema_version"] == 1
+    assert audio.read_bytes() == b"RIFF"
+    assert plays.read_bytes() == b'{"v": 1}\n'
+
+
 def test_matched_intros_and_their_audio_are_backed_up_and_restored(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     state = cfg.index.active_dir / "matched_intros.json"
