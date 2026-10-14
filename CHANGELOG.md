@@ -69,8 +69,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Settings > Stations sets the station time zone and a 12 or 24 hour time format for every
-  station. A new time zone applies the next time AutoDJ starts; the format applies at once
-  (#282, #286).
+  station. A new time zone applies the next time AutoDJ starts (#282, #286).
 - Stations can be created or duplicated from the web page without restarting AutoDJ. New
   stations start stopped with their own state and recording folder (#233).
 - Spoken track landmarks (#60): a song's structure through keys and speech, in place of a
