@@ -39,6 +39,12 @@ _ENTRY_FIELDS = (
 )
 _POINTS = ("start", "intro", "outro", "segue", "end", "overlap_start")
 _POINT_SOURCES = {"auto", "lyrics", "analysis", "user", "imported"}
+# Track info shows and sends cue times to the nearest 0.01 s, so a cue saved
+# unchanged can land up to 0.005 s past the length or a neighbouring cue, and
+# an Overlap start up to 0.01 s past its Start-to-End room (#237).  A cue that
+# far over is moved onto its limit instead of rejected; the epsilon absorbs
+# float error in the rounded values.
+_CUE_SLACK = 0.01 + 1e-6
 # The columns a tag edit from Track info may change (LibraryCatalog.retag).
 _RETAG_FIELDS = frozenset({"title", "artist", "album", "genre", "year", "bpm", "key", "mode"})
 # Fields set by hand in Track info that analysis keeps (catalog_entries.user_tags).
@@ -1407,17 +1413,25 @@ class LibraryCatalog:
                         else f"{name} must be a finite non-negative time or None"
                     )
                 if row["length"] > 0 and name != "overlap_start" and value > row["length"]:
-                    raise ValueError(f"{name} exceeds track length")
+                    if value - row["length"] > _CUE_SLACK:
+                        raise ValueError(f"{name} exceeds track length")
+                    value = row["length"]
             if sources.get(name) in {"user", "imported"} and source not in {"user", "imported"}:
                 continue
             current[name], sources[name] = value, source
         start, end = current.get("start"), current.get("end")
         for name in ("intro", "outro", "segue"):
             value = current.get(name)
-            if value is not None and (
-                (start is not None and value < start) or (end is not None and value > end)
-            ):
-                raise ValueError(f"{name} must fall between Start and End")
+            if value is None:
+                continue
+            if start is not None and value < start:
+                if start - value > _CUE_SLACK:
+                    raise ValueError(f"{name} must fall between Start and End")
+                current[name] = start
+            elif end is not None and value > end:
+                if value - end > _CUE_SLACK:
+                    raise ValueError(f"{name} must fall between Start and End")
+                current[name] = end
         if start is not None and end is not None and start >= end:
             raise ValueError("Start must precede End")
         overlap = current.get("overlap_start")
@@ -1430,11 +1444,17 @@ class LibraryCatalog:
                     limit_point = row["length"]
                 limit = None if limit_point is None else limit_point - (start or 0)
                 if limit is not None and overlap > limit:
-                    if "overlap_start" in values and source in {"user", "imported"}:
+                    if (
+                        "overlap_start" in values
+                        and source in {"user", "imported"}
+                        and overlap - limit > _CUE_SLACK
+                    ):
                         raise ValueError("overlap_start exceeds the liner segue after Start")
                     current["overlap_start"], sources["overlap_start"] = max(0, limit), source
             elif start is not None and end is not None and overlap > end - start:
-                raise ValueError("overlap_start exceeds the selected Start to End range")
+                if overlap - (end - start) > _CUE_SLACK:
+                    raise ValueError("overlap_start exceeds the selected Start to End range")
+                current["overlap_start"] = end - start
         self._db().execute(
             "UPDATE catalog_entries SET points=?,point_sources=? WHERE path=?",
             (json.dumps(current), json.dumps(sources), path),
