@@ -4,12 +4,14 @@ version = "0.20.0"
 description = "AI-powered local music continuity player using MuQ embeddings and FAISS similarity search"
 requires-python = ">=3.14,<3.15"
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
 authors = [
     { name = "blindndangerous" },
+    { name = "jage9" },
 ]
 classifiers = [
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
     "Programming Language :: Python :: 3.14",
     "Operating System :: OS Independent",
     "Topic :: Multimedia :: Sound/Audio :: Players",

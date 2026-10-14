@@ -4,6 +4,7 @@ sounddevice is mocked so tests run without audio hardware.
 Audio crossfade math is tested with real numpy arrays.
 """
 
+import logging
 import os
 import subprocess
 import sys
@@ -23,6 +24,7 @@ from autodj.player import (
     _apply_crossfade,
     _apply_crossfade_ducked,
     apply_filter_sweep,
+    apply_repeat_windows,
 )
 from autodj.similarity import SimilarityError
 from autodj.transitions import TRANSITION_EFFECT_NAMES
@@ -198,6 +200,31 @@ class TestPlayerState:
 
 
 class TestPlayerConstruction:
+    def test_repeat_cap_warning_tracks_each_station_setting_and_library_size(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        cfg = _make_cfg_mock()
+        sim = _make_sim_index(n=29)
+        with caplog.at_level(logging.WARNING, logger="autodj.player"):
+            player = Player(cfg, sim)
+            apply_repeat_windows(player)
+            apply_repeat_windows(player)
+            player._library = MagicMock()
+            player._library.entries_snapshot.return_value = [None] * 28
+            apply_repeat_windows(player)
+            apply_repeat_windows(player)
+            cfg.playback.repeat_rules.track.tracks = 60
+            apply_repeat_windows(player)
+            other = Player(_make_cfg_mock(), sim)
+            apply_repeat_windows(other)
+
+        warnings = [
+            record.args
+            for record in caplog.records
+            if record.message.startswith("playback.repeat_rules.track.tracks=")
+        ]
+        assert warnings == [(50, 29, 25), (50, 28, 24), (60, 28, 24), (50, 29, 25)]
+
     def test_no_repeat_window_clamped_to_library_size(self) -> None:
         """Library smaller than configured window must clamp.
 

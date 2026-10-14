@@ -3230,10 +3230,8 @@ function linkBuildStamp(build, url) {
   link.href = url;
   link.target = "_blank";
   link.rel = "noopener noreferrer";
-  const where = document.createElement("span");
-  where.className = "visually-hidden";
-  where.textContent = " on GitHub (opens in a new tab)";
-  link.append(...build.childNodes, where);
+  link.append(...build.childNodes);
+  link.setAttribute("aria-label", `${link.textContent} on GitHub (opens in a new tab)`);
   build.append(link);
 }
 

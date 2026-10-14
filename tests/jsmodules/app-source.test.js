@@ -416,12 +416,10 @@ describe("footer build stamp", () => {
     expect(link.target).toBe("_blank");
     expect(link.rel.split(" ")).toEqual(expect.arrayContaining(["noopener", "noreferrer"]));
     expect(link.querySelector("#ver-commit").textContent).toBe("1a2b3c4");
-    // Visible text first (2.5.3), then where it goes, for a screen reader.
-    expect(link.textContent.replace(/\s+/g, " ").trim())
-      .toBe("build 1a2b3c4 on GitHub (opens in a new tab)");
-    expect(link.querySelector(".visually-hidden").textContent)
-      .toBe(" on GitHub (opens in a new tab)");
-    expect(link.hasAttribute("aria-label")).toBe(false);
+    // Visible text first (2.5.3), then where it goes, in one name: hidden
+    // text inside the link would be read as a second line.
+    expect(link.textContent.replace(/\s+/g, " ").trim()).toBe("build 1a2b3c4");
+    expect(link.getAttribute("aria-label")).toBe("build 1a2b3c4 on GitHub (opens in a new tab)");
     // Reference data, not a status update: still no live region.
     expect(document.querySelector("#version-stamp [aria-live]")).toBeNull();
     expect(document.querySelector("#version-stamp").hasAttribute("aria-live")).toBe(false);

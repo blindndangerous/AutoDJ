@@ -436,11 +436,9 @@ export function installClockwheelPanel({ document: doc = document, request = req
             item.append(cell);
             continue;
           }
-          // The visible words start the name; the hidden number says which step.
-          const hidden = doc.createElement("span");
-          hidden.className = "visually-hidden";
-          hidden.textContent = ` step ${index + 1}`;
-          button.append(title, hidden);
+          // The visible words start the name, which says which step.
+          button.textContent = title;
+          button.setAttribute("aria-label", `${title} step ${index + 1}`);
           button.disabled = (key === "move-up" && index === 0) || (key === "move-down" && index === clock.steps.length - 1)
             || (key === "delete" && editing !== null);
           if (button.disabled) cell.setAttribute("aria-disabled", "true");

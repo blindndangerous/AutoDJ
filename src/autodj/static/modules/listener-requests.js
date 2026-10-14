@@ -123,11 +123,9 @@ export function installListenerRequests({
     button.dataset.action = action;
     button.dataset.id = item.id;
     // The visible word first, so speech input matches it (2.5.3).
-    button.append(label);
-    const which = doc.createElement("span");
-    which.className = "visually-hidden";
-    which.textContent = ` ${songText(item)}`;
-    button.append(which);
+    button.textContent = label;
+    button.dataset.song = songText(item);
+    button.setAttribute("aria-label", `${label} ${button.dataset.song}`);
     return button;
   }
 
@@ -349,7 +347,7 @@ export function installListenerRequests({
     const button = event.target.closest?.("button[data-action]");
     if (!button || busy) return;
     const { id, action } = button.dataset;
-    const song = button.querySelector(".visually-hidden")?.textContent.trim() || "the song";
+    const song = button.dataset.song || "the song";
     const next = neighbours(id);
     busy = true;
     button.setAttribute("aria-disabled", "true");
