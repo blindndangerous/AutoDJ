@@ -808,7 +808,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- Settings > Profiles and access no longer opens with two headings in a row (#304).
 - Tables no longer say "row header" when focus lands on a track's name (#302).
 - In tables, a cell with a button such as Track info takes focus itself, so it is read once.
   Enter or Space on the cell presses the button (#294).
