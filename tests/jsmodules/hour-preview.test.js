@@ -199,6 +199,21 @@ describe("hour preview card", () => {
     });
   });
 
+  it("opens Track info for a liner row as a liner", async () => {
+    const next = view();
+    Object.assign(next.items[1], { kind: "liner", title: "Liner: ID 1", path: "/liners/id1.mp3" });
+    const opened = vi.fn();
+    document.addEventListener("autodj:edit-points", opened, { once: true });
+    harness([next]);
+    await open();
+    const button = byId("hour-preview-tbody").children[1].querySelector("button");
+    expect(button.getAttribute("aria-label")).toBe("Track info for Liner: ID 1");
+    button.click();
+    expect(opened.mock.calls[0][0].detail).toEqual({
+      path: "/liners/id1.mp3", kind: "liner", opener: button,
+    });
+  });
+
   it("refreshes on its timer without speaking or moving focus", async () => {
     const { request, timers } = harness([view(), view({ summary: "Changed." })]);
     await open();

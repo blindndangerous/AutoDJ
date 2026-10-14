@@ -801,6 +801,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Liners in the hour preview have a Track info button too (#289).
 - The footer Changelog link, the build link, Dismiss, and the row buttons for clockwheel steps,
   categories, shows and listener requests each read as one line in NVDA browse mode (#288).
 - A slow request-head deadline no longer logs an asyncio error when a TLS connection has already

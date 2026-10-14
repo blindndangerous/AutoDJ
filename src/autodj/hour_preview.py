@@ -1865,7 +1865,7 @@ def _status_text(item: Item) -> str:
 
 
 def _item_view(item: Item, zone: ZoneInfo) -> dict[str, Any]:
-    path = getattr(item.entry, "path", None) if item.kind == "song" else None
+    path = getattr(item.entry, "path", None) if item.kind in {"song", "liner"} else None
     return {
         "kind": item.kind,
         "status": item.status,
