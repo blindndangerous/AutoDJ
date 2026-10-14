@@ -125,6 +125,41 @@ def _migrate_v1(data: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
+def migrate_state_file(path: Path, *, apply: bool = False) -> bool:
+    """Upgrade a v1 web-state file explicitly, preserving its original bytes.
+
+    Return whether the file needs migration. Preview mode validates and reports
+    without writing; applying writes the v1 recovery copy before replacing the
+    file. This is used by ``autodj migrate-index`` so serving can treat saved
+    state as current-format data only.
+    """
+    try:
+        original = path.read_bytes()
+        data = json.loads(original)
+    except FileNotFoundError:
+        return False
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+    version = data.get("schema_version")
+    if type(version) is int and version == STATE_VERSION:
+        return False
+    if type(version) is not int or version != 1:
+        raise ValueError(f"{path} has unsupported schema_version {version!r}")
+    if not apply:
+        return True
+
+    backup = path.with_name(f"{path.name}.v1.bak")
+    if backup.exists():
+        if backup.read_bytes() != original:
+            raise ValueError(f"recovery copy already exists with different data: {backup}")
+    else:
+        atomic_write(backup, original)
+    atomic_write(path, json.dumps(_migrate_v1(data), indent=2, ensure_ascii=False))
+    return True
+
+
 def _backup_v1_state(path: Path) -> bool:
     """Preserve a v1 file once before replacing it; false means do not save."""
     backup = path.with_name(f"{path.name}.v1.bak")
