@@ -3361,7 +3361,7 @@ Each row says in its Status column whether it is fixed or predicted:
 
 Backtiming goes to each fixed point in the span:
 
-- **Top of the hour**: the nearer song change counts. "Top of the hour 13:00: 0:35 early" means
+- **Top of the hour**: the nearer song change counts. "Top of the hour, 13:00: expected 0:35 early" means
   the song change nearest the hour comes 35 seconds before it; the line names the song that
   causes it, whether that song is fixed or predicted, and how far it runs past the hour. Liners and breaks that run straight into
   a song start its song change.
@@ -3371,8 +3371,8 @@ Backtiming goes to each fixed point in the span:
   late it runs; a hard event runs on time and the preview says how much of the song it cuts.
 
 The card's summary is the first top of the hour (or clockwheel restart) and how it lands, then
-how many rows are fixed and predicted, such as "Top of the hour 13:00: 0:35 early. 3 fixed, 20
-predicted until 13:10." **Refresh preview** says
+how many rows are fixed and predicted, such as "Next top of the hour, 13:00: expected 0:35 early. 3 fixed
+items, 20 predicted, through 13:10." **Refresh preview** says
 it once; **Shift+H** says it from any tab. While the card is open and Now Playing is showing, the
 table refreshes every 30 seconds and shortly after the song changes, changing cells in place,
 saying nothing and leaving focus where it is; if those refreshes start failing, the failure is

@@ -1622,35 +1622,41 @@ def landing_words(landing: Landing, zone: ZoneInfo) -> tuple[str, str]:
     if point.kind == "event" and point.timing == "hard" and landing.offset == 0:
         if landing.cut:
             cut = length_text(landing.cut)
-            return f"on time, cuts {cut}", f"{heading}: on time, cuts {_who(playing)} by {cut}."
-        return "on time", f"{heading}: on time, between songs."
+            return (
+                f"on time, cuts {cut}",
+                f"{heading}: expected on time, cuts {_who(playing)} by {cut}.",
+            )
+        return "on time", f"{heading}: expected on time, between songs."
     if landing.offset == 0:
         nearest = min((landing.began, landing.starts), key=lambda moment: abs(moment - point.at))
-        return "on time", f"{heading}: on time, song change {clock_text(nearest, zone)}."
+        return "on time", f"{heading}: expected on time, song change {clock_text(nearest, zone)}."
     amount = length_text(abs(landing.offset))
     if point.kind == "event":
-        return f"{amount} late", f"{heading}: {amount} late, after {_who(playing)} ends {after}."
+        return (
+            f"{amount} late",
+            f"{heading}: expected {amount} late, after {_who(playing)} ends {after}.",
+        )
     if landing.offset > 0:
         return (
             f"{amount} late",
-            f"{heading}: {amount} late. {_who(playing)} runs over, next change {after}.",
+            f"{heading}: expected {amount} late. {_who(playing)} runs over, next change {after}.",
         )
     past = length_text(landing.starts - point.at)
     return (
         f"{amount} early",
-        f"{heading}: {amount} early. {_who(playing)} starts "
+        f"{heading}: expected {amount} early. {_who(playing)} starts "
         f"{clock_text(landing.began, zone)}, runs {past} past.",
     )
 
 
 def landing_heading(landing: Landing, zone: ZoneInfo) -> str:
-    """ "Top of the hour 13:00" or "News (Play a liner: news.mp3) 12:30, hard"."""
+    """ "Top of the hour, 13:00" or "News (Play a liner: news.mp3), 12:30, hard"."""
     point = landing.point
     when = clock_text(point.at, zone)
     if point.kind != "event":
-        return f"{point.label} {when}"
+        return f"{point.label}, {when}"
     name = f"{point.label} ({point.detail})" if point.detail else point.label
-    return f"{name} {when}, {point.timing}"
+    return f"{name}, {when}, {point.timing}"
 
 
 # ---------------------------------------------------------------------------
@@ -1849,14 +1855,21 @@ def _point_view(landing: Landing, zone: ZoneInfo) -> dict[str, Any]:
 
 def _summary(view: dict[str, Any], landings: Sequence[Landing], zone: ZoneInfo, end: float) -> str:
     counts = view["counts"]
+    fixed = counts["fixed"]
     listed = (
-        f"{counts['fixed']} fixed, {counts['predicted']} predicted until {clock_text(end, zone)}."
+        f"{fixed} fixed item{'' if fixed == 1 else 's'}, {counts['predicted']} predicted, "
+        f"through {clock_text(end, zone)}."
     )
     hours = [landing for landing in landings if landing.point.kind in {"hour", "restart"}]
     first = hours[0] if hours else (landings[0] if landings else None)
     if first is None:
         return f"No top of the hour, clockwheel restart or scheduled event. {listed}"
-    return f"{landing_heading(first, zone)}: {landing_words(first, zone)[0]}. {listed}"
+    heading = landing_heading(first, zone)
+    if first.point.kind != "event":
+        heading = heading[0].lower() + heading[1:]
+    short = landing_words(first, zone)[0]
+    lands = "past the end of the preview" if short == "not known" else f"expected {short}"
+    return f"Next {heading}: {lands}. {listed}"
 
 
 # ---------------------------------------------------------------------------
