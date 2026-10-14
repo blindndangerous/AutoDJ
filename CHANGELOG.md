@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Track info's Tags, Cue points, Matched intros and Song structure sections can be collapsed and
+  expanded like the Now Playing cards, and Song structure comes last (#297).
 - AutoDJ is now licensed under the GNU Affero General Public License, version 3 or later
   (AGPL-3.0-or-later), instead of MIT. Anyone who runs a modified AutoDJ that people use over a
   network must offer them its source code. Releases up to and including 0.21.0 stay available under

@@ -424,26 +424,14 @@
     <h2 id="track-info-heading" tabindex="-1">Track info</h2>
     <p id="track-info-empty">Choose Track info beside a song or liner.</p>
     <dl id="track-info-details" hidden></dl>
-    <!-- Song structure (modules/landmarks.js, #60): the song's landmarks as
-         a list of text in time order, times numeric (1:35) as the UI
-         wording guidance asks.  Never live: it is drawn when a song opens, and the bracket
-         keys say where they land through #sr-status instead. -->
-    <section id="landmarks-section" aria-labelledby="landmarks-heading" hidden>
-      <h3 id="landmarks-heading">Song structure</h3>
-      <p class="setting-desc" id="landmarks-help">Where the intro, the singing, drops, breakdowns and the outro are, from AutoDJ’s analysis, the synced lyrics and the cue points. While Track info shows, the Right bracket key moves the cue point preview to the next landmark and the Left bracket key to the previous one, and says what is there.</p>
-      <p id="landmarks-empty" hidden></p>
-      <!-- role="list": list-style none drops the list role in Safari. -->
-      <ol id="landmarks-list" class="landmark-list" role="list" aria-labelledby="landmarks-heading" hidden></ol>
-      <p class="setting-desc" id="landmarks-note" hidden>Drops, breakdowns, phrases and bar numbers appear once AutoDJ has analysed this song: when it is next up to play, or when Analyse runs in Library tools.</p>
-    </section>
     <!-- Tags (modules/tag-editor.js). Save tags stores only changed fields
          in the library, and in the file when Also save the tags to the file
          is checked. Analysis and cue points stay. A refused field is marked
          invalid, its error is linked to it
          and the first one is focused; any other result is said once in
          #tags-status, and focus stays on Save tags. -->
-    <section id="tags-editor" aria-labelledby="tags-heading" hidden>
-      <h3 id="tags-heading">Tags</h3>
+    <details class="card" id="tags-editor" open hidden>
+      <summary><h3 id="tags-heading">Tags</h3></summary>
       <p id="tags-unavailable" hidden>AutoDJ cannot write tags into this kind of file, so Save tags changes them in AutoDJ only.</p>
       <form id="tags-form" novalidate>
         <p class="setting-desc">Change any tag and choose Save tags. AutoDJ keeps them in its library without analysing the song again. The file changes only if you check Also save the tags to the file. Leave a field empty to remove that tag; Title is required.</p>
@@ -496,9 +484,9 @@
         <button type="submit" id="tags-save">Save tags</button>
       </form>
       <p id="tags-status" role="status" aria-live="polite" aria-atomic="true"></p>
-    </section>
-    <section id="points-editor" aria-labelledby="points-heading" hidden>
-      <h3 id="points-heading">Cue points</h3>
+    </details>
+    <details class="card" id="points-editor" open hidden>
+      <summary><h3 id="points-heading">Cue points</h3></summary>
       <p>Preview this file to check its cues. Use preview position copies the preview’s time; it does not use or change the station’s playback position.</p>
       <p id="points-liner-help" hidden>Segue marks the end of the liner’s main content; End keeps the remaining tail. A blank Overlap start uses Segue, or End when Segue is blank. With Allow start over outro unchecked, the liner starts at the outgoing song’s Segue; checked, it may start over the Outro. Set Overlap start to 0 to let the next song’s intro overlap the liner when timing allows. A positive value is the earliest time after the liner’s saved Start at which the next song may enter. Every overlap value respects the next song’s intro: with no intro, the song waits until the liner’s Segue, while its remaining tail may overlap. It cannot be later than the liner’s Segue. A negative value starts the liner after the next song begins, limited by its intro.</p>
       <label id="points-allow-outro-label" hidden><input type="checkbox" id="points-allow-outro"> Allow start over outro</label>
@@ -539,14 +527,14 @@
       </div>
       <button type="button" id="points-save" aria-describedby="shared-context">Save points</button>
       <audio id="points-preview" controls preload="none" aria-label="Song point preview" data-preview-output></audio>
-    </section>
+    </details>
     <p id="points-status" role="status" aria-live="polite" aria-atomic="true"></p>
     <!-- Matched intros (modules/matched-intros.js, #127): voice clips that
          play as this song starts.  The lists change in place; a refused
          field is marked invalid with its error linked to it and focused;
          any other result is said once in #intros-status. -->
-    <section id="intros-editor" aria-labelledby="intros-heading" hidden>
-      <h3 id="intros-heading">Matched intros</h3>
+    <details class="card" id="intros-editor" open hidden>
+      <summary><h3 id="intros-heading">Matched intros</h3></summary>
       <p class="setting-desc" id="intros-help">Short voice clips that introduce this song or its artist.</p>
       <details class="setting-desc setting-help">
         <summary>Intro timing and priority</summary>
@@ -620,7 +608,19 @@
         </fieldset>
       </form>
       <p id="intros-status" role="status" aria-live="polite" aria-atomic="true"></p>
-    </section>
+    </details>
+    <!-- Song structure (modules/landmarks.js, #60): the song's landmarks as
+         a list of text in time order, times numeric (1:35) as the UI
+         wording guidance asks.  Never live: it is drawn when a song opens, and the bracket
+         keys say where they land through #sr-status instead. -->
+    <details class="card" id="landmarks-section" open hidden>
+      <summary><h3 id="landmarks-heading">Song structure</h3></summary>
+      <p class="setting-desc" id="landmarks-help">Where the intro, the singing, drops, breakdowns and the outro are, from AutoDJ’s analysis, the synced lyrics and the cue points. While Track info shows, the Right bracket key moves the cue point preview to the next landmark and the Left bracket key to the previous one, and says what is there.</p>
+      <p id="landmarks-empty" hidden></p>
+      <!-- role="list": list-style none drops the list role in Safari. -->
+      <ol id="landmarks-list" class="landmark-list" role="list" aria-labelledby="landmarks-heading" hidden></ol>
+      <p class="setting-desc" id="landmarks-note" hidden>Drops, breakdowns, phrases and bar numbers appear once AutoDJ has analysed this song: when it is next up to play, or when Analyse runs in Library tools.</p>
+    </details>
   </section>
   <!-- ============================================================
        View: History — session play log, most-recent first
