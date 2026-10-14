@@ -1468,6 +1468,7 @@ class NowPlayingConfig(_Section):
 
 #: How listener requests are approved (``[requests] approval``).
 REQUEST_APPROVALS: tuple[str, ...] = ("manual", "auto")
+REQUEST_NO_SMOOTH_SPOT: tuple[str, ...] = ("best", "wait")
 
 
 @dataclass
@@ -1492,6 +1493,11 @@ class RequestsConfig(_Section):
         ipv6_prefix: The IPv6 network one listener's limits count over,
             in bits: 56 (the default) counts a whole home network that was
             delegated a /56; 64 a single /64; 128 a single address.
+        bridges_enabled: Add transition songs before a distant request. Off by default.
+        max_bridges: At most this many transition songs, from one to three.
+        bridge_cost_threshold: Cost above which a smooth bridge is sought.
+        no_smooth_spot: ``"best"`` queues the best legal position; ``"wait"``
+            leaves the request pending for the operator.
     """
 
     SECTION: ClassVar[str] = "requests"
@@ -1505,12 +1511,26 @@ class RequestsConfig(_Section):
     blocked_artists: list[str] = field(default_factory=list)
     blocked_folders: list[str] = field(default_factory=list)
     ipv6_prefix: int = 56
+    bridges_enabled: bool = False
+    max_bridges: int = 3
+    bridge_cost_threshold: float = 2.0
+    no_smooth_spot: str = "best"
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
             raise TypeError("requests.enabled must be true or false")
         if self.approval not in REQUEST_APPROVALS:
             raise ValueError("requests.approval must be manual or auto")
+        if not isinstance(self.bridges_enabled, bool):
+            raise TypeError("requests.bridges_enabled must be true or false")
+        if self.no_smooth_spot not in REQUEST_NO_SMOOTH_SPOT:
+            raise ValueError("requests.no_smooth_spot must be best or wait")
+        if isinstance(self.bridge_cost_threshold, bool) or not isinstance(
+            self.bridge_cost_threshold, (int, float)
+        ):
+            raise TypeError("requests.bridge_cost_threshold must be a number")
+        if not 0.0 <= self.bridge_cost_threshold <= 10.0:
+            raise ValueError("requests.bridge_cost_threshold must be between 0 and 10")
         for name, low, high in (
             ("per_listener", 1, 100),
             ("per_listener_minutes", 1, 1440),
@@ -1518,6 +1538,7 @@ class RequestsConfig(_Section):
             ("max_pending", 1, 200),
             ("window_minutes", 5, 240),
             ("ipv6_prefix", 32, 128),
+            ("max_bridges", 1, 3),
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int):

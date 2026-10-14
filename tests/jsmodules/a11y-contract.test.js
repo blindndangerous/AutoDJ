@@ -3080,6 +3080,44 @@ describe("listener request contracts", () => {
     expect(requestsScript).toMatch(/which\.className = "visually-hidden";/);
     expect(requestsScript).not.toMatch(/aria-live/);
   });
+
+  it("labels every smooth-transition setting, groups the give-up choice and links its help and error", () => {
+    const start = htmlSource.indexOf('<form id="requests-settings"');
+    const form = htmlSource.slice(start, htmlSource.indexOf("</form>", start));
+    expect(form).toMatch(/aria-labelledby="requests-settings-heading"/);
+    expect(form).toMatch(/<h3 id="requests-settings-heading">/);
+    for (const id of ["requests-bridges", "requests-max-bridges", "requests-threshold",
+      "requests-no-smooth-best", "requests-no-smooth-wait"]) {
+      expect(form).toMatch(new RegExp(`<label for="${id}">[^<]+</label>`));
+    }
+    for (const id of ["requests-bridges", "requests-max-bridges", "requests-threshold"]) {
+      expect(form).toMatch(new RegExp(`id="${id}"[^>]*aria-describedby="${id}-help"`));
+      expect(form).toMatch(new RegExp(`class="setting-desc" id="${id}-help"`));
+    }
+    expect(form).toMatch(/<fieldset id="requests-no-smooth">\s*<legend>When no smooth spot is found<\/legend>/);
+    expect(form).toMatch(/<p id="requests-threshold-error" class="field-error" hidden><\/p>/);
+    expect(form).toMatch(/<button type="submit" id="requests-settings-save">Save request settings<\/button>/);
+    expect(form).not.toMatch(/aria-live|role="status"/);
+    // A refused value is marked, linked, shown and focused; its words are said once.
+    expect(requestsScript).toMatch(/threshold\.setAttribute\("aria-invalid", "true"\)/);
+    expect(requestsScript).toMatch(/linkThresholdError\(true\)/);
+    expect(requestsScript).toMatch(/threshold\.focus\(\)/);
+  });
+
+  it("says a bridge song in words with tokens only for its colour", () => {
+    const rule = cssSource.match(/#queue-list \.queue-bridge \{[^}]*\}/)?.[0] || "";
+    expect(rule).toMatch(/color: var\(--text-dim\);/);
+    expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
+    for (const selector of ["#requests-settings", "#requests-no-smooth"]) {
+      const start = cssSource.indexOf(`${selector} {`);
+      const block = start < 0 ? "" : cssSource.slice(start, cssSource.indexOf("}", start));
+      expect(block).toMatch(/\S/);
+      expect(block).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
+    }
+    const queueScript = readFileSync(staticPath("modules", "queue.js"), "utf8");
+    expect(queueScript).toMatch(/`Bridge to \$\{target\}`/);
+    expect(queueScript).toMatch(/<span class="queue-bridge">/);
+  });
 });
 
 describe("public player page contracts", () => {
