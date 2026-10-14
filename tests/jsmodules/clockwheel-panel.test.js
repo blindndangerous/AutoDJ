@@ -487,6 +487,10 @@ describe("clockwheel editor", () => {
     expect(document.activeElement).toBe(rowCell(1, "delete"));
     rowCell(1, "delete").dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true, cancelable: true }));
     expect(document.activeElement).toBe(rowCell(1, "edit"));
+    rowCell(1, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Home", ctrlKey: true, bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(rowCell(0, "edit"));
+    rowCell(0, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "End", ctrlKey: true, bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(rowCell(2, "edit"));
     rowCell(2, "edit").focus();
     rowCell(2, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     expect(byId("clock-step-legend").textContent).toBe("Edit step 3");

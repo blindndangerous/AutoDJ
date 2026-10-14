@@ -78,7 +78,10 @@ describe("search requests", () => {
     els.btnSearch.click();
     await vi.waitFor(() => expect(els.searchResults.querySelector('[data-points="true"]')).not.toBeNull());
     const button = els.searchResults.querySelector('[data-points="true"]');
-    expect(button.hasAttribute("aria-label")).toBe(false);
+    const trackName = els.searchResults.querySelector(".result-name").textContent;
+    for (const action of els.searchResults.querySelectorAll(".result-btn")) {
+      expect(action.getAttribute("aria-label")).toBe(`${action.textContent}, ${trackName}`);
+    }
     expect(button.textContent).toContain("Track info");
     button.click();
     expect(onEditPoints).toHaveBeenCalledWith({ path: "M:/music/song.flac", kind: "music", opener: button });

@@ -117,6 +117,7 @@ export function installSearch({
         button.type = "button";
         button.className = "result-btn";
         button.textContent = text;
+        button.setAttribute("aria-label", `${text}, ${name}`);
         button.dataset.path = track.path;
         for (const [key, value] of Object.entries(values)) button.dataset[key] = value;
         // Playing and queueing act on the station the page controls (#70).
